@@ -1,0 +1,46 @@
+<!doctype html>
+<!--
+  ============================================================
+  链路第 3 环：渲染进程 HTML — 被 BrowserWindow 加载的页面入口
+  ============================================================
+  main/index.js 在创建窗口后通过 loadURL / loadFile 加载此文件。
+  它是整个前端 UI 的起点，Vue 应用在此页面中挂载并运行。
+
+  上一环 → src/preload/index.js     (已注入 window.electron / window.api)
+  下一环 → src/renderer/src/main.js (ES Module 入口，启动 Vue 应用)
+-->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Electron</title>
+
+    <!--
+      内容安全策略（Content-Security-Policy）
+      严格限制资源加载来源，防范 XSS 攻击：
+        - default-src 'self'      → 默认仅允许加载同源资源
+        - script-src 'self'       → 脚本仅允许同源（Vue 构建产物）
+        - style-src 'self' 'unsafe-inline' → 样式允许内联（Vue SFC 需要）
+        - img-src 'self' data:    → 图片允许同源及 data: URI
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    />
+  </head>
+
+  <body>
+    <!--
+      Vue 应用挂载点。
+      src/renderer/src/main.js 中执行 createApp(App).mount('#app')
+      会将 Vue 根组件渲染到此 div 内部。
+    -->
+    <div id="app"></div>
+
+    <!--
+      ES Module 入口脚本。
+      electron-vite 在开发模式下通过 HMR 服务器对此路径进行实时编译；
+      生产模式下则是打包后的静态 JS 文件。
+    -->
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
