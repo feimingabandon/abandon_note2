@@ -50,7 +50,30 @@ const api = {
    * 打开灵动岛的设置窗口
    * 由灵动岛窗口「设置」按钮调用
    */
-  openIslandSettings: () => ipcRenderer.send('open-island-settings')
+  openIslandSettings: () => ipcRenderer.send('open-island-settings'),
+
+  /**
+   * 设置主窗口的字体大小（rem 值）
+   * 由主窗口设置页面的字体滑动条调用
+   * → 主进程收到后转发给主窗口渲染进程
+   * @param {number} size - 字体大小（rem 值，如 14）
+   */
+  setMainFontSize: (size) => ipcRenderer.send('set-main-font-size', size),
+
+  /**
+   * 设置灵动岛窗口的字体大小（rem 值）
+   * 由灵动岛设置页面的字体滑动条调用
+   * → 主进程收到后转发给灵动岛渲染进程
+   * @param {number} size - 字体大小（rem 值，如 14）
+   */
+  setIslandFontSize: (size) => ipcRenderer.send('set-island-font-size', size),
+
+  /**
+   * 监听字号更新事件（由目标窗口的渲染进程调用）
+   * 主进程转发字号后，渲染进程通过此方法接收并应用
+   * @param {Function} callback - 回调函数，参数为 (event, size)
+   */
+  onFontSizeChanged: (callback) => ipcRenderer.on('font-size-changed', callback)
 }
 
 /**

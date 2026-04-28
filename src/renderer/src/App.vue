@@ -14,6 +14,7 @@
  */
 
 import Versions from './components/Versions.vue'
+import { useFontSizeListener } from './composables/useFontSize'
 
 /**
  * 打开主窗口的设置窗口
@@ -28,6 +29,12 @@ const openSettings = () => window.api.openMainSettings()
  * → 触发 IPC 'open-island' → main/index.js 先创建灵动岛窗口再关闭本窗口
  */
 const switchToIsland = () => window.api.switchToIsland()
+
+/**
+ * 注册字号变更 IPC 监听
+ * 设置窗口修改字号 → 主进程转发 → 本窗口接收并更新 CSS 变量
+ */
+useFontSizeListener()
 </script>
 
 <template>

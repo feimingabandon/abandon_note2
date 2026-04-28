@@ -6,7 +6,7 @@
  * - electronApp、optimizer、is 来自 electron-toolkit 工具库
  * - icon 是应用图标资源
  */
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, screen } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -18,6 +18,10 @@ let mainWindow = null      // 主窗口
 let mainSettingsWin = null // 主窗口的设置窗口
 let islandWindow = null    // 灵动岛窗口
 let islandSettingsWin = null // 灵动岛的设置窗口
+
+// 窗口尺寸缓存：由 app.whenReady() 初始化，基于主显示器可用区域
+let screenW = 1920   // 默认兜底
+let screenH = 1080
 
 /**
  * ============================================================
@@ -106,8 +110,8 @@ function createWindow() {
   }
 
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    width: Math.round(screenW * 0.3),   // 屏幕宽的 30%
+    height: Math.round(screenH * 0.62),  // 屏幕高的 62%
     ...getSharedWindowOptions()
   })
 
@@ -136,8 +140,8 @@ function createMainSettingsWindow() {
   }
 
   mainSettingsWin = new BrowserWindow({
-    width: 600,
-    height: 500,
+    width: Math.round(screenW * 0.32),   // 屏幕宽的 32%
+    height: Math.round(screenH * 0.46),  // 屏幕高的 46%
     parent: mainWindow,       // 设为子窗口，跟随主窗口
     modal: false,             // 非模态，可以同时操作主窗口
     ...getSharedWindowOptions()
@@ -165,8 +169,8 @@ function createIslandWindow() {
   }
 
   islandWindow = new BrowserWindow({
-    width: 400,
-    height: 150,
+    width: Math.round(screenW * 0.22),   // 屏幕宽的 22%
+    height: Math.round(screenH * 0.15),  // 屏幕高的 15%
     resizable: true,          // 允许调整大小（灵动岛通常较小，但给用户自由）
     frame: true,              // 保留窗口边框，用户可拖拽
     ...getSharedWindowOptions()
@@ -193,8 +197,8 @@ function createIslandSettingsWindow() {
   }
 
   islandSettingsWin = new BrowserWindow({
-    width: 500,
-    height: 400,
+    width: Math.round(screenW * 0.28),   // 屏幕宽的 28%
+    height: Math.round(screenH * 0.38),  // 屏幕高的 38%
     parent: islandWindow,     // 设为灵动岛窗口的子窗口
     modal: false,
     ...getSharedWindowOptions()
@@ -215,6 +219,12 @@ function createIslandSettingsWindow() {
  * 仅当 Electron 完成初始化后才执行，所有窗口 API 必须在此之后调用。
  */
 app.whenReady().then(() => {
+  // --- 步骤 3.0：获取主显示器可用区域尺寸，供所有窗口按比例计算 ---
+  const display = screen.getPrimaryDisplay()
+  screenW = display.workAreaSize.width
+  screenH = display.workAreaSize.height
+  console.log(`[screen] 主显示器可用区域: ${screenW}×${screenH} (比例 ${(screenW / screenH).toFixed(2)})`)
+
   // --- 步骤 3.1：设置 Windows 任务栏应用 ID ---
   electronApp.setAppUserModelId('com.electron')
 
@@ -255,6 +265,26 @@ app.whenReady().then(() => {
   // 灵动岛窗口 → 打开灵动岛的设置窗口
   ipcMain.on('open-island-settings', () => {
     createIslandSettingsWindow()
+  })
+
+  // ============================================================
+  // 字体大小 IPC：设置窗口 → 主进程 → 目标窗口
+  // ============================================================
+
+  // 主窗口设置页 → 修改主窗口字体
+  // 接收 rem 值，转发给主窗口渲染进程更新 CSS 变量
+  ipcMain.on('set-main-font-size', (_event, size) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('font-size-changed', size)
+    }
+  })
+
+  // 灵动岛设置页 → 修改灵动岛窗口字体
+  // 接收 rem 值，转发给灵动岛渲染进程更新 CSS 变量
+  ipcMain.on('set-island-font-size', (_event, size) => {
+    if (islandWindow && !islandWindow.isDestroyed()) {
+      islandWindow.webContents.send('font-size-changed', size)
+    }
   })
 
   // --- 步骤 3.4：应用启动，创建主窗口 ---

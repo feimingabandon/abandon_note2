@@ -1,3 +1,31 @@
+/**
+ * ============================================================
+ * rem 响应式根字号（W = 500）
+ * ============================================================
+ * html font-size = 窗口宽度 / 500
+ * 当窗口正好 500px 宽时，1rem = 1px，设计稿像素 1:1 映射。
+ *
+ * 窗口变宽 → 所有 rem 元素等比放大
+ * 窗口变窄 → 所有 rem 元素等比缩小
+ * ============================================================ */
+html {
+  font-size: calc(100vw / 500);
+}
+
+/* 窗口太小时防止元素过小不可读 */
+@media (max-width: 350px) {
+  html {
+    font-size: 0.7px;  /* 350 / 500 */
+  }
+}
+
+/* 窗口太大时防止元素过大溢出 */
+@media (min-width: 1000px) {
+  html {
+    font-size: 2px;  /* 1000 / 500 */
+  }
+}
+
 :root {
   --ev-c-white: #ffffff;
   --ev-c-white-soft: #f8f8f8;
@@ -31,6 +59,33 @@
   --color-text: var(--ev-c-text-1);
 }
 
+/**
+ * ============================================================
+ * 第 2 层：字体设计变量（每窗口独立，用户可通过设置窗口调整）
+ * ============================================================
+ * --font-size-base    → 正文字号，所有字体的基准锚点
+ * --font-size-title   → 标题字号 = 正文 × 1.5 倍
+ * --font-size-caption → 辅助文字 = 正文 × 0.85 倍
+ *
+ * clamp(最小px, 理想rem, 最大px)：
+ *   - 最小值：防止窗口极端缩小时文字不可读
+ *   - 理想值：rem 值，随窗口等比缩放
+ *   - 最大值：防止窗口极端放大时文字过大
+ *
+ * 用户改字号时，JS 只需修改 --font-size-base，标题和辅助自动联动：
+ *   document.documentElement.style.setProperty('--font-size-base', 'clamp(12px, 16rem, 22px)')
+ * ============================================================ */
+:root {
+  /* 正文字号：基准 14rem，最小 8px，最大 40px */
+  --font-size-base: clamp(8px, 14rem, 40px);
+
+  /* 标题字号：正文 × 1.5，最小 12px，最大 60px */
+  --font-size-title: clamp(12px, calc(14rem * 1.5), 60px);
+
+  /* 辅助文字：正文 × 0.85，最小 7px，最大 34px */
+  --font-size-caption: clamp(7px, calc(14rem * 0.85), 34px);
+}
+
 *,
 *::before,
 *::after {
@@ -47,6 +102,7 @@ body {
   min-height: 100vh;
   color: var(--color-text);
   background: var(--color-background);
+  font-size: var(--font-size-base);  /* 所有未显式设置字号的元素默认继承正文大小 */
   line-height: 1.6;
   font-family:
     Inter,
