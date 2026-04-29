@@ -17,15 +17,22 @@ import { reactive } from 'vue'
 
 /**
  * 从 window.electron.process.versions 获取运行时版本信息。
- * 使用 reactive 包裹使其成为 Vue 响应式对象（实际上这些值在运行
- * 期间不会变化，但使用 reactive 是 Vue 推荐的数据管理方式）。
  *
- * window.electron.process.versions 包含：
+ * reactive() 是 Vue 3 的响应式 API，将普通对象包装成响应式对象。
+ *   类比 Vue 2：相当于在 data() { return { versions: {...} } } 中声明。
+ *   类比 Java：相当于一个被 @Observable 标注的 POJO，属性变化时自动通知视图更新。
+ *
+ * ...window.electron.process.versions — ES6 展开运算符
+ *   将 versions 对象的所有属性展开并复制到新对象中。
+ *   类比 Java：相当于 new HashMap<>(originalMap)，即浅拷贝。
+ *
+ * window.electron.process.versions 的来源：
+ *   preload/index.js 通过 contextBridge 将 electronAPI 暴露到 window.electron，
+ *   其中包含 process.versions 属性，记录了各运行时的版本号：
  *   - electron  : Electron 版本
- *   - chrome    : Chromium 内核版本
- *   - node      : Node.js 版本
+ *   - chrome    : Chromium 内核版本（Electron 内置的浏览器引擎）
+ *   - node      : Node.js 版本（Electron 内置的 JS 运行时）
  *   - v8        : V8 引擎版本（未显示）
- *   - ...       : 其他底层库版本
  */
 const versions = reactive({ ...window.electron.process.versions })
 </script>

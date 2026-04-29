@@ -15,21 +15,54 @@
  * 使用方 → App.vue / IslandApp.vue / SettingsApp.vue / IslandSettingsApp.vue
  */
 
-import { ref, watch, onMounted } from 'vue'
-import { applyFontSize, clampFontSize, FONT_SIZE_DEFAULT } from '../utils/fontUtils'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { applyFontSize, clampFontSize, readFontSizeFromCSS } from '../utils/fontUtils'
 
 /**
- * 目标窗口用：监听 IPC 字号变更事件
- * 在 onMounted 中注册 window.api.onFontSizeChanged 回调，
- * 收到设置窗口发来的字号后调用 applyFontSize 更新本窗口 CSS 变量。
+ * 目标窗口用：监听 IPC 字号变更事件 + 启动时从数据库恢复字号
+ *
+ * 做两件事：
+ *   1. 注册 IPC 监听器 — 实时接收设置窗口发来的字号变更
+ *   2. 主动拉取持久化字号 — 启动时从数据库读取上次保存的字号并应用
+ *
+ * @param {string} windowType - 窗口类型：'main' 或 'island'
+ *   主窗口传 'main'，灵动岛传 'island'
+ *   对应数据库 window_styles 表的 window_type 字段
  *
  * 使用示例（App.vue / IslandApp.vue）：
  *   import { useFontSizeListener } from '@/composables/useFontSize'
- *   useFontSizeListener()
+ *   useFontSizeListener('main')    // 主窗口
+ *   useFontSizeListener('island')  // 灵动岛
  */
-export function useFontSizeListener() {
-  onMounted(() => {
-    window.api.onFontSizeChanged((_event, size) => applyFontSize(size))
+export function useFontSizeListener(windowType) {
+  let cleanup = null
+
+  onMounted(async () => {
+    // --- 第 1 步：注册 IPC 监听器，接收实时字号变更 ---
+    const handler = (_event, size) => applyFontSize(size)
+    cleanup = window.api.onFontSizeChanged(handler)
+
+    // --- 第 2 步：从数据库拉取持久化字号并应用 ---
+    // window.api.getWindowStyle() 是异步方法（返回 Promise），需要 await
+    // 类似 Java 中 CompletableFuture.get() 等待异步结果
+    try {
+      const styles = await window.api.getWindowStyle(windowType)
+      // styles 是一个对象，如 { font_size: '20' }
+      // styles.font_size 是字符串，需要用 Number() 转成数字
+      if (styles && styles.font_size) {
+        applyFontSize(Number(styles.font_size))
+      }
+    } catch (err) {
+      // 首次启动时数据库可能没有记录，此时静默使用 CSS 默认值
+      console.warn('[useFontSize] 读取持久化字号失败，使用默认值:', err)
+    }
+  })
+
+  onUnmounted(() => {
+    if (cleanup) {
+      cleanup()
+      cleanup = null
+    }
   })
 }
 
@@ -48,8 +81,8 @@ export function useFontSizeListener() {
  *   const { fontSize } = useFontSizeEditor('setMainFontSize')
  */
 export function useFontSizeEditor(ipcMethod) {
-  /** 当前字号（rem 值），默认 14 */
-  const fontSize = ref(FONT_SIZE_DEFAULT)
+  /** 当前字号（rem 值），默认从 CSS 变量 --font-size-base-raw 读取 */
+  const fontSize = ref(readFontSizeFromCSS())
 
   /**
    * 监听字号变化：

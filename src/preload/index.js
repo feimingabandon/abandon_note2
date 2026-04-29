@@ -28,6 +28,36 @@ import { electronAPI } from '@electron-toolkit/preload'
  * ipcMain.on(...) 一一匹配。
  */
 const api = {
+  // ---- 窗口控制（关闭 / 最小化 / 最大化） ----
+  // 由标题栏组件调用，主进程通过 event.sender 自动识别是哪个窗口
+
+  /** 关闭当前窗口 */
+  closeWindow: () => ipcRenderer.send('window-close'),
+
+  /** 最小化当前窗口 */
+  minimizeWindow: () => ipcRenderer.send('window-minimize'),
+
+  /** 切换最大化 / 还原 */
+  maximizeWindow: () => ipcRenderer.send('window-maximize'),
+
+  // ---- 窗口缩放（自定义 resize 手柄） ----
+
+  /**
+   * 获取当前窗口的矩形区域 { x, y, width, height }
+   * 由 ResizeHandles 组件在 mousedown 时调用，记录缩放起始状态
+   * @returns {Promise<{x:number, y:number, width:number, height:number}>}
+   */
+  getWindowBounds: () => ipcRenderer.invoke('window-get-bounds'),
+
+  /**
+   * 设置当前窗口的矩形区域（位置 + 尺寸）
+   * 由 ResizeHandles 组件在 mousemove 时高频调用，实时更新窗口大小
+   * @param {{x:number, y:number, width:number, height:number}} bounds
+   */
+  setWindowBounds: (bounds) => ipcRenderer.send('window-set-bounds', bounds),
+
+  // ---- 窗口切换 ----
+
   /**
    * 打开主窗口的设置窗口
    * 由主窗口「设置」按钮调用
@@ -72,8 +102,28 @@ const api = {
    * 监听字号更新事件（由目标窗口的渲染进程调用）
    * 主进程转发字号后，渲染进程通过此方法接收并应用
    * @param {Function} callback - 回调函数，参数为 (event, size)
+   * @returns {Function} 清理函数，调用即可移除监听器
    */
-  onFontSizeChanged: (callback) => ipcRenderer.on('font-size-changed', callback)
+  onFontSizeChanged: (callback) => {
+    ipcRenderer.on('font-size-changed', callback)
+    return () => ipcRenderer.removeListener('font-size-changed', callback)
+  },
+
+  /**
+   * 查询某个窗口类型的持久化样式配置
+   *
+   * 这是一个异步接口（返回 Promise），渲染进程需要用 await 等待结果：
+   *   const styles = await window.api.getWindowStyle('main')
+   *   // styles = { font_size: '20', theme: 'dark' } 或 {}
+   *
+   * ipcRenderer.invoke() 会向主进程发送请求并等待返回值，
+   * 类似 Java 中 HttpClient 发送 HTTP 请求并等待响应。
+   * 对应主进程的 ipcMain.handle('get-window-style', ...) 处理器。
+   *
+   * @param {string} windowType - 窗口类型：'main'（主窗口组）或 'island'（灵动岛组）
+   * @returns {Promise<Object>} 样式键值对，如 { font_size: '20' }
+   */
+  getWindowStyle: (windowType) => ipcRenderer.invoke('get-window-style', windowType)
 }
 
 /**

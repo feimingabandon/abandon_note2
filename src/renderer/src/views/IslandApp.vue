@@ -6,11 +6,14 @@
  * 用户点击主窗口的「灵动岛」按钮后，主窗口关闭、本窗口打开。
  * 包含「回到主窗口」和「设置」两个操作按钮。
  *
+ * 透明窗口 + 毛玻璃效果，整个窗口看起来像一个浮动胶囊。
+ *
  * 上一环 → island-main.js     (Vue 实例挂载此组件)
  * 下一环 → main/index.js      (通过 window.api 切换窗口)
  */
 
 import { useFontSizeListener } from '../composables/useFontSize'
+import ResizeHandles from '../components/ResizeHandles.vue'
 
 /**
  * 切换回主窗口
@@ -25,26 +28,28 @@ const switchToMain = () => window.api.switchToMain()
 const openSettings = () => window.api.openIslandSettings()
 
 /**
- * 注册字号变更 IPC 监听
- * 灵动岛设置窗口修改字号 → 主进程转发 → 本窗口接收并更新 CSS 变量
+ * 注册字号变更 IPC 监听 + 启动时从数据库恢复字号
+ * 传入 'island' 表示这是灵动岛组，从 window_styles 表中读取 window_type='island' 的配置
  */
-useFontSizeListener()
+useFontSizeListener('island')
 </script>
 
 <template>
-  <div class="island-container">
-    <div class="island-pill">
+  <!-- 整个灵动岛是一个毛玻璃胶囊 -->
+  <div class="window-frame glass">
+    <!-- 窗口缩放手柄 -->
+    <ResizeHandles />
+
+    <!-- 拖拽区域 + 标题 -->
+    <div class="island-drag">
       <span class="island-icon">🏝️</span>
       <span class="island-title">灵动岛</span>
     </div>
 
+    <!-- 操作按钮（no-drag 区域，可点击） -->
     <div class="island-actions">
-      <button class="island-btn" @click="switchToMain">
-        ← 回到主窗口
-      </button>
-      <button class="island-btn" @click="openSettings">
-        设置
-      </button>
+      <button class="btn-ghost island-btn" @click="switchToMain">← 主窗口</button>
+      <button class="btn-dark island-btn" @click="openSettings">⚙ 设置</button>
     </div>
   </div>
 </template>
@@ -52,53 +57,55 @@ useFontSizeListener()
 <style scoped>
 /**
  * ============================================================
- * 灵动岛窗口样式（rem 响应式，W = 500）
+ * 灵动岛窗口私有样式
  * ============================================================
- * 窗口 500px 时 1rem = 1px。
- * 1px 边框保留 px，transition 时间保留秒单位。
+ * 基础框架使用 base.css 的 .window-frame（纵向 + 圆角 + 溢出裁剪），
+ * 这里覆写为横向胶囊布局。
  */
-.island-container {
-  display: flex;
+
+/* 覆写 .window-frame 默认的纵向布局为横向胶囊
+ * flex-direction: row — 图标、标题、按钮水平排列
+ * border-radius: pill — 胶囊形（两端半圆）
+ * overflow: visible — 胶囊不需要裁剪溢出 */
+.window-frame {
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  height: 100%;
-  padding: 16rem;
-  gap: 24rem;
-  color: var(--color-text);
+  justify-content: space-between;
+  padding: var(--sp-3) var(--sp-5);
+  border-radius: var(--radius-pill);
+  overflow: visible;
+  gap: var(--sp-5);
 }
 
-.island-pill {
+/* 拖拽区域 — 用户可以按住这里移动整个灵动岛窗口 */
+.island-drag {
   display: flex;
   align-items: center;
-  gap: 8rem;
-  padding: 10rem 20rem;
-  background: var(--ev-c-black-mute);
-  border-radius: 24rem;
-  font-size: var(--font-size-base);  /* 标题文字 */
-  font-weight: 600;
+  gap: var(--sp-2);
+  -webkit-app-region: drag;
+  flex: 1;
 }
 
 .island-icon {
-  font-size: 24rem;
+  font-size: var(--fs-h3);
 }
 
+.island-title {
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  color: var(--color-text-1);
+}
+
+/* 按钮区域 — no-drag 让按钮可以正常点击 */
 .island-actions {
   display: flex;
-  gap: 10rem;
+  gap: var(--sp-2);
+  -webkit-app-region: no-drag;
 }
 
+/* 按钮尺寸微调 */
 .island-btn {
-  padding: 8rem 18rem;
-  border: 1px solid var(--ev-c-gray-1);
-  border-radius: 16rem;
-  background: var(--ev-c-gray-3);
-  color: var(--ev-c-text-1);
-  font-size: var(--font-size-caption);  /* 按钮文字：辅助 */
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.island-btn:hover {
-  background: var(--ev-c-gray-2);
+  font-size: var(--fs-caption);
+  padding: var(--sp-2) var(--sp-3);
 }
 </style>
