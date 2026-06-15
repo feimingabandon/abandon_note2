@@ -1,24 +1,17 @@
 /**
- * ============================================================
- * 链路第 4 环：Vue 应用启动入口
- * ============================================================
- * 此文件是渲染进程的 JS 入口，由 index.html 中的
- * <script type="module" src="/src/main.js"> 加载执行。
- * 它负责初始化 Vue 3 应用并将其挂载到 DOM 中。
+ * main.js — 渲染进程入口文件
  *
- * 上一环 → src/renderer/index.html  (HTML 加载并执行此模块)
- * 下一环 → src/renderer/src/App.vue  (Vue 根组件)
+ * 职责：
+ *   1. 导入全局样式文件（tokens.css 包含 CSS Reset + 变量 + 根字号）
+ *   2. 创建 Vue 3 应用实例并挂载到 DOM
+ *
+ * 注意：此文件是 Vite 打包时渲染进程的入口点，
+ * 对应 index.html 中的 <script type="module" src="./src/main.js">
  */
 
-// 导入全局样式（base.css + main.css），确保样式在整个应用中生效
-import './assets/main.css'
+import './assets/tokens.css' // 导入全局基础样式（唯一的全局 CSS 文件）
+import { createApp } from 'vue' // Vue 3 应用创建函数
+import App from './App.vue' // 根组件
 
-import { createApp } from 'vue'
-import App from './App.vue'
-
-/**
- * 创建 Vue 3 应用实例，以 App.vue 为根组件，
- * 挂载到 index.html 中的 <div id="app"> 元素上。
- * 此时开始执行 Vue 的组件树渲染，窗口界面正式呈现。
- */
+// 创建 Vue 应用实例并挂载到 index.html 中 id="app" 的 DOM 节点
 createApp(App).mount('#app')

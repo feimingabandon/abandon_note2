@@ -1,477 +1,416 @@
-/**
- * ============================================================
- * 步骤 1：导入依赖模块
- * ============================================================
- * - app、BrowserWindow、ipcMain、shell、screen 来自 Electron 核心
- *   app       → 控制应用生命周期（启动、退出等），类似 Java 的 main() 方法
- *   BrowserWindow → 创建和管理窗口，类似 Java Swing 的 JFrame
- *   ipcMain   → 主进程的 IPC 消息接收器，类似 Java 的事件监听器
- *   shell     → 调用系统功能（如用默认浏览器打开链接）
- *   screen    → 获取显示器信息（分辨率、可用区域等）
- * - electronApp、optimizer、is 来自 electron-toolkit 工具库
- * - icon 是应用图标资源
- * - db.js 是本项目的数据库模块，封装了所有 SQLite 操作
- */
-import { app, shell, BrowserWindow, ipcMain, screen } from 'electron'
-import { join } from 'path'
-import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
 
-// 导入数据库模块（本项目自建）
+/**
+ * index.js — Electron 主进程入口文件
+ *
+ * 职责：
+ *   1. 创建和管理 BrowserWindow（无边框、透明背景）
+ *   2. 注册所有 IPC 通道（窗口控制、缩放手柄、数据库桥接）
+ *   3. 管理应用生命周期（启动、退出、macOS 激活）
+ *   4. 窗口几何信息的防抖持久化
+ */
+
+import { app, shell, BrowserWindow, ipcMain, screen, Tray, Menu } from 'electron'
+import { join } from 'path'
+import { electronApp, optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
+import icon from '../../resources/icon.png?asset' // 应用图标（Vite asset 导入）
 import {
   initDatabase,
   closeDatabase,
-  getWindowStyle,
-  getAllWindowStyles,
-  setWindowStyle,
-  getWindowGeometry,
-  saveWindowGeometry
+  getGeometry,
+  saveGeometry,
+  getSetting,
+  setSetting,
+  getSettingsByType,
+  deleteSetting
 } from './db.js'
 
+/** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
+const WINDOW_NAME = 'main'
+
+/** 主窗口实例引用 */
+let mainWindow = null
+
+/** 系统托盘实例 */
+let tray = null
+
+/** 是否正在执行退出流程（托盘菜单「退出」触发） */
+let isQuitting = false
+
+/** 防抖定时器，用于延迟保存窗口位置/尺寸 */
+let geometryTimer = null
+
 // ============================================================
-// 模块级变量：保存四个窗口的引用，供 IPC 和窗口切换使用
+// 贴边隐藏模块
 // ============================================================
-let mainWindow = null      // 主窗口
-let mainSettingsWin = null // 主窗口的设置窗口
-let islandWindow = null    // 灵动岛窗口
-let islandSettingsWin = null // 灵动岛的设置窗口
+const SNAP_THRESHOLD = 20 // 贴边吸附阈值（px）
+const TRIGGER_WIDTH = 2 // 边缘触发窗口宽度（px）
+const SLIDE_DURATION = 200 // 滑动动画总时长（ms）
+const SLIDE_INTERVAL = 16 // 滑动动画帧间隔（ms）≈60fps
+const HIDE_DELAY = 200 // 鼠标离开后延迟隐藏（ms）
 
-// 窗口尺寸缓存：由 app.whenReady() 初始化，基于主显示器可用区域
-let screenW = 1920   // 默认兜底
-let screenH = 1080
-
-// ============================================================
-// 防抖定时器缓存：每个窗口各自独立，避免 resize/move 高频写库
-// ============================================================
-// 类似 Java 中的 ScheduledFuture，延迟执行，新事件来了就取消旧的重新计时
-const geometryTimers = {}
-
-/**
- * ============================================================
- * getSharedWindowOptions() — 提取所有窗口的通用配置
- * ============================================================
- * 所有四个窗口共享相同的 preload、沙箱、图标等基础配置，
- * 避免重复代码。返回一个可展开到 BrowserWindow 构造参数的对象。
- */
-function getSharedWindowOptions() {
-  return {
-    show: false,                        // 初始隐藏，ready-to-show 后再显示
-    autoHideMenuBar: true,              // 自动隐藏菜单栏
-    transparent: true,                  // 窗口背景透明，配合 CSS 毛玻璃效果
-    frame: false,                       // 无边框窗口，配合透明背景实现自定义外观
-    backgroundColor: '#00000000',       // 初始背景全透明（8 位十六进制，最后 00 = 透明度 0）
-    ...(process.platform === 'linux' ? { icon } : {}), // Linux 需要显式设置图标
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'), // 共用同一个 preload
-      sandbox: false                    // electron-toolkit 要求关闭沙箱
-    }
-  }
-}
+let dockSide = null // null | 'left' | 'right' 当前吸附方向
+let isDockHidden = false // 窗口是否处于贴边隐藏状态
+let triggerWin = null // 边缘触发窗口实例
+let cachedWorkArea = null // 缓存显示器工作区，避免隐藏后 getDisplayMatching 返回过期对象
+let slideAnimTimer = null // 滑动动画定时器
+let hideTimer = null // 隐藏延迟定时器
+let isSliding = false // 滑动动画进行中标志
 
 /**
- * ============================================================
- * configureWindow() — 窗口通用行为配置
- * ============================================================
- * 为窗口绑定 ready-to-show 显示逻辑 + 外部链接拦截。
- * 每个窗口创建后调用此函数完成标准化配置。
- * @param {BrowserWindow} win - 待配置的窗口实例
- */
-function configureWindow(win) {
-  // 等待渲染完成再显示，避免白屏
-  win.on('ready-to-show', () => win.show())
-
-  // 拦截 window.open / target="_blank"，交给系统浏览器
-  win.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
-  })
-}
-
-/**
- * ============================================================
- * bindGeometryPersistence() — 为窗口绑定几何状态持久化
- * ============================================================
- * 监听窗口的 resize（调整大小）和 move（拖动位置）事件，
- * 使用防抖机制（500ms）将最新的尺寸和位置写入数据库。
- *
- * 防抖原理：用户拖拽窗口时，resize/move 事件每秒触发几十次，
- * 如果每次都写数据库会浪费性能。防抖的做法是：
- *   每次事件触发时，取消上一次的定时器，重新开始计时 500ms，
- *   只有用户停止拖拽超过 500ms 后才真正执行一次写入。
- * 类似 Java 中用 ScheduledExecutorService.schedule() 实现延迟执行。
- *
- * @param {BrowserWindow} win        - 要监听的窗口实例
- * @param {string}        windowType - 窗口标识，如 'main' | 'island'
- */
-function bindGeometryPersistence(win, windowType) {
-  /**
-   * 实际执行保存的内部函数
-   * win.getBounds() 返回 { x, y, width, height }，即窗口当前的位置和尺寸
-   * win.isMaximized() 返回布尔值，表示窗口是否处于最大化状态
-   *
-   * screen.getDisplayMatching(rect) 根据窗口的矩形区域，
-   * 返回该窗口所在的显示器对象（多显示器时能精确判断在哪个屏幕上）
-   */
-  const saveGeometry = () => {
-    // 如果窗口已经被关闭销毁了，就不再保存
-    // isDestroyed() 类似 Java 中检查对象是否已被回收
-    if (win.isDestroyed()) return
-
-    const bounds = win.getBounds()
-
-    // 获取窗口所在显示器的 ID，用于多屏场景恢复位置
-    const display = screen.getDisplayMatching(bounds)
-
-    try {
-      saveWindowGeometry(windowType, bounds, {
-        isMaximized: win.isMaximized(),
-        // String() 将数字转为字符串存储，display.id 是显示器的唯一标识
-        displayId: String(display.id)
-      })
-    } catch (err) {
-      console.error(`[db] 保存窗口几何状态失败 (${windowType}):`, err)
-    }
-  }
-
-  /**
-   * 防抖处理函数
-   * clearTimeout / setTimeout 是 JS 的定时器 API：
-   *   clearTimeout(id) — 取消之前的定时器
-   *   setTimeout(fn, ms) — ms 毫秒后执行 fn，返回定时器 ID
-   */
-  const debouncedSave = () => {
-    if (geometryTimers[windowType]) {
-      clearTimeout(geometryTimers[windowType])
-    }
-    geometryTimers[windowType] = setTimeout(saveGeometry, 500)
-  }
-
-  // win.on('事件名', 回调) 是 Electron 的事件监听，类似 Java 的 addListener
-  // 'resize' — 窗口大小改变时触发（用户拖拽窗口边缘）
-  // 'move'   — 窗口位置改变时触发（用户拖拽标题栏）
-  win.on('resize', debouncedSave)
-  win.on('move', debouncedSave)
-}
-
-/**
- * ============================================================
- * resolveWindowBounds() — 从数据库恢复窗口尺寸和位置
- * ============================================================
- * 启动时调用，决定窗口应该用多大的尺寸、放在什么位置。
- *
- * 逻辑：
- *   1. 从数据库读取上次保存的几何状态
- *   2. 如果没有记录（首次启动），使用屏幕比例计算的默认值
- *   3. 如果有记录，检查上次所在的显示器是否还在：
- *      - 还在 → 恢复完整的位置和尺寸
- *      - 不在（比如副屏被拔掉了）→ 只恢复宽高，位置由系统自动居中
- *
- * @param {string} windowType      - 窗口标识
- * @param {number} defaultWidth    - 兜底默认宽度
- * @param {number} defaultHeight   - 兜底默认高度
- * @returns {Object} BrowserWindow 构造函数可用的 { width, height, x?, y? }
- */
-function resolveWindowBounds(windowType, defaultWidth, defaultHeight) {
-  const saved = getWindowGeometry(windowType)
-
-  if (!saved) {
-    // 首次启动，无持久化记录，使用默认尺寸
-    return { width: defaultWidth, height: defaultHeight }
-  }
-
-  // 有持久化记录，检查上次所在的显示器是否仍然存在
-  // screen.getAllDisplays() 返回当前所有显示器的数组
-  const displays = screen.getAllDisplays()
-
-  // .find() 是 JS 数组方法，找到第一个满足条件的元素
-  // 类似 Java Stream 的 .filter().findFirst()
-  const targetDisplay = displays.find(
-    (d) => String(d.id) === saved.display_id
-  )
-
-  if (targetDisplay) {
-    // 上次的显示器还在，完整恢复位置和尺寸
-    return {
-      width: saved.width,
-      height: saved.height,
-      x: saved.pos_x,
-      y: saved.pos_y
-    }
-  } else {
-    // 上次的显示器不在了，只恢复宽高，坐标不设置（系统会自动居中到主显示器）
-    console.log(`[window] ${windowType} 的上次显示器已断开，只恢复宽高`)
-    return {
-      width: saved.width,
-      height: saved.height
-    }
-  }
-}
-
-/**
- * ============================================================
- * loadPage() — 统一的页面加载逻辑（兼容开发/生产环境）
- * ============================================================
- * 开发模式：每个窗口加载 Vite 开发服务器上对应的 HTML 文件路径
- *   主窗口     → http://localhost:5173/           (index.html)
- *   设置窗口   → http://localhost:5173/settings.html
- *   灵动岛     → http://localhost:5173/island.html
- *   灵动岛设置 → http://localhost:5173/island-settings.html
- *
- * 生产模式：加载打包后的本地 HTML 文件
- * @param {BrowserWindow} win      - 目标窗口
- * @param {string} htmlFileName    - HTML 文件名（如 'index.html' / 'settings.html'）
- */
-function loadPage(win, htmlFileName) {
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    // 开发模式：使用 URL 构造函数确保路径正确拼接
-    // 避免 ELECTRON_RENDERER_URL 有无末尾斜杠导致的拼接错误
-    const baseUrl = process.env['ELECTRON_RENDERER_URL']
-    let devUrl
-    if (htmlFileName === 'index.html') {
-      devUrl = baseUrl
-    } else {
-      // URL 构造函数会自动处理 baseUrl 末尾有无斜杠的问题
-      devUrl = new URL(htmlFileName, baseUrl).href
-    }
-    console.log(`[loadPage] 开发模式加载: ${devUrl}`)
-    win.loadURL(devUrl)
-  } else {
-    // 生产模式：加载 out/renderer/ 下打包好的对应 HTML 文件
-    win.loadFile(join(__dirname, '../renderer/', htmlFileName))
-  }
-}
-
-/**
- * ============================================================
- * createWindow() — 创建主窗口（窗口 1 / 4）
- * ============================================================
- * 加载 index.html，显示主界面。
- * 应用启动时自动调用，也可由灵动岛窗口切换过来。
+ * 创建主窗口
+ * - 根据数据库中保存的位置/尺寸恢复窗口状态
+ * - 若无保存记录，则使用默认值（屏幕左侧 25% 宽度、90% 高度）
+ * - 窗口无边框 + 透明背景，用于实现自定义外观
  */
 function createWindow() {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    // 主窗口已存在 → 直接显示，不重复创建
-    mainWindow.show()
-    return
-  }
+  // 获取主显示器信息，用于计算默认窗口位置
+  const display = screen.getPrimaryDisplay()
+  const screenW = display.workAreaSize.width // 可用工作区宽度（排除任务栏）
+  const screenH = display.workAreaSize.height // 可用工作区高度
 
-  // 从数据库恢复窗口尺寸/位置，首次启动用屏幕比例兜底
-  const bounds = resolveWindowBounds(
-    'main',
-    Math.round(screenW * 0.3),    // 默认：屏幕宽的 30%
-    Math.round(screenH * 0.62)    // 默认：屏幕高的 62%
-  )
+  // 计算默认窗口尺寸：宽度为屏幕的 25%，高度为屏幕的 90%
+  const defaultW = Math.round(screenW * 0.25)
+  const defaultH = Math.round(screenH * 0.9)
+  // 计算上下边距，使窗口垂直居中
+  const margin = Math.round((screenH - defaultH) / 2)
+  const defaultX = margin // 默认 X 位置（距左边距等于上边距，视觉更协调）
+  const defaultY = margin // 默认 Y 位置（垂直居中）
 
+  // 优先使用数据库中保存的窗口几何信息，否则使用默认值
+  const saved = getGeometry(WINDOW_NAME)
+  const bounds = saved || { x: defaultX, y: defaultY, width: defaultW, height: defaultH }
+
+  // 创建 BrowserWindow 实例
   mainWindow = new BrowserWindow({
-    ...bounds,
-    ...getSharedWindowOptions()
+    ...bounds, // 展开窗口位置和尺寸
+    show: false, // 先隐藏，等待渲染进程就绪后再显示（避免白屏闪烁）
+    frame: false, // 无系统边框（自定义标题栏）
+    transparent: true, // 透明背景（支持圆角和磨砂效果）
+    autoHideMenuBar: true, // 自动隐藏菜单栏
+    ...(process.platform === 'linux' ? { icon } : {}), // Linux 需要手动设置图标
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'), // 预加载脚本路径
+      sandbox: false // 关闭沙箱以允许 preload 使用 Node.js API
+    }
   })
 
-  configureWindow(mainWindow)
+  // 固定缩放因子为 1.0，防止系统 DPI 缩放影响布局
+  mainWindow.webContents.setZoomFactor(1.0)
 
-  // 绑定几何状态持久化（resize/move 时防抖写入数据库）
-  bindGeometryPersistence(mainWindow, 'main')
+  // 拦截新窗口打开请求，改为使用系统默认浏览器打开链接
+  mainWindow.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url)
+    return { action: 'deny' } // 拒绝在应用内打开新窗口
+  })
 
-  // 窗口关闭时清空引用，防止内存泄漏
-  mainWindow.on('closed', () => { mainWindow = null })
-
-  // 开发模式：http://localhost:5173/（不带 hash，直接加载 index.html）
-  // 生产模式：index.html
-  loadPage(mainWindow, 'index.html')
-}
-
-/**
- * ============================================================
- * createMainSettingsWindow() — 创建主窗口的设置窗口（窗口 2 / 4）
- * ============================================================
- * 加载 settings.html，由主窗口的「设置」按钮触发。
- * 设计为只能同时存在一个实例。
- */
-function createMainSettingsWindow() {
-  // 防重复：如果设置窗口已存在，直接聚焦
-  if (mainSettingsWin && !mainSettingsWin.isDestroyed()) {
-    mainSettingsWin.focus()
-    return
+  /**
+   * 防抖保存窗口几何信息
+   * 窗口 resize/move 事件触发频繁，使用 500ms 防抖避免频繁写数据库
+   */
+  const debouncedSaveGeometry = () => {
+    if (geometryTimer) clearTimeout(geometryTimer)
+    geometryTimer = setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        const b = mainWindow.getBounds()
+        saveGeometry(WINDOW_NAME, b.x, b.y, b.width, b.height)
+      }
+    }, 500)
   }
 
-  // 从数据库恢复设置窗口的尺寸/位置
-  const bounds = resolveWindowBounds(
-    'main_settings',
-    Math.round(screenW * 0.32),   // 默认：屏幕宽的 32%
-    Math.round(screenH * 0.46)    // 默认：屏幕高的 46%
-  )
+  // 监听窗口大小变化和移动事件，触发防抖保存
+  mainWindow.on('resize', debouncedSaveGeometry)
+  mainWindow.on('move', debouncedSaveGeometry)
 
-  mainSettingsWin = new BrowserWindow({
-    ...bounds,
-    parent: mainWindow,       // 设为子窗口，跟随主窗口
-    modal: false,             // 非模态，可以同时操作主窗口
-    ...getSharedWindowOptions()
+  // 【贴边隐藏 - 边缘检测】窗口移动时检测是否靠近屏幕左/右边缘
+  mainWindow.on('move', () => {
+    if (!mainWindow || mainWindow.isDestroyed() || isDockHidden || isSliding) return
+    const side = detectSide()
+    if (side) {
+      if (dockSide !== side) {
+        dockSide = side
+        snapToEdge(side)
+      }
+    } else {
+      dockSide = null
+    }
   })
 
-  configureWindow(mainSettingsWin)
+  // 拦截窗口关闭事件：最小化到托盘而非退出
+  mainWindow.on('close', (e) => {
+    if (!isQuitting) {
+      e.preventDefault()
+      mainWindow.hide()
+      // 隐藏时重置贴边状态，避免恢复时状态异常
+      dockSide = null
+      isDockHidden = false
+      if (triggerWin && !triggerWin.isDestroyed()) {
+        triggerWin.destroy()
+        triggerWin = null
+      }
+    }
+  })
 
-  // 设置窗口也绑定几何状态持久化
-  bindGeometryPersistence(mainSettingsWin, 'main_settings')
+  // 窗口销毁时清除引用和贴边资源
+  mainWindow.on('closed', () => {
+    mainWindow = null
+    dockSide = null
+    isDockHidden = false
+    if (triggerWin && !triggerWin.isDestroyed()) {
+      triggerWin.destroy()
+      triggerWin = null
+    }
+  })
 
-  mainSettingsWin.on('closed', () => { mainSettingsWin = null })
+  // 根据环境加载页面：开发模式用 HMR URL，生产模式加载本地 HTML 文件
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
 
-  // 开发模式：http://localhost:5173/settings.html；生产模式：settings.html
-  loadPage(mainSettingsWin, 'settings.html')
+// ============================================================
+// 贴边隐藏 —— 核心函数
+// ============================================================
+
+/** 缓存当前窗口所在显示器的工作区 */
+function updateWorkArea() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const display = screen.getDisplayMatching(mainWindow.getBounds())
+    if (display) cachedWorkArea = display.workArea
+  }
+}
+
+/** 仅修改窗口 X 坐标，保持 Y / 宽 / 高不变 */
+function setX(x) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const b = mainWindow.getBounds()
+  mainWindow.setBounds({ x: Math.round(x), y: b.y, width: b.width, height: b.height })
 }
 
 /**
- * ============================================================
- * createIslandWindow() — 创建灵动岛窗口（窗口 3 / 4）
- * ============================================================
- * 加载 island.html，由主窗口的「灵动岛」按钮触发。
- * 打开后会显示一个灵动岛风格的独立窗口。
+ * 检测窗口是否靠近屏幕左/右边缘
+ * @returns {null|'left'|'right'} 边缘方向，null 表示未靠近
  */
-function createIslandWindow() {
-  if (islandWindow && !islandWindow.isDestroyed()) {
-    islandWindow.show()
-    return
+function detectSide() {
+  if (!mainWindow || mainWindow.isDestroyed()) return null
+  if (mainWindow.isMaximized() || mainWindow.isMinimized()) return null
+
+  updateWorkArea()
+  if (!cachedWorkArea) return null
+
+  const b = mainWindow.getBounds()
+  const wa = cachedWorkArea
+
+  if (b.x <= wa.x + SNAP_THRESHOLD) return 'left'
+  if (b.x + b.width >= wa.x + wa.width - SNAP_THRESHOLD) return 'right'
+  return null
+}
+
+/** 将窗口吸附到指定边缘 */
+function snapToEdge(side) {
+  updateWorkArea()
+  if (!cachedWorkArea) return
+  const wa = cachedWorkArea
+  const b = mainWindow.getBounds()
+  setX(side === 'left' ? wa.x : wa.x + wa.width - b.width)
+}
+
+/**
+ * 创建边缘触发窗口
+ * 2px 宽的透明窗口，用于在主窗口隐藏后检测鼠标进入边缘
+ */
+function createTriggerWindow(side) {
+  if (triggerWin && !triggerWin.isDestroyed()) triggerWin.destroy()
+  updateWorkArea()
+  if (!cachedWorkArea) return
+
+  const wa = cachedWorkArea
+  const bounds =
+    side === 'left'
+      ? { x: wa.x, y: wa.y, width: TRIGGER_WIDTH, height: wa.height }
+      : { x: wa.x + wa.width - TRIGGER_WIDTH, y: wa.y, width: TRIGGER_WIDTH, height: wa.height }
+
+  triggerWin = new BrowserWindow({
+    ...bounds,
+    transparent: true,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    focusable: false,
+    hasShadow: false,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false
+    }
+  })
+
+  // 直接在 HTML 中绑定 onmouseenter，避免 executeJavaScript 异步注入的时序风险
+  const html = `<body style="margin:0;height:100vh" onmouseenter="api.triggerEnter()">`
+  triggerWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {})
+
+  triggerWin.setVisibleOnAllWorkspaces(true)
+  // 弹出菜单级别置顶，确保全屏应用覆盖时触发窗口仍在其上方
+  triggerWin.setAlwaysOnTop(true, 'pop-up-menu')
+}
+
+/**
+ * 滑动动画 —— easeInOutQuad 缓动曲线，慢起 → 快 → 慢停
+ * @param {number} targetX - 目标 X 坐标
+ */
+function slideTo(targetX) {
+  if (slideAnimTimer) clearInterval(slideAnimTimer)
+  isSliding = true
+
+  // 记录动画起始位置和总帧数
+  const fromX = mainWindow.getBounds().x
+  const totalFrames = Math.ceil(SLIDE_DURATION / SLIDE_INTERVAL)
+  let frame = 0
+
+  slideAnimTimer = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      clearInterval(slideAnimTimer)
+      slideAnimTimer = null
+      isSliding = false
+      return
+    }
+
+    frame++
+    const progress = Math.min(frame / totalFrames, 1)
+    // easeInOutQuad：前半段加速，后半段减速
+    const ease = progress < 0.5
+      ? 2 * progress * progress
+      : 1 - Math.pow(-2 * progress + 2, 2) / 2
+
+    setX(fromX + (targetX - fromX) * ease)
+
+    if (progress >= 1) {
+      clearInterval(slideAnimTimer)
+      slideAnimTimer = null
+      isSliding = false
+    }
+  }, SLIDE_INTERVAL)
+}
+
+/**
+ * 贴边隐藏 —— 窗口滑出屏幕，创建边缘触发窗口
+ * 前置条件：dockSide 非空且 isDockHidden === false
+ */
+function doHide() {
+  if (!mainWindow || mainWindow.isDestroyed() || isDockHidden || !dockSide) return
+  isDockHidden = true
+
+  // 隐藏后恢复默认定级，避免在其他应用上方干扰
+  mainWindow.setAlwaysOnTop(true)
+
+  updateWorkArea()
+  if (!cachedWorkArea) return
+
+  const wa = cachedWorkArea
+  const b = mainWindow.getBounds()
+  const targetX = dockSide === 'left' ? wa.x - b.width : wa.x + wa.width
+
+  createTriggerWindow(dockSide)
+  slideTo(targetX)
+}
+
+/**
+ * 贴边显示 —— 销毁触发窗口，窗口滑回边缘
+ * 前置条件：isDockHidden === true
+ */
+function doShow() {
+  if (!mainWindow || mainWindow.isDestroyed() || !isDockHidden) return
+  isDockHidden = false
+
+  // 立即销毁触发窗口，防止阻挡主窗口
+  if (triggerWin && !triggerWin.isDestroyed()) {
+    triggerWin.destroy()
+    triggerWin = null
   }
 
-  const bounds = resolveWindowBounds(
-    'island',
-    Math.round(screenW * 0.22),   // 默认：屏幕宽的 22%
-    Math.round(screenH * 0.15)    // 默认：屏幕高的 15%
-  )
+  updateWorkArea()
+  if (!cachedWorkArea) return
 
-  islandWindow = new BrowserWindow({
-    ...bounds,
-    resizable: true,          // 允许调整大小（灵动岛通常较小，但给用户自由）
-    ...getSharedWindowOptions()
-  })
+  const wa = cachedWorkArea
+  const b = mainWindow.getBounds()
+  const targetX = dockSide === 'left' ? wa.x : wa.x + wa.width - b.width
 
-  configureWindow(islandWindow)
-
-  // 绑定几何状态持久化
-  bindGeometryPersistence(islandWindow, 'island')
-
-  islandWindow.on('closed', () => { islandWindow = null })
-
-  // 开发模式：http://localhost:5173/island.html；生产模式：island.html
-  loadPage(islandWindow, 'island.html')
+  // 滑回前提升定级，确保能覆盖全屏应用
+  mainWindow.setAlwaysOnTop(true, 'pop-up-menu')
+  slideTo(targetX)
 }
 
-/**
- * ============================================================
- * createIslandSettingsWindow() — 创建灵动岛的设置窗口（窗口 4 / 4）
- * ============================================================
- * 加载 island-settings.html，由灵动岛窗口的「设置」按钮触发。
- */
-function createIslandSettingsWindow() {
-  if (islandSettingsWin && !islandSettingsWin.isDestroyed()) {
-    islandSettingsWin.focus()
-    return
-  }
-
-  const bounds = resolveWindowBounds(
-    'island_settings',
-    Math.round(screenW * 0.28),   // 默认：屏幕宽的 28%
-    Math.round(screenH * 0.38)    // 默认：屏幕高的 38%
-  )
-
-  islandSettingsWin = new BrowserWindow({
-    ...bounds,
-    parent: islandWindow,     // 设为灵动岛窗口的子窗口
-    modal: false,
-    ...getSharedWindowOptions()
-  })
-
-  configureWindow(islandSettingsWin)
-
-  // 绑定几何状态持久化
-  bindGeometryPersistence(islandSettingsWin, 'island_settings')
-
-  islandSettingsWin.on('closed', () => { islandSettingsWin = null })
-
-  // 开发模式：http://localhost:5173/island-settings.html；生产模式：island-settings.html
-  loadPage(islandSettingsWin, 'island-settings.html')
-}
-
-/**
- * ============================================================
- * 步骤 3：app.whenReady() — Electron 初始化完成后的回调
- * ============================================================
- * 仅当 Electron 完成初始化后才执行，所有窗口 API 必须在此之后调用。
- * 类似 Java 中 Spring 的 ApplicationReadyEvent 回调。
- */
+// ============================================================
+// 应用就绪后的初始化逻辑
+// ============================================================
 app.whenReady().then(() => {
-  // --- 步骤 3.0：初始化数据库 ---
-  // 必须在创建任何窗口之前调用，因为创建窗口时需要从数据库读取几何状态
+  // 初始化数据库连接
   initDatabase()
 
-  // --- 步骤 3.1：获取主显示器可用区域尺寸，供首次启动时按比例计算窗口大小 ---
-  // getPrimaryDisplay() 获取主显示器信息
-  // workAreaSize 是排除任务栏后的可用区域（不是整个屏幕分辨率）
-  const display = screen.getPrimaryDisplay()
-  screenW = display.workAreaSize.width
-  screenH = display.workAreaSize.height
-  console.log(`[screen] 主显示器可用区域: ${screenW}×${screenH} (比例 ${(screenW / screenH).toFixed(2)})`)
-
-  // --- 步骤 3.2：设置 Windows 任务栏应用 ID ---
+  // 设置 Windows 任务栏的应用程序用户模型 ID
   electronApp.setAppUserModelId('com.electron')
 
-  // --- 步骤 3.3：注册开发调试快捷键 ---
-  // 所有窗口自动绑定 F12（开发工具）和 Ctrl+R（刷新）快捷键
+  // 监听新窗口创建事件，自动注册快捷键优化器
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // ============================================================
-  // 步骤 3.4：注册 IPC 通信处理（四个窗口的所有 IPC 通道）
-  // ============================================================
-  // ipcMain.on(通道名, 回调) — 监听渲染进程发来的消息（单向，无返回值）
-  //   类似 Java 中的 @EventListener 或消息队列消费者
-  // ipcMain.handle(通道名, 回调) — 监听渲染进程的请求（双向，有返回值）
-  //   类似 Java 中的 @RequestMapping 接口，渲染进程 invoke 后会收到返回值
+  // ---- IPC 通道注册 ----
 
-  // IPC 测试（保留）
-  ipcMain.on('ping', () => console.log('pong'))
-
-  // ============================================================
-  // 窗口控制 IPC（关闭 / 最小化 / 最大化）
-  // ============================================================
-  // BrowserWindow.fromWebContents(event.sender) — 根据发送消息的
-  // 渲染进程，找到它所在的 BrowserWindow 实例。
-  // 这样所有窗口共用同一组 IPC 通道，无需每个窗口单独注册。
-
-  ipcMain.on('window-close', (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (win) win.close()
+  // 【渲染就绪】渲染进程初始化完成后发送此消息，主进程收到后显示窗口
+  ipcMain.on('renderer-ready', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show()
+    }
   })
 
+  // 【窗口控制 - 关闭】渲染进程请求关闭窗口 → 最小化到托盘
+  ipcMain.on('window-close', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.hide()
+      // 隐藏时重置贴边状态
+      dockSide = null
+      isDockHidden = false
+      if (triggerWin && !triggerWin.isDestroyed()) {
+        triggerWin.destroy()
+        triggerWin = null
+      }
+    }
+  })
+
+  // 【窗口控制 - 最小化】渲染进程请求最小化窗口
   ipcMain.on('window-minimize', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (win) win.minimize()
   })
 
+  // 【窗口控制 - 最大化/还原】切换最大化状态
   ipcMain.on('window-maximize', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (win) {
-      // isMaximized() 检查窗口是否已最大化，是则还原，否则最大化
+      // 最大化/还原时重置贴边状态，避免状态残留
+      dockSide = null
+      isDockHidden = false
+      if (triggerWin && !triggerWin.isDestroyed()) {
+        triggerWin.destroy()
+        triggerWin = null
+      }
       win.isMaximized() ? win.unmaximize() : win.maximize()
     }
   })
 
-  // ============================================================
-  // 窗口缩放 IPC（自定义 resize 手柄）
-  // ============================================================
-  // ResizeHandles.vue 组件在 mousedown 时通过 invoke 获取当前 bounds，
-  // 在 mousemove 时通过 send 高频设置新 bounds，实现自定义窗口缩放。
-
-  /** 获取当前窗口的矩形区域（invoke 有返回值，类似 GET 请求） */
+  // 【缩放手柄 - 获取边界】返回当前窗口的位置和尺寸
   ipcMain.handle('window-get-bounds', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     return win ? win.getBounds() : null
   })
 
-  /** 设置当前窗口的矩形区域（send 无返回值，类似 POST 请求） */
+  // 【缩放手柄 - 设置边界】根据渲染进程传入的 bounds 调整窗口大小/位置
   ipcMain.on('window-set-bounds', (event, bounds) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (win && bounds) {
+      // Math.round 确保像素值为整数，避免亚像素渲染问题
       win.setBounds({
         x: Math.round(bounds.x),
         y: Math.round(bounds.y),
@@ -481,125 +420,119 @@ app.whenReady().then(() => {
     }
   })
 
-  // 主窗口 → 打开主窗口的设置窗口
-  ipcMain.on('open-main-settings', () => {
-    createMainSettingsWindow()
+  // ---- 数据库 IPC 桥接 ----
+  // 以下通道将渲染进程的数据库操作请求转发到主进程的 db 模块
+
+  // 按类型批量获取设置
+  ipcMain.handle('get-settings', (_event, windowName, type) => {
+    return getSettingsByType(windowName, type)
   })
 
-  // 主窗口 → 切换到灵动岛窗口（关闭主窗口，打开灵动岛）
-  ipcMain.on('open-island', () => {
-    createIslandWindow()
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.close()
+  // 获取单个设置值
+  ipcMain.handle('get-setting', (_event, windowName, key) => {
+    return getSetting(windowName, key)
+  })
+
+  // 写入/更新设置
+  ipcMain.handle('set-setting', (_event, windowName, type, key, value) => {
+    setSetting(windowName, type, key, value)
+    return true
+  })
+
+  // 删除设置
+  ipcMain.handle('delete-setting', (_event, windowName, key) => {
+    deleteSetting(windowName, key)
+    return true
+  })
+
+  // ---- 贴边隐藏 IPC ----
+
+  // 【贴边隐藏 - 鼠标悬停】渲染进程报告鼠标进入/离开主窗口
+  ipcMain.on('window-hover', (_event, isHovering) => {
+    if (isHovering) {
+      // 鼠标进入窗口 —— 取消待执行的隐藏定时器
+      if (hideTimer) {
+        clearTimeout(hideTimer)
+        hideTimer = null
+      }
+    } else {
+      // 鼠标离开窗口 —— 若已吸附边缘，延迟后执行隐藏
+      if (dockSide && !isDockHidden && !isSliding) {
+        if (hideTimer) clearTimeout(hideTimer)
+        hideTimer = setTimeout(() => {
+          hideTimer = null
+          // 透明窗口圆角区域会误触发 mouseleave，此处用光标位置二次确认
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            const b = mainWindow.getBounds()
+            const cursor = screen.getCursorScreenPoint()
+            if (cursor.x >= b.x && cursor.x <= b.x + b.width && cursor.y >= b.y && cursor.y <= b.y + b.height) {
+              return // 光标仍在窗口矩形内 → 误触发，不隐藏
+            }
+          }
+          doHide()
+        }, HIDE_DELAY)
+      }
     }
   })
 
-  // 灵动岛窗口 → 切换到主窗口（关闭灵动岛，打开主窗口）
-  ipcMain.on('open-main', () => {
-    createWindow()
-    if (islandWindow && !islandWindow.isDestroyed()) {
-      islandWindow.close()
-    }
+  // 【贴边隐藏 - 触发窗口】边缘触发窗口检测到鼠标进入，恢复主窗口
+  ipcMain.on('trigger-enter', () => {
+    if (isDockHidden) doShow()
   })
 
-  // 灵动岛窗口 → 打开灵动岛的设置窗口
-  ipcMain.on('open-island-settings', () => {
-    createIslandSettingsWindow()
-  })
-
-  // ============================================================
-  // 步骤 3.5：字体大小 IPC（设置窗口 → 主进程 → 目标窗口 + 持久化）
-  // ============================================================
-
-  /**
-   * 主窗口设置页 → 修改主窗口字体
-   * 数据流：设置窗口 → IPC → 主进程 → ① 转发给主窗口 ② 写入数据库
-   *
-   * 内存优先策略：先让主窗口立刻生效，再写数据库持久化。
-   * 即使数据库写入失败，主窗口的显示也不受影响。
-   */
-  ipcMain.on('set-main-font-size', (_event, size) => {
-    // ① 转发给主窗口渲染进程，立刻更新 CSS 变量
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('font-size-changed', size)
-    }
-    // ② 持久化到数据库（try-catch 保护，写入失败不影响主流程）
-    try {
-      setWindowStyle('main', 'font_size', size)
-    } catch (err) {
-      console.error('[db] 写入主窗口字号失败:', err)
-    }
-  })
-
-  /**
-   * 灵动岛设置页 → 修改灵动岛窗口字体
-   * 数据流同上，window_type 为 'island'
-   */
-  ipcMain.on('set-island-font-size', (_event, size) => {
-    if (islandWindow && !islandWindow.isDestroyed()) {
-      islandWindow.webContents.send('font-size-changed', size)
-    }
-    try {
-      setWindowStyle('island', 'font_size', size)
-    } catch (err) {
-      console.error('[db] 写入灵动岛字号失败:', err)
-    }
-  })
-
-  // ============================================================
-  // 步骤 3.6：样式查询 IPC（渲染进程主动拉取持久化样式）
-  // ============================================================
-
-  /**
-   * ipcMain.handle() 注册一个可以被渲染进程 ipcRenderer.invoke() 调用的接口
-   *
-   * 渲染进程调用：const styles = await window.api.getWindowStyle('main')
-   * 主进程返回：{ font_size: '20', theme: 'dark' }（或空对象 {}）
-   *
-   * 类似 Java 的 REST 接口：
-   *   @GetMapping("/api/window-style/{windowType}")
-   *   public Map<String, String> getWindowStyle(@PathVariable String windowType)
-   */
-  ipcMain.handle('get-window-style', (_event, windowType) => {
-    try {
-      return getAllWindowStyles(windowType)
-    } catch (err) {
-      console.error('[db] 读取窗口样式失败:', err)
-      return {}
-    }
-  })
-
-  // --- 步骤 3.7：应用启动，创建主窗口 ---
+  // 创建主窗口
   createWindow()
 
-  // --- 步骤 3.8：macOS 激活事件处理 ---
-  app.on('activate', function () {
-    // 所有窗口都关闭时点击 Dock 图标 → 重新创建主窗口
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  // ---- 系统托盘 ----
+  tray = new Tray(icon)
+  tray.setToolTip('便签')
+
+  // 左键点击：显示窗口
+  tray.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (!mainWindow.isVisible()) {
+      if (isDockHidden) doShow()
+      mainWindow.show()
+      mainWindow.focus()
+      // 恢复后重新检测边缘，因为 hide 时 dockSide 被重置了
+      dockSide = detectSide()
+    }
+  })
+
+  // 右键菜单
+  const trayMenu = Menu.buildFromTemplate([
+    {
+      label: '退出',
+      click: () => {
+        isQuitting = true
+        app.quit()
+      }
+    }
+  ])
+  tray.setContextMenu(trayMenu)
+
+  // macOS 特有：点击 Dock 图标时显示窗口
+  app.on('activate', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show()
+    }
   })
 })
 
-/**
- * ============================================================
- * 步骤 4：应用退出前 — 关闭数据库连接
- * ============================================================
- * 'before-quit' 事件在应用即将退出时触发（所有窗口关闭之前）。
- * 此时关闭数据库连接，确保 WAL 日志刷入主数据库文件。
- * 类似 Java 的 @PreDestroy 或 ShutdownHook。
- */
+// 应用退出前关闭数据库连接和贴边资源，确保数据安全
 app.on('before-quit', () => {
   closeDatabase()
-})
-
-/**
- * ============================================================
- * 步骤 5：window-all-closed — 所有窗口关闭时的处理
- * ============================================================
- * Windows / Linux：所有窗口关闭 = 应用退出
- * macOS：菜单栏保持活跃，用户需手动 Cmd+Q 退出
- */
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
+  if (triggerWin && !triggerWin.isDestroyed()) {
+    triggerWin.destroy()
+    triggerWin = null
+  }
+  if (slideAnimTimer) clearInterval(slideAnimTimer)
+  if (hideTimer) clearTimeout(hideTimer)
+  if (tray) {
+    tray.destroy()
+    tray = null
   }
 })
+
+// 所有窗口关闭时不退出应用，保持在托盘中运行
+app.on('window-all-closed', () => {})

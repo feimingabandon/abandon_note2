@@ -1,0 +1,73 @@
+/* ============================================================
+ * tokens.css — 全局基础样式（唯一全局样式文件）
+ * ============================================================
+ * 职责：CSS Reset + 响应式根字号 + 全局变量 + 背景容器
+ * 使用方：src/renderer/src/main.js 导入
+ * ============================================================ */
+
+/* ---- 引入 OppoSans WebFont ---- */
+@import '@zf-web-font/opposans/style.css';
+
+/* ---- CSS Reset ---- */
+/* 统一所有元素的盒模型为 border-box，清除默认 margin 和 font-weight */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  font-weight: normal;
+}
+
+/* 隐藏 WebKit 内核的滚动条（Electron 基于 Chromium） */
+::-webkit-scrollbar {
+  display: none;
+}
+
+/* 清除列表默认样式 */
+ul {
+  list-style: none;
+}
+
+/* ---- 响应式根字号 ----
+ * 公式：1rem = 窗口宽度 / 500 * 缩放因子
+ * 这样做的好处：
+ *   - 所有使用 rem 单位的元素会随窗口宽度自动缩放
+ *   - --font-scale 变量允许用户自定义全局字体缩放比例
+ *   - 基准 500 意味着 500px 宽窗口下 1rem = 1px * scale
+ */
+html {
+  font-size: calc(100vw / 500 * var(--font-scale, 1));
+}
+
+/* ---- 全局 CSS 自定义属性（Design Tokens） ---- */
+:root {
+  --font-scale: 1; /* 字体缩放因子，可通过数据库设置覆盖 */
+  --font-family-text: 'OPPOSans', 'SF Pro Text', 'PingFang SC', 'Microsoft YaHei', sans-serif; /* 正文字体族 */
+  --text-color: #1d1d1f; /* 全局文字颜色 */
+  --bg-color: 255 255 255; /* 背景颜色（RGB 三通道，配合 rgb() 函数使用） */
+  --bg-opacity: 1; /* 背景透明度（0~1） */
+  --bg-blur: 0px; /* 磨砂模糊半径，启用磨砂效果时由 JS 设置为非零值 */
+}
+
+/* ---- body 基础样式 ---- */
+body {
+  font-family: var(--font-family-text), sans-serif; /* 使用正文字体变量 */
+  color: var(--text-color); /* 使用全局文字颜色 */
+  background: transparent; /* 透明背景，配合 BrowserWindow transparent:true */
+  overflow: hidden; /* 隐藏溢出内容，避免出现不必要的滚动条 */
+  user-select: none; /* 禁止用户选择文字（桌面应用风格） */
+  
+  /* 字体平滑优化 */
+  -webkit-font-smoothing: antialiased; /* WebKit 字体平滑 */
+  -moz-osx-font-smoothing: grayscale; /* macOS 字体平滑 */
+  text-rendering: optimizeLegibility; /* 优化可读性 */
+}
+
+/* ---- 背景容器 ----
+ * .app-bg 类应用于根组件，提供统一的背景色
+ * 使用 rgb(R G B / opacity) 语法实现带透明度的背景
+ * 配合 --bg-color 和 --bg-opacity 变量可动态调整
+ */
+.app-bg {
+  background-color: rgb(var(--bg-color) / var(--bg-opacity));
+}

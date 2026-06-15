@@ -20,6 +20,7 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
+    "@zf-web-font/opposans": "^0.2.0",
     "better-sqlite3": "^12.9.0",
     "electron-updater": "^6.3.9"
   },
@@ -36,5 +37,8 @@
     "vite": "^7.2.6",
     "vue": "^3.5.25",
     "vue-eslint-parser": "^10.2.0"
+  },
+  "volta": {
+    "node": "22.22.3"
   }
 }
