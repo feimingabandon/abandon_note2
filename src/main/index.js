@@ -9,7 +9,9 @@
  *   4. 窗口几何信息的防抖持久化
  */
 
-import { app, shell, BrowserWindow, ipcMain, screen, Tray, Menu } from 'electron'
+import * as Electron from 'electron'
+const { app, shell, BrowserWindow, ipcMain, screen, Tray, Menu } = Electron
+
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
 import icon from '../../resources/icon.png?asset' // 应用图标（Vite asset 导入）
@@ -18,10 +20,10 @@ import {
   closeDatabase,
   getGeometry,
   saveGeometry,
-  getSetting,
   setSetting,
   getSettingsByType,
-  deleteSetting
+  deleteSetting,
+  resetDatabase
 } from './db.js'
 
 /** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
@@ -35,6 +37,9 @@ let tray = null
 
 /** 是否正在执行退出流程（托盘菜单「退出」触发） */
 let isQuitting = false
+
+/** 窗口置顶状态 */
+let alwaysOnTop = true
 
 /** 防抖定时器，用于延迟保存窗口位置/尺寸 */
 let geometryTimer = null
@@ -80,17 +85,19 @@ function createWindow() {
   const saved = getGeometry(WINDOW_NAME)
   const bounds = saved || { x: defaultX, y: defaultY, width: defaultW, height: defaultH }
 
-  // 创建 BrowserWindow 实例
+  // 创建主窗口实例（透明背景 + CSS 圆角）
   mainWindow = new BrowserWindow({
-    ...bounds, // 展开窗口位置和尺寸
-    show: false, // 先隐藏，等待渲染进程就绪后再显示（避免白屏闪烁）
-    frame: false, // 无系统边框（自定义标题栏）
-    transparent: true, // 透明背景（支持圆角和磨砂效果）
-    autoHideMenuBar: true, // 自动隐藏菜单栏
-    ...(process.platform === 'linux' ? { icon } : {}), // Linux 需要手动设置图标
+    ...bounds,
+    show: false,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    autoHideMenuBar: true,
+    ...(process.platform === 'darwin' ? { vibrancy: 'under-window' } : {}),
+    ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'), // 预加载脚本路径
-      sandbox: false // 关闭沙箱以允许 preload 使用 Node.js API
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false
     }
   })
 
@@ -258,8 +265,9 @@ function createTriggerWindow(side) {
 /**
  * 滑动动画 —— easeInOutQuad 缓动曲线，慢起 → 快 → 慢停
  * @param {number} targetX - 目标 X 坐标
+ * @param {Function} [onFinish] - 动画完成回调
  */
-function slideTo(targetX) {
+function slideTo(targetX, onFinish) {
   if (slideAnimTimer) clearInterval(slideAnimTimer)
   isSliding = true
 
@@ -273,6 +281,7 @@ function slideTo(targetX) {
       clearInterval(slideAnimTimer)
       slideAnimTimer = null
       isSliding = false
+      if (onFinish) onFinish()
       return
     }
 
@@ -289,6 +298,7 @@ function slideTo(targetX) {
       clearInterval(slideAnimTimer)
       slideAnimTimer = null
       isSliding = false
+      if (onFinish) onFinish()
     }
   }, SLIDE_INTERVAL)
 }
@@ -300,9 +310,6 @@ function slideTo(targetX) {
 function doHide() {
   if (!mainWindow || mainWindow.isDestroyed() || isDockHidden || !dockSide) return
   isDockHidden = true
-
-  // 隐藏后恢复默认定级，避免在其他应用上方干扰
-  mainWindow.setAlwaysOnTop(true)
 
   updateWorkArea()
   if (!cachedWorkArea) return
@@ -336,9 +343,22 @@ function doShow() {
   const b = mainWindow.getBounds()
   const targetX = dockSide === 'left' ? wa.x : wa.x + wa.width - b.width
 
-  // 滑回前提升定级，确保能覆盖全屏应用
+  // 滑出时短暂提升置顶层，确保动画可见
   mainWindow.setAlwaysOnTop(true, 'pop-up-menu')
-  slideTo(targetX)
+  slideTo(targetX, () => {
+    // 动画完成后恢复用户设置的置顶状态
+    applyAlwaysOnTop()
+  })
+}
+
+// ============================================================
+// 窗口置顶控制
+// ============================================================
+
+/** 根据当前 alwaysOnTop 状态应用定级 */
+function applyAlwaysOnTop() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.setAlwaysOnTop(alwaysOnTop, 'pop-up-menu')
 }
 
 // ============================================================
@@ -480,23 +500,81 @@ app.whenReady().then(() => {
     if (isDockHidden) doShow()
   })
 
-  // 创建主窗口
   createWindow()
+
+  // 初始化置顶状态（必须在 createWindow 之后）
+  applyAlwaysOnTop()
+
+  // 窗口被显示或获得焦点时，若贴边隐藏则拉出
+  mainWindow.on('show', () => {
+    if (isDockHidden) doShow()
+  })
+  mainWindow.on('focus', () => {
+    if (isDockHidden) doShow()
+  })
+
+  // 【重置数据库】
+  ipcMain.handle('reset-database', () => {
+    resetDatabase()
+    // 重置后恢复默认置顶状态
+    alwaysOnTop = true
+    applyAlwaysOnTop()
+    return true
+  })
+
+  // ---- 开机自启 ----
+
+  /**
+   * 获取开机自启真实状态
+   * 每次打开设置页面时调用：读取 OS 实际状态，若与数据库不一致则同步
+   * 返回值是 OS 的真实状态（非数据库值）
+   */
+  ipcMain.handle('get-auto-start', () => {
+    const osSettings = app.getLoginItemSettings()
+    const osValue = osSettings.openAtLogin
+    const dbValue = getSetting(WINDOW_NAME, 'auto_start')
+
+    // 数据库无记录 或 与 OS 不一致 → 以 OS 为准写入数据库
+    if (dbValue === null || String(dbValue) !== String(osValue)) {
+      setSetting(WINDOW_NAME, 'system', 'auto_start', String(osValue))
+    }
+
+    return osValue
+  })
+
+  /**
+   * 设置开机自启
+   * 同时更新 OS 注册表/LoginItem 和本地数据库
+   * 返回设置后 OS 确认的真实状态（用于 UI 校验）
+   */
+  ipcMain.handle('set-auto-start', (_event, enabled) => {
+    app.setLoginItemSettings({ openAtLogin: enabled })
+    setSetting(WINDOW_NAME, 'system', 'auto_start', String(enabled))
+
+    // 立即回读确认 OS 是否设置成功
+    const verifySettings = app.getLoginItemSettings()
+    return verifySettings.openAtLogin
+  })
 
   // ---- 系统托盘 ----
   tray = new Tray(icon)
   tray.setToolTip('便签')
 
-  // 左键点击：显示窗口
+  // 左键点击：仅显示窗口 / 拉出贴边窗口（不隐藏，不切换）
   tray.on('click', () => {
     if (!mainWindow || mainWindow.isDestroyed()) return
-    if (!mainWindow.isVisible()) {
-      if (isDockHidden) doShow()
-      mainWindow.show()
-      mainWindow.focus()
-      // 恢复后重新检测边缘，因为 hide 时 dockSide 被重置了
-      dockSide = detectSide()
+    // 贴边隐藏 → 拉出
+    if (isDockHidden) {
+      doShow()
+      return
     }
+    // 已可见 → 只聚焦，不做其他操作
+    if (mainWindow.isVisible()) {
+      mainWindow.focus()
+      return
+    }
+    // 隐藏状态 → 显示
+    mainWindow.show()
   })
 
   // 右键菜单

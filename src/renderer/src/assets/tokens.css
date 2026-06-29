@@ -18,9 +18,33 @@
   font-weight: normal;
 }
 
-/* 隐藏 WebKit 内核的滚动条（Electron 基于 Chromium） */
+/* macOS 风格覆盖式滚动条 —— 纤细、半透明、悬浮出现
+ * 不占用布局空间，与苹果原生设计语言一致 */
 ::-webkit-scrollbar {
-  display: none;
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(128, 128, 128, 0.35);
+  border-radius: 3px;
+  transition: background-color 200ms ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(128, 128, 128, 0.55);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: rgba(128, 128, 128, 0.7);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* 清除列表默认样式 */
@@ -42,11 +66,16 @@ html {
 /* ---- 全局 CSS 自定义属性（Design Tokens） ---- */
 :root {
   --font-scale: 1; /* 字体缩放因子，可通过数据库设置覆盖 */
-  --font-family-text: 'OPPOSans', 'SF Pro Text', 'PingFang SC', 'Microsoft YaHei', sans-serif; /* 正文字体族 */
+  --font-family-text: 'OPPOSans Regular', 'SF Pro Text', 'PingFang SC', 'Microsoft YaHei', sans-serif; /* 正文字体族 */
   --text-color: #1d1d1f; /* 全局文字颜色 */
-  --bg-color: 255 255 255; /* 背景颜色（RGB 三通道，配合 rgb() 函数使用） */
-  --bg-opacity: 1; /* 背景透明度（0~1） */
-  --bg-blur: 0px; /* 磨砂模糊半径，启用磨砂效果时由 JS 设置为非零值 */
+
+  /* ---- 玻璃态背景参数（主窗口 + 弹窗共用） ---- */
+  --bg-color: 255 255 255; /* 背景颜色（RGB 三通道） */
+  --bg-blur: 10px; /* 弹窗模糊半径（0px = 关闭模糊，仅弹窗使用） */
+  --bg-border: 1; /* 边框开关（0 = 无，1 = 有） */
+
+  /* ---- 窗口透明度（CSS 层透明度，控制 OS 毛玻璃透出程度） ---- */
+  --popup-opacity: 0.25; /* 窗口背景透明度（0~1，值越小 OS 毛玻璃越透出） */
 }
 
 /* ---- body 基础样式 ---- */
@@ -63,11 +92,15 @@ body {
   text-rendering: optimizeLegibility; /* 优化可读性 */
 }
 
-/* ---- 背景容器 ----
- * .app-bg 类应用于根组件，提供统一的背景色
- * 使用 rgb(R G B / opacity) 语法实现带透明度的背景
- * 配合 --bg-color 和 --bg-opacity 变量可动态调整
+/* ---- 玻璃态背景容器 ----
+ * .app-bg 类应用于根组件和弹出面板，提供统一的玻璃态效果
+ * 背景色：rgb(R G B / popup-opacity)，透明度由"窗口透明度"滑动条控制
+ * 模糊：backdrop-filter blur，主窗口通过覆写 .app-root 关闭模糊
+ * 边框：通过 calc(--bg-border * 1px) 实现 0/1 开关
  */
 .app-bg {
-  background-color: rgb(var(--bg-color) / var(--bg-opacity));
+  background-color: rgb(var(--bg-color) / var(--popup-opacity));
+  -webkit-backdrop-filter: blur(var(--bg-blur)) saturate(180%) contrast(100%) brightness(100%);
+  backdrop-filter: blur(var(--bg-blur)) saturate(180%) contrast(100%) brightness(100%);
+  border: calc(var(--bg-border) * 1px) solid rgba(255, 255, 255, 0.18);
 }

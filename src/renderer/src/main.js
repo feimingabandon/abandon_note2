@@ -10,6 +10,7 @@
  */
 
 import './assets/tokens.css' // 导入全局基础样式（唯一的全局 CSS 文件）
+import './utils/smoothScroll.js' // 导入全局速度驱动平滑滚动（一次性，全应用生效）
 import { createApp } from 'vue' // Vue 3 应用创建函数
 import App from './App.vue' // 根组件
 

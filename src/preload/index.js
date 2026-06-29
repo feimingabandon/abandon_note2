@@ -53,7 +53,16 @@ const api = {
   /** 通知主进程鼠标悬停状态（true=进入窗口, false=离开窗口） */
   windowHover: (isHovering) => ipcRenderer.send('window-hover', isHovering),
   /** 边缘触发窗口：鼠标进入边缘时通知主进程恢复窗口 */
-  triggerEnter: () => ipcRenderer.send('trigger-enter')
+  triggerEnter: () => ipcRenderer.send('trigger-enter'),
+
+  // ---- 数据库重置 ----
+  resetDatabase: () => ipcRenderer.invoke('reset-database'),
+
+  // ---- 开机自启 ----
+  /** 获取 OS 真实开机自启状态（打开设置页时调用，自动同步数据库） */
+  getAutoStart: () => ipcRenderer.invoke('get-auto-start'),
+  /** 设置开机自启（同步更新 OS + 数据库） */
+  setAutoStart: (enabled) => ipcRenderer.invoke('set-auto-start', enabled)
 }
 
 // ============================================================

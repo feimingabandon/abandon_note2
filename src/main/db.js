@@ -144,6 +144,13 @@ export function saveGeometry(windowName, x, y, width, height) {
 }
 
 /**
+ * 重置数据库 —— 删除 app_settings 表中所有数据，恢复为初始状态
+ */
+export function resetDatabase() {
+  db.exec('DELETE FROM app_settings')
+}
+
+/**
  * 读取窗口几何信息
  * @param {string} windowName - 窗口标识
  * @returns {{x: number, y: number, width: number, height: number}|null}
