@@ -17,7 +17,6 @@
  *
  * Events:
  *   update:modelValue — v-model 双向绑定，拖动中实时触发
- *   input             — 拖动中实时触发，与 update:modelValue 同步
  *   change            — 滑动停止（pointerup）时触发一次，携带最终值
  */
 import { computed, ref } from 'vue'
@@ -34,7 +33,7 @@ const props = defineProps({
   disabled: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:modelValue', 'input', 'change'])
+const emit = defineEmits(['update:modelValue', 'change'])
 
 const dragging = ref(false)
 const trackRef = ref(null)
@@ -94,7 +93,6 @@ function flushUpdate() {
   const val = posToValue(pendingClientX)
   pendingClientX = null
   emit('update:modelValue', val)
-  emit('input', val)
 }
 
 function onDown(e) {
@@ -103,7 +101,6 @@ function onDown(e) {
   dragging.value = true
   const val = posToValue(e.clientX)
   emit('update:modelValue', val)
-  emit('input', val)
   e.target.setPointerCapture(e.pointerId)
 }
 
@@ -126,8 +123,10 @@ function onUp() {
     const val = posToValue(pendingClientX)
     pendingClientX = null
     emit('update:modelValue', val)
-    emit('input', val)
     emit('change', val)
+  } else if (dragging.value) {
+    // 纯点击（无拖拽）：onDown 已通过 emit 更新了值，此处补发 change
+    emit('change', props.modelValue)
   }
   dragging.value = false
 }

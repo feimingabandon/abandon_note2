@@ -35,7 +35,6 @@ const colorMap = {
           v-for="m in messages"
           :key="m.id"
           class="msg-toast"
-          :class="'msg--' + m.type"
           @click="closeMessage(m.id)"
         >
           <span

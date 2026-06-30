@@ -31,6 +31,10 @@ export function initDatabase() {
 
   // 启用 WAL 模式：允许读写并行，减少锁等待
   db.pragma('journal_mode = WAL')
+  // WAL 模式下可安全使用 NORMAL 同步级别，写入性能提升 2-5x
+  db.pragma('synchronous = NORMAL')
+  // 分配 8MB 缓存页，减少磁盘 I/O
+  db.pragma('cache_size = -8000')
 
   // === 旧表兼容性处理 ===
   // 检查 app_settings 表的列信息
@@ -157,16 +161,21 @@ export function resetDatabase() {
  *   返回数值化的窗口边界对象；如果任一值缺失则返回 null（表示无保存记录）
  */
 export function getGeometry(windowName) {
-  const x = getSetting(windowName, 'pos_x')
-  const y = getSetting(windowName, 'pos_y')
-  const w = getSetting(windowName, 'width')
-  const h = getSetting(windowName, 'height')
-  // 任一值缺失则视为未保存过，返回 null 让调用方使用默认值
-  if (x === null || y === null || w === null || h === null) return null
+  // 单次查询替代 4 次独立查询，减少 SQLite 往返
+  const rows = db
+    .prepare("SELECT key, value FROM app_settings WHERE window_name = ? AND key IN ('pos_x','pos_y','width','height')")
+    .all(windowName)
+
+  // 4 个键必须全部存在才视为有效
+  if (rows.length !== 4) return null
+
+  const map = {}
+  rows.forEach(r => { map[r.key] = r.value })
+
   return {
-    x: Number(x),
-    y: Number(y),
-    width: Number(w),
-    height: Number(h)
+    x: Number(map.pos_x),
+    y: Number(map.pos_y),
+    width: Number(map.width),
+    height: Number(map.height)
   }
 }

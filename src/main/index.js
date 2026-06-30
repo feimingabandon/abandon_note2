@@ -20,6 +20,7 @@ import {
   closeDatabase,
   getGeometry,
   saveGeometry,
+  getSetting,
   setSetting,
   getSettingsByType,
   deleteSetting,
@@ -147,25 +148,14 @@ function createWindow() {
     if (!isQuitting) {
       e.preventDefault()
       mainWindow.hide()
-      // 隐藏时重置贴边状态，避免恢复时状态异常
-      dockSide = null
-      isDockHidden = false
-      if (triggerWin && !triggerWin.isDestroyed()) {
-        triggerWin.destroy()
-        triggerWin = null
-      }
+      resetDockState()
     }
   })
 
   // 窗口销毁时清除引用和贴边资源
   mainWindow.on('closed', () => {
     mainWindow = null
-    dockSide = null
-    isDockHidden = false
-    if (triggerWin && !triggerWin.isDestroyed()) {
-      triggerWin.destroy()
-      triggerWin = null
-    }
+    resetDockState()
   })
 
   // 根据环境加载页面：开发模式用 HMR URL，生产模式加载本地 HTML 文件
@@ -193,6 +183,16 @@ function setX(x) {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const b = mainWindow.getBounds()
   mainWindow.setBounds({ x: Math.round(x), y: b.y, width: b.width, height: b.height })
+}
+
+/** 重置贴边状态（隐藏/关闭/最大化时统一调用） */
+function resetDockState() {
+  dockSide = null
+  isDockHidden = false
+  if (triggerWin && !triggerWin.isDestroyed()) {
+    triggerWin.destroy()
+    triggerWin = null
+  }
 }
 
 /**
@@ -389,13 +389,7 @@ app.whenReady().then(() => {
   ipcMain.on('window-close', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.hide()
-      // 隐藏时重置贴边状态
-      dockSide = null
-      isDockHidden = false
-      if (triggerWin && !triggerWin.isDestroyed()) {
-        triggerWin.destroy()
-        triggerWin = null
-      }
+      resetDockState()
     }
   })
 
@@ -409,13 +403,7 @@ app.whenReady().then(() => {
   ipcMain.on('window-maximize', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (win) {
-      // 最大化/还原时重置贴边状态，避免状态残留
-      dockSide = null
-      isDockHidden = false
-      if (triggerWin && !triggerWin.isDestroyed()) {
-        triggerWin.destroy()
-        triggerWin = null
-      }
+      resetDockState()
       win.isMaximized() ? win.unmaximize() : win.maximize()
     }
   })
@@ -516,9 +504,6 @@ app.whenReady().then(() => {
   // 【重置数据库】
   ipcMain.handle('reset-database', () => {
     resetDatabase()
-    // 重置后恢复默认置顶状态
-    alwaysOnTop = true
-    applyAlwaysOnTop()
     return true
   })
 

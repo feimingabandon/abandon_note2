@@ -15,11 +15,12 @@
  *   - update:visible  关闭面板时触发
  */
 
-import { ref, watch, nextTick, onMounted } from 'vue'
+import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import StyledSelect from './StyledSelect.vue'
 import AppToggle from './AppToggle.vue'
 import BaseButton from './BaseButton.vue'
 import AppSlider from './AppSlider.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 import { useMessage } from '../composables/useMessage.js' // 消息弹窗
 
 const props = defineProps({
@@ -38,9 +39,13 @@ const el = document.documentElement
 const rendered = ref(props.visible)
 const panelActive = ref(false)
 
+/** 关闭动画定时器 ID，用于取消竞态关闭 */
+let closeTimer = null
+
 const close = () => {
   panelActive.value = false
-  setTimeout(() => {
+  closeTimer = setTimeout(() => {
+    closeTimer = null
     rendered.value = false
     emit('update:visible', false)
   }, 350)
@@ -50,6 +55,11 @@ watch(
   () => props.visible,
   async (val) => {
     if (val) {
+      // 取消待执行的关闭动画，避免「关闭中重开」导致的闪现消失
+      if (closeTimer) {
+        clearTimeout(closeTimer)
+        closeTimer = null
+      }
       rendered.value = true
       await nextTick()
       requestAnimationFrame(() => {
@@ -99,6 +109,10 @@ const autoStart = ref(false)
 let _autoStartSynced = false
 
 const { showMessage } = useMessage()
+
+// ---- 确认弹窗状态 ----
+const showResetDbDialog = ref(false)
+const showResetUIDialog = ref(false)
 
 watch(autoStart, async (v) => {
   if (!_autoStartSynced) return
@@ -197,13 +211,32 @@ onMounted(async () => {
   }
 })
 
-/** 重置数据库 —— 清空所有持久化数据 */
-const resetDatabase = async () => {
+onBeforeUnmount(() => {
+  // 清理所有待执行的防抖定时器，避免组件销毁后触发 IPC 写库
+  Object.values(debounceTimers).forEach(t => clearTimeout(t))
+  // 清理关闭动画定时器
+  if (closeTimer) {
+    clearTimeout(closeTimer)
+    closeTimer = null
+  }
+})
+
+/** 确认重置数据库 —— 清空所有持久化数据 + 同步重置 UI */
+const onConfirmResetDatabase = async () => {
   try {
     await window.api.resetDatabase()
+    resetUI() // 同步重置 UI 状态，使视觉变化与数据库清空保持一致
+    showMessage('success', '数据库已重置')
   } catch (e) {
     console.warn('[SettingsPanel] 重置数据库失败:', e)
+    showMessage('error', '重置数据库失败，请重试', 4000)
   }
+}
+
+/** 确认恢复默认设置 —— 仅重置 UI，不操作数据库 */
+const onConfirmResetUI = () => {
+  resetUI()
+  showMessage('success', '已恢复默认设置')
 }
 
 /** 恢复默认设置 —— 仅重置 UI，不操作数据库 */
@@ -283,7 +316,6 @@ const resetUI = () => {
                   :options="fontScaleOptions"
                   size="sm"
                   width="72rem"
-                  @change="(opt) => fontScale = opt.value"
                 />
               </div>
             </div>
@@ -344,15 +376,14 @@ const resetUI = () => {
               <span class="setting-value">v1.0.0</span>
             </div>
 
-
             <div class="setting-item">
-              <BaseButton variant="danger" @click="resetDatabase" style="width: 100%">
+              <BaseButton variant="danger" @click="showResetDbDialog = true" style="width: 100%">
                 重置数据库
               </BaseButton>
             </div>
 
             <div class="setting-item">
-              <BaseButton variant="default" @click="resetUI" style="width: 100%">
+              <BaseButton variant="default" @click="showResetUIDialog = true" style="width: 100%">
                 恢复默认设置
               </BaseButton>
             </div>
@@ -360,6 +391,28 @@ const resetUI = () => {
         </div>
       </div>
     </div>
+
+    <!-- 重置数据库确认弹窗 -->
+    <ConfirmDialog
+      v-model:visible="showResetDbDialog"
+      title="重置数据库"
+      message="此操作将清空所有持久化数据（窗口位置、样式设置等），恢复为初始状态。此操作不可撤销。"
+      confirm-text="重置"
+      cancel-text="取消"
+      variant="danger"
+      @confirm="onConfirmResetDatabase"
+    />
+
+    <!-- 恢复默认设置确认弹窗 -->
+    <ConfirmDialog
+      v-model:visible="showResetUIDialog"
+      title="恢复默认设置"
+      message="将所有样式（透明度、模糊、颜色、字体缩放等）恢复为默认值，不涉及数据库清空。"
+      confirm-text="恢复"
+      cancel-text="取消"
+      variant="default"
+      @confirm="onConfirmResetUI"
+    />
   </Teleport>
 </template>
 
@@ -525,22 +578,6 @@ const resetUI = () => {
 }
 .setting-item:hover {
   background-color: rgba(255, 255, 255, 0.07);
-}
-
-/* ---- 设置组（弹窗透明度 + 模糊合并为一个卡片） ---- */
-.setting-group {
-  border-radius: 10rem;
-  background-color: rgba(255, 255, 255, 0.04);
-  margin-bottom: 6rem;
-  overflow: hidden;
-}
-.setting-group .group-item {
-  margin-bottom: 0;
-  border-radius: 0;
-  background-color: transparent;
-}
-.setting-group .group-item + .group-item {
-  border-top: 1rem solid rgba(255, 255, 255, 0.06);
 }
 
 .setting-label {
