@@ -87,7 +87,7 @@ const colorMap = {
   /* 文字 = 窗口背景色（反色） */
   color: rgb(var(--bg-color));
 
-  font-size: 14px;
+  font-size: var(--fs-body);
   font-weight: 500;
   letter-spacing: -0.1px;
   cursor: default;
@@ -104,7 +104,7 @@ const colorMap = {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: var(--fs-secondary);
   font-weight: 700;
   /* 图标圆圈背景 = 窗口文字色（反色）低透明度 */
   background: color-mix(in srgb, var(--text-color) 15%, transparent);

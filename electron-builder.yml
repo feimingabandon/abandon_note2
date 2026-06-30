@@ -10,6 +10,11 @@ files:
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
 asarUnpack:
   - resources/**
+extraResources:
+  - from: native_blur/build/bin/
+    to: native_blur/
+    filter:
+      - "*.dll"
 win:
   executableName: abandon_note2
 nsis:

@@ -13,25 +13,38 @@
  */
 
 // 定义组件接收的 props
-defineProps({
+const props = defineProps({
   title: {
     type: String,
     default: ''
+  },
+  locked: {
+    type: Boolean,
+    default: false
   }
 })
+
+const emit = defineEmits(['update:locked'])
 
 // ---- 窗口控制事件处理函数 ----
 /** 关闭窗口：通过 preload 暴露的 API 发送 IPC 消息到主进程 */
 const close = () => window.api.closeWindow()
 /** 最小化窗口 */
 const minimize = () => window.api.minimizeWindow()
-/** 切换最大化/还原状态 */
-const maximize = () => window.api.maximizeWindow()
+/** 切换锁定/解锁状态 */
+const toggleLock = async () => {
+  try {
+    const newState = await window.api.toggleLock()
+    emit('update:locked', newState)
+  } catch (e) {
+    console.warn('[MacTitlebar] 切换锁定失败:', e)
+  }
+}
 </script>
 
 <template>
-  <!-- 标题栏容器：整体可拖拽（-webkit-app-region: drag） -->
-  <header class="mac-titlebar">
+  <!-- 标题栏容器：整体可拖拽（-webkit-app-region: drag），锁定后禁用拖拽 -->
+  <header class="mac-titlebar" :class="{ locked: locked }">
     <!-- 红绿灯按钮组：设置 no-drag 使按钮可点击 -->
     <div class="traffic-lights">
       <!-- 关闭按钮(红色) -->
@@ -42,9 +55,13 @@ const maximize = () => window.api.maximizeWindow()
       <button class="light light-minimize" @click="minimize" title="最小化">
         <img class="light-icon" src="@/resources/icons/minimize.png" alt="最小化" />
       </button>
-      <!-- 最大化按钮(绿色) -->
-      <button class="light light-maximize" @click="maximize" title="最大化">
-        <img class="light-icon" src="@/resources/icons/maximize.png" alt="最大化" />
+      <!-- 锁定按钮（绿色=未锁 / 橙色=已锁） -->
+      <button
+        class="light light-lock"
+        :class="{ locked: locked }"
+        @click="toggleLock"
+        :title="locked ? '解锁便签' : '锁定便签'">
+        <img class="light-icon" src="@/resources/icons/lock.png" alt="锁定" />
       </button>
     </div>
     <!-- 标题文字，仅当 title prop 非空时显示 -->
@@ -105,16 +122,25 @@ const maximize = () => window.api.maximizeWindow()
 /* 各按钮的默认背景色（模拟 macOS 红绿灯） */
 .light-close { background-color: #ff5f57; } /* 红色 - 关闭 */
 .light-minimize { background-color: #febc2e; } /* 黄色 - 最小化 */
-.light-maximize { background-color: #28c840; } /* 绿色 - 最大化 */
+.light-lock { background-color: #28c840; } /* 绿色 - 未锁定 */
 
 /* 各按钮悬停时的加深背景色 */
 .light-close:hover { background-color: #ff4136; }
 .light-minimize:hover { background-color: #f5a623; }
-.light-maximize:hover { background-color: #1db954; }
+.light-lock:hover { background-color: #1db954; }
+
+/* 锁定状态：按钮变橙色 */
+.light-lock.locked { background-color: #ff9f0a; }
+.light-lock.locked:hover { background-color: #e08e00; }
+
+/* 锁定状态下标题栏不可拖拽 */
+.mac-titlebar.locked {
+  -webkit-app-region: no-drag;
+}
 
 /* 标题文字样式 */
 .mac-titlebar-title {
-  font-size: 24rem; /* 标题字号（响应式） */
+  font-size: var(--fs-title); /* 标题字号（响应式） */
   font-weight: 600; /* MiSans Medium，更圆润 */
   color: var(--text-color); /* 使用全局文字颜色变量 */
   flex: 1; /* 占据中间所有剩余空间，实现左右分布布局 */

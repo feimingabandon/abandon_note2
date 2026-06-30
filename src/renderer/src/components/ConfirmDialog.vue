@@ -139,7 +139,7 @@ onBeforeUnmount(() => {
 
 /* ---- 标题 ---- */
 .confirm-title {
-  font-size: 16rem;
+  font-size: var(--fs-title);
   font-weight: 600;
   color: var(--text-color);
   letter-spacing: -0.2rem;
@@ -148,10 +148,10 @@ onBeforeUnmount(() => {
 
 /* ---- 描述文字 ---- */
 .confirm-message {
-  font-size: 13rem;
+  font-size: var(--fs-secondary);
   font-weight: 400;
   color: var(--text-color);
-  opacity: 0.6;
+  opacity: var(--text-opacity-secondary);
   line-height: 1.45;
   margin-bottom: 22rem;
 }

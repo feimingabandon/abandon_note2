@@ -27,6 +27,9 @@ createMessageProvider()
 /** 设置面板显隐状态 */
 const showSettings = ref(false)
 
+/** 窗口锁定状态 */
+const locked = ref(false)
+
 /** 窗口标识，与数据库中存储的 window_name 对应 */
 const WINDOW_NAME = 'main'
 
@@ -38,8 +41,8 @@ onMounted(async () => {
     // === 拉取 CSS 类型的持久化设置 ===
     const cssSettings = await window.api.getSettings(WINDOW_NAME, 'css')
     cssSettings.forEach(({ key, value }) => {
-      if (key === 'font_scale') {
-        el.style.setProperty('--font-scale', value)
+      if (key === 'font_size_base') {
+        el.style.setProperty('--font-size-base', value + 'rem')
       } else if (key === 'bg_color') {
         el.style.setProperty('--bg-color', value)
       } else if (key === 'win_opacity') {
@@ -52,9 +55,24 @@ onMounted(async () => {
         el.style.setProperty('--text-color', value)
       }
     })
+
+    // 加载窗口圆角（来自系统模糊配置）
+    try {
+      const savedBlur = await window.api.getBlurConfig()
+      if (savedBlur?.cornerRadius !== undefined) {
+        el.style.setProperty('--window-radius', savedBlur.cornerRadius + 'px')
+      }
+    } catch (e) { /* 无模糊配置则使用 CSS 默认值 12px */ }
   } catch (err) {
     // 读取失败时使用 CSS 中定义的默认值，不影响应用正常运行
     console.warn('[App] 读取持久化设置失败，使用默认值:', err)
+  }
+
+  // 同步初始锁定状态
+  try {
+    locked.value = await window.api.getLockState()
+  } catch (e) {
+    console.warn('[App] 获取锁定状态失败:', e)
   }
 
   // 通知主进程渲染已完成，可以安全地显示窗口了
@@ -77,9 +95,9 @@ onUnmounted(() => {
   <!-- 应用根容器：同时承载背景样式（.app-bg）和布局（.app-root） -->
   <div class="app-root app-bg">
     <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
-    <ResizeHandles />
+    <ResizeHandles :locked="locked" />
     <!-- Mac 风格标题栏，包含红绿灯按钮和标题文字 -->
-    <MacTitlebar title="便签">
+    <MacTitlebar title="便签" v-model:locked="locked">
       <!-- 设置和帮助按钮组 -->
       <div class="titlebar-actions-group">
         <!-- 设置按钮 -->
@@ -112,7 +130,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column; /* 纵向排列：标题栏 → 内容区 */
   height: 100vh; /* 占满视口高度 */
-  border-radius: 12px; /* 圆角边框，配合 transparent 窗口实现圆角窗口 */
+  border-radius: var(--window-radius, 12px); /* 用户可调的圆角，默认 12px */
   -electron-corner-smoothing: system-ui; /* macOS 连续曲率圆角，Win/Linux 自动为 0% */
   overflow: hidden; /* 裁剪超出圆角的内容 */
   box-shadow: none; /* 主窗口主动取消阴影 */

@@ -25,6 +25,14 @@ const MIN_WIDTH = 200
 /** 窗口最小高度限制（像素） */
 const MIN_HEIGHT = 200
 
+/** Props */
+defineProps({
+  locked: {
+    type: Boolean,
+    default: false
+  }
+})
+
 /** 拖拽开始时的窗口初始 bounds，用于计算偏移量 */
 let startBounds = null
 
@@ -98,8 +106,8 @@ async function onMouseDown(e, direction) {
 </script>
 
 <template>
-  <!-- 缩放手柄容器：absolute 定位覆盖整个窗口，自身不捕获事件 -->
-  <div class="resize-handles">
+  <!-- 缩放手柄容器：absolute 定位覆盖整个窗口，自身不捕获事件；锁定后禁用手柄 -->
+  <div class="resize-handles" :class="{ locked: locked }">
     <!-- 上边缘手柄 -->
     <div class="rh rh-n" @mousedown="onMouseDown($event, 'n')"></div>
     <!-- 下边缘手柄 -->
@@ -132,6 +140,11 @@ async function onMouseDown(e, direction) {
 .rh {
   position: absolute;
   pointer-events: auto; /* 手柄区域恢复鼠标事件响应 */
+}
+
+/* 锁定状态下禁用手柄交互 */
+.resize-handles.locked .rh {
+  pointer-events: none;
 }
 
 /* ---- 边缘手柄（条形，宽度/高度 5px） ---- */

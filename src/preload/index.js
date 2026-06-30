@@ -25,8 +25,12 @@ const api = {
   closeWindow: () => ipcRenderer.send('window-close'),
   /** 最小化当前窗口 */
   minimizeWindow: () => ipcRenderer.send('window-minimize'),
-  /** 切换最大化/还原状态 */
-  maximizeWindow: () => ipcRenderer.send('window-maximize'),
+
+  // ---- 窗口锁定 ----
+  /** 切换窗口锁定状态（禁止/允许移动和缩放），返回新的锁定状态 */
+  toggleLock: () => ipcRenderer.invoke('toggle-lock'),
+  /** 获取当前锁定状态 */
+  getLockState: () => ipcRenderer.invoke('get-lock-state'),
 
   // ---- 缩放手柄（窗口边界操作） ----
   /** 获取当前窗口的位置和尺寸（双向通信，返回 Promise） */
@@ -59,10 +63,20 @@ const api = {
   resetDatabase: () => ipcRenderer.invoke('reset-database'),
 
   // ---- 开机自启 ----
-  /** 获取 OS 真实开机自启状态（打开设置页时调用，自动同步数据库） */
-  getAutoStart: () => ipcRenderer.invoke('get-auto-start'),
+  /** 校验开机自启状态（DB 为权威，同步 OS，失败返回错误信息） */
+  verifyAutoStart: () => ipcRenderer.invoke('verify-auto-start'),
   /** 设置开机自启（同步更新 OS + 数据库） */
-  setAutoStart: (enabled) => ipcRenderer.invoke('set-auto-start', enabled)
+  setAutoStart: (enabled) => ipcRenderer.invoke('set-auto-start', enabled),
+
+  // ---- 系统模糊 ----
+  /** 校验毛玻璃启用状态（DB 为权威，同步运行时，失败返回错误信息） */
+  verifyBlurEnabled: () => ipcRenderer.invoke('verify-blur-enabled'),
+  /** 获取平台模糊能力信息（支持 / 不支持 / 策略等） */
+  getBlurCapabilities: () => ipcRenderer.invoke('get-blur-capabilities'),
+  /** 获取当前模糊配置 */
+  getBlurConfig: () => ipcRenderer.invoke('get-blur-config'),
+  /** 设置模糊配置（立即生效 + 持久化） */
+  setBlurConfig: (config) => ipcRenderer.invoke('set-blur-config', config)
 }
 
 // ============================================================

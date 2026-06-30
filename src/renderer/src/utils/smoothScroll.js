@@ -1,5 +1,5 @@
 /**
- * smoothScroll.js — 全局速度驱动平滑滚动
+ * smoothScroll.js — 全局速度驱动平滑滚动 + 滚动条自动隐现
  *
  * 在 main.js 中 import 一次，自动对所有 overflow-y:auto/scroll 元素生效。
  * 替代 Chrome 原生 ~100px/步的跳跃式滚动，实现逐帧细腻滚动。
@@ -11,8 +11,24 @@
 
 /* ---- 可调参数 ---- */
 const SCALE = 0.05   // 滚轮灵敏度（越小越细腻，0.05~0.2）
-const DECAY = 0.82   // 速度衰减系数（<1，模拟惯性，0.75~0.92）
+const DECAY = 0.92   // 速度衰减系数（<1，模拟惯性，0.75~0.92）
 const MIN_V  = 0.25  // 最小速度阈值（低于此值停止 RAF）
+
+/* ---- 滚动条自动隐现 ---- */
+let scrollbarTimer = null
+const SHOW_SCROLLBAR_DELAY = 800 // 停止滚动后隐藏滚动条的延迟（ms）
+
+function showScrollbar() {
+  document.documentElement.classList.add('is-scrolling')
+  if (scrollbarTimer) clearTimeout(scrollbarTimer)
+  scrollbarTimer = setTimeout(() => {
+    document.documentElement.classList.remove('is-scrolling')
+    scrollbarTimer = null
+  }, SHOW_SCROLLBAR_DELAY)
+}
+
+// 监听原生 scroll 事件（覆盖 wheel 驱动 + 拖拽滚动条 + 键盘滚动）
+document.addEventListener('scroll', showScrollbar, { passive: true, capture: true })
 
 /* ---- 每个可滚动元素独立的速度状态 ---- */
 const states = new WeakMap()

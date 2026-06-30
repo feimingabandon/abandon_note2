@@ -109,7 +109,7 @@ onBeforeUnmount(() => {
   <div ref="wrapperRef" class="sel-wrapper" :class="sizeClass" :style="wrapperStyle">
     <!-- 触发器 -->
     <button
-      class="sel-trigger app-bg"
+      class="sel-trigger"
       :class="{ 'is-open': open, 'is-disabled': disabled }"
       :disabled="disabled"
       @click="toggle"
@@ -168,6 +168,7 @@ onBeforeUnmount(() => {
   font-size: inherit;
   font-family: inherit;
   color: var(--text-color);
+  background-color: rgb(var(--bg-color) / var(--popup-opacity));
   border: 1rem solid color-mix(in srgb, var(--text-color) 15%, transparent);
   border-radius: 6rem;
   cursor: pointer;
@@ -219,6 +220,8 @@ onBeforeUnmount(() => {
 }
 .sel-panel {
   padding: 4rem 0;
+  max-height: 256rem;
+  overflow-y: auto;
 }
 
 .sel-option {
@@ -253,17 +256,17 @@ onBeforeUnmount(() => {
 .sel--sm,
 .sel--sm .sel-trigger,
 .sel--sm .sel-option {
-  font-size: 12rem;
+  font-size: var(--fs-secondary);
 }
 .sel--md,
 .sel--md .sel-trigger,
 .sel--md .sel-option {
-  font-size: 13rem;
+  font-size: var(--fs-secondary);
 }
 .sel--lg,
 .sel--lg .sel-trigger,
 .sel--lg .sel-option {
-  font-size: 15rem;
+  font-size: var(--fs-body);
 }
 .sel--lg .sel-trigger {
   padding: 7rem 12rem;

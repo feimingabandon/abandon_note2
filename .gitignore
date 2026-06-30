@@ -4,3 +4,12 @@ out
 .DS_Store
 .eslintcache
 *.log*
+
+# C++ DLL 构建产物
+native_blur/build/
+*.aps
+*.user
+*.sln
+*.vcxproj*
+CMakeCache.txt
+CMakeFiles/

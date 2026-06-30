@@ -5,8 +5,11 @@
  * 使用方：src/renderer/src/main.js 导入
  * ============================================================ */
 
-/* ---- 引入 OppoSans WebFont ---- */
+/* ---- 引入 OppoSans WebFont（保留作为回退）---- */
 @import '@zf-web-font/opposans/style.css';
+
+/* ---- 引入 Apple PingFang SC（苹方简体中文，苹果系统字体）---- */
+@import 'font-pingfang-sc/index.css';
 
 /* ---- CSS Reset ---- */
 /* 统一所有元素的盒模型为 border-box，清除默认 margin 和 font-weight */
@@ -18,8 +21,8 @@
   font-weight: normal;
 }
 
-/* macOS 风格覆盖式滚动条 —— 纤细、半透明、悬浮出现
- * 不占用布局空间，与苹果原生设计语言一致 */
+/* macOS 风格自动隐现滚动条 —— 纤细、半透明、滚动时淡入、停止后淡出
+ * 通过 html.is-scrolling 类控制显隐，JS 中监听 scroll 事件切换 */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -30,17 +33,21 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(128, 128, 128, 0.35);
+  background-color: rgba(128, 128, 128, 0);
   border-radius: 3px;
-  transition: background-color 200ms ease;
+  transition: background-color 500ms ease;
+}
+
+html.is-scrolling ::-webkit-scrollbar-thumb {
+  background-color: rgba(128, 128, 128, 0.5);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(128, 128, 128, 0.55);
+  background-color: rgba(128, 128, 128, 0.65);
 }
 
 ::-webkit-scrollbar-thumb:active {
-  background-color: rgba(128, 128, 128, 0.7);
+  background-color: rgba(128, 128, 128, 0.8);
 }
 
 ::-webkit-scrollbar-corner {
@@ -53,43 +60,48 @@ ul {
 }
 
 /* ---- 响应式根字号 ----
- * 公式：1rem = 窗口宽度 / 500 * 缩放因子
- * 这样做的好处：
- *   - 所有使用 rem 单位的元素会随窗口宽度自动缩放
- *   - --font-scale 变量允许用户自定义全局字体缩放比例
- *   - 基准 500 意味着 500px 宽窗口下 1rem = 1px * scale
+ * 公式：1rem = 窗口宽度 / 480
+ * 设计基准 1920px 屏：默认窗口宽 480px（25%）→ 1rem = 1px
  */
 html {
-  font-size: calc(100vw / 500 * var(--font-scale, 1));
+  font-size: calc(100vw / 480);
 }
 
 /* ---- 全局 CSS 自定义属性（Design Tokens） ---- */
 :root {
-  --font-scale: 1; /* 字体缩放因子，可通过数据库设置覆盖 */
-  --font-family-text: 'OPPOSans Regular', 'SF Pro Text', 'PingFang SC', 'Microsoft YaHei', sans-serif; /* 正文字体族 */
-  --text-color: #1d1d1f; /* 全局文字颜色 */
+  --font-size-base: 18rem; /* 正文基准字号，用户可调（14~20），所有字号按比例跟随 */
+  --font-family-text: 'PingFangSC-Regular', 'OPPOSans Medium', 'Segoe UI', 'Microsoft YaHei', sans-serif; /* 正文字体族：苹果 PingFang SC Regular（中文），OPPOSans/Segoe UI 回退 */
+  --text-color: #000000; /* 全局文字颜色 */
+  --text-opacity-secondary: 0.7; /* 辅助文字统一透明度（0~1），通过叠加主文字色实现层级区分 */
+
+  /* ---- 字号层级（以 --font-size-base 为基准按比例缩放） ---- */
+  --fs-title:      calc(var(--font-size-base) * 1.125);  /* 标题（base=18 → 20.25） */
+  --fs-body:       var(--font-size-base);                 /* 正文/标签/按钮 */
+  --fs-secondary:  calc(var(--font-size-base) * 0.875);  /* 所有辅助文字（base=18 → 15.75） */
 
   /* ---- 玻璃态背景参数（主窗口 + 弹窗共用） ---- */
   --bg-color: 255 255 255; /* 背景颜色（RGB 三通道） */
-  --bg-blur: 10px; /* 弹窗模糊半径（0px = 关闭模糊，仅弹窗使用） */
+  --bg-blur: 5px; /* 弹窗模糊半径（0px = 关闭模糊，仅弹窗使用） */
   --bg-border: 1; /* 边框开关（0 = 无，1 = 有） */
 
   /* ---- 窗口透明度（CSS 层透明度，控制 OS 毛玻璃透出程度） ---- */
-  --popup-opacity: 0.25; /* 窗口背景透明度（0~1，值越小 OS 毛玻璃越透出） */
+  --popup-opacity: 0.2; /* 窗口背景透明度，默认 20%（0~1，值越小 OS 毛玻璃越透出） */
 }
 
 /* ---- body 基础样式 ---- */
 body {
   font-family: var(--font-family-text), sans-serif; /* 使用正文字体变量 */
+  font-size: var(--fs-body); /* 全局正文默认字号 */
   color: var(--text-color); /* 使用全局文字颜色 */
   background: transparent; /* 透明背景，配合 BrowserWindow transparent:true */
   overflow: hidden; /* 隐藏溢出内容，避免出现不必要的滚动条 */
   user-select: none; /* 禁止用户选择文字（桌面应用风格） */
-  
+
   /* 字体平滑优化 */
-  -webkit-font-smoothing: antialiased; /* WebKit 字体平滑 */
-  -moz-osx-font-smoothing: grayscale; /* macOS 字体平滑 */
-  text-rendering: optimizeLegibility; /* 优化可读性 */
+  -webkit-font-smoothing: antialiased; /* macOS: 统一灰度抗锯齿，避免默认 subpixel 导致字重偏粗 */
+  -moz-osx-font-smoothing: grayscale; /* Firefox macOS: 灰度抗锯齿 */
+  text-rendering: optimizeLegibility; /* 优先保证字形清晰度（适合正文大小文字） */
+  font-smooth: always; /* 非标准属性，部分引擎用于强制抗锯齿 */
 }
 
 /* ---- 玻璃态背景容器 ----

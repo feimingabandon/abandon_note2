@@ -26,6 +26,13 @@ import {
   deleteSetting,
   resetDatabase
 } from './db.js'
+import {
+  detectCapabilities,
+  initialize as blurInit,
+  setConfig as blurSetConfig,
+  updateGeometry as blurUpdateGeometry,
+  destroy as blurDestroy
+} from './blur_bridge.js'
 
 /** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
 const WINDOW_NAME = 'main'
@@ -41,6 +48,24 @@ let isQuitting = false
 
 /** 窗口置顶状态 */
 let alwaysOnTop = true
+
+/** 窗口锁定状态（禁止移动和缩放） */
+let isLocked = false
+
+/** 系统模糊能力信息（启动时检测） */
+const blurCaps = detectCapabilities()
+
+/** 系统模糊是否已初始化 */
+let blurInitialized = false
+
+/** 当前模糊配置（持久化到数据库） */
+const blurConfig = {
+  enabled: true,
+  radius: 10,                          // 模糊半径/通透度 (0~100 DIP)，默认 10
+  tint: { r: 255, g: 255, b: 255 },    // 颜色 (默认白色=无色叠加)
+  saturation: 1.8,                      // 饱和度 (0~2, 苹果风格 = 1.8)
+  cornerRadius: 12                       // 窗口圆角 (0~30 DIP)
+}
 
 /** 防抖定时器，用于延迟保存窗口位置/尺寸 */
 let geometryTimer = null
@@ -105,6 +130,56 @@ function createWindow() {
   // 固定缩放因子为 1.0，防止系统 DPI 缩放影响布局
   mainWindow.webContents.setZoomFactor(1.0)
 
+  // 恢复锁定状态（持久化）
+  const savedLocked = getSetting(WINDOW_NAME, 'lock_state')
+  if (savedLocked === 'true') {
+    isLocked = true
+    mainWindow.setMovable(false)
+    mainWindow.setResizable(false)
+  }
+
+  // ---- 初始化系统模糊 ----
+  if (blurCaps.supported) {
+    try {
+      // 从数据库恢复模糊配置
+      const savedEnabled = getSetting(WINDOW_NAME, 'blur_enabled')
+      const savedRadius = getSetting(WINDOW_NAME, 'blur_radius')
+      const savedTintR = getSetting(WINDOW_NAME, 'blur_tint_r')
+      const savedTintG = getSetting(WINDOW_NAME, 'blur_tint_g')
+      const savedTintB = getSetting(WINDOW_NAME, 'blur_tint_b')
+      const savedSaturation = getSetting(WINDOW_NAME, 'blur_saturation')
+      const savedCornerRadius = getSetting(WINDOW_NAME, 'blur_corner_radius')
+
+      if (savedEnabled !== null) blurConfig.enabled = savedEnabled === 'true'
+      if (savedRadius !== null) blurConfig.radius = parseFloat(savedRadius)
+      if (savedTintR !== null) blurConfig.tint.r = parseInt(savedTintR)
+      if (savedTintG !== null) blurConfig.tint.g = parseInt(savedTintG)
+      if (savedTintB !== null) blurConfig.tint.b = parseInt(savedTintB)
+      if (savedSaturation !== null) blurConfig.saturation = parseFloat(savedSaturation)
+      if (savedCornerRadius !== null) blurConfig.cornerRadius = parseFloat(savedCornerRadius)
+
+      const result = blurInit(mainWindow)
+      if (result.success) {
+        blurInitialized = true
+        // 仅 Windows 需要设置初始参数（macOS 在构造时已设置 vibrancy）
+        if (process.platform === 'win32' && blurConfig.enabled) {
+          blurSetConfig(blurConfig)
+        }
+        // macOS：若持久化配置中毛玻璃为关闭，需覆盖构造时硬编码的 vibrancy
+        if (process.platform === 'darwin' && !blurConfig.enabled) {
+          mainWindow.setVibrancy(null)
+        }
+        console.log('[blur] 系统模糊已初始化, 策略:', result.strategy)
+      } else {
+        console.warn('[blur] 初始化失败:', result.error)
+      }
+    } catch (e) {
+      console.warn('[blur] 初始化异常:', e.message)
+    }
+  } else {
+    console.log('[blur] 当前平台不支持系统模糊:', blurCaps.reason)
+  }
+
   // 拦截新窗口打开请求，改为使用系统默认浏览器打开链接
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
@@ -129,6 +204,12 @@ function createWindow() {
   mainWindow.on('resize', debouncedSaveGeometry)
   mainWindow.on('move', debouncedSaveGeometry)
 
+  // 窗口移动/缩放时同步模糊 overlay 位置
+  if (blurInitialized && process.platform === 'win32') {
+    mainWindow.on('resize', () => blurUpdateGeometry(mainWindow))
+    mainWindow.on('move', () => blurUpdateGeometry(mainWindow))
+  }
+
   // 【贴边隐藏 - 边缘检测】窗口移动时检测是否靠近屏幕左/右边缘
   mainWindow.on('move', () => {
     if (!mainWindow || mainWindow.isDestroyed() || isDockHidden || isSliding) return
@@ -147,8 +228,14 @@ function createWindow() {
   mainWindow.on('close', (e) => {
     if (!isQuitting) {
       e.preventDefault()
-      mainWindow.hide()
-      resetDockState()
+      hideToTray()
+    }
+  })
+
+  // 窗口显示时恢复模糊（从托盘恢复）
+  mainWindow.on('show', () => {
+    if (blurInitialized && blurConfig.enabled) {
+      blurSetConfig(blurConfig)
     }
   })
 
@@ -164,6 +251,18 @@ function createWindow() {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+}
+
+// ============================================================
+// 托盘隐藏（窗口关闭 → 最小化到托盘，统一入口）
+// ============================================================
+
+/** 窗口关闭/隐藏时统一执行：隐藏窗口 + 清理贴边 + 禁用系统模糊 */
+function hideToTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.hide()
+  resetDockState()
+  if (blurInitialized) blurSetConfig({ enabled: false })
 }
 
 // ============================================================
@@ -387,10 +486,7 @@ app.whenReady().then(() => {
 
   // 【窗口控制 - 关闭】渲染进程请求关闭窗口 → 最小化到托盘
   ipcMain.on('window-close', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.hide()
-      resetDockState()
-    }
+    hideToTray()
   })
 
   // 【窗口控制 - 最小化】渲染进程请求最小化窗口
@@ -399,13 +495,20 @@ app.whenReady().then(() => {
     if (win) win.minimize()
   })
 
-  // 【窗口控制 - 最大化/还原】切换最大化状态
-  ipcMain.on('window-maximize', (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (win) {
-      resetDockState()
-      win.isMaximized() ? win.unmaximize() : win.maximize()
+  // 【窗口锁定 - 切换锁定状态】
+  ipcMain.handle('toggle-lock', () => {
+    isLocked = !isLocked
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setMovable(!isLocked)
+      mainWindow.setResizable(!isLocked)
     }
+    setSetting(WINDOW_NAME, 'system', 'lock_state', String(isLocked))
+    return isLocked
+  })
+
+  // 【窗口锁定 - 获取锁定状态】
+  ipcMain.handle('get-lock-state', () => {
+    return isLocked
   })
 
   // 【缩放手柄 - 获取边界】返回当前窗口的位置和尺寸
@@ -488,6 +591,57 @@ app.whenReady().then(() => {
     if (isDockHidden) doShow()
   })
 
+  // ---- 系统模糊 IPC ----
+
+  /** 获取平台模糊能力信息 */
+  ipcMain.handle('get-blur-capabilities', () => {
+    return blurCaps
+  })
+
+  /** 获取当前模糊配置 */
+  ipcMain.handle('get-blur-config', () => {
+    return { ...blurConfig, initialized: blurInitialized }
+  })
+
+  /** 设置模糊配置（立即生效 + 持久化到数据库） */
+  ipcMain.handle('set-blur-config', (_event, config) => {
+    // 合并到当前配置
+    if (config.enabled !== undefined) blurConfig.enabled = config.enabled
+    if (config.radius !== undefined) blurConfig.radius = config.radius
+    if (config.tint) {
+      if (config.tint.r !== undefined) blurConfig.tint.r = config.tint.r
+      if (config.tint.g !== undefined) blurConfig.tint.g = config.tint.g
+      if (config.tint.b !== undefined) blurConfig.tint.b = config.tint.b
+    }
+    if (config.saturation !== undefined) blurConfig.saturation = config.saturation
+    if (config.cornerRadius !== undefined) blurConfig.cornerRadius = config.cornerRadius
+
+    // 持久化到数据库
+    setSetting(WINDOW_NAME, 'system', 'blur_enabled', String(blurConfig.enabled))
+    setSetting(WINDOW_NAME, 'system', 'blur_radius', String(blurConfig.radius))
+    setSetting(WINDOW_NAME, 'system', 'blur_tint_r', String(blurConfig.tint.r))
+    setSetting(WINDOW_NAME, 'system', 'blur_tint_g', String(blurConfig.tint.g))
+    setSetting(WINDOW_NAME, 'system', 'blur_tint_b', String(blurConfig.tint.b))
+    setSetting(WINDOW_NAME, 'system', 'blur_saturation', String(blurConfig.saturation))
+    setSetting(WINDOW_NAME, 'system', 'blur_corner_radius', String(blurConfig.cornerRadius))
+
+    // 立即生效（仅 Windows 需要调用 DLL）
+    if (blurInitialized && process.platform === 'win32') {
+      blurSetConfig(blurConfig)
+    }
+
+    // macOS：切换 vibrancy 类型
+    if (process.platform === 'darwin' && mainWindow && !mainWindow.isDestroyed()) {
+      if (blurConfig.enabled) {
+        mainWindow.setVibrancy('under-window')
+      } else {
+        mainWindow.setVibrancy(null)
+      }
+    }
+
+    return { ...blurConfig }
+  })
+
   createWindow()
 
   // 初始化置顶状态（必须在 createWindow 之后）
@@ -510,21 +664,76 @@ app.whenReady().then(() => {
   // ---- 开机自启 ----
 
   /**
-   * 获取开机自启真实状态
-   * 每次打开设置页面时调用：读取 OS 实际状态，若与数据库不一致则同步
-   * 返回值是 OS 的真实状态（非数据库值）
+   * 校验开机自启状态
+   * 每次打开设置页面时调用：以数据库为权威，尝试将 OS 同步为数据库的值
+   * 若同步失败则返回错误信息（持久显示，不自动消失）
+   * @returns {{ value: boolean, error: string|null }}
    */
-  ipcMain.handle('get-auto-start', () => {
-    const osSettings = app.getLoginItemSettings()
-    const osValue = osSettings.openAtLogin
+  ipcMain.handle('verify-auto-start', () => {
     const dbValue = getSetting(WINDOW_NAME, 'auto_start')
 
-    // 数据库无记录 或 与 OS 不一致 → 以 OS 为准写入数据库
-    if (dbValue === null || String(dbValue) !== String(osValue)) {
-      setSetting(WINDOW_NAME, 'system', 'auto_start', String(osValue))
+    // 数据库无记录 → 以 OS 当前状态为准，写入数据库
+    if (dbValue === null) {
+      const osSettings = app.getLoginItemSettings()
+      setSetting(WINDOW_NAME, 'system', 'auto_start', String(osSettings.openAtLogin))
+      return { value: osSettings.openAtLogin, error: null }
     }
 
-    return osValue
+    const dbEnabled = dbValue === 'true'
+
+    // 尝试将 OS 同步为数据库的值
+    app.setLoginItemSettings({ openAtLogin: dbEnabled })
+    const verifySettings = app.getLoginItemSettings()
+
+    if (verifySettings.openAtLogin === dbEnabled) {
+      return { value: dbEnabled, error: null }
+    }
+
+    // 同步失败：返回实际状态 + 错误信息
+    return {
+      value: verifySettings.openAtLogin,
+      error: dbEnabled
+        ? '开启失败，请检查系统安全软件是否拦截了开机启动权限'
+        : '关闭失败，请检查系统权限设置'
+    }
+  })
+
+  /**
+   * 校验毛玻璃启用状态
+   * 每次打开设置页面时调用：以数据库为权威，尝试将运行时状态同步为数据库的值
+   * 若无法启用（如 DLL 未加载）则返回错误信息
+   * @returns {{ value: boolean, error: string|null }}
+   */
+  ipcMain.handle('verify-blur-enabled', () => {
+    const dbValue = getSetting(WINDOW_NAME, 'blur_enabled')
+    if (dbValue === null) return { value: true, error: null }
+
+    const dbEnabled = dbValue === 'true'
+
+    // macOS：直接设置 vibrancy
+    if (process.platform === 'darwin' && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setVibrancy(dbEnabled ? 'under-window' : null)
+      blurConfig.enabled = dbEnabled
+      return { value: dbEnabled, error: null }
+    }
+
+    // Windows：需要通过 DLL 控制
+    if (process.platform === 'win32') {
+      if (dbEnabled && !blurInitialized) {
+        return {
+          value: false,
+          error: '系统模糊引擎未加载（DLL 缺失或版本不兼容）'
+        }
+      }
+      if (blurInitialized) {
+        blurConfig.enabled = dbEnabled
+        blurSetConfig({ enabled: dbEnabled })
+      }
+      return { value: dbEnabled, error: null }
+    }
+
+    // 不支持模糊的平台（Linux 等）
+    return { value: dbEnabled, error: null }
   })
 
   /**
@@ -585,6 +794,8 @@ app.whenReady().then(() => {
 // 应用退出前关闭数据库连接和贴边资源，确保数据安全
 app.on('before-quit', () => {
   closeDatabase()
+  // 销毁模糊引擎（释放 DLL 资源）
+  blurDestroy()
   if (triggerWin && !triggerWin.isDestroyed()) {
     triggerWin.destroy()
     triggerWin = null

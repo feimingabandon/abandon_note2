@@ -22,7 +22,9 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@zf-web-font/opposans": "^0.2.0",
     "better-sqlite3": "^12.9.0",
-    "electron-updater": "^6.3.9"
+    "electron-updater": "^6.3.9",
+    "font-pingfang-sc": "^1.0.5",
+    "koffi": "^2.9.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config": "^2.1.0",

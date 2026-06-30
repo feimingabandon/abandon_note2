@@ -38,7 +38,7 @@ const emit = defineEmits(['click'])
   border: none;
   border-radius: 8rem;
   padding: 9rem 16rem;
-  font-size: 14rem;
+  font-size: var(--fs-body);
   font-family: inherit;
   font-weight: 500;
   color: var(--text-color);
@@ -78,11 +78,11 @@ const emit = defineEmits(['click'])
 /* ---- 尺寸 ---- */
 .btn--sm {
   padding: 6rem 12rem;
-  font-size: 12rem;
+  font-size: var(--fs-secondary);
   border-radius: 6rem;
 }
 .btn--lg {
   padding: 12rem 24rem;
-  font-size: 16rem;
+  font-size: var(--fs-body);
 }
 </style>

@@ -16,9 +16,9 @@
  */
 
 import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import StyledSelect from './StyledSelect.vue'
 import AppToggle from './AppToggle.vue'
 import BaseButton from './BaseButton.vue'
+import FontSizeInput from './FontSizeInput.vue'
 import AppSlider from './AppSlider.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import { useMessage } from '../composables/useMessage.js' // 消息弹窗
@@ -38,9 +38,81 @@ const el = document.documentElement
 // ---- 面板动画控制 ----
 const rendered = ref(props.visible)
 const panelActive = ref(false)
+const panelRef = ref(null)
+const panelHeight = ref(70) // 面板高度百分比，默认 70%
 
 /** 关闭动画定时器 ID，用于取消竞态关闭 */
 let closeTimer = null
+
+// ---- 拖拽调整面板高度 ----
+let isDragging = false
+let dragStartY = 0
+let dragStartHeight = 0
+let dragRaf = null
+const resizing = ref(false)
+
+function onDragStart(e) {
+  isDragging = true
+  resizing.value = true
+  dragStartY = e.clientY
+  dragStartHeight = panelHeight.value
+  if (panelRef.value) {
+    panelRef.value.style.transition = 'none'
+  }
+  document.addEventListener('mousemove', onDragMove)
+  document.addEventListener('mouseup', onDragEnd)
+  e.preventDefault()
+}
+
+function onDragMove(e) {
+  if (!isDragging || !panelRef.value) return
+  // RAF 节流：每帧只更新一次
+  if (dragRaf) return
+  dragRaf = requestAnimationFrame(() => {
+    dragRaf = null
+    const wrapper = panelRef.value.parentElement
+    const wrapperHeight = wrapper ? wrapper.getBoundingClientRect().height : window.innerHeight
+    const deltaY = dragStartY - e.clientY
+    const deltaPct = (deltaY / wrapperHeight) * 100
+    let newHeight = dragStartHeight + deltaPct
+    newHeight = Math.max(25, Math.min(95, newHeight))
+    newHeight = Math.round(newHeight)
+    // 直接操作 DOM 绕过 Vue 响应式
+    panelRef.value.style.height = newHeight + '%'
+    panelHeight.value = newHeight
+  })
+}
+
+function onDragEnd() {
+  isDragging = false
+  resizing.value = false
+  if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = null }
+  if (panelRef.value) {
+    panelRef.value.style.transition = ''
+    panelRef.value.style.height = panelHeight.value + '%'
+  }
+  document.removeEventListener('mousemove', onDragMove)
+  document.removeEventListener('mouseup', onDragEnd)
+}
+
+// 清理拖拽监听（组件卸载时）
+onBeforeUnmount(() => {
+  document.removeEventListener('mousemove', onDragMove)
+  document.removeEventListener('mouseup', onDragEnd)
+})
+
+/** 点击面板外区域关闭（排除自身弹窗内的点击） */
+const onDocClick = (e) => {
+  if (!rendered.value || !panelActive.value) return
+  // 点击在设置面板内部 → 不关闭
+  if (panelRef.value && panelRef.value.contains(e.target)) return
+  // 点击在 ConfirmDialog 弹窗内部 → 不关闭（弹窗通过 Teleport 渲染在 panelRef 之外）
+  if (e.target.closest('.confirm-overlay')) return
+  close()
+}
+
+onMounted(() => document.addEventListener('click', onDocClick, true))
+onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
 
 const close = () => {
   panelActive.value = false
@@ -73,24 +145,14 @@ watch(
 
 // ---- 基础样式设置 ----
 const bgColor = ref('255 255 255')
-const winOpacity = ref(0.25) // 统一的窗口透明度（控制 CSS 层透明度）
-const bgBlur = ref(10)
+const winOpacity = ref(0.2) // 统一的窗口透明度（控制 CSS 层透明度），默认 20%
+const bgBlur = ref(5) // 弹窗模糊，默认 5px
 const bgBorder = ref(true)
-const fontScale = ref(1)
-const textColor = ref('#1d1d1f')
+const fontSizeBase = ref(18)
+const textColor = ref('#000000')
 
-/** 字体缩放选项 */
-const fontScaleOptions = [
-  { label: '0.5x', value: 0.5 },
-  { label: '0.75x', value: 0.75 },
-  { label: '1x', value: 1 },
-  { label: '1.25x', value: 1.25 },
-  { label: '1.5x', value: 1.5 },
-  { label: '1.75x', value: 1.75 },
-  { label: '2x', value: 2 },
-  { label: '2.5x', value: 2.5 },
-  { label: '3x', value: 3 }
-]
+/** 字体大小预设（datalist 选项） */
+const fontSizePresets = [12, 14, 16, 18, 20, 24, 28, 32, 36, 40]
 
 /** 预设背景色 */
 const presetColors = [
@@ -104,9 +166,22 @@ const presetColors = [
 
 // ---- 窗口设置 ----
 const autoStart = ref(false)
+const autoStartError = ref(null) // 持久错误（null = 无错误），恒显示不自动消失
 
 /** 开机自启状态是否已从 OS 同步完成（防止首次同步触发持久化） */
 let _autoStartSynced = false
+
+// ---- 系统模糊设置 ----
+const blurCaps = ref({ supported: false, platform: '', strategy: 'none' })
+const blurEnabled = ref(true) // 启用毛玻璃，默认开启
+const blurError = ref(null) // 持久错误（如 DLL 未加载），恒显示不自动消失
+const blurRadius = ref(10) // 模糊半径，默认 10
+const blurTintR = ref(255)
+const blurTintG = ref(255)
+const blurTintB = ref(255)
+const blurSaturation = ref(1.8)
+const blurCornerRadius = ref(12)
+let _blurSynced = false
 
 const { showMessage } = useMessage()
 
@@ -122,16 +197,19 @@ watch(autoStart, async (v) => {
     const verified = await window.api.setAutoStart(v)
 
     if (verified === v) {
-      // OS 确认成功 → 成功消息
+      // OS 确认成功 → 清除持久错误 + 成功 Toast
+      autoStartError.value = null
       showMessage('success', v ? '开机自启已开启' : '开机自启已关闭')
     } else {
-      // OS 状态与请求不符 → 错误消息 + 回滚 UI
+      // OS 状态与请求不符 → 回滚 UI + 持久错误
       autoStart.value = verified
-      showMessage('error', '设置失败，请检查系统权限后重试', 4000)
+      autoStartError.value = v
+        ? '开启失败，请检查系统安全软件是否拦截了开机启动权限'
+        : '关闭失败，请检查系统权限设置'
     }
   } catch (e) {
     console.warn('[SettingsPanel] 设置开机自启失败:', e)
-    showMessage('error', '设置失败，请重试', 4000)
+    autoStartError.value = '设置失败，请重试'
   }
 })
 
@@ -170,16 +248,46 @@ watch(bgBorder, (v) => {
   window.api.setSetting(WINDOW_NAME, 'css', 'bg_border', v ? '1' : '0')
 })
 
-// 字体缩放 → CSS --font-scale
-watch(fontScale, (v) => {
-  el.style.setProperty('--font-scale', v)
-  debouncedSave('css', 'font_scale', v)
+// 字体大小 → CSS --font-size-base
+watch(fontSizeBase, (v) => {
+  el.style.setProperty('--font-size-base', v + 'rem')
+  debouncedSave('css', 'font_size_base', v)
 })
 
 // 文字颜色 → CSS --text-color
 watch(textColor, (v) => {
   el.style.setProperty('--text-color', v)
   debouncedSave('css', 'text_color', v)
+})
+
+// ---- 系统模糊 watch（防抖发送到主进程） ----
+function syncBlurConfig() {
+  if (!_blurSynced) return
+  window.api.setBlurConfig({
+    enabled: blurEnabled.value,
+    radius: blurRadius.value,
+    saturation: blurSaturation.value,
+    cornerRadius: blurCornerRadius.value,
+    tint: { r: blurTintR.value, g: blurTintG.value, b: blurTintB.value }
+  }).catch(e => console.warn('[SettingsPanel] 同步模糊配置失败:', e))
+}
+
+let _blurSyncTimer = null
+function debouncedSyncBlur() {
+  if (_blurSyncTimer) clearTimeout(_blurSyncTimer)
+  _blurSyncTimer = setTimeout(syncBlurConfig, 150)
+}
+
+watch(blurEnabled, debouncedSyncBlur)
+watch(blurRadius, debouncedSyncBlur)
+watch(blurTintR, debouncedSyncBlur)
+watch(blurTintG, debouncedSyncBlur)
+watch(blurTintB, debouncedSyncBlur)
+watch(blurSaturation, debouncedSyncBlur)
+watch(blurCornerRadius, debouncedSyncBlur)
+// 圆角 CSS 变量即时同步（不等防抖，视觉必须立即跟上）
+watch(blurCornerRadius, (v) => {
+  document.documentElement.style.setProperty('--window-radius', v + 'px')
 })
 
 // ---- 挂载时加载持久化设置 ----
@@ -191,7 +299,7 @@ onMounted(async () => {
       else if (key === 'win_opacity') winOpacity.value = parseFloat(value)
       else if (key === 'bg_blur') bgBlur.value = parseFloat(value)
       else if (key === 'bg_border') bgBorder.value = value === '1'
-      else if (key === 'font_scale') fontScale.value = parseFloat(value)
+      else if (key === 'font_size_base') fontSizeBase.value = parseInt(value)
       else if (key === 'text_color') textColor.value = value
     })
 
@@ -199,15 +307,49 @@ onMounted(async () => {
     console.warn('[SettingsPanel] 加载设置失败:', e)
   }
 
-  // 开机自启：从 OS 读取真实状态，若与数据库不一致自动同步
+  // 校验开机自启（DB 为权威，同步 OS，失败则显示持久错误）
   try {
     _autoStartSynced = false
-    autoStart.value = await window.api.getAutoStart()
+    const result = await window.api.verifyAutoStart()
+    autoStart.value = result.value
+    autoStartError.value = result.error
     await nextTick() // 等待 Vue watcher 冲刷完毕，避免首次赋值触发持久化
     _autoStartSynced = true
   } catch (e) {
-    console.warn('[SettingsPanel] 加载开机自启状态失败:', e)
+    console.warn('[SettingsPanel] 校验开机自启失败:', e)
     _autoStartSynced = true // 即使失败也放开监听，允许用户手动切换
+  }
+
+  // 加载系统模糊配置
+  try {
+    blurCaps.value = await window.api.getBlurCapabilities()
+    const savedBlur = await window.api.getBlurConfig()
+    if (savedBlur) {
+      blurEnabled.value = savedBlur.enabled ?? true
+      blurRadius.value = savedBlur.radius ?? 10
+      blurSaturation.value = savedBlur.saturation ?? 1.8
+      blurCornerRadius.value = savedBlur.cornerRadius ?? 12
+      if (savedBlur.tint) {
+        blurTintR.value = savedBlur.tint.r ?? 255
+        blurTintG.value = savedBlur.tint.g ?? 255
+        blurTintB.value = savedBlur.tint.b ?? 255
+      }
+    }
+    _blurSynced = true
+  } catch (e) {
+    console.warn('[SettingsPanel] 加载模糊配置失败:', e)
+    _blurSynced = true
+  }
+
+  // 校验毛玻璃运行时状态（DB 为权威，失败则显示持久错误）
+  try {
+    const result = await window.api.verifyBlurEnabled()
+    if (result.error) {
+      blurError.value = result.error
+      blurEnabled.value = result.value // 使用实际状态（如 DLL 未加载 → false）
+    }
+  } catch (e) {
+    console.warn('[SettingsPanel] 校验毛玻璃状态失败:', e)
   }
 })
 
@@ -218,6 +360,11 @@ onBeforeUnmount(() => {
   if (closeTimer) {
     clearTimeout(closeTimer)
     closeTimer = null
+  }
+  // 清理模糊同步定时器
+  if (_blurSyncTimer) {
+    clearTimeout(_blurSyncTimer)
+    _blurSyncTimer = null
   }
 })
 
@@ -233,37 +380,43 @@ const onConfirmResetDatabase = async () => {
   }
 }
 
-/** 确认恢复默认设置 —— 仅重置 UI，不操作数据库 */
+/** 确认恢复默认设置 —— 重置 UI 并将默认值持久化到数据库 */
 const onConfirmResetUI = () => {
   resetUI()
   showMessage('success', '已恢复默认设置')
 }
 
-/** 恢复默认设置 —— 仅重置 UI，不操作数据库 */
+/** 恢复默认设置 —— 重置 UI + 同步模糊/自启 */
 const resetUI = () => {
   bgColor.value = '255 255 255'
-  winOpacity.value = 0.25
-  bgBlur.value = 10
+  winOpacity.value = 0.2
+  bgBlur.value = 5
   bgBorder.value = true
-  fontScale.value = 1
-  textColor.value = '#1d1d1f'
+  fontSizeBase.value = 18
+  textColor.value = '#000000'
+  blurEnabled.value = true
+  blurRadius.value = 10
+  blurTintR.value = 255
+  blurTintG.value = 255
+  blurTintB.value = 255
+  blurSaturation.value = 1.8
+  blurCornerRadius.value = 12
+  autoStart.value = true
+  // 清除所有持久错误
+  autoStartError.value = null
+  blurError.value = null
 }
 </script>
 
 <template>
   <Teleport to="body">
     <div v-if="rendered" class="settings-wrapper">
-      <!-- 遮罩层 -->
-      <div
-        class="settings-overlay"
-        :class="{ active: panelActive }"
-        @click="close"
-      />
+      <!-- 遮罩层（已移除） -->
 
       <!-- 面板主体（玻璃态样式已内联到 .settings-panel + ::before，无需 .app-bg） -->
-      <div class="settings-panel" :class="{ active: panelActive }">
-        <!-- 顶部拖拽指示条 -->
-        <div class="drag-indicator">
+      <div ref="panelRef" class="settings-panel" :class="{ active: panelActive, 'is-resizing': resizing }" :style="{ height: panelHeight + '%' }">
+        <!-- 顶部拖拽指示条（拖拽调整面板高度） -->
+        <div class="drag-indicator" @mousedown="onDragStart">
           <div class="drag-bar" />
         </div>
 
@@ -285,45 +438,62 @@ const resetUI = () => {
 
             <!-- 窗口透明度（统一控制 CSS 层透明度） -->
             <div class="setting-item">
-              <span class="setting-label">窗口透明度</span>
-              <div class="setting-control">
-                <AppSlider v-model="winOpacity" :min="0" :max="1" :step="0.01" />
-                <span class="setting-value">{{ Math.round(winOpacity * 100) }}%</span>
+              <div class="setting-left">
+                <span class="setting-label">窗口透明度</span>
+              </div>
+              <div class="setting-right setting-right-slider">
+                <div class="slider-value-row">
+                  <AppSlider v-model="winOpacity" :min="0" :max="1" :step="0.01" />
+                  <span class="setting-value">{{ Math.round(winOpacity * 100) }}%</span>
+                </div>
               </div>
             </div>
 
             <!-- 弹窗模糊 -->
             <div class="setting-item">
-              <span class="setting-label">弹窗模糊</span>
-              <div class="setting-control">
-                <AppSlider v-model="bgBlur" :min="0" :max="40" :step="1" />
-                <span class="setting-value">{{ bgBlur }}px</span>
+              <div class="setting-left">
+                <span class="setting-label">弹窗模糊</span>
+              </div>
+              <div class="setting-right setting-right-slider">
+                <div class="slider-value-row">
+                  <AppSlider v-model="bgBlur" :min="0" :max="40" :step="1" />
+                  <span class="setting-value">{{ bgBlur }}px</span>
+                </div>
               </div>
             </div>
 
             <!-- 边框 -->
             <div class="setting-item">
-              <span class="setting-label">边框</span>
-              <AppToggle v-model="bgBorder" />
+              <div class="setting-left">
+                <span class="setting-label">边框</span>
+              </div>
+              <div class="setting-right">
+                <AppToggle v-model="bgBorder" />
+              </div>
             </div>
 
-            <!-- 字体缩放（下拉框） -->
+            <!-- 字体大小（输入 + 下拉预设） -->
             <div class="setting-item">
-              <span class="setting-label">字体缩放</span>
-              <div class="setting-control">
-                <StyledSelect
-                  v-model="fontScale"
-                  :options="fontScaleOptions"
-                  size="sm"
-                  width="72rem"
+              <div class="setting-left">
+                <span class="setting-label">字体大小</span>
+              </div>
+              <div class="setting-right">
+                <FontSizeInput
+                  v-model="fontSizeBase"
+                  :presets="fontSizePresets"
+                  :min="12"
+                  :max="50"
+                  width="88rem"
                 />
               </div>
             </div>
 
             <!-- 文字颜色 -->
             <div class="setting-item">
-              <span class="setting-label">文字颜色</span>
-              <div class="setting-control">
+              <div class="setting-left">
+                <span class="setting-label">文字颜色</span>
+              </div>
+              <div class="setting-right">
                 <input type="color" class="color-input" v-model="textColor" />
                 <span class="setting-value">{{ textColor }}</span>
               </div>
@@ -331,8 +501,10 @@ const resetUI = () => {
 
             <!-- 背景颜色（预设 + 颜色选择器） -->
             <div class="setting-item">
-              <span class="setting-label">背景颜色</span>
-              <div class="bg-color-control">
+              <div class="setting-left">
+                <span class="setting-label">背景颜色</span>
+              </div>
+              <div class="setting-right bg-color-control">
                 <div class="color-presets">
                   <button
                     v-for="c in presetColors"
@@ -355,6 +527,102 @@ const resetUI = () => {
                 />
               </div>
             </div>
+
+            <!-- 窗口圆角（纯 CSS 控制，与系统模糊解耦） -->
+            <div class="setting-item has-hint">
+              <div class="setting-left">
+                <span class="setting-label">窗口圆角</span>
+                <span class="setting-hint">四个角的圆润程度。0 = 直角，数值越大越圆。推荐 8–16（苹果原生风格）</span>
+              </div>
+              <div class="setting-right setting-right-slider">
+                <div class="slider-value-row">
+                  <AppSlider v-model="blurCornerRadius" :min="0" :max="30" :step="1" />
+                  <span class="setting-value">{{ blurCornerRadius }}px</span>
+                </div>
+                <div class="setting-range-labels">
+                  <span class="range-label-start">直角</span>
+                  <span class="range-label-end">圆润</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ========== 系统模糊 ========== -->
+          <!-- Windows：完整控件；macOS：仅启用开关（vibrancy）；其他：隐藏 -->
+          <section v-if="blurCaps.supported" class="settings-section">
+            <h3 class="section-title">系统模糊</h3>
+
+            <!-- 启用开关（所有支持平台通用） -->
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">启用毛玻璃</span>
+                <span v-if="blurError" class="setting-error">{{ blurError }}</span>
+              </div>
+              <div class="setting-right">
+                <AppToggle v-model="blurEnabled" />
+              </div>
+            </div>
+
+            <!-- 以下控件仅 Windows 平台有效（macOS 使用原生 vibrancy，无可调参数） -->
+            <template v-if="blurCaps.platform === 'Windows'">
+              <!-- 模糊半径（通透度） -->
+              <div class="setting-item has-hint">
+                <div class="setting-left">
+                  <span class="setting-label">模糊半径</span>
+                  <span class="setting-hint">控制背景被打散的程度。越小越清晰，越大越像近视眼看东西。推荐值 20–40</span>
+                </div>
+                <div class="setting-right setting-right-slider">
+                  <div class="slider-value-row">
+                    <AppSlider v-model="blurRadius" :min="0" :max="100" :step="1" :disabled="!blurEnabled" />
+                    <span class="setting-value">{{ blurRadius }} DIP</span>
+                  </div>
+                  <div class="setting-range-labels">
+                    <span class="range-label-start">清晰</span>
+                    <span class="range-label-end">模糊</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 颜色 -->
+              <div class="setting-item has-hint">
+                <div class="setting-left">
+                  <span class="setting-label">颜色</span>
+                  <span class="setting-hint">选中的颜色会像染色玻璃一样盖在模糊层上。默认白色 ≈ 无色叠加（推荐）</span>
+                </div>
+                <div class="setting-right">
+                  <input
+                    type="color"
+                    class="color-input"
+                    :value="`#${blurTintR.toString(16).padStart(2,'0')}${blurTintG.toString(16).padStart(2,'0')}${blurTintB.toString(16).padStart(2,'0')}`"
+                    :disabled="!blurEnabled"
+                    @input="(e) => {
+                      const hex = e.target.value
+                      blurTintR = parseInt(hex.slice(1,3), 16)
+                      blurTintG = parseInt(hex.slice(3,5), 16)
+                      blurTintB = parseInt(hex.slice(5,7), 16)
+                    }"
+                  />
+                </div>
+              </div>
+
+              <!-- 饱和度 -->
+              <div class="setting-item has-hint">
+                <div class="setting-left">
+                  <span class="setting-label">饱和度</span>
+                  <span class="setting-hint">模糊会让颜色变灰，提高饱和度能把鲜艳度补回来。1.0 = 原色，推荐 1.6–2.0（苹果官网用 1.8）</span>
+                </div>
+                <div class="setting-right setting-right-slider">
+                  <div class="slider-value-row">
+                    <AppSlider v-model="blurSaturation" :min="0" :max="2" :step="0.1" :disabled="!blurEnabled" />
+                    <span class="setting-value">{{ blurSaturation.toFixed(1) }}x</span>
+                  </div>
+                  <div class="setting-range-labels">
+                    <span class="range-label-start">黑白</span>
+                    <span class="range-label-end">鲜艳</span>
+                  </div>
+                </div>
+              </div>
+            </template>
           </section>
 
           <!-- ========== 系统设置 ========== -->
@@ -362,8 +630,13 @@ const resetUI = () => {
             <h3 class="section-title">系统设置</h3>
 
             <div class="setting-item">
-              <span class="setting-label">开机自启</span>
-              <AppToggle v-model="autoStart" />
+              <div class="setting-left">
+                <span class="setting-label">开机自启</span>
+                <span v-if="autoStartError" class="setting-error">{{ autoStartError }}</span>
+              </div>
+              <div class="setting-right">
+                <AppToggle v-model="autoStart" />
+              </div>
             </div>
           </section>
 
@@ -372,17 +645,21 @@ const resetUI = () => {
             <h3 class="section-title">关于</h3>
 
             <div class="setting-item">
-              <span class="setting-label">应用版本</span>
-              <span class="setting-value">v1.0.0</span>
+              <div class="setting-left">
+                <span class="setting-label">应用版本</span>
+              </div>
+              <div class="setting-right">
+                <span class="setting-value">v1.0.0</span>
+              </div>
             </div>
 
-            <div class="setting-item">
+            <div class="setting-item setting-item-full">
               <BaseButton variant="danger" @click="showResetDbDialog = true" style="width: 100%">
                 重置数据库
               </BaseButton>
             </div>
 
-            <div class="setting-item">
+            <div class="setting-item setting-item-full">
               <BaseButton variant="default" @click="showResetUIDialog = true" style="width: 100%">
                 恢复默认设置
               </BaseButton>
@@ -407,7 +684,7 @@ const resetUI = () => {
     <ConfirmDialog
       v-model:visible="showResetUIDialog"
       title="恢复默认设置"
-      message="将所有样式（透明度、模糊、颜色、字体缩放等）恢复为默认值，不涉及数据库清空。"
+      message="将所有样式（透明度、模糊、颜色、字体缩放等）恢复为默认值并保存到数据库。"
       confirm-text="恢复"
       cancel-text="取消"
       variant="default"
@@ -423,21 +700,11 @@ const resetUI = () => {
   inset: 0;
   z-index: 1000;
   pointer-events: none;
-  border-radius: 12px; /* 匹配窗口圆角，裁剪遮罩层和面板的直角 */
+  border-radius: var(--window-radius, 12px); /* 同步窗口圆角，裁剪面板直角 */
   overflow: hidden;    /* 裁剪超出圆角的内容 */
 }
 
-/* ---- 遮罩层 ---- */
-.settings-overlay {
-  position: absolute;
-  inset: 0;
-  background-color: rgba(0, 0, 0, 0);
-  transition: background-color 350ms ease;
-  pointer-events: auto;
-}
-.settings-overlay.active {
-  background-color: rgba(0, 0, 0, 0.25);
-}
+/* ---- 遮罩层（已移除） ---- */
 
 /* ---- 面板主体（.app-bg 继承全局玻璃态，单独加阴影） ---- */
 .settings-panel {
@@ -460,7 +727,12 @@ const resetUI = () => {
   border: calc(var(--bg-border) * 1px) solid rgba(255, 255, 255, 0.18);
 }
 
-/* 固定模糊层：独立于滚动内容，避免滚动时每帧重算 blur */
+/* 拖拽时暂停 backdrop-filter 和 transition，避免卡顿 */
+.settings-panel.is-resizing,
+.settings-panel.is-resizing::before {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
 .settings-panel::before {
   content: '';
   position: absolute;
@@ -481,12 +753,14 @@ const resetUI = () => {
   transform: translateY(0);
 }
 
-/* ---- 拖拽指示条 ---- */
+/* ---- 拖拽指示条（可拖拽调整面板高度） ---- */
 .drag-indicator {
   display: flex;
   justify-content: center;
   padding: 10rem 0 4rem;
   flex-shrink: 0;
+  cursor: ns-resize;
+  user-select: none;
 }
 .drag-bar {
   width: 36rem;
@@ -504,7 +778,7 @@ const resetUI = () => {
   flex-shrink: 0;
 }
 .panel-title {
-  font-size: 18rem;
+  font-size: var(--fs-title);
   font-weight: 600;
   color: var(--text-color);
   letter-spacing: -0.2rem;
@@ -555,22 +829,23 @@ const resetUI = () => {
   margin-bottom: 0;
 }
 .section-title {
-  font-size: 12rem;
+  font-size: var(--fs-body);
   font-weight: 600;
   color: var(--text-color);
-  opacity: 0.38;
+  opacity: var(--text-opacity-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5rem;
   margin-bottom: 12rem;
   padding-left: 2rem;
 }
 
-/* ---- 单条设置项 ---- */
+/* ---- 单条设置项（Grid 两列：左标签 + 右控件）---- */
 .setting-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  padding: 12rem 14rem;
+  gap: 8rem 24rem;
+  padding: 14rem 16rem;
   border-radius: 10rem;
   background-color: rgba(255, 255, 255, 0.04);
   margin-bottom: 6rem;
@@ -580,26 +855,90 @@ const resetUI = () => {
   background-color: rgba(255, 255, 255, 0.07);
 }
 
-.setting-label {
-  font-size: 14rem;
-  color: var(--text-color);
+/* 有辅助文字时，左列顶部对齐 */
+.setting-item.has-hint {
+  align-items: start;
+}
+
+/* 按钮项占满宽度（单列） */
+.setting-item.setting-item-full {
+  display: flex;
+}
+
+/* ---- 左侧区域（标签 + 提示）---- */
+.setting-left {
+  display: flex;
+  flex-direction: column;
+  gap: 3rem;
+  min-width: 0;
+}
+
+/* ---- 右侧区域（控件容器）---- */
+.setting-right {
+  display: flex;
+  align-items: center;
+  gap: 10rem;
   flex-shrink: 0;
 }
-.setting-value {
-  font-size: 13rem;
-  color: var(--text-color);
-  opacity: 0.5;
-  min-width: 40rem;
-  text-align: right;
-  flex-shrink: 0;
+
+/* 滑块类右侧——纵向排列（滑块行 + 范围标签） */
+.setting-right.setting-right-slider {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4rem;
 }
-.setting-control {
+
+/* 滑块 + 值 同行 */
+.slider-value-row {
   display: flex;
   align-items: center;
   gap: 10rem;
 }
 
-/* ---- 背景颜色控制区（预设 + 颜色选择器） ---- */
+/* ---- 文字样式 ---- */
+.setting-label {
+  font-size: var(--fs-body);
+  color: var(--text-color);
+}
+
+.setting-value {
+  font-size: var(--fs-secondary);
+  color: var(--text-color);
+  opacity: var(--text-opacity-secondary);
+  min-width: 40rem;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.setting-hint {
+  font-size: var(--fs-secondary);
+  color: var(--text-color);
+  opacity: var(--text-opacity-secondary);
+  line-height: 1.5;
+}
+
+/* 持久错误提示（恒显示，不自动消失） */
+.setting-error {
+  font-size: var(--fs-secondary);
+  color: #ff3b30;
+  line-height: 1.4;
+}
+
+/* ---- 滑块两端文字提示 ---- */
+.setting-range-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--fs-secondary);
+  color: var(--text-color);
+  opacity: var(--text-opacity-secondary);
+  padding: 0 2rem;
+}
+.range-label-start,
+.range-label-end {
+  user-select: none;
+}
+
+/* ---- 背景颜色控制区（预设 + 颜色选择器）---- */
 .bg-color-control {
   display: flex;
   align-items: center;
@@ -650,5 +989,22 @@ const resetUI = () => {
   border-radius: 6rem;
 }
 
-/* ---- 滑动条（已由 AppSlider 组件接管） ---- */
+/* ---- 响应式：窗口很窄时堆叠为单列 ---- */
+@media (max-width: 380px) {
+  .setting-item {
+    grid-template-columns: 1fr;
+    gap: 8rem;
+  }
+  .setting-item.has-hint {
+    align-items: stretch;
+  }
+  .setting-right {
+    justify-self: end;
+  }
+  .setting-right.setting-right-slider {
+    justify-self: stretch;
+  }
+}
+
+/* ---- 滑动条（已由 AppSlider 组件接管）---- */
 </style>
