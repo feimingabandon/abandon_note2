@@ -360,6 +360,10 @@ function createTriggerWindow(side) {
   triggerWin.setVisibleOnAllWorkspaces(true)
   // 弹出菜单级别置顶，确保全屏应用覆盖时触发窗口仍在其上方
   triggerWin.setAlwaysOnTop(true, 'pop-up-menu')
+
+  // 允许鼠标事件穿透触发窗口，避免阻挡下层 UI 的点击操作
+  // forward: true 确保 mouseenter 仍能正常触发恢复动画
+  triggerWin.setIgnoreMouseEvents(true, { forward: true })
 }
 
 /**
@@ -486,6 +490,8 @@ function toggleWindow() {
     hideToTray()
   } else {
     mainWindow.show()
+    // 从托盘恢复后重新检测贴边（hideToTray 中的 resetDockState 清除了 dockSide）
+    dockSide = detectSide()
   }
 }
 

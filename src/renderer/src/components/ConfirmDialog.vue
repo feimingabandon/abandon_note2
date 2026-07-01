@@ -149,9 +149,8 @@ onBeforeUnmount(() => {
 /* ---- 描述文字 ---- */
 .confirm-message {
   font-size: var(--fs-secondary);
-  font-weight: 400;
-  color: var(--text-color);
-  opacity: var(--text-opacity-secondary);
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text-color) 70%, transparent);
   line-height: 1.45;
   margin-bottom: 22rem;
 }

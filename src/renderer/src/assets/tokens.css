@@ -5,20 +5,31 @@
  * 使用方：src/renderer/src/main.js 导入
  * ============================================================ */
 
-/* ---- 引入 OppoSans WebFont（保留作为回退）---- */
-@import '@zf-web-font/opposans/style.css';
+/* ---- OPPOSans 统一字体族（同一 font-family 名下注册多字重）----
+ * font-weight: 500 → Medium    font-weight: 600/700 → Bold */
+@font-face {
+  font-family: 'OPPOSans';
+  src: url('@zf-web-font/opposans/OPPOSans-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
 
-/* ---- 引入 Apple PingFang SC（苹方简体中文，苹果系统字体）---- */
-@import 'font-pingfang-sc/index.css';
+@font-face {
+  font-family: 'OPPOSans';
+  src: url('@zf-web-font/opposans/OPPOSans-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
 
 /* ---- CSS Reset ---- */
-/* 统一所有元素的盒模型为 border-box，清除默认 margin 和 font-weight */
+/* 统一所有元素的盒模型为 border-box，清除默认 margin */
 *,
 *::before,
 *::after {
   box-sizing: border-box;
   margin: 0;
-  font-weight: normal;
 }
 
 /* macOS 风格自动隐现滚动条 —— 纤细、半透明、滚动时淡入、停止后淡出
@@ -69,8 +80,8 @@ html {
 
 /* ---- 全局 CSS 自定义属性（Design Tokens） ---- */
 :root {
-  --font-size-base: 18rem; /* 正文基准字号，用户可调（14~20），所有字号按比例跟随 */
-  --font-family-text: 'PingFangSC-Regular', 'OPPOSans Medium', 'Segoe UI', 'Microsoft YaHei', sans-serif; /* 正文字体族：苹果 PingFang SC Regular（中文），OPPOSans/Segoe UI 回退 */
+  --font-size-base: 20rem; /* 正文基准字号，用户可调（14~20），所有字号按比例跟随 */
+  --font-family-text: 'OPPOSans', 'Segoe UI', 'Microsoft YaHei', sans-serif; /* OPPOSans 为主字体，Segoe UI / 微软雅黑为回退 */
   --text-color: #000000; /* 全局文字颜色 */
   --text-opacity-secondary: 0.7; /* 辅助文字统一透明度（0~1），通过叠加主文字色实现层级区分 */
 
@@ -92,13 +103,13 @@ html {
 body {
   font-family: var(--font-family-text), sans-serif; /* 使用正文字体变量 */
   font-size: var(--fs-body); /* 全局正文默认字号 */
+  font-weight: 500; /* OPPOSans Medium（正文基准字重） */
   color: var(--text-color); /* 使用全局文字颜色 */
   background: transparent; /* 透明背景，配合 BrowserWindow transparent:true */
   overflow: hidden; /* 隐藏溢出内容，避免出现不必要的滚动条 */
   user-select: none; /* 禁止用户选择文字（桌面应用风格） */
 
-  /* 字体平滑优化 */
-  -webkit-font-smoothing: antialiased; /* macOS: 统一灰度抗锯齿，避免默认 subpixel 导致字重偏粗 */
+  /* 字体平滑优化 —— macOS 用灰度抗锯齿，Windows 保持默认 ClearType 子像素渲染 */
   -moz-osx-font-smoothing: grayscale; /* Firefox macOS: 灰度抗锯齿 */
   text-rendering: optimizeLegibility; /* 优先保证字形清晰度（适合正文大小文字） */
 }

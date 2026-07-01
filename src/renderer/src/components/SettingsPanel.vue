@@ -631,7 +631,7 @@ const resetUI = () => {
                   :presets="fontSizePresets"
                   :min="12"
                   :max="50"
-                  width="88rem"
+                  width="100rem"
                 />
               </div>
             </div>
@@ -1053,7 +1053,6 @@ const resetUI = () => {
   font-size: var(--fs-body);
   font-weight: 600;
   color: var(--text-color);
-  opacity: var(--text-opacity-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5rem;
   margin-bottom: 12rem;
@@ -1125,8 +1124,8 @@ const resetUI = () => {
 
 .setting-value {
   font-size: var(--fs-secondary);
-  color: var(--text-color);
-  opacity: var(--text-opacity-secondary);
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text-color) 70%, transparent);
   min-width: 40rem;
   text-align: right;
   flex-shrink: 0;
@@ -1134,8 +1133,8 @@ const resetUI = () => {
 
 .setting-hint {
   font-size: var(--fs-secondary);
-  color: var(--text-color);
-  opacity: var(--text-opacity-secondary);
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text-color) 70%, transparent);
   line-height: 1.5;
 }
 
@@ -1159,8 +1158,8 @@ const resetUI = () => {
   display: flex;
   justify-content: space-between;
   font-size: var(--fs-secondary);
-  color: var(--text-color);
-  opacity: var(--text-opacity-secondary);
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text-color) 70%, transparent);
   padding: 0 2rem;
 }
 .range-label-start,
@@ -1198,7 +1197,7 @@ const resetUI = () => {
   flex-direction: column;
 }
 .color-hex-input {
-  width: 88rem;
+  width: 100rem;
   padding: 5rem 8rem;
   border: 1rem solid color-mix(in srgb, var(--text-color) 15%, transparent);
   border-radius: 6rem;
@@ -1207,7 +1206,7 @@ const resetUI = () => {
   font-size: var(--fs-secondary);
   font-family: inherit;
   font-weight: 500;
-  text-align: center;
+  text-align: left;
   outline: none;
   transition: border-color 150ms ease;
 }

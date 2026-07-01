@@ -259,7 +259,7 @@ onBeforeUnmount(() => {
   font-size: var(--fs-secondary);
   font-family: inherit;
   font-weight: 500;
-  text-align: center;
+  text-align: left;
 }
 .fsi-input::selection {
   background: rgba(0, 113, 227, 0.25);
