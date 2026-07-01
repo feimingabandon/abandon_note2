@@ -101,7 +101,6 @@ body {
   -webkit-font-smoothing: antialiased; /* macOS: 统一灰度抗锯齿，避免默认 subpixel 导致字重偏粗 */
   -moz-osx-font-smoothing: grayscale; /* Firefox macOS: 灰度抗锯齿 */
   text-rendering: optimizeLegibility; /* 优先保证字形清晰度（适合正文大小文字） */
-  font-smooth: always; /* 非标准属性，部分引擎用于强制抗锯齿 */
 }
 
 /* ---- 玻璃态背景容器 ----

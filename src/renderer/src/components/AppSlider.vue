@@ -9,11 +9,12 @@
  *   modelValue — 当前值（v-model）
  *   min / max  — 取值范围
  *   step       — 步长
- *   thumbSize  — 圆点直径（同时决定轨道高度）
- *   width      — 轨道宽度
+ *   thumbSize  — 圆点直径（同时决定轨道高度，默认 20rem，与 AppToggle 对齐）
  *   trackColor — 已走过颜色（默认蓝）
  *   bgColor    — 未走过颜色
  *   disabled   — 是否禁用
+ *
+ * 宽度自动占满父容器（width: 100%），无需手动指定。
  *
  * Events:
  *   update:modelValue — v-model 双向绑定，拖动中实时触发
@@ -26,8 +27,7 @@ const props = defineProps({
   min: { type: Number, default: 0 },
   max: { type: Number, default: 100 },
   step: { type: Number, default: 1 },
-  thumbSize: { type: Number, default: 14 },
-  width: { type: Number, default: 120 },
+  thumbSize: { type: Number, default: 20 },
   trackColor: { type: String, default: '#0071e3' },
   bgColor: { type: String, default: 'rgba(255, 255, 255, 0.12)' },
   disabled: { type: Boolean, default: false },
@@ -49,17 +49,17 @@ const progress = computed(() => {
   return (props.modelValue - props.min) / (props.max - props.min)
 })
 
-/** 有效轨道长度（去掉圆点半圆占位），仅用于渲染 fillW */
-const trackLength = computed(() => props.width - props.thumbSize)
+/** 白色圆点位置：进度百分比 + 半圆偏移（calc 混合单位支持任意宽度） */
+const thumbLeft = computed(() => `calc(${progress.value * 100}% - ${props.thumbSize / 2}rem)`)
 
-/** 蓝色填充宽度：半圆起点 + 进度 × 有效长度 */
+/** 蓝色填充宽度：progress=0 时归零，>0 时覆盖到圆点中心 + 半圆收尾 */
 const fillW = computed(() => {
-  return (props.thumbSize / 2) + progress.value * trackLength.value
+  if (progress.value <= 0) return '0'
+  return `calc(${progress.value * 100}% + ${props.thumbSize / 2}rem)`
 })
 
 const cssVars = computed(() => ({
   '--s-h': props.thumbSize + 'rem',
-  '--s-w': props.width + 'rem',
   '--s-r': (props.thumbSize / 2) + 'rem',
   '--s-track': props.trackColor,
   '--s-bg': props.bgColor,
@@ -67,21 +67,14 @@ const cssVars = computed(() => ({
 
 /**
  * 根据 track 内像素坐标计算对应值（已步长对齐）。
- * 使用 rect.width 做像素级精确换算，避免 rem/px 单位混算。
+ * 使用 getBoundingClientRect 做像素级精确换算，支持任意宽度。
  */
 function posToValue(clientX) {
   if (!trackRef.value) return props.modelValue
   const rect = trackRef.value.getBoundingClientRect()
-  // 将 rem 尺寸换算为像素：pxPerRem = 元素实际像素宽 / props.width(rem)
-  const pxPerRem = rect.width / props.width
-  const thumbHalfPx = (props.thumbSize / 2) * pxPerRem
-  const trackLenPx = trackLength.value * pxPerRem
-
   let x = clientX - rect.left
-  // 限制在轨道有效范围内（考虑圆点半边留白）
-  x = Math.max(thumbHalfPx, Math.min(x, rect.width - thumbHalfPx))
-  const t = (x - thumbHalfPx) / trackLenPx
-  const raw = props.min + Math.max(0, Math.min(1, t)) * (props.max - props.min)
+  const t = Math.max(0, Math.min(1, x / rect.width))
+  const raw = props.min + t * (props.max - props.min)
   const snapped = Math.round(raw / props.step) * props.step
   return Math.min(props.max, Math.max(props.min, snapped))
 }
@@ -146,20 +139,21 @@ function onUp() {
     <!-- 轨道背景 -->
     <div class="slider-bg" />
     <!-- 蓝色填充 -->
-    <div class="slider-fill" :style="{ width: fillW + 'rem' }" />
+    <div class="slider-fill" :style="{ width: fillW }" />
     <!-- 白色圆点 -->
-    <div class="slider-thumb" :style="{ left: (fillW - props.thumbSize / 2) + 'rem' }" />
+    <div class="slider-thumb" :style="{ left: thumbLeft }" />
   </div>
 </template>
 
 <style scoped>
 .slider-root {
   position: relative;
-  width: var(--s-w);
+  width: 100%;
   height: var(--s-h);
   cursor: pointer;
   touch-action: none;
   flex-shrink: 0;
+  overflow: hidden;
 }
 .slider-root.disabled {
   opacity: 0.35;

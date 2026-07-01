@@ -13,7 +13,7 @@ import * as Electron from 'electron'
 const { app, shell, BrowserWindow, ipcMain, screen, Tray, Menu } = Electron
 
 import { join } from 'path'
-import { electronApp, optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
+import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
 import icon from '../../resources/icon.png?asset' // 应用图标（Vite asset 导入）
 import {
   initDatabase,
@@ -119,6 +119,7 @@ function createWindow() {
     transparent: true,
     backgroundColor: '#00000000',
     autoHideMenuBar: true,
+    skipTaskbar: true,
     ...(process.platform === 'darwin' ? { vibrancy: 'under-window' } : {}),
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
@@ -461,14 +462,39 @@ function applyAlwaysOnTop() {
 }
 
 // ============================================================
+// 窗口切换（托盘点击）
+// ============================================================
+
+/**
+ * 托盘点击统一切换逻辑：
+ * - 贴边隐藏 → 滑出（doShow）
+ * - 贴边可见 → 滑入（doHide）
+ * - 非贴边   → 显示/隐藏到托盘
+ */
+function toggleWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+
+  if (isDockHidden) {
+    doShow()
+    return
+  }
+  if (dockSide) {
+    doHide()
+    return
+  }
+  if (mainWindow.isVisible()) {
+    hideToTray()
+  } else {
+    mainWindow.show()
+  }
+}
+
+// ============================================================
 // 应用就绪后的初始化逻辑
 // ============================================================
 app.whenReady().then(() => {
   // 初始化数据库连接
   initDatabase()
-
-  // 设置 Windows 任务栏的应用程序用户模型 ID
-  electronApp.setAppUserModelId('com.electron')
 
   // 监听新窗口创建事件，自动注册快捷键优化器
   app.on('browser-window-created', (_, window) => {
@@ -647,12 +673,19 @@ app.whenReady().then(() => {
   // 初始化置顶状态（必须在 createWindow 之后）
   applyAlwaysOnTop()
 
-  // 窗口被显示或获得焦点时，若贴边隐藏则拉出
+  // ---- 任务栏 & 托盘事件 ----
+
+  // show / focus：贴边隐藏时滑出
   mainWindow.on('show', () => {
     if (isDockHidden) doShow()
   })
   mainWindow.on('focus', () => {
     if (isDockHidden) doShow()
+  })
+
+  // minimize：将最小化转为隐藏到托盘，与关闭按钮行为一致
+  mainWindow.on('minimize', () => {
+    hideToTray()
   })
 
   // 【重置数据库】
@@ -754,21 +787,9 @@ app.whenReady().then(() => {
   tray = new Tray(icon)
   tray.setToolTip('便签')
 
-  // 左键点击：仅显示窗口 / 拉出贴边窗口（不隐藏，不切换）
+  // 左键点击：切换（显示/隐藏 ↔ 滑出/滑入）
   tray.on('click', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    // 贴边隐藏 → 拉出
-    if (isDockHidden) {
-      doShow()
-      return
-    }
-    // 已可见 → 只聚焦，不做其他操作
-    if (mainWindow.isVisible()) {
-      mainWindow.focus()
-      return
-    }
-    // 隐藏状态 → 显示
-    mainWindow.show()
+    toggleWindow()
   })
 
   // 右键菜单

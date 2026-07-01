@@ -17,6 +17,7 @@
  */
 
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { useMessage } from '../composables/useMessage.js'
 
 const props = defineProps({
   modelValue: { type: Number, default: 16 },
@@ -27,10 +28,11 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:modelValue'])
+const { showMessage } = useMessage()
 
 // ============ State ============
 const open = ref(false)
-const warning = ref('')
+const hasWarning = ref(false)
 const wrapperRef = ref(null)
 const inputRef = ref(null)
 const inputText = ref(String(props.modelValue))
@@ -44,20 +46,21 @@ watch(() => props.modelValue, (v) => {
 // ============ Methods ============
 function onInput(e) {
   inputText.value = e.target.value
-  // 用户开始编辑时清除之前的警告
-  if (warning.value) {
-    warning.value = ''
+  // 用户开始编辑时清除之前的警告边框
+  if (hasWarning.value) {
+    hasWarning.value = false
     if (warningTimer) { clearTimeout(warningTimer); warningTimer = null }
   }
 }
 
 function showWarning(text) {
-  warning.value = text
+  showMessage('warning', text)
+  hasWarning.value = true
   if (warningTimer) clearTimeout(warningTimer)
   warningTimer = setTimeout(() => {
-    warning.value = ''
+    hasWarning.value = false
     warningTimer = null
-  }, 2500)
+  }, 3000)
 }
 
 function commit() {
@@ -173,46 +176,12 @@ onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick, true)
   if (warningTimer) clearTimeout(warningTimer)
 })
-
-// ============ 警告动画 ============
-function onWarnBeforeEnter(el) {
-  el.style.height = '0'
-  el.style.opacity = '0'
-}
-function onWarnEnter(el, done) {
-  const h = el.scrollHeight
-  el.animate(
-    [
-      { height: '0px', opacity: 0 },
-      { height: h + 'px', opacity: 1, offset: 0.6 },
-      { height: 'auto', opacity: 1 }
-    ],
-    { duration: 280, easing: 'cubic-bezier(0.2, 0, 0, 1)', fill: 'forwards' }
-  ).onfinish = () => {
-    el.style.height = 'auto'
-    el.style.opacity = '1'
-    done()
-  }
-}
-function onWarnBeforeLeave(el) {
-  el.style.height = el.scrollHeight + 'px'
-  el.style.opacity = '1'
-}
-function onWarnLeave(el, done) {
-  el.animate(
-    [
-      { height: el.scrollHeight + 'px', opacity: 1 },
-      { height: '0px', opacity: 0 }
-    ],
-    { duration: 180, easing: 'cubic-bezier(0.42, 0, 1, 1)', fill: 'forwards' }
-  ).onfinish = done
-}
 </script>
 
 <template>
   <div ref="wrapperRef" class="fsi-wrapper" :style="width ? { width: typeof width === 'number' ? width + 'px' : width } : {}">
     <!-- 触发器：输入框 + 下拉箭头 -->
-    <div class="fsi-trigger" :class="{ 'is-open': open, 'has-warning': warning }">
+    <div class="fsi-trigger" :class="{ 'is-open': open, 'has-warning': hasWarning }">
       <input
         ref="inputRef"
         class="fsi-input"
@@ -252,16 +221,6 @@ function onWarnLeave(el, done) {
         </div>
       </div>
     </Transition>
-
-    <!-- 警告提示（高度动画展开，不突兀） -->
-    <Transition
-      @before-enter="onWarnBeforeEnter"
-      @enter="onWarnEnter"
-      @before-leave="onWarnBeforeLeave"
-      @leave="onWarnLeave"
-    >
-      <span v-if="warning" class="fsi-warning">{{ warning }}</span>
-    </Transition>
   </div>
 </template>
 
@@ -285,7 +244,7 @@ function onWarnLeave(el, done) {
   transition: border-color 150ms ease;
 }
 .fsi-trigger.has-warning {
-  border-color: #ff3b30;
+  border-color: rgba(255, 59, 48, 0.4);
 }
 
 /* ============ 输入框 ============ */
@@ -297,24 +256,13 @@ function onWarnLeave(el, done) {
   outline: none;
   background: transparent;
   color: var(--text-color);
-  font-size: var(--fs-body);
+  font-size: var(--fs-secondary);
   font-family: inherit;
   font-weight: 500;
   text-align: center;
 }
 .fsi-input::selection {
   background: rgba(0, 113, 227, 0.25);
-}
-
-/* ============ 警告文字 ============ */
-.fsi-warning {
-  display: block;
-  padding-top: 4rem;
-  font-size: var(--fs-secondary);
-  color: #ff3b30;
-  line-height: 1.3;
-  white-space: nowrap;
-  overflow: hidden;
 }
 
 /* ============ 箭头按钮 ============ */

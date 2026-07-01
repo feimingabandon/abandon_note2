@@ -42,7 +42,8 @@ const emit = defineEmits(['update:modelValue'])
   transition: background-color 200ms ease;
   flex-shrink: 0;
   outline: none;
-  line-height: 0;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 .switch.on {
@@ -57,18 +58,20 @@ const emit = defineEmits(['update:modelValue'])
 
 .switch-thumb {
   position: absolute;
-  top: 2rem;
+  top: 50%;
   left: 2rem;
   display: block;
   width: 20rem;
   height: 20rem;
   border-radius: 50%;
-  background: #ffffff;
+  background: transparent;
+  border: 3rem solid #ffffff;
   box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.2);
   transition: transform 200ms ease;
+  transform: translateY(-50%);
 }
 
 .switch.on .switch-thumb {
-  transform: translateX(20rem);
+  transform: translate(20rem, -50%);
 }
 </style>
