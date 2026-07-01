@@ -49,13 +49,20 @@ const progress = computed(() => {
   return (props.modelValue - props.min) / (props.max - props.min)
 })
 
-/** 白色圆点位置：进度百分比 + 半圆偏移（calc 混合单位支持任意宽度） */
-const thumbLeft = computed(() => `calc(${progress.value * 100}% - ${props.thumbSize / 2}rem)`)
+/**
+ * 白色圆点位置：0 时圆点与左侧半圆帽重合（left=0），100 时与右侧半圆帽重合（left=100%-thumbSize）
+ */
+const thumbLeft = computed(() =>
+  `calc(${progress.value} * (100% - ${props.thumbSize}rem))`
+)
 
-/** 蓝色填充宽度：progress=0 时归零，>0 时覆盖到圆点中心 + 半圆收尾 */
+/**
+ * 蓝色填充宽度：0 时归零；>0 时覆盖到圆点中心 + 半圆收尾
+ * 用与 thumbLeft 相同的线性映射，再加半个圆点覆盖其左半
+ */
 const fillW = computed(() => {
   if (progress.value <= 0) return '0'
-  return `calc(${progress.value * 100}% + ${props.thumbSize / 2}rem)`
+  return `calc(${progress.value} * (100% - ${props.thumbSize}rem) + ${props.thumbSize}rem)`
 })
 
 const cssVars = computed(() => ({
@@ -67,13 +74,19 @@ const cssVars = computed(() => ({
 
 /**
  * 根据 track 内像素坐标计算对应值（已步长对齐）。
- * 使用 getBoundingClientRect 做像素级精确换算，支持任意宽度。
+ * 圆点中心对准点击位置：clickX → 值映射与 thumbLeft 同尺度，扣除半径偏移消除跳变。
  */
 function posToValue(clientX) {
   if (!trackRef.value) return props.modelValue
   const rect = trackRef.value.getBoundingClientRect()
-  let x = clientX - rect.left
-  const t = Math.max(0, Math.min(1, x / rect.width))
+  // 圆点直径（轨道等高），px
+  const thumbPx = trackRef.value.offsetHeight
+  // 圆点活动范围 = 轨道宽 - 圆点直径
+  const rangePx = rect.width - thumbPx
+  if (rangePx <= 0) return props.modelValue
+  // 圆点中心 x 坐标 → 圆点左边缘 x = clientX - rect.left - thumbPx/2
+  const thumbLeftX = clientX - rect.left - thumbPx / 2
+  const t = Math.max(0, Math.min(1, thumbLeftX / rangePx))
   const raw = props.min + t * (props.max - props.min)
   const snapped = Math.round(raw / props.step) * props.step
   return Math.min(props.max, Math.max(props.min, snapped))
