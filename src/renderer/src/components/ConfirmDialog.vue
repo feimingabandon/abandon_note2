@@ -150,7 +150,7 @@ onBeforeUnmount(() => {
 .confirm-message {
   font-size: var(--fs-secondary);
   font-weight: 500;
-  color: color-mix(in srgb, var(--text-color) 70%, transparent);
+  color: var(--text-color-secondary);
   line-height: 1.45;
   margin-bottom: 22rem;
 }

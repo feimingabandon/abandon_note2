@@ -533,9 +533,14 @@ const onConfirmResetDatabase = async () => {
   }
 }
 
-/** 确认恢复默认设置 —— 重置 UI 并将默认值持久化到数据库 */
-const onConfirmResetUI = () => {
+/** 确认恢复默认设置 —— 重置 UI + 窗口几何，并将默认值持久化到数据库 */
+const onConfirmResetUI = async () => {
   resetUI()
+  try {
+    await window.api.resetWindowGeometry()
+  } catch (e) {
+    console.warn('[SettingsPanel] 重置窗口几何失败:', e)
+  }
   showMessage('success', '已恢复默认设置')
 }
 
@@ -545,7 +550,7 @@ const resetUI = () => {
   winOpacity.value = 0.2
   bgBlur.value = 5
   bgBorder.value = true
-  fontSizeBase.value = 18
+  fontSizeBase.value = 20
   textColor.value = '#000000'
   blurEnabled.value = true
   blurRadius.value = 10
@@ -631,7 +636,7 @@ const resetUI = () => {
                   :presets="fontSizePresets"
                   :min="12"
                   :max="50"
-                  width="100rem"
+                  width="90rem"
                 />
               </div>
             </div>
@@ -656,6 +661,7 @@ const resetUI = () => {
                   <input
                     type="text"
                     class="color-hex-input"
+                    spellcheck="false"
                     :class="{ 'has-error': textColorInputError }"
                     :value="textColorInput"
                     placeholder="#000000"
@@ -664,9 +670,6 @@ const resetUI = () => {
                     @blur="commitTextColor"
                     @keydown.enter="commitTextColor"
                   />
-                  <Transition name="warn-fade">
-                    <span v-if="textColorInputError" class="color-hex-error">{{ textColorInputError }}</span>
-                  </Transition>
                 </div>
               </div>
             </div>
@@ -702,6 +705,7 @@ const resetUI = () => {
                   <input
                     type="text"
                     class="color-hex-input"
+                    spellcheck="false"
                     :class="{ 'has-error': bgColorInputError }"
                     :value="bgColorInput"
                     placeholder="#FFFFFF"
@@ -710,9 +714,6 @@ const resetUI = () => {
                     @blur="commitBgColor"
                     @keydown.enter="commitBgColor"
                   />
-                  <Transition name="warn-fade">
-                    <span v-if="bgColorInputError" class="color-hex-error">{{ bgColorInputError }}</span>
-                  </Transition>
                 </div>
               </div>
             </div>
@@ -806,6 +807,7 @@ const resetUI = () => {
                     <input
                       type="text"
                       class="color-hex-input"
+                      spellcheck="false"
                       :class="{ 'has-error': blurTintInputError }"
                       :value="blurTintInput"
                       placeholder="#FFFFFF"
@@ -815,9 +817,6 @@ const resetUI = () => {
                       @blur="commitBlurTint"
                       @keydown.enter="commitBlurTint"
                     />
-                    <Transition name="warn-fade">
-                      <span v-if="blurTintInputError" class="color-hex-error">{{ blurTintInputError }}</span>
-                    </Transition>
                   </div>
                 </div>
                 <span class="setting-hint color-hint">选中的颜色会像染色玻璃一样盖在模糊层上。默认白色 ≈ 无色叠加（推荐）</span>
@@ -905,7 +904,7 @@ const resetUI = () => {
     <ConfirmDialog
       v-model:visible="showResetUIDialog"
       title="恢复默认设置"
-      message="将所有样式（透明度、模糊、颜色、字体缩放等）恢复为默认值并保存到数据库。"
+      message="将所有样式（透明度、模糊、颜色、字体缩放等）恢复为默认值，并将窗口宽高重置为默认（屏幕 25% × 90%），同时保存到数据库。"
       confirm-text="恢复"
       cancel-text="取消"
       variant="default"
@@ -1117,7 +1116,7 @@ const resetUI = () => {
 .setting-value {
   font-size: var(--fs-secondary);
   font-weight: 500;
-  color: color-mix(in srgb, var(--text-color) 70%, transparent);
+  color: var(--text-color-secondary);
   min-width: 40rem;
   text-align: right;
   flex-shrink: 0;
@@ -1126,7 +1125,7 @@ const resetUI = () => {
 .setting-hint {
   font-size: var(--fs-secondary);
   font-weight: 500;
-  color: color-mix(in srgb, var(--text-color) 70%, transparent);
+  color: var(--text-color-secondary);
   line-height: 1.5;
 }
 
@@ -1151,7 +1150,7 @@ const resetUI = () => {
   justify-content: space-between;
   font-size: var(--fs-secondary);
   font-weight: 500;
-  color: color-mix(in srgb, var(--text-color) 70%, transparent);
+  color: var(--text-color-secondary);
   padding: 0 2rem;
 }
 .range-label-start,
@@ -1189,7 +1188,7 @@ const resetUI = () => {
   flex-direction: column;
 }
 .color-hex-input {
-  width: 100rem;
+  width: 90rem;
   padding: 5rem 8rem;
   border: 1rem solid color-mix(in srgb, var(--text-color) 15%, transparent);
   border-radius: 6rem;

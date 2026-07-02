@@ -179,3 +179,12 @@ export function getGeometry(windowName) {
     height: Number(map.height)
   }
 }
+
+/**
+ * 删除窗口几何信息（重置为默认尺寸时使用）
+ * @param {string} windowName - 窗口标识
+ */
+export function deleteGeometry(windowName) {
+  db.prepare("DELETE FROM app_settings WHERE window_name = ? AND key IN ('pos_x','pos_y','width','height')")
+    .run(windowName)
+}

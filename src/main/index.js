@@ -79,6 +79,10 @@ const SLIDE_DURATION = 200 // 滑动动画总时长（ms）
 const SLIDE_INTERVAL = 16 // 滑动动画帧间隔（ms）≈60fps
 const HIDE_DELAY = 200 // 鼠标离开后延迟隐藏（ms）
 
+/** 默认窗口尺寸比例（相对屏幕工作区），改一个地方即可全局生效 */
+const DEFAULT_WIDTH_RATIO = 0.25  // 宽度 = 屏幕工作区宽度 × 25%
+const DEFAULT_HEIGHT_RATIO = 0.9  // 高度 = 屏幕工作区高度 × 90%
+
 let dockSide = null // null | 'left' | 'right' 当前吸附方向
 let isDockHidden = false // 窗口是否处于贴边隐藏状态
 let triggerWin = null // 边缘触发窗口实例
@@ -100,9 +104,9 @@ function createWindow() {
   const screenW = display.workAreaSize.width // 可用工作区宽度（排除任务栏）
   const screenH = display.workAreaSize.height // 可用工作区高度
 
-  // 计算默认窗口尺寸：宽度为屏幕的 25%，高度为屏幕的 90%
-  const defaultW = Math.round(screenW * 0.25)
-  const defaultH = Math.round(screenH * 0.9)
+  // 计算默认窗口尺寸（比例见顶部常量）
+  const defaultW = Math.round(screenW * DEFAULT_WIDTH_RATIO)
+  const defaultH = Math.round(screenH * DEFAULT_HEIGHT_RATIO)
   // 计算上下边距，使窗口垂直居中
   const margin = Math.round((screenH - defaultH) / 2)
   const defaultX = margin // 默认 X 位置（距左边距等于上边距，视觉更协调）
@@ -727,6 +731,33 @@ app.whenReady().then(() => {
   // 【重置数据库】
   ipcMain.handle('reset-database', () => {
     resetDatabase()
+    return true
+  })
+
+  // 【重置窗口几何】仅恢复默认宽高（屏幕 25% × 90%），保留当前位置
+  ipcMain.handle('reset-window-geometry', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return false
+
+    // 保留当前位置
+    const currentBounds = mainWindow.getBounds()
+
+    // 计算默认尺寸（比例见顶部常量）
+    const display = screen.getPrimaryDisplay()
+    const screenW = display.workAreaSize.width
+    const screenH = display.workAreaSize.height
+    const defaultW = Math.round(screenW * DEFAULT_WIDTH_RATIO)
+    const defaultH = Math.round(screenH * DEFAULT_HEIGHT_RATIO)
+
+    mainWindow.setBounds({
+      x: currentBounds.x,
+      y: currentBounds.y,
+      width: defaultW,
+      height: defaultH
+    })
+
+    // 仅持久化新的宽高，不修改 x、y
+    setSetting(WINDOW_NAME, 'geometry', 'width', String(defaultW))
+    setSetting(WINDOW_NAME, 'geometry', 'height', String(defaultH))
     return true
   })
 

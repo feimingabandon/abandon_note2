@@ -62,6 +62,10 @@ const api = {
   // ---- 数据库重置 ----
   resetDatabase: () => ipcRenderer.invoke('reset-database'),
 
+  // ---- 窗口几何重置 ----
+  /** 恢复窗口为默认宽高（屏幕 25% × 90%），保留当前位置 */
+  resetWindowGeometry: () => ipcRenderer.invoke('reset-window-geometry'),
+
   // ---- 开机自启 ----
   /** 校验开机自启状态（DB 为权威，同步 OS，失败返回错误信息） */
   verifyAutoStart: () => ipcRenderer.invoke('verify-auto-start'),

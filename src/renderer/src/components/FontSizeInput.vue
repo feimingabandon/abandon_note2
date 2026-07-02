@@ -102,7 +102,6 @@ function commit() {
 
 function onFocus() {
   open.value = true
-  inputRef.value?.select()
 }
 
 function onBlur() {
