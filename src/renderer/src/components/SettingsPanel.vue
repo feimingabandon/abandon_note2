@@ -1030,16 +1030,8 @@ const resetUI = () => {
   padding: 0 20rem 0;
   margin-bottom: 32rem; /* 底部留安全区，内容不贴边 */
 
-  /* GPU 层提升：将滚动区域独立到自己的合成层，避免滚动时触发父级 backdrop-filter 重绘 */
-  will-change: transform;
-  transform: translateZ(0);
-
-  /* 阻止滚动链接 */
+  /* 阻止滚动链接：子元素滚到头不会导致父级抖动 */
   overscroll-behavior: contain;
-
-  /* 平滑滚动 */
-  scroll-behavior: smooth;
-  -webkit-overflow-scrolling: touch;
 }
 
 /* ---- 设置分区 ---- */

@@ -63,6 +63,8 @@ document.addEventListener('wheel', (e) => {
   let d = e.deltaY
   if (e.deltaMode === 1) d *= 20
   else if (e.deltaMode === 2) d *= container.clientHeight
+  // 钳制 delta 上限，避免系统鼠标设置差异导致速度突变
+  d = Math.sign(d) * Math.min(Math.abs(d), 150)
 
   st.v += d * SCALE
 

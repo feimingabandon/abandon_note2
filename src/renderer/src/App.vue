@@ -181,17 +181,7 @@ onUnmounted(() => {
   padding: 16px; /* 内边距 */
   overflow-y: auto; /* 内容超出时显示垂直滚动条 */
 
-  /* GPU 层提升：将滚动区域独立到自己的合成层，避免滚动时触发父级 backdrop-filter 重绘 */
-  will-change: transform;
-  transform: translateZ(0);
-
   /* 阻止滚动链接：子元素滚到头不会导致父级抖动 */
   overscroll-behavior: contain;
-
-  /* 平滑滚动（影响 scrollTo 等编程式滚动） */
-  scroll-behavior: smooth;
-
-  /* 让 Chromium 优先使用独立线程滚动 */
-  -webkit-overflow-scrolling: touch;
 }
 </style>
