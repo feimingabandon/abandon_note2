@@ -86,6 +86,7 @@ let cachedWorkArea = null // 缓存显示器工作区，避免隐藏后 getDispl
 let slideAnimTimer = null // 滑动动画定时器
 let hideTimer = null // 隐藏延迟定时器
 let isSliding = false // 滑动动画进行中标志
+let pendingSlideCallback = null // 动画中断时待执行的完成回调
 
 /**
  * 创建主窗口
@@ -207,8 +208,12 @@ function createWindow() {
 
   // 窗口移动/缩放时同步模糊 overlay 位置
   if (blurInitialized && process.platform === 'win32') {
-    mainWindow.on('resize', () => blurUpdateGeometry(mainWindow))
-    mainWindow.on('move', () => blurUpdateGeometry(mainWindow))
+    mainWindow.on('resize', () => {
+      try { blurUpdateGeometry(mainWindow) } catch (_) { /* DComp 会话失效时静默 */ }
+    })
+    mainWindow.on('move', () => {
+      try { blurUpdateGeometry(mainWindow) } catch (_) { /* DComp 会话失效时静默 */ }
+    })
   }
 
   // 【贴边隐藏 - 边缘检测】窗口移动时检测是否靠近屏幕左/右边缘
@@ -372,8 +377,19 @@ function createTriggerWindow(side) {
  * @param {Function} [onFinish] - 动画完成回调
  */
 function slideTo(targetX, onFinish) {
-  if (slideAnimTimer) clearInterval(slideAnimTimer)
+  // 中断前一个动画时，先执行其回调以恢复状态（如置顶级别）
+  if (slideAnimTimer) {
+    clearInterval(slideAnimTimer)
+    slideAnimTimer = null
+  }
+  if (pendingSlideCallback) {
+    const cb = pendingSlideCallback
+    pendingSlideCallback = null
+    cb()
+  }
+
   isSliding = true
+  pendingSlideCallback = onFinish || null
 
   // 记录动画起始位置和总帧数
   const fromX = mainWindow.getBounds().x
@@ -385,7 +401,11 @@ function slideTo(targetX, onFinish) {
       clearInterval(slideAnimTimer)
       slideAnimTimer = null
       isSliding = false
-      if (onFinish) onFinish()
+      if (pendingSlideCallback) {
+        const cb = pendingSlideCallback
+        pendingSlideCallback = null
+        cb()
+      }
       return
     }
 
@@ -402,7 +422,11 @@ function slideTo(targetX, onFinish) {
       clearInterval(slideAnimTimer)
       slideAnimTimer = null
       isSliding = false
-      if (onFinish) onFinish()
+      if (pendingSlideCallback) {
+        const cb = pendingSlideCallback
+        pendingSlideCallback = null
+        cb()
+      }
     }
   }, SLIDE_INTERVAL)
 }
@@ -413,10 +437,12 @@ function slideTo(targetX, onFinish) {
  */
 function doHide() {
   if (!mainWindow || mainWindow.isDestroyed() || isDockHidden || !dockSide) return
-  isDockHidden = true
+  if (isSliding) return
 
   updateWorkArea()
   if (!cachedWorkArea) return
+
+  isDockHidden = true
 
   const wa = cachedWorkArea
   const b = mainWindow.getBounds()
@@ -432,6 +458,11 @@ function doHide() {
  */
 function doShow() {
   if (!mainWindow || mainWindow.isDestroyed() || !isDockHidden) return
+  if (isSliding) return
+
+  updateWorkArea()
+  if (!cachedWorkArea) return
+
   isDockHidden = false
 
   // 立即销毁触发窗口，防止阻挡主窗口
@@ -439,9 +470,6 @@ function doShow() {
     triggerWin.destroy()
     triggerWin = null
   }
-
-  updateWorkArea()
-  if (!cachedWorkArea) return
 
   const wa = cachedWorkArea
   const b = mainWindow.getBounds()
@@ -681,16 +709,18 @@ app.whenReady().then(() => {
 
   // ---- 任务栏 & 托盘事件 ----
 
-  // show / focus：贴边隐藏时滑出
+  // show：贴边隐藏时滑出（安全网，正常路径下 show 不会在贴边隐藏时触发）
   mainWindow.on('show', () => {
     if (isDockHidden) doShow()
   })
-  mainWindow.on('focus', () => {
-    if (isDockHidden) doShow()
-  })
 
-  // minimize：将最小化转为隐藏到托盘，与关闭按钮行为一致
+  // minimize：贴边状态下取消最小化并滑出隐藏，非贴边场景正常隐藏到托盘
   mainWindow.on('minimize', () => {
+    if (dockSide && !isDockHidden && !isSliding && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.restore()
+      setTimeout(() => doHide(), 0)
+      return
+    }
     hideToTray()
   })
 
