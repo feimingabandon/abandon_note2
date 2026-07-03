@@ -82,6 +82,7 @@ const toggleLock = async () => {
   -webkit-app-region: drag; /* 允许通过此区域拖拽移动窗口 */
   flex-shrink: 0; /* 禁止在 flex 布局中被压缩 */
   gap: 8px; /* 子元素间距 */
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08); /* 标题栏底部分割线 */
 }
 
 /* 红绿灯按钮容器 */
@@ -93,8 +94,8 @@ const toggleLock = async () => {
 
 /* 单个红绿灯按钮的基础样式 */
 .light {
-  width: 24rem; /* 按钮直径（响应式 rem 单位） */
-  height: 24rem;
+  width: 18rem; /* 按钮直径（响应式 rem 单位） */
+  height: 18rem;
   border-radius: 50%; /* 圆形 */
   border: none;
   padding: 0;
@@ -107,8 +108,8 @@ const toggleLock = async () => {
 
 /* 按钮内的图标 */
 .light-icon {
-  width: 24rem; /* 图标大小 */
-  height: 24rem;
+  width: 14rem; /* 图标大小 */
+  height: 14rem;
   opacity: 0; /* 默认隐藏图标 */
   transition: opacity 120ms ease;
   display: block; /* 确保正确居中 */

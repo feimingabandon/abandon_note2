@@ -550,7 +550,7 @@ const resetUI = () => {
   winOpacity.value = 0.2
   bgBlur.value = 5
   bgBorder.value = true
-  fontSizeBase.value = 20
+  fontSizeBase.value = 18
   textColor.value = '#000000'
   blurEnabled.value = true
   blurRadius.value = 10

@@ -169,8 +169,8 @@ const toggleAlwaysOnTop = async () => {
 
 /* 标题栏按钮通用样式 */
 .titlebar-btn {
-  width: 24rem; /* 与红绿灯按钮大小一致 */
-  height: 24rem;
+  width: 18rem; /* 与红绿灯按钮大小一致 */
+  height: 18rem;
   border: none;
   border-radius: 50%; /* 圆形，与红绿灯按钮一致 */
   padding: 0;
@@ -184,8 +184,8 @@ const toggleAlwaysOnTop = async () => {
 
 /* 按钮图标 - 默认隐藏 */
 .btn-icon {
-  width: 18rem; /* 图标大小 */
-  height: 18rem;
+  width: 14rem; /* 图标大小 */
+  height: 14rem;
   opacity: 0; /* 默认隐藏 */
   transition: opacity 120ms ease;
   display: block; /* 确保正确居中 */
