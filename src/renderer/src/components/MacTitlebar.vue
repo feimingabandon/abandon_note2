@@ -74,11 +74,12 @@ const toggleLock = async () => {
 </template>
 
 <style scoped>
-/* 标题栏容器：水平排列，支持拖拽移动窗口 */
+/* 标题栏容器：flex 响应式三栏布局，支持拖拽移动窗口
+ * 左（红绿灯）· 中（标题 flex:1）· 右（操作按钮），随窗口宽度自适应 */
 .mac-titlebar {
   display: flex;
   align-items: center; /* 垂直居中对齐 */
-  padding: 12px 16px; /* 内边距 */
+  padding: 14px 16px; /* 内边距，总高 14+18+14+1(border)=47rem ≈ 48px Apple 导航标准 */
   -webkit-app-region: drag; /* 允许通过此区域拖拽移动窗口 */
   flex-shrink: 0; /* 禁止在 flex 布局中被压缩 */
   gap: 8px; /* 子元素间距 */
@@ -139,12 +140,13 @@ const toggleLock = async () => {
   -webkit-app-region: no-drag;
 }
 
-/* 标题文字样式 */
+/* 标题文字：正文大小、居中、flex:1 占据中间剩余空间 */
 .mac-titlebar-title {
-  font-size: var(--fs-title); /* 标题字号（响应式） */
-  font-weight: 600; /* MiSans Medium，更圆润 */
+  font-size: var(--fs-body); /* 正文字号（跟随 --font-size-base 响应式缩放） */
+  font-weight: 600; /* OPPOSans Bold，更圆润 */
   color: var(--text-color); /* 使用全局文字颜色变量 */
-  flex: 1; /* 占据中间所有剩余空间，实现左右分布布局 */
+  flex: 1; /* 占据中间所有剩余空间，左右等宽按钮组自然居中 */
+  text-align: center; /* 文字在 flex 区域内居中 */
 }
 
 /* 右侧操作按钮区域 */

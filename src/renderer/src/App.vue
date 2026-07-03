@@ -116,7 +116,7 @@ const toggleAlwaysOnTop = async () => {
     <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
     <ResizeHandles :locked="locked" />
     <!-- Mac 风格标题栏，包含红绿灯按钮和标题文字 -->
-    <MacTitlebar v-model:locked="locked">
+    <MacTitlebar v-model:locked="locked" title="列表">
       <!-- 设置和帮助按钮组 -->
       <div class="titlebar-actions-group">
         <!-- 置顶切换按钮 -->
