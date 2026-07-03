@@ -37,6 +37,7 @@ const wrapperRef = ref(null)
 const inputRef = ref(null)
 const inputText = ref(String(props.modelValue))
 let warningTimer = null
+let blurTimer = null
 
 // ============ Sync external model → input text ============
 watch(() => props.modelValue, (v) => {
@@ -101,13 +102,20 @@ function commit() {
 }
 
 function onFocus() {
+  // 清除待执行的 blur 关闭定时器，防止「blur 延迟关闭」与「focus 打开」竞态
+  if (blurTimer) { clearTimeout(blurTimer); blurTimer = null }
   open.value = true
 }
 
 function onBlur() {
   commit()
   // 延迟关闭下拉，让选项的 click 事件先触发
-  setTimeout(() => { open.value = false }, 150)
+  // 复用 blurTimer，防止多次 blur 产生多个互相竞争的定时器
+  if (blurTimer) clearTimeout(blurTimer)
+  blurTimer = setTimeout(() => {
+    blurTimer = null
+    open.value = false
+  }, 150)
 }
 
 function onKeydown(e) {
@@ -134,6 +142,8 @@ function toggle() {
   if (open.value) {
     open.value = false
   } else {
+    // 清除待执行的 blur 关闭定时器，防止先前的 blur 延迟关闭覆盖本次打开
+    if (blurTimer) { clearTimeout(blurTimer); blurTimer = null }
     open.value = true
     inputRef.value?.focus()
   }
@@ -174,6 +184,7 @@ onMounted(() => document.addEventListener('click', onDocClick, true))
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick, true)
   if (warningTimer) clearTimeout(warningTimer)
+  if (blurTimer) clearTimeout(blurTimer)
 })
 </script>
 
