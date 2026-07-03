@@ -45,6 +45,10 @@ void Blur_UpdateGeometry(int x, int y, int width, int height) {
     BlurEngine::Engine::Instance().UpdateGeometry(x, y, width, height);
 }
 
+void Blur_ReSyncOrder(void) {
+    BlurEngine::Engine::Instance().ReSyncZOrder();
+}
+
 int Blur_IsInitialized(void) {
     return BlurEngine::Engine::Instance().IsInitialized() ? 1 : 0;
 }

@@ -31,7 +31,8 @@ import {
   initialize as blurInit,
   setConfig as blurSetConfig,
   updateGeometry as blurUpdateGeometry,
-  destroy as blurDestroy
+  destroy as blurDestroy,
+  reSyncZOrder as blurReSyncZOrder
 } from './blur_bridge.js'
 
 /** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
@@ -334,7 +335,7 @@ function snapToEdge(side) {
 
 /**
  * 创建边缘触发窗口
- * 2px 宽的透明窗口，用于在主窗口隐藏后检测鼠标进入边缘
+ * 2px 宽的透明窗口，高度与主窗口一致，仅覆盖窗口实际所在的屏幕边缘区域
  */
 function createTriggerWindow(side) {
   if (triggerWin && !triggerWin.isDestroyed()) triggerWin.destroy()
@@ -342,16 +343,17 @@ function createTriggerWindow(side) {
   if (!cachedWorkArea) return
 
   const wa = cachedWorkArea
+  const b = mainWindow.getBounds()
   const bounds =
     side === 'left'
-      ? { x: wa.x, y: wa.y, width: TRIGGER_WIDTH, height: wa.height }
-      : { x: wa.x + wa.width - TRIGGER_WIDTH, y: wa.y, width: TRIGGER_WIDTH, height: wa.height }
+      ? { x: wa.x, y: b.y, width: TRIGGER_WIDTH, height: b.height }
+      : { x: wa.x + wa.width - TRIGGER_WIDTH, y: b.y, width: TRIGGER_WIDTH, height: b.height }
 
   triggerWin = new BrowserWindow({
     ...bounds,
     transparent: true,
     frame: false,
-    alwaysOnTop: true,
+    alwaysOnTop: alwaysOnTop,
     skipTaskbar: true,
     resizable: false,
     focusable: false,
@@ -362,13 +364,12 @@ function createTriggerWindow(side) {
     }
   })
 
-  // 直接在 HTML 中绑定 onmouseenter，避免 executeJavaScript 异步注入的时序风险
-  const html = `<body style="margin:0;height:100vh" onmouseenter="api.triggerEnter()">`
+  const html = `<body style="margin:0;height:100%" onmouseenter="api.triggerEnter()">`
   triggerWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {})
 
   triggerWin.setVisibleOnAllWorkspaces(true)
-  // 弹出菜单级别置顶，确保全屏应用覆盖时触发窗口仍在其上方
-  triggerWin.setAlwaysOnTop(true, 'pop-up-menu')
+  // 跟随主窗口置顶状态（置顶时提升到 pop-up-menu 覆盖全屏应用）
+  triggerWin.setAlwaysOnTop(alwaysOnTop, alwaysOnTop ? 'pop-up-menu' : undefined)
 
   // 允许鼠标事件穿透触发窗口，避免阻挡下层 UI 的点击操作
   // forward: true 确保 mouseenter 仍能正常触发恢复动画
@@ -495,6 +496,12 @@ function doShow() {
 function applyAlwaysOnTop() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.setAlwaysOnTop(alwaysOnTop, 'pop-up-menu')
+  blurReSyncZOrder()
+
+  // 同步触发窗口置顶状态（贴边隐藏时切换置顶按钮生效）
+  if (triggerWin && !triggerWin.isDestroyed()) {
+    triggerWin.setAlwaysOnTop(alwaysOnTop, alwaysOnTop ? 'pop-up-menu' : undefined)
+  }
 }
 
 // ============================================================
@@ -566,13 +573,26 @@ app.whenReady().then(() => {
       mainWindow.setMovable(!isLocked)
       mainWindow.setResizable(!isLocked)
     }
-    setSetting(WINDOW_NAME, 'system', 'lock_state', String(isLocked))
+    setSetting(WINDOW_NAME, 'system', 'lock_state', String(isLocked), '窗口锁定状态（true=锁定禁止移动缩放, false=解锁）')
     return isLocked
   })
 
   // 【窗口锁定 - 获取锁定状态】
   ipcMain.handle('get-lock-state', () => {
     return isLocked
+  })
+
+  // 【窗口置顶 - 切换】
+  ipcMain.handle('toggle-always-on-top', () => {
+    alwaysOnTop = !alwaysOnTop
+    applyAlwaysOnTop()
+    setSetting(WINDOW_NAME, 'system', 'always_on_top', String(alwaysOnTop), '窗口置顶状态（true=始终置顶, false=正常层级）')
+    return alwaysOnTop
+  })
+
+  // 【窗口置顶 - 获取状态】
+  ipcMain.handle('get-always-on-top', () => {
+    return alwaysOnTop
   })
 
   // 【缩放手柄 - 获取边界】返回当前窗口的位置和尺寸
@@ -609,8 +629,8 @@ app.whenReady().then(() => {
   })
 
   // 写入/更新设置
-  ipcMain.handle('set-setting', (_event, windowName, type, key, value) => {
-    setSetting(windowName, type, key, value)
+  ipcMain.handle('set-setting', (_event, windowName, type, key, value, remark) => {
+    setSetting(windowName, type, key, value, remark)
     return true
   })
 
@@ -681,13 +701,13 @@ app.whenReady().then(() => {
     if (config.cornerRadius !== undefined) blurConfig.cornerRadius = config.cornerRadius
 
     // 持久化到数据库
-    setSetting(WINDOW_NAME, 'system', 'blur_enabled', String(blurConfig.enabled))
-    setSetting(WINDOW_NAME, 'system', 'blur_radius', String(blurConfig.radius))
-    setSetting(WINDOW_NAME, 'system', 'blur_tint_r', String(blurConfig.tint.r))
-    setSetting(WINDOW_NAME, 'system', 'blur_tint_g', String(blurConfig.tint.g))
-    setSetting(WINDOW_NAME, 'system', 'blur_tint_b', String(blurConfig.tint.b))
-    setSetting(WINDOW_NAME, 'system', 'blur_saturation', String(blurConfig.saturation))
-    setSetting(WINDOW_NAME, 'system', 'blur_corner_radius', String(blurConfig.cornerRadius))
+    setSetting(WINDOW_NAME, 'system', 'blur_enabled', String(blurConfig.enabled), '系统级毛玻璃效果开关（true=启用, false=关闭）')
+    setSetting(WINDOW_NAME, 'system', 'blur_radius', String(blurConfig.radius), '系统模糊半径/通透度（0~100 DIP）')
+    setSetting(WINDOW_NAME, 'system', 'blur_tint_r', String(blurConfig.tint.r), '系统模糊着色-红色通道（0~255）')
+    setSetting(WINDOW_NAME, 'system', 'blur_tint_g', String(blurConfig.tint.g), '系统模糊着色-绿色通道（0~255）')
+    setSetting(WINDOW_NAME, 'system', 'blur_tint_b', String(blurConfig.tint.b), '系统模糊着色-蓝色通道（0~255）')
+    setSetting(WINDOW_NAME, 'system', 'blur_saturation', String(blurConfig.saturation), '系统模糊饱和度（0~2 浮点数，苹果风格=1.8）')
+    setSetting(WINDOW_NAME, 'system', 'blur_corner_radius', String(blurConfig.cornerRadius), '窗口圆角半径（0~30 DIP）')
 
     // 立即生效（仅 Windows 需要调用 DLL）
     if (blurInitialized && process.platform === 'win32') {
@@ -707,6 +727,10 @@ app.whenReady().then(() => {
   })
 
   createWindow()
+
+  // 从数据库恢复置顶状态（默认 true）
+  const savedAlwaysOnTop = getSetting(WINDOW_NAME, 'always_on_top')
+  if (savedAlwaysOnTop !== null) alwaysOnTop = savedAlwaysOnTop === 'true'
 
   // 初始化置顶状态（必须在 createWindow 之后）
   applyAlwaysOnTop()
@@ -756,8 +780,8 @@ app.whenReady().then(() => {
     })
 
     // 仅持久化新的宽高，不修改 x、y
-    setSetting(WINDOW_NAME, 'geometry', 'width', String(defaultW))
-    setSetting(WINDOW_NAME, 'geometry', 'height', String(defaultH))
+    setSetting(WINDOW_NAME, 'geometry', 'width', String(defaultW), '窗口宽度（像素）')
+    setSetting(WINDOW_NAME, 'geometry', 'height', String(defaultH), '窗口高度（像素）')
     return true
   })
 
@@ -775,7 +799,7 @@ app.whenReady().then(() => {
     // 数据库无记录 → 以 OS 当前状态为准，写入数据库
     if (dbValue === null) {
       const osSettings = app.getLoginItemSettings()
-      setSetting(WINDOW_NAME, 'system', 'auto_start', String(osSettings.openAtLogin))
+      setSetting(WINDOW_NAME, 'system', 'auto_start', String(osSettings.openAtLogin), '开机自启开关（true=启用, false=关闭）')
       return { value: osSettings.openAtLogin, error: null }
     }
 
@@ -843,7 +867,7 @@ app.whenReady().then(() => {
    */
   ipcMain.handle('set-auto-start', (_event, enabled) => {
     app.setLoginItemSettings({ openAtLogin: enabled })
-    setSetting(WINDOW_NAME, 'system', 'auto_start', String(enabled))
+    setSetting(WINDOW_NAME, 'system', 'auto_start', String(enabled), '开机自启开关（true=启用, false=关闭）')
 
     // 立即回读确认 OS 是否设置成功
     const verifySettings = app.getLoginItemSettings()

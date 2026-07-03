@@ -30,6 +30,9 @@ const showSettings = ref(false)
 /** 窗口锁定状态 */
 const locked = ref(false)
 
+/** 窗口置顶状态 */
+const alwaysOnTop = ref(true)
+
 /** 窗口标识，与数据库中存储的 window_name 对应 */
 const WINDOW_NAME = 'main'
 
@@ -75,6 +78,13 @@ onMounted(async () => {
     console.warn('[App] 获取锁定状态失败:', e)
   }
 
+  // 同步初始置顶状态
+  try {
+    alwaysOnTop.value = await window.api.getAlwaysOnTop()
+  } catch (e) {
+    console.warn('[App] 获取置顶状态失败:', e)
+  }
+
   // 通知主进程渲染已完成，可以安全地显示窗口了
   // 主进程收到后会调用 mainWindow.show()
   window.api.rendererReady()
@@ -89,6 +99,15 @@ onUnmounted(() => {
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
 })
+
+/** 切换置顶状态 */
+const toggleAlwaysOnTop = async () => {
+  try {
+    alwaysOnTop.value = await window.api.toggleAlwaysOnTop()
+  } catch (e) {
+    console.warn('[App] 切换置顶失败:', e)
+  }
+}
 </script>
 
 <template>
@@ -97,9 +116,17 @@ onUnmounted(() => {
     <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
     <ResizeHandles :locked="locked" />
     <!-- Mac 风格标题栏，包含红绿灯按钮和标题文字 -->
-    <MacTitlebar title="便签" v-model:locked="locked">
+    <MacTitlebar v-model:locked="locked">
       <!-- 设置和帮助按钮组 -->
       <div class="titlebar-actions-group">
+        <!-- 置顶切换按钮 -->
+        <button
+          class="titlebar-btn titlebar-btn-pin"
+          :class="{ pinned: alwaysOnTop }"
+          :title="alwaysOnTop ? '取消置顶' : '窗口置顶'"
+          @click="toggleAlwaysOnTop">
+          <img class="btn-icon" src="@/resources/icons/pin.svg" alt="置顶" />
+        </button>
         <!-- 设置按钮 -->
         <button class="titlebar-btn titlebar-btn-settings" title="设置" @click="showSettings = true">
           <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
@@ -173,6 +200,14 @@ onUnmounted(() => {
 .titlebar-actions-group {
   display: flex;
   gap: 8px;
+}
+
+/* 置顶按钮：未置顶时灰色，置顶时蓝色 */
+.titlebar-btn-pin {
+  background-color: #8e8e93; /* 默认灰色 = 未置顶 */
+}
+.titlebar-btn-pin.pinned {
+  background-color: #0071e3; /* 蓝色 = 已置顶 */
 }
 
 /* 主内容区域 */

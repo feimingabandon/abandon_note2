@@ -60,7 +60,7 @@ const toggleLock = async () => {
         class="light light-lock"
         :class="{ locked: locked }"
         @click="toggleLock"
-        :title="locked ? '解锁便签' : '锁定便签'">
+        :title="locked ? '解锁' : '锁定'">
         <img class="light-icon" src="@/resources/icons/lock.png" alt="锁定" />
       </button>
     </div>
@@ -150,6 +150,7 @@ const toggleLock = async () => {
 .mac-titlebar-actions {
   display: flex;
   gap: 8px;
+  margin-left: auto; /* 标题移除后，仍保持靠右对齐 */
   -webkit-app-region: no-drag; /* 取消拖拽，使操作按钮可点击 */
 }
 </style>

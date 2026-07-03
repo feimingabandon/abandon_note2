@@ -32,6 +32,12 @@ const api = {
   /** 获取当前锁定状态 */
   getLockState: () => ipcRenderer.invoke('get-lock-state'),
 
+  // ---- 窗口置顶 ----
+  /** 切换窗口置顶状态，返回新的置顶状态 */
+  toggleAlwaysOnTop: () => ipcRenderer.invoke('toggle-always-on-top'),
+  /** 获取当前置顶状态 */
+  getAlwaysOnTop: () => ipcRenderer.invoke('get-always-on-top'),
+
   // ---- 缩放手柄（窗口边界操作） ----
   /** 获取当前窗口的位置和尺寸（双向通信，返回 Promise） */
   getWindowBounds: () => ipcRenderer.invoke('window-get-bounds'),
@@ -44,8 +50,8 @@ const api = {
   /** 获取单个设置值 */
   getSetting: (windowName, key) => ipcRenderer.invoke('get-setting', windowName, key),
   /** 写入/更新设置 */
-  setSetting: (windowName, type, key, value) =>
-    ipcRenderer.invoke('set-setting', windowName, type, key, value),
+  setSetting: (windowName, type, key, value, remark = '') =>
+    ipcRenderer.invoke('set-setting', windowName, type, key, value, remark),
   /** 删除设置 */
   deleteSetting: (windowName, key) => ipcRenderer.invoke('delete-setting', windowName, key),
 

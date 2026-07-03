@@ -5,6 +5,7 @@
  *   1. 初始化 SQLite 数据库连接（使用 better-sqlite3）
  *   2. 提供 app_settings 表的 CRUD 操作
  *   3. 提供窗口几何信息（位置/尺寸）的持久化读写
+ *   4. 自动迁移旧表结构（新增 remark 列等）
  *
  * 数据库文件存储在 Electron 的 userData 目录下，名为 app.db
  * 使用 WAL 模式提升并发读写性能
@@ -50,17 +51,25 @@ export function initDatabase() {
   // 主键为 (window_name, key) 的复合主键
   // type 字段用于分类（如 'css'、'geometry'、'system'）
   // value 以文本形式存储，由调用方负责类型转换
+  // remark 字段用于描述该设置项的功能用途
   db.exec(`
     CREATE TABLE IF NOT EXISTS app_settings (
       window_name TEXT NOT NULL,
       type TEXT NOT NULL,
       key TEXT NOT NULL,
       value TEXT,
+      remark TEXT DEFAULT '',
       created_at INTEGER,
       updated_at INTEGER,
       PRIMARY KEY (window_name, key)
     );
   `)
+
+  // === 增量迁移：为已存在的表添加 remark 列 ===
+  const hasRemark = tableInfo.some((col) => col.name === 'remark')
+  if (tableInfo.length > 0 && !hasRemark) {
+    db.exec("ALTER TABLE app_settings ADD COLUMN remark TEXT DEFAULT ''")
+  }
 }
 
 /**
@@ -89,22 +98,25 @@ export function getSetting(windowName, key) {
 
 /**
  * 写入/更新单个设置项
- * 使用 UPSERT 策略：存在则更新 value/type/updated_at，不存在则插入新行
+ * 使用 UPSERT 策略：存在则更新 value/type/updated_at，不存在则插入新行（含 remark）
+ * remark 仅在首次 INSERT 时写入，后续 UPDATE 不会覆盖已有备注
  * @param {string} windowName - 窗口标识
  * @param {string} type - 设置分类（如 'css'、'geometry'、'system'）
  * @param {string} key - 设置项的键名
  * @param {*} value - 设置值（会被转为字符串存储）
+ * @param {string} [remark=''] - 设置项的功能描述/备注（仅首次创建时生效）
  */
-export function setSetting(windowName, type, key, value) {
+export function setSetting(windowName, type, key, value, remark = '') {
   const now = Date.now() // 当前时间戳（毫秒）
   db.prepare(`
-    INSERT INTO app_settings (window_name, type, key, value, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO app_settings (window_name, type, key, value, remark, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(window_name, key) DO UPDATE SET
       value = excluded.value,
       type = excluded.type,
       updated_at = excluded.updated_at
-  `).run(windowName, type, key, String(value), now, now)
+      -- remark 仅在首次 INSERT 时写入，UPDATE 时保留原值不变
+  `).run(windowName, type, key, String(value), remark, now, now)
 }
 
 /**
@@ -139,10 +151,10 @@ export function deleteSetting(windowName, key) {
  */
 export function saveGeometry(windowName, x, y, width, height) {
   const save = db.transaction(() => {
-    setSetting(windowName, 'geometry', 'pos_x', String(x))
-    setSetting(windowName, 'geometry', 'pos_y', String(y))
-    setSetting(windowName, 'geometry', 'width', String(width))
-    setSetting(windowName, 'geometry', 'height', String(height))
+    setSetting(windowName, 'geometry', 'pos_x', String(x), '窗口左上角 X 坐标（像素）')
+    setSetting(windowName, 'geometry', 'pos_y', String(y), '窗口左上角 Y 坐标（像素）')
+    setSetting(windowName, 'geometry', 'width', String(width), '窗口宽度（像素）')
+    setSetting(windowName, 'geometry', 'height', String(height), '窗口高度（像素）')
   })
   save()
 }

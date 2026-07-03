@@ -114,6 +114,12 @@ void Engine::UpdateGeometry(int x, int y, int width, int height) {
     if (m_overlayHwnd) PostMessage(m_overlayHwnd, WM_BLUR_UPDATE_GEOMETRY, 0, 0);
 }
 
+void Engine::ReSyncZOrder() {
+    if (!m_overlayHwnd || !m_parentHwnd) return;
+    SetWindowPos(m_overlayHwnd, m_parentHwnd,
+        0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
 void Engine::Show() { if (m_overlayHwnd) PostMessage(m_overlayHwnd, WM_BLUR_SHOW, 0, 0); }
 void Engine::Hide() { if (m_overlayHwnd) PostMessage(m_overlayHwnd, WM_BLUR_HIDE, 0, 0); }
 Engine::~Engine() { Destroy(); }

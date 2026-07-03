@@ -58,6 +58,7 @@ function initNative() {
     lib.Blur_SetSaturation = lib.func('Blur_SetSaturation', 'void', ['float'])
     lib.Blur_SetCornerRadius = lib.func('Blur_SetCornerRadius', 'void', ['float'])
     lib.Blur_UpdateGeometry = lib.func('Blur_UpdateGeometry', 'void', ['int', 'int', 'int', 'int'])
+    lib.Blur_ReSyncOrder = lib.func('Blur_ReSyncOrder', 'void', [])
     lib.Blur_IsInitialized = lib.func('Blur_IsInitialized', 'int', [])
     lib.Blur_IsSupported = lib.func('Blur_IsSupported', 'int', [])
     return true
@@ -102,6 +103,11 @@ export function updateGeometry(mainWindow) {
   if (!initialized) return
   const b = mainWindow.getBounds()
   lib.Blur_UpdateGeometry(b.x, b.y, b.width, b.height)
+}
+
+export function reSyncZOrder() {
+  if (!initialized || process.platform !== 'win32') return
+  lib.Blur_ReSyncOrder()
 }
 
 export function destroy() {

@@ -28,6 +28,9 @@ BLUR_API void Blur_SetEnabled(int enabled);            // 开关 0/1
 // ---- 位置同步 ----
 BLUR_API void Blur_UpdateGeometry(int x, int y, int width, int height);
 
+// ---- Z-order 重同步 ----
+BLUR_API void Blur_ReSyncOrder(void);
+
 // ---- 查询 ----
 BLUR_API int Blur_IsInitialized(void);
 BLUR_API int Blur_IsSupported(void);

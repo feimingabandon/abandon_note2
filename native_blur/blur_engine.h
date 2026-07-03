@@ -74,6 +74,9 @@ public:
     // ---- 位置/尺寸同步 ----
     void UpdateGeometry(int x, int y, int width, int height);
 
+    // ---- Z-order 重同步（父窗口置顶层变化后调用） ----
+    void ReSyncZOrder();
+
     // ---- 可见性 ----
     void Show();
     void Hide();

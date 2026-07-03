@@ -350,10 +350,10 @@ watch(autoStart, async (v) => {
 
 // ---- 防抖保存工具 ----
 const debounceTimers = {}
-function debouncedSave(type, key, value) {
+function debouncedSave(type, key, value, remark = '') {
   if (debounceTimers[key]) clearTimeout(debounceTimers[key])
   debounceTimers[key] = setTimeout(() => {
-    window.api.setSetting(WINDOW_NAME, type, key, String(value))
+    window.api.setSetting(WINDOW_NAME, type, key, String(value), remark)
   }, 300)
 }
 
@@ -362,37 +362,37 @@ function debouncedSave(type, key, value) {
 // 背景颜色 → CSS --bg-color
 watch(bgColor, (v) => {
   el.style.setProperty('--bg-color', v)
-  debouncedSave('css', 'bg_color', v)
+  debouncedSave('css', 'bg_color', v, '背景颜色（十六进制，如 #ffffff）')
 })
 
 // 窗口透明度 → CSS --popup-opacity
 watch(winOpacity, (v) => {
   el.style.setProperty('--popup-opacity', v)
-  debouncedSave('css', 'win_opacity', v)
+  debouncedSave('css', 'win_opacity', v, '窗口透明度（0~1 浮点数）')
 })
 
 // 弹窗模糊 → CSS --bg-blur
 watch(bgBlur, (v) => {
   el.style.setProperty('--bg-blur', v + 'px')
-  debouncedSave('css', 'bg_blur', v + 'px')
+  debouncedSave('css', 'bg_blur', v + 'px', 'CSS 背景模糊半径（像素值，如 10px）')
 })
 
 // 边框开关 → CSS --bg-border
 watch(bgBorder, (v) => {
   el.style.setProperty('--bg-border', v ? '1' : '0')
-  window.api.setSetting(WINDOW_NAME, 'css', 'bg_border', v ? '1' : '0')
+  window.api.setSetting(WINDOW_NAME, 'css', 'bg_border', v ? '1' : '0', '边框显示开关（1=显示, 0=隐藏）')
 })
 
 // 字体大小 → CSS --font-size-base
 watch(fontSizeBase, (v) => {
   el.style.setProperty('--font-size-base', v + 'rem')
-  debouncedSave('css', 'font_size_base', v)
+  debouncedSave('css', 'font_size_base', v, '基准字号（rem 单位数值）')
 })
 
 // 文字颜色 → CSS --text-color
 watch(textColor, (v) => {
   el.style.setProperty('--text-color', v)
-  debouncedSave('css', 'text_color', v)
+  debouncedSave('css', 'text_color', v, '文字颜色（十六进制，如 #333333）')
 })
 
 // 同步文字颜色输入显示值
