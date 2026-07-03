@@ -1050,12 +1050,13 @@ const resetUI = () => {
   padding-left: 2rem;
 }
 
-/* ---- 单条设置项（Grid 两列：左标签 + 右控件）---- */
+/* ---- 单条设置项（Flex 两列：左标签 + 右控件，space-between 平分多余空间）---- */
 .setting-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8rem 24rem;
+  justify-content: space-between;
+  row-gap: 8rem;
   padding: 14rem 16rem;
   border-radius: 10rem;
   background-color: rgba(255, 255, 255, 0.04);
@@ -1082,6 +1083,7 @@ const resetUI = () => {
   flex-direction: column;
   gap: 3rem;
   min-width: 0;
+  flex-shrink: 0;
 }
 
 /* ---- 右侧区域（控件容器）---- */
@@ -1161,7 +1163,7 @@ const resetUI = () => {
 /* ---- 预设色块 ---- */
 /* 颜色控件行下方的 hint 横跨全宽 */
 .color-hint {
-  grid-column: 1 / -1;
+  flex-basis: 100%;
 }
 
 .color-dot {
@@ -1236,7 +1238,6 @@ const resetUI = () => {
 /* ---- 响应式：窗口很窄时堆叠为单列 ---- */
 @media (max-width: 380px) {
   .setting-item {
-    grid-template-columns: 1fr;
     gap: 8rem;
   }
   .setting-item.has-hint {
