@@ -23,8 +23,6 @@ const api = {
   // ---- 窗口控制（单向通信，无需返回值） ----
   /** 关闭当前窗口 */
   closeWindow: () => ipcRenderer.send('window-close'),
-  /** 最小化当前窗口 */
-  minimizeWindow: () => ipcRenderer.send('window-minimize'),
 
   // ---- 窗口锁定 ----
   /** 切换窗口锁定状态（禁止/允许移动和缩放），返回新的锁定状态 */
@@ -86,7 +84,91 @@ const api = {
   /** 获取当前模糊配置 */
   getBlurConfig: () => ipcRenderer.invoke('get-blur-config'),
   /** 设置模糊配置（立即生效 + 持久化） */
-  setBlurConfig: (config) => ipcRenderer.invoke('set-blur-config', config)
+  setBlurConfig: (config) => ipcRenderer.invoke('set-blur-config', config),
+  // ---- 便签 CRUD ----
+  /** 创建便签 */
+  createNote: (options) => ipcRenderer.invoke('notes:create', options),
+  /** 更新便签（部分字段） */
+  updateNote: (id, fields) => ipcRenderer.invoke('notes:update', { id, fields }),
+  /** 删除便签（取消） */
+  deleteNote: (id) => ipcRenderer.invoke('notes:delete', { id }),
+  /** 获取单条便签（含附件和标签） */
+  getNote: (id) => ipcRenderer.invoke('notes:get', { id }),
+  /** 查询便签列表 */
+  listNotes: (options) => ipcRenderer.invoke('notes:list', options),
+  /** 开始处理 */
+  startProgress: (id) => ipcRenderer.invoke('notes:start-progress', { id }),
+  /** 完成便签 */
+  completeNote: (id) => ipcRenderer.invoke('notes:complete', { id }),
+  /** 取消便签 */
+  cancelNote: (id) => ipcRenderer.invoke('notes:cancel', { id }),
+
+  // ---- 标签管理 ----
+  /** 创建标签 */
+  createTag: (name, color) => ipcRenderer.invoke('tags:create', { name, color }),
+  /** 更新标签 */
+  updateTag: (id, fields) => ipcRenderer.invoke('tags:update', { id, fields }),
+  /** 删除标签 */
+  deleteTag: (id) => ipcRenderer.invoke('tags:delete', { id }),
+  /** 获取全部标签 */
+  listTags: () => ipcRenderer.invoke('tags:list'),
+  /** 获取单个标签 */
+  getTag: (id) => ipcRenderer.invoke('tags:get', { id }),
+
+  // ---- 便签-标签关联 ----
+  /** 绑定标签到便签 */
+  bindTag: (noteId, tagId) => ipcRenderer.invoke('note-tags:bind', { noteId, tagId }),
+  /** 取消绑定 */
+  unbindTag: (noteId, tagId) => ipcRenderer.invoke('note-tags:unbind', { noteId, tagId }),
+  /** 整体设置便签标签（事务替换） */
+  setNoteTags: (noteId, tagIds) => ipcRenderer.invoke('note-tags:set', { noteId, tagIds }),
+  /** 获取便签的标签列表 */
+  getNoteTags: (noteId) => ipcRenderer.invoke('note-tags:list', { noteId }),
+
+  // ---- 循环模板 ----
+  /** 创建循环模板 */
+  createTemplate: (options) => ipcRenderer.invoke('templates:create', options),
+  /** 更新模板 */
+  updateTemplate: (id, fields) => ipcRenderer.invoke('templates:update', { id, fields }),
+  /** 删除模板（软删） */
+  deleteTemplate: (id) => ipcRenderer.invoke('templates:delete', { id }),
+  /** 获取模板列表 */
+  listTemplates: () => ipcRenderer.invoke('templates:list'),
+  /** 获取单个模板 */
+  getTemplate: (id) => ipcRenderer.invoke('templates:get', { id }),
+  /** 暂停模板 */
+  pauseTemplate: (id) => ipcRenderer.invoke('templates:pause', { id }),
+  /** 恢复模板 */
+  resumeTemplate: (id) => ipcRenderer.invoke('templates:resume', { id }),
+
+  // ---- 附件管理 ----
+  /** 添加附件 */
+  addAttachment: (options) => ipcRenderer.invoke('attachments:add', options),
+  /** 删除附件 */
+  removeAttachment: (id) => ipcRenderer.invoke('attachments:remove', { id }),
+  /** 获取附件列表 */
+  listAttachments: (noteId) => ipcRenderer.invoke('attachments:list', { noteId }),
+
+  // ---- 全文搜索 ----
+  /** FTS5 全文搜索 */
+  searchNotes: (query, options) => ipcRenderer.invoke('search:notes', { query, options }),
+  /** 搜索建议/自动补全 */
+  searchSuggestions: (prefix, limit) => ipcRenderer.invoke('search:suggestions', { prefix, limit }),
+
+  // ---- 批量操作 ----
+  /** 批量更新状态 */
+  batchUpdateStatus: (ids, status) => ipcRenderer.invoke('batch:update-status', { ids, status }),
+  /** 批量设置置顶 */
+  batchSetPinned: (ids, pinned) => ipcRenderer.invoke('batch:set-pinned', { ids, pinned }),
+  /** 批量设置生效时间 */
+  batchSetEffectiveAt: (ids, effectiveAt) =>
+    ipcRenderer.invoke('batch:set-effective-at', { ids, effectiveAt }),
+  /** 批量添加标签 */
+  batchAddTags: (noteIds, tagIds) => ipcRenderer.invoke('batch:add-tags', { noteIds, tagIds }),
+
+  // ---- 调度器健康检查 ----
+  /** 获取调度器健康状态 */
+  getSchedulerHealth: () => ipcRenderer.invoke('scheduler:health')
 }
 
 // ============================================================

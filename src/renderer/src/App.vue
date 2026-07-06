@@ -99,15 +99,6 @@ onUnmounted(() => {
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
 })
-
-/** 切换置顶状态 */
-const toggleAlwaysOnTop = async () => {
-  try {
-    alwaysOnTop.value = await window.api.toggleAlwaysOnTop()
-  } catch (e) {
-    console.warn('[App] 切换置顶失败:', e)
-  }
-}
 </script>
 
 <template>
@@ -116,24 +107,16 @@ const toggleAlwaysOnTop = async () => {
     <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
     <ResizeHandles :locked="locked" />
     <!-- Mac 风格标题栏，包含红绿灯按钮和标题文字 -->
-    <MacTitlebar v-model:locked="locked" title="列表">
+    <MacTitlebar v-model:locked="locked" v-model:alwaysOnTop="alwaysOnTop" title="列表">
       <!-- 设置和帮助按钮组 -->
       <div class="titlebar-actions-group">
-        <!-- 置顶切换按钮 -->
-        <button
-          class="titlebar-btn titlebar-btn-pin"
-          :class="{ pinned: alwaysOnTop }"
-          :title="alwaysOnTop ? '取消置顶' : '窗口置顶'"
-          @click="toggleAlwaysOnTop">
-          <img class="btn-icon" src="@/resources/icons/pin.svg" alt="置顶" />
-        </button>
         <!-- 设置按钮 -->
         <button class="titlebar-btn titlebar-btn-settings" title="设置" @click="showSettings = true">
           <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
         </button>
         <!-- 帮助按钮 -->
         <button class="titlebar-btn titlebar-btn-help" title="帮助">
-          <img class="btn-icon" src="@/resources/icons/help.png" alt="帮助" />
+          <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
         </button>
       </div>
     </MacTitlebar>
@@ -200,14 +183,6 @@ const toggleAlwaysOnTop = async () => {
 .titlebar-actions-group {
   display: flex;
   gap: 8px;
-}
-
-/* 置顶按钮：未置顶时灰色，置顶时蓝色 */
-.titlebar-btn-pin {
-  background-color: #8e8e93; /* 默认灰色 = 未置顶 */
-}
-.titlebar-btn-pin.pinned {
-  background-color: #0071e3; /* 蓝色 = 已置顶 */
 }
 
 /* 主内容区域 */

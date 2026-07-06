@@ -1,4 +1,3 @@
-
 /**
  * index.js — Electron 主进程入口文件
  *
@@ -35,6 +34,43 @@ import {
   reSyncZOrder as blurReSyncZOrder
 } from './blur_bridge.js'
 
+import {
+  createNote,
+  updateNote,
+  deleteNote,
+  getNoteById,
+  listNotes,
+  startProgress,
+  completeNote,
+  cancelNote,
+  batchUpdateStatus,
+  batchSetPinned,
+  batchSetEffectiveAt,
+  batchAddTags
+} from './db-notes.js'
+import {
+  createTag,
+  updateTag,
+  deleteTag as deleteTagFn,
+  listTags,
+  getTagById,
+  bindTag,
+  unbindTag,
+  setNoteTags,
+  getNoteTags
+} from './db-tags.js'
+import {
+  createTemplate,
+  updateTemplate,
+  deleteTemplate as deleteTemplateFn,
+  listTemplates,
+  getTemplateById,
+  pauseTemplate,
+  resumeTemplate
+} from './db-templates.js'
+import { addAttachment, removeAttachment, listAttachments } from './db-attachments.js'
+import { searchNotes, searchSuggestions } from './db-search.js'
+
 /** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
 const WINDOW_NAME = 'main'
 
@@ -62,10 +98,10 @@ let blurInitialized = false
 /** 当前模糊配置（持久化到数据库） */
 const blurConfig = {
   enabled: true,
-  radius: 10,                          // 模糊半径/通透度 (0~100 DIP)，默认 10
-  tint: { r: 255, g: 255, b: 255 },    // 颜色 (默认白色=无色叠加)
-  saturation: 1.8,                      // 饱和度 (0~2, 苹果风格 = 1.8)
-  cornerRadius: 12                       // 窗口圆角 (0~30 DIP)
+  radius: 10, // 模糊半径/通透度 (0~100 DIP)，默认 10
+  tint: { r: 255, g: 255, b: 255 }, // 颜色 (默认白色=无色叠加)
+  saturation: 1.8, // 饱和度 (0~2, 苹果风格 = 1.8)
+  cornerRadius: 12 // 窗口圆角 (0~30 DIP)
 }
 
 /** 防抖定时器，用于延迟保存窗口位置/尺寸 */
@@ -81,8 +117,8 @@ const SLIDE_INTERVAL = 16 // 滑动动画帧间隔（ms）≈60fps
 const HIDE_DELAY = 200 // 鼠标离开后延迟隐藏（ms）
 
 /** 默认窗口尺寸比例（相对屏幕工作区），改一个地方即可全局生效 */
-const DEFAULT_WIDTH_RATIO = 0.25  // 宽度 = 屏幕工作区宽度 × 25%
-const DEFAULT_HEIGHT_RATIO = 0.9  // 高度 = 屏幕工作区高度 × 90%
+const DEFAULT_WIDTH_RATIO = 0.25 // 宽度 = 屏幕工作区宽度 × 25%
+const DEFAULT_HEIGHT_RATIO = 0.9 // 高度 = 屏幕工作区高度 × 90%
 
 let dockSide = null // null | 'left' | 'right' 当前吸附方向
 let isDockHidden = false // 窗口是否处于贴边隐藏状态
@@ -214,10 +250,18 @@ function createWindow() {
   // 窗口移动/缩放时同步模糊 overlay 位置
   if (blurInitialized && process.platform === 'win32') {
     mainWindow.on('resize', () => {
-      try { blurUpdateGeometry(mainWindow) } catch (_) { /* DComp 会话失效时静默 */ }
+      try {
+        blurUpdateGeometry(mainWindow)
+      } catch (_) {
+        /* DComp 会话失效时静默 */
+      }
     })
     mainWindow.on('move', () => {
-      try { blurUpdateGeometry(mainWindow) } catch (_) { /* DComp 会话失效时静默 */ }
+      try {
+        blurUpdateGeometry(mainWindow)
+      } catch (_) {
+        /* DComp 会话失效时静默 */
+      }
     })
   }
 
@@ -417,9 +461,7 @@ function slideTo(targetX, onFinish) {
     frame++
     const progress = Math.min(frame / totalFrames, 1)
     // easeInOutQuad：前半段加速，后半段减速
-    const ease = progress < 0.5
-      ? 2 * progress * progress
-      : 1 - Math.pow(-2 * progress + 2, 2) / 2
+    const ease = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2
 
     setX(fromX + (targetX - fromX) * ease)
 
@@ -560,12 +602,6 @@ app.whenReady().then(() => {
     hideToTray()
   })
 
-  // 【窗口控制 - 最小化】渲染进程请求最小化窗口
-  ipcMain.on('window-minimize', (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (win) win.minimize()
-  })
-
   // 【窗口锁定 - 切换锁定状态】
   ipcMain.handle('toggle-lock', () => {
     isLocked = !isLocked
@@ -573,7 +609,13 @@ app.whenReady().then(() => {
       mainWindow.setMovable(!isLocked)
       mainWindow.setResizable(!isLocked)
     }
-    setSetting(WINDOW_NAME, 'system', 'lock_state', String(isLocked), '窗口锁定状态（true=锁定禁止移动缩放, false=解锁）')
+    setSetting(
+      WINDOW_NAME,
+      'system',
+      'lock_state',
+      String(isLocked),
+      '窗口锁定状态（true=锁定禁止移动缩放, false=解锁）'
+    )
     return isLocked
   })
 
@@ -586,7 +628,13 @@ app.whenReady().then(() => {
   ipcMain.handle('toggle-always-on-top', () => {
     alwaysOnTop = !alwaysOnTop
     applyAlwaysOnTop()
-    setSetting(WINDOW_NAME, 'system', 'always_on_top', String(alwaysOnTop), '窗口置顶状态（true=始终置顶, false=正常层级）')
+    setSetting(
+      WINDOW_NAME,
+      'system',
+      'always_on_top',
+      String(alwaysOnTop),
+      '窗口置顶状态（true=始终置顶, false=正常层级）'
+    )
     return alwaysOnTop
   })
 
@@ -660,7 +708,12 @@ app.whenReady().then(() => {
           if (mainWindow && !mainWindow.isDestroyed()) {
             const b = mainWindow.getBounds()
             const cursor = screen.getCursorScreenPoint()
-            if (cursor.x >= b.x && cursor.x <= b.x + b.width && cursor.y >= b.y && cursor.y <= b.y + b.height) {
+            if (
+              cursor.x >= b.x &&
+              cursor.x <= b.x + b.width &&
+              cursor.y >= b.y &&
+              cursor.y <= b.y + b.height
+            ) {
               return // 光标仍在窗口矩形内 → 误触发，不隐藏
             }
           }
@@ -701,13 +754,55 @@ app.whenReady().then(() => {
     if (config.cornerRadius !== undefined) blurConfig.cornerRadius = config.cornerRadius
 
     // 持久化到数据库
-    setSetting(WINDOW_NAME, 'system', 'blur_enabled', String(blurConfig.enabled), '系统级毛玻璃效果开关（true=启用, false=关闭）')
-    setSetting(WINDOW_NAME, 'system', 'blur_radius', String(blurConfig.radius), '系统模糊半径/通透度（0~100 DIP）')
-    setSetting(WINDOW_NAME, 'system', 'blur_tint_r', String(blurConfig.tint.r), '系统模糊着色-红色通道（0~255）')
-    setSetting(WINDOW_NAME, 'system', 'blur_tint_g', String(blurConfig.tint.g), '系统模糊着色-绿色通道（0~255）')
-    setSetting(WINDOW_NAME, 'system', 'blur_tint_b', String(blurConfig.tint.b), '系统模糊着色-蓝色通道（0~255）')
-    setSetting(WINDOW_NAME, 'system', 'blur_saturation', String(blurConfig.saturation), '系统模糊饱和度（0~2 浮点数，苹果风格=1.8）')
-    setSetting(WINDOW_NAME, 'system', 'blur_corner_radius', String(blurConfig.cornerRadius), '窗口圆角半径（0~30 DIP）')
+    setSetting(
+      WINDOW_NAME,
+      'system',
+      'blur_enabled',
+      String(blurConfig.enabled),
+      '系统级毛玻璃效果开关（true=启用, false=关闭）'
+    )
+    setSetting(
+      WINDOW_NAME,
+      'system',
+      'blur_radius',
+      String(blurConfig.radius),
+      '系统模糊半径/通透度（0~100 DIP）'
+    )
+    setSetting(
+      WINDOW_NAME,
+      'system',
+      'blur_tint_r',
+      String(blurConfig.tint.r),
+      '系统模糊着色-红色通道（0~255）'
+    )
+    setSetting(
+      WINDOW_NAME,
+      'system',
+      'blur_tint_g',
+      String(blurConfig.tint.g),
+      '系统模糊着色-绿色通道（0~255）'
+    )
+    setSetting(
+      WINDOW_NAME,
+      'system',
+      'blur_tint_b',
+      String(blurConfig.tint.b),
+      '系统模糊着色-蓝色通道（0~255）'
+    )
+    setSetting(
+      WINDOW_NAME,
+      'system',
+      'blur_saturation',
+      String(blurConfig.saturation),
+      '系统模糊饱和度（0~2 浮点数，苹果风格=1.8）'
+    )
+    setSetting(
+      WINDOW_NAME,
+      'system',
+      'blur_corner_radius',
+      String(blurConfig.cornerRadius),
+      '窗口圆角半径（0~30 DIP）'
+    )
 
     // 立即生效（仅 Windows 需要调用 DLL）
     if (blurInitialized && process.platform === 'win32') {
@@ -740,16 +835,6 @@ app.whenReady().then(() => {
   // show：贴边隐藏时滑出（安全网，正常路径下 show 不会在贴边隐藏时触发）
   mainWindow.on('show', () => {
     if (isDockHidden) doShow()
-  })
-
-  // minimize：贴边状态下取消最小化并滑出隐藏，非贴边场景正常隐藏到托盘
-  mainWindow.on('minimize', () => {
-    if (dockSide && !isDockHidden && !isSliding && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.restore()
-      setTimeout(() => doHide(), 0)
-      return
-    }
-    hideToTray()
   })
 
   // 【重置数据库】
@@ -799,7 +884,13 @@ app.whenReady().then(() => {
     // 数据库无记录 → 以 OS 当前状态为准，写入数据库
     if (dbValue === null) {
       const osSettings = app.getLoginItemSettings()
-      setSetting(WINDOW_NAME, 'system', 'auto_start', String(osSettings.openAtLogin), '开机自启开关（true=启用, false=关闭）')
+      setSetting(
+        WINDOW_NAME,
+        'system',
+        'auto_start',
+        String(osSettings.openAtLogin),
+        '开机自启开关（true=启用, false=关闭）'
+      )
       return { value: osSettings.openAtLogin, error: null }
     }
 
@@ -867,11 +958,203 @@ app.whenReady().then(() => {
    */
   ipcMain.handle('set-auto-start', (_event, enabled) => {
     app.setLoginItemSettings({ openAtLogin: enabled })
-    setSetting(WINDOW_NAME, 'system', 'auto_start', String(enabled), '开机自启开关（true=启用, false=关闭）')
+    setSetting(
+      WINDOW_NAME,
+      'system',
+      'auto_start',
+      String(enabled),
+      '开机自启开关（true=启用, false=关闭）'
+    )
 
     // 立即回读确认 OS 是否设置成功
     const verifySettings = app.getLoginItemSettings()
     return verifySettings.openAtLogin
+  })
+
+  // ---- 便签便签 CRUD IPC ----
+
+  // 【便签 - 创建】
+  ipcMain.handle('notes:create', (_event, options) => {
+    return createNote(options || {})
+  })
+
+  // 【便签 - 更新】
+  ipcMain.handle('notes:update', (_event, { id, fields }) => {
+    return updateNote(id, fields || {})
+  })
+
+  // 【便签 - 删除（取消）】
+  ipcMain.handle('notes:delete', (_event, { id }) => {
+    return deleteNote(id)
+  })
+
+  // 【便签 - 获取单条（含附件和标签）】
+  ipcMain.handle('notes:get', (_event, { id }) => {
+    return getNoteById(id)
+  })
+
+  // 【便签 - 列表查询】
+  ipcMain.handle('notes:list', (_event, options) => {
+    return listNotes(options || {})
+  })
+
+  // 【便签 - 开始处理】
+  ipcMain.handle('notes:start-progress', (_event, { id }) => {
+    return startProgress(id)
+  })
+
+  // 【便签 - 完成】
+  ipcMain.handle('notes:complete', (_event, { id }) => {
+    return completeNote(id)
+  })
+
+  // 【便签 - 取消】
+  ipcMain.handle('notes:cancel', (_event, { id }) => {
+    return cancelNote(id)
+  })
+
+  // ---- 标签 CRUD IPC ----
+
+  // 【标签 - 创建】
+  ipcMain.handle('tags:create', (_event, { name, color }) => {
+    return createTag(name, color)
+  })
+
+  // 【标签 - 更新】
+  ipcMain.handle('tags:update', (_event, { id, fields }) => {
+    return updateTag(id, fields || {})
+  })
+
+  // 【标签 - 删除】
+  ipcMain.handle('tags:delete', (_event, { id }) => {
+    return deleteTagFn(id)
+  })
+
+  // 【标签 - 列表】
+  ipcMain.handle('tags:list', () => {
+    return listTags()
+  })
+
+  // 【标签 - 获取单条】
+  ipcMain.handle('tags:get', (_event, { id }) => {
+    return getTagById(id)
+  })
+
+  // 【便签标签 - 绑定】
+  ipcMain.handle('note-tags:bind', (_event, { noteId, tagId }) => {
+    return bindTag(noteId, tagId)
+  })
+
+  // 【便签标签 - 解绑】
+  ipcMain.handle('note-tags:unbind', (_event, { noteId, tagId }) => {
+    return unbindTag(noteId, tagId)
+  })
+
+  // 【便签标签 - 整体设置（事务替换）】
+  ipcMain.handle('note-tags:set', (_event, { noteId, tagIds }) => {
+    setNoteTags(noteId, tagIds)
+    return getNoteTags(noteId)
+  })
+
+  // 【便签标签 - 获取便签的标签列表】
+  ipcMain.handle('note-tags:list', (_event, { noteId }) => {
+    return getNoteTags(noteId)
+  })
+
+  // ---- 循环模板 CRUD IPC ----
+
+  // 【模板 - 创建】
+  ipcMain.handle('templates:create', (_event, options) => {
+    return createTemplate(options || {})
+  })
+
+  // 【模板 - 更新】
+  ipcMain.handle('templates:update', (_event, { id, fields }) => {
+    return updateTemplate(id, fields || {})
+  })
+
+  // 【模板 - 删除（软删）】
+  ipcMain.handle('templates:delete', (_event, { id }) => {
+    return deleteTemplateFn(id)
+  })
+
+  // 【模板 - 列表（仅活跃模板）】
+  ipcMain.handle('templates:list', () => {
+    return listTemplates()
+  })
+
+  // 【模板 - 获取单条】
+  ipcMain.handle('templates:get', (_event, { id }) => {
+    return getTemplateById(id)
+  })
+
+  // 【模板 - 暂停】
+  ipcMain.handle('templates:pause', (_event, { id }) => {
+    return pauseTemplate(id)
+  })
+
+  // 【模板 - 恢复】
+  ipcMain.handle('templates:resume', (_event, { id }) => {
+    return resumeTemplate(id)
+  })
+
+  // ---- 附件 IPC ----
+
+  // 【附件 - 添加】
+  ipcMain.handle('attachments:add', (_event, options) => {
+    return addAttachment(options || {})
+  })
+
+  // 【附件 - 删除】
+  ipcMain.handle('attachments:remove', (_event, { id }) => {
+    return removeAttachment(id)
+  })
+
+  // 【附件 - 列表】
+  ipcMain.handle('attachments:list', (_event, { noteId }) => {
+    return listAttachments(noteId)
+  })
+
+  // ---- 搜索 IPC ----
+
+  // 【搜索 - 全文搜索】
+  ipcMain.handle('search:notes', (_event, { query, options }) => {
+    return searchNotes(query, options || {})
+  })
+
+  // 【搜索 - 自动补全建议】
+  ipcMain.handle('search:suggestions', (_event, { prefix, limit }) => {
+    return searchSuggestions(prefix, limit)
+  })
+
+  // ---- 批量操作 IPC ----
+
+  // 【批量 - 更新状态】
+  ipcMain.handle('batch:update-status', (_event, { ids, status }) => {
+    return batchUpdateStatus(ids, status)
+  })
+
+  // 【批量 - 设置置顶】
+  ipcMain.handle('batch:set-pinned', (_event, { ids, pinned }) => {
+    return batchSetPinned(ids, pinned)
+  })
+
+  // 【批量 - 设置生效时间】
+  ipcMain.handle('batch:set-effective-at', (_event, { ids, effectiveAt }) => {
+    return batchSetEffectiveAt(ids, effectiveAt)
+  })
+
+  // 【批量 - 添加标签】
+  ipcMain.handle('batch:add-tags', (_event, { noteIds, tagIds }) => {
+    batchAddTags(noteIds, tagIds)
+    return true
+  })
+
+  // ---- 调度器健康检查 IPC ----
+
+  // 【调度器 - 健康检查】（占位，调度器未实现前返回离线状态）
+  ipcMain.handle('scheduler:health', () => {
+    return { status: 'offline', reason: '调度器尚未实现（规划于阶段 3）' }
   })
 
   // ---- 系统托盘 ----

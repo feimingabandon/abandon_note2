@@ -3,13 +3,15 @@
  * MacTitlebar.vue — Mac 风格自定义标题栏组件
  *
  * 职责：
- *   1. 提供 macOS 风格的"红绿灯"窗口控制按钮（关闭、最小化、最大化）
+ *   1. 提供 macOS 风格的“红绿灯”窗口控制按钮（关闭、置顶、锁定）
  *   2. 展示窗口标题文字
  *   3. 通过 slot 支持在标题栏右侧插入自定义操作按钮
  *   4. 整个标题栏区域可拖拽移动窗口（-webkit-app-region: drag）
  *
  * Props:
  *   - title {String} 标题栏显示的文字，默认为空
+ *   - locked {Boolean} 窗口锁定状态
+ *   - alwaysOnTop {Boolean} 窗口置顶状态
  */
 
 // 定义组件接收的 props
@@ -21,16 +23,27 @@ const props = defineProps({
   locked: {
     type: Boolean,
     default: false
+  },
+  alwaysOnTop: {
+    type: Boolean,
+    default: true
   }
 })
 
-const emit = defineEmits(['update:locked'])
+const emit = defineEmits(['update:locked', 'update:alwaysOnTop'])
 
 // ---- 窗口控制事件处理函数 ----
 /** 关闭窗口：通过 preload 暴露的 API 发送 IPC 消息到主进程 */
 const close = () => window.api.closeWindow()
-/** 最小化窗口 */
-const minimize = () => window.api.minimizeWindow()
+/** 切换置顶/取消置顶状态 */
+const toggleAlwaysOnTop = async () => {
+  try {
+    const newState = await window.api.toggleAlwaysOnTop()
+    emit('update:alwaysOnTop', newState)
+  } catch (e) {
+    console.warn('[MacTitlebar] 切换置顶失败:', e)
+  }
+}
 /** 切换锁定/解锁状态 */
 const toggleLock = async () => {
   try {
@@ -51,9 +64,13 @@ const toggleLock = async () => {
       <button class="light light-close" @click="close" title="关闭">
         <img class="light-icon" src="@/resources/icons/close.png" alt="关闭" />
       </button>
-      <!-- 最小化按钮(黄色) -->
-      <button class="light light-minimize" @click="minimize" title="最小化">
-        <img class="light-icon" src="@/resources/icons/minimize.png" alt="最小化" />
+      <!-- 置顶切换按钮(黄色=已置顶 / 灰色=未置顶) -->
+      <button
+        class="light light-pin"
+        :class="{ pinned: alwaysOnTop }"
+        @click="toggleAlwaysOnTop"
+        :title="alwaysOnTop ? '取消置顶' : '窗口置顶'">
+        <img class="light-icon" src="@/resources/icons/pin.svg" alt="置顶" />
       </button>
       <!-- 锁定按钮（绿色=未锁 / 橙色=已锁） -->
       <button
@@ -123,12 +140,14 @@ const toggleLock = async () => {
 
 /* 各按钮的默认背景色（模拟 macOS 红绿灯） */
 .light-close { background-color: #ff5f57; } /* 红色 - 关闭 */
-.light-minimize { background-color: #febc2e; } /* 黄色 - 最小化 */
+.light-pin { background-color: #8e8e93; } /* 灰色 - 未置顶 */
+.light-pin.pinned { background-color: #febc2e; } /* 黄色 - 已置顶（原最小化色） */
 .light-lock { background-color: #28c840; } /* 绿色 - 未锁定 */
 
 /* 各按钮悬停时的加深背景色 */
 .light-close:hover { background-color: #ff4136; }
-.light-minimize:hover { background-color: #f5a623; }
+.light-pin:hover { background-color: #7c7c80; }
+.light-pin.pinned:hover { background-color: #f5a623; }
 .light-lock:hover { background-color: #1db954; }
 
 /* 锁定状态：按钮变橙色 */
