@@ -29,15 +29,21 @@ export function detectCapabilities() {
 
 function getDllPath() {
   const prod = join(process.resourcesPath, 'native_blur', 'blur_engine.dll')
-  try { require('fs').accessSync(prod); return prod } catch (_) {}
+  try {
+    require('fs').accessSync(prod)
+    return prod
+  } catch (_) {}
 
   const devs = [
     join(__dirname, '..', '..', 'native_blur', 'build', 'bin', 'Release', 'blur_engine.dll'),
     join(__dirname, '..', '..', 'native_blur', 'build', 'bin', 'blur_engine.dll'),
-    join(__dirname, '..', '..', 'native_blur', 'build', 'bin', 'Debug', 'blur_engine.dll'),
+    join(__dirname, '..', '..', 'native_blur', 'build', 'bin', 'Debug', 'blur_engine.dll')
   ]
   for (const p of devs) {
-    try { require('fs').accessSync(p); return p } catch (_) {}
+    try {
+      require('fs').accessSync(p)
+      return p
+    } catch (_) {}
   }
   return null
 }
@@ -45,7 +51,10 @@ function getDllPath() {
 function initNative() {
   if (process.platform !== 'win32' || lib) return !!lib
   const dllPath = getDllPath()
-  if (!dllPath) { console.warn('[blur] DLL 未找到'); return false }
+  if (!dllPath) {
+    console.warn('[blur] DLL 未找到')
+    return false
+  }
 
   try {
     koffi = require('koffi')
@@ -64,7 +73,8 @@ function initNative() {
     return true
   } catch (e) {
     console.warn('[blur] DLL 加载失败:', e.message)
-    lib = null; return false
+    lib = null
+    return false
   }
 }
 
@@ -77,9 +87,7 @@ export function initialize(mainWindow) {
 
   const hwndBuf = mainWindow.getNativeWindowHandle()
   // HWND 在 x64 上是 8 字节，读取为整数传给 DLL
-  const hwndVal = hwndBuf.length >= 8
-    ? Number(hwndBuf.readBigUInt64LE())
-    : hwndBuf.readUInt32LE()
+  const hwndVal = hwndBuf.length >= 8 ? Number(hwndBuf.readBigUInt64LE()) : hwndBuf.readUInt32LE()
 
   if (!lib.Blur_Init(hwndVal)) return { success: false, error: '引擎初始化失败' }
 
@@ -111,5 +119,8 @@ export function reSyncZOrder() {
 }
 
 export function destroy() {
-  if (lib && initialized) { lib.Blur_Destroy(); initialized = false }
+  if (lib && initialized) {
+    lib.Blur_Destroy()
+    initialized = false
+  }
 }

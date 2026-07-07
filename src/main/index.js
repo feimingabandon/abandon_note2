@@ -9,7 +9,7 @@
  */
 
 import * as Electron from 'electron'
-const { app, shell, BrowserWindow, ipcMain, screen, Tray, Menu } = Electron
+const { app, shell, BrowserWindow, ipcMain, screen, Tray, Menu, Notification } = Electron
 
 import { join } from 'path'
 import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
@@ -17,6 +17,7 @@ import icon from '../../resources/icon.png?asset' // 应用图标（Vite asset �
 import {
   initDatabase,
   closeDatabase,
+  getDb,
   getGeometry,
   saveGeometry,
   getSetting,
@@ -70,6 +71,8 @@ import {
 } from './db-templates.js'
 import { addAttachment, removeAttachment, listAttachments } from './db-attachments.js'
 import { searchNotes, searchSuggestions } from './db-search.js'
+import { Scheduler } from './scheduler.js'
+import { generateRecurringNotes } from './recurrence.js'
 
 /** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
 const WINDOW_NAME = 'main'
@@ -106,6 +109,9 @@ const blurConfig = {
 
 /** 防抖定时器，用于延迟保存窗口位置/尺寸 */
 let geometryTimer = null
+
+/** 统一调度器实例 */
+const scheduler = new Scheduler()
 
 // ============================================================
 // 贴边隐藏模块
@@ -829,6 +835,50 @@ app.whenReady().then(() => {
 
   // 初始化置顶状态（必须在 createWindow 之后）
   applyAlwaysOnTop()
+  // ---- 调度器任务注册 ----
+
+  // 3.3 通知任务：每分钟检查生效时间已到的便签并弹出操作系统通知
+  scheduler.register({
+    name: 'notificationTask',
+    shouldRun: () => true,
+    execute: () => {
+      const now = Date.now()
+      const db = getDb()
+      const notes = db
+        .prepare(
+          `SELECT id, content, note_type, effective_at FROM notes
+         WHERE notify_enabled = 1 AND effective_at <= ? AND effective_at > ?
+         AND status IN ('active','in_progress')
+         ORDER BY effective_at DESC LIMIT 20`
+        )
+        .all(now, now - 60000)
+
+      for (const note of notes) {
+        const summary = (note.content || '').slice(0, 50) || '（空内容）'
+        new Notification({ title: '便签提醒', body: summary, silent: false }).show()
+        db.prepare('UPDATE notes SET notify_enabled = 0 WHERE id = ?').run(note.id)
+
+        const name = (note.content || '').trim().slice(0, 5) || '空内容'
+        const typeLabel = note.note_type === 'one_time' ? '一次性' : note.note_type
+        const time = new Date(note.effective_at).toLocaleTimeString('zh-CN', { hour12: false })
+        console.log(`[notification] 便签 #${note.id}「${name}」[${typeLabel}] 生效 ${time}`)
+      }
+    }
+  })
+
+  // 3.4 循环模板生成任务：每分钟检查应当生成的模板并创建实例
+  scheduler.register({
+    name: 'noteGenerationTask',
+    shouldRun: () => true,
+    execute: () => {
+      generateRecurringNotes()
+      // 具体生成日志由 generateRecurringNotes 内部逐模板打印
+    }
+  })
+
+  // 启动调度器
+  scheduler.start()
+  console.log('[scheduler] 调度器已启动')
 
   // ---- 任务栏 & 托盘事件 ----
 
@@ -1154,7 +1204,7 @@ app.whenReady().then(() => {
 
   // 【调度器 - 健康检查】（占位，调度器未实现前返回离线状态）
   ipcMain.handle('scheduler:health', () => {
-    return { status: 'offline', reason: '调度器尚未实现（规划于阶段 3）' }
+    return scheduler.getHealth()
   })
 
   // ---- 系统托盘 ----
@@ -1188,6 +1238,7 @@ app.whenReady().then(() => {
 
 // 应用退出前关闭数据库连接和贴边资源，确保数据安全
 app.on('before-quit', () => {
+  scheduler.stop()
   closeDatabase()
   // 销毁模糊引擎（释放 DLL 资源）
   blurDestroy()

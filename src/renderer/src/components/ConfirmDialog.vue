@@ -55,10 +55,15 @@ watch(
   () => props.visible,
   async (val) => {
     if (val) {
-      if (animTimer) { clearTimeout(animTimer); animTimer = null }
+      if (animTimer) {
+        clearTimeout(animTimer)
+        animTimer = null
+      }
       rendered.value = true
       await nextTick()
-      requestAnimationFrame(() => { active.value = true })
+      requestAnimationFrame(() => {
+        active.value = true
+      })
     } else if (rendered.value) {
       close()
     }
@@ -130,7 +135,7 @@ onBeforeUnmount(() => {
   opacity: 0;
   transition:
     transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity   220ms ease;
+    opacity 220ms ease;
 }
 .confirm-card.active {
   transform: scale(1);

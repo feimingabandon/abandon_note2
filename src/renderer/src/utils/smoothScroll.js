@@ -10,9 +10,9 @@
  */
 
 /* ---- 可调参数 ---- */
-const SCALE = 0.05   // 滚轮灵敏度（越小越细腻，0.05~0.2）
-const DECAY = 0.92   // 速度衰减系数（<1，模拟惯性，0.75~0.92）
-const MIN_V  = 0.25  // 最小速度阈值（低于此值停止 RAF）
+const SCALE = 0.05 // 滚轮灵敏度（越小越细腻，0.05~0.2）
+const DECAY = 0.92 // 速度衰减系数（<1，模拟惯性，0.75~0.92）
+const MIN_V = 0.25 // 最小速度阈值（低于此值停止 RAF）
 
 /* ---- 滚动条自动隐现 ---- */
 let scrollbarTimer = null
@@ -46,45 +46,51 @@ function findScrollContainer(el) {
   return null
 }
 
-document.addEventListener('wheel', (e) => {
-  const container = findScrollContainer(e.target)
-  if (!container) return // 无可滚动容器，走原生行为
+document.addEventListener(
+  'wheel',
+  (e) => {
+    const container = findScrollContainer(e.target)
+    if (!container) return // 无可滚动容器，走原生行为
 
-  e.preventDefault()
+    e.preventDefault()
 
-  // 取/建该容器的速度状态
-  let st = states.get(container)
-  if (!st) {
-    st = { v: 0, raf: null }
-    states.set(container, st)
-  }
+    // 取/建该容器的速度状态
+    let st = states.get(container)
+    if (!st) {
+      st = { v: 0, raf: null }
+      states.set(container, st)
+    }
 
-  // 归一化 delta
-  let d = e.deltaY
-  if (e.deltaMode === 1) d *= 20
-  else if (e.deltaMode === 2) d *= container.clientHeight
-  // 钳制 delta 上限，避免系统鼠标设置差异导致速度突变
-  d = Math.sign(d) * Math.min(Math.abs(d), 150)
+    // 归一化 delta
+    let d = e.deltaY
+    if (e.deltaMode === 1) d *= 20
+    else if (e.deltaMode === 2) d *= container.clientHeight
+    // 钳制 delta 上限，避免系统鼠标设置差异导致速度突变
+    d = Math.sign(d) * Math.min(Math.abs(d), 150)
 
-  st.v += d * SCALE
+    st.v += d * SCALE
 
-  if (!st.raf) {
-    st.raf = requestAnimationFrame(function step() {
-      container.scrollTop += st.v
-      st.v *= DECAY
+    if (!st.raf) {
+      st.raf = requestAnimationFrame(function step() {
+        container.scrollTop += st.v
+        st.v *= DECAY
 
-      // 触边时快速衰减
-      if (container.scrollTop <= 0 ||
-          container.scrollTop >= container.scrollHeight - container.clientHeight) {
-        st.v *= 0.4
-      }
+        // 触边时快速衰减
+        if (
+          container.scrollTop <= 0 ||
+          container.scrollTop >= container.scrollHeight - container.clientHeight
+        ) {
+          st.v *= 0.4
+        }
 
-      if (Math.abs(st.v) < MIN_V) {
-        st.v = 0
-        st.raf = null
-        return
-      }
-      st.raf = requestAnimationFrame(step)
-    })
-  }
-}, { passive: false })
+        if (Math.abs(st.v) < MIN_V) {
+          st.v = 0
+          st.raf = null
+          return
+        }
+        st.raf = requestAnimationFrame(step)
+      })
+    }
+  },
+  { passive: false }
+)

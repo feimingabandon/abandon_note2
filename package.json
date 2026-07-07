@@ -24,7 +24,8 @@
     "better-sqlite3": "^12.9.0",
     "electron-updater": "^6.3.9",
     "font-pingfang-sc": "^1.0.5",
-    "koffi": "^2.9.0"
+    "koffi": "^2.9.0",
+    "vuedraggable": "^2.24.3"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config": "^2.1.0",

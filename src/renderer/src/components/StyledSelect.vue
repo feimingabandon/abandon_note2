@@ -26,7 +26,7 @@ const props = defineProps({
   placeholder: { type: String, default: '-' },
   size: { type: String, default: '' },
   width: { type: [String, Number], default: '' },
-  disabled: { type: Boolean, default: false },
+  disabled: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
@@ -39,11 +39,11 @@ const wrapperRef = ref(null)
 const displayLabel = computed(() => {
   const val = props.modelValue
   if (val === '' || val === null || val === undefined) return props.placeholder
-  const opt = props.options.find(o => o.value === val)
+  const opt = props.options.find((o) => o.value === val)
   return opt ? opt.label : props.placeholder
 })
 
-const sizeClass = computed(() => props.size ? `sel--${props.size}` : '')
+const sizeClass = computed(() => (props.size ? `sel--${props.size}` : ''))
 
 const wrapperStyle = computed(() => {
   if (!props.width) return {}
@@ -70,10 +70,11 @@ function onBeforeEnter(el) {
 
 function onEnter(el, done) {
   const h = el.scrollHeight
-  el.animate(
-    [{ height: '0px' }, { height: h + 'px' }],
-    { duration: 350, easing: 'cubic-bezier(0.2, 0, 0, 1)', fill: 'forwards' }
-  ).onfinish = () => {
+  el.animate([{ height: '0px' }, { height: h + 'px' }], {
+    duration: 350,
+    easing: 'cubic-bezier(0.2, 0, 0, 1)',
+    fill: 'forwards'
+  }).onfinish = () => {
     el.style.height = 'auto'
     done()
   }
@@ -84,10 +85,11 @@ function onBeforeLeave(el) {
 }
 
 function onLeave(el, done) {
-  el.animate(
-    [{ height: el.scrollHeight + 'px' }, { height: '0px' }],
-    { duration: 200, easing: 'cubic-bezier(0.42, 0, 1, 1)', fill: 'forwards' }
-  ).onfinish = done
+  el.animate([{ height: el.scrollHeight + 'px' }, { height: '0px' }], {
+    duration: 200,
+    easing: 'cubic-bezier(0.42, 0, 1, 1)',
+    fill: 'forwards'
+  }).onfinish = done
 }
 
 // 点击外部关闭
@@ -118,7 +120,13 @@ onBeforeUnmount(() => {
         {{ displayLabel }}
       </span>
       <svg class="sel-arrow" :class="{ 'is-open': open }" width="10" height="6" aria-hidden="true">
-        <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" />
+        <path
+          d="M1 1l4 4 4-4"
+          stroke="currentColor"
+          stroke-width="1.5"
+          fill="none"
+          stroke-linecap="round"
+        />
       </svg>
     </button>
 
@@ -128,11 +136,7 @@ onBeforeUnmount(() => {
       @before-leave="onBeforeLeave"
       @leave="onLeave"
     >
-      <div
-        v-if="open"
-        class="sel-panel-wrap app-bg"
-        @click.stop
-      >
+      <div v-if="open" class="sel-panel-wrap app-bg" @click.stop>
         <div class="sel-panel">
           <button
             v-for="opt in options"

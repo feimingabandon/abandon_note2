@@ -23,6 +23,36 @@ import AppSlider from './AppSlider.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import { useMessage } from '../composables/useMessage.js' // 消息弹窗
 
+// ---- 调度器健康数据 ----
+const schedulerHealth = ref(null)
+let _schedulerTimer = null
+
+async function loadSchedulerHealth() {
+  try {
+    schedulerHealth.value = await window.api.getSchedulerHealth()
+  } catch (e) {
+    console.warn('[SettingsPanel] 获取调度器健康数据失败:', e)
+    schedulerHealth.value = null
+  }
+}
+
+function formatTickTime(ts) {
+  if (!ts) return '——'
+  return new Date(ts).toLocaleString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  })
+}
+
+function tickTimeAgo(ts) {
+  if (!ts) return '——'
+  const diff = Date.now() - ts
+  if (diff < 60000) return `${Math.floor(diff / 1000)} 秒前`
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`
+  return `${Math.floor(diff / 3600000)} 小时前`
+}
+
 const props = defineProps({
   visible: {
     type: Boolean,
@@ -86,7 +116,10 @@ function onDragMove(e) {
 function onDragEnd() {
   isDragging = false
   resizing.value = false
-  if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = null }
+  if (dragRaf) {
+    cancelAnimationFrame(dragRaf)
+    dragRaf = null
+  }
   if (panelRef.value) {
     panelRef.value.style.transition = ''
     panelRef.value.style.height = panelHeight.value + '%'
@@ -168,7 +201,9 @@ const textColorInputError = ref(false)
 const bgColorHex = computed(() => {
   const parts = bgColor.value.split(' ').map(Number)
   if (parts.length !== 3) return '#ffffff'
-  return '#' + parts.map(p => Math.min(255, Math.max(0, p)).toString(16).padStart(2, '0')).join('')
+  return (
+    '#' + parts.map((p) => Math.min(255, Math.max(0, p)).toString(16).padStart(2, '0')).join('')
+  )
 })
 const bgColorInput = ref('#ffffff')
 const bgColorInputError = ref(false)
@@ -182,7 +217,7 @@ function isValidHex(val) {
 function normalizeHex(val) {
   const trimmed = val.trim().toLowerCase()
   if (trimmed.length === 4) {
-    return '#' + [...trimmed.slice(1)].map(c => c + c).join('')
+    return '#' + [...trimmed.slice(1)].map((c) => c + c).join('')
   }
   return trimmed
 }
@@ -380,7 +415,13 @@ watch(bgBlur, (v) => {
 // 边框开关 → CSS --bg-border
 watch(bgBorder, (v) => {
   el.style.setProperty('--bg-border', v ? '1' : '0')
-  window.api.setSetting(WINDOW_NAME, 'css', 'bg_border', v ? '1' : '0', '边框显示开关（1=显示, 0=隐藏）')
+  window.api.setSetting(
+    WINDOW_NAME,
+    'css',
+    'bg_border',
+    v ? '1' : '0',
+    '边框显示开关（1=显示, 0=隐藏）'
+  )
 })
 
 // 字体大小 → CSS --font-size-base
@@ -416,13 +457,15 @@ watch(blurTintHex, (v) => {
 // ---- 系统模糊 watch（防抖发送到主进程） ----
 function syncBlurConfig() {
   if (!_blurSynced) return
-  window.api.setBlurConfig({
-    enabled: blurEnabled.value,
-    radius: blurRadius.value,
-    saturation: blurSaturation.value,
-    cornerRadius: blurCornerRadius.value,
-    tint: { r: blurTintR.value, g: blurTintG.value, b: blurTintB.value }
-  }).catch(e => console.warn('[SettingsPanel] 同步模糊配置失败:', e))
+  window.api
+    .setBlurConfig({
+      enabled: blurEnabled.value,
+      radius: blurRadius.value,
+      saturation: blurSaturation.value,
+      cornerRadius: blurCornerRadius.value,
+      tint: { r: blurTintR.value, g: blurTintG.value, b: blurTintB.value }
+    })
+    .catch((e) => console.warn('[SettingsPanel] 同步模糊配置失败:', e))
 }
 
 let _blurSyncTimer = null
@@ -455,7 +498,6 @@ onMounted(async () => {
       else if (key === 'font_size_base') fontSizeBase.value = parseInt(value)
       else if (key === 'text_color') textColor.value = value
     })
-
   } catch (e) {
     console.warn('[SettingsPanel] 加载设置失败:', e)
   }
@@ -504,11 +546,15 @@ onMounted(async () => {
   } catch (e) {
     console.warn('[SettingsPanel] 校验毛玻璃状态失败:', e)
   }
+
+  // 启动调度器健康检查（每 10 秒刷新）
+  loadSchedulerHealth()
+  _schedulerTimer = setInterval(loadSchedulerHealth, 10000)
 })
 
 onBeforeUnmount(() => {
   // 清理所有待执行的防抖定时器，避免组件销毁后触发 IPC 写库
-  Object.values(debounceTimers).forEach(t => clearTimeout(t))
+  Object.values(debounceTimers).forEach((t) => clearTimeout(t))
   // 清理关闭动画定时器
   if (closeTimer) {
     clearTimeout(closeTimer)
@@ -518,6 +564,11 @@ onBeforeUnmount(() => {
   if (_blurSyncTimer) {
     clearTimeout(_blurSyncTimer)
     _blurSyncTimer = null
+  }
+  // 清理调度器健康检查定时器
+  if (_schedulerTimer) {
+    clearInterval(_schedulerTimer)
+    _schedulerTimer = null
   }
 })
 
@@ -575,7 +626,12 @@ const resetUI = () => {
       <!-- 遮罩层（已移除） -->
 
       <!-- 面板主体（玻璃态样式已内联到 .settings-panel + ::before，无需 .app-bg） -->
-      <div ref="panelRef" class="settings-panel" :class="{ active: panelActive, 'is-resizing': resizing }" :style="{ height: panelHeight + '%' }">
+      <div
+        ref="panelRef"
+        class="settings-panel"
+        :class="{ active: panelActive, 'is-resizing': resizing }"
+        :style="{ height: panelHeight + '%' }"
+      >
         <!-- 顶部拖拽指示条（拖拽调整面板高度） -->
         <div class="drag-indicator" @mousedown="onDragStart">
           <div class="drag-bar" />
@@ -584,9 +640,14 @@ const resetUI = () => {
         <!-- 面板头部 -->
         <div class="panel-header">
           <h2 class="panel-title">设置</h2>
-          <button class="panel-close-btn" @click="close" title="关闭">
+          <button class="panel-close-btn" title="关闭" @click="close">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M1 1L13 13M1 13L13 1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+              <path
+                d="M1 1L13 13M1 13L13 1"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+              />
             </svg>
           </button>
         </div>
@@ -656,7 +717,7 @@ const resetUI = () => {
                   :title="c.label"
                   @click="textColor = c.value"
                 />
-                <input type="color" class="color-input" v-model="textColor" />
+                <input v-model="textColor" type="color" class="color-input" />
                 <div class="color-hex-input-wrap">
                   <input
                     type="text"
@@ -693,13 +754,15 @@ const resetUI = () => {
                   type="color"
                   class="color-input"
                   :value="bgColorHex"
-                  @input="e => {
-                    const h = e.target.value
-                    const r = parseInt(h.slice(1,3), 16)
-                    const g = parseInt(h.slice(3,5), 16)
-                    const b = parseInt(h.slice(5,7), 16)
-                    bgColor = `${r} ${g} ${b}`
-                  }"
+                  @input="
+                    (e) => {
+                      const h = e.target.value
+                      const r = parseInt(h.slice(1, 3), 16)
+                      const g = parseInt(h.slice(3, 5), 16)
+                      const b = parseInt(h.slice(5, 7), 16)
+                      bgColor = `${r} ${g} ${b}`
+                    }
+                  "
                 />
                 <div class="color-hex-input-wrap">
                   <input
@@ -729,7 +792,9 @@ const resetUI = () => {
                 <span class="range-label-start">直角</span>
                 <span class="range-label-end">圆润</span>
               </div>
-              <span class="setting-hint">四个角的圆润程度。0 = 直角，数值越大越圆。推荐 8–16（苹果原生风格）</span>
+              <span class="setting-hint"
+                >四个角的圆润程度。0 = 直角，数值越大越圆。推荐 8–16（苹果原生风格）</span
+              >
             </div>
           </section>
 
@@ -743,10 +808,22 @@ const resetUI = () => {
               <div class="setting-left">
                 <span class="setting-label">启用毛玻璃</span>
                 <span v-if="blurError" class="setting-error">
-                  <svg class="warn-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                    <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1"/>
-                    <path d="M6 3.5v3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-                    <circle cx="6" cy="9" r="0.7" fill="currentColor"/>
+                  <svg
+                    class="warn-icon"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" />
+                    <path
+                      d="M6 3.5v3"
+                      stroke="currentColor"
+                      stroke-width="1.2"
+                      stroke-linecap="round"
+                    />
+                    <circle cx="6" cy="9" r="0.7" fill="currentColor" />
                   </svg>
                   {{ blurError }}
                 </span>
@@ -764,12 +841,20 @@ const resetUI = () => {
                   <span class="setting-label">模糊半径</span>
                   <span class="setting-value">{{ blurRadius }} DIP</span>
                 </div>
-                <AppSlider v-model="blurRadius" :min="0" :max="100" :step="1" :disabled="!blurEnabled" />
+                <AppSlider
+                  v-model="blurRadius"
+                  :min="0"
+                  :max="100"
+                  :step="1"
+                  :disabled="!blurEnabled"
+                />
                 <div class="setting-range-labels">
                   <span class="range-label-start">清晰</span>
                   <span class="range-label-end">模糊</span>
                 </div>
-                <span class="setting-hint">控制背景被打散的程度。越小越清晰，越大越像近视眼看东西。推荐值 20–40</span>
+                <span class="setting-hint"
+                  >控制背景被打散的程度。越小越清晰，越大越像近视眼看东西。推荐值 20–40</span
+                >
               </div>
 
               <!-- 颜色 -->
@@ -793,15 +878,17 @@ const resetUI = () => {
                     class="color-input"
                     :value="blurTintHex"
                     :disabled="!blurEnabled"
-                    @input="e => {
-                      const h = e.target.value
-                      const r = parseInt(h.slice(1,3), 16)
-                      const g = parseInt(h.slice(3,5), 16)
-                      const b = parseInt(h.slice(5,7), 16)
-                      blurTintR = r
-                      blurTintG = g
-                      blurTintB = b
-                    }"
+                    @input="
+                      (e) => {
+                        const h = e.target.value
+                        const r = parseInt(h.slice(1, 3), 16)
+                        const g = parseInt(h.slice(3, 5), 16)
+                        const b = parseInt(h.slice(5, 7), 16)
+                        blurTintR = r
+                        blurTintG = g
+                        blurTintB = b
+                      }
+                    "
                   />
                   <div class="color-hex-input-wrap">
                     <input
@@ -819,7 +906,9 @@ const resetUI = () => {
                     />
                   </div>
                 </div>
-                <span class="setting-hint color-hint">选中的颜色会像染色玻璃一样盖在模糊层上。默认白色 ≈ 无色叠加（推荐）</span>
+                <span class="setting-hint color-hint"
+                  >选中的颜色会像染色玻璃一样盖在模糊层上。默认白色 ≈ 无色叠加（推荐）</span
+                >
               </div>
 
               <!-- 饱和度 -->
@@ -828,12 +917,21 @@ const resetUI = () => {
                   <span class="setting-label">饱和度</span>
                   <span class="setting-value">{{ blurSaturation.toFixed(1) }}x</span>
                 </div>
-                <AppSlider v-model="blurSaturation" :min="0" :max="2" :step="0.1" :disabled="!blurEnabled" />
+                <AppSlider
+                  v-model="blurSaturation"
+                  :min="0"
+                  :max="2"
+                  :step="0.1"
+                  :disabled="!blurEnabled"
+                />
                 <div class="setting-range-labels">
                   <span class="range-label-start">黑白</span>
                   <span class="range-label-end">鲜艳</span>
                 </div>
-                <span class="setting-hint">模糊会让颜色变灰，提高饱和度能把鲜艳度补回来。1.0 = 原色，推荐 1.6–2.0（苹果官网用 1.8）</span>
+                <span class="setting-hint"
+                  >模糊会让颜色变灰，提高饱和度能把鲜艳度补回来。1.0 = 原色，推荐
+                  1.6–2.0（苹果官网用 1.8）</span
+                >
               </div>
             </template>
           </section>
@@ -846,10 +944,22 @@ const resetUI = () => {
               <div class="setting-left">
                 <span class="setting-label">开机自启</span>
                 <span v-if="autoStartError" class="setting-error">
-                  <svg class="warn-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                    <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1"/>
-                    <path d="M6 3.5v3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-                    <circle cx="6" cy="9" r="0.7" fill="currentColor"/>
+                  <svg
+                    class="warn-icon"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" />
+                    <path
+                      d="M6 3.5v3"
+                      stroke="currentColor"
+                      stroke-width="1.2"
+                      stroke-linecap="round"
+                    />
+                    <circle cx="6" cy="9" r="0.7" fill="currentColor" />
                   </svg>
                   {{ autoStartError }}
                 </span>
@@ -874,15 +984,134 @@ const resetUI = () => {
             </div>
 
             <div class="setting-item setting-item-full">
-              <BaseButton variant="danger" @click="showResetDbDialog = true" style="width: 100%">
+              <BaseButton variant="danger" style="width: 100%" @click="showResetDbDialog = true">
                 重置数据库
               </BaseButton>
             </div>
 
             <div class="setting-item setting-item-full">
-              <BaseButton variant="default" @click="showResetUIDialog = true" style="width: 100%">
+              <BaseButton variant="default" style="width: 100%" @click="showResetUIDialog = true">
                 恢复默认设置
               </BaseButton>
+            </div>
+          </section>
+
+          <!-- ========== 调度器诊断 ========== -->
+          <section v-if="schedulerHealth" class="settings-section">
+            <h3 class="section-title">
+              调度器诊断
+              <button class="sched-refresh-btn" title="刷新" @click="loadSchedulerHealth">↻</button>
+            </h3>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">调度器状态</span>
+              </div>
+              <div class="setting-right">
+                <span
+                  class="sched-badge"
+                  :class="
+                    schedulerHealth.status === 'running' ? 'sched-badge--ok' : 'sched-badge--warn'
+                  "
+                >
+                  {{ schedulerHealth.status === 'running' ? '● 运行中' : '○ 已停止' }}
+                </span>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">最近执行</span>
+                <span class="setting-hint-caption">上次检查任务的时间</span>
+              </div>
+              <div class="setting-right">
+                <span class="setting-value">
+                  {{ formatTickTime(schedulerHealth.lastTickAt) }}
+                  <span class="setting-hint-inline"
+                    >（{{ tickTimeAgo(schedulerHealth.lastTickAt) }}）</span
+                  >
+                </span>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">故障监控</span>
+                <span class="setting-hint-caption">独立计时器，检测调度器是否卡死</span>
+              </div>
+              <div class="setting-right">
+                <span
+                  class="sched-badge"
+                  :class="schedulerHealth.watchdogRunning ? 'sched-badge--ok' : 'sched-badge--warn'"
+                >
+                  {{ schedulerHealth.watchdogRunning ? '● 活跃' : '○ 休眠' }}
+                </span>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">执行保护</span>
+                <span class="setting-hint-caption">防止同一时刻重复执行</span>
+              </div>
+              <div class="setting-right">
+                <span
+                  class="sched-badge"
+                  :class="!schedulerHealth.tickStuck ? 'sched-badge--ok' : 'sched-badge--danger'"
+                >
+                  {{ schedulerHealth.tickStuck ? '⚠ 阻塞中' : '● 空闲' }}
+                </span>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">调度计数</span>
+                <span class="setting-hint-caption">每发生一次故障恢复 +1</span>
+              </div>
+              <div class="setting-right">
+                <span class="setting-value">第 {{ schedulerHealth.mainGeneration }} 轮</span>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">自动恢复</span>
+                <span class="setting-hint-caption">故障监控触发的恢复次数</span>
+              </div>
+              <div class="setting-right">
+                <span
+                  class="setting-value"
+                  :class="{ 'sched-warn': schedulerHealth.recoveryFailures > 0 }"
+                >
+                  {{ schedulerHealth.recoveryFailures }} 次
+                </span>
+              </div>
+            </div>
+
+            <!-- 任务列表 -->
+            <div v-if="schedulerHealth.tasks?.length" class="sched-tasks">
+              <div class="sched-tasks-title">注册任务（{{ schedulerHealth.tasks.length }} 个）</div>
+              <div
+                v-for="task in schedulerHealth.tasks"
+                :key="task.name"
+                class="sched-task-card"
+                :class="{ 'sched-task-card--disabled': task.disabled }"
+              >
+                <div class="sched-task-header">
+                  <span class="sched-task-name">{{ task.name }}</span>
+                  <span
+                    v-if="task.disabled"
+                    class="sched-badge sched-badge--danger"
+                    title="连续失败 10 次已自动禁用"
+                  >
+                    ⚠ 已熔断
+                  </span>
+                  <span v-else class="sched-badge sched-badge--ok">正常</span>
+                </div>
+                <div class="sched-task-meta">失败次数：{{ task.failures }}</div>
+                <div v-if="task.lastError" class="sched-task-error">{{ task.lastError }}</div>
+              </div>
             </div>
           </section>
         </div>
@@ -921,7 +1150,7 @@ const resetUI = () => {
   z-index: 1000;
   pointer-events: none;
   border-radius: var(--window-radius, 12px); /* 同步窗口圆角，裁剪面板直角 */
-  overflow: hidden;    /* 裁剪超出圆角的内容 */
+  overflow: hidden; /* 裁剪超出圆角的内容 */
 }
 
 /* ---- 遮罩层（已移除） ---- */
@@ -1115,6 +1344,16 @@ const resetUI = () => {
   color: var(--text-color);
 }
 
+.setting-hint-caption {
+  display: block;
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.75);
+  font-weight: 400;
+  margin-top: 2rem;
+  line-height: 1.3;
+  opacity: 0.7;
+}
+
 .setting-value {
   font-size: var(--fs-secondary);
   font-weight: 500;
@@ -1249,4 +1488,101 @@ const resetUI = () => {
 }
 
 /* ---- 滑动条（已由 AppSlider 组件接管）---- */
+
+/* ---- 调度器诊断 ---- */
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8rem;
+}
+.sched-refresh-btn {
+  width: 22rem;
+  height: 22rem;
+  border: none;
+  border-radius: 50%;
+  background: rgba(128, 128, 128, 0.1);
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-body) * 0.95);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 150ms ease;
+  flex-shrink: 0;
+}
+.sched-refresh-btn:hover {
+  background: rgba(128, 128, 128, 0.2);
+  color: var(--text-color);
+}
+.setting-hint-inline {
+  color: var(--text-color-secondary);
+  font-weight: 400;
+  font-size: calc(var(--fs-secondary) * 0.88);
+}
+/* 纯黑底 + 彩色文字：完全不透明，字在最暗底上最锐利 */
+.sched-badge {
+  font-size: calc(var(--fs-secondary) * 0.88);
+  padding: 2rem 8rem;
+  border-radius: 4rem;
+  font-weight: 500;
+  background: var(--text-color);
+  opacity: 0.8;
+}
+.sched-badge--ok {
+  color: rgb(52, 199, 89);
+}
+.sched-badge--warn {
+  color: rgb(255, 149, 0);
+}
+.sched-badge--danger {
+  color: rgb(255, 59, 48);
+}
+.sched-warn {
+  color: rgb(255, 149, 0);
+}
+.sched-tasks {
+  margin-top: 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 8rem;
+}
+.sched-tasks-title {
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+  color: var(--text-color-secondary);
+  margin-bottom: 4rem;
+}
+.sched-task-card {
+  padding: 10rem;
+  border-radius: 8rem;
+  background: rgba(128, 128, 128, 0.04);
+  border: 1px solid rgba(128, 128, 128, 0.08);
+}
+.sched-task-card--disabled {
+  opacity: 0.6;
+  border-color: rgba(255, 59, 48, 0.2);
+}
+.sched-task-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4rem;
+}
+.sched-task-name {
+  font-size: calc(var(--fs-secondary) * 0.95);
+  font-weight: 600;
+}
+.sched-task-meta {
+  font-size: calc(var(--fs-secondary) * 0.8);
+  color: var(--text-color-secondary);
+}
+.sched-task-error {
+  font-size: calc(var(--fs-secondary) * 0.78);
+  color: rgb(255, 59, 48);
+  margin-top: 4rem;
+  padding: 4rem 6rem;
+  background: rgba(255, 59, 48, 0.06);
+  border-radius: 4rem;
+  word-break: break-all;
+}
 </style>

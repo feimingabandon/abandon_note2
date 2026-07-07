@@ -67,7 +67,7 @@ function isValidTransition(current, target) {
  * @param {number|null} [options.effectiveAt=null] - 生效时间戳，默认等于 created_at
  * @param {string} [options.noteType='one_time'] - 便签类型
  * @param {number|null} [options.templateId=null] - 关联的循环模板 ID
- * @param {boolean} [options.notifyEnabled=true] - 是否启用通知
+ * @param {boolean} [options.notifyEnabled=true] - 是否启用操作系统通知
  * @returns {Object} 创建的便签完整对象
  */
 export function createNote({
@@ -288,6 +288,7 @@ export function listNotes({
 
 /**
  * 批量更新便签状态
+ * 仅允许对非终态便签执行批量状态流转（completed/cancelled/expired 不可逆）
  * @param {number[]} ids - 便签 ID 数组
  * @param {string} status - 目标状态
  * @returns {number} 受影响行数
@@ -300,7 +301,9 @@ export function batchUpdateStatus(ids, status) {
   return db
     .prepare(
       `
-    UPDATE notes SET status = ?, updated_at = ? WHERE id IN (${placeholders})
+    UPDATE notes SET status = ?, updated_at = ?
+    WHERE id IN (${placeholders})
+      AND status NOT IN ('completed','cancelled','expired')
   `
     )
     .run(status, ts, ...ids).changes

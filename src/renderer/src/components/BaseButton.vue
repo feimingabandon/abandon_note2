@@ -13,7 +13,7 @@
 defineProps({
   variant: { type: String, default: 'default' },
   size: { type: String, default: 'md' },
-  disabled: { type: Boolean, default: false },
+  disabled: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['click'])
@@ -45,7 +45,9 @@ const emit = defineEmits(['click'])
   background-color: rgba(255, 255, 255, 0.06);
   cursor: pointer;
   outline: none;
-  transition: background-color 150ms ease, border-color 150ms ease;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease;
   white-space: nowrap;
 }
 

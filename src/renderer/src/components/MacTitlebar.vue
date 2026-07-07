@@ -61,23 +61,25 @@ const toggleLock = async () => {
     <!-- 红绿灯按钮组：设置 no-drag 使按钮可点击 -->
     <div class="traffic-lights">
       <!-- 关闭按钮(红色) -->
-      <button class="light light-close" @click="close" title="关闭">
+      <button class="light light-close" title="关闭" @click="close">
         <img class="light-icon" src="@/resources/icons/close.png" alt="关闭" />
       </button>
       <!-- 置顶切换按钮(黄色=已置顶 / 灰色=未置顶) -->
       <button
         class="light light-pin"
         :class="{ pinned: alwaysOnTop }"
+        :title="alwaysOnTop ? '取消置顶' : '窗口置顶'"
         @click="toggleAlwaysOnTop"
-        :title="alwaysOnTop ? '取消置顶' : '窗口置顶'">
+      >
         <img class="light-icon" src="@/resources/icons/pin.svg" alt="置顶" />
       </button>
       <!-- 锁定按钮（绿色=未锁 / 橙色=已锁） -->
       <button
         class="light light-lock"
         :class="{ locked: locked }"
+        :title="locked ? '解锁' : '锁定'"
         @click="toggleLock"
-        :title="locked ? '解锁' : '锁定'">
+      >
         <img class="light-icon" src="@/resources/icons/lock.png" alt="锁定" />
       </button>
     </div>
@@ -139,20 +141,40 @@ const toggleLock = async () => {
 }
 
 /* 各按钮的默认背景色（模拟 macOS 红绿灯） */
-.light-close { background-color: #ff5f57; } /* 红色 - 关闭 */
-.light-pin { background-color: #8e8e93; } /* 灰色 - 未置顶 */
-.light-pin.pinned { background-color: #febc2e; } /* 黄色 - 已置顶（原最小化色） */
-.light-lock { background-color: #28c840; } /* 绿色 - 未锁定 */
+.light-close {
+  background-color: #ff5f57;
+} /* 红色 - 关闭 */
+.light-pin {
+  background-color: #8e8e93;
+} /* 灰色 - 未置顶 */
+.light-pin.pinned {
+  background-color: #febc2e;
+} /* 黄色 - 已置顶（原最小化色） */
+.light-lock {
+  background-color: #28c840;
+} /* 绿色 - 未锁定 */
 
 /* 各按钮悬停时的加深背景色 */
-.light-close:hover { background-color: #ff4136; }
-.light-pin:hover { background-color: #7c7c80; }
-.light-pin.pinned:hover { background-color: #f5a623; }
-.light-lock:hover { background-color: #1db954; }
+.light-close:hover {
+  background-color: #ff4136;
+}
+.light-pin:hover {
+  background-color: #7c7c80;
+}
+.light-pin.pinned:hover {
+  background-color: #f5a623;
+}
+.light-lock:hover {
+  background-color: #1db954;
+}
 
 /* 锁定状态：按钮变橙色 */
-.light-lock.locked { background-color: #ff9f0a; }
-.light-lock.locked:hover { background-color: #e08e00; }
+.light-lock.locked {
+  background-color: #ff9f0a;
+}
+.light-lock.locked:hover {
+  background-color: #e08e00;
+}
 
 /* 锁定状态下标题栏不可拖拽 */
 .mac-titlebar.locked {

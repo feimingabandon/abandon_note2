@@ -149,21 +149,69 @@ async function onMouseDown(e, direction) {
 
 /* ---- 边缘手柄（条形，宽度/高度 5px） ---- */
 /* 上边缘：水平条形，留出 6px 避免与角手柄重叠 */
-.rh-n { top: 0; left: 6px; right: 6px; height: 5px; cursor: ns-resize; }
+.rh-n {
+  top: 0;
+  left: 6px;
+  right: 6px;
+  height: 5px;
+  cursor: ns-resize;
+}
 /* 下边缘 */
-.rh-s { bottom: 0; left: 6px; right: 6px; height: 5px; cursor: ns-resize; }
+.rh-s {
+  bottom: 0;
+  left: 6px;
+  right: 6px;
+  height: 5px;
+  cursor: ns-resize;
+}
 /* 左边缘：垂直条形 */
-.rh-w { left: 0; top: 6px; bottom: 6px; width: 5px; cursor: ew-resize; }
+.rh-w {
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 5px;
+  cursor: ew-resize;
+}
 /* 右边缘 */
-.rh-e { right: 0; top: 6px; bottom: 6px; width: 5px; cursor: ew-resize; }
+.rh-e {
+  right: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 5px;
+  cursor: ew-resize;
+}
 
 /* ---- 角手柄（正方形 8x8px，对角线方向光标） ---- */
 /* 左上角 */
-.rh-nw { top: 0; left: 0; width: 8px; height: 8px; cursor: nwse-resize; }
+.rh-nw {
+  top: 0;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nwse-resize;
+}
 /* 右上角 */
-.rh-ne { top: 0; right: 0; width: 8px; height: 8px; cursor: nesw-resize; }
+.rh-ne {
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nesw-resize;
+}
 /* 左下角 */
-.rh-sw { bottom: 0; left: 0; width: 8px; height: 8px; cursor: nesw-resize; }
+.rh-sw {
+  bottom: 0;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nesw-resize;
+}
 /* 右下角 */
-.rh-se { bottom: 0; right: 0; width: 8px; height: 8px; cursor: nwse-resize; }
+.rh-se {
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nwse-resize;
+}
 </style>

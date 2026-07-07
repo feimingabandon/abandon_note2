@@ -24,7 +24,7 @@ const props = defineProps({
   presets: { type: Array, default: () => [14, 15, 16, 17, 18, 19, 20] },
   min: { type: Number, default: 12 },
   max: { type: Number, default: 24 },
-  width: { type: [String, Number], default: '' },
+  width: { type: [String, Number], default: '' }
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -40,9 +40,12 @@ let warningTimer = null
 let blurTimer = null
 
 // ============ Sync external model → input text ============
-watch(() => props.modelValue, (v) => {
-  inputText.value = String(v)
-})
+watch(
+  () => props.modelValue,
+  (v) => {
+    inputText.value = String(v)
+  }
+)
 
 // ============ Methods ============
 function onInput(e) {
@@ -50,7 +53,10 @@ function onInput(e) {
   // 用户开始编辑时清除之前的警告边框
   if (hasWarning.value) {
     hasWarning.value = false
-    if (warningTimer) { clearTimeout(warningTimer); warningTimer = null }
+    if (warningTimer) {
+      clearTimeout(warningTimer)
+      warningTimer = null
+    }
   }
 }
 
@@ -103,7 +109,10 @@ function commit() {
 
 function onFocus() {
   // 清除待执行的 blur 关闭定时器，防止「blur 延迟关闭」与「focus 打开」竞态
-  if (blurTimer) { clearTimeout(blurTimer); blurTimer = null }
+  if (blurTimer) {
+    clearTimeout(blurTimer)
+    blurTimer = null
+  }
   open.value = true
 }
 
@@ -143,7 +152,10 @@ function toggle() {
     open.value = false
   } else {
     // 清除待执行的 blur 关闭定时器，防止先前的 blur 延迟关闭覆盖本次打开
-    if (blurTimer) { clearTimeout(blurTimer); blurTimer = null }
+    if (blurTimer) {
+      clearTimeout(blurTimer)
+      blurTimer = null
+    }
     open.value = true
     inputRef.value?.focus()
   }
@@ -155,10 +167,11 @@ function onBeforeEnter(el) {
 }
 function onEnter(el, done) {
   const h = el.scrollHeight
-  el.animate(
-    [{ height: '0px' }, { height: h + 'px' }],
-    { duration: 350, easing: 'cubic-bezier(0.2, 0, 0, 1)', fill: 'forwards' }
-  ).onfinish = () => {
+  el.animate([{ height: '0px' }, { height: h + 'px' }], {
+    duration: 350,
+    easing: 'cubic-bezier(0.2, 0, 0, 1)',
+    fill: 'forwards'
+  }).onfinish = () => {
     el.style.height = 'auto'
     done()
   }
@@ -167,10 +180,11 @@ function onBeforeLeave(el) {
   el.style.height = el.scrollHeight + 'px'
 }
 function onLeave(el, done) {
-  el.animate(
-    [{ height: el.scrollHeight + 'px' }, { height: '0px' }],
-    { duration: 200, easing: 'cubic-bezier(0.42, 0, 1, 1)', fill: 'forwards' }
-  ).onfinish = done
+  el.animate([{ height: el.scrollHeight + 'px' }, { height: '0px' }], {
+    duration: 200,
+    easing: 'cubic-bezier(0.42, 0, 1, 1)',
+    fill: 'forwards'
+  }).onfinish = done
 }
 
 // ============ 点击外部关闭 ============
@@ -189,7 +203,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="wrapperRef" class="fsi-wrapper" :style="width ? { width: typeof width === 'number' ? width + 'px' : width } : {}">
+  <div
+    ref="wrapperRef"
+    class="fsi-wrapper"
+    :style="width ? { width: typeof width === 'number' ? width + 'px' : width } : {}"
+  >
     <!-- 触发器：输入框 + 下拉箭头 -->
     <div class="fsi-trigger" :class="{ 'is-open': open, 'has-warning': hasWarning }">
       <input
@@ -204,8 +222,20 @@ onBeforeUnmount(() => {
         @keydown="onKeydown"
       />
       <button class="fsi-arrow-btn" tabindex="-1" @click="toggle">
-        <svg class="fsi-arrow" :class="{ 'is-open': open }" width="10" height="6" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" />
+        <svg
+          class="fsi-arrow"
+          :class="{ 'is-open': open }"
+          width="10"
+          height="6"
+          aria-hidden="true"
+        >
+          <path
+            d="M1 1l4 4 4-4"
+            stroke="currentColor"
+            stroke-width="1.5"
+            fill="none"
+            stroke-linecap="round"
+          />
         </svg>
       </button>
     </div>

@@ -30,7 +30,7 @@ const props = defineProps({
   thumbSize: { type: Number, default: 20 },
   trackColor: { type: String, default: '#0071e3' },
   bgColor: { type: String, default: 'rgba(255, 255, 255, 0.12)' },
-  disabled: { type: Boolean, default: false },
+  disabled: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
@@ -52,9 +52,7 @@ const progress = computed(() => {
 /**
  * 白色圆点位置：0 时圆点与左侧半圆帽重合（left=0），100 时与右侧半圆帽重合（left=100%-thumbSize）
  */
-const thumbLeft = computed(() =>
-  `calc(${progress.value} * (100% - ${props.thumbSize}rem))`
-)
+const thumbLeft = computed(() => `calc(${progress.value} * (100% - ${props.thumbSize}rem))`)
 
 /**
  * 蓝色填充宽度：0 时归零；>0 时覆盖到圆点中心 + 半圆收尾
@@ -67,9 +65,9 @@ const fillW = computed(() => {
 
 const cssVars = computed(() => ({
   '--s-h': props.thumbSize + 'rem',
-  '--s-r': (props.thumbSize / 2) + 'rem',
+  '--s-r': props.thumbSize / 2 + 'rem',
   '--s-track': props.trackColor,
-  '--s-bg': props.bgColor,
+  '--s-bg': props.bgColor
 }))
 
 /**
@@ -140,10 +138,10 @@ function onUp() {
 
 <template>
   <div
+    ref="trackRef"
     class="slider-root"
     :class="{ dragging, disabled }"
     :style="cssVars"
-    ref="trackRef"
     @pointerdown="onDown"
     @pointermove="onMove"
     @pointerup="onUp"
@@ -211,6 +209,8 @@ function onUp() {
 }
 .slider-root:not(.dragging) .slider-fill,
 .slider-root:not(.dragging) .slider-thumb {
-  transition: width 80ms ease, left 80ms ease;
+  transition:
+    width 80ms ease,
+    left 80ms ease;
 }
 </style>

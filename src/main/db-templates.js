@@ -35,7 +35,7 @@ function isValidRecurrenceRule(rule) {
  * @param {Object} options
  * @param {string} options.recurrenceRule - JSON 字符串，循环规则
  * @param {string} [options.content=''] - 模板默认正文
- * @param {boolean} [options.notifyEnabled=true] - 生成实例时是否通知
+ * @param {boolean} [options.notifyEnabled=true] - 生成实例时是否发送操作系统通知
  * @returns {Object} 创建的模板对象
  * @throws {Error} recurrenceRule 为空或 JSON 格式无效时抛出
  */

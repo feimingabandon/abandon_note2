@@ -18,14 +18,28 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import MacTitlebar from './components/MacTitlebar.vue' // 自定义 Mac 风格标题栏
 import ResizeHandles from './components/ResizeHandles.vue' // 自定义窗口缩放手柄
 import SettingsPanel from './components/SettingsPanel.vue' // 底部弹出式设置面板
-import MessageToast from './components/MessageToast.vue' // 消息弹窗（Apple 风格）
+import MessageToast from './components/MessageToast.vue'
+import NoteList from './components/NoteList.vue'
+import NoteEditor from './components/NoteEditor.vue'
+import ActionBar from './components/ActionBar.vue'
+import AttachmentPanel from './components/AttachmentPanel.vue'
+import TagPanel from './components/TagPanel.vue' // 消息弹窗（Apple 风格）
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 
-// 注册全局消息通知能力（子孙组件通过 useMessage() 获取）
+// 注册全局应用内消息通知能力（子孙组件通过 useMessage() 获取）
 createMessageProvider()
 
 /** 设置面板显隐状态 */
 const showSettings = ref(false)
+
+/** 当前选中的便签 */
+const selectedNote = ref(null)
+
+/** NoteList 引用 */
+const noteListRef = ref(null)
+
+/** 标签筛选 ID 列表 */
+const tagFilterIds = ref([])
 
 /** 窗口锁定状态 */
 const locked = ref(false)
@@ -65,7 +79,9 @@ onMounted(async () => {
       if (savedBlur?.cornerRadius !== undefined) {
         el.style.setProperty('--window-radius', savedBlur.cornerRadius + 'px')
       }
-    } catch (e) { /* 无模糊配置则使用 CSS 默认值 12px */ }
+    } catch (e) {
+      /* 无模糊配置则使用 CSS 默认值 12px */
+    }
   } catch (err) {
     // 读取失败时使用 CSS 中定义的默认值，不影响应用正常运行
     console.warn('[App] 读取持久化设置失败，使用默认值:', err)
@@ -95,6 +111,29 @@ const onMouseEnter = () => window.api.windowHover(true)
 const onMouseLeave = () => window.api.windowHover(false)
 document.addEventListener('mouseenter', onMouseEnter)
 document.addEventListener('mouseleave', onMouseLeave)
+// ---- 便签交互 ----
+function onSelectNote(note) {
+  selectedNote.value = note
+}
+
+function onCloseEditor() {
+  selectedNote.value = null
+  noteListRef.value?.refresh()
+}
+
+async function onNoteSaved(updated) {
+  if (updated) selectedNote.value = updated
+  noteListRef.value?.refresh()
+}
+
+async function onCreateNote() {
+  noteListRef.value?.refresh()
+}
+
+function onTagFilter(tagIds) {
+  tagFilterIds.value = tagIds || []
+}
+
 onUnmounted(() => {
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
@@ -107,14 +146,18 @@ onUnmounted(() => {
     <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
     <ResizeHandles :locked="locked" />
     <!-- Mac 风格标题栏，包含红绿灯按钮和标题文字 -->
-    <MacTitlebar v-model:locked="locked" v-model:alwaysOnTop="alwaysOnTop" title="列表">
+    <MacTitlebar v-model:locked="locked" v-model:always-on-top="alwaysOnTop" title="列表">
       <!-- 设置和帮助按钮组 -->
       <div class="titlebar-actions-group">
         <!-- 设置按钮 -->
-        <button class="titlebar-btn titlebar-btn-settings" title="设置" @click="showSettings = true">
+        <button
+          class="titlebar-btn titlebar-btn-settings"
+          title="设置"
+          @click="showSettings = true"
+        >
           <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
         </button>
-        <!-- 帮助按钮 -->
+        <!-- 帮助按钮（预留，暂未绑定功能） -->
         <button class="titlebar-btn titlebar-btn-help" title="帮助">
           <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
         </button>
@@ -122,13 +165,38 @@ onUnmounted(() => {
     </MacTitlebar>
     <!-- 主内容区域，flex:1 占据剩余空间，支持垂直滚动 -->
     <main class="content">
-      <p>主页面内容区域</p>
+      <!-- 操作栏（新建 + 搜索，双模切换） -->
+      <ActionBar class="app-search" />
+
+      <!-- 标签筛选栏 -->
+      <TagPanel class="app-tags" @filter="onTagFilter" />
+
+      <!-- 列表视图（无选中便签时） -->
+      <NoteList
+        v-if="!selectedNote"
+        ref="noteListRef"
+        :filter-tag-ids="tagFilterIds"
+        class="app-list"
+        @select="onSelectNote"
+        @create="onCreateNote"
+      />
+
+      <!-- 编辑视图（选中便签时） -->
+      <template v-else>
+        <NoteEditor
+          :note="selectedNote"
+          class="app-editor"
+          @saved="onNoteSaved"
+          @close="onCloseEditor"
+        />
+        <AttachmentPanel v-if="selectedNote" :note-id="selectedNote.id" class="app-attachments" />
+      </template>
     </main>
 
     <!-- 设置面板（底部弹出） -->
     <SettingsPanel v-model:visible="showSettings" />
 
-    <!-- 消息弹窗（Apple 风格 Toast，固定顶部居中） -->
+    <!-- 应用内消息弹窗（Apple 风格 Toast，固定顶部居中） -->
     <MessageToast />
   </div>
 </template>
@@ -193,5 +261,27 @@ onUnmounted(() => {
 
   /* 阻止滚动链接：子元素滚到头不会导致父级抖动 */
   overscroll-behavior: contain;
+}
+
+/* 搜索框间距 */
+.app-search {
+  margin-bottom: 8rem;
+}
+
+/* 标签筛选间距 */
+.app-tags {
+  margin-bottom: 8rem;
+}
+
+/* 列表/编辑器/附件弹性填充 */
+.app-list,
+.app-editor {
+  flex: 1;
+  min-height: 0;
+}
+
+.app-attachments {
+  flex-shrink: 0;
+  max-height: 30%;
 }
 </style>

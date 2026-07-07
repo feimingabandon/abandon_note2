@@ -1,8 +1,8 @@
 # 便签模块需求文档
 
-> 版本：v2.2  
+> 版本：v2.0  
 > 最后更新：2026-07-06  
-> 状态：阶段 2（IPC 桥接）进行中（2.1~2.2 已完，2.3~2.6 待开发）
+> 状态：需求确认完成，待进入开发
 
 ---
 
@@ -16,7 +16,6 @@
 6. [IPC 接口设计](#6-ipc-接口设计)
 7. [开发分期规划](#7-开发分期规划)
 8. [附录：术语表](#8-附录术语表)
-9. [开发实施计划](#9-开发实施计划)
 
 ---
 
@@ -1090,58 +1089,3 @@ for each 活跃模板 (is_paused=0, is_deleted=0):
 | 附件 | Attachment | 图片/视频/音频文件 |
 | 标签 | Tag | 用户自定义的分类标记 |
 | FTS | Full-Text Search | SQLite 全文搜索引擎 |
-
----
-
-## 9. 开发实施计划
-
-### 阶段 1：数据底座 ✅ 已完成（2026-07-06）
-
-| 顺序 | 任务 | 产出文件 | 验证方式 |
-|------|------|---------|------|
-| 1.1 | `db.js` 新增建表迁移（6 表+3 触发器+5 索引） | `src/main/db.js` 扩展 | SQLite 客户端直连验证 |
-| 1.2 | `notes` CRUD 函数 | `src/main/db-notes.js` | 创建→编辑→完成→归档 |
-| 1.3 | `tags` + `note_tags` CRUD | `src/main/db-tags.js` | 绑定/解绑/多标签筛选 |
-| 1.4 | `note_templates` CRUD | `src/main/db-templates.js` | 创建→暂停→恢复→软删除 |
-| 1.5 | `note_attachments` CRUD | `src/main/db-attachments.js` | 添加→级联删除验证 |
-| 1.6 | FTS5 搜索函数 | `src/main/db-search.js` | 全文搜索+中文分词测试 |
-
-### 阶段 2：IPC 桥接 + 渲染层骨架 🔄 进行中（2026-07-06）
-
-| 顺序 | 任务 | 产出 |
-|------|------|------|
-| 2.1 | 注册 6.1~6.7 全部 IPC 通道 | `src/main/index.js` 新增 handler |
-| 2.2 | preload 暴露 API | `src/preload/index.js` 更新 |
-| 2.3 | 便签列表-时间线视图 | `NoteList.vue`（时间线模式） |
-| 2.4 | 便签编辑器（Markdown） | `NoteEditor.vue` |
-| 2.5 | 附件上传 + 展示 | `AttachmentPanel.vue` |
-| 2.6 | 标签面板 + 筛选栏 | `TagPanel.vue` |
-
-### 阶段 3：核心逻辑（约 4-5 天）
-
-| 顺序 | 任务 | 产出 |
-|------|------|------|
-| 3.1 | Scheduler 类 | `src/main/scheduler.js` |
-| 3.2 | 循环生成算法 | `src/main/recurrence.js` |
-| 3.3 | 通知模块注册到 Scheduler | tick 中注册 notificationTask |
-| 3.4 | 循环模板生成任务注册 | tick 中注册 noteGenerationTask |
-| 3.5 | 自定义拖拽排序 UI | `NoteList.vue`（自定义模式） |
-| 3.6 | vuedraggable 集成 + 三区域 | 置顶区/日常区隔离、过期区只读 |
-
-### 阶段 4：收尾（约 2-3 天）
-
-| 顺序 | 任务 | 产出 |
-|------|------|------|
-| 4.1 | 批量操作 UI + IPC | 复选框+批量工具栏 |
-| 4.2 | `scheduler:health` 诊断面板 | 开发者工具页 |
-| 4.3 | 看门狗 + 代数去重 + 终极告警 集成测试 | 整体 Scheduler 验证 |
-| 4.4 | 全文搜索 UI | 搜索框+高亮结果 |
-
-### 关键里程碑
-
-| 周次 | 完成内容 |
-|------|---------|
-| Week 1 | 阶段 1 完成 ✅ → 数据库可读写、便签可 CRUD |
-| Week 2 | 阶段 2 完成 → 前端列表可渲染、可编辑、可搜索 |
-| Week 3 | 阶段 3 完成 → 循环便签自动生成、拖拽排序可用 |
-| Week 4 | 阶段 4 完成 → 批量操作、诊断面板、集成测试通过 |
