@@ -6,6 +6,9 @@
  * 展开态：活跃框在文档流内向下生长，挤占下方内容
  */
 import { ref, computed, onBeforeUnmount } from 'vue'
+import DateTimePicker from './DateTimePicker.vue'
+
+const emit = defineEmits(['create'])
 
 // ============================================================
 // 状态
@@ -15,6 +18,11 @@ const expanded = ref(false)
 const collapsing = ref(false) // 收起动画进行中，保持展开内容但缩高
 const expandHeight = ref(40) // vh，默认 40vh
 const resizing = ref(false)
+
+// ---- 新建便签表单 ----
+const newContent = ref('')
+const newEffectiveAt = ref('') // "YYYY-MM-DD HH:mm:ss" 或空（空 = 立即生效）
+const creating = ref(false) // 防止重复提交
 
 // ============================================================
 // 每个框的动态 class
@@ -132,6 +140,33 @@ onBeforeUnmount(() => {
 })
 
 // ============================================================
+// 新建便签提交
+// ============================================================
+async function handleCreateNote() {
+  const content = newContent.value.trim()
+  if (!content) return
+  if (creating.value) return
+  creating.value = true
+
+  try {
+    const options = { content }
+    // 如果设置了生效时间，转为毫秒时间戳
+    if (newEffectiveAt.value) {
+      options.effectiveAt = new Date(newEffectiveAt.value).getTime()
+    }
+    await window.api.createNote(options)
+    newContent.value = ''
+    newEffectiveAt.value = ''
+    emit('create')
+    closeExpanded()
+  } catch (e) {
+    console.error('[ActionBar] 创建便签失败:', e)
+  } finally {
+    creating.value = false
+  }
+}
+
+// ============================================================
 // 展开态高度
 // ============================================================
 const expandBoxStyle = computed(() => {
@@ -201,7 +236,34 @@ const expandBoxStyle = computed(() => {
             <span class="ab-expand-title">新建便签</span>
             <div class="ab-header-spacer" />
           </div>
-          <div class="ab-panel-body" />
+          <div class="ab-panel-body">
+            <!-- 便签内容 -->
+            <textarea
+              v-model="newContent"
+              class="ab-textarea"
+              placeholder="输入便签内容…（Enter 换行）"
+              rows="3"
+            />
+
+            <!-- 生效时间 -->
+            <div class="ab-field">
+              <label class="ab-field-label">生效时间</label>
+              <DateTimePicker
+                v-model="newEffectiveAt"
+                placeholder="立即生效"
+                :width="'100%'"
+              />
+            </div>
+
+            <!-- 提交按钮 -->
+            <button
+              class="ab-submit-btn"
+              :disabled="!newContent.trim() || creating"
+              @click="handleCreateNote"
+            >
+              {{ creating ? '创建中…' : '创建便签' }}
+            </button>
+          </div>
           <div class="ab-drag-handle" @mousedown="onDragStart">
             <div class="ab-drag-bar" />
           </div>
@@ -311,6 +373,7 @@ const expandBoxStyle = computed(() => {
   align-items: stretch;
   height: 40vh;
   flex-grow: 1;
+  overflow: visible;
 }
 .ab-box--hidden {
   display: none;
@@ -347,9 +410,8 @@ const expandBoxStyle = computed(() => {
 /* === 面板内容区 === */
 .ab-panel-body {
   flex: 1;
-  overflow-y: auto;
+  overflow: visible;
   padding: 0 14rem;
-  overscroll-behavior: contain;
 }
 
 /* === 拖拽条（底部，参照 SettingsPanel） === */
@@ -428,5 +490,66 @@ const expandBoxStyle = computed(() => {
 .ab-fade-enter-from,
 .ab-fade-leave-to {
   opacity: 0;
+}
+
+/* === 新建便签表单 === */
+.ab-textarea {
+  display: block;
+  width: 100%;
+  padding: 10rem 12rem;
+  font-size: var(--fs-body);
+  font-family: inherit;
+  font-weight: 500;
+  color: var(--text-color);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1rem solid color-mix(in srgb, var(--text-color) 12%, transparent);
+  border-radius: 8rem;
+  outline: none;
+  resize: vertical;
+  transition: border-color 150ms ease;
+  line-height: 1.5;
+}
+.ab-textarea:focus {
+  border-color: color-mix(in srgb, var(--text-color) 25%, transparent);
+}
+.ab-textarea::placeholder {
+  color: var(--text-color-secondary);
+  opacity: 0.5;
+}
+
+.ab-field {
+  margin-top: 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 6rem;
+}
+.ab-field-label {
+  font-size: var(--fs-secondary);
+  color: var(--text-color-secondary);
+  font-weight: 500;
+}
+
+.ab-submit-btn {
+  margin-top: 14rem;
+  display: block;
+  width: 100%;
+  padding: 10rem 0;
+  font-size: var(--fs-body);
+  font-family: inherit;
+  font-weight: 600;
+  color: var(--text-color);
+  background: #0071e3;
+  border: none;
+  border-radius: 8rem;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 150ms ease;
+}
+.ab-submit-btn:hover:not(:disabled) {
+  background: #0077ed;
+}
+.ab-submit-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 </style>

@@ -166,7 +166,7 @@ onUnmounted(() => {
     <!-- 主内容区域，flex:1 占据剩余空间，支持垂直滚动 -->
     <main class="content">
       <!-- 操作栏（新建 + 搜索，双模切换） -->
-      <ActionBar class="app-search" />
+      <ActionBar class="app-search" @create="onCreateNote" />
 
       <!-- 标签筛选栏 -->
       <TagPanel class="app-tags" @filter="onTagFilter" />
@@ -256,7 +256,7 @@ onUnmounted(() => {
 /* 主内容区域 */
 .content {
   flex: 1; /* 占据标题栏之外的所有剩余空间 */
-  padding: 16px; /* 内边距 */
+  padding: 16rem; /* 内边距，统一使用 rem 跟随窗口缩放 */
   overflow-y: auto; /* 内容超出时显示垂直滚动条 */
 
   /* 阻止滚动链接：子元素滚到头不会导致父级抖动 */

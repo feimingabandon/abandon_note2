@@ -67,7 +67,9 @@ function isValidTransition(current, target) {
  * @param {number|null} [options.effectiveAt=null] - 生效时间戳，默认等于 created_at
  * @param {string} [options.noteType='one_time'] - 便签类型
  * @param {number|null} [options.templateId=null] - 关联的循环模板 ID
- * @param {boolean} [options.notifyEnabled=true] - 是否启用操作系统通知
+ * @param {boolean} [options.notifyEnabled=false] - 是否启用操作系统通知，默认关闭
+ * @param {boolean} [options.isPinned=false] - 是否置顶，默认关闭
+ * @param {number} [options.sortOrder=0] - 排序序号
  * @returns {Object} 创建的便签完整对象
  */
 export function createNote({
@@ -75,7 +77,9 @@ export function createNote({
   effectiveAt = null,
   noteType = 'one_time',
   templateId = null,
-  notifyEnabled = 1
+  notifyEnabled = 0,
+  isPinned = 0,
+  sortOrder = 0
 } = {}) {
   const ts = now()
   const effAt = effectiveAt ?? ts
@@ -84,10 +88,10 @@ export function createNote({
     .prepare(
       `
     INSERT INTO notes (template_id, note_type, content, status, is_pinned, notify_enabled, effective_at, sort_order, created_at, updated_at)
-    VALUES (?, ?, ?, 'active', 0, ?, ?, 0, ?, ?)
+    VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
   `
     )
-    .run(templateId, noteType, content, notifyEnabled ? 1 : 0, effAt, ts, ts)
+    .run(templateId, noteType, content, isPinned ? 1 : 0, notifyEnabled ? 1 : 0, effAt, sortOrder, ts, ts)
 
   return getNoteById(result.lastInsertRowid)
 }

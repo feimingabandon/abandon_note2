@@ -471,7 +471,7 @@ defineExpose({ refresh: loadNotes })
   display: flex;
   align-items: center;
   gap: 10rem;
-  padding: 12rem 16rem;
+  padding: 12rem 12rem;
   border-bottom: 1px solid rgba(128, 128, 128, 0.15);
   flex-shrink: 0;
 }
@@ -553,6 +553,7 @@ defineExpose({ refresh: loadNotes })
   flex: 1;
   overflow-y: auto;
   padding: 8rem 12rem;
+  scrollbar-gutter: stable;
 }
 .nl-group {
   margin-bottom: 16rem;
@@ -561,7 +562,7 @@ defineExpose({ refresh: loadNotes })
   font-size: var(--fs-secondary);
   font-weight: 500;
   color: var(--text-color-secondary);
-  padding: 6rem 8rem 4rem;
+  padding: 6rem 0 4rem;
 }
 
 /* ===== 自定义模式 ===== */
@@ -569,6 +570,7 @@ defineExpose({ refresh: loadNotes })
   flex: 1;
   overflow-y: auto;
   padding: 8rem 12rem;
+  scrollbar-gutter: stable;
 }
 .nl-zone {
   margin-bottom: 20rem;
