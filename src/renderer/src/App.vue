@@ -23,7 +23,7 @@ import NoteList from './components/NoteList.vue'
 import NoteEditor from './components/NoteEditor.vue'
 import ActionBar from './components/ActionBar.vue'
 import AttachmentPanel from './components/AttachmentPanel.vue'
-import TagPanel from './components/TagPanel.vue' // 消息弹窗（Apple 风格）
+import TagSelector from './components/TagSelector.vue' // 统一标签选择器
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 
 // 注册全局应用内消息通知能力（子孙组件通过 useMessage() 获取）
@@ -38,8 +38,8 @@ const selectedNote = ref(null)
 /** NoteList 引用 */
 const noteListRef = ref(null)
 
-/** 标签筛选 ID 列表 */
-const tagFilterIds = ref([])
+/** 标签筛选名称列表 */
+const tagFilterNames = ref([])
 
 /** 窗口锁定状态 */
 const locked = ref(false)
@@ -65,7 +65,11 @@ onMounted(async () => {
       } else if (key === 'win_opacity') {
         el.style.setProperty('--popup-opacity', value)
       } else if (key === 'bg_blur') {
-        el.style.setProperty('--bg-blur', value)
+        el.style.setProperty('--bg-blur', value + 'px')
+      } else if (key === 'bg_saturation') {
+        el.style.setProperty('--bg-saturation', value)
+      } else if (key === 'window_opacity') {
+        el.style.setProperty('--window-opacity', value)
       } else if (key === 'bg_border') {
         el.style.setProperty('--bg-border', value)
       } else if (key === 'text_color') {
@@ -130,10 +134,6 @@ async function onCreateNote() {
   noteListRef.value?.refresh()
 }
 
-function onTagFilter(tagIds) {
-  tagFilterIds.value = tagIds || []
-}
-
 onUnmounted(() => {
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
@@ -164,18 +164,18 @@ onUnmounted(() => {
       </div>
     </MacTitlebar>
     <!-- 主内容区域，flex:1 占据剩余空间，支持垂直滚动 -->
-    <main class="content">
+    <main class="content scroll-y">
       <!-- 操作栏（新建 + 搜索，双模切换） -->
-      <ActionBar class="app-search" @create="onCreateNote" />
+      <ActionBar class="app-search"  create="onCreateNote" />
 
       <!-- 标签筛选栏 -->
-      <TagPanel class="app-tags" @filter="onTagFilter" />
+      <TagSelector v-model="tagFilterNames" class="app-tags" />
 
       <!-- 列表视图（无选中便签时） -->
       <NoteList
         v-if="!selectedNote"
         ref="noteListRef"
-        :filter-tag-ids="tagFilterIds"
+        :filter-tag-names="tagFilterNames"
         class="app-list"
         @select="onSelectNote"
         @create="onCreateNote"
@@ -216,6 +216,9 @@ onUnmounted(() => {
   /* 主窗口不使用 CSS 模糊（OS 已提供毛玻璃），覆写 .app-bg 的 backdrop-filter */
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+
+  /* 主窗口独立透明度（--window-opacity），与弹窗的 --popup-opacity 分离 */
+  background-color: rgb(var(--bg-color) / var(--window-opacity));
 }
 
 /* 标题栏按钮通用样式 */
@@ -257,7 +260,6 @@ onUnmounted(() => {
 .content {
   flex: 1; /* 占据标题栏之外的所有剩余空间 */
   padding: 16rem; /* 内边距，统一使用 rem 跟随窗口缩放 */
-  overflow-y: auto; /* 内容超出时显示垂直滚动条 */
 
   /* 阻止滚动链接：子元素滚到头不会导致父级抖动 */
   overscroll-behavior: contain;

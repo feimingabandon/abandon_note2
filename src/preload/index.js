@@ -106,22 +106,22 @@ const api = {
   // ---- 标签管理 ----
   /** 创建标签 */
   createTag: (name, color) => ipcRenderer.invoke('tags:create', { name, color }),
-  /** 更新标签 */
-  updateTag: (id, fields) => ipcRenderer.invoke('tags:update', { id, fields }),
-  /** 删除标签 */
-  deleteTag: (id) => ipcRenderer.invoke('tags:delete', { id }),
+  /** 更新标签（按名称） */
+  updateTag: (name, fields) => ipcRenderer.invoke('tags:update', { name, fields }),
+  /** 删除标签（按名称） */
+  deleteTag: (name) => ipcRenderer.invoke('tags:delete', { name }),
   /** 获取全部标签 */
   listTags: () => ipcRenderer.invoke('tags:list'),
-  /** 获取单个标签 */
-  getTag: (id) => ipcRenderer.invoke('tags:get', { id }),
+  /** 获取单个标签（按名称） */
+  getTag: (name) => ipcRenderer.invoke('tags:get', { name }),
 
   // ---- 便签-标签关联 ----
   /** 绑定标签到便签 */
-  bindTag: (noteId, tagId) => ipcRenderer.invoke('note-tags:bind', { noteId, tagId }),
+  bindTag: (noteId, tagName) => ipcRenderer.invoke('note-tags:bind', { noteId, tagName }),
   /** 取消绑定 */
-  unbindTag: (noteId, tagId) => ipcRenderer.invoke('note-tags:unbind', { noteId, tagId }),
-  /** 整体设置便签标签（事务替换） */
-  setNoteTags: (noteId, tagIds) => ipcRenderer.invoke('note-tags:set', { noteId, tagIds }),
+  unbindTag: (noteId, tagName) => ipcRenderer.invoke('note-tags:unbind', { noteId, tagName }),
+  /** 整体设置便签标签（事务替换，tagNames 为字符串数组） */
+  setNoteTags: (noteId, tagNames) => ipcRenderer.invoke('note-tags:set', { noteId, tagNames }),
   /** 获取便签的标签列表 */
   getNoteTags: (noteId) => ipcRenderer.invoke('note-tags:list', { noteId }),
 
@@ -164,7 +164,7 @@ const api = {
   batchSetEffectiveAt: (ids, effectiveAt) =>
     ipcRenderer.invoke('batch:set-effective-at', { ids, effectiveAt }),
   /** 批量添加标签 */
-  batchAddTags: (noteIds, tagIds) => ipcRenderer.invoke('batch:add-tags', { noteIds, tagIds }),
+  batchAddTags: (noteIds, tagNames) => ipcRenderer.invoke('batch:add-tags', { noteIds, tagNames }),
 
   // ---- 调度器健康检查 ----
   /** 获取调度器健康状态 */

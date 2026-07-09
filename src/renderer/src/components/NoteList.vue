@@ -11,7 +11,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import draggable from 'vuedraggable'
 
 const props = defineProps({
-  filterTagIds: { type: Array, default: () => [] }
+  filterTagNames: { type: Array, default: () => [] }
 })
 
 const emit = defineEmits(['select', 'create'])
@@ -45,7 +45,7 @@ async function loadNotes() {
           ? ['active', 'in_progress', 'completed', 'cancelled', 'expired']
           : ['active', 'in_progress'],
       sortMode: sortMode.value,
-      tagIds: props.filterTagIds.length > 0 ? props.filterTagIds : null
+      tagNames: props.filterTagNames.length > 0 ? props.filterTagNames : null
     })
     notes.value = result.notes || []
   } catch (e) {
@@ -250,7 +250,7 @@ function statusLabel(s) {
 onMounted(loadNotes)
 
 // 标签筛选变化时重新加载
-watch(() => props.filterTagIds, loadNotes, { deep: true })
+watch(() => props.filterTagNames, loadNotes, { deep: true })
 
 defineExpose({ refresh: loadNotes })
 </script>
@@ -296,7 +296,7 @@ defineExpose({ refresh: loadNotes })
     </div>
 
     <!-- ======== 时间线模式 ======== -->
-    <div v-else-if="sortMode === 'timeline'" class="nl-timeline">
+    <div v-else-if="sortMode === 'timeline'" class="nl-timeline scroll-y">
       <div v-for="g in timelineGroups()" :key="g.group" class="nl-group">
         <div class="nl-group-label">{{ g.label }}</div>
         <div
@@ -332,7 +332,7 @@ defineExpose({ refresh: loadNotes })
     </div>
 
     <!-- ======== 自定义模式 ======== -->
-    <div v-else class="nl-custom">
+    <div v-else class="nl-custom scroll-y">
       <!-- 置顶区 -->
       <div class="nl-zone">
         <div class="nl-zone-label">📌 置顶区</div>
@@ -551,9 +551,7 @@ defineExpose({ refresh: loadNotes })
 /* ===== 时间线 ===== */
 .nl-timeline {
   flex: 1;
-  overflow-y: auto;
   padding: 8rem 12rem;
-  scrollbar-gutter: stable;
 }
 .nl-group {
   margin-bottom: 16rem;
@@ -568,9 +566,7 @@ defineExpose({ refresh: loadNotes })
 /* ===== 自定义模式 ===== */
 .nl-custom {
   flex: 1;
-  overflow-y: auto;
   padding: 8rem 12rem;
-  scrollbar-gutter: stable;
 }
 .nl-zone {
   margin-bottom: 20rem;

@@ -7,6 +7,7 @@
  */
 import { ref, computed, onBeforeUnmount } from 'vue'
 import DateTimePicker from './DateTimePicker.vue'
+import TagSelector from './TagSelector.vue'
 
 const emit = defineEmits(['create'])
 
@@ -22,6 +23,7 @@ const resizing = ref(false)
 // ---- 新建便签表单 ----
 const newContent = ref('')
 const newEffectiveAt = ref('') // "YYYY-MM-DD HH:mm:ss" 或空（空 = 立即生效）
+const newTagNames = ref([]) // 选中的标签名称数组
 const creating = ref(false) // 防止重复提交
 
 // ============================================================
@@ -154,9 +156,14 @@ async function handleCreateNote() {
     if (newEffectiveAt.value) {
       options.effectiveAt = new Date(newEffectiveAt.value).getTime()
     }
-    await window.api.createNote(options)
+    const note = await window.api.createNote(options)
+    // 绑定标签
+    if (newTagNames.value.length > 0 && note?.id) {
+      await window.api.setNoteTags(note.id, newTagNames.value)
+    }
     newContent.value = ''
     newEffectiveAt.value = ''
+    newTagNames.value = []
     emit('create')
     closeExpanded()
   } catch (e) {
@@ -236,7 +243,7 @@ const expandBoxStyle = computed(() => {
             <span class="ab-expand-title">新建便签</span>
             <div class="ab-header-spacer" />
           </div>
-          <div class="ab-panel-body">
+          <div class="ab-panel-body scroll-y">
             <!-- 便签内容 -->
             <textarea
               v-model="newContent"
@@ -244,6 +251,12 @@ const expandBoxStyle = computed(() => {
               placeholder="输入便签内容…（Enter 换行）"
               rows="3"
             />
+
+            <!-- 标签选择 -->
+            <div class="ab-field">
+              <label class="ab-field-label">标签</label>
+              <TagSelector v-model="newTagNames" />
+            </div>
 
             <!-- 生效时间 -->
             <div class="ab-field">
@@ -331,7 +344,7 @@ const expandBoxStyle = computed(() => {
               </svg>
             </button>
           </div>
-          <div class="ab-panel-body" />
+          <div class="ab-panel-body scroll-y" />
           <div class="ab-drag-handle" @mousedown="onDragStart">
             <div class="ab-drag-bar" />
           </div>
@@ -357,7 +370,7 @@ const expandBoxStyle = computed(() => {
   flex-shrink: 0;
   min-width: 0;
   height: 36rem;
-  border: 1px solid rgba(128, 128, 128, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 10rem;
   overflow: hidden;
   background: rgba(128, 128, 128, 0.03);
@@ -373,7 +386,8 @@ const expandBoxStyle = computed(() => {
   align-items: stretch;
   height: 40vh;
   flex-grow: 1;
-  overflow: visible;
+  flex-basis: 0%;
+  overflow: hidden;
 }
 .ab-box--hidden {
   display: none;
@@ -385,6 +399,7 @@ const expandBoxStyle = computed(() => {
   flex-direction: column;
   width: 100%;
   height: 100%;
+  min-width: 0;
 }
 
 /* === 展开头部（按钮 + 标题居中 + 对称占位） === */
@@ -410,7 +425,9 @@ const expandBoxStyle = computed(() => {
 /* === 面板内容区 === */
 .ab-panel-body {
   flex: 1;
-  overflow: visible;
+  min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
   padding: 0 14rem;
 }
 
@@ -501,8 +518,8 @@ const expandBoxStyle = computed(() => {
   font-family: inherit;
   font-weight: 500;
   color: var(--text-color);
-  background: rgba(255, 255, 255, 0.04);
-  border: 1rem solid color-mix(in srgb, var(--text-color) 12%, transparent);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1rem solid rgba(255, 255, 255, 0.1);
   border-radius: 8rem;
   outline: none;
   resize: vertical;
@@ -510,7 +527,7 @@ const expandBoxStyle = computed(() => {
   line-height: 1.5;
 }
 .ab-textarea:focus {
-  border-color: color-mix(in srgb, var(--text-color) 25%, transparent);
+  border-color: rgba(255, 255, 255, 0.18);
 }
 .ab-textarea::placeholder {
   color: var(--text-color-secondary);
@@ -522,6 +539,7 @@ const expandBoxStyle = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 6rem;
+  min-width: 0;
 }
 .ab-field-label {
   font-size: var(--fs-secondary);

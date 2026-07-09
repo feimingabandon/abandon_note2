@@ -65,6 +65,7 @@ function initNative() {
     lib.Blur_SetTint = lib.func('Blur_SetTint', 'void', ['int', 'int', 'int'])
     lib.Blur_SetEnabled = lib.func('Blur_SetEnabled', 'void', ['int'])
     lib.Blur_SetSaturation = lib.func('Blur_SetSaturation', 'void', ['float'])
+    lib.Blur_SetOpacity = lib.func('Blur_SetOpacity', 'void', ['float'])
     lib.Blur_SetCornerRadius = lib.func('Blur_SetCornerRadius', 'void', ['float'])
     lib.Blur_UpdateGeometry = lib.func('Blur_UpdateGeometry', 'void', ['int', 'int', 'int', 'int'])
     lib.Blur_ReSyncOrder = lib.func('Blur_ReSyncOrder', 'void', [])
@@ -101,6 +102,7 @@ export function setConfig(config) {
   if (!initialized) return false
   if (config.enabled !== undefined) lib.Blur_SetEnabled(config.enabled ? 1 : 0)
   if (config.saturation !== undefined) lib.Blur_SetSaturation(config.saturation)
+  if (config.opacity !== undefined) lib.Blur_SetOpacity(config.opacity)
   if (config.cornerRadius !== undefined) lib.Blur_SetCornerRadius(config.cornerRadius)
   if (config.radius !== undefined) lib.Blur_SetRadius(config.radius)
   if (config.tint) lib.Blur_SetTint(config.tint.r, config.tint.g, config.tint.b)

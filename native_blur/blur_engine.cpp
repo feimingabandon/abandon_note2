@@ -91,6 +91,12 @@ void Engine::SetEnabled(bool enabled) {
     if (m_overlayHwnd) PostMessage(m_overlayHwnd, enabled ? WM_BLUR_SHOW : WM_BLUR_HIDE, 0, 0);
 }
 
+void Engine::SetOpacity(float opacity) {
+    BlurConfig cfg = GetConfig();
+    cfg.opacity = (opacity < 0) ? 0 : (opacity > 1) ? 1 : opacity;
+    SetConfig(cfg);
+}
+
 void Engine::SetSaturation(float saturation) {
     BlurConfig cfg = GetConfig();
     cfg.saturation = (saturation < 0) ? 0 : (saturation > 2) ? 2 : saturation;
@@ -298,6 +304,7 @@ void Engine::BuildEffectGraph() {
         m_blurVisual.Brush(m_effectBrush);
         m_target.Root(m_blurVisual);
 
+        m_blurVisual.Opacity(cfg.opacity);
         UpdateVisualSize();
         ApplyClip();
     }
@@ -359,6 +366,7 @@ void Engine::UpdateEffectParameters() {
         newBrush.SetSourceParameter(L"backdrop", backdropBrush);
         m_effectBrush = newBrush;
         m_blurVisual.Brush(m_effectBrush);
+        m_blurVisual.Opacity(cfg.opacity);
         ApplyClip();
     }
     catch (...) { }

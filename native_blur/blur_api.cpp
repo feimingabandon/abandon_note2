@@ -37,6 +37,10 @@ void Blur_SetSaturation(float saturation) {
     BlurEngine::Engine::Instance().SetSaturation(saturation);
 }
 
+void Blur_SetOpacity(float opacity) {
+    BlurEngine::Engine::Instance().SetOpacity(opacity);
+}
+
 void Blur_SetCornerRadius(float radiusDip) {
     BlurEngine::Engine::Instance().SetCornerRadius(radiusDip);
 }

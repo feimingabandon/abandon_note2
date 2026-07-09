@@ -74,7 +74,7 @@ onUnmounted(() => {
 
 <template>
   <div class="sp-overlay" @click.self="emit('close')">
-    <div class="sp-panel app-bg">
+    <div class="sp-panel app-bg scroll-y">
       <!-- 标题栏 -->
       <div class="sp-header">
         <span class="sp-title">🔧 调度器诊断</span>
@@ -195,7 +195,6 @@ onUnmounted(() => {
 .sp-panel {
   width: min(520rem, 90vw);
   max-height: 85vh;
-  overflow-y: auto;
   border-radius: 14rem;
   padding: 24rem;
   display: flex;

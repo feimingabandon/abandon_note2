@@ -148,14 +148,14 @@ function selectPreset(n) {
 }
 
 function toggle() {
+  // 清除待执行的 blur 关闭定时器（防御性清除，配合 @mousedown.prevent 消除 blur-click 竞态）
+  if (blurTimer) {
+    clearTimeout(blurTimer)
+    blurTimer = null
+  }
   if (open.value) {
     open.value = false
   } else {
-    // 清除待执行的 blur 关闭定时器，防止先前的 blur 延迟关闭覆盖本次打开
-    if (blurTimer) {
-      clearTimeout(blurTimer)
-      blurTimer = null
-    }
     open.value = true
     inputRef.value?.focus()
   }
@@ -221,7 +221,7 @@ onBeforeUnmount(() => {
         @blur="onBlur"
         @keydown="onKeydown"
       />
-      <button class="fsi-arrow-btn" tabindex="-1" @click="toggle">
+      <button class="fsi-arrow-btn" tabindex="-1" @mousedown.prevent="toggle">
         <svg
           class="fsi-arrow"
           :class="{ 'is-open': open }"
@@ -248,7 +248,7 @@ onBeforeUnmount(() => {
       @leave="onLeave"
     >
       <div v-if="open" class="fsi-panel-wrap app-bg" @click.stop>
-        <div class="fsi-panel">
+        <div class="fsi-panel scroll-y">
           <button
             v-for="n in presets"
             :key="n"
@@ -278,8 +278,8 @@ onBeforeUnmount(() => {
   gap: 4rem;
   width: 100%;
   padding: 5rem 10rem;
-  background-color: rgb(var(--bg-color) / var(--popup-opacity));
-  border: 1rem solid color-mix(in srgb, var(--text-color) 15%, transparent);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1rem solid rgba(255, 255, 255, 0.1);
   border-radius: 6rem;
   transition: border-color 150ms ease;
 }
@@ -348,7 +348,6 @@ onBeforeUnmount(() => {
 .fsi-panel {
   padding: 4rem 0;
   max-height: 256rem;
-  overflow-y: auto;
 }
 
 /* ============ 预设选项 ============ */

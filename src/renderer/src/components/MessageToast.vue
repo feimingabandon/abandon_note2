@@ -71,8 +71,8 @@ const colorMap = {
   background: color-mix(in srgb, var(--text-color) 88%, transparent);
 
   /* 毛玻璃效果 */
-  -webkit-backdrop-filter: blur(var(--bg-blur, 20px)) saturate(180%);
-  backdrop-filter: blur(var(--bg-blur, 20px)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--bg-blur)) saturate(var(--bg-saturation));
+  backdrop-filter: blur(var(--bg-blur)) saturate(var(--bg-saturation));
 
   box-shadow:
     0 4px 16px rgba(0, 0, 0, 0.28),

@@ -6,7 +6,7 @@
  * 视图切换：v-show（DOM 常驻，布局已解好）
  * 滚动定位：nextTick + el.scrollTop = value（瞬间完成，不触发外层跳动）
  */
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import TimeSpinner from './TimeSpinner.vue'
 
 const props = defineProps({
@@ -33,6 +33,8 @@ const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
 // ==================== 状态 ====================
 const open = ref(false)
 const wrapperRef = ref(null)
+const panelRef = ref(null)
+const panelStyle = ref({})
 
 const year = ref(new Date().getFullYear())
 const month = ref(new Date().getMonth() + 1)
@@ -182,13 +184,37 @@ function selectDateCell(cell) {
 }
 
 // ==================== 面板操作 ====================
+/** 计算面板 fixed 定位（相对于触发器元素） */
+function updatePanelPosition() {
+  if (!wrapperRef.value) return
+  const rect = wrapperRef.value.getBoundingClientRect()
+  panelStyle.value = {
+    position: 'fixed',
+    top: (rect.bottom + 4) + 'px',
+    left: rect.left + 'px',
+    zIndex: 100
+  }
+}
+
 function toggle() {
   if (props.disabled) return
   if (open.value) { open.value = false; return }
   if (!parseValue(props.modelValue)) resetToNow()
   viewYear.value = year.value; viewMonth.value = month.value - 1
-  currentView.value = 'calendar'; open.value = true
+  currentView.value = 'calendar'
+  updatePanelPosition()
+  open.value = true
 }
+
+// 面板打开时监听窗口 resize，保持定位跟随
+watch(open, (val) => {
+  if (val) {
+    nextTick(() => updatePanelPosition())
+    window.addEventListener('resize', updatePanelPosition)
+  } else {
+    window.removeEventListener('resize', updatePanelPosition)
+  }
+})
 
 function confirm() {
   const val = buildValue()
@@ -218,6 +244,7 @@ function switchToTime() { currentView.value = 'time' }
 function onDocClick(e) {
   if (!open.value) return
   if (wrapperRef.value?.contains(e.target)) return
+  if (panelRef.value?.contains(e.target)) return
   open.value = false
 }
 
@@ -233,6 +260,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick, true)
   document.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('resize', updatePanelPosition)
 })
 
 // ==================== 下拉动画 ====================
@@ -267,9 +295,10 @@ function onLeave(el, done) {
       </svg>
     </button>
 
-    <Transition @before-enter="onBeforeEnter" @enter="onEnter" @before-leave="onBeforeLeave" @leave="onLeave">
-      <div v-if="open" class="dt-panel-wrap app-bg" @click.stop>
-        <div class="dt-panel">
+    <Teleport to="body">
+      <Transition @before-enter="onBeforeEnter" @enter="onEnter" @before-leave="onBeforeLeave" @leave="onLeave">
+        <div v-if="open" ref="panelRef" class="dt-panel-wrap app-bg" :style="panelStyle" @click.stop>
+          <div class="dt-panel">
           <!-- ===== 上：日期+时间可编辑区 ===== -->
           <div class="dt-time-header">
             <div class="dt-header-field" :class="{ active: currentView === 'calendar' }" @click="currentView = 'calendar'">
@@ -351,9 +380,10 @@ function onLeave(el, done) {
             <button class="dt-btn dt-btn--now" @click="applyShortcut({ getValue: () => new Date() }); confirm()">此刻</button>
             <button class="dt-btn dt-btn--confirm" @click="confirm">确认</button>
           </div>
+          </div>
         </div>
-      </div>
-    </Transition>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -367,13 +397,13 @@ function onLeave(el, done) {
   gap: 6rem; width: 100%;
   padding: 5rem 8rem 5rem 10rem;
   font-size: inherit; font-family: inherit; color: var(--text-color);
-  background-color: rgb(var(--bg-color)/var(--popup-opacity));
-  border: 1rem solid color-mix(in srgb, var(--text-color) 15%, transparent);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1rem solid rgba(255, 255, 255, 0.1);
   border-radius: 6rem; cursor: pointer; outline: none;
   transition: border-color 150ms ease;
 }
-.dt-trigger:hover:not(.is-disabled) { border-color: color-mix(in srgb, var(--text-color) 25%, transparent); }
-.dt-trigger.is-open { border-color: color-mix(in srgb, var(--text-color) 30%, transparent); }
+.dt-trigger:hover:not(.is-disabled) { border-color: rgba(255, 255, 255, 0.18); }
+.dt-trigger.is-open { border-color: rgba(255, 255, 255, 0.25); }
 .dt-trigger.is-disabled { opacity: .4; cursor: not-allowed; }
 .dt-label { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .dt-label.is-placeholder { opacity: .4; }
@@ -390,7 +420,6 @@ function onLeave(el, done) {
 
 /* ===== 面板 ===== */
 .dt-panel-wrap {
-  position: absolute; top: calc(100% + 4rem); left: 0; z-index: 100;
   border-radius: 10rem; box-shadow: 0 4rem 24rem rgba(0,0,0,.35);
   overflow: hidden;
 }

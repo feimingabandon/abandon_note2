@@ -137,7 +137,7 @@ onMounted(loadAttachments)
     </div>
 
     <!-- 附件列表 -->
-    <div v-if="attachments.length > 0" class="attachment-panel__list">
+    <div v-if="attachments.length > 0" class="attachment-panel__list scroll-y">
       <div v-for="att in attachments" :key="att.id" class="attachment-panel__item">
         <span class="attachment-panel__item-icon">{{ mediaIcon(att.media_type) }}</span>
         <span class="attachment-panel__item-name">{{ att.file_path }}</span>
@@ -199,7 +199,6 @@ onMounted(loadAttachments)
 
 .attachment-panel__list {
   flex: 1;
-  overflow-y: auto;
   padding: 6rem 0;
 }
 

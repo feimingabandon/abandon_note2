@@ -78,7 +78,7 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <div v-if="rendered" class="confirm-overlay" :class="{ active }" @click.self="close()">
-      <div class="confirm-card" :class="{ active }" @click.stop>
+      <div class="confirm-card app-bg" :class="{ active }" @click.stop>
         <h3 class="confirm-title">{{ title }}</h3>
         <p class="confirm-message">{{ message }}</p>
         <div class="confirm-actions">
@@ -124,11 +124,7 @@ onBeforeUnmount(() => {
     0 8px 40px rgba(0, 0, 0, 0.42),
     0 0 0 0.5px rgba(255, 255, 255, 0.12);
 
-  /* 继承 .app-bg 的玻璃态风格 */
-  background-color: rgb(var(--bg-color) / var(--popup-opacity));
-  -webkit-backdrop-filter: blur(var(--bg-blur)) saturate(180%) contrast(100%) brightness(100%);
-  backdrop-filter: blur(var(--bg-blur)) saturate(180%) contrast(100%) brightness(100%);
-  border: calc(var(--bg-border) * 1px) solid rgba(255, 255, 255, 0.18);
+  /* 玻璃态样式由 .app-bg 类统一提供 */
 
   /* 入场动画 */
   transform: scale(0.92);

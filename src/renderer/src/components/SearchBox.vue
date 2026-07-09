@@ -175,7 +175,7 @@ function formatTime(ts) {
     </div>
 
     <!-- 搜索结果面板 -->
-    <div v-if="showResults" class="sb-results-panel">
+    <div v-if="showResults" class="sb-results-panel scroll-y">
       <div class="sb-results-header">
         <span class="sb-results-count">找到 {{ total }} 条结果</span>
       </div>
@@ -214,14 +214,14 @@ function formatTime(ts) {
   align-items: center;
   gap: 6rem;
   padding: 6rem 10rem;
-  background: rgba(128, 128, 128, 0.06);
-  border: 1px solid rgba(128, 128, 128, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8rem;
   transition: border-color 150ms ease;
 }
 .sb-input-wrap:focus-within {
   border-color: rgba(0, 122, 255, 0.4);
-  background: rgba(128, 128, 128, 0.1);
+  background: rgba(255, 255, 255, 0.05);
 }
 .sb-icon {
   font-size: var(--fs-secondary);
@@ -271,7 +271,7 @@ function formatTime(ts) {
   right: 0;
   margin-top: 4rem;
   background: rgb(var(--bg-color) / 0.95);
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(var(--bg-blur)) saturate(var(--bg-saturation));
   border: 1px solid rgba(128, 128, 128, 0.15);
   border-radius: 8rem;
   overflow: hidden;
@@ -302,9 +302,8 @@ function formatTime(ts) {
   right: 0;
   margin-top: 4rem;
   max-height: 320rem;
-  overflow-y: auto;
   background: rgb(var(--bg-color) / 0.95);
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(var(--bg-blur)) saturate(var(--bg-saturation));
   border: 1px solid rgba(128, 128, 128, 0.15);
   border-radius: 8rem;
   z-index: 100;

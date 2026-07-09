@@ -27,7 +27,7 @@ const props = defineProps({
   min: { type: Number, default: 0 },
   max: { type: Number, default: 100 },
   step: { type: Number, default: 1 },
-  thumbSize: { type: Number, default: 20 },
+  thumbSize: { type: Number, default: 14 },
   trackColor: { type: String, default: '#0071e3' },
   bgColor: { type: String, default: 'rgba(255, 255, 255, 0.12)' },
   disabled: { type: Boolean, default: false }

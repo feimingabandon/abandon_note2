@@ -199,7 +199,7 @@ onMounted(loadTags)
     </div>
 
     <!-- 标签列表 -->
-    <div class="tag-panel__list">
+    <div class="tag-panel__list scroll-y">
       <div
         v-for="tag in tags"
         :key="tag.id"
@@ -370,7 +370,6 @@ onMounted(loadTags)
 /* ---- 标签列表 ---- */
 .tag-panel__list {
   flex: 1;
-  overflow-y: auto;
   padding: 4rem 0;
 }
 

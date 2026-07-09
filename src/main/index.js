@@ -102,6 +102,7 @@ let blurInitialized = false
 const blurConfig = {
   enabled: true,
   radius: 10, // 模糊半径/通透度 (0~100 DIP)，默认 10
+  opacity: 1.0, // 模糊层透明度 (0=全透, 1=不透明, 0~1)
   tint: { r: 255, g: 255, b: 255 }, // 颜色 (默认白色=无色叠加)
   saturation: 1.8, // 饱和度 (0~2, 苹果风格 = 1.8)
   cornerRadius: 12 // 窗口圆角 (0~30 DIP)
@@ -197,6 +198,7 @@ function createWindow() {
       const savedTintG = getSetting(WINDOW_NAME, 'blur_tint_g')
       const savedTintB = getSetting(WINDOW_NAME, 'blur_tint_b')
       const savedSaturation = getSetting(WINDOW_NAME, 'blur_saturation')
+      const savedOpacity = getSetting(WINDOW_NAME, 'blur_opacity')
       const savedCornerRadius = getSetting(WINDOW_NAME, 'blur_corner_radius')
 
       if (savedEnabled !== null) blurConfig.enabled = savedEnabled === 'true'
@@ -205,6 +207,7 @@ function createWindow() {
       if (savedTintG !== null) blurConfig.tint.g = parseInt(savedTintG)
       if (savedTintB !== null) blurConfig.tint.b = parseInt(savedTintB)
       if (savedSaturation !== null) blurConfig.saturation = parseFloat(savedSaturation)
+      if (savedOpacity !== null) blurConfig.opacity = parseFloat(savedOpacity)
       if (savedCornerRadius !== null) blurConfig.cornerRadius = parseFloat(savedCornerRadius)
 
       const result = blurInit(mainWindow)
@@ -757,6 +760,7 @@ app.whenReady().then(() => {
       if (config.tint.b !== undefined) blurConfig.tint.b = config.tint.b
     }
     if (config.saturation !== undefined) blurConfig.saturation = config.saturation
+    if (config.opacity !== undefined) blurConfig.opacity = config.opacity
     if (config.cornerRadius !== undefined) blurConfig.cornerRadius = config.cornerRadius
 
     // 持久化到数据库
@@ -801,6 +805,13 @@ app.whenReady().then(() => {
       'blur_saturation',
       String(blurConfig.saturation),
       '系统模糊饱和度（0~2 浮点数，苹果风格=1.8）'
+    )
+    setSetting(
+      WINDOW_NAME,
+      'system',
+      'blur_opacity',
+      String(blurConfig.opacity),
+      '系统模糊层透明度（0~1 浮点数，1=不透明）'
     )
     setSetting(
       WINDOW_NAME,
@@ -1071,13 +1082,13 @@ app.whenReady().then(() => {
   })
 
   // 【标签 - 更新】
-  ipcMain.handle('tags:update', (_event, { id, fields }) => {
-    return updateTag(id, fields || {})
+  ipcMain.handle('tags:update', (_event, { name, fields }) => {
+    return updateTag(name, fields || {})
   })
 
   // 【标签 - 删除】
-  ipcMain.handle('tags:delete', (_event, { id }) => {
-    return deleteTagFn(id)
+  ipcMain.handle('tags:delete', (_event, { name }) => {
+    return deleteTagFn(name)
   })
 
   // 【标签 - 列表】
@@ -1086,23 +1097,23 @@ app.whenReady().then(() => {
   })
 
   // 【标签 - 获取单条】
-  ipcMain.handle('tags:get', (_event, { id }) => {
-    return getTagById(id)
+  ipcMain.handle('tags:get', (_event, { name }) => {
+    return getTagByName(name)
   })
 
   // 【便签标签 - 绑定】
-  ipcMain.handle('note-tags:bind', (_event, { noteId, tagId }) => {
-    return bindTag(noteId, tagId)
+  ipcMain.handle('note-tags:bind', (_event, { noteId, tagName }) => {
+    return bindTag(noteId, tagName)
   })
 
   // 【便签标签 - 解绑】
-  ipcMain.handle('note-tags:unbind', (_event, { noteId, tagId }) => {
-    return unbindTag(noteId, tagId)
+  ipcMain.handle('note-tags:unbind', (_event, { noteId, tagName }) => {
+    return unbindTag(noteId, tagName)
   })
 
   // 【便签标签 - 整体设置（事务替换）】
-  ipcMain.handle('note-tags:set', (_event, { noteId, tagIds }) => {
-    setNoteTags(noteId, tagIds)
+  ipcMain.handle('note-tags:set', (_event, { noteId, tagNames }) => {
+    setNoteTags(noteId, tagNames)
     return getNoteTags(noteId)
   })
 
@@ -1195,8 +1206,8 @@ app.whenReady().then(() => {
   })
 
   // 【批量 - 添加标签】
-  ipcMain.handle('batch:add-tags', (_event, { noteIds, tagIds }) => {
-    batchAddTags(noteIds, tagIds)
+  ipcMain.handle('batch:add-tags', (_event, { noteIds, tagNames }) => {
+    batchAddTags(noteIds, tagNames)
     return true
   })
 

@@ -32,37 +32,18 @@
   margin: 0;
 }
 
-/* macOS 风格自动隐现滚动条 —— 纤细、半透明、滚动时淡入、停止后淡出
- * 通过 html.is-scrolling 类控制显隐，JS 中监听 scroll 事件切换 */
+/* 全局隐藏滚动条 —— 保留滚动功能，不占布局空间，零抖动
+   鼠标滚轮 / 触控板 / 键盘方向键均可正常滚动 */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  display: none;
+}
+html {
+  scrollbar-width: none; /* Firefox */
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background-color: rgba(128, 128, 128, 0);
-  border-radius: 3px;
-  transition: background-color 500ms ease;
-}
-
-html.is-scrolling ::-webkit-scrollbar-thumb {
-  background-color: rgba(128, 128, 128, 0.5);
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(128, 128, 128, 0.65);
-}
-
-::-webkit-scrollbar-thumb:active {
-  background-color: rgba(128, 128, 128, 0.8);
-}
-
-::-webkit-scrollbar-corner {
-  background: transparent;
+/* 全局统一纵向滚动容器 —— 全站一处定义、各处 class="scroll-y" 复用 */
+.scroll-y {
+  overflow-y: auto;
 }
 
 /* 清除列表默认样式 */
@@ -90,13 +71,17 @@ html {
   --fs-body:       var(--font-size-base);                 /* 正文/标签/按钮 */
   --fs-secondary:  calc(var(--font-size-base) * 0.8);  /* 所有辅助文字（base=18 → 15.75） */
 
-  /* ---- 玻璃态背景参数（主窗口 + 弹窗共用） ---- */
+  /* ---- 玻璃态背景参数（仅弹窗/面板组件使用） ---- */
   --bg-color: 255 255 255; /* 背景颜色（RGB 三通道） */
-  --bg-blur: 5px; /* 弹窗模糊半径（0px = 关闭模糊，仅弹窗使用） */
+  --bg-blur: 20px; /* 面板模糊半径，glassmorphism 标准 20px（0-30 有效范围） */
+  --bg-saturation: 1.8; /* 面板饱和度（0=黑白, 1=原色, 1.8=苹果风格） */
   --bg-border: 1; /* 边框开关（0 = 无，1 = 有） */
 
-  /* ---- 窗口透明度（CSS 层透明度，控制 OS 毛玻璃透出程度） ---- */
-  --popup-opacity: 0.2; /* 窗口背景透明度，默认 20%（0~1，值越小 OS 毛玻璃越透出） */
+  /* ---- 组件透明度（仅弹窗/面板 .app-bg 玻璃层使用） ---- */
+  --popup-opacity: 0.15; /* glassmorphism 标准：15% 白底 + 强模糊 */
+
+  /* ---- 窗口透明度（仅主窗口 .app-root，独立于组件透明度） ---- */
+  --window-opacity: 0; /* 默认 0 = OS 毛玻璃透出；系统模糊关闭时由用户调节 */
 }
 
 /* ---- body 基础样式 ---- */
@@ -115,14 +100,52 @@ body {
 }
 
 /* ---- 玻璃态背景容器 ----
- * .app-bg 类应用于根组件和弹出面板，提供统一的玻璃态效果
- * 背景色：rgb(R G B / popup-opacity)，透明度由"窗口透明度"滑动条控制
- * 模糊：backdrop-filter blur，主窗口通过覆写 .app-root 关闭模糊
- * 边框：通过 calc(--bg-border * 1px) 实现 0/1 开关
+ * .app-bg 类应用于弹出面板（非主窗口），提供统一 glassmorphism 效果
+ * 公式：低透明度白底 + 强模糊 + 饱和度补偿（仅 blur + saturate）
+ * 主窗口 .app-root 覆写 backdrop-filter: none 并单独使用 --window-opacity
+ *
+ * 关键：backdrop-filter 放在 ::before 伪元素上，而非元素本体。
+ * 这样面板的半透明白底会先渲染，再被 ::before 的 backdrop-filter 一起模糊，
+ * 确保模糊输入包含白色霜层，所有 .app-bg 组件模糊效果一致。
  */
 .app-bg {
+  position: relative;
   background-color: rgb(var(--bg-color) / var(--popup-opacity));
-  -webkit-backdrop-filter: blur(var(--bg-blur)) saturate(180%) contrast(100%) brightness(100%);
-  backdrop-filter: blur(var(--bg-blur)) saturate(180%) contrast(100%) brightness(100%);
   border: calc(var(--bg-border) * 1px) solid rgba(255, 255, 255, 0.18);
+}
+
+.app-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  -webkit-backdrop-filter: blur(var(--bg-blur)) saturate(var(--bg-saturation));
+  backdrop-filter: blur(var(--bg-blur)) saturate(var(--bg-saturation));
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 第二道霜层：模糊结果之上再叠加半透明白底，
+   等效霜层约 1-(1-opacity)² ≈ 28%（默认 opacity=15%），
+   解决窗口透明时模糊不够不透、背后文字仍可辨认的问题。 */
+.app-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-color: rgb(var(--bg-color) / var(--popup-opacity));
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 确保面板内容显示在模糊层之上 */
+.app-bg > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* 主窗口禁用 ::before / ::after 模糊层（由 OS 系统模糊接管） */
+.app-root::before,
+.app-root::after {
+  display: none;
 }

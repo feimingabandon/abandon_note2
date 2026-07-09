@@ -22,6 +22,7 @@ BLUR_API void Blur_Destroy(void);
 BLUR_API void Blur_SetRadius(float radiusDip);       // 模糊半径 0~100
 BLUR_API void Blur_SetTint(int r, int g, int b);      // 颜色 RGB 0~255
 BLUR_API void Blur_SetSaturation(float saturation);    // 饱和度 0~2
+BLUR_API void Blur_SetOpacity(float opacity);          // 透明度 0~1
 BLUR_API void Blur_SetCornerRadius(float radiusDip);  // 圆角 0~30
 BLUR_API void Blur_SetEnabled(int enabled);            // 开关 0/1
 

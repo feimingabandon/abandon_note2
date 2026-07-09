@@ -207,37 +207,17 @@ export function initNotesTables() {
 
     CREATE TABLE IF NOT EXISTS note_tags (
       note_id             INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-      tag_id              INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-      PRIMARY KEY (note_id, tag_id)
+      tag_name            TEXT    NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
+      PRIMARY KEY (note_id, tag_name)
     );
-    CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id ON note_tags(tag_id);
+    CREATE INDEX IF NOT EXISTS idx_note_tags_tag_name ON note_tags(tag_name);
 
-    CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-      content,
-      content=notes,
-      content_rowid=id
-    );
-
-    CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
-      INSERT INTO notes_fts(rowid, content) VALUES (new.id, new.content);
-    END;
-    CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
-      INSERT INTO notes_fts(notes_fts, rowid, content) VALUES ('delete', old.id, old.content);
-      INSERT INTO notes_fts(rowid, content) VALUES (new.id, new.content);
-    END;
-    CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
-      INSERT INTO notes_fts(notes_fts, rowid, content) VALUES ('delete', old.id, old.content);
-    END;
+    -- 固有标签（首次创建时自动插入，幂等）
+    INSERT OR IGNORE INTO tags (name, color, created_at) VALUES ('语音', '#ff9500', strftime('%s','now')*1000);
+    INSERT OR IGNORE INTO tags (name, color, created_at) VALUES ('图片', '#007aff', strftime('%s','now')*1000);
+    INSERT OR IGNORE INTO tags (name, color, created_at) VALUES ('视频', '#ff3b30', strftime('%s','now')*1000);
+    INSERT OR IGNORE INTO tags (name, color, created_at) VALUES ('文本', '#34c759', strftime('%s','now')*1000);
   `)
-
-  // 修复：首次创建 FTS 时，将已存在的便签内容补入索引
-  // CREATE TRIGGER 只对新写入生效，历史数据需手动填充
-  // 安全条件：仅当 notes 有数据且 FTS 为空时才填充（幂等）
-  const noteCount = db.prepare('SELECT COUNT(*) as count FROM notes').get().count
-  const ftsCount = db.prepare('SELECT COUNT(*) as count FROM notes_fts').get().count
-  if (noteCount > 0 && ftsCount === 0) {
-    db.exec('INSERT INTO notes_fts(rowid, content) SELECT id, content FROM notes')
-  }
 }
 
 /**

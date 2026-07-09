@@ -145,7 +145,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="ts-wrapper">
-    <div ref="listRef" class="ts-list" @scroll="onScroll">
+    <div ref="listRef" class="ts-list scroll-y" @scroll="onScroll">
       <div
         v-for="v in items"
         :key="v"
@@ -163,7 +163,6 @@ onBeforeUnmount(() => {
 .ts-wrapper { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .ts-list {
   height: 100%;
-  overflow-y: auto;
   box-sizing: border-box;
   -webkit-overflow-scrolling: touch;
 }

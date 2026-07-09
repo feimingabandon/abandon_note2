@@ -18,14 +18,6 @@ import { getDb } from './db.js'
 const now = () => Date.now()
 
 /**
- * 将用户搜索词转为 FTS5 安全查询字符串
- * 包裹双引号实现短语匹配，转义内部双引号
- */
-function fts5Escape(raw) {
-  return `"${raw.replace(/"/g, '""')}"`
-}
-
-/**
  * 校验状态流转是否合法
  * @param {string} current - 当前状态
  * @param {string} target - 目标状态
@@ -155,7 +147,7 @@ export function getNoteById(id) {
     .prepare(
       `
       SELECT t.* FROM tags t
-      INNER JOIN note_tags nt ON nt.tag_id = t.id
+      INNER JOIN note_tags nt ON nt.tag_name = t.name
       WHERE nt.note_id = ?
     `
     )
@@ -221,7 +213,7 @@ export function expireNote(id) {
  * 查询便签列表
  * @param {Object} options
  * @param {string[]} [options.statuses] - 状态筛选，默认 ['active','in_progress']
- * @param {number[]} [options.tagIds] - 标签 AND 筛选（同时包含所有指定标签）
+ * @param {string[]} [options.tagNames] - 标签名称 AND 筛选（同时包含所有指定标签）
  * @param {string} [options.search] - FTS5 搜索关键词（自动转义）
  * @param {'timeline'|'custom'} [options.sortMode='timeline'] - 排序模式
  * @param {number} [options.limit=50] - 分页条数
@@ -230,7 +222,7 @@ export function expireNote(id) {
  */
 export function listNotes({
   statuses = ['active', 'in_progress'],
-  tagIds = null,
+  tagNames = null,
   search = null,
   sortMode = 'timeline',
   limit = 50,
@@ -246,21 +238,21 @@ export function listNotes({
     params.push(...statuses)
   }
 
-  // 标签 AND 筛选
-  if (tagIds && tagIds.length > 0) {
+  // 标签 AND 筛选（以 tag_name 为标识）
+  if (tagNames && tagNames.length > 0) {
     where.push(`n.id IN (
       SELECT note_id FROM note_tags
-      WHERE tag_id IN (${tagIds.map(() => '?').join(',')})
+      WHERE tag_name IN (${tagNames.map(() => '?').join(',')})
       GROUP BY note_id
-      HAVING COUNT(DISTINCT tag_id) = ?
+      HAVING COUNT(DISTINCT tag_name) = ?
     )`)
-    params.push(...tagIds, tagIds.length)
+    params.push(...tagNames, tagNames.length)
   }
 
-  // FTS5 搜索（与 searchNotes 一致的转义策略）
+  // LIKE 模糊搜索
   if (search && search.trim()) {
-    where.push(`n.id IN (SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?)`)
-    params.push(fts5Escape(search.trim()))
+    where.push(`n.content LIKE '%' || ? || '%'`)
+    params.push(search.trim())
   }
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
@@ -359,14 +351,14 @@ export function batchSetEffectiveAt(ids, effectiveAt) {
  * @param {number[]} noteIds
  * @param {number[]} tagIds
  */
-export function batchAddTags(noteIds, tagIds) {
-  if (!noteIds?.length || !tagIds?.length) return
+export function batchAddTags(noteIds, tagNames) {
+  if (!noteIds?.length || !tagNames?.length) return
   const db = getDb()
-  const insert = db.prepare('INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)')
+  const insert = db.prepare('INSERT OR IGNORE INTO note_tags (note_id, tag_name) VALUES (?, ?)')
   const batch = db.transaction(() => {
     for (const nid of noteIds) {
-      for (const tid of tagIds) {
-        insert.run(nid, tid)
+      for (const tn of tagNames) {
+        insert.run(nid, tn)
       }
     }
   })

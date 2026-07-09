@@ -137,7 +137,7 @@ onBeforeUnmount(() => {
       @leave="onLeave"
     >
       <div v-if="open" class="sel-panel-wrap app-bg" @click.stop>
-        <div class="sel-panel">
+        <div class="sel-panel scroll-y">
           <button
             v-for="opt in options"
             :key="opt.value"
@@ -172,18 +172,18 @@ onBeforeUnmount(() => {
   font-size: inherit;
   font-family: inherit;
   color: var(--text-color);
-  background-color: rgb(var(--bg-color) / var(--popup-opacity));
-  border: 1rem solid color-mix(in srgb, var(--text-color) 15%, transparent);
+  background: transparent;
+  border: 1rem solid rgba(255, 255, 255, 0.1);
   border-radius: 6rem;
   cursor: pointer;
   outline: none;
   transition: border-color 150ms ease;
 }
 .sel-trigger:hover:not(.is-disabled) {
-  border-color: color-mix(in srgb, var(--text-color) 25%, transparent);
+  border-color: rgba(255, 255, 255, 0.18);
 }
 .sel-trigger.is-open {
-  border-color: color-mix(in srgb, var(--text-color) 30%, transparent);
+  border-color: rgba(255, 255, 255, 0.25);
 }
 .sel-trigger.is-disabled {
   opacity: 0.4;
@@ -225,7 +225,6 @@ onBeforeUnmount(() => {
 .sel-panel {
   padding: 4rem 0;
   max-height: 256rem;
-  overflow-y: auto;
 }
 
 .sel-option {

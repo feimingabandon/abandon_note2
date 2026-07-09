@@ -24,55 +24,44 @@ const now = () => Date.now()
 export function createTag(name, color = null) {
   const ts = now()
   try {
-    const result = getDb()
-      .prepare(
-        `
-      INSERT INTO tags (name, color, created_at)
-      VALUES (?, ?, ?)
-    `
-      )
+    getDb()
+      .prepare('INSERT INTO tags (name, color, created_at) VALUES (?, ?, ?)')
       .run(name, color, ts)
-    return getTagById(result.lastInsertRowid)
+    return getTagByName(name)
   } catch (err) {
-    // SQLITE_CONSTRAINT_UNIQUE → 名称已存在
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') return null
     throw err
   }
 }
 
 /**
- * 更新标签
- * @param {number} id
+ * 更新标签（按名称查找）
+ * @param {string} name - 标签名称
  * @param {Object} [fields={}] - { name?, color? }
  * @returns {Object|null} 标签不存在或名称冲突返回 null
  */
-export function updateTag(id, { name, color } = {}) {
-  const old = getTagById(id)
+export function updateTag(name, { newName, color } = {}) {
+  const old = getTagByName(name)
   if (!old) return null
-
+  const targetName = newName ?? name
   try {
     getDb()
-      .prepare(
-        `
-    UPDATE tags SET name = ?, color = ? WHERE id = ?
-  `
-      )
-      .run(name ?? old.name, color ?? old.color, id)
-    return getTagById(id)
+      .prepare('UPDATE tags SET name = ?, color = ? WHERE name = ?')
+      .run(targetName, color ?? old.color, name)
+    return getTagByName(targetName)
   } catch (err) {
-    // SQLITE_CONSTRAINT_UNIQUE → 改名后与已有标签冲突
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') return null
     throw err
   }
 }
 
 /**
- * 删除标签（级联删除关联关系）
- * @param {number} id
+ * 删除标签（按名称，级联删除关联关系）
+ * @param {string} name
  * @returns {boolean}
  */
-export function deleteTag(id) {
-  const result = getDb().prepare('DELETE FROM tags WHERE id = ?').run(id)
+export function deleteTag(name) {
+  const result = getDb().prepare('DELETE FROM tags WHERE name = ?').run(name)
   return result.changes > 0
 }
 
@@ -103,21 +92,20 @@ export function listTags() {
 }
 
 // ============================================================
-// 便签-标签关联
+// 便签-标签关联（以 tag_name 为唯一标识）
 // ============================================================
 
 /**
  * 为便签绑定标签
  * @param {number} noteId
- * @param {number} tagId
+ * @param {string} tagName
  * @returns {boolean} 是否成功（已绑定返回 true）
  */
-export function bindTag(noteId, tagId) {
+export function bindTag(noteId, tagName) {
   try {
-    getDb().prepare('INSERT INTO note_tags (note_id, tag_id) VALUES (?, ?)').run(noteId, tagId)
+    getDb().prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)').run(noteId, tagName)
     return true
   } catch (err) {
-    // SQLITE_CONSTRAINT_PRIMARYKEY → 已绑定，视为成功
     if (err.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') return true
     throw err
   }
@@ -126,30 +114,29 @@ export function bindTag(noteId, tagId) {
 /**
  * 解除便签与标签的绑定
  * @param {number} noteId
- * @param {number} tagId
+ * @param {string} tagName
  * @returns {boolean}
  */
-export function unbindTag(noteId, tagId) {
+export function unbindTag(noteId, tagName) {
   const result = getDb()
-    .prepare('DELETE FROM note_tags WHERE note_id = ? AND tag_id = ?')
-    .run(noteId, tagId)
+    .prepare('DELETE FROM note_tags WHERE note_id = ? AND tag_name = ?')
+    .run(noteId, tagName)
   return result.changes > 0
 }
 
 /**
  * 批量绑定标签（事务内完成，原子替换）
  * @param {number} noteId
- * @param {number[]} tagIds
+ * @param {string[]} tagNames
  */
-export function setNoteTags(noteId, tagIds) {
+export function setNoteTags(noteId, tagNames) {
   const db = getDb()
   const del = db.prepare('DELETE FROM note_tags WHERE note_id = ?')
-  const ins = db.prepare('INSERT INTO note_tags (note_id, tag_id) VALUES (?, ?)')
-
+  const ins = db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)')
   const txn = db.transaction(() => {
     del.run(noteId)
-    for (const tid of tagIds) {
-      ins.run(noteId, tid)
+    for (const tn of tagNames) {
+      ins.run(noteId, tn)
     }
   })
   txn()
@@ -163,22 +150,20 @@ export function setNoteTags(noteId, tagIds) {
 export function getNoteTags(noteId) {
   return getDb()
     .prepare(
-      `
-    SELECT t.* FROM tags t
-    INNER JOIN note_tags nt ON nt.tag_id = t.id
-    WHERE nt.note_id = ?
-    ORDER BY t.created_at ASC
-  `
+      `SELECT t.* FROM tags t
+       INNER JOIN note_tags nt ON nt.tag_name = t.name
+       WHERE nt.note_id = ?
+       ORDER BY t.created_at ASC`
     )
     .all(noteId)
 }
 
 /**
  * 获取标签关联的便签数量
- * @param {number} tagId
+ * @param {string} tagName
  * @returns {number}
  */
-export function getTagNoteCount(tagId) {
-  const row = getDb().prepare('SELECT COUNT(*) as count FROM note_tags WHERE tag_id = ?').get(tagId)
+export function getTagNoteCount(tagName) {
+  const row = getDb().prepare('SELECT COUNT(*) as count FROM note_tags WHERE tag_name = ?').get(tagName)
   return row?.count ?? 0
 }

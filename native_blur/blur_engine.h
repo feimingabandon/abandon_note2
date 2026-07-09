@@ -44,6 +44,7 @@ using namespace winrt::Windows::UI::Composition::Desktop;
 struct BlurConfig {
     bool    enabled    = true;
     float   radiusDip  = 30.0f;    // 模糊半径/通透度 (0=清晰, 越大越模糊, 0~100)
+    float   opacity    = 1.0f;     // 模糊层透明度 (0=完全透明, 1=不透明, 0~1)
     uint8_t tintR      = 255;      // 叠加颜色 R (默认白色=无色叠加)
     uint8_t tintG      = 255;      // 叠加颜色 G
     uint8_t tintB      = 255;      // 叠加颜色 B
@@ -69,6 +70,7 @@ public:
     void SetSaturation(float saturation);
     void SetCornerRadius(float radiusDip);
     void SetEnabled(bool enabled);
+    void SetOpacity(float opacity);
     BlurConfig GetConfig() const;
 
     // ---- 位置/尺寸同步 ----

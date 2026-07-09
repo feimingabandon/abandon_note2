@@ -21,6 +21,7 @@ import BaseButton from './BaseButton.vue'
 import FontSizeInput from './FontSizeInput.vue'
 import AppSlider from './AppSlider.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
+import HelpButton from './HelpButton.vue'
 import { useMessage } from '../composables/useMessage.js' // 消息弹窗
 
 // ---- 调度器健康数据 ----
@@ -178,8 +179,6 @@ watch(
 
 // ---- 基础样式设置 ----
 const bgColor = ref('255 255 255')
-const winOpacity = ref(0.2) // 统一的窗口透明度（控制 CSS 层透明度），默认 20%
-const bgBlur = ref(5) // 弹窗模糊，默认 5px
 const bgBorder = ref(true)
 const fontSizeBase = ref(18)
 const textColor = ref('#000000')
@@ -299,7 +298,8 @@ let _autoStartSynced = false
 const blurCaps = ref({ supported: false, platform: '', strategy: 'none' })
 const blurEnabled = ref(true) // 启用毛玻璃，默认开启
 const blurError = ref(null) // 持久错误（如 DLL 未加载），恒显示不自动消失
-const blurRadius = ref(10) // 模糊半径，默认 10
+const blurRadius = ref(10) // 模糊半径，默认 10，范围 0-30
+const blurOpacity = ref(1.0) // 系统模糊层透明度，开启时默认 1.0
 const blurTintR = ref(255)
 const blurTintG = ref(255)
 const blurTintB = ref(255)
@@ -307,7 +307,13 @@ const blurSaturation = ref(1.8)
 const blurCornerRadius = ref(12)
 let _blurSynced = false
 
-// ---- 模糊着色 hex 显示与校验 ----
+// ---- 窗口透明度（仅系统模糊关闭时显示） ----
+const windowOpacity = ref(0) // 默认 0 = OS 毛玻璃透出
+
+// ---- CSS 组件模糊设置 ----
+const cssBlur = ref(20) // CSS 模糊半径，glassmorphism 标准 20px
+const cssOpacity = ref(0.15) // CSS 组件透明度，标准 15%
+const cssSaturation = ref(1.8) // CSS 饱和度，默认 1.8
 const blurTintHex = computed(() => {
   const r = blurTintR.value.toString(16).padStart(2, '0')
   const g = blurTintG.value.toString(16).padStart(2, '0')
@@ -394,25 +400,37 @@ function debouncedSave(type, key, value, remark = '') {
 
 // ---- 实时生效 watchers ----
 
-// 背景颜色 → CSS --bg-color
+// 背景颜色 → CSS --bg-color (基础样式，主窗口+组件共用)
 watch(bgColor, (v) => {
   el.style.setProperty('--bg-color', v)
   debouncedSave('css', 'bg_color', v, '背景颜色（十六进制，如 #ffffff）')
 })
 
-// 窗口透明度 → CSS --popup-opacity
-watch(winOpacity, (v) => {
-  el.style.setProperty('--popup-opacity', v)
-  debouncedSave('css', 'win_opacity', v, '窗口透明度（0~1 浮点数）')
-})
-
-// 弹窗模糊 → CSS --bg-blur
-watch(bgBlur, (v) => {
+// ---- CSS 组件模糊：模糊半径 → CSS --bg-blur ----
+watch(cssBlur, (v) => {
   el.style.setProperty('--bg-blur', v + 'px')
-  debouncedSave('css', 'bg_blur', v + 'px', 'CSS 背景模糊半径（像素值，如 10px）')
+  debouncedSave('css', 'bg_blur', String(v), 'CSS 背景模糊半径（像素值，如 5）')
 })
 
-// 边框开关 → CSS --bg-border
+// ---- CSS 组件模糊：透明度 → CSS --popup-opacity ----
+watch(cssOpacity, (v) => {
+  el.style.setProperty('--popup-opacity', v)
+  debouncedSave('css', 'win_opacity', v, '组件透明度（0~1 浮点数）')
+})
+
+// ---- CSS 组件模糊：饱和度 → CSS --bg-saturation ----
+watch(cssSaturation, (v) => {
+  el.style.setProperty('--bg-saturation', v)
+  debouncedSave('css', 'bg_saturation', v, 'CSS 饱和度（0~2 浮点数）')
+})
+
+// ---- 窗口透明度 ----
+watch(windowOpacity, (v) => {
+  el.style.setProperty('--window-opacity', v)
+  debouncedSave('css', 'window_opacity', v, '窗口透明度（0~1 浮点数）')
+})
+
+// ---- CSS 组件模糊：边框开关 → CSS --bg-border ----
 watch(bgBorder, (v) => {
   el.style.setProperty('--bg-border', v ? '1' : '0')
   window.api.setSetting(
@@ -461,6 +479,7 @@ function syncBlurConfig() {
     .setBlurConfig({
       enabled: blurEnabled.value,
       radius: blurRadius.value,
+      opacity: blurOpacity.value,
       saturation: blurSaturation.value,
       cornerRadius: blurCornerRadius.value,
       tint: { r: blurTintR.value, g: blurTintG.value, b: blurTintB.value }
@@ -476,6 +495,7 @@ function debouncedSyncBlur() {
 
 watch(blurEnabled, debouncedSyncBlur)
 watch(blurRadius, debouncedSyncBlur)
+watch(blurOpacity, debouncedSyncBlur)
 watch(blurTintR, debouncedSyncBlur)
 watch(blurTintG, debouncedSyncBlur)
 watch(blurTintB, debouncedSyncBlur)
@@ -492,8 +512,10 @@ onMounted(async () => {
     const cssSettings = await window.api.getSettings(WINDOW_NAME, 'css')
     cssSettings.forEach(({ key, value }) => {
       if (key === 'bg_color') bgColor.value = value
-      else if (key === 'win_opacity') winOpacity.value = parseFloat(value)
-      else if (key === 'bg_blur') bgBlur.value = parseFloat(value)
+      else if (key === 'win_opacity') cssOpacity.value = parseFloat(value)
+      else if (key === 'bg_blur') cssBlur.value = parseInt(value)
+      else if (key === 'bg_saturation') cssSaturation.value = parseFloat(value)
+      else if (key === 'window_opacity') windowOpacity.value = parseFloat(value)
       else if (key === 'bg_border') bgBorder.value = value === '1'
       else if (key === 'font_size_base') fontSizeBase.value = parseInt(value)
       else if (key === 'text_color') textColor.value = value
@@ -522,6 +544,7 @@ onMounted(async () => {
     if (savedBlur) {
       blurEnabled.value = savedBlur.enabled ?? true
       blurRadius.value = savedBlur.radius ?? 10
+      blurOpacity.value = savedBlur.opacity ?? 1.0
       blurSaturation.value = savedBlur.saturation ?? 1.8
       blurCornerRadius.value = savedBlur.cornerRadius ?? 12
       if (savedBlur.tint) {
@@ -598,12 +621,15 @@ const onConfirmResetUI = async () => {
 /** 恢复默认设置 —— 重置 UI + 同步模糊/自启 */
 const resetUI = () => {
   bgColor.value = '255 255 255'
-  winOpacity.value = 0.2
-  bgBlur.value = 5
+  cssOpacity.value = 0.15
+  cssBlur.value = 20
+  cssSaturation.value = 1.8
+  windowOpacity.value = 0
   bgBorder.value = true
   fontSizeBase.value = 18
   textColor.value = '#000000'
   blurEnabled.value = true
+  blurOpacity.value = 1.0
   blurRadius.value = 10
   blurTintR.value = 255
   blurTintG.value = 255
@@ -625,10 +651,10 @@ const resetUI = () => {
     <div v-if="rendered" class="settings-wrapper">
       <!-- 遮罩层（已移除） -->
 
-      <!-- 面板主体（玻璃态样式已内联到 .settings-panel + ::before，无需 .app-bg） -->
+      <!-- 面板主体（玻璃态样式由 .app-bg 统一提供） -->
       <div
         ref="panelRef"
-        class="settings-panel"
+        class="settings-panel app-bg"
         :class="{ active: panelActive, 'is-resizing': resizing }"
         :style="{ height: panelHeight + '%' }"
       >
@@ -653,176 +679,19 @@ const resetUI = () => {
         </div>
 
         <!-- 面板内容（可滚动） -->
-        <div class="panel-body">
-          <!-- ========== 基础样式修改 ========== -->
-          <section class="settings-section">
-            <h3 class="section-title">基础样式修改</h3>
-
-            <!-- 窗口透明度（统一控制 CSS 层透明度） -->
-            <div class="setting-item setting-item-slider">
-              <div class="slider-header">
-                <span class="setting-label">窗口透明度</span>
-                <span class="setting-value">{{ Math.round(winOpacity * 100) }}%</span>
-              </div>
-              <AppSlider v-model="winOpacity" :min="0" :max="1" :step="0.01" />
-            </div>
-
-            <!-- 弹窗模糊 -->
-            <div class="setting-item setting-item-slider">
-              <div class="slider-header">
-                <span class="setting-label">弹窗模糊</span>
-                <span class="setting-value">{{ bgBlur }}px</span>
-              </div>
-              <AppSlider v-model="bgBlur" :min="0" :max="40" :step="1" />
-            </div>
-
-            <!-- 边框 -->
-            <div class="setting-item">
-              <div class="setting-left">
-                <span class="setting-label">边框</span>
-              </div>
-              <div class="setting-right">
-                <AppToggle v-model="bgBorder" />
-              </div>
-            </div>
-
-            <!-- 字体大小（输入 + 下拉预设） -->
-            <div class="setting-item">
-              <div class="setting-left">
-                <span class="setting-label">字体大小</span>
-              </div>
-              <div class="setting-right">
-                <FontSizeInput
-                  v-model="fontSizeBase"
-                  :presets="fontSizePresets"
-                  :min="12"
-                  :max="50"
-                  width="90rem"
-                />
-              </div>
-            </div>
-
-            <!-- 文字颜色 -->
-            <div class="setting-item">
-              <div class="setting-left">
-                <span class="setting-label">文字颜色</span>
-              </div>
-              <div class="setting-right">
-                <button
-                  v-for="c in hexPresets"
-                  :key="c.value"
-                  class="color-dot"
-                  :class="{ active: textColor === c.value }"
-                  :style="{ backgroundColor: c.value }"
-                  :title="c.label"
-                  @click="textColor = c.value"
-                />
-                <input v-model="textColor" type="color" class="color-input" />
-                <div class="color-hex-input-wrap">
-                  <input
-                    type="text"
-                    class="color-hex-input"
-                    spellcheck="false"
-                    :class="{ 'has-error': textColorInputError }"
-                    :value="textColorInput"
-                    placeholder="#000000"
-                    maxlength="7"
-                    @input="onTextColorInput"
-                    @blur="commitTextColor"
-                    @keydown.enter="commitTextColor"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <!-- 背景颜色 -->
-            <div class="setting-item">
-              <div class="setting-left">
-                <span class="setting-label">背景颜色</span>
-              </div>
-              <div class="setting-right">
-                <button
-                  v-for="c in hexPresets"
-                  :key="c.value"
-                  class="color-dot"
-                  :class="{ active: bgColorHex === c.value }"
-                  :style="{ backgroundColor: c.value }"
-                  :title="c.label"
-                  @click="setBgColorPreset(c.value)"
-                />
-                <input
-                  type="color"
-                  class="color-input"
-                  :value="bgColorHex"
-                  @input="
-                    (e) => {
-                      const h = e.target.value
-                      const r = parseInt(h.slice(1, 3), 16)
-                      const g = parseInt(h.slice(3, 5), 16)
-                      const b = parseInt(h.slice(5, 7), 16)
-                      bgColor = `${r} ${g} ${b}`
-                    }
-                  "
-                />
-                <div class="color-hex-input-wrap">
-                  <input
-                    type="text"
-                    class="color-hex-input"
-                    spellcheck="false"
-                    :class="{ 'has-error': bgColorInputError }"
-                    :value="bgColorInput"
-                    placeholder="#FFFFFF"
-                    maxlength="7"
-                    @input="onBgColorInput"
-                    @blur="commitBgColor"
-                    @keydown.enter="commitBgColor"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <!-- 窗口圆角（纯 CSS 控制，与系统模糊解耦） -->
-            <div class="setting-item setting-item-slider">
-              <div class="slider-header">
-                <span class="setting-label">窗口圆角</span>
-                <span class="setting-value">{{ blurCornerRadius }}px</span>
-              </div>
-              <AppSlider v-model="blurCornerRadius" :min="0" :max="30" :step="1" />
-              <div class="setting-range-labels">
-                <span class="range-label-start">直角</span>
-                <span class="range-label-end">圆润</span>
-              </div>
-              <span class="setting-hint"
-                >四个角的圆润程度。0 = 直角，数值越大越圆。推荐 8–16（苹果原生风格）</span
-              >
-            </div>
-          </section>
-
-          <!-- ========== 系统模糊 ========== -->
-          <!-- Windows：完整控件；macOS：仅启用开关（vibrancy）；其他：隐藏 -->
+        <div class="panel-body scroll-y">
+          <!-- ========== 系统窗口模糊玻璃效果 ========== -->
           <section v-if="blurCaps.supported" class="settings-section">
-            <h3 class="section-title">系统模糊</h3>
+            <h3 class="section-title">系统窗口模糊玻璃效果</h3>
 
             <!-- 启用开关（所有支持平台通用） -->
             <div class="setting-item">
               <div class="setting-left">
                 <span class="setting-label">启用毛玻璃</span>
                 <span v-if="blurError" class="setting-error">
-                  <svg
-                    class="warn-icon"
-                    width="12"
-                    height="12"
-                    viewBox="0 0 12 12"
-                    fill="none"
-                    aria-hidden="true"
-                  >
+                  <svg class="warn-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
                     <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" />
-                    <path
-                      d="M6 3.5v3"
-                      stroke="currentColor"
-                      stroke-width="1.2"
-                      stroke-linecap="round"
-                    />
+                    <path d="M6 3.5v3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
                     <circle cx="6" cy="9" r="0.7" fill="currentColor" />
                   </svg>
                   {{ blurError }}
@@ -833,107 +702,173 @@ const resetUI = () => {
               </div>
             </div>
 
-            <!-- 以下控件仅 Windows 平台有效（macOS 使用原生 vibrancy，无可调参数） -->
-            <template v-if="blurCaps.platform === 'Windows'">
-              <!-- 模糊半径（通透度） -->
+            <!-- 窗口透明度（始终显示，控制主窗口背景） -->
+            <div class="setting-item setting-item-slider">
+              <span class="setting-label">窗口透明度<HelpButton text="控制主窗口背景透明度。0=OS毛玻璃完全透出，1=不透明纯色底" /></span>
+              <span class="range-label-start"></span>
+              <AppSlider v-model="windowOpacity" :min="0" :max="1" :step="0.01" />
+              <span class="range-label-end"></span>
+              <span class="setting-value">{{ Math.round(windowOpacity * 100) }}%</span>
+            </div>
+
+            <!-- 开启时：显示系统模糊设置（仅 Windows） -->
+            <template v-if="blurEnabled && blurCaps.platform === 'Windows'">
+              <!-- 系统透明度 -->
               <div class="setting-item setting-item-slider">
-                <div class="slider-header">
-                  <span class="setting-label">模糊半径</span>
-                  <span class="setting-value">{{ blurRadius }} DIP</span>
-                </div>
-                <AppSlider
-                  v-model="blurRadius"
-                  :min="0"
-                  :max="100"
-                  :step="1"
-                  :disabled="!blurEnabled"
-                />
-                <div class="setting-range-labels">
-                  <span class="range-label-start">清晰</span>
-                  <span class="range-label-end">模糊</span>
-                </div>
-                <span class="setting-hint"
-                  >控制背景被打散的程度。越小越清晰，越大越像近视眼看东西。推荐值 20–40</span
-                >
+                <span class="setting-label">系统透明度<HelpButton text="控制DComp模糊层的通透程度。1=不透明（最强模糊）" /></span>
+                <span class="range-label-start"></span>
+                <AppSlider v-model="blurOpacity" :min="0" :max="1" :step="0.01" />
+                <span class="range-label-end"></span>
+                <span class="setting-value">{{ Math.round(blurOpacity * 100) }}%</span>
+              </div>
+
+              <!-- 模糊半径 -->
+              <div class="setting-item setting-item-slider">
+                <span class="setting-label">模糊半径<HelpButton text="控制背景被打散的程度。推荐值10–20" /></span>
+                <span class="range-label-start">清晰</span>
+                <AppSlider v-model="blurRadius" :min="0" :max="100" :step="1" />
+                <span class="range-label-end">模糊</span>
+                <span class="setting-value">{{ blurRadius }} DIP</span>
               </div>
 
               <!-- 颜色 -->
               <div class="setting-item">
                 <div class="setting-left">
-                  <span class="setting-label">颜色</span>
+                <span class="setting-label">颜色<HelpButton text="选中颜色如染色玻璃盖在模糊层上。白色≈无色叠加（推荐）" /></span>
                 </div>
                 <div class="setting-right">
                   <button
-                    v-for="c in hexPresets"
-                    :key="c.value"
-                    class="color-dot"
+                    v-for="c in hexPresets" :key="c.value" class="color-dot"
                     :class="{ active: blurTintHex === c.value }"
-                    :style="{ backgroundColor: c.value }"
-                    :title="c.label"
-                    :disabled="!blurEnabled"
+                    :style="{ backgroundColor: c.value }" :title="c.label"
                     @click="setBlurTintPreset(c.value)"
                   />
-                  <input
-                    type="color"
-                    class="color-input"
-                    :value="blurTintHex"
-                    :disabled="!blurEnabled"
-                    @input="
-                      (e) => {
-                        const h = e.target.value
-                        const r = parseInt(h.slice(1, 3), 16)
-                        const g = parseInt(h.slice(3, 5), 16)
-                        const b = parseInt(h.slice(5, 7), 16)
-                        blurTintR = r
-                        blurTintG = g
-                        blurTintB = b
-                      }
-                    "
+                  <input type="color" class="color-input" :value="blurTintHex"
+                    @input="(e) => { const h = e.target.value; blurTintR = parseInt(h.slice(1,3),16); blurTintG = parseInt(h.slice(3,5),16); blurTintB = parseInt(h.slice(5,7),16) }"
                   />
                   <div class="color-hex-input-wrap">
-                    <input
-                      type="text"
-                      class="color-hex-input"
-                      spellcheck="false"
-                      :class="{ 'has-error': blurTintInputError }"
-                      :value="blurTintInput"
-                      placeholder="#FFFFFF"
-                      maxlength="7"
-                      :disabled="!blurEnabled"
-                      @input="onBlurTintInput"
-                      @blur="commitBlurTint"
-                      @keydown.enter="commitBlurTint"
+                    <input type="text" class="color-hex-input" spellcheck="false"
+                      :class="{ 'has-error': blurTintInputError }" :value="blurTintInput"
+                      placeholder="#FFFFFF" maxlength="7"
+                      @input="onBlurTintInput" @blur="commitBlurTint" @keydown.enter="commitBlurTint"
                     />
                   </div>
                 </div>
-                <span class="setting-hint color-hint"
-                  >选中的颜色会像染色玻璃一样盖在模糊层上。默认白色 ≈ 无色叠加（推荐）</span
-                >
               </div>
 
               <!-- 饱和度 -->
               <div class="setting-item setting-item-slider">
-                <div class="slider-header">
-                  <span class="setting-label">饱和度</span>
-                  <span class="setting-value">{{ blurSaturation.toFixed(1) }}x</span>
-                </div>
-                <AppSlider
-                  v-model="blurSaturation"
-                  :min="0"
-                  :max="2"
-                  :step="0.1"
-                  :disabled="!blurEnabled"
-                />
-                <div class="setting-range-labels">
-                  <span class="range-label-start">黑白</span>
-                  <span class="range-label-end">鲜艳</span>
-                </div>
-                <span class="setting-hint"
-                  >模糊会让颜色变灰，提高饱和度能把鲜艳度补回来。1.0 = 原色，推荐
-                  1.6–2.0（苹果官网用 1.8）</span
-                >
+                <span class="setting-label">饱和度<HelpButton text="模糊会让颜色变灰，提高饱和度能把鲜艳度补回来。推荐1.6–2.0（苹果用1.8）" /></span>
+                <span class="range-label-start">黑白</span>
+                <AppSlider v-model="blurSaturation" :min="0" :max="2" :step="0.1" />
+                <span class="range-label-end">鲜艳</span>
+                <span class="setting-value">{{ blurSaturation.toFixed(1) }}x</span>
               </div>
             </template>
+
+            <!-- 窗口圆角（所有平台通用，纯 CSS 控制） -->
+            <div class="setting-item setting-item-slider">
+              <span class="setting-label">窗口圆角<HelpButton text="四个角的圆润程度。0=直角，数值越大越圆。推荐8–16（苹果原生风格）" /></span>
+              <span class="range-label-start">直角</span>
+              <AppSlider v-model="blurCornerRadius" :min="0" :max="30" :step="1" />
+              <span class="range-label-end">圆润</span>
+              <span class="setting-value">{{ blurCornerRadius }}px</span>
+            </div>
+          </section>
+
+          <!-- ========== CSS组件模糊玻璃效果 ========== -->
+          <section class="settings-section">
+            <h3 class="section-title">CSS组件模糊玻璃效果</h3>
+
+            <!-- 模糊半径 -->
+            <div class="setting-item setting-item-slider">
+              <span class="setting-label">模糊半径<HelpButton text="控制弹窗、下拉框等浮动组件的背景模糊程度。推荐20px" /></span>
+              <span class="range-label-start"></span>
+              <AppSlider v-model="cssBlur" :min="0" :max="30" :step="1" />
+              <span class="range-label-end"></span>
+              <span class="setting-value">{{ cssBlur }}px</span>
+            </div>
+
+            <!-- 组件透明度 -->
+            <div class="setting-item setting-item-slider">
+              <span class="setting-label">组件透明度<HelpButton text="控制浮动组件的霜层厚薄。值越小越透，推荐15%" /></span>
+              <span class="range-label-start"></span>
+              <AppSlider v-model="cssOpacity" :min="0" :max="1" :step="0.01" />
+              <span class="range-label-end"></span>
+              <span class="setting-value">{{ Math.round(cssOpacity * 100) }}%</span>
+            </div>
+
+            <!-- 饱和度 -->
+            <div class="setting-item setting-item-slider">
+              <span class="setting-label">饱和度<HelpButton text="模糊会洗掉颜色，提高饱和度补偿回来。推荐1.6–2.0（苹果用1.8）" /></span>
+              <span class="range-label-start">黑白</span>
+              <AppSlider v-model="cssSaturation" :min="0" :max="2" :step="0.1" />
+              <span class="range-label-end">鲜艳</span>
+              <span class="setting-value">{{ cssSaturation.toFixed(1) }}x</span>
+            </div>
+          </section>
+
+          <!-- ========== 基础样式 ========== -->
+          <section class="settings-section">
+            <h3 class="section-title">基础样式</h3>
+
+            <!-- 背景颜色 -->
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">背景颜色</span>
+              </div>
+              <div class="setting-right">
+                <button
+                  v-for="c in hexPresets" :key="c.value" class="color-dot"
+                  :class="{ active: bgColorHex === c.value }"
+                  :style="{ backgroundColor: c.value }" :title="c.label"
+                  @click="setBgColorPreset(c.value)"
+                />
+                <input type="color" class="color-input" :value="bgColorHex"
+                  @input="(e) => { const h = e.target.value; const r = parseInt(h.slice(1,3),16); const g = parseInt(h.slice(3,5),16); const b = parseInt(h.slice(5,7),16); bgColor = `${r} ${g} ${b}` }"
+                />
+                <div class="color-hex-input-wrap">
+                  <input type="text" class="color-hex-input" spellcheck="false"
+                    :class="{ 'has-error': bgColorInputError }" :value="bgColorInput"
+                    placeholder="#FFFFFF" maxlength="7"
+                    @input="onBgColorInput" @blur="commitBgColor" @keydown.enter="commitBgColor"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- 字体大小（输入 + 下拉预设） -->
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">字体大小</span>
+              </div>
+              <div class="setting-right">
+                <FontSizeInput v-model="fontSizeBase" :presets="fontSizePresets" :min="12" :max="50" width="90rem" />
+              </div>
+            </div>
+
+            <!-- 文字颜色 -->
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">文字颜色</span>
+              </div>
+              <div class="setting-right">
+                <button
+                  v-for="c in hexPresets" :key="c.value" class="color-dot"
+                  :class="{ active: textColor === c.value }"
+                  :style="{ backgroundColor: c.value }" :title="c.label"
+                  @click="textColor = c.value"
+                />
+                <input v-model="textColor" type="color" class="color-input" />
+                <div class="color-hex-input-wrap">
+                  <input type="text" class="color-hex-input" spellcheck="false"
+                    :class="{ 'has-error': textColorInputError }" :value="textColorInput"
+                    placeholder="#000000" maxlength="7"
+                    @input="onTextColorInput" @blur="commitTextColor" @keydown.enter="commitTextColor"
+                  />
+                </div>
+              </div>
+            </div>
           </section>
 
           <!-- ========== 系统设置 ========== -->
@@ -1155,7 +1090,7 @@ const resetUI = () => {
 
 /* ---- 遮罩层（已移除） ---- */
 
-/* ---- 面板主体（.app-bg 继承全局玻璃态，单独加阴影） ---- */
+/* ---- 面板主体（玻璃态样式由 .app-bg 统一提供，此处仅保留位置/动画/阴影等独有样式） ---- */
 .settings-panel {
   position: absolute;
   left: 0;
@@ -1170,34 +1105,16 @@ const resetUI = () => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-
-  /* 从 .app-bg 继承背景色和边框，但 backdrop-filter 交给 ::before 伪元素 */
-  background-color: rgb(var(--bg-color) / var(--popup-opacity));
-  border: calc(var(--bg-border) * 1px) solid rgba(255, 255, 255, 0.18);
 }
 
 /* 拖拽时暂停 backdrop-filter 和 transition，避免卡顿 */
 .settings-panel.is-resizing,
-.settings-panel.is-resizing::before {
+.settings-panel.is-resizing::before,
+.settings-panel.is-resizing::after {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
-.settings-panel::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  -webkit-backdrop-filter: blur(var(--bg-blur)) saturate(180%) contrast(100%) brightness(100%);
-  backdrop-filter: blur(var(--bg-blur)) saturate(180%) contrast(100%) brightness(100%);
-  pointer-events: none;
-  z-index: 0;
-}
 
-/* 确保内容在模糊层之上 */
-.settings-panel > * {
-  position: relative;
-  z-index: 1;
-}
 .settings-panel.active {
   transform: translateY(0);
 }
@@ -1254,7 +1171,6 @@ const resetUI = () => {
 /* ---- 面板内容区 ---- */
 .panel-body {
   flex: 1;
-  overflow-y: auto;
   padding: 0 20rem 0;
   margin-bottom: 32rem; /* 底部留安全区，内容不贴边 */
 
@@ -1264,7 +1180,7 @@ const resetUI = () => {
 
 /* ---- 设置分区 ---- */
 .settings-section {
-  margin-bottom: 24rem;
+  margin-bottom: 16rem;
 }
 .settings-section:last-child {
   margin-bottom: 0;
@@ -1275,7 +1191,7 @@ const resetUI = () => {
   color: var(--text-color);
   text-transform: uppercase;
   letter-spacing: 0.5rem;
-  margin-bottom: 12rem;
+  margin-bottom: 8rem;
   padding-left: 2rem;
 }
 
@@ -1286,10 +1202,10 @@ const resetUI = () => {
   align-items: center;
   justify-content: space-between;
   row-gap: 8rem;
-  padding: 14rem 16rem;
+  padding: 10rem 14rem;
   border-radius: 10rem;
   background-color: rgba(255, 255, 255, 0.04);
-  margin-bottom: 6rem;
+  margin-bottom: 4rem;
   transition: background-color 120ms ease;
 }
 .setting-item:hover {
@@ -1323,25 +1239,27 @@ const resetUI = () => {
   flex-shrink: 0;
 }
 
-/* 滑块类设置项——纵向堆叠布局（覆盖默认 2 列 Grid） */
+/* 滑块类设置项——单行水平布局：标签 ? 进度条 值 全在一行 */
 .setting-item.setting-item-slider {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  flex-direction: row;
+  align-items: center;
   gap: 6rem;
 }
 
-/* 滑块头部行：标签 + 当前值，两端对齐 */
-.slider-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+/* 进度条自适应撑满剩余空间 */
+.setting-item.setting-item-slider .slider-root {
+  flex: 1;
+  min-width: 50rem;
 }
 
 /* ---- 文字样式 ---- */
 .setting-label {
   font-size: var(--fs-body);
   color: var(--text-color);
+  display: inline-flex;
+  align-items: center;
+  gap: 6rem;
 }
 
 .setting-hint-caption {
@@ -1385,26 +1303,33 @@ const resetUI = () => {
   flex-shrink: 0;
 }
 
-/* ---- 滑块两端文字提示 ---- */
-.setting-range-labels {
-  display: flex;
-  justify-content: space-between;
-  font-size: var(--fs-secondary);
-  font-weight: 500;
-  color: var(--text-color-secondary);
-  padding: 0 2rem;
+/* ---- 滑块行各列按百分比 flex-basis 统一，保证所有进度条对齐 ---- */
+/* 标题+问号：固定 22% */
+.setting-item.setting-item-slider .setting-label {
+  flex: 0 0 22%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+/* 左/右范围标签：各固定 6%，空 span 也占位 */
 .range-label-start,
 .range-label-end {
+  flex: 0 0 6%;
+  text-align: center;
+  font-size: calc(var(--fs-secondary) * 0.85);
+  color: var(--text-color-secondary);
+  opacity: 0.55;
   user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+/* 数值列：固定 12% */
+.setting-item.setting-item-slider .setting-value {
+  flex: 0 0 12%;
+  min-width: 0;
 }
 
 /* ---- 预设色块 ---- */
-/* 颜色控件行下方的 hint 横跨全宽 */
-.color-hint {
-  flex-basis: 100%;
-}
-
 .color-dot {
   width: 20rem;
   height: 20rem;
@@ -1433,12 +1358,12 @@ const resetUI = () => {
   padding: 5rem 8rem;
   border: 1rem solid color-mix(in srgb, var(--text-color) 15%, transparent);
   border-radius: 6rem;
-  background: rgb(var(--bg-color) / var(--popup-opacity));
+  background: transparent;
   color: var(--text-color);
   font-size: var(--fs-secondary);
   font-family: inherit;
   font-weight: 500;
-  text-align: left;
+  text-align: right;
   outline: none;
   transition: border-color 150ms ease;
 }
