@@ -114,7 +114,21 @@ export function saveGeometry(windowName, x, y, width, height) {
 }
 
 export function resetDatabase() {
-  db.exec('DELETE FROM app_settings')
+  // 清空除 app_settings 外的所有业务数据（便签/模板/标签/附件，直接物理删除）
+  // 注意：SQLite 默认不启用 foreign_keys，CASCADE 不会生效，因此显式删除所有关联表
+  db.exec(`
+    DELETE FROM note_tags;
+    DELETE FROM note_attachments;
+    DELETE FROM notes;
+    DELETE FROM note_templates;
+    DELETE FROM tags;
+  `)
+  // 重新插入固有标签（与 initNotesTables 保持一致）
+  const now = Date.now()
+  db.prepare('INSERT OR IGNORE INTO tags (name, color, created_at) VALUES (?, ?, ?)').run('语音', '#ff9500', now)
+  db.prepare('INSERT OR IGNORE INTO tags (name, color, created_at) VALUES (?, ?, ?)').run('图片', '#007aff', now)
+  db.prepare('INSERT OR IGNORE INTO tags (name, color, created_at) VALUES (?, ?, ?)').run('视频', '#ff3b30', now)
+  db.prepare('INSERT OR IGNORE INTO tags (name, color, created_at) VALUES (?, ?, ?)').run('文本', '#34c759', now)
 }
 
 export function getGeometry(windowName) {

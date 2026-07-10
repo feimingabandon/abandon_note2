@@ -101,7 +101,7 @@ let blurInitialized = false
 /** 当前模糊配置（持久化到数据库） */
 const blurConfig = {
   enabled: true,
-  radius: 10, // 模糊半径/通透度 (0~100 DIP)，默认 10
+  radius: 15, // 模糊半径/通透度 (0~100 DIP)，默认 15
   opacity: 1.0, // 模糊层透明度 (0=全透, 1=不透明, 0~1)
   tint: { r: 255, g: 255, b: 255 }, // 颜色 (默认白色=无色叠加)
   saturation: 1.8, // 饱和度 (0~2, 苹果风格 = 1.8)

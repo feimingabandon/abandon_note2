@@ -298,7 +298,7 @@ let _autoStartSynced = false
 const blurCaps = ref({ supported: false, platform: '', strategy: 'none' })
 const blurEnabled = ref(true) // 启用毛玻璃，默认开启
 const blurError = ref(null) // 持久错误（如 DLL 未加载），恒显示不自动消失
-const blurRadius = ref(10) // 模糊半径，默认 10，范围 0-30
+const blurRadius = ref(15) // 模糊半径，默认 15，范围 0-100
 const blurOpacity = ref(1.0) // 系统模糊层透明度，开启时默认 1.0
 const blurTintR = ref(255)
 const blurTintG = ref(255)
@@ -308,11 +308,11 @@ const blurCornerRadius = ref(12)
 let _blurSynced = false
 
 // ---- 窗口透明度（仅系统模糊关闭时显示） ----
-const windowOpacity = ref(0) // 默认 0 = OS 毛玻璃透出
+const windowOpacity = ref(0.5) // 默认 0.5 = 半透明
 
 // ---- CSS 组件模糊设置 ----
-const cssBlur = ref(20) // CSS 模糊半径，glassmorphism 标准 20px
-const cssOpacity = ref(0.15) // CSS 组件透明度，标准 15%
+const cssBlur = ref(5) // CSS 模糊半径，默认 5px
+const cssOpacity = ref(0.5) // CSS 组件透明度，默认 50%
 const cssSaturation = ref(1.8) // CSS 饱和度，默认 1.8
 const blurTintHex = computed(() => {
   const r = blurTintR.value.toString(16).padStart(2, '0')
@@ -595,12 +595,11 @@ onBeforeUnmount(() => {
   }
 })
 
-/** 确认重置数据库 —— 清空所有持久化数据 + 同步重置 UI */
+/** 确认重置数据库 —— 清空除设置外的所有业务数据（便签/模板/标签/附件），保留 app_settings */
 const onConfirmResetDatabase = async () => {
   try {
     await window.api.resetDatabase()
-    resetUI() // 同步重置 UI 状态，使视觉变化与数据库清空保持一致
-    showMessage('success', '数据库已重置')
+    showMessage('success', '业务数据已重置，设置已保留')
   } catch (e) {
     console.warn('[SettingsPanel] 重置数据库失败:', e)
     showMessage('error', '重置数据库失败，请重试', 4000)
@@ -621,16 +620,16 @@ const onConfirmResetUI = async () => {
 /** 恢复默认设置 —— 重置 UI + 同步模糊/自启 */
 const resetUI = () => {
   bgColor.value = '255 255 255'
-  cssOpacity.value = 0.15
-  cssBlur.value = 20
+  cssOpacity.value = 0.5
+  cssBlur.value = 5
   cssSaturation.value = 1.8
-  windowOpacity.value = 0
+  windowOpacity.value = 0.5
   bgBorder.value = true
   fontSizeBase.value = 18
   textColor.value = '#000000'
   blurEnabled.value = true
   blurOpacity.value = 1.0
-  blurRadius.value = 10
+  blurRadius.value = 15
   blurTintR.value = 255
   blurTintG.value = 255
   blurTintB.value = 255
@@ -782,7 +781,7 @@ const resetUI = () => {
 
             <!-- 模糊半径 -->
             <div class="setting-item setting-item-slider">
-              <span class="setting-label">模糊半径<HelpButton text="控制弹窗、下拉框等浮动组件的背景模糊程度。推荐20px" /></span>
+              <span class="setting-label">模糊半径<HelpButton text="控制弹窗、下拉框等浮动组件的背景模糊程度。推荐5px" /></span>
               <span class="range-label-start"></span>
               <AppSlider v-model="cssBlur" :min="0" :max="30" :step="1" />
               <span class="range-label-end"></span>
@@ -791,7 +790,7 @@ const resetUI = () => {
 
             <!-- 组件透明度 -->
             <div class="setting-item setting-item-slider">
-              <span class="setting-label">组件透明度<HelpButton text="控制浮动组件的霜层厚薄。值越小越透，推荐15%" /></span>
+              <span class="setting-label">组件透明度<HelpButton text="控制浮动组件的霜层厚薄。值越小越透，推荐50%" /></span>
               <span class="range-label-start"></span>
               <AppSlider v-model="cssOpacity" :min="0" :max="1" :step="0.01" />
               <span class="range-label-end"></span>
@@ -1057,7 +1056,7 @@ const resetUI = () => {
     <ConfirmDialog
       v-model:visible="showResetDbDialog"
       title="重置数据库"
-      message="此操作将清空所有持久化数据（窗口位置、样式设置等），恢复为初始状态。此操作不可撤销。"
+      message="此操作将清空所有便签、模板、标签和附件数据（直接物理删除），设置项（样式、窗口等）不受影响。此操作不可撤销。"
       confirm-text="重置"
       cancel-text="取消"
       variant="danger"
