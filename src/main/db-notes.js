@@ -76,14 +76,23 @@ export function createNote({
   const ts = now()
   const effAt = effectiveAt ?? ts
 
+  // 一次性便签状态逻辑：
+  // - 未设生效时间（立即）→ in_progress
+  // - 已设生效时间且已到达 → in_progress
+  // - 已设生效时间但未到达 → active（等待激活）
+  let status = 'in_progress'
+  if (effectiveAt && effectiveAt > ts && effectiveAt > 0) {
+    status = 'active'
+  }
+
   const result = getDb()
     .prepare(
       `
     INSERT INTO notes (template_id, note_type, content, status, is_pinned, notify_enabled, effective_at, sort_order, created_at, updated_at)
-    VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
     )
-    .run(templateId, noteType, content, isPinned ? 1 : 0, notifyEnabled ? 1 : 0, effAt, sortOrder, ts, ts)
+    .run(templateId, noteType, content, status, isPinned ? 1 : 0, notifyEnabled ? 1 : 0, effAt, sortOrder, ts, ts)
 
   return getNoteById(result.lastInsertRowid)
 }
@@ -129,7 +138,7 @@ export function updateNote(id, fields = {}) {
 }
 
 /**
- * 按 ID 获取便签（含附件和标签）
+ * 按 ID 获取便签（含图片附件和标签）
  * @param {number} id
  * @returns {Object|null} 便签对象，不存在返回 null
  */
@@ -137,7 +146,7 @@ export function getNoteById(id) {
   const note = getDb().prepare('SELECT * FROM notes WHERE id = ?').get(id)
   if (!note) return null
 
-  // 拼接附件
+  // 拼接图片附件
   note.attachments = getDb()
     .prepare('SELECT * FROM note_attachments WHERE note_id = ? ORDER BY sort_order')
     .all(id)
@@ -163,6 +172,41 @@ export function getNoteById(id) {
  */
 export function deleteNote(id) {
   return updateNote(id, { status: 'cancelled' }) !== null
+}
+
+/**
+ * 批量激活便签：将生效时间已到的 active 便签转为 in_progress
+ * 由调度器的激活任务每分钟调用一次
+ * @returns {{ count: number, notified: Array<{id:number, content:string}> }}
+ */
+export function activateNotes() {
+  const db = getDb()
+  const now = Date.now()
+
+  // 先查出待激活便签中的通知数据
+  const toNotify = db
+    .prepare(
+      `SELECT id, content FROM notes
+       WHERE status = 'active' AND effective_at <= ? AND notify_enabled = 1
+       ORDER BY effective_at ASC`
+    )
+    .all(now)
+
+  // 批量转状态
+  const result = db
+    .prepare(
+      `UPDATE notes SET status = 'in_progress', updated_at = ?
+       WHERE status = 'active' AND effective_at <= ?`
+    )
+    .run(now, now)
+
+  const count = result.changes
+
+  if (count > 0) {
+    console.log(`[activateNotes] 激活了 ${count} 条便签（active → in_progress）`)
+  }
+
+  return { count, notified: toNotify }
 }
 
 // ============================================================

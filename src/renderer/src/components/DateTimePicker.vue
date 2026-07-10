@@ -15,6 +15,7 @@ const props = defineProps({
   width: { type: [String, Number], default: '' },
   disabled: { type: Boolean, default: false },
   clearable: { type: Boolean, default: true },
+  minDate: { type: Date, default: null },
   shortcuts: {
     type: Array,
     default: () => [
@@ -64,6 +65,10 @@ const calendarCells = computed(() => {
   const total = daysInMonth.value
   const prev = daysInPrevMonth.value
   const today = new Date()
+  // 日期下限（仅比较日期部分，忽略时分秒）
+  const minDay = props.minDate
+    ? new Date(props.minDate.getFullYear(), props.minDate.getMonth(), props.minDate.getDate())
+    : null
   const c = []
   for (let i = 0; i < 42; i++) {
     const o = i - offset
@@ -84,10 +89,12 @@ const calendarCells = computed(() => {
       cm = viewMonth.value
       cy = viewYear.value
     }
+    const cellDate = new Date(cy, cm, d)
     c.push({
       day: d, type: t, month: cm, year: cy,
       isToday: cy === today.getFullYear() && cm === today.getMonth() && d === today.getDate(),
-      isSelected: cy === year.value && cm === month.value - 1 && d === day.value
+      isSelected: cy === year.value && cm === month.value - 1 && d === day.value,
+      isDisabled: minDay ? cellDate < minDay : false
     })
   }
   return c
@@ -132,6 +139,15 @@ function commitDate() {
   if (m) {
     const y = parseInt(m[1]), mo = parseInt(m[2]), d = parseInt(m[3])
     if (y >= 1900 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= new Date(y, mo, 0).getDate()) {
+      // 日期下限校验
+      if (props.minDate) {
+        const minDay = new Date(props.minDate.getFullYear(), props.minDate.getMonth(), props.minDate.getDate())
+        const inputDay = new Date(y, mo - 1, d)
+        if (inputDay < minDay) {
+          inputDate.value = dateDisplay.value
+          return
+        }
+      }
       year.value = y; month.value = mo; day.value = d
       viewYear.value = y; viewMonth.value = mo - 1
       return
@@ -178,6 +194,7 @@ function goToToday() {
 }
 
 function selectDateCell(cell) {
+  if (cell.isDisabled) return
   if (cell.type === 'prev') prevMonth()
   else if (cell.type === 'next') nextMonth()
   year.value = cell.year; month.value = cell.month + 1; day.value = cell.day
@@ -188,10 +205,17 @@ function selectDateCell(cell) {
 function updatePanelPosition() {
   if (!wrapperRef.value) return
   const rect = wrapperRef.value.getBoundingClientRect()
+  let left = rect.left
+  // 面板宽 320rem，防右侧溢出
+  const remSize = parseFloat(getComputedStyle(document.documentElement).fontSize)
+  const panelW = 320 * remSize
+  if (left + panelW > window.innerWidth - 8) {
+    left = Math.max(8, window.innerWidth - panelW - 8)
+  }
   panelStyle.value = {
     position: 'fixed',
     top: (rect.bottom + 4) + 'px',
-    left: rect.left + 'px',
+    left: left + 'px',
     zIndex: 100
   }
 }
@@ -345,7 +369,7 @@ function onLeave(el, done) {
                 <span v-for="w in WEEKDAYS" :key="w" class="dt-weekday">{{ w }}</span>
               </div>
               <div class="dt-calendar">
-                <button v-for="(c, i) in calendarCells" :key="i" class="dt-cell" :class="{ 'is-other': c.type !== 'curr', 'is-today': c.isToday, 'is-sel': c.isSelected }" @click="selectDateCell(c)">
+                <button v-for="(c, i) in calendarCells" :key="i" class="dt-cell" :class="{ 'is-other': c.type !== 'curr', 'is-today': c.isToday, 'is-sel': c.isSelected, 'is-disabled': c.isDisabled }" :disabled="c.isDisabled" @click="selectDateCell(c)">
                   {{ c.day }}
                 </button>
               </div>
@@ -481,6 +505,7 @@ function onLeave(el, done) {
 .dt-cell.is-today { font-weight: 700; color: #0071e3; }
 .dt-cell.is-sel { background: #0071e3; color: #fff; font-weight: 700; }
 .dt-cell.is-sel:hover { background: #0077ed; }
+.dt-cell.is-disabled { opacity: .25; cursor: not-allowed; pointer-events: none; }
 
 /* ---- 时间滚轮 ---- */
 .dt-time-picker { display: flex; padding: 8rem 8rem 0; gap: 0; flex: 1; min-height: 0; }

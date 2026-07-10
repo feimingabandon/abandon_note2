@@ -9,7 +9,7 @@
  */
 
 import * as Electron from 'electron'
-const { app, shell, BrowserWindow, ipcMain, screen, Tray, Menu, Notification } = Electron
+const { app, shell, BrowserWindow, ipcMain, screen, Tray, Menu, Notification, desktopCapturer } = Electron
 
 import { join } from 'path'
 import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
@@ -44,6 +44,7 @@ import {
   startProgress,
   completeNote,
   cancelNote,
+  activateNotes,
   batchUpdateStatus,
   batchSetPinned,
   batchSetEffectiveAt,
@@ -69,7 +70,16 @@ import {
   pauseTemplate,
   resumeTemplate
 } from './db-templates.js'
-import { addAttachment, removeAttachment, listAttachments } from './db-attachments.js'
+import {
+  saveImage,
+  deleteImageFile,
+  deleteNoteImages,
+  getImageBase64,
+  addImageRecord,
+  removeImageRecord,
+  listImageRecords,
+  getImageCount
+} from './db-images.js'
 import { searchNotes, searchSuggestions } from './db-search.js'
 import { Scheduler } from './scheduler.js'
 import { generateRecurringNotes } from './recurrence.js'
@@ -847,43 +857,43 @@ app.whenReady().then(() => {
   // 初始化置顶状态（必须在 createWindow 之后）
   applyAlwaysOnTop()
   // ---- 调度器任务注册 ----
+  // 职责划分（两层任务，按此顺序执行）：
+  //   1. 激活任务：查询 active 便签，生效时间到达的 → 转为 in_progress（含通知）
+  //   2. 模板生成：查询循环模板，判断是否应当生成新便签实例（含通知）
 
-  // 3.3 通知任务：每分钟检查生效时间已到的便签并弹出操作系统通知
+  // 3.3 生效便签激活任务（含通知）
   scheduler.register({
-    name: 'notificationTask',
+    name: 'activationTask',
     shouldRun: () => true,
     execute: () => {
-      const now = Date.now()
-      const db = getDb()
-      const notes = db
-        .prepare(
-          `SELECT id, content, note_type, effective_at FROM notes
-         WHERE notify_enabled = 1 AND effective_at <= ? AND effective_at > ?
-         AND status IN ('active','in_progress')
-         ORDER BY effective_at DESC LIMIT 20`
-        )
-        .all(now, now - 60000)
-
-      for (const note of notes) {
+      const result = activateNotes()
+      // 对启用了通知的已激活便签发送系统通知
+      for (const note of result.notified) {
         const summary = (note.content || '').slice(0, 50) || '（空内容）'
         new Notification({ title: '便签提醒', body: summary, silent: false }).show()
+        const db = getDb()
         db.prepare('UPDATE notes SET notify_enabled = 0 WHERE id = ?').run(note.id)
-
         const name = (note.content || '').trim().slice(0, 5) || '空内容'
-        const typeLabel = note.note_type === 'one_time' ? '一次性' : note.note_type
-        const time = new Date(note.effective_at).toLocaleTimeString('zh-CN', { hour12: false })
-        console.log(`[notification] 便签 #${note.id}「${name}」[${typeLabel}] 生效 ${time}`)
+        console.log(`[activation-notify] 便签 #${note.id}「${name}」已通知`)
       }
     }
   })
 
-  // 3.4 循环模板生成任务：每分钟检查应当生成的模板并创建实例
+  // 3.4 循环模板生成任务（含通知）
   scheduler.register({
     name: 'noteGenerationTask',
     shouldRun: () => true,
     execute: () => {
-      generateRecurringNotes()
-      // 具体生成日志由 generateRecurringNotes 内部逐模板打印
+      const result = generateRecurringNotes()
+      // 对启用通知的模板生成的便签发送系统通知
+      for (const note of result.generated) {
+        const summary = (note.content || '').slice(0, 50) || '（空内容）'
+        new Notification({ title: '便签提醒', body: summary, silent: false }).show()
+        const db = getDb()
+        db.prepare('UPDATE notes SET notify_enabled = 0 WHERE id = ?').run(note.id)
+        const name = (note.content || '').trim().slice(0, 5) || '空内容'
+        console.log(`[generation-notify] 便签 #${note.id}「${name}」已通知`)
+      }
     }
   })
 
@@ -1039,6 +1049,42 @@ app.whenReady().then(() => {
     return createNote(options || {})
   })
 
+  // 【便签 - 原子创建（含图片 + 标签，事务保护，失败则自动回滚并清理文件）】
+  ipcMain.handle('notes:create-with-assets', (_event, { options, images, tagNames }) => {
+    const db = getDb()
+    const writtenFiles = []
+
+    const txn = db.transaction(() => {
+      const note = createNote(options || {})
+      if (!note || !note.id) throw new Error('创建便签失败')
+
+      // 保存图片
+      for (const img of images || []) {
+        const { relativePath, fileSize } = saveImage(note.id, img.base64, img.ext)
+        writtenFiles.push(relativePath)
+        addImageRecord({ noteId: note.id, filePath: relativePath, fileSize })
+      }
+
+      // 绑定标签
+      if (tagNames && tagNames.length > 0) {
+        setNoteTags(note.id, tagNames)
+      }
+
+      return note
+    })
+
+    try {
+      return txn()
+    } catch (e) {
+      // 事务回滚后，清理已写入磁盘的图片文件
+      for (const fp of writtenFiles) {
+        try { deleteImageFile(fp) } catch (_) { /* 忽略 */ }
+      }
+      console.error('[notes:create-with-assets] 创建失败，已回滚并清理文件:', e.message)
+      throw e
+    }
+  })
+
   // 【便签 - 更新】
   ipcMain.handle('notes:update', (_event, { id, fields }) => {
     return updateNote(id, fields || {})
@@ -1159,21 +1205,195 @@ app.whenReady().then(() => {
     return resumeTemplate(id)
   })
 
-  // ---- 附件 IPC ----
+  // ---- 图片附件 IPC ----
 
-  // 【附件 - 添加】
-  ipcMain.handle('attachments:add', (_event, options) => {
-    return addAttachment(options || {})
+  /** 批量保存图片（Base64 数组 → 磁盘 + DB） */
+  ipcMain.handle('images:save-batch', (_event, { noteId, images }) => {
+    const results = []
+    for (const img of images) {
+      const { base64, ext } = img
+      const { relativePath, fileSize } = saveImage(noteId, base64, ext)
+      const record = addImageRecord({ noteId, filePath: relativePath, fileSize })
+      results.push(record)
+    }
+    return results
   })
 
-  // 【附件 - 删除】
-  ipcMain.handle('attachments:remove', (_event, { id }) => {
-    return removeAttachment(id)
+  /** 删除图片记录 + 文件 */
+  ipcMain.handle('images:delete', (_event, { id }) => {
+    const db = getDb()
+    const row = db.prepare('SELECT * FROM note_attachments WHERE id = ?').get(id)
+    if (!row) return false
+    db.prepare('DELETE FROM note_attachments WHERE id = ?').run(id)
+    deleteImageFile(row.file_path)
+    return true
   })
 
-  // 【附件 - 列表】
-  ipcMain.handle('attachments:list', (_event, { noteId }) => {
-    return listAttachments(noteId)
+  /** 获取便签的所有图片附件 */
+  ipcMain.handle('images:list', (_event, { noteId }) => {
+    return listImageRecords(noteId)
+  })
+
+  /** 获取图片 Base64（用于预览） */
+  ipcMain.handle('images:get-base64', (_event, { relativePath }) => {
+    return getImageBase64(relativePath)
+  })
+
+  /** 获取图片数量 */
+  ipcMain.handle('images:count', (_event, { noteId }) => {
+    return getImageCount(noteId)
+  })
+
+  /** 物理删除便签的所有图片（逻辑删除时不调用） */
+  ipcMain.handle('images:delete-note-dir', (_event, { noteId }) => {
+    deleteNoteImages(noteId)
+    return true
+  })
+
+  // ---- 截图 IPC ----
+
+  /** 捕获全屏截图，打开独立窗口供用户选区，返回裁切后的 data URL */
+  ipcMain.handle('screenshot:capture', async () => {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: screen.getPrimaryDisplay().workAreaSize
+    })
+    if (sources.length === 0) return null
+    const dataUrl = sources[0].thumbnail.toDataURL()
+
+    return new Promise((resolve) => {
+      const win = new BrowserWindow({
+        fullscreen: true,
+        transparent: true,
+        frame: false,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        resizable: false,
+        hasShadow: false,
+        webPreferences: {
+          preload: join(__dirname, '../preload/screenshot.js'),
+          sandbox: false,
+          contextIsolation: true,
+          nodeIntegration: false
+        }
+      })
+
+      let settled = false
+      const done = (result) => {
+        if (settled) return
+        settled = true
+        ipcMain.removeAllListeners('screenshot:confirm')
+        ipcMain.removeAllListeners('screenshot:cancel')
+        if (!win.isDestroyed()) win.close()
+        resolve(result)
+      }
+
+      ipcMain.on('screenshot:confirm', (_event, cropped) => done(cropped))
+      ipcMain.on('screenshot:cancel', () => done(null))
+      win.on('closed', () => done(null))
+
+      const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{overflow:hidden;cursor:crosshair;user-select:none;width:100vw;height:100vh;font-family:system-ui,sans-serif}
+img.sc-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:0}
+canvas.sc-canvas{position:absolute;inset:0;z-index:1}
+.sc-hint{position:fixed;bottom:20px;right:24px;font-size:14px;color:rgba(255,255,255,.45);z-index:3;pointer-events:none;font-family:inherit}
+.sc-actions{position:fixed;display:none;align-items:center;gap:10px;z-index:3;font-family:inherit}
+.sc-btn{border:none;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;padding:6px 16px;font-weight:500}
+.sc-btn-exit{background:rgba(255,255,255,.12);color:#fff}
+.sc-btn-exit:hover{background:rgba(255,255,255,.22)}
+.sc-btn-save{background:#0071e3;color:#fff}
+.sc-btn-save:hover{background:#0077ed}
+</style></head><body>
+<img class="sc-bg" draggable="false">
+<canvas class="sc-canvas"></canvas>
+<span class="sc-hint" id="hint">拖拽选择截图区域</span>
+<div class="sc-actions" id="actions"><button class="sc-btn sc-btn-exit" id="btnExit">退出截屏</button><button class="sc-btn sc-btn-save" id="btnSave">保存截屏</button></div>
+<script>
+const img=document.querySelector('img'),cv=document.querySelector('canvas'),ctx=cv.getContext('2d')
+const hint=document.getElementById('hint'),actions=document.getElementById('actions'),btnExit=document.getElementById('btnExit'),btnSave=document.getElementById('btnSave')
+let s={x:0,y:0},e={x:0,y:0},has=false,mode='idle',dragOX=0,dragOY=0,dsX=0,dsY=0,deX=0,deY=0
+
+screenshot.onImage((u)=>{img.src=u;resize();draw()})
+function resize(){cv.width=window.innerWidth;cv.height=window.innerHeight;draw()}
+window.addEventListener('resize',resize)
+
+function draw(){
+  ctx.clearRect(0,0,cv.width,cv.height)
+  ctx.fillStyle='rgba(0,0,0,.4)';ctx.fillRect(0,0,cv.width,cv.height)
+  if(!has && mode!=='sel') return
+  const x=Math.min(s.x,e.x),y=Math.min(s.y,e.y),w=Math.abs(e.x-s.x),h=Math.abs(e.y-s.y)
+  ctx.clearRect(x,y,w,h)
+  ctx.strokeStyle='#0071e3';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,w-1,h-1)
+}
+
+function selRect(){
+  const x=Math.min(s.x,e.x),y=Math.min(s.y,e.y),w=Math.abs(e.x-s.x),h=Math.abs(e.y-s.y)
+  return{x,y,w,h}
+}
+
+function inside(px,py){const r=selRect();return px>=r.x&&px<=r.x+r.w&&py>=r.y&&py<=r.y+r.h}
+
+function updateActions(){
+  if(!has){actions.style.display='none';return}
+  const r=selRect();let tx=r.x,ty=r.y+r.h+8
+  if(ty+36>window.innerHeight)ty=r.y-44
+  actions.style.left=tx+'px';actions.style.top=ty+'px';actions.style.display='flex'
+}
+
+function doSave(){
+  const r=selRect();if(r.w<5||r.h<5)return
+  const c=document.createElement('canvas');c.width=r.w;c.height=r.h
+  const cx=c.getContext('2d');cx.drawImage(img,r.x,r.y,r.w,r.h,0,0,r.w,r.h)
+  screenshot.confirm(c.toDataURL('image/png'))
+}
+
+function doClear(){has=false;hint.style.display='';actions.style.display='none';draw()}
+
+btnExit.onclick=()=>screenshot.cancel()
+btnSave.onclick=()=>doSave()
+
+document.addEventListener('keydown',(ev)=>{if(ev.key==='Escape')screenshot.cancel()})
+document.addEventListener('contextmenu',(ev)=>{ev.preventDefault();has?doClear():screenshot.cancel()})
+
+document.addEventListener('mousedown',(ev)=>{
+  if(ev.button!==0)return
+  if(ev.target.closest('#actions'))return
+  if(has&&inside(ev.clientX,ev.clientY)){
+    mode='move';dragOX=ev.clientX;dragOY=ev.clientY;dsX=s.x;dsY=s.y;deX=e.x;deY=e.y;document.body.style.cursor='grabbing'
+    return
+  }
+  if(has){doClear()}
+  mode='sel';s.x=e.x=ev.clientX;s.y=e.y=ev.clientY;has=false;hint.style.display='';actions.style.display='none';draw();document.body.style.cursor='crosshair'
+})
+
+document.addEventListener('mousemove',(ev)=>{
+  if(mode==='sel'){e.x=ev.clientX;e.y=ev.clientY;draw()}
+  else if(mode==='move'){
+    const dx=ev.clientX-dragOX,dy=ev.clientY-dragOY
+    s.x=dsX+dx;s.y=dsY+dy;e.x=deX+dx;e.y=deY+dy;draw();updateActions()
+  }
+  else if(has&&inside(ev.clientX,ev.clientY)){document.body.style.cursor='move'}
+  else{document.body.style.cursor='crosshair'}
+})
+
+document.addEventListener('mouseup',(ev)=>{
+  if(ev.button!==0)return
+  if(mode==='sel'){
+    mode='idle';const w=Math.abs(e.x-s.x),h=Math.abs(e.y-s.y);has=w>3&&h>3
+    if(has){hint.style.display='none';updateActions()}else{draw()}
+  }else if(mode==='move'){mode='idle';document.body.style.cursor=has&&inside(ev.clientX,ev.clientY)?'move':'crosshair'}
+})
+
+setTimeout(()=>{draw()},50)
+</script></body></html>`
+
+      win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).then(() => {
+        // 窗口加载完成后再发送截图数据，避免 data URL 撑爆 HTML
+        win.webContents.send('screenshot:image', dataUrl)
+      }).catch(() => done(null))
+    })
   })
 
   // ---- 搜索 IPC ----

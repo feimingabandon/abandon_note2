@@ -1171,10 +1171,25 @@ const resetUI = () => {
 .panel-body {
   flex: 1;
   padding: 0 20rem 0;
+  padding-bottom: 20rem;
   margin-bottom: 32rem; /* 底部留安全区，内容不贴边 */
 
   /* 阻止滚动链接：子元素滚到头不会导致父级抖动 */
   overscroll-behavior: contain;
+
+  /* 底部内容渐隐，溢出时含蓄提示"下面还有" */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0%,
+    black calc(100% - 30rem),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black 0%,
+    black calc(100% - 30rem),
+    transparent 100%
+  );
 }
 
 /* ---- 设置分区 ---- */

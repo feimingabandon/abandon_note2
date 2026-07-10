@@ -25,15 +25,16 @@ import { getDb } from './db.js'
 /**
  * 遍历所有活跃模板，为应当生成的模板创建实例
  * 在事务内完成：过期旧实例 + 创建新实例 + 更新 last_generated_at
- * @returns {number} 本次生成的实例数（0 = 没有模板需要生成）
+ * @returns {{ count: number, generated: Array<{id:number, content:string, notifyEnabled:number}> }}
  */
 export function generateRecurringNotes() {
   const templates = getActiveTemplates()
-  if (!templates.length) return 0
+  if (!templates.length) return { count: 0, generated: [] }
 
   const db = getDb()
   const now = Date.now()
-  let generated = 0
+  let count = 0
+  const generated = []
 
   db.transaction(() => {
     for (const tpl of templates) {
@@ -70,7 +71,16 @@ export function generateRecurringNotes() {
       // 3. 更新模板的最后生成时间
       updateLastGeneratedAt(tpl.id, effectiveAt)
 
-      generated++
+      count++
+
+      // 记录生成数据供通知使用
+      if (tpl.notify_enabled) {
+        generated.push({
+          id: newNote.id,
+          content: newNote.content || '',
+          notifyEnabled: tpl.notify_enabled
+        })
+      }
 
       console.log(
         `[recurrence] 模板"${tpl.id}"生成实例 #${newNote.id} @ ${new Date(effectiveAt).toLocaleString()}`
@@ -78,7 +88,7 @@ export function generateRecurringNotes() {
     }
   })()
 
-  return generated
+  return { count, generated }
 }
 
 // ============================================================

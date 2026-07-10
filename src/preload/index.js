@@ -88,6 +88,9 @@ const api = {
   // ---- 便签 CRUD ----
   /** 创建便签 */
   createNote: (options) => ipcRenderer.invoke('notes:create', options),
+  /** 原子创建便签（含图片 + 标签，事务保护） */
+  createNoteWithAssets: ({ options, images, tagNames }) =>
+    ipcRenderer.invoke('notes:create-with-assets', { options, images, tagNames }),
   /** 更新便签（部分字段） */
   updateNote: (id, fields) => ipcRenderer.invoke('notes:update', { id, fields }),
   /** 删除便签（取消） */
@@ -141,13 +144,21 @@ const api = {
   /** 恢复模板 */
   resumeTemplate: (id) => ipcRenderer.invoke('templates:resume', { id }),
 
-  // ---- 附件管理 ----
-  /** 添加附件 */
-  addAttachment: (options) => ipcRenderer.invoke('attachments:add', options),
-  /** 删除附件 */
-  removeAttachment: (id) => ipcRenderer.invoke('attachments:remove', { id }),
-  /** 获取附件列表 */
-  listAttachments: (noteId) => ipcRenderer.invoke('attachments:list', { noteId }),
+  // ---- 图片附件 ----
+  /** 批量保存图片 */
+  saveImages: (noteId, images) => ipcRenderer.invoke('images:save-batch', { noteId, images }),
+  /** 删除图片 */
+  deleteImage: (id) => ipcRenderer.invoke('images:delete', { id }),
+  /** 获取图片列表 */
+  listImages: (noteId) => ipcRenderer.invoke('images:list', { noteId }),
+  /** 获取图片 Base64 */
+  getImageBase64: (relativePath) => ipcRenderer.invoke('images:get-base64', { relativePath }),
+  /** 获取图片数量 */
+  getImageCount: (noteId) => ipcRenderer.invoke('images:count', { noteId }),
+
+  // ---- 截图 ----
+  /** 捕获全屏截图，返回 data URL */
+  captureScreen: () => ipcRenderer.invoke('screenshot:capture'),
 
   // ---- 全文搜索 ----
   /** FTS5 全文搜索 */

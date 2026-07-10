@@ -114,7 +114,7 @@ export function saveGeometry(windowName, x, y, width, height) {
 }
 
 export function resetDatabase() {
-  // 清空除 app_settings 外的所有业务数据（便签/模板/标签/附件，直接物理删除）
+  // 清空除 app_settings 外的所有业务数据（便签/模板/标签，直接物理删除）
   // 注意：SQLite 默认不启用 foreign_keys，CASCADE 不会生效，因此显式删除所有关联表
   db.exec(`
     DELETE FROM note_tags;
@@ -125,9 +125,7 @@ export function resetDatabase() {
   `)
   // 重新插入固有标签（与 initNotesTables 保持一致）
   const now = Date.now()
-  db.prepare('INSERT OR IGNORE INTO tags (name, color, created_at) VALUES (?, ?, ?)').run('语音', '#ff9500', now)
   db.prepare('INSERT OR IGNORE INTO tags (name, color, created_at) VALUES (?, ?, ?)').run('图片', '#007aff', now)
-  db.prepare('INSERT OR IGNORE INTO tags (name, color, created_at) VALUES (?, ?, ?)').run('视频', '#ff3b30', now)
   db.prepare('INSERT OR IGNORE INTO tags (name, color, created_at) VALUES (?, ?, ?)').run('文本', '#34c759', now)
 }
 
@@ -199,16 +197,15 @@ export function initNotesTables() {
     CREATE INDEX IF NOT EXISTS idx_notes_is_pinned ON notes(is_pinned);
     CREATE INDEX IF NOT EXISTS idx_notes_status_pinned_sort ON notes(status, is_pinned, sort_order);
 
+    -- 兼容旧表（若存在含 media_type/transcription 的旧表结构则删除重建）
+    DROP TABLE IF EXISTS note_attachments;
     CREATE TABLE IF NOT EXISTS note_attachments (
-      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-      note_id             INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-      media_type          TEXT    NOT NULL
-                          CHECK(media_type IN ('image','video','audio')),
-      file_path           TEXT    NOT NULL,
-      file_size           INTEGER,
-      transcription       TEXT,
-      sort_order          INTEGER NOT NULL DEFAULT 0,
-      created_at          INTEGER NOT NULL
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      note_id     INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+      file_path   TEXT    NOT NULL,
+      file_size   INTEGER,
+      sort_order  INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_attachments_note_id ON note_attachments(note_id);
 
@@ -227,9 +224,7 @@ export function initNotesTables() {
     CREATE INDEX IF NOT EXISTS idx_note_tags_tag_name ON note_tags(tag_name);
 
     -- 固有标签（首次创建时自动插入，幂等）
-    INSERT OR IGNORE INTO tags (name, color, created_at) VALUES ('语音', '#ff9500', strftime('%s','now')*1000);
     INSERT OR IGNORE INTO tags (name, color, created_at) VALUES ('图片', '#007aff', strftime('%s','now')*1000);
-    INSERT OR IGNORE INTO tags (name, color, created_at) VALUES ('视频', '#ff3b30', strftime('%s','now')*1000);
     INSERT OR IGNORE INTO tags (name, color, created_at) VALUES ('文本', '#34c759', strftime('%s','now')*1000);
   `)
 }

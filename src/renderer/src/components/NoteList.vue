@@ -238,7 +238,7 @@ async function handleCreate() {
 
 function statusLabel(s) {
   const map = {
-    active: '待处理',
+    active: '待生效',
     in_progress: '进行中',
     completed: '已完成',
     cancelled: '已取消',

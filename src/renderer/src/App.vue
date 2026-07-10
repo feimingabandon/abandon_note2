@@ -22,7 +22,7 @@ import MessageToast from './components/MessageToast.vue'
 import NoteList from './components/NoteList.vue'
 import NoteEditor from './components/NoteEditor.vue'
 import ActionBar from './components/ActionBar.vue'
-import AttachmentPanel from './components/AttachmentPanel.vue'
+import ScreenshotPicker from './components/ScreenshotPicker.vue'
 import TagSelector from './components/TagSelector.vue' // 统一标签选择器
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 
@@ -189,7 +189,13 @@ onUnmounted(() => {
           @saved="onNoteSaved"
           @close="onCloseEditor"
         />
-        <AttachmentPanel v-if="selectedNote" :note-id="selectedNote.id" class="app-attachments" />
+        <ScreenshotPicker
+          v-if="selectedNote"
+          :key="selectedNote.id"
+          :note-id="selectedNote.id"
+          mode="persist"
+          class="app-images"
+        />
       </template>
     </main>
 
@@ -282,8 +288,11 @@ onUnmounted(() => {
   min-height: 0;
 }
 
-.app-attachments {
+.app-images {
   flex-shrink: 0;
-  max-height: 30%;
+  max-height: 25%;
+  overflow-y: auto;
+  padding-top: 8rem;
+  border-top: 1px solid rgba(128, 128, 128, 0.08);
 }
 </style>

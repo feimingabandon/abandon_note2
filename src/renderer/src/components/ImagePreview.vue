@@ -1,0 +1,266 @@
+<script setup>
+/**
+ * ImagePreview.vue — 图片大图预览
+ *
+ * 功能：
+ *   - 全屏遮罩预览
+ *   - 滚轮缩放
+ *   - 放大/缩小/旋转按钮
+ *   - ESC / 点击遮罩关闭
+ */
+import { ref, watch, onUnmounted } from 'vue'
+
+const props = defineProps({
+  visible: { type: Boolean, default: false },
+  src: { type: String, default: '' }
+})
+
+const emit = defineEmits(['close'])
+
+/** 缩放比例（1 = 100%） */
+const scale = ref(1)
+/** 旋转角度（度） */
+const rotate = ref(0)
+/** 平移偏移（屏幕像素） */
+const translateX = ref(0)
+const translateY = ref(0)
+
+/** 拖拽状态 */
+const isDragging = ref(false)
+let dragStartX = 0
+let dragStartY = 0
+let dragStartTX = 0
+let dragStartTY = 0
+let dragMoved = false
+
+/** 打开时重置状态 */
+watch(() => props.visible, (v) => {
+  if (v) {
+    scale.value = 1
+    rotate.value = 0
+    translateX.value = 0
+    translateY.value = 0
+  }
+})
+
+function onClose() {
+  emit('close')
+}
+
+function onKeydown(e) {
+  if (e.key === 'Escape') onClose()
+}
+
+/** 滚轮缩放 */
+function onWheel(e) {
+  e.preventDefault()
+  const delta = e.deltaY > 0 ? -0.1 : 0.1
+  scale.value = Math.max(0.1, Math.min(10, scale.value + delta))
+}
+
+/** 放大 */
+function zoomIn() {
+  scale.value = Math.min(10, scale.value + 0.25)
+}
+/** 缩小 */
+function zoomOut() {
+  scale.value = Math.max(0.1, scale.value - 0.25)
+}
+/** 旋转 90° */
+function rotate90() {
+  rotate.value = (rotate.value + 90) % 360
+}
+/** 重置 */
+function reset() {
+  scale.value = 1
+  rotate.value = 0
+  translateX.value = 0
+  translateY.value = 0
+}
+
+// ============================================================
+// 拖拽平移
+// ============================================================
+
+function onMouseDown(e) {
+  if (e.button !== 0) return
+  e.preventDefault()
+  isDragging.value = true
+  dragMoved = false
+  dragStartX = e.clientX
+  dragStartY = e.clientY
+  dragStartTX = translateX.value
+  dragStartTY = translateY.value
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+}
+
+function onMouseMove(e) {
+  if (!isDragging.value) return
+  const dx = e.clientX - dragStartX
+  const dy = e.clientY - dragStartY
+  if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+    dragMoved = true
+  }
+  translateX.value = dragStartTX + dx
+  translateY.value = dragStartTY + dy
+}
+
+function onMouseUp() {
+  isDragging.value = false
+  document.removeEventListener('mousemove', onMouseMove)
+  document.removeEventListener('mouseup', onMouseUp)
+}
+
+onUnmounted(() => {
+  document.removeEventListener('mousemove', onMouseMove)
+  document.removeEventListener('mouseup', onMouseUp)
+})
+</script>
+
+<template>
+  <Teleport to="body">
+    <div
+      v-if="visible"
+      class="ipv-overlay"
+      @click.self="onClose"
+      @keydown="onKeydown"
+      tabindex="0"
+      ref="overlayRef"
+    >
+      <!-- 顶部工具栏 -->
+      <div class="ipv-toolbar">
+        <button class="ipv-btn" title="缩小" @click="zoomOut">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/>
+          </svg>
+        </button>
+        <button class="ipv-btn" title="放大" @click="zoomIn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
+          </svg>
+        </button>
+        <button class="ipv-btn" title="旋转" @click="rotate90">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+        </button>
+        <button class="ipv-btn" title="重置" @click="reset">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/>
+          </svg>
+        </button>
+        <div class="ipv-spacer" />
+        <span class="ipv-info">{{ Math.round(scale * 100) }}%</span>
+        <button class="ipv-btn ipv-btn--close" title="关闭 (ESC)" @click="onClose">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- 图片容器 -->
+      <div class="ipv-viewport" @wheel="onWheel">
+        <img
+          :src="src"
+          class="ipv-image"
+          :class="{ 'ipv-image--dragging': isDragging }"
+          :style="{ transform: `translate(${translateX}px, ${translateY}px) scale(${scale}) rotate(${rotate}deg)` }"
+          @mousedown="onMouseDown"
+          @click.stop
+        />
+      </div>
+    </div>
+  </Teleport>
+</template>
+
+<style scoped>
+.ipv-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.8);
+  outline: none;
+}
+
+/* 工具栏 */
+.ipv-toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 6rem;
+  padding: 10rem 16rem;
+  z-index: 10;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.55), transparent);
+  user-select: none;
+}
+
+.ipv-spacer {
+  flex: 1;
+}
+
+.ipv-info {
+  font-size: var(--fs-secondary);
+  color: rgba(255, 255, 255, 0.65);
+  min-width: 40rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.ipv-btn {
+  width: 36rem;
+  height: 36rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.ipv-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+.ipv-btn svg {
+  width: 18rem;
+  height: 18rem;
+}
+.ipv-btn--close:hover {
+  background: rgba(255, 59, 48, 0.4);
+}
+
+/* 图片视口 */
+.ipv-viewport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.ipv-image {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 8rem;
+  box-shadow: 0 8rem 40rem rgba(0, 0, 0, 0.5);
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: center center;
+  cursor: grab;
+  user-select: none;
+}
+.ipv-image--dragging {
+  transition: none;
+  cursor: grabbing;
+}
+</style>
