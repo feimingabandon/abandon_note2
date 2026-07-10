@@ -14,6 +14,7 @@
 import Database from 'better-sqlite3' // SQLite3 同步驱动，适合 Electron 主进程
 import { join } from 'path' // Node.js 路径拼接工具
 import { app } from 'electron' // Electron app 模块，用于获取用户数据目录
+import { existsSync, rmSync } from 'fs' // 文件系统操作
 
 /** 数据库实例引用，整个应用生命周期内复用 */
 let db = null
@@ -114,6 +115,16 @@ export function saveGeometry(windowName, x, y, width, height) {
 }
 
 export function resetDatabase() {
+  // 先物理删除所有图片附件目录（避免 DB 清空后留下孤儿文件占磁盘）
+  const attachmentsDir = join(app.getPath('userData'), 'attachments')
+  try {
+    if (existsSync(attachmentsDir)) {
+      rmSync(attachmentsDir, { recursive: true, force: true })
+    }
+  } catch (e) {
+    console.error('[resetDatabase] 删除图片附件目录失败:', e.message)
+  }
+
   // 清空除 app_settings 外的所有业务数据（便签/模板/标签，直接物理删除）
   // 注意：SQLite 默认不启用 foreign_keys，CASCADE 不会生效，因此显式删除所有关联表
   db.exec(`

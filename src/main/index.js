@@ -861,20 +861,30 @@ app.whenReady().then(() => {
   //   1. 激活任务：查询 active 便签，生效时间到达的 → 转为 in_progress（含通知）
   //   2. 模板生成：查询循环模板，判断是否应当生成新便签实例（含通知）
 
+  /**
+   * 发送操作系统原生通知
+   * @param {string} body - 通知正文（自动截断至 50 字）
+   * @param {Object} [opts]
+   * @param {string} [opts.title='便签提醒'] - 通知标题
+   * @param {boolean} [opts.silent=false] - 静默（不播放声音）
+   */
+  function sendNotify(body, { title = '便签提醒', silent = false } = {}) {
+    const summary = (body || '').slice(0, 50) || '（空内容）'
+    new Notification({ title, body: summary, silent }).show()
+  }
+
   // 3.3 生效便签激活任务（含通知）
   scheduler.register({
     name: 'activationTask',
     shouldRun: () => true,
     execute: () => {
       const result = activateNotes()
-      // 对启用了通知的已激活便签发送系统通知
+      const db = getDb()
       for (const note of result.notified) {
-        const summary = (note.content || '').slice(0, 50) || '（空内容）'
-        new Notification({ title: '便签提醒', body: summary, silent: false }).show()
-        const db = getDb()
+        sendNotify(note.content)
         db.prepare('UPDATE notes SET notify_enabled = 0 WHERE id = ?').run(note.id)
-        const name = (note.content || '').trim().slice(0, 5) || '空内容'
-        console.log(`[activation-notify] 便签 #${note.id}「${name}」已通知`)
+        const preview = (note.content || '').trim().slice(0, 10) || '空内容'
+        console.log(`[activation-notify]「${preview}」便签已发送系统通知`)
       }
     }
   })
@@ -885,14 +895,12 @@ app.whenReady().then(() => {
     shouldRun: () => true,
     execute: () => {
       const result = generateRecurringNotes()
-      // 对启用通知的模板生成的便签发送系统通知
+      const db = getDb()
       for (const note of result.generated) {
-        const summary = (note.content || '').slice(0, 50) || '（空内容）'
-        new Notification({ title: '便签提醒', body: summary, silent: false }).show()
-        const db = getDb()
+        sendNotify(note.content)
         db.prepare('UPDATE notes SET notify_enabled = 0 WHERE id = ?').run(note.id)
-        const name = (note.content || '').trim().slice(0, 5) || '空内容'
-        console.log(`[generation-notify] 便签 #${note.id}「${name}」已通知`)
+        const preview = (note.content || '').trim().slice(0, 10) || '空内容'
+        console.log(`[generation-notify]「${preview}」已由循环模板生成便签，直接生效`)
       }
     }
   })
@@ -1065,9 +1073,14 @@ app.whenReady().then(() => {
         addImageRecord({ noteId: note.id, filePath: relativePath, fileSize })
       }
 
-      // 绑定标签
+      // 绑定标签（内联 SQL，避免与 setNoteTags 内部事务嵌套冲突）
       if (tagNames && tagNames.length > 0) {
-        setNoteTags(note.id, tagNames)
+        const delTag = db.prepare('DELETE FROM note_tags WHERE note_id = ?')
+        const insTag = db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)')
+        delTag.run(note.id)
+        for (const tn of tagNames) {
+          insTag.run(note.id, tn)
+        }
       }
 
       return note

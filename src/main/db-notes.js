@@ -183,14 +183,21 @@ export function activateNotes() {
   const db = getDb()
   const now = Date.now()
 
-  // 先查出待激活便签中的通知数据
-  const toNotify = db
+  // 加 59 秒缓冲窗口：覆盖当前分钟边界内的便签，下一分钟的留给下个 tick
+  const deadline = now + 59_000
+
+  // 查询缓冲窗口内到期的 active 便签
+  const allToActivate = db
     .prepare(
-      `SELECT id, content FROM notes
-       WHERE status = 'active' AND effective_at <= ? AND notify_enabled = 1
-       ORDER BY effective_at ASC`
+      `SELECT id, content, notify_enabled FROM notes
+       WHERE status = 'active' AND effective_at <= ?`
     )
-    .all(now)
+    .all(deadline)
+
+  // 从中筛选启用通知的（供调度器发送系统通知），只保留需要的字段
+  const toNotify = allToActivate
+    .filter((n) => n.notify_enabled === 1)
+    .map((n) => ({ id: n.id, content: n.content }))
 
   // 批量转状态
   const result = db
@@ -198,12 +205,14 @@ export function activateNotes() {
       `UPDATE notes SET status = 'in_progress', updated_at = ?
        WHERE status = 'active' AND effective_at <= ?`
     )
-    .run(now, now)
+    .run(now, deadline)
 
   const count = result.changes
 
-  if (count > 0) {
-    console.log(`[activateNotes] 激活了 ${count} 条便签（active → in_progress）`)
+  // 日志：每条激活的便签打印一行
+  for (const note of allToActivate) {
+    const preview = (note.content || '').trim().slice(0, 10) || '空内容'
+    console.log(`[activateNotes]「${preview}」便签到达生效时间，已激活`)
   }
 
   return { count, notified: toNotify }

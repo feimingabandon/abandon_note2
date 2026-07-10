@@ -49,6 +49,17 @@ function clampIndex(i) {
   return Math.max(0, Math.min(props.max - 1, i))
 }
 
+// ---- 状态 ----
+let snapTimer = null
+let snapAnimId = null
+let isSnapping = false     // true 时忽略 scroll 回调，避免动画/程序滚动被误判
+let animTargetIndex = props.modelValue  // 当前动画/定位的目标项，供连续滚轮链式步进使用
+let wheelAccum = 0         // 触控板细碎 delta 的累加器
+
+// 滚轮参数
+const WHEEL_NOTCH_MIN = 50   // |deltaY| >= 此值视为鼠标滚轮的一个离散刻度
+const TRACKPAD_STEP = 40     // 触控板累加达到此像素量走一步
+
 // 直接（无动画）把某个 index 定位到双横线中间
 function jumpToIndex(index) {
   cancelAnimationFrame(snapAnimId)
@@ -56,15 +67,88 @@ function jumpToIndex(index) {
   const h = itemH()
   if (!el || !h) return
   isSnapping = true
-  el.scrollTop = clampIndex(index) * h
-  activeIndex.value = clampIndex(index)
+  const idx = clampIndex(index)
+  el.scrollTop = idx * h
+  activeIndex.value = idx
+  animTargetIndex = idx
   requestAnimationFrame(() => { isSnapping = false })
 }
 
-// ---- 吸附逻辑 ----
-let snapTimer = null
-let snapAnimId = null
-let isSnapping = false   // true 时忽略 scroll 回调，避免动画/程序滚动被误判
+// ---- 统一的平滑滚动到某项（滚轮步进 / 点击定位 / 吸附 共用）----
+// RAF + easeOutCubic（200ms，比浏览器 smooth 快且可控）；动画中可被新目标打断重定向
+function animateToIndex(index) {
+  const el = listRef.value
+  const h = itemH()
+  if (!el || !h) return
+
+  const target = clampIndex(index)
+  animTargetIndex = target
+  const targetTop = target * h
+  const from = el.scrollTop
+
+  cancelAnimationFrame(snapAnimId)
+
+  // 距离极小，直接到位
+  if (Math.abs(from - targetTop) < 1) {
+    isSnapping = true
+    el.scrollTop = targetTop
+    activeIndex.value = target
+    requestAnimationFrame(() => { isSnapping = false })
+    if (target !== props.modelValue) emit('update:modelValue', target)
+    return
+  }
+
+  isSnapping = true
+  let start = null
+  function animate(ts) {
+    if (!start) start = ts
+    const t = Math.min((ts - start) / 200, 1)
+    // easeOutCubic: 1 - (1 - t)^3
+    el.scrollTop = from + (targetTop - from) * (1 - Math.pow(1 - t, 3))
+    activeIndex.value = clampIndex(Math.round(el.scrollTop / h))
+    if (t < 1) {
+      snapAnimId = requestAnimationFrame(animate)
+    } else {
+      el.scrollTop = targetTop
+      activeIndex.value = target
+      isSnapping = false
+      if (target !== props.modelValue) emit('update:modelValue', target)
+    }
+  }
+  snapAnimId = requestAnimationFrame(animate)
+}
+
+// ---- 滚轮：接管步进，保证每个值都可达 ----
+function onWheel(e) {
+  let delta = e.deltaY
+  if (e.deltaMode === 1) delta *= 16              // 行模式换算为像素
+  else if (e.deltaMode === 2) delta *= (listRef.value?.clientHeight || 100)  // 页模式
+  if (!delta) return
+
+  const base = isSnapping ? animTargetIndex : activeIndex.value
+  let step = 0
+
+  if (Math.abs(delta) >= WHEEL_NOTCH_MIN) {
+    // 鼠标滚轮：一个刻度 = 精确移动 1 项（忽略系统给的步进大小）
+    step = Math.sign(delta)
+    wheelAccum = 0
+  } else {
+    // 触控板：细碎 delta 累加，超过阈值才走一步，避免一滑飞太快
+    if (Math.sign(delta) !== Math.sign(wheelAccum)) wheelAccum = 0
+    wheelAccum += delta
+    if (Math.abs(wheelAccum) >= TRACKPAD_STEP) {
+      step = Math.sign(wheelAccum)
+      wheelAccum -= step * TRACKPAD_STEP
+    }
+  }
+
+  if (step !== 0) animateToIndex(base + step)
+}
+
+// ---- 点击某项：平滑滚动到中间并选中 ----
+function onItemClick(index) {
+  animateToIndex(index)
+}
 
 function onScroll() {
   const el = listRef.value
@@ -84,39 +168,7 @@ function snap() {
   const el = listRef.value
   const h = itemH()
   if (!el || !h) return
-
-  const index = clampIndex(Math.round(el.scrollTop / h))
-  const target = index * h
-  const distance = Math.abs(el.scrollTop - target)
-
-  activeIndex.value = index
-
-  // 距离极小，直接到位
-  if (distance < 1) {
-    el.scrollTop = target
-    if (index !== props.modelValue) emit('update:modelValue', index)
-    return
-  }
-
-  // RAF + easeOutCubic（200ms，比浏览器 smooth 快且可控）
-  cancelAnimationFrame(snapAnimId)
-  isSnapping = true
-
-  const from = el.scrollTop
-  let start = null
-  function animate(ts) {
-    if (!start) start = ts
-    const t = Math.min((ts - start) / 200, 1)
-    // easeOutCubic: 1 - (1 - t)^3
-    el.scrollTop = from + (target - from) * (1 - Math.pow(1 - t, 3))
-    if (t < 1) {
-      snapAnimId = requestAnimationFrame(animate)
-    } else {
-      isSnapping = false
-      if (index !== props.modelValue) emit('update:modelValue', index)
-    }
-  }
-  snapAnimId = requestAnimationFrame(animate)
+  animateToIndex(clampIndex(Math.round(el.scrollTop / h)))
 }
 
 // ---- 面板显示时初始化定位 ----
@@ -145,12 +197,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="ts-wrapper">
-    <div ref="listRef" class="ts-list scroll-y" @scroll="onScroll">
+    <div ref="listRef" class="ts-list scroll-y" @scroll="onScroll" @wheel.prevent="onWheel">
       <div
         v-for="v in items"
         :key="v"
         class="ts-item"
         :class="{ 'is-act': v === activeIndex }"
+        @click="onItemClick(v)"
       >
         {{ pad(v) }}
       </div>
@@ -182,6 +235,7 @@ onBeforeUnmount(() => {
   font-family: inherit;
   font-weight: 500;
   color: var(--text-color-secondary);
+  cursor: pointer;
   transition: color 120ms, font-weight 120ms;
 }
 .ts-item.is-act { color: var(--text-color); font-weight: 700; }

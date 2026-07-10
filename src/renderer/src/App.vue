@@ -166,7 +166,7 @@ onUnmounted(() => {
     <!-- 主内容区域，flex:1 占据剩余空间，支持垂直滚动 -->
     <main class="content scroll-y">
       <!-- 操作栏（新建 + 搜索，双模切换） -->
-      <ActionBar class="app-search"  create="onCreateNote" />
+      <ActionBar class="app-search"  @create="onCreateNote" />
 
       <!-- 标签筛选栏 -->
       <TagSelector v-model="tagFilterNames" class="app-tags" />

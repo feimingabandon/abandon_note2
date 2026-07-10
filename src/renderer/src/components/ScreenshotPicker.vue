@@ -8,6 +8,8 @@
 import { ref } from 'vue'
 import ImagePicker from './ImagePicker.vue'
 
+const emit = defineEmits(['count-change'])
+
 const props = defineProps({
   noteId: { type: Number, default: null },
   mode: { type: String, default: 'persist' }
@@ -63,6 +65,7 @@ defineExpose({ getImages, clearImages })
       :note-id="noteId"
       :mode="mode"
       class="sp-ip"
+      @count-change="(n) => emit('count-change', n)"
     />
   </div>
 </template>

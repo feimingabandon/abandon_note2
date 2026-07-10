@@ -15,8 +15,11 @@ import TagSelector from './TagSelector.vue'
 import ScreenshotPicker from './ScreenshotPicker.vue'
 import AppToggle from './AppToggle.vue'
 import HelpButton from './HelpButton.vue'
+import { useMessage } from '../composables/useMessage.js'
 
 const emit = defineEmits(['create'])
+
+const { showMessage } = useMessage()
 
 // ============================================================
 // 入场动效：挂载一帧后触发逐层淡入
@@ -70,12 +73,39 @@ watch(effectiveAt, (val) => {
   }
 })
 
+// 图片数量变化 → 双向联动「图片」标签
+function onImageCountChange(count) {
+  const hasImgTag = tagNames.value.includes('图片')
+  if (count > 0 && !hasImgTag) {
+    tagNames.value = [...tagNames.value, '图片']
+  } else if (count === 0 && hasImgTag) {
+    tagNames.value = tagNames.value.filter((t) => t !== '图片')
+  }
+}
+
 // ============================================================
 // 创建便签
 // ============================================================
+const FIVE_MINUTES = 5 * 60 * 1000
+
 async function handleCreate() {
   const text = content.value.trim()
-  if (!text) return
+
+  // 校验：内容不能为空
+  if (!text) {
+    showMessage('warning', '请输入便签内容')
+    return
+  }
+
+  // 校验：生效时间不能距离当下不足 5 分钟
+  if (effectiveAt.value) {
+    const ts = new Date(effectiveAt.value).getTime()
+    if (ts - Date.now() < FIVE_MINUTES) {
+      showMessage('warning', '生效时间需在当前时间 5 分钟之后，请重新选择')
+      return
+    }
+  }
+
   if (creating.value) return
   creating.value = true
 
@@ -85,22 +115,27 @@ async function handleCreate() {
       notifyEnabled: notifyEnabled.value ? 1 : 0,
       isPinned: isPinned.value ? 1 : 0
     }
-    // 如果设置了生效时间，转为毫秒时间戳
     if (effectiveAt.value) {
       options.effectiveAt = new Date(effectiveAt.value).getTime()
     }
-    // 自动添加"图片"标签
     const imgs = imagePickerRef.value?.getImages() || []
     if (imgs.length > 0 && !tagNames.value.includes('图片')) {
       tagNames.value = [...tagNames.value, '图片']
     }
 
-    // 原子创建：便签 + 图片 + 标签，任一失败则全部回滚
+    // 检查 API 是否存在
+    if (typeof window.api.createNoteWithAssets !== 'function') {
+      throw new Error('接口未就绪，请完全重启应用（npm run dev）')
+    }
+
     await window.api.createNoteWithAssets({
       options,
       images: imgs,
-      tagNames: tagNames.value
+      tagNames: [...tagNames.value]
     })
+
+    showMessage('success', '便签创建成功')
+
     // 重置表单
     content.value = ''
     effectiveAt.value = ''
@@ -111,6 +146,7 @@ async function handleCreate() {
     emit('create')
   } catch (e) {
     console.error('[NewNotePanel] 创建便签失败:', e)
+    showMessage('error', e.message || '创建失败，请重试')
   } finally {
     creating.value = false
   }
@@ -213,7 +249,7 @@ onBeforeUnmount(() => {
       <!-- 图片 -->
       <div class="nnp-field nnp-stagger" style="animation-delay: 220ms">
         <label class="nnp-field-label">图片<HelpButton text="支持截图、拖拽或点击上传图片附件。单张最大 50MB，单条便签最多 50 张" /></label>
-        <ScreenshotPicker ref="imagePickerRef" mode="memory" />
+        <ScreenshotPicker ref="imagePickerRef" mode="memory" @count-change="onImageCountChange" />
       </div>
     </div>
 

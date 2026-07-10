@@ -45,7 +45,7 @@ async function loadNotes() {
           ? ['active', 'in_progress', 'completed', 'cancelled', 'expired']
           : ['active', 'in_progress'],
       sortMode: sortMode.value,
-      tagNames: props.filterTagNames.length > 0 ? props.filterTagNames : null
+      tagNames: props.filterTagNames.length > 0 ? [...props.filterTagNames] : null
     })
     notes.value = result.notes || []
   } catch (e) {
