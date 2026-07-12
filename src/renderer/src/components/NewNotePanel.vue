@@ -222,7 +222,6 @@ onBeforeUnmount(() => {
         <DateTimePicker
           v-model="effectiveAt"
           placeholder="立即生效"
-          :width="'250rem'"
           :min-date="today"
           :shortcuts="dateShortcuts"
         />

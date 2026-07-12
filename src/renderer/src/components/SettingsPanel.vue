@@ -1368,14 +1368,15 @@ const resetUI = () => {
   flex-direction: column;
 }
 .color-hex-input {
-  width: 90rem;
+  /* 等宽字体：7 个字符宽度恒定，宽度用 7ch 刚好包住 #RRGGBB，不再留空 */
+  width: calc(7ch + 22rem);
   padding: 5rem 8rem;
-  border: 1rem solid color-mix(in srgb, var(--text-color) 15%, transparent);
+  border: 1rem solid transparent;
   border-radius: 6rem;
   background: transparent;
   color: var(--text-color);
   font-size: var(--fs-secondary);
-  font-family: inherit;
+  font-family: var(--font-family-mono);
   font-weight: 500;
   text-align: right;
   outline: none;

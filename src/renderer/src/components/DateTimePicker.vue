@@ -177,6 +177,21 @@ function commitTime() {
 // ==================== 同步外部值 ====================
 watch(() => props.modelValue, (val) => { if (!parseValue(val)) resetToNow() }, { immediate: true })
 
+// ==================== 触发器宽度自适应过渡 ====================
+// displayText 变化时（占位文本 <-> 具体日期），测量新旧宽度并平滑伸缩
+watch(displayText, async () => {
+  const el = wrapperRef.value
+  if (!el) return
+  const from = el.offsetWidth
+  await nextTick()
+  const to = el.offsetWidth
+  if (from === to) return
+  el.animate(
+    [{ width: from + 'px' }, { width: to + 'px' }],
+    { duration: 300, easing: 'cubic-bezier(0.2, 0, 0, 1)' }
+  )
+})
+
 // ==================== 日历导航 ====================
 function prevYear() { viewYear.value-- }
 function prevMonth() {
@@ -462,7 +477,7 @@ function onLeave(el, done) {
 .dt-header-field-label { font-size: var(--fs-secondary); color: var(--text-color-secondary); font-weight: 500; }
 .dt-header-input {
   width: 100%; padding: 2rem 4rem;
-  font-size: var(--fs-body); font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: var(--fs-body); font-family: var(--font-family-mono);
   font-weight: 600; color: var(--text-color); background: transparent;
   border: 1px solid transparent; border-radius: 4rem; text-align: center; outline: none;
   transition: border-color 120ms ease;

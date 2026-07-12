@@ -158,7 +158,7 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
 </script>
 
 <template>
-  <div class="ab-root">
+  <div class="ab-root" :class="{ 'ab-root--expanded': expanded && !collapsing }">
     <!-- ===== 新建框 ===== -->
     <div class="ab-box" :class="newBoxClass" :style="expandBoxStyle">
       <!-- 按钮始终可见，固定在左上角 -->
@@ -291,6 +291,11 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
   display: flex;
   align-items: flex-start;
   gap: 6rem;
+  transition: gap 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* 展开时收起两框间距，让活跃框平滑撑满整个容器 */
+.ab-root--expanded {
+  gap: 0;
 }
 
 /* === 框体 === */
@@ -300,6 +305,7 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
   flex-direction: column;
   flex-grow: 0;
   flex-shrink: 0;
+  flex-basis: 36rem;
   min-width: 0;
   height: 36rem;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -308,6 +314,8 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
   background: rgba(128, 128, 128, 0.03);
   transition:
     flex-grow 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    flex-basis 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease,
     height 300ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .ab-box--grow {
@@ -318,8 +326,11 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
   flex-grow: 1;
   flex-basis: 0%;
 }
+/* 展开时非活跃框：宽度收缩到 0 + 淡出（不用 display:none，保证可过渡） */
 .ab-box--hidden {
-  display: none;
+  flex-basis: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* === 通用按钮 === */
