@@ -25,7 +25,7 @@ import {
   getSettingsByType,
   deleteSetting,
   resetDatabase
-} from './db.js'
+} from './db/db.js'
 import {
   detectCapabilities,
   initialize as blurInit,
@@ -33,7 +33,7 @@ import {
   updateGeometry as blurUpdateGeometry,
   destroy as blurDestroy,
   reSyncZOrder as blurReSyncZOrder
-} from './blur_bridge.js'
+} from './bridge/blur_bridge.js'
 
 import {
   createNote,
@@ -44,12 +44,8 @@ import {
   startProgress,
   completeNote,
   cancelNote,
-  activateNotes,
-  batchUpdateStatus,
-  batchSetPinned,
-  batchSetEffectiveAt,
-  batchAddTags
-} from './db-notes.js'
+  activateNotes
+} from './db/db-notes.js'
 import {
   createTag,
   updateTag,
@@ -60,7 +56,7 @@ import {
   unbindTag,
   setNoteTags,
   getNoteTags
-} from './db-tags.js'
+} from './db/db-tags.js'
 import {
   createTemplate,
   updateTemplate,
@@ -69,7 +65,7 @@ import {
   getTemplateById,
   pauseTemplate,
   resumeTemplate
-} from './db-templates.js'
+} from './db/db-templates.js'
 import {
   saveImage,
   deleteImageFile,
@@ -79,10 +75,9 @@ import {
   removeImageRecord,
   listImageRecords,
   getImageCount
-} from './db-images.js'
-import { searchNotes, searchSuggestions } from './db-search.js'
-import { Scheduler } from './scheduler.js'
-import { generateRecurringNotes } from './recurrence.js'
+} from './db/db-images.js'
+import { Scheduler } from './services/scheduler.js'
+import { generateRecurringNotes } from './services/recurrence.js'
 
 /** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
 const WINDOW_NAME = 'main'
@@ -1407,41 +1402,6 @@ setTimeout(()=>{draw()},50)
         win.webContents.send('screenshot:image', dataUrl)
       }).catch(() => done(null))
     })
-  })
-
-  // ---- 搜索 IPC ----
-
-  // 【搜索 - 全文搜索】
-  ipcMain.handle('search:notes', (_event, { query, options }) => {
-    return searchNotes(query, options || {})
-  })
-
-  // 【搜索 - 自动补全建议】
-  ipcMain.handle('search:suggestions', (_event, { prefix, limit }) => {
-    return searchSuggestions(prefix, limit)
-  })
-
-  // ---- 批量操作 IPC ----
-
-  // 【批量 - 更新状态】
-  ipcMain.handle('batch:update-status', (_event, { ids, status }) => {
-    return batchUpdateStatus(ids, status)
-  })
-
-  // 【批量 - 设置置顶】
-  ipcMain.handle('batch:set-pinned', (_event, { ids, pinned }) => {
-    return batchSetPinned(ids, pinned)
-  })
-
-  // 【批量 - 设置生效时间】
-  ipcMain.handle('batch:set-effective-at', (_event, { ids, effectiveAt }) => {
-    return batchSetEffectiveAt(ids, effectiveAt)
-  })
-
-  // 【批量 - 添加标签】
-  ipcMain.handle('batch:add-tags', (_event, { noteIds, tagNames }) => {
-    batchAddTags(noteIds, tagNames)
-    return true
   })
 
   // ---- 调度器健康检查 IPC ----

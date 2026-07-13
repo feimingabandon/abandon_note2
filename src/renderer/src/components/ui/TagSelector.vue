@@ -12,8 +12,8 @@
  *   - UI 层：统一展示标签芯片 + 新建按钮
  *   - 数据层：选中状态由外部 v-model 控制（新建便签、编辑便签、筛选查询等场景各不同）
  */
-import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import ConfirmDialog from './ConfirmDialog.vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import ConfirmDialog from '../ui/ConfirmDialog.vue'
 
 const props = defineProps({
   /** 已选中的标签 ID 数组（v-model） */
@@ -101,6 +101,51 @@ async function loadTags() {
   } catch (e) {
     console.error('[TagSelector] 加载标签失败:', e)
   }
+}
+
+// ---- 刷新按钮旋转动画 ----
+const refreshSpinning = ref(false)
+
+/** 双 rAF 强制重排，确保每次点击都能重新触发旋转动画 */
+function restartRefreshSpin() {
+  refreshSpinning.value = false
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      refreshSpinning.value = true
+    })
+  })
+}
+
+// ---- 刷新：重放逐个入场动画（与状态筛选面板 chip 一致：淡入+上浮，总窗口恒定） ----
+const chipAnimating = ref(false)
+const CHIP_ANIM_DURATION = 250   // 单 chip 动画时长(ms)，与 ts-chip-in 关键帧对齐
+const CHIP_TOTAL_WINDOW = 565    // 从首到尾的总动画窗口(ms)，与状态面板 10 chip × 35ms + 250ms 对齐
+const CHIP_STAGGER_MIN = 35      // 最小步进保护
+const CHIP_INITIAL_DELAY = 80    // 首个标签延迟(ms)，避免立刻蹦出显得突兀
+
+/** 动态错峰步长：数量少慢，数量多快，总窗口恒定 */
+const staggerStep = computed(() => {
+  const n = tags.value.length
+  if (n <= 1) return 0
+  const step = (CHIP_TOTAL_WINDOW - CHIP_ANIM_DURATION) / (n - 1)
+  return Math.max(CHIP_STAGGER_MIN, step)
+})
+
+/** 双 rAF 强制重排，确保每次点击都能重新触发动画 */
+function replayChipAnim() {
+  chipAnimating.value = false
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      chipAnimating.value = true
+    })
+  })
+}
+
+/** 刷新按钮处理：旋转图标 + 重新加载 + 重放芯片动画 */
+async function onRefresh() {
+  restartRefreshSpin()
+  await loadTags()
+  replayChipAnim()
 }
 
 // ---- 选中切换 ----
@@ -219,7 +264,11 @@ onBeforeUnmount(() => {
   document.removeEventListener('mouseup', onTagMouseUp)
 })
 
-onMounted(loadTags)
+onMounted(async () => {
+  await loadTags()
+  await nextTick()
+  replayChipAnim()
+})
 </script>
 
 <template>
@@ -229,11 +278,11 @@ onMounted(loadTags)
       <!-- 横向滚动标签区 -->
       <div class="ts-scroll" @wheel.prevent="onTagWheel" @mousedown="onTagMouseDown">
         <div
-          v-for="tag in tags"
+          v-for="(tag, i) in tags"
           :key="tag.id"
           class="ts-chip"
-          :class="{ 'ts-chip--selected': selectedNames.has(tag.name) }"
-          :style="{ '--chip-color': tag.color || '#888' }"
+          :class="{ 'ts-chip--selected': selectedNames.has(tag.name), 'ts-chip-anim': chipAnimating }"
+          :style="{ '--chip-color': tag.color || '#888', animationDelay: chipAnimating ? (CHIP_INITIAL_DELAY + i * staggerStep) + 'ms' : '' }"
         >
           <span class="ts-chip-body" @click="toggleTag(tag.name)">
             <span class="ts-chip-dot" />
@@ -253,8 +302,8 @@ onMounted(loadTags)
       <!-- 操作按钮组 -->
       <span class="ts-actions">
         <!-- 刷新按钮 -->
-        <button class="ts-refresh-btn" title="刷新标签" @click="loadTags">
-          <svg class="ts-refresh-icon" viewBox="0 0 24 24">
+        <button class="ts-refresh-btn" title="刷新标签" @click="onRefresh">
+          <svg class="ts-refresh-icon" :class="{ 'ts-refresh-icon--spin': refreshSpinning }" viewBox="0 0 24 24">
             <path
               d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"
               fill="none"
@@ -483,6 +532,21 @@ onMounted(loadTags)
   white-space: nowrap;
 }
 
+/* ---- 刷新时逐个入场（与状态筛选面板 nl-card-in 一致：淡入+上浮，延迟由 :style 注入） ---- */
+.ts-chip-anim {
+  animation: ts-chip-in 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes ts-chip-in {
+  from {
+    opacity: 0;
+    transform: translateY(6rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* ---- 空状态 ---- */
 .ts-empty {
   flex-shrink: 0;
@@ -522,6 +586,15 @@ onMounted(loadTags)
   width: 18rem;
   height: 18rem;
   display: block;
+}
+
+/* 点击刷新时图标旋转 360°（苹果弹性缓出，与项目动效体系一致） */
+.ts-refresh-icon--spin {
+  animation: ts-refresh-spin 500ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes ts-refresh-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 
 /* ---- 新建按钮 ---- */

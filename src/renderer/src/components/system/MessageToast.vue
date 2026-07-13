@@ -8,7 +8,7 @@
  *
  * 使用方式：在根组件中 <MessageToast /> 即可，无需传参
  */
-import { useMessage } from '../composables/useMessage.js'
+import { useMessage } from '../../composables/useMessage.js'
 
 const { messages, closeMessage } = useMessage()
 

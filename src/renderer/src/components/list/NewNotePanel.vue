@@ -10,12 +10,12 @@
  * 不负责：面板标题栏、面板高度拖拽（由 ActionBar 统一管理）
  */
 import { ref, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import DateTimePicker from './DateTimePicker.vue'
-import TagSelector from './TagSelector.vue'
-import ScreenshotPicker from './ScreenshotPicker.vue'
-import AppToggle from './AppToggle.vue'
-import HelpButton from './HelpButton.vue'
-import { useMessage } from '../composables/useMessage.js'
+import DateTimePicker from '../ui/DateTimePicker.vue'
+import TagSelector from '../ui/TagSelector.vue'
+import ScreenshotPicker from '../note/ScreenshotPicker.vue'
+import AppToggle from '../ui/AppToggle.vue'
+import HelpButton from '../ui/HelpButton.vue'
+import { useMessage } from '../../composables/useMessage.js'
 
 const emit = defineEmits(['create'])
 

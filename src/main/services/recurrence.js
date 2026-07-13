@@ -14,9 +14,9 @@
  *   getDb()               — db.js
  */
 
-import { getActiveTemplates, updateLastGeneratedAt } from './db-templates.js'
-import { createNote, expireNote } from './db-notes.js'
-import { getDb } from './db.js'
+import { getActiveTemplates, updateLastGeneratedAt } from '../db/db-templates.js'
+import { createNote, expireNote } from '../db/db-notes.js'
+import { getDb } from '../db/db.js'
 
 // ============================================================
 // 公共入口：由 Scheduler tick 调用

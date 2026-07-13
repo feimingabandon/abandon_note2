@@ -15,15 +15,14 @@
  */
 
 import { ref, onMounted, onUnmounted } from 'vue'
-import MacTitlebar from './components/MacTitlebar.vue' // 自定义 Mac 风格标题栏
-import ResizeHandles from './components/ResizeHandles.vue' // 自定义窗口缩放手柄
-import SettingsPanel from './components/SettingsPanel.vue' // 底部弹出式设置面板
-import MessageToast from './components/MessageToast.vue'
-import NoteList from './components/NoteList.vue'
-import NoteEditor from './components/NoteEditor.vue'
-import ActionBar from './components/ActionBar.vue'
-import ScreenshotPicker from './components/ScreenshotPicker.vue'
-import TagSelector from './components/TagSelector.vue' // 统一标签选择器
+import MacTitlebar from './components/system/MacTitlebar.vue' // 自定义 Mac 风格标题栏
+import ResizeHandles from './components/system/ResizeHandles.vue' // 自定义窗口缩放手柄
+import SettingsPanel from './components/system/SettingsPanel.vue' // 底部弹出式设置面板
+import MessageToast from './components/system/MessageToast.vue'
+import NoteList from './components/list/NoteList.vue'
+import NoteEditor from './components/note/NoteEditor.vue'
+import ActionBar from './components/list/ActionBar.vue'
+import ScreenshotPicker from './components/note/ScreenshotPicker.vue'
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 
 // 注册全局应用内消息通知能力（子孙组件通过 useMessage() 获取）
@@ -37,9 +36,6 @@ const selectedNote = ref(null)
 
 /** NoteList 引用 */
 const noteListRef = ref(null)
-
-/** 标签筛选名称列表 */
-const tagFilterNames = ref([])
 
 /** 窗口锁定状态 */
 const locked = ref(false)
@@ -146,9 +142,31 @@ onUnmounted(() => {
     <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
     <ResizeHandles :locked="locked" />
     <!-- Mac 风格标题栏，包含红绿灯按钮和标题文字 -->
-    <MacTitlebar v-model:locked="locked" v-model:always-on-top="alwaysOnTop" title="列表">
+    <MacTitlebar v-model:locked="locked" v-model:always-on-top="alwaysOnTop">
       <!-- 设置和帮助按钮组 -->
       <div class="titlebar-actions-group">
+        <!-- 新增循环便签模板按钮（占位） -->
+        <button
+          class="titlebar-btn"
+          title="新增循环便签模板"
+        >
+          <svg class="btn-icon" viewBox="0 0 1024 1024">
+            <path
+              d="M 512 200 V 824"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="100"
+              stroke-linecap="round"
+            />
+            <path
+              d="M 200 512 H 824"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="100"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
         <!-- 设置按钮 -->
         <button
           class="titlebar-btn titlebar-btn-settings"
@@ -164,18 +182,14 @@ onUnmounted(() => {
       </div>
     </MacTitlebar>
     <!-- 主内容区域，flex:1 占据剩余空间，支持垂直滚动 -->
-    <main class="content scroll-y">
+    <main class="content">
       <!-- 操作栏（新建 + 搜索，双模切换） -->
       <ActionBar class="app-search"  @create="onCreateNote" />
-
-      <!-- 标签筛选栏 -->
-      <TagSelector v-model="tagFilterNames" class="app-tags" />
 
       <!-- 列表视图（无选中便签时） -->
       <NoteList
         v-if="!selectedNote"
         ref="noteListRef"
-        :filter-tag-names="tagFilterNames"
         class="app-list"
         @select="onSelectNote"
         @create="onCreateNote"
@@ -265,20 +279,15 @@ onUnmounted(() => {
 /* 主内容区域 */
 .content {
   flex: 1; /* 占据标题栏之外的所有剩余空间 */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* 自身不滚动，滚动权交给内部的便签列表 */
   padding: 16rem; /* 内边距，统一使用 rem 跟随窗口缩放 */
-
-  /* 阻止滚动链接：子元素滚到头不会导致父级抖动 */
-  overscroll-behavior: contain;
 }
 
 /* 搜索框间距 */
 .app-search {
-  margin-bottom: 8rem;
-}
-
-/* 标签筛选间距 */
-.app-tags {
-  margin-bottom: 8rem;
+  flex-shrink: 0;
 }
 
 /* 列表/编辑器/附件弹性填充 */

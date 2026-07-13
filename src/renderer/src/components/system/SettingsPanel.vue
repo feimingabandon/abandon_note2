@@ -16,13 +16,13 @@
  */
 
 import { ref, watch, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import AppToggle from './AppToggle.vue'
-import BaseButton from './BaseButton.vue'
-import FontSizeInput from './FontSizeInput.vue'
-import AppSlider from './AppSlider.vue'
-import ConfirmDialog from './ConfirmDialog.vue'
-import HelpButton from './HelpButton.vue'
-import { useMessage } from '../composables/useMessage.js' // 消息弹窗
+import AppToggle from '../ui/AppToggle.vue'
+import BaseButton from '../ui/BaseButton.vue'
+import FontSizeInput from '../ui/FontSizeInput.vue'
+import AppSlider from '../ui/AppSlider.vue'
+import ConfirmDialog from '../ui/ConfirmDialog.vue'
+import HelpButton from '../ui/HelpButton.vue'
+import { useMessage } from '../../composables/useMessage.js' // 消息弹窗
 
 // ---- 调度器健康数据 ----
 const schedulerHealth = ref(null)
@@ -184,7 +184,7 @@ const fontSizeBase = ref(18)
 const textColor = ref('#000000')
 
 /** 字体大小预设（datalist 选项） */
-const fontSizePresets = [12, 14, 16, 18, 20, 24, 28, 32, 36, 40]
+const fontSizePresets = [14, 15, 16, 17, 18, 19, 20, 21, 22]
 
 /** 十六进制颜色预设（文字颜色 / 背景颜色共用） */
 const hexPresets = [
@@ -842,7 +842,7 @@ const resetUI = () => {
                 <span class="setting-label">字体大小</span>
               </div>
               <div class="setting-right">
-                <FontSizeInput v-model="fontSizeBase" :presets="fontSizePresets" :min="12" :max="50" width="90rem" />
+                <FontSizeInput v-model="fontSizeBase" :presets="fontSizePresets" :min="14" :max="22" width="90rem" />
               </div>
             </div>
 

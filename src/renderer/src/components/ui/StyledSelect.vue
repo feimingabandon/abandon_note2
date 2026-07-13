@@ -2,8 +2,7 @@
 /**
  * StyledSelect.vue — 自定义下拉选择组件
  *
- * 使用 div 实现，不依赖原生 <select> 或 Teleport，
- * 完全控制样式，适配 Electron 透明窗口环境。
+ * 使用 Teleport to="body" + position:fixed 渲染下拉面板，
  *
  * Props:
  *   modelValue  — 当前选中值（v-model 绑定）
@@ -18,7 +17,7 @@
  *   change            — 选中变化，参数为 option 对象 { label, value }
  */
 
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 
 const props = defineProps({
   modelValue: { type: [String, Number, Boolean], default: '' },
@@ -34,6 +33,8 @@ const emit = defineEmits(['update:modelValue', 'change'])
 // ============ State ============
 const open = ref(false)
 const wrapperRef = ref(null)
+const panelRef = ref(null)
+const panelStyle = ref({})
 
 // ============ Computed ============
 const displayLabel = computed(() => {
@@ -53,7 +54,22 @@ const wrapperStyle = computed(() => {
 // ============ Methods ============
 function toggle() {
   if (props.disabled) return
-  open.value = !open.value
+  if (open.value) { open.value = false; return }
+  updatePanelPosition()
+  open.value = true
+}
+
+/** 计算面板 fixed 定位（对齐触发器左下角） */
+function updatePanelPosition() {
+  if (!wrapperRef.value) return
+  const rect = wrapperRef.value.getBoundingClientRect()
+  panelStyle.value = {
+    position: 'fixed',
+    top: (rect.bottom + 4) + 'px',
+    left: rect.left + 'px',
+    minWidth: rect.width + 'px',
+    zIndex: 100
+  }
 }
 
 function select(opt) {
@@ -96,14 +112,26 @@ function onLeave(el, done) {
 function onDocClick(e) {
   if (!open.value) return
   if (wrapperRef.value?.contains(e.target)) return
+  if (panelRef.value?.contains(e.target)) return
   open.value = false
 }
+
+// 面板打开时监听窗口 resize，保持定位跟随
+watch(open, (val) => {
+  if (val) {
+    nextTick(() => updatePanelPosition())
+    window.addEventListener('resize', updatePanelPosition)
+  } else {
+    window.removeEventListener('resize', updatePanelPosition)
+  }
+})
 
 onMounted(() => {
   document.addEventListener('click', onDocClick, true)
 })
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick, true)
+  window.removeEventListener('resize', updatePanelPosition)
 })
 </script>
 
@@ -130,34 +158,35 @@ onBeforeUnmount(() => {
       </svg>
     </button>
 
-    <Transition
-      @before-enter="onBeforeEnter"
-      @enter="onEnter"
-      @before-leave="onBeforeLeave"
-      @leave="onLeave"
-    >
-      <div v-if="open" class="sel-panel-wrap app-bg" @click.stop>
-        <div class="sel-panel scroll-y">
-          <button
-            v-for="opt in options"
-            :key="opt.value"
-            class="sel-option"
-            :class="{ 'is-active': modelValue === opt.value, 'is-disabled': opt.disabled }"
-            :disabled="opt.disabled"
-            @click="select(opt)"
-          >
-            {{ opt.label }}
-          </button>
+    <Teleport to="body">
+      <Transition
+        @before-enter="onBeforeEnter"
+        @enter="onEnter"
+        @before-leave="onBeforeLeave"
+        @leave="onLeave"
+      >
+        <div v-if="open" ref="panelRef" class="sel-panel-wrap app-bg" :style="panelStyle" @click.stop>
+          <div class="sel-panel scroll-y">
+            <button
+              v-for="opt in options"
+              :key="opt.value"
+              class="sel-option"
+              :class="{ 'is-active': modelValue === opt.value, 'is-disabled': opt.disabled }"
+              :disabled="opt.disabled"
+              @click="select(opt)"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
         </div>
-      </div>
-    </Transition>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
 /* ============ 容器 ============ */
 .sel-wrapper {
-  position: relative;
   display: inline-block;
 }
 
@@ -172,7 +201,7 @@ onBeforeUnmount(() => {
   font-size: inherit;
   font-family: inherit;
   color: var(--text-color);
-  background: transparent;
+  background: rgba(255, 255, 255, 0.05);
   border: 1rem solid rgba(255, 255, 255, 0.1);
   border-radius: 6rem;
   cursor: pointer;
@@ -213,11 +242,6 @@ onBeforeUnmount(() => {
 
 /* ============ 下拉面板 ============ */
 .sel-panel-wrap {
-  position: absolute;
-  top: calc(100% + 4rem);
-  left: 0;
-  right: 0;
-  z-index: 100;
   border-radius: 10rem;
   box-shadow: 0 4rem 24rem rgba(0, 0, 0, 0.35);
   overflow: hidden;

@@ -160,12 +160,6 @@ const api = {
   /** 捕获全屏截图，返回 data URL */
   captureScreen: () => ipcRenderer.invoke('screenshot:capture'),
 
-  // ---- 全文搜索 ----
-  /** FTS5 全文搜索 */
-  searchNotes: (query, options) => ipcRenderer.invoke('search:notes', { query, options }),
-  /** 搜索建议/自动补全 */
-  searchSuggestions: (prefix, limit) => ipcRenderer.invoke('search:suggestions', { prefix, limit }),
-
   // ---- 批量操作 ----
   /** 批量更新状态 */
   batchUpdateStatus: (ids, status) => ipcRenderer.invoke('batch:update-status', { ids, status }),

@@ -17,7 +17,7 @@
  */
 
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
-import { useMessage } from '../composables/useMessage.js'
+import { useMessage } from '../../composables/useMessage.js'
 
 const props = defineProps({
   modelValue: { type: Number, default: 16 },

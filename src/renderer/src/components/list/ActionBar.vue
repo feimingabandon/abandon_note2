@@ -8,6 +8,7 @@
  */
 import { ref, computed, onBeforeUnmount } from 'vue'
 import NewNotePanel from './NewNotePanel.vue'
+import SearchBox from './SearchBox.vue'
 
 const emit = defineEmits(['create'])
 
@@ -275,7 +276,7 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
 
         <!-- 展开态：标题 + 面板 + 拖拽条 -->
         <div v-else key="expanded" class="ab-rest ab-rest--column">
-          <div class="ab-panel-body scroll-y" />
+          <SearchBox />
           <div class="ab-drag-handle" @mousedown="onDragStart">
             <div class="ab-drag-bar" />
           </div>
