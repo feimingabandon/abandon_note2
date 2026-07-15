@@ -11,7 +11,7 @@
 import * as Electron from 'electron'
 const { app, shell, BrowserWindow, ipcMain, screen, Tray, Menu, Notification, desktopCapturer } = Electron
 
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
 import icon from '../../resources/icon.png?asset' // 应用图标（Vite asset 导入）
 import {
@@ -49,7 +49,9 @@ import {
   startProgress,
   completeNote,
   cancelNote,
-  activateNotes
+  activateNotes,
+  snoozeNote,
+  claimDueSnoozedNotes
 } from './db/db-notes.js'
 import {
   createTag,
@@ -86,6 +88,23 @@ import { generateRecurringNotes } from './services/recurrence.js'
 
 /** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
 const WINDOW_NAME = 'main'
+const APP_ID = 'com.abandon.note'
+const APP_NAME = '便签'
+const APP_PROTOCOL = 'abandon-note'
+const SNOOZE_DELAY_MS = 10 * 60 * 1000
+
+// 修改展示名称时保留 Electron 已确定的 userData 路径，避免品牌名影响数据库位置。
+const userDataPath = app.getPath('userData')
+app.setName(APP_NAME)
+app.setPath('userData', userDataPath)
+if (process.platform === 'win32') {
+  app.setAppUserModelId(APP_ID)
+  const protocolArgs = process.defaultApp && process.argv[1] ? [resolve(process.argv[1])] : []
+  app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, protocolArgs)
+}
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) app.quit()
 
 /** 主窗口实例引用 */
 let mainWindow = null
@@ -96,6 +115,55 @@ let tray = null
 
 /** 是否正在执行退出流程（托盘菜单「退出」触发） */
 let isQuitting = false
+let suppressInitialWindowShow = false
+
+/** 处理 Windows 富通知通过自定义协议回传的操作。 */
+function handleNotificationProtocol(rawUrl) {
+  try {
+    const url = new URL(rawUrl)
+    if (url.protocol !== `${APP_PROTOCOL}:` || url.hostname !== 'notification') return false
+
+    const noteId = Number(url.searchParams.get('id'))
+    if (!Number.isInteger(noteId) || noteId <= 0) return true
+
+    if (url.pathname === '/snooze') {
+      if (!mainWindow) suppressInitialWindowShow = true
+      const result = snoozeNote(noteId, SNOOZE_DELAY_MS)
+      if (result) {
+        console.log(`[notification] 便签 #${noteId} 已延后 10 分钟提醒`)
+      } else {
+        console.log(`[notification] 便签 #${noteId} 已非进行中，忽略延后提醒`)
+      }
+      return true
+    }
+
+    if (url.pathname === '/open') {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show()
+        mainWindow.focus()
+      }
+      return true
+    }
+  } catch (error) {
+    console.error('[notification] 无法解析通知操作:', error.message)
+  }
+  return false
+}
+
+function handleProtocolArgs(argv) {
+  const protocolUrl = argv.find((arg) => arg.startsWith(`${APP_PROTOCOL}://`))
+  return protocolUrl ? handleNotificationProtocol(protocolUrl) : false
+}
+
+if (gotSingleInstanceLock) {
+  app.on('second-instance', (_event, argv) => {
+    if (handleProtocolArgs(argv)) return
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+}
 
 /** 窗口置顶状态 */
 let alwaysOnTop = true
@@ -600,8 +668,11 @@ function toggleWindow() {
 // 应用就绪后的初始化逻辑
 // ============================================================
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) return
+
   // 初始化数据库连接
   initDatabase()
+  handleProtocolArgs(process.argv)
 
   // 监听新窗口创建事件，自动注册快捷键优化器
   app.on('browser-window-created', (_, window) => {
@@ -613,7 +684,11 @@ app.whenReady().then(() => {
   // 【渲染就绪】渲染进程初始化完成后发送此消息，主进程收到后显示窗口
   ipcMain.on('renderer-ready', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show()
+      if (suppressInitialWindowShow) {
+        suppressInitialWindowShow = false
+      } else {
+        mainWindow.show()
+      }
     }
   })
 
@@ -869,9 +944,44 @@ app.whenReady().then(() => {
    * @param {string} [opts.title='便签提醒'] - 通知标题
    * @param {boolean} [opts.silent=false] - 静默（不播放声音）
    */
-  function sendNotify(body, { title = '便签提醒', silent = false } = {}) {
+  function escapeToastXml(value) {
+    return String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&apos;')
+  }
+
+  function sendNotify(body, { title = '便签提醒', silent = false, noteId = null } = {}) {
     const summary = (body || '').slice(0, 50) || '（空内容）'
-    new Notification({ title, body: summary, silent }).show()
+    const parsedNoteId = Number(noteId)
+
+    if (process.platform === 'win32' && Number.isInteger(parsedNoteId) && parsedNoteId > 0) {
+      const openUrl = `${APP_PROTOCOL}://notification/open?id=${parsedNoteId}`
+      const snoozeUrl = `${APP_PROTOCOL}://notification/snooze?id=${parsedNoteId}`
+      const toastXml = `<toast launch="${openUrl}" activationType="protocol">
+        <visual>
+          <binding template="ToastGeneric">
+            <text>${escapeToastXml(title)}</text>
+            <text>${escapeToastXml(summary)}</text>
+          </binding>
+        </visual>
+        <audio silent="${silent ? 'true' : 'false'}"/>
+        <actions>
+          <action content="明白" arguments="dismiss" activationType="system"/>
+          <action content="稍后提醒（10分钟）" arguments="${snoozeUrl}" activationType="protocol"/>
+        </actions>
+      </toast>`
+      const notification = new Notification({ toastXml })
+      notification.on('failed', (_event, error) => {
+        console.error('[notification] Windows 富通知发送失败:', error)
+      })
+      notification.show()
+      return
+    }
+
+    new Notification({ title, body: summary, silent, icon }).show()
   }
 
   // 3.3 生效便签激活任务（含通知）
@@ -881,7 +991,7 @@ app.whenReady().then(() => {
     execute: () => {
       const result = activateNotes()
       for (const note of result.notified) {
-        sendNotify(note.content)
+        sendNotify(note.content, { noteId: note.id })
         const preview = (note.content || '').trim().slice(0, 10) || '空内容'
         console.log(`[activation-notify]「${preview}」便签已发送系统通知`)
       }
@@ -891,7 +1001,20 @@ app.whenReady().then(() => {
     }
   })
 
-  // 3.4 循环模板生成任务（含通知）
+  // 3.4 独立延后提醒任务：只领取仍处于进行中的到期便签。
+  scheduler.register({
+    name: 'snoozedReminderTask',
+    shouldRun: () => true,
+    execute: () => {
+      const due = claimDueSnoozedNotes()
+      for (const note of due) {
+        sendNotify(note.content, { noteId: note.id })
+        console.log(`[snoozed-notify] 便签 #${note.id} 已再次发送系统通知`)
+      }
+    }
+  })
+
+  // 3.5 循环模板生成任务（含通知）
   scheduler.register({
     name: 'noteGenerationTask',
     shouldRun: () => true,

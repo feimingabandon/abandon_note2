@@ -769,10 +769,10 @@ defineExpose({
 
     <!-- ======== 时间线模式（时间标记 + 统一便签流） ======== -->
     <template v-else-if="sortMode === 'timeline'">
-      <div ref="timelineScrollRef" :key="listAnimKey" class="nl-timeline scroll-y" @scroll="onTimelineScroll">
+      <div ref="timelineScrollRef" :key="listAnimKey" class="nl-timeline nl-list-scroll scroll-y" @scroll="onTimelineScroll">
         <div v-if="timelineIsEmpty" class="nl-empty-state">暂无便签</div>
         <template v-else>
-        <div v-for="g in timelineGroups" :key="g.group" class="nl-group">
+        <div v-for="g in timelineGroups" :key="g.group" class="nl-group nl-section">
           <!-- 普通组：轻量时间标记 -->
           <div v-if="g.group !== 'earlier'" class="nl-group-label-row">{{ g.label }}</div>
           <!-- 更早：可点击展开的时间标记 -->
@@ -822,11 +822,11 @@ defineExpose({
 
     <!-- ======== 自定义模式 ======== -->
     <template v-else>
-      <div ref="customScrollRef" :key="listAnimKey" class="nl-custom scroll-y" @scroll="onCustomScroll">
+      <div ref="customScrollRef" :key="listAnimKey" class="nl-custom nl-list-scroll scroll-y" @scroll="onCustomScroll">
       <div v-if="customTotalRendered === 0" class="nl-empty-state">暂无便签</div>
       <template v-else>
       <!-- 置顶区 -->
-      <div v-if="customPinnedNotes.length > 0" class="nl-zone">
+      <div v-if="customPinnedNotes.length > 0" class="nl-zone nl-section">
         <div class="nl-zone-label">置顶</div>
         <draggable
           v-model="customPinnedNotes"
@@ -849,7 +849,7 @@ defineExpose({
       </div>
 
       <!-- 日常区 -->
-      <div class="nl-zone">
+      <div class="nl-zone nl-section">
         <div class="nl-zone-label">日常</div>
         <draggable
           v-model="customNormalNotes"
@@ -1015,6 +1015,14 @@ defineExpose({
 }
 
 /* ===== 时间线 ===== */
+.nl-list-scroll {
+  padding-bottom: 30rem;
+}
+
+.nl-section + .nl-section {
+  margin-top: 16rem;
+}
+
 .nl-timeline {
   flex: 1;
   -webkit-mask-image: linear-gradient(
@@ -1096,9 +1104,6 @@ defineExpose({
     black calc(100% - 30rem),
     transparent 100%
   );
-}
-.nl-zone {
-  margin-bottom: 20rem;
 }
 .nl-zone--archived {
   opacity: 0.6;

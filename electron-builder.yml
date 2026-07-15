@@ -1,5 +1,5 @@
-appId: com.electron.app
-productName: abandon_note2
+appId: com.abandon.note
+productName: 便签
 directories:
   buildResources: build
 files:
@@ -17,6 +17,10 @@ extraResources:
       - "*.dll"
 win:
   executableName: abandon_note2
+protocols:
+  - name: 便签通知操作
+    schemes:
+      - abandon-note
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}

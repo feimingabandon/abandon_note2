@@ -196,6 +196,7 @@ export function initNotesTables() {
                           CHECK(notify_enabled IN (0, 1)),
       effective_at        INTEGER NOT NULL,
       finished_at         INTEGER,
+      remind_again_at     INTEGER,
       sort_order          INTEGER NOT NULL DEFAULT 0,
       created_at          INTEGER NOT NULL,
       updated_at          INTEGER NOT NULL
@@ -230,6 +231,13 @@ export function initNotesTables() {
     );
     CREATE INDEX IF NOT EXISTS idx_note_tags_tag_name ON note_tags(tag_name);
   `)
+
+  // 开发期增量同步：延后提醒独立于便签状态与原始提醒参数。
+  const noteColumns = db.prepare("PRAGMA table_info('notes')").all()
+  if (!noteColumns.some((col) => col.name === 'remind_again_at')) {
+    db.exec('ALTER TABLE notes ADD COLUMN remind_again_at INTEGER')
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_notes_remind_again_at ON notes(remind_again_at)')
 }
 
 /**

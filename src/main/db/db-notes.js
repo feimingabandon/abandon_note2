@@ -134,7 +134,8 @@ function transitionNote(id, targetStatus) {
   const result = db
     .prepare(
       `UPDATE notes
-       SET status = ?, notify_enabled = 0, finished_at = ?, updated_at = ?
+       SET status = ?, notify_enabled = 0, remind_again_at = NULL,
+           finished_at = ?, updated_at = ?
        WHERE id = ? AND status = ?`
     )
     .run(targetStatus, ts, ts, id, current.status)
@@ -179,7 +180,8 @@ export function activateNotes() {
     const result = db
       .prepare(
         `UPDATE notes
-         SET status = 'in_progress', notify_enabled = 0, finished_at = ?, updated_at = ?
+         SET status = 'in_progress', notify_enabled = 0, remind_again_at = NULL,
+             finished_at = ?, updated_at = ?
          WHERE status = 'initialized' AND effective_at <= ?`
       )
       .run(ts, ts, ts)
@@ -195,6 +197,61 @@ export function activateNotes() {
         .filter((note) => note.notify_enabled === 1)
         .map(({ id, content }) => ({ id, content }))
     }
+  })()
+}
+
+/**
+ * 为进行中的便签安排一次独立延后提醒。
+ * 不改变状态、原始提醒参数、状态时间或内容修改时间。
+ */
+export function snoozeNote(id, delayMs = 10 * 60 * 1000) {
+  const parsedId = Number(id)
+  const parsedDelay = Number(delayMs)
+  if (!Number.isInteger(parsedId) || parsedId <= 0 || !Number.isFinite(parsedDelay) || parsedDelay <= 0) {
+    return null
+  }
+
+  const remindAt = now() + parsedDelay
+  const result = getDb()
+    .prepare(
+      `UPDATE notes
+       SET remind_again_at = ?
+       WHERE id = ? AND status = 'in_progress'`
+    )
+    .run(remindAt, parsedId)
+
+  return result.changes === 1 ? { id: parsedId, remindAt } : null
+}
+
+/**
+ * 原子领取到期的延后提醒，并立即清空，防止同一轮或恢复补偿时重复通知。
+ */
+export function claimDueSnoozedNotes() {
+  const db = getDb()
+  const ts = now()
+
+  return db.transaction(() => {
+    const due = db
+      .prepare(
+        `SELECT id, content
+         FROM notes
+         WHERE status = 'in_progress'
+           AND remind_again_at IS NOT NULL
+           AND remind_again_at <= ?`
+      )
+      .all(ts)
+
+    if (due.length === 0) return []
+
+    db.prepare(
+      `UPDATE notes
+       SET remind_again_at = NULL
+       WHERE status = 'in_progress'
+         AND remind_again_at IS NOT NULL
+         AND remind_again_at <= ?`
+    ).run(ts)
+
+    return due
   })()
 }
 
