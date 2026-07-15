@@ -206,8 +206,14 @@ async function toggleTags() {
     @click="selectCard"
     @keydown.enter="selectCard"
   >
-    <span v-if="draggable" class="nl-handle" aria-hidden="true">
-      <svg viewBox="0 0 12 18" width="10" height="15">
+    <span
+      v-if="draggable"
+      class="nl-drag-handle"
+      title="拖动排序"
+      aria-hidden="true"
+      @click.stop
+    >
+      <svg viewBox="0 0 12 18">
         <circle cx="3" cy="3" r="1.25" /><circle cx="9" cy="3" r="1.25" />
         <circle cx="3" cy="9" r="1.25" /><circle cx="9" cy="9" r="1.25" />
         <circle cx="3" cy="15" r="1.25" /><circle cx="9" cy="15" r="1.25" />
@@ -416,25 +422,46 @@ async function toggleTags() {
   --content-strength: 52%;
 }
 .nl-card--muted { opacity: 0.66; }
-.nl-card--draggable { padding-right: 30rem; cursor: grab; }
-.nl-card--draggable:active { cursor: grabbing; }
 
-.nl-handle {
+.nl-drag-handle {
   position: absolute;
-  z-index: 3;
-  top: 13rem;
-  right: 10rem;
+  z-index: 6;
+  top: 9rem;
+  right: 8rem;
   display: grid;
   place-items: center;
-  width: 14rem;
-  height: 18rem;
+  width: 22rem;
+  height: 24rem;
+  border-radius: 7rem;
+  background: rgb(var(--bg-color) / 0.76);
   color: var(--text-color-secondary);
+  cursor: grab;
   opacity: 0;
-  transition: opacity 140ms ease;
+  pointer-events: none;
+  touch-action: none;
+  box-shadow: 0 2rem 8rem rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(10px);
+  transition: opacity 140ms ease, color 140ms ease, background-color 140ms ease;
 }
-.nl-handle svg { display: block; fill: currentColor; }
-.nl-card:hover .nl-handle,
-.nl-card:focus-visible .nl-handle { opacity: 0.58; }
+.nl-drag-handle svg {
+  width: 9rem;
+  height: 14rem;
+  fill: currentColor;
+}
+.nl-card--draggable:hover .nl-drag-handle,
+.nl-card--draggable:focus-within .nl-drag-handle {
+  opacity: 0.58;
+  pointer-events: auto;
+}
+.nl-card--draggable .nl-drag-handle:hover {
+  background: rgb(var(--bg-color) / 0.9);
+  color: var(--text-color);
+  opacity: 0.9;
+}
+.nl-card--draggable .nl-drag-handle:active {
+  cursor: grabbing;
+  opacity: 1;
+}
 
 .nl-status-control {
   position: relative;

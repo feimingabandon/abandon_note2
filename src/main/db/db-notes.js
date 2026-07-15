@@ -90,7 +90,7 @@ export function updateNote(id, fields = {}) {
 }
 
 export function getNoteById(id) {
-  const note = getDb().prepare('SELECT * FROM notes WHERE id = ?').get(id)
+  const note = getDb().prepare('SELECT * FROM notes WHERE id = ? AND is_deleted = 0').get(id)
   if (!note) return null
 
   note.attachments = getDb()
@@ -111,9 +111,22 @@ export function getNoteById(id) {
   return note
 }
 
-/** 软删除等价于取消。 */
+/** 逻辑删除：保留便签、标签关联和附件文件，物理清理由重置数据库统一执行。 */
 export function deleteNote(id) {
-  return cancelNote(id) !== null
+  const ts = now()
+  const result = getDb()
+    .prepare(
+      `UPDATE notes
+       SET is_deleted = 1, notify_enabled = 0, remind_again_at = NULL, updated_at = ?
+       WHERE id = ? AND is_deleted = 0`
+    )
+    .run(ts, id)
+  return result.changes === 1
+}
+
+/** 所有未删除便签总数，不受当前列表筛选条件影响。 */
+export function countActiveNotes() {
+  return getDb().prepare('SELECT COUNT(*) AS total FROM notes WHERE is_deleted = 0').get().total
 }
 
 // ============================================================
@@ -122,7 +135,7 @@ export function deleteNote(id) {
 
 function transitionNote(id, targetStatus) {
   const db = getDb()
-  const current = db.prepare('SELECT status FROM notes WHERE id = ?').get(id)
+  const current = db.prepare('SELECT status FROM notes WHERE id = ? AND is_deleted = 0').get(id)
   if (!current) return null
 
   if (!TRANSITIONS[current.status]?.has(targetStatus)) {
@@ -136,7 +149,7 @@ function transitionNote(id, targetStatus) {
       `UPDATE notes
        SET status = ?, notify_enabled = 0, remind_again_at = NULL,
            finished_at = ?, updated_at = ?
-       WHERE id = ? AND status = ?`
+       WHERE id = ? AND status = ? AND is_deleted = 0`
     )
     .run(targetStatus, ts, ts, id, current.status)
 
@@ -171,7 +184,7 @@ export function activateNotes() {
       .prepare(
         `SELECT id, content, notify_enabled
          FROM notes
-         WHERE status = 'initialized' AND effective_at <= ?`
+         WHERE status = 'initialized' AND is_deleted = 0 AND effective_at <= ?`
       )
       .all(ts)
 
@@ -182,7 +195,7 @@ export function activateNotes() {
         `UPDATE notes
          SET status = 'in_progress', notify_enabled = 0, remind_again_at = NULL,
              finished_at = ?, updated_at = ?
-         WHERE status = 'initialized' AND effective_at <= ?`
+         WHERE status = 'initialized' AND is_deleted = 0 AND effective_at <= ?`
       )
       .run(ts, ts, ts)
 
@@ -216,7 +229,7 @@ export function snoozeNote(id, delayMs = 10 * 60 * 1000) {
     .prepare(
       `UPDATE notes
        SET remind_again_at = ?
-       WHERE id = ? AND status = 'in_progress'`
+       WHERE id = ? AND status = 'in_progress' AND is_deleted = 0`
     )
     .run(remindAt, parsedId)
 
@@ -236,6 +249,7 @@ export function claimDueSnoozedNotes() {
         `SELECT id, content
          FROM notes
          WHERE status = 'in_progress'
+           AND is_deleted = 0
            AND remind_again_at IS NOT NULL
            AND remind_again_at <= ?`
       )
@@ -247,6 +261,7 @@ export function claimDueSnoozedNotes() {
       `UPDATE notes
        SET remind_again_at = NULL
        WHERE status = 'in_progress'
+         AND is_deleted = 0
          AND remind_again_at IS NOT NULL
          AND remind_again_at <= ?`
     ).run(ts)
@@ -276,7 +291,7 @@ export function claimDueSnoozedNotes() {
  */
 
 function buildWhereClause({ statuses, tagNames, search, extraWhere = [], extraParams = [] } = {}) {
-  const where = [...extraWhere]
+  const where = ['n.is_deleted = 0', ...extraWhere]
   const params = [...extraParams]
 
   if (statuses?.length) {
@@ -373,7 +388,7 @@ export function queryPinnedNotes({ statuses, tagNames, search } = {}) {
     extraWhere: ['n.is_pinned = 1']
   })
   const notes = db
-    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY n.created_at DESC`)
+    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`)
     .all(...params)
   return toNoteListItems(notes)
 }
@@ -384,11 +399,11 @@ export function queryRecentNotes({ statuses, tagNames, search, cutoffTime } = {}
     statuses,
     tagNames,
     search,
-    extraWhere: ['n.is_pinned = 0', 'n.created_at > ?'],
+    extraWhere: ['n.is_pinned = 0', 'n.effective_at > ?'],
     extraParams: [cutoffTime]
   })
   const notes = db
-    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY n.created_at DESC`)
+    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`)
     .all(...params)
   return toNoteListItems(notes)
 }
@@ -399,14 +414,14 @@ export function queryEarlierNotes({ statuses, tagNames, search, cutoffTime, limi
     statuses,
     tagNames,
     search,
-    extraWhere: ['n.is_pinned = 0', 'n.created_at <= ?'],
+    extraWhere: ['n.is_pinned = 0', 'n.effective_at <= ?'],
     extraParams: [cutoffTime]
   })
   const { total } = db.prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`).get(...params)
   const notes = db
     .prepare(
       `SELECT n.* FROM notes n ${whereClause}
-       ORDER BY n.created_at DESC LIMIT ? OFFSET ?`
+       ORDER BY n.effective_at DESC, n.created_at DESC LIMIT ? OFFSET ?`
     )
     .all(...params, limit, offset)
   return { notes: toNoteListItems(notes), total }

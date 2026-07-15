@@ -160,7 +160,7 @@ const MAX_ATTACHMENTS_PER_NOTE = 50
 export function addImageRecord({ noteId, filePath, fileSize }) {
   const db = getDb()
 
-  const note = db.prepare('SELECT id FROM notes WHERE id = ?').get(noteId)
+  const note = db.prepare('SELECT id FROM notes WHERE id = ? AND is_deleted = 0').get(noteId)
   if (!note) throw new Error('便签不存在')
 
   const { count } = db
@@ -189,7 +189,13 @@ export function addImageRecord({ noteId, filePath, fileSize }) {
  */
 export function removeImageRecord(id) {
   const db = getDb()
-  const row = db.prepare('SELECT * FROM note_attachments WHERE id = ?').get(id)
+  const row = db
+    .prepare(
+      `SELECT a.* FROM note_attachments a
+       INNER JOIN notes n ON n.id = a.note_id
+       WHERE a.id = ? AND n.is_deleted = 0`
+    )
+    .get(id)
   if (!row) return false
   db.transaction(() => {
     db.prepare('DELETE FROM note_attachments WHERE id = ?').run(id)
@@ -205,7 +211,12 @@ export function removeImageRecord(id) {
  */
 export function listImageRecords(noteId) {
   return getDb()
-    .prepare('SELECT * FROM note_attachments WHERE note_id = ? ORDER BY sort_order ASC')
+    .prepare(
+      `SELECT a.* FROM note_attachments a
+       INNER JOIN notes n ON n.id = a.note_id
+       WHERE a.note_id = ? AND n.is_deleted = 0
+       ORDER BY a.sort_order ASC`
+    )
     .all(noteId)
 }
 
@@ -216,7 +227,11 @@ export function listImageRecords(noteId) {
  */
 export function getImageCount(noteId) {
   const row = getDb()
-    .prepare('SELECT COUNT(*) as count FROM note_attachments WHERE note_id = ?')
+    .prepare(
+      `SELECT COUNT(*) AS count FROM note_attachments a
+       INNER JOIN notes n ON n.id = a.note_id
+       WHERE a.note_id = ? AND n.is_deleted = 0`
+    )
     .get(noteId)
   return row?.count ?? 0
 }

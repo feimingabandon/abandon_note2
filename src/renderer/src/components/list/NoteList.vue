@@ -65,6 +65,8 @@ const listAnimKey = ref(0)
 /** 便签列表 */
 /** 加载状态 */
 const loading = ref(false)
+/** 全部未删除便签总数，不受当前标签/状态筛选影响。 */
+const allNoteTotal = ref(0)
 const timelineScrollRef = ref(null)
 const customScrollRef = ref(null)
 
@@ -143,6 +145,7 @@ const earlierOffset = ref(0)
 const earlierHasMore = ref(false)
 const earlierLoading = ref(false)
 const earlierHasData = ref(false)  // 更早是否有数据（loadAll 时通过 count 查询获知）
+const earlierTotal = ref(0)
 const earlierLimit = ref(10)       // 每次查询条数（首 10，滚动后 20）
 
 /** 时间线模式：并行加载置顶 + 三天 + 更早计数，合并到单一列表 */
@@ -189,10 +192,11 @@ async function loadAll({ showLoading = true, replayAnimation = true, preserveAnc
     const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
     const cutoff = threeDayCutoff()
 
-    const [pinned, recent, earlierCount] = await Promise.all([
+    const [pinned, recent, earlierCount, activeTotal] = await Promise.all([
       window.api.queryPinnedNotes({ statuses, tagNames }),
       window.api.queryRecentNotes({ statuses, tagNames, cutoffTime: cutoff }),
-      window.api.queryEarlierNotes({ statuses, tagNames, cutoffTime: cutoff, limit: 0, offset: 0 })
+      window.api.queryEarlierNotes({ statuses, tagNames, cutoffTime: cutoff, limit: 0, offset: 0 }),
+      window.api.countActiveNotes()
     ])
     if (seq !== loadSeq) return
 
@@ -202,7 +206,9 @@ async function loadAll({ showLoading = true, replayAnimation = true, preserveAnc
     earlierIds.value = new Set()
     earlierOffset.value = 0
     earlierHasMore.value = false
-    earlierHasData.value = (earlierCount.total || 0) > 0
+    earlierTotal.value = earlierCount.total || 0
+    earlierHasData.value = earlierTotal.value > 0
+    allNoteTotal.value = Number(activeTotal) || 0
     if (replayAnimation) listAnimKey.value++
 
     // 如果更早之前是展开的，自动重新加载
@@ -303,6 +309,7 @@ const totalRendered = computed(() => noteList.value.length)
 const customList = ref([])          // 唯一列表（置顶 + 日常已加载）
 const customNormalOffset = ref(0)
 const customNormalHasMore = ref(false)
+const customNormalTotal = ref(0)
 const customNormalLimit = ref(10)   // 首 10，滚动后 20
 const customNormalLoading = ref(false)
 
@@ -324,15 +331,18 @@ async function loadCustom({ showLoading = true, replayAnimation = true, preserve
     const normalLimit = preserveAnchor
       ? Math.max(customNormalOffset.value, customNormalLimit.value)
       : customNormalLimit.value
-    const [pinned, normalCount] = await Promise.all([
+    const [pinned, normalCount, activeTotal] = await Promise.all([
       window.api.queryCustomPinned({ statuses, tagNames }),
-      window.api.queryCustomNormal({ statuses, tagNames, limit: normalLimit, offset: 0 })
+      window.api.queryCustomNormal({ statuses, tagNames, limit: normalLimit, offset: 0 }),
+      window.api.countActiveNotes()
     ])
     if (seq !== loadSeq) return
 
     customList.value = [...(pinned || []), ...(normalCount.notes || [])]
     customNormalOffset.value = (normalCount.notes || []).length
-    customNormalHasMore.value = customNormalOffset.value < (normalCount.total || 0)
+    customNormalTotal.value = normalCount.total || 0
+    customNormalHasMore.value = customNormalOffset.value < customNormalTotal.value
+    allNoteTotal.value = Number(activeTotal) || 0
     if (replayAnimation) listAnimKey.value++
     await restoreScrollAnchor(anchor)
   } catch (e) {
@@ -364,7 +374,8 @@ async function loadCustomMore() {
     const newNotes = result.notes || []
     customList.value = [...customList.value, ...newNotes]
     customNormalOffset.value += newNotes.length
-    customNormalHasMore.value = customNormalOffset.value < (result.total || 0)
+    customNormalTotal.value = result.total || 0
+    customNormalHasMore.value = customNormalOffset.value < customNormalTotal.value
     if (customNormalLimit.value === 10) {
       customNormalLimit.value = 20
     }
@@ -394,24 +405,41 @@ function timeGroup(ts) {
   const now = new Date()
   const target = new Date(ts)
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const tomorrowStart = todayStart + 86400000
   const yesterdayStart = todayStart - 86400000
   const dayBeforeStart = yesterdayStart - 86400000
+  if (target.getTime() >= tomorrowStart) return 'upcoming'
   if (target.getTime() >= todayStart) return 'today'
   if (target.getTime() >= yesterdayStart) return 'yesterday'
   if (target.getTime() >= dayBeforeStart) return 'dayBefore'
   return 'earlier'
 }
 
+function timelineDateKey(ts) {
+  const date = new Date(ts)
+  if (Number.isNaN(date.getTime())) return 'unknown'
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function timelineDateLabel(ts) {
+  const date = new Date(ts)
+  if (Number.isNaN(date.getTime())) return '日期未知'
+  const now = new Date()
+  return date.getFullYear() === now.getFullYear()
+    ? `${date.getMonth() + 1}月${date.getDate()}日`
+    : `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
+}
+
 const timelineGroups = computed(() => {
   const pinned = []
-  const dayMap = { today: [], yesterday: [], dayBefore: [] }
+  const dayMap = { upcoming: [], today: [], yesterday: [], dayBefore: [] }
   const earlier = []
 
   for (const note of noteList.value) {
     if (note.is_pinned) {
       pinned.push(note)
     } else {
-      const g = timeGroup(note.created_at)
+      const g = timeGroup(note.effective_at)
       if (g === 'earlier') {
         earlier.push(note)
       } else if (dayMap[g]) {
@@ -420,13 +448,31 @@ const timelineGroups = computed(() => {
     }
   }
 
-  // 仅保留有数据的组（更早按 earlierHasData 判断）
+  const earlierDateGroups = []
+  const earlierDateMap = new Map()
+  for (const note of earlier) {
+    const key = timelineDateKey(note.effective_at)
+    let group = earlierDateMap.get(key)
+    if (!group) {
+      group = {
+        group: `date-${key}`,
+        label: timelineDateLabel(note.effective_at),
+        items: []
+      }
+      earlierDateMap.set(key, group)
+      earlierDateGroups.push(group)
+    }
+    group.items.push(note)
+  }
+
   const all = [
     { group: 'pinned', label: '置顶', items: pinned },
+    { group: 'upcoming', label: '未来', items: dayMap.upcoming },
     { group: 'today', label: '今天', items: dayMap.today },
     { group: 'yesterday', label: '昨天', items: dayMap.yesterday },
     { group: 'dayBefore', label: '前天', items: dayMap.dayBefore },
-    { group: 'earlier', label: '更早', items: earlier }
+    { group: 'earlier', label: '更早', items: [], count: earlierTotal.value },
+    ...earlierDateGroups
   ]
 
   const filtered = all.filter(g => {
@@ -772,13 +818,21 @@ defineExpose({
       <div ref="timelineScrollRef" :key="listAnimKey" class="nl-timeline nl-list-scroll scroll-y" @scroll="onTimelineScroll">
         <div v-if="timelineIsEmpty" class="nl-empty-state">暂无便签</div>
         <template v-else>
-        <div v-for="g in timelineGroups" :key="g.group" class="nl-group nl-section">
-          <!-- 普通组：轻量时间标记 -->
-          <div v-if="g.group !== 'earlier'" class="nl-group-label-row">{{ g.label }}</div>
-          <!-- 更早：可点击展开的时间标记 -->
-          <div v-else class="nl-group-label-row nl-group-label-row--earlier" @click="toggleGroupCollapse('earlier')">
-            <span>{{ g.label }}</span>
+        <div
+          v-for="g in timelineGroups"
+          :key="g.group"
+          class="nl-group nl-section"
+          :class="{ 'nl-group--earlier-toggle': g.group === 'earlier' }"
+        >
+          <div
+            class="nl-group-label-row"
+            :class="{ 'nl-group-label-row--earlier': g.group === 'earlier' }"
+            @click="g.group === 'earlier' && toggleGroupCollapse('earlier')"
+          >
+            <span class="nl-group-label">{{ g.label }}</span>
+            <span class="nl-group-count">· {{ g.count ?? g.items.length }}条</span>
             <svg
+              v-if="g.group === 'earlier'"
               width="12" height="12" viewBox="0 0 24 24"
               fill="none" stroke="currentColor" stroke-width="2"
               stroke-linecap="round" stroke-linejoin="round"
@@ -788,19 +842,7 @@ defineExpose({
               <polyline points="6 9 12 15 18 9" />
             </svg>
           </div>
-          <!-- 普通组：便签卡片（始终可见） -->
           <template v-if="g.group !== 'earlier'">
-            <NoteCard
-              v-for="(note, ni) in g.items"
-              :key="note.id"
-              :note="note"
-              :animation-delay="staggerDelay(g.offset + ni)"
-              @select="emit('select', $event)"
-              @status-action="onCardStatusAction"
-            />
-          </template>
-          <!-- 更早：便签卡片（折叠控制） -->
-          <template v-else-if="!collapsedGroups['earlier']">
             <NoteCard
               v-for="(note, ni) in g.items"
               :key="note.id"
@@ -817,7 +859,10 @@ defineExpose({
         </template>
       </div>
       <!-- 底部计数 -->
-      <div v-if="!timelineIsEmpty" class="nl-footer-count">当前页面有 {{ totalRendered }} 条便签</div>
+      <div v-if="!timelineIsEmpty || allNoteTotal > 0" class="nl-footer-count">
+        <span>当前页有 {{ totalRendered }} 条便签</span>
+        <span>共有 {{ allNoteTotal }} 条</span>
+      </div>
     </template>
 
     <!-- ======== 自定义模式 ======== -->
@@ -827,13 +872,15 @@ defineExpose({
       <template v-else>
       <!-- 置顶区 -->
       <div v-if="customPinnedNotes.length > 0" class="nl-zone nl-section">
-        <div class="nl-zone-label">置顶</div>
+        <div class="nl-zone-label">置顶 · {{ customPinnedNotes.length }}条</div>
         <draggable
           v-model="customPinnedNotes"
           :group="{ name: 'custom-pinned', pull: false, put: false }"
           item-key="id"
           class="nl-dropzone"
           ghost-class="nl-ghost"
+          handle=".nl-drag-handle"
+          :animation="180"
           @end="onCustomPinnedDragEnd"
         >
           <template #item="{ element: note, index: i }">
@@ -850,13 +897,15 @@ defineExpose({
 
       <!-- 日常区 -->
       <div class="nl-zone nl-section">
-        <div class="nl-zone-label">日常</div>
+        <div class="nl-zone-label">日常 · {{ customNormalTotal }}条</div>
         <draggable
           v-model="customNormalNotes"
           :group="{ name: 'custom-normal', pull: false, put: false }"
           item-key="id"
           class="nl-dropzone"
           ghost-class="nl-ghost"
+          handle=".nl-drag-handle"
+          :animation="180"
           @end="onCustomNormalDragEnd"
         >
           <template #item="{ element: note, index: i }">
@@ -875,7 +924,10 @@ defineExpose({
       </template>
     </div>
       <!-- 底部计数 -->
-      <div v-if="customTotalRendered > 0" class="nl-footer-count">当前页面有 {{ customTotalRendered }} 条便签</div>
+      <div v-if="customTotalRendered > 0 || allNoteTotal > 0" class="nl-footer-count">
+        <span>当前页有 {{ customTotalRendered }} 条便签</span>
+        <span>共有 {{ allNoteTotal }} 条</span>
+      </div>
     </template>
   </div>
 </template>
@@ -1039,12 +1091,15 @@ defineExpose({
   );
 }
 
-/* 时间标记行（轻量标签） */
+/* 日期分组：用日期、数量和延伸线表达时间层级，不额外占用横向轨道。 */
 .nl-group-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6rem;
   font-size: var(--fs-secondary);
   font-weight: 500;
   color: var(--text-color-secondary);
-  padding: 6rem 0 4rem;
+  padding: 7rem 0 5rem;
 }
 /* 第一项（置顶）去除上内边距，贴顶 */
 .nl-group:first-child .nl-group-label-row {
@@ -1052,15 +1107,18 @@ defineExpose({
 }
 /* 更早标记行（可点击展开） */
 .nl-group-label-row--earlier {
-  display: flex;
-  align-items: center;
-  gap: 8rem;
   cursor: pointer;
   user-select: none;
 }
-.nl-group-label-row--earlier span {
-  flex-shrink: 0;
+.nl-group-label,
+.nl-group-count,
+.nl-group-chevron { flex-shrink: 0; }
+.nl-group-count {
+  font-size: calc(var(--fs-secondary) * 0.82);
+  font-weight: 400;
+  opacity: 0.66;
 }
+.nl-group--earlier-toggle + .nl-section { margin-top: 8rem; }
 
 /* 折叠箭头：收起时旋转 -90° */
 .nl-group-chevron {
@@ -1080,6 +1138,9 @@ defineExpose({
 
 /* 底部计数（始终固定） */
 .nl-footer-count {
+  display: flex;
+  justify-content: center;
+  gap: 12rem;
   flex-shrink: 0;
   text-align: center;
   padding: 10rem 0 4rem;

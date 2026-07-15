@@ -95,6 +95,11 @@ export function listTags() {
 // 便签-标签关联（以 tag_name 为唯一标识）
 // ============================================================
 
+function requireActiveNote(db, noteId) {
+  const note = db.prepare('SELECT id FROM notes WHERE id = ? AND is_deleted = 0').get(noteId)
+  if (!note) throw new Error('便签不存在或已删除')
+}
+
 /**
  * 为便签绑定标签
  * @param {number} noteId
@@ -105,6 +110,7 @@ export function bindTag(noteId, tagName) {
   try {
     const db = getDb()
     db.transaction(() => {
+      requireActiveNote(db, noteId)
       db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)').run(noteId, tagName)
       db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(Date.now(), noteId)
     })()
@@ -123,6 +129,7 @@ export function bindTag(noteId, tagName) {
  */
 export function unbindTag(noteId, tagName) {
   const db = getDb()
+  requireActiveNote(db, noteId)
   const result = db
     .prepare('DELETE FROM note_tags WHERE note_id = ? AND tag_name = ?')
     .run(noteId, tagName)
@@ -142,6 +149,7 @@ export function setNoteTags(noteId, tagNames) {
   const del = db.prepare('DELETE FROM note_tags WHERE note_id = ?')
   const ins = db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)')
   const txn = db.transaction(() => {
+    requireActiveNote(db, noteId)
     del.run(noteId)
     for (const tn of tagNames) {
       ins.run(noteId, tn)
@@ -161,7 +169,8 @@ export function getNoteTags(noteId) {
     .prepare(
       `SELECT t.* FROM tags t
        INNER JOIN note_tags nt ON nt.tag_name = t.name
-       WHERE nt.note_id = ?
+       INNER JOIN notes n ON n.id = nt.note_id
+       WHERE nt.note_id = ? AND n.is_deleted = 0
        ORDER BY t.created_at ASC`
     )
     .all(noteId)

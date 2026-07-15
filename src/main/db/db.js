@@ -115,25 +115,26 @@ export function saveGeometry(windowName, x, y, width, height) {
 }
 
 export function resetDatabase() {
-  // 先物理删除所有图片附件目录（避免 DB 清空后留下孤儿文件占磁盘）
   const attachmentsDir = join(app.getPath('userData'), 'attachments')
-  try {
-    if (existsSync(attachmentsDir)) {
-      rmSync(attachmentsDir, { recursive: true, force: true })
-    }
-  } catch (e) {
-    console.error('[resetDatabase] 删除图片附件目录失败:', e.message)
-  }
 
-  // 清空除 app_settings 外的所有业务数据（便签/模板/标签，直接物理删除）
-  // 注意：SQLite 默认不启用 foreign_keys，CASCADE 不会生效，因此显式删除所有关联表
-  db.exec(`
-    DELETE FROM note_tags;
-    DELETE FROM note_attachments;
-    DELETE FROM notes;
-    DELETE FROM note_templates;
-    DELETE FROM tags;
-  `)
+  // SQLite 默认不启用 foreign_keys，因此显式清理关联表。
+  // 文件删除位于同一同步事务内：SQL 或文件删除失败都会抛错并回滚数据库变更。
+  db.transaction(() => {
+    db.prepare('DELETE FROM note_tags').run()
+    db.prepare('DELETE FROM note_attachments').run()
+    db.prepare('DELETE FROM notes').run()
+    db.prepare('DELETE FROM note_templates').run()
+    db.prepare('DELETE FROM tags').run()
+
+    try {
+      if (existsSync(attachmentsDir)) {
+        rmSync(attachmentsDir, { recursive: true, force: true })
+      }
+    } catch (e) {
+      console.error('[resetDatabase] 删除图片附件目录失败:', e.message)
+      throw new Error(`删除图片附件目录失败: ${e.message}`)
+    }
+  })()
 }
 
 export function getGeometry(windowName) {
@@ -191,6 +192,8 @@ export function initNotesTables() {
       content             TEXT    NOT NULL DEFAULT '',
       status              TEXT    NOT NULL DEFAULT 'initialized'
                           CHECK(status IN ('initialized','in_progress','completed','cancelled')),
+      is_deleted          INTEGER NOT NULL DEFAULT 0
+                          CHECK(is_deleted IN (0, 1)),
       is_pinned           INTEGER NOT NULL DEFAULT 0,
       notify_enabled      INTEGER NOT NULL DEFAULT 0
                           CHECK(notify_enabled IN (0, 1)),
@@ -237,7 +240,11 @@ export function initNotesTables() {
   if (!noteColumns.some((col) => col.name === 'remind_again_at')) {
     db.exec('ALTER TABLE notes ADD COLUMN remind_again_at INTEGER')
   }
+  if (!noteColumns.some((col) => col.name === 'is_deleted')) {
+    db.exec('ALTER TABLE notes ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0')
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_notes_remind_again_at ON notes(remind_again_at)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_notes_is_deleted ON notes(is_deleted)')
 }
 
 /**

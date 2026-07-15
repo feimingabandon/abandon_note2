@@ -52,7 +52,9 @@ export function generateRecurringNotes() {
       // 1. 将该模板上一周期未完成的实例标记为 cancelled
       const oldInstances = db
         .prepare(
-          `SELECT id FROM notes WHERE template_id = ? AND status IN ('initialized','in_progress')`
+          `SELECT id FROM notes
+           WHERE template_id = ? AND is_deleted = 0
+             AND status IN ('initialized','in_progress')`
         )
         .all(tpl.id)
 

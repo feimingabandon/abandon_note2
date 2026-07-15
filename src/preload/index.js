@@ -93,7 +93,7 @@ const api = {
     ipcRenderer.invoke('notes:create-with-assets', { options, images, tagNames }),
   /** 更新便签（部分字段） */
   updateNote: (id, fields) => ipcRenderer.invoke('notes:update', { id, fields }),
-  /** 删除便签（取消） */
+  /** 逻辑删除便签（附件随记录保留，重置数据库时物理清理） */
   deleteNote: (id) => ipcRenderer.invoke('notes:delete', { id }),
   /** 获取单条便签（含附件和标签） */
   getNote: (id) => ipcRenderer.invoke('notes:get', { id }),
@@ -107,6 +107,8 @@ const api = {
   queryCustomPinned: (options) => ipcRenderer.invoke('notes:query-custom-pinned', options),
   /** 查询日常便签（自定义模式，分页） */
   queryCustomNormal: (options) => ipcRenderer.invoke('notes:query-custom-normal', options),
+  /** 查询全部未删除便签总数（不受筛选影响） */
+  countActiveNotes: () => ipcRenderer.invoke('notes:count-active'),
   /** 全局重排 sort_order（自定义模式） */
   reorderCustomSortOrder: (options) => ipcRenderer.invoke('notes:reorder-custom', options),
   /** 开始处理 */

@@ -45,6 +45,7 @@ import {
   queryEarlierNotes,
   queryCustomPinned,
   queryCustomNormal,
+  countActiveNotes,
   reorderCustomSortOrder,
   startProgress,
   completeNote,
@@ -1045,6 +1046,7 @@ app.whenReady().then(() => {
   // 【重置数据库】
   ipcMain.handle('reset-database', () => {
     resetDatabase()
+    mainWindow?.webContents.send('notes:changed', { reason: 'database-reset' })
     return true
   })
 
@@ -1233,9 +1235,11 @@ app.whenReady().then(() => {
     return updateNote(id, fields || {})
   })
 
-  // 【便签 - 删除（取消）】
+  // 【便签 - 逻辑删除】
   ipcMain.handle('notes:delete', (_event, { id }) => {
-    return deleteNote(id)
+    const deleted = deleteNote(id)
+    if (deleted) mainWindow?.webContents.send('notes:changed', { reason: 'deletion', id })
+    return deleted
   })
 
   // 【便签 - 获取单条（含附件和标签）】
@@ -1268,6 +1272,11 @@ app.whenReady().then(() => {
   // 【便签 - 自定义模式：日常查询（分页）】
   ipcMain.handle('notes:query-custom-normal', (_event, options) => {
     return queryCustomNormal(options || {})
+  })
+
+  // 【便签 - 未删除总数（不受列表筛选影响）】
+  ipcMain.handle('notes:count-active', () => {
+    return countActiveNotes()
   })
 
   // 【便签 - 自定义模式：全局重排 sort_order】
@@ -1406,7 +1415,13 @@ app.whenReady().then(() => {
   /** 删除图片记录 + 文件 */
   ipcMain.handle('images:delete', (_event, { id }) => {
     const db = getDb()
-    const row = db.prepare('SELECT * FROM note_attachments WHERE id = ?').get(id)
+    const row = db
+      .prepare(
+        `SELECT a.* FROM note_attachments a
+         INNER JOIN notes n ON n.id = a.note_id
+         WHERE a.id = ? AND n.is_deleted = 0`
+      )
+      .get(id)
     if (!row) return false
     if (!deleteImageFile(row.file_path)) throw new Error('删除图片文件失败')
     db.prepare('DELETE FROM note_attachments WHERE id = ?').run(id)
