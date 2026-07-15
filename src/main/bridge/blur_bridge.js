@@ -3,7 +3,6 @@
  */
 
 import { join } from 'path'
-import { app } from 'electron'
 
 let koffi = null
 let lib = null
@@ -32,7 +31,9 @@ function getDllPath() {
   try {
     require('fs').accessSync(prod)
     return prod
-  } catch (_) {}
+  } catch {
+    // 生产路径不存在时继续尝试开发路径。
+  }
 
   const devs = [
     join(__dirname, '..', '..', 'native_blur', 'build', 'bin', 'Release', 'blur_engine.dll'),
@@ -43,7 +44,9 @@ function getDllPath() {
     try {
       require('fs').accessSync(p)
       return p
-    } catch (_) {}
+    } catch {
+      // 当前候选不存在时继续尝试下一个路径。
+    }
   }
   return null
 }

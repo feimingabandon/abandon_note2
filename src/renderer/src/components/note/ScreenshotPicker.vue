@@ -10,7 +10,7 @@ import ImagePicker from './ImagePicker.vue'
 
 const emit = defineEmits(['count-change'])
 
-const props = defineProps({
+defineProps({
   noteId: { type: Number, default: null },
   mode: { type: String, default: 'persist' }
 })

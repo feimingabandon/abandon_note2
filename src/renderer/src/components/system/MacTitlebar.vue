@@ -15,7 +15,7 @@
  */
 
 // 定义组件接收的 props
-const props = defineProps({
+defineProps({
   title: {
     type: String,
     default: ''

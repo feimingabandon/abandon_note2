@@ -3,11 +3,9 @@
  * NoteList.vue — 便签列表（时间线 + 自定义拖拽双模式）
  *
  * 3.5 + 3.6: 新增自定义拖拽模式，集成 vuedraggable
- * - 置顶区（is_pinned=1, active/in_progress）: 可拖拽
- * - 日常区（is_pinned=0, active/in_progress）: 可拖拽
- * - 过期区（completed/expired）: 只读
+ * - 四状态：initialized / in_progress / completed / cancelled
  */
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import draggable from 'vuedraggable'
 import TagSelector from '../ui/TagSelector.vue'
 import FilterTabs from '../ui/FilterTabs.vue'
@@ -67,6 +65,8 @@ const listAnimKey = ref(0)
 /** 便签列表 */
 /** 加载状态 */
 const loading = ref(false)
+const timelineScrollRef = ref(null)
+const customScrollRef = ref(null)
 
 /** 标签筛选名称列表 */
 const tagFilterNames = ref([])
@@ -75,7 +75,7 @@ const tagFilterNames = ref([])
 const panelState = ref('taiji')
 
 /** 状态筛选列表 */
-const statusFilter = ref(['active', 'in_progress', 'completed'])
+const statusFilter = ref(['initialized', 'in_progress', 'completed'])
 
 /** FilterTabs 选项 */
 const panelOptions = [
@@ -104,10 +104,10 @@ function onPanelClick(value) {
 
 /** 状态筛选项 */
 const statusOptions = [
-  { value: 'active', label: '初始化' },
+  { value: 'initialized', label: '初始化' },
   { value: 'in_progress', label: '进行中' },
   { value: 'completed', label: '完成' },
-  { value: 'expired', label: '过期' }
+  { value: 'cancelled', label: '取消' }
 ]
 
 /** 切换状态筛选 */
@@ -126,6 +126,8 @@ function toggleStatus(value) {
 
 /** 请求令牌：并发加载时只接受最新一次结果，避免旧请求覆盖新数据 */
 let loadSeq = 0
+let earlierRequestSeq = 0
+let customMoreRequestSeq = 0
 
 /** 三天截止时间戳（毫秒）：今天 23:59:59 倒推 3×24h 再减 1 秒 */
 function threeDayCutoff() {
@@ -144,13 +146,46 @@ const earlierHasData = ref(false)  // 更早是否有数据（loadAll 时通过 
 const earlierLimit = ref(10)       // 每次查询条数（首 10，滚动后 20）
 
 /** 时间线模式：并行加载置顶 + 三天 + 更早计数，合并到单一列表 */
-async function loadAll() {
+function captureScrollAnchor() {
+  const container = sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
+  if (!container) return null
+  const containerTop = container.getBoundingClientRect().top
+  const cards = [...container.querySelectorAll('[data-note-id]')]
+  const card = cards.find((item) => item.getBoundingClientRect().bottom > containerTop)
+  return card
+    ? { id: card.dataset.noteId, offset: card.getBoundingClientRect().top - containerTop }
+    : { id: null, scrollTop: container.scrollTop }
+}
+
+async function restoreScrollAnchor(anchor) {
+  if (!anchor) return
+  await nextTick()
+  const container = sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
+  if (!container) return
+  if (!anchor.id) {
+    container.scrollTop = anchor.scrollTop || 0
+    return
+  }
+  const card = [...container.querySelectorAll('[data-note-id]')]
+    .find((item) => item.dataset.noteId === anchor.id)
+  if (!card) return
+  const containerTop = container.getBoundingClientRect().top
+  container.scrollTop += card.getBoundingClientRect().top - containerTop - anchor.offset
+}
+
+async function loadAll({ showLoading = true, replayAnimation = true, preserveAnchor = false } = {}) {
   const seq = ++loadSeq
-  loading.value = true
+  earlierRequestSeq++
+  customMoreRequestSeq++
+  earlierLoading.value = false
+  customNormalLoading.value = false
+  const anchor = preserveAnchor ? captureScrollAnchor() : null
+  const loadedEarlierCount = earlierIds.value.size
+  if (showLoading) loading.value = true
   try {
     const statuses = statusFilter.value.length > 0
       ? [...statusFilter.value]
-      : ['active', 'in_progress', 'completed']
+      : ['initialized', 'in_progress', 'completed']
     const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
     const cutoff = threeDayCutoff()
 
@@ -168,13 +203,20 @@ async function loadAll() {
     earlierOffset.value = 0
     earlierHasMore.value = false
     earlierHasData.value = (earlierCount.total || 0) > 0
-    listAnimKey.value++
+    if (replayAnimation) listAnimKey.value++
 
     // 如果更早之前是展开的，自动重新加载
     if (!collapsedGroups.value['earlier'] && earlierHasData.value) {
       earlierHasMore.value = true
-      loadEarlier() // 不 await，后台加载
+      if (preserveAnchor) {
+        earlierLimit.value = Math.max(10, loadedEarlierCount)
+        await loadEarlier()
+        earlierLimit.value = 20
+      } else {
+        loadEarlier() // 不 await，后台加载
+      }
     }
+    await restoreScrollAnchor(anchor)
   } catch (e) {
     console.error('[NoteList] 加载列表失败:', e)
   } finally {
@@ -185,11 +227,13 @@ async function loadAll() {
 /** 时间线模式：懒加载更早数据，追加到统一列表并记录 ID */
 async function loadEarlier() {
   if (earlierLoading.value || !earlierHasMore.value) return
+  const requestSeq = ++earlierRequestSeq
+  const parentLoadSeq = loadSeq
   earlierLoading.value = true
   try {
     const statuses = statusFilter.value.length > 0
       ? [...statusFilter.value]
-      : ['active', 'in_progress', 'completed']
+      : ['initialized', 'in_progress', 'completed']
     const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
     const cutoff = threeDayCutoff()
 
@@ -200,6 +244,7 @@ async function loadEarlier() {
       limit: earlierLimit.value,
       offset: earlierOffset.value
     })
+    if (requestSeq !== earlierRequestSeq || parentLoadSeq !== loadSeq) return
     const newNotes = result.notes || []
     noteList.value = [...noteList.value, ...newNotes]
     for (const n of newNotes) {
@@ -214,7 +259,7 @@ async function loadEarlier() {
   } catch (e) {
     console.error('[NoteList] 加载更早便签失败:', e)
   } finally {
-    earlierLoading.value = false
+    if (requestSeq === earlierRequestSeq) earlierLoading.value = false
   }
 }
 
@@ -262,25 +307,34 @@ const customNormalLimit = ref(10)   // 首 10，滚动后 20
 const customNormalLoading = ref(false)
 
 /** 自定义模式：并行加载置顶 + 日常首 10 条 */
-async function loadCustom() {
+async function loadCustom({ showLoading = true, replayAnimation = true, preserveAnchor = false } = {}) {
   const seq = ++loadSeq
-  loading.value = true
+  earlierRequestSeq++
+  customMoreRequestSeq++
+  earlierLoading.value = false
+  customNormalLoading.value = false
+  const anchor = preserveAnchor ? captureScrollAnchor() : null
+  if (showLoading) loading.value = true
   try {
     const statuses = statusFilter.value.length > 0
       ? [...statusFilter.value]
-      : ['active', 'in_progress', 'completed', 'expired']
+      : ['initialized', 'in_progress', 'completed', 'cancelled']
     const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
 
+    const normalLimit = preserveAnchor
+      ? Math.max(customNormalOffset.value, customNormalLimit.value)
+      : customNormalLimit.value
     const [pinned, normalCount] = await Promise.all([
       window.api.queryCustomPinned({ statuses, tagNames }),
-      window.api.queryCustomNormal({ statuses, tagNames, limit: customNormalLimit.value, offset: 0 })
+      window.api.queryCustomNormal({ statuses, tagNames, limit: normalLimit, offset: 0 })
     ])
     if (seq !== loadSeq) return
 
     customList.value = [...(pinned || []), ...(normalCount.notes || [])]
     customNormalOffset.value = (normalCount.notes || []).length
     customNormalHasMore.value = customNormalOffset.value < (normalCount.total || 0)
-    listAnimKey.value++
+    if (replayAnimation) listAnimKey.value++
+    await restoreScrollAnchor(anchor)
   } catch (e) {
     console.error('[NoteList] 加载自定义列表失败:', e)
   } finally {
@@ -291,11 +345,13 @@ async function loadCustom() {
 /** 自定义模式：滚动加载更多日常 */
 async function loadCustomMore() {
   if (customNormalLoading.value || !customNormalHasMore.value) return
+  const requestSeq = ++customMoreRequestSeq
+  const parentLoadSeq = loadSeq
   customNormalLoading.value = true
   try {
     const statuses = statusFilter.value.length > 0
       ? [...statusFilter.value]
-      : ['active', 'in_progress', 'completed', 'expired']
+      : ['initialized', 'in_progress', 'completed', 'cancelled']
     const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
 
     const result = await window.api.queryCustomNormal({
@@ -304,6 +360,7 @@ async function loadCustomMore() {
       limit: customNormalLimit.value,
       offset: customNormalOffset.value
     })
+    if (requestSeq !== customMoreRequestSeq || parentLoadSeq !== loadSeq) return
     const newNotes = result.notes || []
     customList.value = [...customList.value, ...newNotes]
     customNormalOffset.value += newNotes.length
@@ -314,7 +371,7 @@ async function loadCustomMore() {
   } catch (e) {
     console.error('[NoteList] 加载更多日常便签失败:', e)
   } finally {
-    customNormalLoading.value = false
+    if (requestSeq === customMoreRequestSeq) customNormalLoading.value = false
   }
 }
 
@@ -354,7 +411,7 @@ const timelineGroups = computed(() => {
     if (note.is_pinned) {
       pinned.push(note)
     } else {
-      const g = timeGroup(note.effective_at)
+      const g = timeGroup(note.created_at)
       if (g === 'earlier') {
         earlier.push(note)
       } else if (dayMap[g]) {
@@ -384,6 +441,9 @@ const timelineGroups = computed(() => {
   }
   return filtered
 })
+
+/** “更早”可能尚未展开，因此同时检查它的总数。 */
+const timelineIsEmpty = computed(() => totalRendered.value === 0 && !earlierHasData.value)
 
 /** 更早折叠状态 */
 const collapsedGroups = ref({ earlier: true })
@@ -451,6 +511,66 @@ async function persistSortOrder(list) {
   }
 }
 
+/** 状态圆环的主操作：初始化提前开始，进行中标记完成。 */
+async function onCardStatusAction(note) {
+  try {
+    let updated = null
+    if (note.status === 'initialized') {
+      updated = await window.api.startProgress(note.id)
+    } else if (note.status === 'in_progress') {
+      updated = await window.api.completeNote(note.id)
+    } else {
+      return
+    }
+    if (updated && !patchVisibleNote(updated)) await refreshInBackground()
+  } catch (e) {
+    console.error('[NoteList] 状态修改失败:', note.id, e)
+  }
+}
+
+function patchVisibleNote(updated) {
+  const allowed = statusFilter.value.length === 0 || statusFilter.value.includes(updated.status)
+  if (!allowed) return false
+  if (sortMode.value === 'timeline') {
+    noteList.value = noteList.value.map((note) => note.id === updated.id ? mergeListItem(note, updated) : note)
+    return true
+  }
+  customList.value = customList.value.map((note) => note.id === updated.id ? mergeListItem(note, updated) : note)
+  syncCustomZones()
+  return true
+}
+
+/** 局部状态响应缺少摘要字段时保留卡片已有的标签与附件信息。 */
+function mergeListItem(current, updated) {
+  return {
+    ...current,
+    ...updated,
+    tags: Array.isArray(updated.tags) ? updated.tags : current.tags,
+    attachment_count: Number.isFinite(Number(updated.attachment_count))
+      ? Number(updated.attachment_count)
+      : current.attachment_count,
+    has_text: typeof updated.has_text === 'boolean' ? updated.has_text : current.has_text,
+    has_image: typeof updated.has_image === 'boolean' ? updated.has_image : current.has_image
+  }
+}
+
+async function refreshOne(noteOrId) {
+  const id = typeof noteOrId === 'object' ? noteOrId?.id : noteOrId
+  if (!id) return
+  const updated = typeof noteOrId === 'object' && Array.isArray(noteOrId.tags)
+    ? noteOrId
+    : await window.api.getNote(id)
+  if (updated && !patchVisibleNote(updated)) await refreshInBackground()
+}
+
+async function refreshInBackground() {
+  const options = { showLoading: false, replayAnimation: false, preserveAnchor: true }
+  if (sortMode.value === 'timeline') return loadAll(options)
+  const result = await loadCustom(options)
+  syncCustomZones()
+  return result
+}
+
 // ---- 模式切换 ----
 
 async function switchMode(mode) {
@@ -462,7 +582,7 @@ async function switchMode(mode) {
     if (needsReorder) {
       const statuses = statusFilter.value.length > 0
         ? [...statusFilter.value]
-        : ['active', 'in_progress', 'completed', 'expired']
+        : ['initialized', 'in_progress', 'completed', 'cancelled']
       const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
       await window.api.reorderCustomSortOrder({ statuses, tagNames })
       await loadCustom()
@@ -499,7 +619,11 @@ async function loadFilterState() {
       const state = JSON.parse(raw)
       if (state.listMode) sortMode.value = state.listMode
       if (state.tagNames) tagFilterNames.value = state.tagNames
-      if (state.statusFilter) statusFilter.value = state.statusFilter
+      if (state.statusFilter) {
+        const validStatuses = new Set(['initialized', 'in_progress', 'completed', 'cancelled'])
+        const restored = state.statusFilter.filter((status) => validStatuses.has(status))
+        statusFilter.value = restored.length ? restored : ['initialized', 'in_progress', 'completed']
+      }
     }
   } catch (e) {
     console.warn('[NoteList] 恢复筛选状态失败:', e)
@@ -514,6 +638,20 @@ onMounted(async () => {
   await loadFilterState()
   // 统一入口：根据当前模式加载（时间线 / 自定义）
   await switchMode(sortMode.value)
+})
+
+let notesChangedTimer = null
+const stopNotesChanged = window.api.onNotesChanged?.(() => {
+  clearTimeout(notesChangedTimer)
+  notesChangedTimer = setTimeout(refreshInBackground, 80)
+})
+
+onUnmounted(() => {
+  clearTimeout(notesChangedTimer)
+  clearTimeout(_customSyncTimer)
+  stopNotesChanged?.()
+  earlierRequestSeq++
+  customMoreRequestSeq++
 })
 
 // 统一响应式入口：排序模式 / 标签 / 状态任一变化 → 重载 + 持久化
@@ -572,7 +710,10 @@ function onPanelLeave(el, done) {
   el.addEventListener('transitionend', onEnd)
 }
 
-defineExpose({ refresh: () => sortMode.value === 'timeline' ? loadAll() : loadCustom() })
+defineExpose({
+  refresh: refreshInBackground,
+  refreshOne
+})
 </script>
 
 <template>
@@ -628,7 +769,9 @@ defineExpose({ refresh: () => sortMode.value === 'timeline' ? loadAll() : loadCu
 
     <!-- ======== 时间线模式（时间标记 + 统一便签流） ======== -->
     <template v-else-if="sortMode === 'timeline'">
-      <div :key="listAnimKey" class="nl-timeline scroll-y" @scroll="onTimelineScroll">
+      <div ref="timelineScrollRef" :key="listAnimKey" class="nl-timeline scroll-y" @scroll="onTimelineScroll">
+        <div v-if="timelineIsEmpty" class="nl-empty-state">暂无便签</div>
+        <template v-else>
         <div v-for="g in timelineGroups" :key="g.group" class="nl-group">
           <!-- 普通组：轻量时间标记 -->
           <div v-if="g.group !== 'earlier'" class="nl-group-label-row">{{ g.label }}</div>
@@ -653,6 +796,7 @@ defineExpose({ refresh: () => sortMode.value === 'timeline' ? loadAll() : loadCu
               :note="note"
               :animation-delay="staggerDelay(g.offset + ni)"
               @select="emit('select', $event)"
+              @status-action="onCardStatusAction"
             />
           </template>
           <!-- 更早：便签卡片（折叠控制） -->
@@ -663,20 +807,24 @@ defineExpose({ refresh: () => sortMode.value === 'timeline' ? loadAll() : loadCu
               :note="note"
               :animation-delay="staggerDelay(g.offset + ni)"
               @select="emit('select', $event)"
+              @status-action="onCardStatusAction"
             />
           </template>
         </div>
         <!-- 更早加载提示 -->
         <div v-if="!collapsedGroups['earlier'] && earlierLoading" class="nl-earlier-hint">加载中…</div>
         <div v-else-if="!collapsedGroups['earlier'] && earlierHasData && !earlierHasMore && earlierOffset > 0" class="nl-earlier-hint">没有更多便签</div>
+        </template>
       </div>
       <!-- 底部计数 -->
-      <div class="nl-footer-count">当前页面有 {{ totalRendered }} 条便签</div>
+      <div v-if="!timelineIsEmpty" class="nl-footer-count">当前页面有 {{ totalRendered }} 条便签</div>
     </template>
 
     <!-- ======== 自定义模式 ======== -->
     <template v-else>
-      <div :key="listAnimKey" class="nl-custom scroll-y" @scroll="onCustomScroll">
+      <div ref="customScrollRef" :key="listAnimKey" class="nl-custom scroll-y" @scroll="onCustomScroll">
+      <div v-if="customTotalRendered === 0" class="nl-empty-state">暂无便签</div>
+      <template v-else>
       <!-- 置顶区 -->
       <div v-if="customPinnedNotes.length > 0" class="nl-zone">
         <div class="nl-zone-label">置顶</div>
@@ -694,6 +842,7 @@ defineExpose({ refresh: () => sortMode.value === 'timeline' ? loadAll() : loadCu
               draggable
               :animation-delay="staggerDelay(i)"
               @select="emit('select', $event)"
+              @status-action="onCardStatusAction"
             />
           </template>
         </draggable>
@@ -716,16 +865,17 @@ defineExpose({ refresh: () => sortMode.value === 'timeline' ? loadAll() : loadCu
               draggable
               :animation-delay="staggerDelay(customPinnedNotes.length + i)"
               @select="emit('select', $event)"
+              @status-action="onCardStatusAction"
             />
           </template>
         </draggable>
-        <div v-if="customNormalNotes.length === 0" class="nl-zone-empty">暂无日常便签</div>
         <div v-if="customNormalLoading" class="nl-earlier-hint">加载中…</div>
         <div v-else-if="customNormalNotes.length > 0 && !customNormalHasMore" class="nl-earlier-hint">没有更多便签</div>
       </div>
+      </template>
     </div>
       <!-- 底部计数 -->
-      <div class="nl-footer-count">当前页面有 {{ totalRendered }} 条便签</div>
+      <div v-if="customTotalRendered > 0" class="nl-footer-count">当前页面有 {{ customTotalRendered }} 条便签</div>
     </template>
   </div>
 </template>
@@ -852,6 +1002,16 @@ defineExpose({ refresh: () => sortMode.value === 'timeline' ? loadAll() : loadCu
   font-size: var(--fs-secondary);
   color: var(--text-color-secondary);
   gap: 12rem;
+}
+
+.nl-empty-state {
+  display: grid;
+  place-items: center;
+  min-height: 180rem;
+  padding: 32rem 20rem;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  letter-spacing: 0.02em;
 }
 
 /* ===== 时间线 ===== */

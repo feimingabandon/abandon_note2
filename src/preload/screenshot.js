@@ -6,10 +6,8 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('screenshot', {
-  /** 确定截图，回传裁切后的 data URL */
-  confirm: (dataUrl) => ipcRenderer.send('screenshot:confirm', dataUrl),
+  /** 确定截图，只回传逻辑像素选区；原始图片由主进程裁切。 */
+  confirm: (selection) => ipcRenderer.send('screenshot:confirm', selection),
   /** 取消截图 */
-  cancel: () => ipcRenderer.send('screenshot:cancel'),
-  /** 接收主进程传来的截图图片 data URL */
-  onImage: (cb) => ipcRenderer.on('screenshot:image', (_e, dataUrl) => cb(dataUrl))
+  cancel: () => ipcRenderer.send('screenshot:cancel')
 })

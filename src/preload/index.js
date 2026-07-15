@@ -115,6 +115,12 @@ const api = {
   completeNote: (id) => ipcRenderer.invoke('notes:complete', { id }),
   /** 取消便签 */
   cancelNote: (id) => ipcRenderer.invoke('notes:cancel', { id }),
+  /** 监听调度器等主进程来源的便签变化；返回取消监听函数。 */
+  onNotesChanged: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('notes:changed', handler)
+    return () => ipcRenderer.removeListener('notes:changed', handler)
+  },
 
   // ---- 标签管理 ----
   /** 创建标签 */
@@ -163,6 +169,9 @@ const api = {
   listImages: (noteId) => ipcRenderer.invoke('images:list', { noteId }),
   /** 获取图片 Base64 */
   getImageBase64: (relativePath) => ipcRenderer.invoke('images:get-base64', { relativePath }),
+  /** 获取图片缩略图 */
+  getImageThumbnail: (relativePath, maxSize = 240) =>
+    ipcRenderer.invoke('images:get-thumbnail', { relativePath, maxSize }),
   /** 获取图片数量 */
   getImageCount: (noteId) => ipcRenderer.invoke('images:count', { noteId }),
 

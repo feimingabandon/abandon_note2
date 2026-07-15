@@ -103,7 +103,11 @@ export function listTags() {
  */
 export function bindTag(noteId, tagName) {
   try {
-    getDb().prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)').run(noteId, tagName)
+    const db = getDb()
+    db.transaction(() => {
+      db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)').run(noteId, tagName)
+      db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(Date.now(), noteId)
+    })()
     return true
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') return true
@@ -118,9 +122,13 @@ export function bindTag(noteId, tagName) {
  * @returns {boolean}
  */
 export function unbindTag(noteId, tagName) {
-  const result = getDb()
+  const db = getDb()
+  const result = db
     .prepare('DELETE FROM note_tags WHERE note_id = ? AND tag_name = ?')
     .run(noteId, tagName)
+  if (result.changes > 0) {
+    db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(Date.now(), noteId)
+  }
   return result.changes > 0
 }
 
@@ -138,6 +146,7 @@ export function setNoteTags(noteId, tagNames) {
     for (const tn of tagNames) {
       ins.run(noteId, tn)
     }
+    db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(Date.now(), noteId)
   })
   txn()
 }

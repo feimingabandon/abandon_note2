@@ -7,8 +7,9 @@
  *   3. 提供图片 CRUD（通过 IPC 调用）
  */
 
-import { join } from 'path'
-import { app } from 'electron'
+import { join, resolve, sep } from 'path'
+import { randomUUID } from 'crypto'
+import { app, nativeImage } from 'electron'
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, statSync, readFileSync, rmSync } from 'fs'
 import { getDb } from './db.js'
 
@@ -18,6 +19,7 @@ const now = () => Date.now()
 
 /** 单图片最大 50MB */
 const MAX_IMAGE_SIZE = 50 * 1024 * 1024
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'])
 
 function ensureDir(dirPath) {
   if (!existsSync(dirPath)) {
@@ -38,7 +40,12 @@ function getAttachmentsRoot() {
  * @returns {string}
  */
 export function resolveImagePath(relativePath) {
-  return join(app.getPath('userData'), relativePath)
+  const root = resolve(app.getPath('userData'), ATTACHMENTS_ROOT)
+  const target = resolve(app.getPath('userData'), String(relativePath || ''))
+  if (target !== root && !target.startsWith(root + sep)) {
+    throw new Error('非法的附件路径')
+  }
+  return target
 }
 
 /**
@@ -49,15 +56,21 @@ export function resolveImagePath(relativePath) {
  * @returns {{ relativePath: string, fileSize: number }}
  */
 export function saveImage(noteId, base64Data, ext) {
+  if (!Number.isInteger(Number(noteId)) || Number(noteId) <= 0) throw new Error('无效的便签 ID')
+  const normalizedExt = String(ext || '').toLowerCase()
+  if (!IMAGE_EXTENSIONS.has(normalizedExt)) throw new Error('不支持的图片格式')
+
+  const buffer = Buffer.from(String(base64Data || ''), 'base64')
+  if (buffer.length === 0) throw new Error('图片内容为空')
+  if (buffer.length > MAX_IMAGE_SIZE) throw new Error('单张图片不能超过 50MB')
+
   const root = getAttachmentsRoot()
   const subDir = join(root, 'images', String(noteId))
   ensureDir(subDir)
 
-  const ts = now()
-  const fileName = `${ts}.${ext}`
+  const fileName = `${now()}-${randomUUID()}.${normalizedExt}`
   const filePath = join(subDir, fileName)
 
-  const buffer = Buffer.from(base64Data, 'base64')
   writeFileSync(filePath, buffer)
 
   const fileSize = statSync(filePath).size
@@ -75,7 +88,8 @@ export function deleteImageFile(relativePath) {
   try {
     unlinkSync(resolveImagePath(relativePath))
     return true
-  } catch {
+  } catch (error) {
+    if (error?.code === 'ENOENT') return true
     return false
   }
 }
@@ -105,8 +119,24 @@ export function getImageBase64(relativePath) {
     const absPath = resolveImagePath(relativePath)
     const buffer = readFileSync(absPath)
     const ext = relativePath.split('.').pop()?.toLowerCase() || 'png'
-    const mime = ext === 'jpg' ? 'jpeg' : ext
+    const mime = ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext
     return `data:image/${mime};base64,${buffer.toString('base64')}`
+  } catch {
+    return null
+  }
+}
+
+/** 生成列表展示用缩略图，原图只在大图预览时读取。 */
+export function getImageThumbnail(relativePath, maxSize = 240) {
+  try {
+    const image = nativeImage.createFromPath(resolveImagePath(relativePath))
+    if (image.isEmpty()) return null
+    const { width, height } = image.getSize()
+    const limit = Math.max(32, Math.min(512, Number(maxSize) || 240))
+    const resized = width >= height
+      ? image.resize({ width: Math.min(width, limit), quality: 'good' })
+      : image.resize({ height: Math.min(height, limit), quality: 'good' })
+    return resized.toDataURL()
   } catch {
     return null
   }
@@ -130,6 +160,9 @@ const MAX_ATTACHMENTS_PER_NOTE = 50
 export function addImageRecord({ noteId, filePath, fileSize }) {
   const db = getDb()
 
+  const note = db.prepare('SELECT id FROM notes WHERE id = ?').get(noteId)
+  if (!note) throw new Error('便签不存在')
+
   const { count } = db
     .prepare('SELECT COUNT(*) as count FROM note_attachments WHERE note_id = ?')
     .get(noteId)
@@ -144,6 +177,7 @@ export function addImageRecord({ noteId, filePath, fileSize }) {
        VALUES (?, ?, ?, ?, ?)`
     )
     .run(noteId, filePath, fileSize, count, ts)
+  db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(ts, noteId)
 
   return db.prepare('SELECT * FROM note_attachments WHERE id = ?').get(result.lastInsertRowid)
 }
@@ -157,7 +191,10 @@ export function removeImageRecord(id) {
   const db = getDb()
   const row = db.prepare('SELECT * FROM note_attachments WHERE id = ?').get(id)
   if (!row) return false
-  db.prepare('DELETE FROM note_attachments WHERE id = ?').run(id)
+  db.transaction(() => {
+    db.prepare('DELETE FROM note_attachments WHERE id = ?').run(id)
+    db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(now(), row.note_id)
+  })()
   return true
 }
 

@@ -31,7 +31,6 @@ let dragStartX = 0
 let dragStartY = 0
 let dragStartTX = 0
 let dragStartTY = 0
-let dragMoved = false
 
 /** 打开时重置状态 */
 watch(() => props.visible, (v) => {
@@ -86,7 +85,6 @@ function onMouseDown(e) {
   if (e.button !== 0) return
   e.preventDefault()
   isDragging.value = true
-  dragMoved = false
   dragStartX = e.clientX
   dragStartY = e.clientY
   dragStartTX = translateX.value
@@ -99,9 +97,6 @@ function onMouseMove(e) {
   if (!isDragging.value) return
   const dx = e.clientX - dragStartX
   const dy = e.clientY - dragStartY
-  if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
-    dragMoved = true
-  }
   translateX.value = dragStartTX + dx
   translateY.value = dragStartTY + dy
 }

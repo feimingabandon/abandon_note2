@@ -78,7 +78,7 @@ onMounted(async () => {
       if (savedBlur?.cornerRadius !== undefined) {
         el.style.setProperty('--window-radius', savedBlur.cornerRadius + 'px')
       }
-    } catch (e) {
+    } catch {
       /* 无模糊配置则使用 CSS 默认值 12px */
     }
   } catch (err) {
@@ -111,18 +111,17 @@ const onMouseLeave = () => window.api.windowHover(false)
 document.addEventListener('mouseenter', onMouseEnter)
 document.addEventListener('mouseleave', onMouseLeave)
 // ---- 便签交互 ----
-function onSelectNote(_note) {
+function onSelectNote() {
   // 暂时禁用编辑功能，后续统一处理
 }
 
 function onCloseEditor() {
   selectedNote.value = null
-  noteListRef.value?.refresh()
 }
 
 async function onNoteSaved(updated) {
   if (updated) selectedNote.value = updated
-  noteListRef.value?.refresh()
+  if (updated?.id) await noteListRef.value?.refreshOne(updated)
 }
 
 async function onCreateNote() {

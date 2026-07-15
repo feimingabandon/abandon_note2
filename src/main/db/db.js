@@ -134,10 +134,6 @@ export function resetDatabase() {
     DELETE FROM note_templates;
     DELETE FROM tags;
   `)
-  // 重新插入固有标签（与 initNotesTables 保持一致）
-  const now = Date.now()
-  db.prepare('INSERT OR IGNORE INTO tags (name, color, created_at) VALUES (?, ?, ?)').run('图片', '#007aff', now)
-  db.prepare('INSERT OR IGNORE INTO tags (name, color, created_at) VALUES (?, ?, ?)').run('文本', '#34c759', now)
 }
 
 export function getGeometry(windowName) {
@@ -193,11 +189,13 @@ export function initNotesTables() {
       note_type           TEXT    NOT NULL DEFAULT 'one_time'
                           CHECK(note_type IN ('one_time')),
       content             TEXT    NOT NULL DEFAULT '',
-      status              TEXT    NOT NULL DEFAULT 'active'
-                          CHECK(status IN ('active','in_progress','completed','cancelled','expired')),
+      status              TEXT    NOT NULL DEFAULT 'initialized'
+                          CHECK(status IN ('initialized','in_progress','completed','cancelled')),
       is_pinned           INTEGER NOT NULL DEFAULT 0,
-      notify_enabled      INTEGER NOT NULL DEFAULT 1,
+      notify_enabled      INTEGER NOT NULL DEFAULT 0
+                          CHECK(notify_enabled IN (0, 1)),
       effective_at        INTEGER NOT NULL,
+      finished_at         INTEGER,
       sort_order          INTEGER NOT NULL DEFAULT 0,
       created_at          INTEGER NOT NULL,
       updated_at          INTEGER NOT NULL
@@ -208,8 +206,6 @@ export function initNotesTables() {
     CREATE INDEX IF NOT EXISTS idx_notes_is_pinned ON notes(is_pinned);
     CREATE INDEX IF NOT EXISTS idx_notes_status_pinned_sort ON notes(status, is_pinned, sort_order);
 
-    -- 兼容旧表（若存在含 media_type/transcription 的旧表结构则删除重建）
-    DROP TABLE IF EXISTS note_attachments;
     CREATE TABLE IF NOT EXISTS note_attachments (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       note_id     INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
@@ -233,10 +229,6 @@ export function initNotesTables() {
       PRIMARY KEY (note_id, tag_name)
     );
     CREATE INDEX IF NOT EXISTS idx_note_tags_tag_name ON note_tags(tag_name);
-
-    -- 固有标签（首次创建时自动插入，幂等）
-    INSERT OR IGNORE INTO tags (name, color, created_at) VALUES ('图片', '#007aff', strftime('%s','now')*1000);
-    INSERT OR IGNORE INTO tags (name, color, created_at) VALUES ('文本', '#34c759', strftime('%s','now')*1000);
   `)
 }
 

@@ -56,7 +56,7 @@ import {
   updateTag,
   deleteTag as deleteTagFn,
   listTags,
-  getTagById,
+  getTagByName,
   bindTag,
   unbindTag,
   setNoteTags,
@@ -76,8 +76,8 @@ import {
   deleteImageFile,
   deleteNoteImages,
   getImageBase64,
+  getImageThumbnail,
   addImageRecord,
-  removeImageRecord,
   listImageRecords,
   getImageCount
 } from './db/db-images.js'
@@ -89,6 +89,7 @@ const WINDOW_NAME = 'main'
 
 /** 主窗口实例引用 */
 let mainWindow = null
+let screenshotWindow = null
 
 /** 系统托盘实例 */
 let tray = null
@@ -271,14 +272,14 @@ function createWindow() {
     mainWindow.on('resize', () => {
       try {
         blurUpdateGeometry(mainWindow)
-      } catch (_) {
+      } catch {
         /* DComp 会话失效时静默 */
       }
     })
     mainWindow.on('move', () => {
       try {
         blurUpdateGeometry(mainWindow)
-      } catch (_) {
+      } catch {
         /* DComp 会话失效时静默 */
       }
     })
@@ -858,7 +859,7 @@ app.whenReady().then(() => {
   applyAlwaysOnTop()
   // ---- 调度器任务注册 ----
   // 职责划分（两层任务，按此顺序执行）：
-  //   1. 激活任务：查询 active 便签，生效时间到达的 → 转为 in_progress（含通知）
+  //   1. 激活任务：查询 initialized 便签，生效时间到达的 → 转为 in_progress（含通知）
   //   2. 模板生成：查询循环模板，判断是否应当生成新便签实例（含通知）
 
   /**
@@ -879,12 +880,13 @@ app.whenReady().then(() => {
     shouldRun: () => true,
     execute: () => {
       const result = activateNotes()
-      const db = getDb()
       for (const note of result.notified) {
         sendNotify(note.content)
-        db.prepare('UPDATE notes SET notify_enabled = 0 WHERE id = ?').run(note.id)
         const preview = (note.content || '').trim().slice(0, 10) || '空内容'
         console.log(`[activation-notify]「${preview}」便签已发送系统通知`)
+      }
+      if (result.count > 0 && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('notes:changed', { reason: 'activation' })
       }
     }
   })
@@ -895,12 +897,13 @@ app.whenReady().then(() => {
     shouldRun: () => true,
     execute: () => {
       const result = generateRecurringNotes()
-      const db = getDb()
       for (const note of result.generated) {
         sendNotify(note.content)
-        db.prepare('UPDATE notes SET notify_enabled = 0 WHERE id = ?').run(note.id)
         const preview = (note.content || '').trim().slice(0, 10) || '空内容'
         console.log(`[generation-notify]「${preview}」已由循环模板生成便签，直接生效`)
+      }
+      if (result.count > 0 && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('notes:changed', { reason: 'recurrence' })
       }
     }
   })
@@ -1083,7 +1086,7 @@ app.whenReady().then(() => {
         }
       }
 
-      return note
+      return getNoteById(note.id)
     })
 
     try {
@@ -1091,7 +1094,11 @@ app.whenReady().then(() => {
     } catch (e) {
       // 事务回滚后，清理已写入磁盘的图片文件
       for (const fp of writtenFiles) {
-        try { deleteImageFile(fp) } catch (_) { /* 忽略 */ }
+        try {
+          deleteImageFile(fp)
+        } catch {
+          /* 忽略 */
+        }
       }
       console.error('[notes:create-with-assets] 创建失败，已回滚并清理文件:', e.message)
       throw e
@@ -1249,14 +1256,28 @@ app.whenReady().then(() => {
 
   /** 批量保存图片（Base64 数组 → 磁盘 + DB） */
   ipcMain.handle('images:save-batch', (_event, { noteId, images }) => {
-    const results = []
-    for (const img of images) {
-      const { base64, ext } = img
-      const { relativePath, fileSize } = saveImage(noteId, base64, ext)
-      const record = addImageRecord({ noteId, filePath: relativePath, fileSize })
-      results.push(record)
+    const batch = Array.isArray(images) ? images : []
+    const remaining = 50 - getImageCount(noteId)
+    if (batch.length > remaining) throw new Error(`最多还能添加 ${Math.max(0, remaining)} 张图片`)
+
+    const db = getDb()
+    const writtenFiles = []
+    const txn = db.transaction(() => {
+      const results = []
+      for (const img of batch) {
+        const { relativePath, fileSize } = saveImage(noteId, img.base64, img.ext)
+        writtenFiles.push(relativePath)
+        results.push(addImageRecord({ noteId, filePath: relativePath, fileSize }))
+      }
+      return results
+    })
+
+    try {
+      return txn()
+    } catch (error) {
+      for (const filePath of writtenFiles) deleteImageFile(filePath)
+      throw error
     }
-    return results
   })
 
   /** 删除图片记录 + 文件 */
@@ -1264,8 +1285,9 @@ app.whenReady().then(() => {
     const db = getDb()
     const row = db.prepare('SELECT * FROM note_attachments WHERE id = ?').get(id)
     if (!row) return false
+    if (!deleteImageFile(row.file_path)) throw new Error('删除图片文件失败')
     db.prepare('DELETE FROM note_attachments WHERE id = ?').run(id)
-    deleteImageFile(row.file_path)
+    db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(Date.now(), row.note_id)
     return true
   })
 
@@ -1277,6 +1299,11 @@ app.whenReady().then(() => {
   /** 获取图片 Base64（用于预览） */
   ipcMain.handle('images:get-base64', (_event, { relativePath }) => {
     return getImageBase64(relativePath)
+  })
+
+  /** 获取列表展示用缩略图，避免一次性把全部原图传入渲染进程。 */
+  ipcMain.handle('images:get-thumbnail', (_event, { relativePath, maxSize }) => {
+    return getImageThumbnail(relativePath, maxSize)
   })
 
   /** 获取图片数量 */
@@ -1294,21 +1321,53 @@ app.whenReady().then(() => {
 
   /** 捕获全屏截图，打开独立窗口供用户选区，返回裁切后的 data URL */
   ipcMain.handle('screenshot:capture', async () => {
-    const sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: screen.getPrimaryDisplay().workAreaSize
-    })
-    if (sources.length === 0) return null
-    const dataUrl = sources[0].thumbnail.toDataURL()
+    if (screenshotWindow && !screenshotWindow.isDestroyed()) {
+      screenshotWindow.focus()
+      return null
+    }
+
+    const targetDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+    const pixelSize = {
+      width: Math.round(targetDisplay.size.width * targetDisplay.scaleFactor),
+      height: Math.round(targetDisplay.size.height * targetDisplay.scaleFactor)
+    }
+
+    async function captureTargetDisplay() {
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: pixelSize })
+      if (sources.length === 0) return null
+      return (
+        sources.find((item) => String(item.display_id) === String(targetDisplay.id)) || sources[0]
+      ).thumbnail
+    }
+
+    function cropScreenshot(selection, sourceImage) {
+      if (!sourceImage) return null
+      const viewportWidth = Number(selection?.viewportWidth)
+      const viewportHeight = Number(selection?.viewportHeight)
+      if (!viewportWidth || !viewportHeight) return null
+
+      const imageSize = sourceImage.getSize()
+      const scaleX = imageSize.width / viewportWidth
+      const scaleY = imageSize.height / viewportHeight
+      const x = Math.max(0, Math.round(Number(selection.x) * scaleX))
+      const y = Math.max(0, Math.round(Number(selection.y) * scaleY))
+      const width = Math.min(imageSize.width - x, Math.max(1, Math.round(Number(selection.w) * scaleX)))
+      const height = Math.min(imageSize.height - y, Math.max(1, Math.round(Number(selection.h) * scaleY)))
+      if (!Number.isFinite(x + y + width + height) || width <= 0 || height <= 0) return null
+      return sourceImage.crop({ x, y, width, height }).toDataURL()
+    }
 
     return new Promise((resolve) => {
       const win = new BrowserWindow({
-        fullscreen: true,
+        ...targetDisplay.bounds,
+        show: false,
         transparent: true,
+        backgroundColor: '#00000000',
         frame: false,
         alwaysOnTop: true,
         skipTaskbar: true,
         resizable: false,
+        fullscreenable: false,
         hasShadow: false,
         webPreferences: {
           preload: join(__dirname, '../preload/screenshot.js'),
@@ -1317,26 +1376,46 @@ app.whenReady().then(() => {
           nodeIntegration: false
         }
       })
+      screenshotWindow = win
 
       let settled = false
+      let confirming = false
       const done = (result) => {
         if (settled) return
         settled = true
-        ipcMain.removeAllListeners('screenshot:confirm')
-        ipcMain.removeAllListeners('screenshot:cancel')
+        ipcMain.removeListener('screenshot:confirm', onConfirm)
+        ipcMain.removeListener('screenshot:cancel', onCancel)
         if (!win.isDestroyed()) win.close()
+        if (screenshotWindow === win) screenshotWindow = null
         resolve(result)
       }
 
-      ipcMain.on('screenshot:confirm', (_event, cropped) => done(cropped))
-      ipcMain.on('screenshot:cancel', () => done(null))
+      const onConfirm = async (event, selection) => {
+        if (event.sender !== win.webContents || confirming || settled) return
+        confirming = true
+        win.hide()
+        try {
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 60))
+          const sourceImage = await captureTargetDisplay()
+          done(cropScreenshot(selection, sourceImage))
+        } catch (error) {
+          console.error('[screenshot] 保存截图失败:', error)
+          done(null)
+        }
+      }
+      const onCancel = (event) => {
+        if (event.sender === win.webContents) done(null)
+      }
+
+      ipcMain.on('screenshot:confirm', onConfirm)
+      ipcMain.on('screenshot:cancel', onCancel)
       win.on('closed', () => done(null))
 
       const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
+html,body{background:transparent}
 body{overflow:hidden;cursor:crosshair;user-select:none;width:100vw;height:100vh;font-family:system-ui,sans-serif}
-img.sc-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:0}
 canvas.sc-canvas{position:absolute;inset:0;z-index:1}
 .sc-hint{position:fixed;bottom:20px;right:24px;font-size:14px;color:rgba(255,255,255,.45);z-index:3;pointer-events:none;font-family:inherit}
 .sc-actions{position:fixed;display:none;align-items:center;gap:10px;z-index:3;font-family:inherit}
@@ -1346,22 +1425,25 @@ canvas.sc-canvas{position:absolute;inset:0;z-index:1}
 .sc-btn-save{background:#0071e3;color:#fff}
 .sc-btn-save:hover{background:#0077ed}
 </style></head><body>
-<img class="sc-bg" draggable="false">
 <canvas class="sc-canvas"></canvas>
 <span class="sc-hint" id="hint">拖拽选择截图区域</span>
 <div class="sc-actions" id="actions"><button class="sc-btn sc-btn-exit" id="btnExit">退出截屏</button><button class="sc-btn sc-btn-save" id="btnSave">保存截屏</button></div>
 <script>
-const img=document.querySelector('img'),cv=document.querySelector('canvas'),ctx=cv.getContext('2d')
+const cv=document.querySelector('canvas'),ctx=cv.getContext('2d')
 const hint=document.getElementById('hint'),actions=document.getElementById('actions'),btnExit=document.getElementById('btnExit'),btnSave=document.getElementById('btnSave')
 let s={x:0,y:0},e={x:0,y:0},has=false,mode='idle',dragOX=0,dragOY=0,dsX=0,dsY=0,deX=0,deY=0
 
-screenshot.onImage((u)=>{img.src=u;resize();draw()})
-function resize(){cv.width=window.innerWidth;cv.height=window.innerHeight;draw()}
+function resize(){
+  const dpr=window.devicePixelRatio||1
+  cv.style.width=window.innerWidth+'px';cv.style.height=window.innerHeight+'px'
+  cv.width=Math.round(window.innerWidth*dpr);cv.height=Math.round(window.innerHeight*dpr)
+  ctx.setTransform(dpr,0,0,dpr,0,0);draw()
+}
 window.addEventListener('resize',resize)
 
 function draw(){
-  ctx.clearRect(0,0,cv.width,cv.height)
-  ctx.fillStyle='rgba(0,0,0,.4)';ctx.fillRect(0,0,cv.width,cv.height)
+  ctx.clearRect(0,0,window.innerWidth,window.innerHeight)
+  ctx.fillStyle='rgba(0,0,0,.3)';ctx.fillRect(0,0,window.innerWidth,window.innerHeight)
   if(!has && mode!=='sel') return
   const x=Math.min(s.x,e.x),y=Math.min(s.y,e.y),w=Math.abs(e.x-s.x),h=Math.abs(e.y-s.y)
   ctx.clearRect(x,y,w,h)
@@ -1384,9 +1466,7 @@ function updateActions(){
 
 function doSave(){
   const r=selRect();if(r.w<5||r.h<5)return
-  const c=document.createElement('canvas');c.width=r.w;c.height=r.h
-  const cx=c.getContext('2d');cx.drawImage(img,r.x,r.y,r.w,r.h,0,0,r.w,r.h)
-  screenshot.confirm(c.toDataURL('image/png'))
+  screenshot.confirm({...r,viewportWidth:window.innerWidth,viewportHeight:window.innerHeight})
 }
 
 function doClear(){has=false;hint.style.display='';actions.style.display='none';draw()}
@@ -1426,12 +1506,12 @@ document.addEventListener('mouseup',(ev)=>{
   }else if(mode==='move'){mode='idle';document.body.style.cursor=has&&inside(ev.clientX,ev.clientY)?'move':'crosshair'}
 })
 
-setTimeout(()=>{draw()},50)
+setTimeout(()=>{resize()},0)
 </script></body></html>`
 
       win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).then(() => {
-        // 窗口加载完成后再发送截图数据，避免 data URL 撑爆 HTML
-        win.webContents.send('screenshot:image', dataUrl)
+        win.show()
+        win.focus()
       }).catch(() => done(null))
     })
   })

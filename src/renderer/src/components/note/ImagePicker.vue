@@ -5,6 +5,7 @@
  * 两种模式：
  *   mode="memory" — 图片暂存内存，由父组件决定何时持久化
  *   mode="persist" — 图片即时写入磁盘（需提供 noteId）
+ *   readonly        — 只展示已保存图片，隐藏上传和删除操作
  *
  * Props:
  *   noteId  — 便签 ID（persist 模式必传，memory 模式传 null）
@@ -14,27 +15,25 @@
  *   getImages()    → { base64, ext, name, size }[]
  *   clearImages()  → void
  */
-import { ref, watch, onMounted, computed } from 'vue'
+import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
 import ImagePreview from './ImagePreview.vue'
 
 const props = defineProps({
   noteId: { type: Number, default: null },
-  mode: { type: String, default: 'persist' }
+  mode: { type: String, default: 'persist' },
+  readonly: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['count-change'])
 
 /** 图片列表（统一数据格式） */
 const images = ref([])
-/** 是否正在加载 */
-const loading = ref(false)
 /** 是否拖拽悬停 */
 const dragover = ref(false)
 /** 文件选择器 */
 const fileInput = ref(null)
 
-/** 已保存到 DB 的图片 */
-const savedImages = ref([])
+let imageLoadSeq = 0
 
 /** 支持的图片扩展名 */
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']
@@ -43,7 +42,7 @@ const MAX_SIZE = 50 * 1024 * 1024
 /** 单便签最多 50 张 */
 const MAX_COUNT = 50
 
-const canAdd = computed(() => images.value.length < MAX_COUNT)
+const canAdd = computed(() => !props.readonly && images.value.length < MAX_COUNT)
 
 /** 大图预览 */
 const previewVisible = ref(false)
@@ -53,30 +52,30 @@ const previewSrc = ref('')
 // 从 DB 加载已有图片
 // ============================================================
 async function loadImages() {
+  const seq = ++imageLoadSeq
   if (!props.noteId || props.mode !== 'persist') return
-  loading.value = true
   try {
     const records = await window.api.listImages(props.noteId)
-    savedImages.value = records
 
-    // 为每条记录获取 Base64 用于预览
-    const items = []
-    for (const rec of records) {
-      const base64 = await window.api.getImageBase64(rec.file_path)
-      items.push({
+    // 列表只加载缩略图；原图在用户点击预览时按需读取。
+    const items = await Promise.all(records.map(async (rec) => {
+      const thumbnail = await window.api.getImageThumbnail(rec.file_path, 240)
+      return {
         id: rec.id,
         name: rec.file_path.split(/[\\/]/).pop(),
         size: rec.file_size,
-        dataUrl: base64 || '',
+        filePath: rec.file_path,
+        dataUrl: thumbnail || '',
+        fullDataUrl: null,
         saved: true
-      })
-    }
+      }
+    }))
+    if (seq !== imageLoadSeq) return
     images.value = items
   } catch (e) {
     console.error('[ImagePicker] 加载图片失败:', e)
-  } finally {
-    loading.value = false
   }
+  if (seq !== imageLoadSeq) return
   emitCount()
 }
 
@@ -134,7 +133,14 @@ async function processFiles(files) {
         const results = await window.api.saveImages(props.noteId, [{ base64, ext }])
         if (results && results.length > 0) {
           const rec = results[0]
-          images.value[idx] = { id: rec.id, name: file.name, size: file.size, dataUrl, saved: true }
+          images.value[idx] = {
+            id: rec.id,
+            name: file.name,
+            size: file.size,
+            dataUrl,
+            fullDataUrl: dataUrl,
+            saved: true
+          }
         }
       } catch (e) {
         console.error('[ImagePicker] 保存失败:', e)
@@ -200,6 +206,7 @@ async function handleDelete(img, index) {
       await window.api.deleteImage(img.id)
     } catch (e) {
       console.error('[ImagePicker] 删除图片失败:', e)
+      return
     }
   }
   images.value.splice(index, 1)
@@ -207,9 +214,20 @@ async function handleDelete(img, index) {
 }
 
 /** 打开大图预览 */
-function handlePreview(img) {
-  previewSrc.value = img.dataUrl
+async function handlePreview(img) {
+  if (img._loading) return
+  let source = img.fullDataUrl || img.dataUrl
+  if (img.saved && img.filePath && !img.fullDataUrl) {
+    source = await window.api.getImageBase64(img.filePath)
+  }
+  if (!source) return
+  previewSrc.value = source
   previewVisible.value = true
+}
+
+function closePreview() {
+  previewVisible.value = false
+  previewSrc.value = ''
 }
 
 function emitCount() {
@@ -237,7 +255,15 @@ function addImage(dataUrl, ext, name, size) {
     window.api.saveImages(props.noteId, [{ base64, ext }]).then((results) => {
       if (results && results.length > 0) {
         const rec = results[0]
-        images.value.push({ id: rec.id, name, size, dataUrl, saved: true })
+        images.value.push({
+          id: rec.id,
+          name,
+          size,
+          dataUrl,
+          fullDataUrl: dataUrl,
+          filePath: rec.file_path,
+          saved: true
+        })
         emitCount()
       }
     }).catch((e) => console.error('[ImagePicker] 截图保存失败:', e))
@@ -254,6 +280,9 @@ defineExpose({ getImages, clearImages, addImage, images })
 // ============================================================
 watch(() => props.noteId, loadImages)
 onMounted(loadImages)
+onUnmounted(() => {
+  imageLoadSeq++
+})
 
 // ============================================================
 // 尺寸格式化
@@ -267,10 +296,10 @@ function formatSize(bytes) {
 </script>
 
 <template>
-  <div class="ip-root">
+  <div class="ip-root" :class="{ 'ip-root--readonly': readonly }">
     <!-- 拖拽区域 — 始终在第一位 -->
     <div
-      v-if="canAdd"
+      v-if="!readonly && canAdd"
       class="ip-dropzone"
       :class="{ 'ip-dropzone--active': dragover }"
       @dragover="onDragOver"
@@ -292,7 +321,7 @@ function formatSize(bytes) {
     </div>
 
     <!-- 已满时不可添加的占位 -->
-    <div v-else class="ip-dropzone ip-dropzone--disabled">
+    <div v-else-if="!readonly" class="ip-dropzone ip-dropzone--disabled">
       <span class="ip-dropzone__text ip-dropzone__text--full">已满</span>
     </div>
 
@@ -304,13 +333,13 @@ function formatSize(bytes) {
       </div>
       <!-- 已加载图片 -->
       <img v-else :src="img.dataUrl" class="ip-thumb__img" :alt="img.name" @click.stop="handlePreview(img)" />
-      <button class="ip-thumb__del" title="删除" @click.stop="handleDelete(img, idx)">×</button>
+      <button v-if="!readonly" class="ip-thumb__del" title="删除" @click.stop="handleDelete(img, idx)">×</button>
       <span class="ip-thumb__name">{{ img.name }}</span>
       <span class="ip-thumb__size">{{ img._loading ? '处理中…' : formatSize(img.size) }}</span>
     </div>
 
     <!-- 大图预览 -->
-    <ImagePreview :visible="previewVisible" :src="previewSrc" @close="previewVisible = false" />
+    <ImagePreview :visible="previewVisible" :src="previewSrc" @close="closePreview" />
   </div>
 </template>
 
@@ -320,6 +349,11 @@ function formatSize(bytes) {
   flex-wrap: wrap;
   gap: 8rem;
   align-items: flex-start;
+}
+
+.ip-root--readonly .ip-thumb {
+  width: 92rem;
+  background: rgb(var(--bg-color) / 0.08);
 }
 
 /* 拖拽区域 — 正方形 */

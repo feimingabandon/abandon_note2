@@ -40,7 +40,7 @@ onMounted(async () => {
 // ============================================================
 const content = ref('')
 const effectiveAt = ref('') // "YYYY-MM-DD HH:mm:ss" 或空（空 = 立即生效）
-const tagNames = ref(['文本']) // 选中的标签名称数组，默认选中"文本"
+const tagNames = ref([]) // 仅保存用户自定义标签；内容类型由正文和附件推导
 const notifyEnabled = ref(false) // 启用系统提醒开关
 const isPinned = ref(false) // 置顶开关
 const creating = ref(false) // 防止重复提交
@@ -72,16 +72,6 @@ watch(effectiveAt, (val) => {
     notifyEnabled.value = false
   }
 })
-
-// 图片数量变化 → 双向联动「图片」标签
-function onImageCountChange(count) {
-  const hasImgTag = tagNames.value.includes('图片')
-  if (count > 0 && !hasImgTag) {
-    tagNames.value = [...tagNames.value, '图片']
-  } else if (count === 0 && hasImgTag) {
-    tagNames.value = tagNames.value.filter((t) => t !== '图片')
-  }
-}
 
 // ============================================================
 // 创建便签
@@ -119,10 +109,6 @@ async function handleCreate() {
       options.effectiveAt = new Date(effectiveAt.value).getTime()
     }
     const imgs = imagePickerRef.value?.getImages() || []
-    if (imgs.length > 0 && !tagNames.value.includes('图片')) {
-      tagNames.value = [...tagNames.value, '图片']
-    }
-
     // 检查 API 是否存在
     if (typeof window.api.createNoteWithAssets !== 'function') {
       throw new Error('接口未就绪，请完全重启应用（npm run dev）')
@@ -139,7 +125,7 @@ async function handleCreate() {
     // 重置表单
     content.value = ''
     effectiveAt.value = ''
-    tagNames.value = ['文本']
+    tagNames.value = []
     notifyEnabled.value = false
     isPinned.value = false
     imagePickerRef.value?.clearImages()
@@ -241,14 +227,14 @@ onBeforeUnmount(() => {
 
       <!-- 标签 -->
       <div class="nnp-field nnp-group-gap nnp-stagger" style="animation-delay: 190ms">
-        <label class="nnp-field-label">标签<HelpButton text="为便签添加分类标签，便于筛选和管理。默认选中「文本」标签；上传图片后自动添加「图片」标签" /></label>
+        <label class="nnp-field-label">标签<HelpButton text="添加自定义分类标签；正文和图片类型由系统自动识别。" /></label>
         <TagSelector v-model="tagNames" />
       </div>
 
       <!-- 图片 -->
       <div class="nnp-field nnp-stagger" style="animation-delay: 220ms">
         <label class="nnp-field-label">图片<HelpButton text="支持截图、拖拽或点击上传图片附件。单张最大 50MB，单条便签最多 50 张" /></label>
-        <ScreenshotPicker ref="imagePickerRef" mode="memory" @count-change="onImageCountChange" />
+        <ScreenshotPicker ref="imagePickerRef" mode="memory" />
       </div>
     </div>
 

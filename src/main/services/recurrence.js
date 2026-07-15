@@ -10,12 +10,12 @@
  *   getActiveTemplates()  — db-templates.js
  *   updateLastGeneratedAt() — db-templates.js
  *   createNote()          — db-notes.js
- *   expireNote()          — db-notes.js
+ *   cancelNote()          — db-notes.js
  *   getDb()               — db.js
  */
 
 import { getActiveTemplates, updateLastGeneratedAt } from '../db/db-templates.js'
-import { createNote, expireNote } from '../db/db-notes.js'
+import { createNote, cancelNote } from '../db/db-notes.js'
 import { getDb } from '../db/db.js'
 
 // ============================================================
@@ -49,15 +49,15 @@ export function generateRecurringNotes() {
       const { should, effectiveAt } = shouldGenerate(rule, tpl.last_generated_at, now)
       if (!should || effectiveAt === null) continue
 
-      // 1. 将该模板上一周期未完成的实例标记为 expired
+      // 1. 将该模板上一周期未完成的实例标记为 cancelled
       const oldInstances = db
         .prepare(
-          `SELECT id FROM notes WHERE template_id = ? AND status IN ('active','in_progress')`
+          `SELECT id FROM notes WHERE template_id = ? AND status IN ('initialized','in_progress')`
         )
         .all(tpl.id)
 
       for (const row of oldInstances) {
-        expireNote(row.id)
+        cancelNote(row.id)
       }
 
       // 2. 创建新实例

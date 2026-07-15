@@ -5,14 +5,13 @@
  * 职责：
  *   1. 接收 note prop，预填表单字段
  *   2. content / tags / images / is_pinned — 始终可修改
- *   3. effective_at / notify_enabled — 仅 active 状态可修改
+ *   3. effective_at / notify_enabled — 创建后不可修改
  *   4. 状态流转按钮（开始处理 / 完成 / 取消）
  *   5. 保存后 emit('saved')
  *
  * 面板结构（flex column + scroll-y body + 底部渐隐 + 逐层淡入）与 NewNotePanel 一致。
  */
 import { ref, watch, computed, onMounted, nextTick } from 'vue'
-import DateTimePicker from '../ui/DateTimePicker.vue'
 import TagSelector from '../ui/TagSelector.vue'
 import ScreenshotPicker from '../note/ScreenshotPicker.vue'
 import AppToggle from '../ui/AppToggle.vue'
@@ -40,9 +39,7 @@ onMounted(async () => {
 // 表单状态
 // ============================================================
 const content = ref('')
-const effectiveAt = ref('')
 const tagNames = ref([])
-const notifyEnabled = ref(false)
 const isPinned = ref(false)
 const saving = ref(false)
 /** ScreenshotPicker 引用 */
@@ -51,36 +48,16 @@ const imagePickerRef = ref(null)
 // ---- 状态标签 ----
 const statusLabel = computed(() => {
   const map = {
-    active: '待生效',
+    initialized: '初始化',
     in_progress: '进行中',
     completed: '已完成',
-    cancelled: '已取消',
-    expired: '已过期'
+    cancelled: '已取消'
   }
   return map[props.note.status] || props.note.status
 })
 
-const isActive = computed(() => props.note.status === 'active')
-const isTerminal = computed(() => ['completed', 'cancelled', 'expired'].includes(props.note.status))
-
-// ---- 联动逻辑 ----
-const canEnableNotify = computed(() => !!effectiveAt.value)
-
-watch(effectiveAt, (val) => {
-  if (!val && notifyEnabled.value) notifyEnabled.value = false
-})
-
-// ---- 日期快捷选项 ----
-const today = computed(() => {
-  const d = new Date()
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate())
-})
-
-const dateShortcuts = [
-  { label: '今天', getValue: () => new Date() },
-  { label: '明天', getValue: () => { const d = new Date(); d.setDate(d.getDate() + 1); return d } },
-  { label: '三天后', getValue: () => { const d = new Date(); d.setDate(d.getDate() + 3); return d } }
-]
+const isInitialized = computed(() => props.note.status === 'initialized')
+const isTerminal = computed(() => ['completed', 'cancelled'].includes(props.note.status))
 
 // ============================================================
 // 预填数据
@@ -90,25 +67,7 @@ watch(() => props.note, (n) => {
   content.value = n.content || ''
   tagNames.value = n.tags?.map(t => t.name) || []
   isPinned.value = !!n.is_pinned
-  notifyEnabled.value = !!n.notify_enabled
-  if (n.effective_at && n.effective_at > 0) {
-    effectiveAt.value = new Date(n.effective_at).toISOString().slice(0, 19).replace('T', ' ')
-  } else {
-    effectiveAt.value = ''
-  }
 }, { immediate: true })
-
-// ============================================================
-// 图片 ←→ 标签双向联动
-// ============================================================
-function onImageCountChange(count) {
-  const hasImgTag = tagNames.value.includes('图片')
-  if (count > 0 && !hasImgTag) {
-    tagNames.value = [...tagNames.value, '图片']
-  } else if (count === 0 && hasImgTag) {
-    tagNames.value = tagNames.value.filter((t) => t !== '图片')
-  }
-}
 
 // ============================================================
 // 保存
@@ -129,21 +88,12 @@ async function handleSave() {
       is_pinned: isPinned.value ? 1 : 0
     }
 
-    if (isActive.value) {
-      if (effectiveAt.value) {
-        fields.effective_at = new Date(effectiveAt.value).getTime()
-      }
-      fields.notify_enabled = notifyEnabled.value ? 1 : 0
-    }
-
     await window.api.updateNote(props.note.id, fields)
-
-    if (tagNames.value.length > 0) {
-      await window.api.setNoteTags(props.note.id, [...tagNames.value])
-    }
+    await window.api.setNoteTags(props.note.id, [...tagNames.value])
+    const updated = await window.api.getNote(props.note.id)
 
     showMessage('success', '便签已保存')
-    emit('saved')
+    emit('saved', updated)
   } catch (e) {
     console.error('[NoteEditor] 保存失败:', e)
     showMessage('error', e.message || '保存失败，请重试')
@@ -160,9 +110,9 @@ async function handleStartProgress() {
     const updated = await window.api.startProgress(props.note.id)
     if (updated) {
       showMessage('success', '已切换为进行中')
-      emit('saved')
+      emit('saved', updated)
     }
-  } catch (e) {
+  } catch {
     showMessage('error', '状态切换失败')
   }
 }
@@ -172,9 +122,9 @@ async function handleComplete() {
     const updated = await window.api.completeNote(props.note.id)
     if (updated) {
       showMessage('success', '已完成')
-      emit('saved')
+      emit('saved', updated)
     }
-  } catch (e) {
+  } catch {
     showMessage('error', '状态切换失败')
   }
 }
@@ -184,9 +134,9 @@ async function handleCancel() {
     const updated = await window.api.cancelNote(props.note.id)
     if (updated) {
       showMessage('success', '已取消')
-      emit('saved')
+      emit('saved', updated)
     }
-  } catch (e) {
+  } catch {
     showMessage('error', '状态切换失败')
   }
 }
@@ -211,31 +161,6 @@ async function handleCancel() {
         rows="4"
       />
 
-      <!-- 生效时间（仅 active 状态） -->
-      <div
-        v-if="isActive"
-        class="ne-field-row ne-stagger"
-        style="animation-delay: 60ms"
-      >
-        <label class="ne-field-label">生效时间<HelpButton text="设置后便签将在指定时间生效。未设置则立即生效。" /></label>
-        <DateTimePicker
-          v-model="effectiveAt"
-          placeholder="立即生效"
-          :min-date="today"
-          :shortcuts="dateShortcuts"
-        />
-      </div>
-
-      <!-- 启用系统提醒（仅 active 状态） -->
-      <div
-        v-if="isActive"
-        class="ne-field-row ne-stagger"
-        style="animation-delay: 90ms"
-      >
-        <label class="ne-field-label">启用系统提醒<HelpButton text="仅在设置生效时间后才可开启。" /></label>
-        <AppToggle v-model="notifyEnabled" :disabled="!canEnableNotify" />
-      </div>
-
       <!-- 置顶 -->
       <div class="ne-field-row ne-stagger" style="animation-delay: 120ms">
         <label class="ne-field-label">置顶<HelpButton text="开启后便签将固定在列表顶部。" /></label>
@@ -255,7 +180,6 @@ async function handleCancel() {
           ref="imagePickerRef"
           :note-id="note.id"
           mode="persist"
-          @count-change="onImageCountChange"
         />
       </div>
     </div>
@@ -265,13 +189,13 @@ async function handleCancel() {
       <!-- 状态流转按钮（非终态时显示） -->
       <div v-if="!isTerminal" class="ne-actions">
         <button
-          v-if="note.status === 'active'"
+          v-if="isInitialized"
           class="ne-action-btn ne-action-btn--start"
           :disabled="saving"
           @click="handleStartProgress"
         >开始处理</button>
         <button
-          v-if="note.status === 'active' || note.status === 'in_progress'"
+          v-if="note.status === 'in_progress'"
           class="ne-action-btn ne-action-btn--complete"
           :disabled="saving"
           @click="handleComplete"
@@ -372,11 +296,10 @@ async function handleCancel() {
   white-space: nowrap;
 }
 
-.ne-status--active       { color: #007aff; }
+.ne-status--initialized  { color: #007aff; }
 .ne-status--in_progress  { color: #ff9500; }
 .ne-status--completed    { color: #34c759; }
 .ne-status--cancelled    { color: #ff3b30; }
-.ne-status--expired      { color: #8e8e93; }
 
 /* === 文本域 === */
 .ne-textarea {

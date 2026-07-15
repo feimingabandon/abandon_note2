@@ -8,7 +8,7 @@ import { ref, reactive, nextTick, onMounted, onBeforeUnmount } from 'vue'
  * 定位：Teleport 到 body → position:fixed → 视口 clamp
  * 方向优先级：下 → 上 → 右 → 左（自动 flip）
  */
-const props = defineProps({
+defineProps({
   text: { type: String, required: true }
 })
 
@@ -51,7 +51,7 @@ function rawPos(triggerRect, tipW, tipH, dir) {
 }
 
 // ---- 检查 clamp 后是否还有足够空间（至少 50% 可见） ----
-function hasEnoughSpace(clampedLeft, clampedTop, tipW, tipH, dir) {
+function hasEnoughSpace(clampedLeft, clampedTop, tipW, tipH) {
   const vw = window.innerWidth
   const vh = window.innerHeight
   const minVisible = 0.5
@@ -65,7 +65,7 @@ function pickPosition(triggerRect, tipW, tipH) {
   for (const dir of DIRS) {
     const raw = rawPos(triggerRect, tipW, tipH, dir)
     const pos = clampPos(raw.left, raw.top, tipW, tipH)
-    if (hasEnoughSpace(pos.left, pos.top, tipW, tipH, dir)) {
+    if (hasEnoughSpace(pos.left, pos.top, tipW, tipH)) {
       return { dir, ...pos }
     }
   }

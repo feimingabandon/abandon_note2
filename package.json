@@ -6,8 +6,8 @@
   "author": "example.com",
   "homepage": "https://electron-vite.org",
   "scripts": {
-    "format": "prettier --write abandon_note2",
-    "lint": "eslint --cache abandon_note2",
+    "format": "prettier --write src",
+    "lint": "eslint --cache src",
     "start": "electron-vite preview",
     "dev": "chcp 65001 && electron-vite dev",
     "build": "electron-vite build",
