@@ -397,7 +397,6 @@ function debouncedSave(type, key, value, remark = '') {
     window.api.setSetting(WINDOW_NAME, type, key, String(value), remark)
   }, 300)
 }
-
 // ---- 实时生效 watchers ----
 
 // 背景颜色 → CSS --bg-color (基础样式，主窗口+组件共用)
@@ -1459,22 +1458,23 @@ const resetUI = () => {
   font-weight: 400;
   font-size: calc(var(--fs-secondary) * 0.88);
 }
-/* 纯黑底 + 彩色文字：完全不透明，字在最暗底上最锐利 */
+/* 苹果风格淡染胶囊：背景为语义色极淡染，文字同色系 */
 .sched-badge {
   font-size: calc(var(--fs-secondary) * 0.88);
   padding: 2rem 8rem;
   border-radius: 4rem;
   font-weight: 500;
-  background: var(--text-color);
-  opacity: 0.8;
 }
 .sched-badge--ok {
+  background: rgba(52, 199, 89, 0.10);
   color: rgb(52, 199, 89);
 }
 .sched-badge--warn {
+  background: rgba(255, 149, 0, 0.10);
   color: rgb(255, 149, 0);
 }
 .sched-badge--danger {
+  background: rgba(255, 59, 48, 0.10);
   color: rgb(255, 59, 48);
 }
 .sched-warn {

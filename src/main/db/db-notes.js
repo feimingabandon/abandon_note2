@@ -3,7 +3,7 @@
  *
  * 职责：
  *   1. 创建、查询、更新、删除便签实例
- *   2. 状态流转（active → in_progress → completed / cancelled）
+ *   2. 状态流转（active → in_progress → completed / expired）
  *   3. 列表查询（支持状态筛选、标签筛选、排序模式、分页）
  *   4. 所有操作自动更新 updated_at
  */
@@ -25,11 +25,8 @@ const now = () => Date.now()
  */
 function isValidTransition(current, target) {
   // 终态不可逆转
-  const terminals = ['completed', 'cancelled', 'expired']
+  const terminals = ['completed', 'expired']
   if (terminals.includes(current)) return false
-
-  // 任意非终态 → cancelled 始终允许
-  if (target === 'cancelled') return true
 
   switch (target) {
     case 'active':
@@ -166,12 +163,12 @@ export function getNoteById(id) {
 }
 
 /**
- * 删除便签（状态流转为 cancelled，不物理删除）
+ * 删除便签（状态流转为 expired，不物理删除）
  * @param {number} id
  * @returns {boolean} 是否成功
  */
 export function deleteNote(id) {
-  return updateNote(id, { status: 'cancelled' }) !== null
+  return updateNote(id, { status: 'expired' }) !== null
 }
 
 /**
@@ -241,12 +238,12 @@ export function completeNote(id) {
 }
 
 /**
- * 取消便签：任意非终态 → cancelled
+ * 取消便签：任意非终态 → expired
  * @param {number} id
  * @returns {Object|null}
  */
 export function cancelNote(id) {
-  return updateNote(id, { status: 'cancelled' })
+  return updateNote(id, { status: 'expired' })
 }
 
 /**
@@ -261,37 +258,28 @@ export function expireNote(id) {
 // ============================================================
 // 列表查询
 // ============================================================
+// 共享 WHERE 子句构建（供各查询方法复用）
+// ============================================================
 
 /**
- * 查询便签列表
- * @param {Object} options
- * @param {string[]} [options.statuses] - 状态筛选，默认 ['active','in_progress']
- * @param {string[]} [options.tagNames] - 标签名称 AND 筛选（同时包含所有指定标签）
- * @param {string} [options.search] - FTS5 搜索关键词（自动转义）
- * @param {'timeline'|'custom'} [options.sortMode='timeline'] - 排序模式
- * @param {number} [options.limit=50] - 分页条数
- * @param {number} [options.offset=0] - 偏移量
- * @returns {{ notes: Object[], total: number }} 便签列表和总数
+ * 构建 WHERE 子句
+ * @param {Object} opts
+ * @param {string[]} opts.statuses - 状态列表
+ * @param {string[]} opts.tagNames - 标签名列表
+ * @param {string} opts.search - 搜索词
+ * @param {string[]} opts.extraWhere - 额外的 WHERE 条件（不含参数）
+ * @param {any[]} opts.extraParams - 额外条件的参数值
+ * @returns {{ whereClause: string, params: any[] }}
  */
-export function listNotes({
-  statuses = ['active', 'in_progress'],
-  tagNames = null,
-  search = null,
-  sortMode = 'timeline',
-  limit = 50,
-  offset = 0
-} = {}) {
-  const db = getDb()
-  const where = []
-  const params = []
+function buildWhereClause({ statuses, tagNames, search, extraWhere = [], extraParams = [] } = {}) {
+  const where = [...extraWhere]
+  const params = [...extraParams]
 
-  // 状态筛选
   if (statuses && statuses.length > 0) {
     where.push(`n.status IN (${statuses.map(() => '?').join(',')})`)
     params.push(...statuses)
   }
 
-  // 标签 AND 筛选（以 tag_name 为标识）
   if (tagNames && tagNames.length > 0) {
     where.push(`n.id IN (
       SELECT note_id FROM note_tags
@@ -302,31 +290,160 @@ export function listNotes({
     params.push(...tagNames, tagNames.length)
   }
 
-  // LIKE 模糊搜索
   if (search && search.trim()) {
     where.push(`n.content LIKE '%' || ? || '%'`)
     params.push(search.trim())
   }
 
-  const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
+  return { whereClause: where.length > 0 ? `WHERE ${where.join(' AND ')}` : '', params }
+}
 
-  // 排序
-  let orderBy
-  if (sortMode === 'custom') {
-    orderBy = 'ORDER BY n.is_pinned DESC, n.sort_order ASC, n.created_at DESC'
-  } else {
-    orderBy = 'ORDER BY n.is_pinned DESC, n.effective_at DESC, n.created_at DESC'
-  }
+// ============================================================
+// 分组专用查询（时间线模式）
+// ============================================================
 
-  // 查询总数
+/**
+ * 方法一：查询置顶便签（全量，不分页）
+ * 仅接受状态 + 标签 + 搜索条件，不加任何额外限制
+ * @param {Object} opts
+ * @param {string[]} opts.statuses
+ * @param {string[]} [opts.tagNames]
+ * @param {string} [opts.search]
+ * @returns {Object[]} 便签列表
+ */
+export function queryPinnedNotes({ statuses, tagNames, search } = {}) {
+  const db = getDb()
+  const { whereClause, params } = buildWhereClause({
+    statuses, tagNames, search,
+    extraWhere: ['n.is_pinned = 1'],
+    extraParams: []
+  })
+
+  return db
+    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`)
+    .all(...params)
+}
+
+/**
+ * 方法二：查询三天内非置顶便签（全量，不分页）
+ * @param {Object} opts
+ * @param {string[]} opts.statuses
+ * @param {string[]} [opts.tagNames]
+ * @param {string} [opts.search]
+ * @param {number} opts.cutoffTime - 三天截止时间戳（毫秒）
+ * @returns {Object[]} 便签列表
+ */
+export function queryRecentNotes({ statuses, tagNames, search, cutoffTime } = {}) {
+  const db = getDb()
+  const { whereClause, params } = buildWhereClause({
+    statuses, tagNames, search,
+    extraWhere: ['n.is_pinned = 0', 'n.effective_at > ?'],
+    extraParams: [cutoffTime]
+  })
+
+  return db
+    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`)
+    .all(...params)
+}
+
+/**
+ * 方法三：查询更早的非置顶便签（分页，每次默认 10 条）
+ * @param {Object} opts
+ * @param {string[]} opts.statuses
+ * @param {string[]} [opts.tagNames]
+ * @param {string} [opts.search]
+ * @param {number} opts.cutoffTime - 三天截止时间戳（毫秒）
+ * @param {number} [opts.limit=10]
+ * @param {number} [opts.offset=0]
+ * @returns {{ notes: Object[], total: number }}
+ */
+export function queryEarlierNotes({ statuses, tagNames, search, cutoffTime, limit = 10, offset = 0 } = {}) {
+  const db = getDb()
+  const { whereClause, params } = buildWhereClause({
+    statuses, tagNames, search,
+    extraWhere: ['n.is_pinned = 0', 'n.effective_at <= ?'],
+    extraParams: [cutoffTime]
+  })
+
   const { total } = db
     .prepare(`SELECT COUNT(*) as total FROM notes n ${whereClause}`)
     .get(...params)
 
-  // 查询列表
   const notes = db
-    .prepare(`SELECT n.* FROM notes n ${whereClause} ${orderBy} LIMIT ? OFFSET ?`)
+    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC LIMIT ? OFFSET ?`)
     .all(...params, limit, offset)
 
   return { notes, total }
+}
+
+// ============================================================
+// 自定义模式专用查询（按 sort_order 排序）
+// ============================================================
+
+/**
+ * 自定义模式——查询置顶便签（全量，按 sort_order 排序）
+ * 仅接受状态 + 标签 + 搜索条件，不加任何额外限制
+ */
+export function queryCustomPinned({ statuses, tagNames, search } = {}) {
+  const db = getDb()
+  const { whereClause, params } = buildWhereClause({
+    statuses, tagNames, search,
+    extraWhere: ['n.is_pinned = 1'],
+    extraParams: []
+  })
+  return db
+    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY n.sort_order ASC, n.created_at DESC`)
+    .all(...params)
+}
+
+/**
+ * 自定义模式——查询日常便签（分页，按 sort_order 排序）
+ * 仅接受状态 + 标签 + 搜索条件
+ */
+export function queryCustomNormal({ statuses, tagNames, search, limit = 10, offset = 0 } = {}) {
+  const db = getDb()
+  const { whereClause, params } = buildWhereClause({
+    statuses, tagNames, search,
+    extraWhere: ['n.is_pinned = 0'],
+    extraParams: []
+  })
+  const { total } = db
+    .prepare(`SELECT COUNT(*) as total FROM notes n ${whereClause}`)
+    .get(...params)
+  const notes = db
+    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY n.sort_order ASC, n.created_at DESC LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset)
+  return { notes, total }
+}
+
+/**
+ * 自定义模式——全局重排 sort_order
+ * 查询所有活跃便签，按置顶优先、effective_at 降序，分配大间距 sort_order
+ */
+export function reorderCustomSortOrder({ statuses, tagNames, search } = {}) {
+  const db = getDb()
+  const { whereClause, params } = buildWhereClause({
+    statuses, tagNames, search,
+    extraWhere: [],
+    extraParams: []
+  })
+
+  const all = db
+    .prepare(`SELECT n.id, n.is_pinned FROM notes n ${whereClause} ORDER BY n.is_pinned DESC, n.effective_at DESC`)
+    .all(...params)
+
+  if (all.length === 0) return false
+
+  const txn = db.transaction(() => {
+    let pinnedOrder = 65536
+    let normalOrder = 65536
+    for (const n of all) {
+      const order = n.is_pinned ? pinnedOrder : normalOrder
+      db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(order, n.id)
+      if (n.is_pinned) pinnedOrder += 65536
+      else normalOrder += 65536
+    }
+  })
+  txn()
+  return true
 }

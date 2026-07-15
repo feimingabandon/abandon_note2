@@ -5,14 +5,15 @@
  * 3.5 + 3.6: 新增自定义拖拽模式，集成 vuedraggable
  * - 置顶区（is_pinned=1, active/in_progress）: 可拖拽
  * - 日常区（is_pinned=0, active/in_progress）: 可拖拽
- * - 过期区（completed/cancelled/expired）: 只读
+ * - 过期区（completed/expired）: 只读
  */
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import draggable from 'vuedraggable'
 import TagSelector from '../ui/TagSelector.vue'
 import FilterTabs from '../ui/FilterTabs.vue'
+import NoteCard from './NoteCard.vue'
 
-const emit = defineEmits(['select', 'create'])
+const emit = defineEmits(['select'])
 
 /** 排序模式：timeline | custom */
 const sortMode = ref('timeline')
@@ -64,7 +65,6 @@ function staggerDelay(index) {
 const listAnimKey = ref(0)
 
 /** 便签列表 */
-const notes = ref([])
 /** 加载状态 */
 const loading = ref(false)
 
@@ -75,7 +75,7 @@ const tagFilterNames = ref([])
 const panelState = ref('taiji')
 
 /** 状态筛选列表 */
-const statusFilter = ref([])
+const statusFilter = ref(['active', 'in_progress', 'completed'])
 
 /** FilterTabs 选项 */
 const panelOptions = [
@@ -88,7 +88,11 @@ const panelOptions = [
 function onPanelClick(value) {
   if (value === 'taiji') {
     panelState.value = 'taiji'
-    loadNotes()
+    if (sortMode.value === 'timeline') {
+      loadAll()
+    } else {
+      loadCustom()
+    }
     return
   }
   if (panelState.value === value) {
@@ -100,11 +104,10 @@ function onPanelClick(value) {
 
 /** 状态筛选项 */
 const statusOptions = [
-  { value: 'active', label: '待生效' },
+  { value: 'active', label: '初始化' },
   { value: 'in_progress', label: '进行中' },
-  { value: 'completed', label: '已完成' },
-  { value: 'cancelled', label: '已取消' },
-  { value: 'expired', label: '已过期' }
+  { value: 'completed', label: '完成' },
+  { value: 'expired', label: '过期' }
 ]
 
 /** 切换状态筛选 */
@@ -124,31 +127,210 @@ function toggleStatus(value) {
 /** 请求令牌：并发加载时只接受最新一次结果，避免旧请求覆盖新数据 */
 let loadSeq = 0
 
-async function loadNotes() {
+/** 三天截止时间戳（毫秒）：今天 23:59:59 倒推 3×24h 再减 1 秒 */
+function threeDayCutoff() {
+  const now = new Date()
+  const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime()
+  return todayEnd - 3 * 24 * 60 * 60 * 1000 - 1000
+}
+
+// ---- 时间线模式：单一统一列表 ----
+const noteList = ref([])          // 唯一列表（置顶 + 三天 + 更早已加载）
+const earlierIds = ref(new Set())  // 方法三写入的便签 ID（折叠时用于定点清除）
+const earlierOffset = ref(0)
+const earlierHasMore = ref(false)
+const earlierLoading = ref(false)
+const earlierHasData = ref(false)  // 更早是否有数据（loadAll 时通过 count 查询获知）
+const earlierLimit = ref(10)       // 每次查询条数（首 10，滚动后 20）
+
+/** 时间线模式：并行加载置顶 + 三天 + 更早计数，合并到单一列表 */
+async function loadAll() {
   const seq = ++loadSeq
   loading.value = true
   try {
-    const defaultStatuses = sortMode.value === 'custom'
-      ? ['active', 'in_progress', 'completed', 'cancelled', 'expired']
-      : ['active', 'in_progress']
+    const statuses = statusFilter.value.length > 0
+      ? [...statusFilter.value]
+      : ['active', 'in_progress', 'completed']
+    const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
+    const cutoff = threeDayCutoff()
 
-    const params = { sortMode: sortMode.value }
-    params.statuses = statusFilter.value.length > 0 ? [...statusFilter.value] : defaultStatuses
-    params.tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
+    const [pinned, recent, earlierCount] = await Promise.all([
+      window.api.queryPinnedNotes({ statuses, tagNames }),
+      window.api.queryRecentNotes({ statuses, tagNames, cutoffTime: cutoff }),
+      window.api.queryEarlierNotes({ statuses, tagNames, cutoffTime: cutoff, limit: 0, offset: 0 })
+    ])
+    if (seq !== loadSeq) return
 
-    const result = await window.api.listNotes(params)
-    if (seq !== loadSeq) return // 已有更新的请求发起，丢弃本次旧结果
-    notes.value = result.notes || []
-    listAnimKey.value++ // 触发列表容器重挂载，重放逐条入场动画
+    // 合并到单一列表：置顶在前，三天在后
+    noteList.value = [...(pinned || []), ...(recent || [])]
+    // 重置更早运行时状态（数据已清空，需按当前展开状态重新加载）
+    earlierIds.value = new Set()
+    earlierOffset.value = 0
+    earlierHasMore.value = false
+    earlierHasData.value = (earlierCount.total || 0) > 0
+    listAnimKey.value++
+
+    // 如果更早之前是展开的，自动重新加载
+    if (!collapsedGroups.value['earlier'] && earlierHasData.value) {
+      earlierHasMore.value = true
+      loadEarlier() // 不 await，后台加载
+    }
   } catch (e) {
     console.error('[NoteList] 加载列表失败:', e)
   } finally {
-    if (seq === loadSeq) loading.value = false // 仅最新请求可结束 loading 态
+    if (seq === loadSeq) loading.value = false
   }
 }
 
+/** 时间线模式：懒加载更早数据，追加到统一列表并记录 ID */
+async function loadEarlier() {
+  if (earlierLoading.value || !earlierHasMore.value) return
+  earlierLoading.value = true
+  try {
+    const statuses = statusFilter.value.length > 0
+      ? [...statusFilter.value]
+      : ['active', 'in_progress', 'completed']
+    const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
+    const cutoff = threeDayCutoff()
+
+    const result = await window.api.queryEarlierNotes({
+      statuses,
+      tagNames,
+      cutoffTime: cutoff,
+      limit: earlierLimit.value,
+      offset: earlierOffset.value
+    })
+    const newNotes = result.notes || []
+    noteList.value = [...noteList.value, ...newNotes]
+    for (const n of newNotes) {
+      earlierIds.value.add(n.id)
+    }
+    earlierOffset.value += newNotes.length
+    earlierHasMore.value = earlierOffset.value < (result.total || 0)
+    // 首次加载后提升每批条数到 20
+    if (earlierLimit.value === 10) {
+      earlierLimit.value = 20
+    }
+  } catch (e) {
+    console.error('[NoteList] 加载更早便签失败:', e)
+  } finally {
+    earlierLoading.value = false
+  }
+}
+
+/** 展开更早时触发首次加载（重置 limit 到初始值） */
+function onEarlierExpand() {
+  if (earlierOffset.value === 0 && !earlierLoading.value) {
+    earlierLimit.value = 10
+    earlierHasMore.value = true
+    loadEarlier()
+  }
+}
+
+/** 收起更早：从统一列表中移除方法三写入的便签 */
+function collapseEarlier() {
+  noteList.value = noteList.value.filter(n => !earlierIds.value.has(n.id))
+  earlierIds.value = new Set()
+  earlierOffset.value = 0
+  earlierHasMore.value = false
+  earlierLimit.value = 10
+  collapsedGroups.value['earlier'] = true
+}
+
+/** 主容器滚动触底检测（更早展开 + 有更多数据时自动加载） */
+let scrollPending = false
+function onTimelineScroll(e) {
+  if (scrollPending) return
+  scrollPending = true
+  requestAnimationFrame(() => {
+    scrollPending = false
+    const el = e.target
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
+      loadEarlier()
+    }
+  })
+}
+
+/** 当前页面实际渲染总数 */
+const totalRendered = computed(() => noteList.value.length)
+
+// ---- 自定义模式：单列表 + 日常分页 ----
+const customList = ref([])          // 唯一列表（置顶 + 日常已加载）
+const customNormalOffset = ref(0)
+const customNormalHasMore = ref(false)
+const customNormalLimit = ref(10)   // 首 10，滚动后 20
+const customNormalLoading = ref(false)
+
+/** 自定义模式：并行加载置顶 + 日常首 10 条 */
+async function loadCustom() {
+  const seq = ++loadSeq
+  loading.value = true
+  try {
+    const statuses = statusFilter.value.length > 0
+      ? [...statusFilter.value]
+      : ['active', 'in_progress', 'completed', 'expired']
+    const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
+
+    const [pinned, normalCount] = await Promise.all([
+      window.api.queryCustomPinned({ statuses, tagNames }),
+      window.api.queryCustomNormal({ statuses, tagNames, limit: customNormalLimit.value, offset: 0 })
+    ])
+    if (seq !== loadSeq) return
+
+    customList.value = [...(pinned || []), ...(normalCount.notes || [])]
+    customNormalOffset.value = (normalCount.notes || []).length
+    customNormalHasMore.value = customNormalOffset.value < (normalCount.total || 0)
+    listAnimKey.value++
+  } catch (e) {
+    console.error('[NoteList] 加载自定义列表失败:', e)
+  } finally {
+    if (seq === loadSeq) loading.value = false
+  }
+}
+
+/** 自定义模式：滚动加载更多日常 */
+async function loadCustomMore() {
+  if (customNormalLoading.value || !customNormalHasMore.value) return
+  customNormalLoading.value = true
+  try {
+    const statuses = statusFilter.value.length > 0
+      ? [...statusFilter.value]
+      : ['active', 'in_progress', 'completed', 'expired']
+    const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
+
+    const result = await window.api.queryCustomNormal({
+      statuses,
+      tagNames,
+      limit: customNormalLimit.value,
+      offset: customNormalOffset.value
+    })
+    const newNotes = result.notes || []
+    customList.value = [...customList.value, ...newNotes]
+    customNormalOffset.value += newNotes.length
+    customNormalHasMore.value = customNormalOffset.value < (result.total || 0)
+    if (customNormalLimit.value === 10) {
+      customNormalLimit.value = 20
+    }
+  } catch (e) {
+    console.error('[NoteList] 加载更多日常便签失败:', e)
+  } finally {
+    customNormalLoading.value = false
+  }
+}
+
+/** 自定义模式滚动触底检测 */
+function onCustomScroll(e) {
+  const el = e.target
+  if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
+    loadCustomMore()
+  }
+}
+
+/** 自定义模式当前渲染总数 */
+const customTotalRendered = computed(() => customList.value.length)
+
 // ============================================================
-// 时间线分组
+// 时间线分组（从单一 noteList 派生）
 // ============================================================
 
 function timeGroup(ts) {
@@ -156,127 +338,141 @@ function timeGroup(ts) {
   const target = new Date(ts)
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
   const yesterdayStart = todayStart - 86400000
+  const dayBeforeStart = yesterdayStart - 86400000
   if (target.getTime() >= todayStart) return 'today'
   if (target.getTime() >= yesterdayStart) return 'yesterday'
+  if (target.getTime() >= dayBeforeStart) return 'dayBefore'
   return 'earlier'
 }
 
-const groupLabels = { today: '今天', yesterday: '昨天', earlier: '更早' }
-
 const timelineGroups = computed(() => {
-  const pinned = notes.value.filter((n) => n.is_pinned)
-  const unpinned = notes.value.filter((n) => !n.is_pinned)
-  const groups = []
-  if (pinned.length > 0) groups.push({ group: 'pinned', label: '📌 置顶', items: pinned })
-  let currentGroup = null
-  for (const note of unpinned) {
-    const g = timeGroup(note.effective_at)
-    if (g !== currentGroup) {
-      currentGroup = g
-      groups.push({ group: g, label: groupLabels[g], items: [] })
+  const pinned = []
+  const dayMap = { today: [], yesterday: [], dayBefore: [] }
+  const earlier = []
+
+  for (const note of noteList.value) {
+    if (note.is_pinned) {
+      pinned.push(note)
+    } else {
+      const g = timeGroup(note.effective_at)
+      if (g === 'earlier') {
+        earlier.push(note)
+      } else if (dayMap[g]) {
+        dayMap[g].push(note)
+      }
     }
-    groups[groups.length - 1].items.push(note)
   }
-  // 为每组标记其之前的累计条数，供卡片跨组连续错峰
+
+  // 仅保留有数据的组（更早按 earlierHasData 判断）
+  const all = [
+    { group: 'pinned', label: '置顶', items: pinned },
+    { group: 'today', label: '今天', items: dayMap.today },
+    { group: 'yesterday', label: '昨天', items: dayMap.yesterday },
+    { group: 'dayBefore', label: '前天', items: dayMap.dayBefore },
+    { group: 'earlier', label: '更早', items: earlier }
+  ]
+
+  const filtered = all.filter(g => {
+    if (g.group === 'earlier') return earlierHasData.value
+    return g.items.length > 0
+  })
+
   let acc = 0
-  for (const grp of groups) {
+  for (const grp of filtered) {
     grp.offset = acc
     acc += grp.items.length
   }
-  return groups
+  return filtered
 })
 
-// ============================================================
-// 自定义模式（3.5 三区域）
-// ============================================================
+/** 更早折叠状态 */
+const collapsedGroups = ref({ earlier: true })
 
-// 置顶区 / 日常区要作为 vuedraggable 的可写 v-model（拖拽会就地重排元素），
-// 故用 ref + watch(notes) 派生为「可变数组」；过期区只读，直接用 computed 即可。
-const pinnedNotes = ref([])
-const normalNotes = ref([])
-const archivedNotes = computed(() =>
-  notes.value.filter((n) => ['completed', 'cancelled', 'expired'].includes(n.status))
-)
-
-/** 便签数据变化时，重新派生可写的置顶区 / 日常区（供 vuedraggable 拖拽重排） */
-watch(
-  notes,
-  () => {
-    pinnedNotes.value = notes.value.filter(
-      (n) => n.is_pinned && ['active', 'in_progress'].includes(n.status)
-    )
-    normalNotes.value = notes.value.filter(
-      (n) => !n.is_pinned && ['active', 'in_progress'].includes(n.status)
-    )
-  },
-  { immediate: true }
-)
-
-let needsGlobalReorder = false
-
-// ============================================================
-// 拖拽排序回调（3.6）
-// ============================================================
-
-async function onPinnedDragEnd() {
-  await syncSortOrder(pinnedNotes.value)
-}
-async function onNormalDragEnd() {
-  await syncSortOrder(normalNotes.value)
+/** 更早展开/折叠 */
+function toggleGroupCollapse(groupKey) {
+  if (groupKey !== 'earlier') return
+  if (!collapsedGroups.value['earlier']) {
+    collapseEarlier()
+  } else {
+    collapsedGroups.value['earlier'] = false
+    onEarlierExpand()
+  }
 }
 
-/** 大间距策略持久化 sort_order（顺序执行，防并发写入丢失） */
-async function syncSortOrder(list) {
+// ============================================================
+// 自定义模式（置顶 + 日常，拖拽排序 + 滚动分页）
+// ============================================================
+
+const customPinnedNotes = ref([])
+const customNormalNotes = ref([])
+
+/** 从 customList 派生拖拽区数组 */
+function syncCustomZones() {
+  customPinnedNotes.value = customList.value.filter(n => n.is_pinned)
+  customNormalNotes.value = customList.value.filter(n => !n.is_pinned)
+}
+
+/** customList 变化时自动同步拖拽区 */
+let _customSyncTimer = null
+watch(customList, () => {
+  clearTimeout(_customSyncTimer)
+  _customSyncTimer = setTimeout(syncCustomZones, 0)
+}, { deep: false })
+
+// ---- 拖拽排序回调 ----
+
+async function onCustomPinnedDragEnd() {
   let order = 65536
+  for (const note of customPinnedNotes.value) {
+    note.sort_order = order
+    order += 65536
+  }
+  customList.value = [...customPinnedNotes.value, ...customNormalNotes.value]
+  await persistSortOrder(customPinnedNotes.value)
+}
+
+async function onCustomNormalDragEnd() {
+  let order = 65536
+  for (const note of customNormalNotes.value) {
+    note.sort_order = order
+    order += 65536
+  }
+  customList.value = [...customPinnedNotes.value, ...customNormalNotes.value]
+  await persistSortOrder(customNormalNotes.value)
+}
+
+async function persistSortOrder(list) {
   for (const note of list) {
     try {
-      await window.api.updateNote(note.id, { sort_order: order })
-      order += 65536
+      await window.api.updateNote(note.id, { sort_order: note.sort_order })
     } catch (e) {
       console.error('[NoteList] sort_order 持久化失败:', note.id, e)
     }
   }
 }
 
-// ============================================================
-// 模式切换
-// ============================================================
+// ---- 模式切换 ----
 
 async function switchMode(mode) {
   if (mode === 'custom') {
-    const active = notes.value.filter((n) => ['active', 'in_progress'].includes(n.status))
-    needsGlobalReorder = active.some((n) => n.sort_order === 0)
-  }
-  await loadNotes()
-  if (mode === 'custom' && needsGlobalReorder) {
-    // 直接从 notes 派生重排列表（置顶在前），不依赖 watch(notes) 的 flush 时机
-    const active = notes.value.filter((n) => ['active', 'in_progress'].includes(n.status))
-    const ordered = [...active.filter((n) => n.is_pinned), ...active.filter((n) => !n.is_pinned)]
-    await syncSortOrder(ordered)
-    needsGlobalReorder = false
-    await loadNotes()
-  }
-}
-
-// ============================================================
-// 创建 / 工具函数
-// ============================================================
-
-async function handleCreate() {
-  try {
-    await window.api.createNote({ content: '' })
-    emit('create')
-    await loadNotes()
-  } catch (e) {
-    console.error('[NoteList] 创建便签失败:', e)
+    await loadCustom()
+    syncCustomZones()
+    // 检查已加载的便签是否需要全局重排
+    const needsReorder = customList.value.some(n => n.sort_order === 0)
+    if (needsReorder) {
+      const statuses = statusFilter.value.length > 0
+        ? [...statusFilter.value]
+        : ['active', 'in_progress', 'completed', 'expired']
+      const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
+      await window.api.reorderCustomSortOrder({ statuses, tagNames })
+      await loadCustom()
+      syncCustomZones()
+    }
+  } else {
+    await loadAll()
   }
 }
 
-/** 状态 value → label 映射（由 statusOptions 派生，单一真相源，仅构建一次） */
-const statusLabelMap = Object.fromEntries(statusOptions.map((o) => [o.value, o.label]))
-function statusLabel(s) {
-  return statusLabelMap[s] || s
-}
 
 const WINDOW_NAME = 'main'
 const FILTER_KEY = 'list_filter'
@@ -376,7 +572,7 @@ function onPanelLeave(el, done) {
   el.addEventListener('transitionend', onEnd)
 }
 
-defineExpose({ refresh: loadNotes })
+defineExpose({ refresh: () => sortMode.value === 'timeline' ? loadAll() : loadCustom() })
 </script>
 
 <template>
@@ -427,148 +623,110 @@ defineExpose({ refresh: loadNotes })
       </div>
     </Transition>
 
-    <!-- 加载/空状态 -->
+    <!-- 加载状态 -->
     <div v-if="loading" class="nl-loading">加载中…</div>
-    <div v-else-if="notes.length === 0" class="nl-empty">
-      <p>暂无便签</p>
-      <button class="nl-empty-btn" @click="handleCreate">创建第一条便签</button>
-    </div>
 
-    <!-- ======== 时间线模式 ======== -->
-    <div v-else-if="sortMode === 'timeline'" :key="listAnimKey" class="nl-timeline scroll-y">
-      <div v-for="g in timelineGroups" :key="g.group" class="nl-group">
-        <div class="nl-group-label">{{ g.label }}</div>
-        <div
-          v-for="(note, ni) in g.items"
-          :key="note.id"
-          class="nl-card nl-card-anim"
-          :style="{ animationDelay: staggerDelay(g.offset + ni) }"
-          @click="emit('select', note)"
-        >
-          <div class="nl-card-body">
-            <span class="nl-card-text">{{ note.content || '（空内容）' }}</span>
-            <div class="nl-card-meta">
-              <span class="nl-card-status" :class="'nl-status--' + note.status">{{
-                statusLabel(note.status)
-              }}</span>
-              <span
-                v-for="tag in note.tags"
-                :key="tag.id"
-                class="nl-card-tag"
-                :style="tag.color ? { backgroundColor: tag.color + '22', color: tag.color } : {}"
-                >{{ tag.name }}</span
-              >
-            </div>
+    <!-- ======== 时间线模式（时间标记 + 统一便签流） ======== -->
+    <template v-else-if="sortMode === 'timeline'">
+      <div :key="listAnimKey" class="nl-timeline scroll-y" @scroll="onTimelineScroll">
+        <div v-for="g in timelineGroups" :key="g.group" class="nl-group">
+          <!-- 普通组：轻量时间标记 -->
+          <div v-if="g.group !== 'earlier'" class="nl-group-label-row">{{ g.label }}</div>
+          <!-- 更早：可点击展开的时间标记 -->
+          <div v-else class="nl-group-label-row nl-group-label-row--earlier" @click="toggleGroupCollapse('earlier')">
+            <span>{{ g.label }}</span>
+            <svg
+              width="12" height="12" viewBox="0 0 24 24"
+              fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round"
+              class="nl-group-chevron"
+              :class="{ 'nl-group-chevron--collapsed': collapsedGroups['earlier'] }"
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
           </div>
+          <!-- 普通组：便签卡片（始终可见） -->
+          <template v-if="g.group !== 'earlier'">
+            <NoteCard
+              v-for="(note, ni) in g.items"
+              :key="note.id"
+              :note="note"
+              :animation-delay="staggerDelay(g.offset + ni)"
+              @select="emit('select', $event)"
+            />
+          </template>
+          <!-- 更早：便签卡片（折叠控制） -->
+          <template v-else-if="!collapsedGroups['earlier']">
+            <NoteCard
+              v-for="(note, ni) in g.items"
+              :key="note.id"
+              :note="note"
+              :animation-delay="staggerDelay(g.offset + ni)"
+              @select="emit('select', $event)"
+            />
+          </template>
         </div>
+        <!-- 更早加载提示 -->
+        <div v-if="!collapsedGroups['earlier'] && earlierLoading" class="nl-earlier-hint">加载中…</div>
+        <div v-else-if="!collapsedGroups['earlier'] && earlierHasData && !earlierHasMore && earlierOffset > 0" class="nl-earlier-hint">没有更多便签</div>
       </div>
-    </div>
+      <!-- 底部计数 -->
+      <div class="nl-footer-count">当前页面有 {{ totalRendered }} 条便签</div>
+    </template>
 
     <!-- ======== 自定义模式 ======== -->
-    <div v-else :key="listAnimKey" class="nl-custom scroll-y">
+    <template v-else>
+      <div :key="listAnimKey" class="nl-custom scroll-y" @scroll="onCustomScroll">
       <!-- 置顶区 -->
-      <div class="nl-zone">
-        <div class="nl-zone-label">📌 置顶区</div>
+      <div v-if="customPinnedNotes.length > 0" class="nl-zone">
+        <div class="nl-zone-label">置顶</div>
         <draggable
-          v-model="pinnedNotes"
-          :group="{ name: 'pinned', pull: false, put: false }"
+          v-model="customPinnedNotes"
+          :group="{ name: 'custom-pinned', pull: false, put: false }"
           item-key="id"
           class="nl-dropzone"
           ghost-class="nl-ghost"
-          @end="onPinnedDragEnd"
+          @end="onCustomPinnedDragEnd"
         >
           <template #item="{ element: note, index: i }">
-            <div
-              class="nl-card nl-card--draggable nl-card-anim"
-              :style="{ animationDelay: staggerDelay(i) }"
-              @click="emit('select', note)"
-            >
-              <span class="nl-handle">⠿</span>
-              <div class="nl-card-body">
-                <span class="nl-card-text">{{ note.content || '（空内容）' }}</span>
-                <div class="nl-card-meta">
-                  <span class="nl-card-status" :class="'nl-status--' + note.status">{{
-                    statusLabel(note.status)
-                  }}</span>
-                  <span
-                    v-for="tag in note.tags"
-                    :key="tag.id"
-                    class="nl-card-tag"
-                    :style="
-                      tag.color ? { backgroundColor: tag.color + '22', color: tag.color } : {}
-                    "
-                    >{{ tag.name }}</span
-                  >
-                </div>
-              </div>
-            </div>
+            <NoteCard
+              :note="note"
+              draggable
+              :animation-delay="staggerDelay(i)"
+              @select="emit('select', $event)"
+            />
           </template>
         </draggable>
-        <div v-if="pinnedNotes.length === 0" class="nl-zone-empty">拖拽便签到此处置顶</div>
       </div>
 
       <!-- 日常区 -->
       <div class="nl-zone">
-        <div class="nl-zone-label">📋 日常区</div>
+        <div class="nl-zone-label">日常</div>
         <draggable
-          v-model="normalNotes"
-          :group="{ name: 'normal', pull: false, put: false }"
+          v-model="customNormalNotes"
+          :group="{ name: 'custom-normal', pull: false, put: false }"
           item-key="id"
           class="nl-dropzone"
           ghost-class="nl-ghost"
-          @end="onNormalDragEnd"
+          @end="onCustomNormalDragEnd"
         >
           <template #item="{ element: note, index: i }">
-            <div
-              class="nl-card nl-card--draggable nl-card-anim"
-              :style="{ animationDelay: staggerDelay(pinnedNotes.length + i) }"
-              @click="emit('select', note)"
-            >
-              <span class="nl-handle">⠿</span>
-              <div class="nl-card-body">
-                <span class="nl-card-text">{{ note.content || '（空内容）' }}</span>
-                <div class="nl-card-meta">
-                  <span class="nl-card-status" :class="'nl-status--' + note.status">{{
-                    statusLabel(note.status)
-                  }}</span>
-                  <span
-                    v-for="tag in note.tags"
-                    :key="tag.id"
-                    class="nl-card-tag"
-                    :style="
-                      tag.color ? { backgroundColor: tag.color + '22', color: tag.color } : {}
-                    "
-                    >{{ tag.name }}</span
-                  >
-                </div>
-              </div>
-            </div>
+            <NoteCard
+              :note="note"
+              draggable
+              :animation-delay="staggerDelay(customPinnedNotes.length + i)"
+              @select="emit('select', $event)"
+            />
           </template>
         </draggable>
-        <div v-if="normalNotes.length === 0" class="nl-zone-empty">暂无活跃便签</div>
-      </div>
-
-      <!-- 过期区（只读） -->
-      <div v-if="archivedNotes.length > 0" class="nl-zone nl-zone--archived">
-        <div class="nl-zone-label">📦 过期区</div>
-        <div
-          v-for="(note, i) in archivedNotes"
-          :key="note.id"
-          class="nl-card nl-card--muted nl-card-anim"
-          :style="{ animationDelay: staggerDelay(pinnedNotes.length + normalNotes.length + i) }"
-          @click="emit('select', note)"
-        >
-          <div class="nl-card-body">
-            <span class="nl-card-text">{{ note.content || '（空内容）' }}</span>
-            <div class="nl-card-meta">
-              <span class="nl-card-status" :class="'nl-status--' + note.status">{{
-                statusLabel(note.status)
-              }}</span>
-            </div>
-          </div>
-        </div>
+        <div v-if="customNormalNotes.length === 0" class="nl-zone-empty">暂无日常便签</div>
+        <div v-if="customNormalLoading" class="nl-earlier-hint">加载中…</div>
+        <div v-else-if="customNormalNotes.length > 0 && !customNormalHasMore" class="nl-earlier-hint">没有更多便签</div>
       </div>
     </div>
+      <!-- 底部计数 -->
+      <div class="nl-footer-count">当前页面有 {{ totalRendered }} 条便签</div>
+    </template>
   </div>
 </template>
 
@@ -587,7 +745,6 @@ defineExpose({ refresh: loadNotes })
   align-items: center;
   gap: 0;
   padding: 8rem 0;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.15);
   flex-shrink: 0;
 }
 
@@ -685,9 +842,8 @@ defineExpose({ refresh: loadNotes })
   transform: translateX(12rem);
 }
 
-/* ===== 空/加载状态 ===== */
-.nl-loading,
-.nl-empty {
+/* ===== 加载状态 ===== */
+.nl-loading {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -697,37 +853,89 @@ defineExpose({ refresh: loadNotes })
   color: var(--text-color-secondary);
   gap: 12rem;
 }
-.nl-empty-btn {
-  padding: 8rem 16rem;
-  font-size: var(--fs-secondary);
-  font-family: inherit;
-  font-weight: 500;
-  border: 1px solid rgba(128, 128, 128, 0.2);
-  border-radius: 8rem;
-  background: transparent;
-  color: var(--text-color);
-  cursor: pointer;
-}
 
 /* ===== 时间线 ===== */
 .nl-timeline {
   flex: 1;
-  padding: 8rem 0;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0%,
+    black calc(100% - 30rem),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black 0%,
+    black calc(100% - 30rem),
+    transparent 100%
+  );
 }
-.nl-group {
-  margin-bottom: 16rem;
-}
-.nl-group-label {
+
+/* 时间标记行（轻量标签） */
+.nl-group-label-row {
   font-size: var(--fs-secondary);
   font-weight: 500;
   color: var(--text-color-secondary);
   padding: 6rem 0 4rem;
 }
+/* 第一项（置顶）去除上内边距，贴顶 */
+.nl-group:first-child .nl-group-label-row {
+  padding-top: 0;
+}
+/* 更早标记行（可点击展开） */
+.nl-group-label-row--earlier {
+  display: flex;
+  align-items: center;
+  gap: 8rem;
+  cursor: pointer;
+  user-select: none;
+}
+.nl-group-label-row--earlier span {
+  flex-shrink: 0;
+}
+
+/* 折叠箭头：收起时旋转 -90° */
+.nl-group-chevron {
+  transition: transform 200ms ease;
+}
+.nl-group-chevron--collapsed {
+  transform: rotate(-90deg);
+}
+
+/* 更早区域加载/结束提示 */
+.nl-earlier-hint {
+  text-align: center;
+  padding: 12rem 0 6rem;
+  font-size: calc(var(--fs-secondary) * 0.85);
+  color: var(--text-color-secondary);
+}
+
+/* 底部计数（始终固定） */
+.nl-footer-count {
+  flex-shrink: 0;
+  text-align: center;
+  padding: 10rem 0 4rem;
+  font-size: calc(var(--fs-secondary) * 0.85);
+  color: var(--text-color-secondary);
+  border-top: 1px solid rgb(var(--bg-color, 255 255 255) / 0.08);
+  margin-top: 4rem;
+}
 
 /* ===== 自定义模式 ===== */
 .nl-custom {
   flex: 1;
-  padding: 8rem 0;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0%,
+    black calc(100% - 30rem),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black 0%,
+    black calc(100% - 30rem),
+    transparent 100%
+  );
 }
 .nl-zone {
   margin-bottom: 20rem;
@@ -739,8 +947,10 @@ defineExpose({ refresh: loadNotes })
   font-size: var(--fs-secondary);
   font-weight: 500;
   color: var(--text-color-secondary);
-  padding: 6rem 8rem 4rem;
-  margin-bottom: 4rem;
+  padding: 6rem 0 4rem;
+}
+.nl-zone:first-child .nl-zone-label {
+  padding-top: 0;
 }
 .nl-dropzone {
   min-height: 10rem;
@@ -755,99 +965,11 @@ defineExpose({ refresh: loadNotes })
   opacity: 0.3;
 }
 
-/* ===== 列表卡片逐条入场（依次淡入上浮，延迟由 :style 按序号注入） ===== */
-.nl-card-anim {
-  animation: nl-card-in 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-@keyframes nl-card-in {
-  from {
-    opacity: 0;
-    transform: translateY(6rem);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-/* 状态 chip 逐个淡入上浮（复用卡片关键帧，延迟由 :style 注入 animationDelay） */
+/* 状态 chip 逐个淡入上浮（复用 NoteCard 全局 nl-card-in 关键帧，延迟由 :style 注入 animationDelay） */
 .nl-chip-anim {
   animation: nl-card-in 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-/* ===== 便签卡片 ===== */
-.nl-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 8rem;
-  padding: 10rem 12rem;
-  margin: 2rem 0;
-  border-radius: 8rem;
-  cursor: pointer;
-  transition: background-color 120ms ease;
-}
-.nl-card:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-.nl-card--draggable {
-  cursor: grab;
-}
-.nl-card--muted {
-  cursor: default;
-  opacity: 0.7;
-}
-.nl-handle {
-  font-size: var(--fs-body);
-  color: var(--text-color-secondary);
-  margin-top: 2rem;
-  opacity: 0;
-  transition: opacity 120ms ease;
-  flex-shrink: 0;
-}
-.nl-card:hover .nl-handle {
-  opacity: 1;
-}
-.nl-card-body {
-  flex: 1;
-  min-width: 0;
-}
-.nl-card-text {
-  font-size: var(--fs-body);
-  color: var(--text-color);
-  line-height: 1.5;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-}
-.nl-card-meta {
-  display: flex;
-  align-items: center;
-  gap: 6rem;
-  flex-wrap: wrap;
-  margin-top: 6rem;
-}
-.nl-card-status {
-  font-size: calc(var(--fs-secondary) * 0.88);
-  padding: 2rem 6rem;
-  border-radius: 4rem;
-  background: rgba(128, 128, 128, 0.12);
-}
-.nl-status--active {
-  background: rgba(0, 122, 255, 0.12);
-}
-.nl-status--in_progress {
-  background: rgba(255, 149, 0, 0.12);
-}
-.nl-status--completed {
-  background: rgba(52, 199, 89, 0.12);
-}
-.nl-card-tag {
-  font-size: calc(var(--fs-secondary) * 0.85);
-  padding: 1rem 5rem;
-  border-radius: 3rem;
-}
 
 /* ===== 展开面板容器（标签 / 状态）===== */
 /* 动画元素本身不留内边距：全局 box-sizing:border-box 下，height:0 会被 padding 撑住无法归零，
@@ -855,9 +977,7 @@ defineExpose({ refresh: loadNotes })
    把间距放到内层 .nl-panel-inner，其高度仍计入外层 scrollHeight，动画即可平滑收到 0。
    外层 overflow 由 onPanelEnter / onPanelLeave 钩子在动画期间接管，动画结束后还原，
    避免常驻裁剪掉选中标签的 box-shadow 光晕。 */
-.nl-panel-inner {
-  padding-top: 10rem;
-}
+.nl-panel-inner {}
 
 /* ===== 标签筛选栏 ===== */
 .nl-tags {
@@ -877,27 +997,30 @@ defineExpose({ refresh: loadNotes })
   flex-wrap: wrap;
 }
 .nl-status-chip {
-  padding: 4rem 12rem;
-  font-size: var(--fs-secondary);
+  padding: 5rem 14rem;
+  font-size: calc(var(--fs-secondary) * 0.85);
   font-family: inherit;
-  font-weight: 500;
-  border: 1px solid rgba(128, 128, 128, 0.15);
-  border-radius: 14rem;
-  background: rgba(128, 128, 128, 0.05);
+  font-weight: 400;
+  border: 1px solid rgba(128, 128, 128, 0.18);
+  border-radius: 16rem;
+  background: transparent;
   color: var(--text-color-secondary);
   cursor: pointer;
-  transition:
-    background-color 150ms ease,
-    border-color 150ms ease,
-    color 150ms ease;
+  transition: all 200ms ease;
   white-space: nowrap;
 }
 .nl-status-chip:hover {
-  background: rgba(128, 128, 128, 0.1);
+  background: rgba(128, 128, 128, 0.06);
+  border-color: rgba(128, 128, 128, 0.28);
 }
 .nl-status-chip--active {
-  background: rgba(0, 122, 255, 0.12);
-  border-color: rgba(0, 122, 255, 0.3);
-  color: #007aff;
+  background: #007aff;
+  border-color: #007aff;
+  color: #fff;
+  font-weight: 500;
+}
+.nl-status-chip--active:hover {
+  background: #0066d6;
+  border-color: #0066d6;
 }
 </style>

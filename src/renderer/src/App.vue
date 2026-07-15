@@ -45,7 +45,6 @@ const alwaysOnTop = ref(true)
 
 /** 窗口标识，与数据库中存储的 window_name 对应 */
 const WINDOW_NAME = 'main'
-
 onMounted(async () => {
   // 获取 HTML 根元素，用于设置 CSS 自定义属性
   const el = document.documentElement
@@ -112,8 +111,8 @@ const onMouseLeave = () => window.api.windowHover(false)
 document.addEventListener('mouseenter', onMouseEnter)
 document.addEventListener('mouseleave', onMouseLeave)
 // ---- 便签交互 ----
-function onSelectNote(note) {
-  selectedNote.value = note
+function onSelectNote(_note) {
+  // 暂时禁用编辑功能，后续统一处理
 }
 
 function onCloseEditor() {
@@ -302,6 +301,6 @@ onUnmounted(() => {
   max-height: 25%;
   overflow-y: auto;
   padding-top: 8rem;
-  border-top: 1px solid rgba(128, 128, 128, 0.08);
+  border-top: 1px solid rgb(var(--bg-color, 255 255 255) / 0.1);
 }
 </style>

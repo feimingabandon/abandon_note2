@@ -292,15 +292,15 @@ onUnmounted(() => {
   font-weight: 500;
 }
 .sp-badge--ok {
-  background: rgba(52, 199, 89, 0.12);
+  background: rgba(52, 199, 89, 0.10);
   color: rgb(52, 199, 89);
 }
 .sp-badge--warn {
-  background: rgba(255, 149, 0, 0.12);
+  background: rgba(255, 149, 0, 0.10);
   color: rgb(255, 149, 0);
 }
 .sp-badge--danger {
-  background: rgba(255, 59, 48, 0.12);
+  background: rgba(255, 59, 48, 0.10);
   color: rgb(255, 59, 48);
 }
 

@@ -98,7 +98,17 @@ const api = {
   /** 获取单条便签（含附件和标签） */
   getNote: (id) => ipcRenderer.invoke('notes:get', { id }),
   /** 查询便签列表 */
-  listNotes: (options) => ipcRenderer.invoke('notes:list', options),
+  queryPinnedNotes: (options) => ipcRenderer.invoke('notes:query-pinned', options),
+  /** 查询三天内非置顶便签（时间线模式） */
+  queryRecentNotes: (options) => ipcRenderer.invoke('notes:query-recent', options),
+  /** 查询更早的非置顶便签（时间线模式，分页） */
+  queryEarlierNotes: (options) => ipcRenderer.invoke('notes:query-earlier', options),
+  /** 查询置顶便签（自定义模式，按 sort_order） */
+  queryCustomPinned: (options) => ipcRenderer.invoke('notes:query-custom-pinned', options),
+  /** 查询日常便签（自定义模式，分页） */
+  queryCustomNormal: (options) => ipcRenderer.invoke('notes:query-custom-normal', options),
+  /** 全局重排 sort_order（自定义模式） */
+  reorderCustomSortOrder: (options) => ipcRenderer.invoke('notes:reorder-custom', options),
   /** 开始处理 */
   startProgress: (id) => ipcRenderer.invoke('notes:start-progress', { id }),
   /** 完成便签 */

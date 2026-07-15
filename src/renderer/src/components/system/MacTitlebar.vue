@@ -102,7 +102,7 @@ const toggleLock = async () => {
   -webkit-app-region: drag; /* 允许通过此区域拖拽移动窗口 */
   flex-shrink: 0; /* 禁止在 flex 布局中被压缩 */
   gap: 8px; /* 子元素间距 */
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08); /* 标题栏底部分割线 */
+  border-bottom: 1px solid rgb(var(--bg-color, 255 255 255) / 0.1); /* 标题栏底部分割线 */
 }
 
 /* 红绿灯按钮容器 */

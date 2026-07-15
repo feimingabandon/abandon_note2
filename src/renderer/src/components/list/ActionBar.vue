@@ -309,7 +309,7 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
   flex-basis: 36rem;
   min-width: 0;
   height: 36rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgb(var(--bg-color, 255 255 255) / 0.1);
   border-radius: 10rem;
   overflow: hidden;
   background: rgba(128, 128, 128, 0.03);

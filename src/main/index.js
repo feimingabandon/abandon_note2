@@ -40,7 +40,12 @@ import {
   updateNote,
   deleteNote,
   getNoteById,
-  listNotes,
+  queryPinnedNotes,
+  queryRecentNotes,
+  queryEarlierNotes,
+  queryCustomPinned,
+  queryCustomNormal,
+  reorderCustomSortOrder,
   startProgress,
   completeNote,
   cancelNote,
@@ -1108,9 +1113,36 @@ app.whenReady().then(() => {
     return getNoteById(id)
   })
 
-  // 【便签 - 列表查询】
-  ipcMain.handle('notes:list', (_event, options) => {
-    return listNotes(options || {})
+  // 【便签 - 列表查询（已废弃，由专用查询替代）】
+
+  // 【便签 - 置顶查询（时间线模式）】
+  ipcMain.handle('notes:query-pinned', (_event, options) => {
+    return queryPinnedNotes(options || {})
+  })
+
+  // 【便签 - 三天内查询（时间线模式）】
+  ipcMain.handle('notes:query-recent', (_event, options) => {
+    return queryRecentNotes(options || {})
+  })
+
+  // 【便签 - 更早查询（时间线模式，分页）】
+  ipcMain.handle('notes:query-earlier', (_event, options) => {
+    return queryEarlierNotes(options || {})
+  })
+
+  // 【便签 - 自定义模式：置顶查询】
+  ipcMain.handle('notes:query-custom-pinned', (_event, options) => {
+    return queryCustomPinned(options || {})
+  })
+
+  // 【便签 - 自定义模式：日常查询（分页）】
+  ipcMain.handle('notes:query-custom-normal', (_event, options) => {
+    return queryCustomNormal(options || {})
+  })
+
+  // 【便签 - 自定义模式：全局重排 sort_order】
+  ipcMain.handle('notes:reorder-custom', (_event, options) => {
+    return reorderCustomSortOrder(options || {})
   })
 
   // 【便签 - 开始处理】

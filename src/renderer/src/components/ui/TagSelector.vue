@@ -447,7 +447,7 @@ onMounted(async () => {
   align-items: center;
   gap: 4rem;
   flex-shrink: 0;
-  font-size: var(--fs-secondary);
+  font-size: calc(var(--fs-secondary) * 0.85);
   font-family: inherit;
   font-weight: 500;
   color: var(--text-color);
@@ -550,7 +550,7 @@ onMounted(async () => {
 /* ---- 空状态 ---- */
 .ts-empty {
   flex-shrink: 0;
-  font-size: var(--fs-secondary);
+  font-size: calc(var(--fs-secondary) * 0.85);
   color: var(--text-color-secondary);
   white-space: nowrap;
 }
