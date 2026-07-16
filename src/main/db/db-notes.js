@@ -111,7 +111,7 @@ export function getNoteById(id) {
   return note
 }
 
-/** 逻辑删除：保留便签、标签关联和附件文件，物理清理由重置数据库统一执行。 */
+/** 逻辑删除：保留便签、标签关联和附件文件，物理清理由“清空便签数据”统一执行。 */
 export function deleteNote(id) {
   const ts = now()
   const result = getDb()

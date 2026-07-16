@@ -24,6 +24,8 @@ import NoteEditor from './components/note/NoteEditor.vue'
 import ActionBar from './components/list/ActionBar.vue'
 import ScreenshotPicker from './components/note/ScreenshotPicker.vue'
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
+import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
+import { DEFAULT_SETTINGS } from '../../shared/settings-schema.js'
 
 // 注册全局应用内消息通知能力（子孙组件通过 useMessage() 获取）
 createMessageProvider()
@@ -38,67 +40,41 @@ const selectedNote = ref(null)
 const noteListRef = ref(null)
 
 /** 窗口锁定状态 */
-const locked = ref(false)
+const locked = ref(DEFAULT_SETTINGS.window.lockState)
 
 /** 窗口置顶状态 */
-const alwaysOnTop = ref(true)
+const alwaysOnTop = ref(DEFAULT_SETTINGS.window.alwaysOnTop)
 
-/** 窗口标识，与数据库中存储的 window_name 对应 */
-const WINDOW_NAME = 'main'
+let stopSettingsListener = null
+let stopNotesChangedListener = null
+
+function applyAppSettingsSnapshot(snapshot) {
+  applySettingsSnapshot(snapshot)
+  const windowSettings = snapshot?.values?.window
+  if (windowSettings) {
+    locked.value = windowSettings.lockState
+    alwaysOnTop.value = windowSettings.alwaysOnTop
+  }
+}
+
 onMounted(async () => {
-  // 获取 HTML 根元素，用于设置 CSS 自定义属性
-  const el = document.documentElement
-
   try {
-    // === 拉取 CSS 类型的持久化设置 ===
-    const cssSettings = await window.api.getSettings(WINDOW_NAME, 'css')
-    cssSettings.forEach(({ key, value }) => {
-      if (key === 'font_size_base') {
-        el.style.setProperty('--font-size-base', value + 'rem')
-      } else if (key === 'bg_color') {
-        el.style.setProperty('--bg-color', value)
-      } else if (key === 'win_opacity') {
-        el.style.setProperty('--popup-opacity', value)
-      } else if (key === 'bg_blur') {
-        el.style.setProperty('--bg-blur', value + 'px')
-      } else if (key === 'bg_saturation') {
-        el.style.setProperty('--bg-saturation', value)
-      } else if (key === 'window_opacity') {
-        el.style.setProperty('--window-opacity', value)
-      } else if (key === 'bg_border') {
-        el.style.setProperty('--bg-border', value)
-      } else if (key === 'text_color') {
-        el.style.setProperty('--text-color', value)
-      }
-    })
-
-    // 加载窗口圆角（来自系统模糊配置）
-    try {
-      const savedBlur = await window.api.getBlurConfig()
-      if (savedBlur?.cornerRadius !== undefined) {
-        el.style.setProperty('--window-radius', savedBlur.cornerRadius + 'px')
-      }
-    } catch {
-      /* 无模糊配置则使用 CSS 默认值 12px */
-    }
+    // 主进程始终返回“数据库值覆盖共享默认值”后的完整快照。
+    const snapshot = await window.api.getSettingsSnapshot()
+    applyAppSettingsSnapshot(snapshot)
   } catch (err) {
-    // 读取失败时使用 CSS 中定义的默认值，不影响应用正常运行
-    console.warn('[App] 读取持久化设置失败，使用默认值:', err)
+    // IPC 异常时同样从唯一 schema 回退，不依赖 tokens.css 中的旧值。
+    applyAppSettingsSnapshot({ values: DEFAULT_SETTINGS })
+    console.warn('[App] 读取设置快照失败，使用共享默认值:', err)
   }
 
-  // 同步初始锁定状态
-  try {
-    locked.value = await window.api.getLockState()
-  } catch (e) {
-    console.warn('[App] 获取锁定状态失败:', e)
-  }
-
-  // 同步初始置顶状态
-  try {
-    alwaysOnTop.value = await window.api.getAlwaysOnTop()
-  } catch (e) {
-    console.warn('[App] 获取置顶状态失败:', e)
-  }
+  // 主进程是设置权威源；其他入口修改或重置设置时统一刷新实际 CSS 效果。
+  stopSettingsListener = window.api.onSettingsChanged?.((snapshot) => {
+    applyAppSettingsSnapshot(snapshot)
+  })
+  stopNotesChangedListener = window.api.onNotesChanged?.((event) => {
+    if (event?.reason === 'note-data-cleared') selectedNote.value = null
+  })
 
   // 通知主进程渲染已完成，可以安全地显示窗口了
   // 主进程收到后会调用 mainWindow.show()
@@ -129,6 +105,8 @@ async function onCreateNote() {
 }
 
 onUnmounted(() => {
+  stopSettingsListener?.()
+  stopNotesChangedListener?.()
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
 })
@@ -137,82 +115,82 @@ onUnmounted(() => {
 <template>
   <!-- 应用根容器：同时承载背景样式（.app-bg）和布局（.app-root） -->
   <div class="app-root app-bg">
-    <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
-    <ResizeHandles :locked="locked" />
-    <!-- Mac 风格标题栏，包含红绿灯按钮和标题文字 -->
-    <MacTitlebar v-model:locked="locked" v-model:always-on-top="alwaysOnTop">
-      <!-- 设置和帮助按钮组 -->
-      <div class="titlebar-actions-group">
-        <!-- 新增循环便签模板按钮（占位） -->
-        <button
-          class="titlebar-btn"
-          title="新增循环便签模板"
-        >
-          <svg class="btn-icon" viewBox="0 0 1024 1024">
-            <path
-              d="M 512 200 V 824"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="100"
-              stroke-linecap="round"
-            />
-            <path
-              d="M 200 512 H 824"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="100"
-              stroke-linecap="round"
-            />
-          </svg>
-        </button>
-        <!-- 设置按钮 -->
-        <button
-          class="titlebar-btn titlebar-btn-settings"
-          title="设置"
-          @click="showSettings = true"
-        >
-          <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
-        </button>
-        <!-- 帮助按钮（预留，暂未绑定功能） -->
-        <button class="titlebar-btn titlebar-btn-help" title="帮助">
-          <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
-        </button>
-      </div>
-    </MacTitlebar>
-    <!-- 主内容区域，flex:1 占据剩余空间，支持垂直滚动 -->
-    <main class="content">
-      <!-- 操作栏（新建 + 搜索，双模切换） -->
-      <ActionBar class="app-search"  @create="onCreateNote" />
+    <!-- 设置打开时，底层场景不可点击且不可获取键盘焦点。 -->
+    <div class="app-scene" :inert="showSettings">
+      <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
+      <ResizeHandles :locked="locked" />
+      <!-- Mac 风格标题栏，包含红绿灯按钮和标题文字 -->
+      <MacTitlebar v-model:locked="locked" v-model:always-on-top="alwaysOnTop">
+        <!-- 设置和帮助按钮组 -->
+        <div class="titlebar-actions-group">
+          <!-- 新增循环便签模板按钮（占位） -->
+          <button class="titlebar-btn" title="新增循环便签模板">
+            <svg class="btn-icon" viewBox="0 0 1024 1024">
+              <path
+                d="M 512 200 V 824"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="100"
+                stroke-linecap="round"
+              />
+              <path
+                d="M 200 512 H 824"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="100"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+          <!-- 设置按钮 -->
+          <button
+            class="titlebar-btn titlebar-btn-settings"
+            title="设置"
+            @click="showSettings = true"
+          >
+            <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
+          </button>
+          <!-- 帮助按钮（预留，暂未绑定功能） -->
+          <button class="titlebar-btn titlebar-btn-help" title="帮助">
+            <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
+          </button>
+        </div>
+      </MacTitlebar>
+      <!-- 主内容区域，flex:1 占据剩余空间，支持垂直滚动 -->
+      <main class="content">
+        <!-- 操作栏（新建 + 搜索，双模切换） -->
+        <ActionBar class="app-search" @create="onCreateNote" />
 
-      <!-- 列表视图（无选中便签时） -->
-      <NoteList
-        v-if="!selectedNote"
-        ref="noteListRef"
-        class="app-list"
-        @select="onSelectNote"
-        @create="onCreateNote"
-      />
-
-      <!-- 编辑视图（选中便签时） -->
-      <template v-else>
-        <NoteEditor
-          :note="selectedNote"
-          class="app-editor"
-          @saved="onNoteSaved"
-          @close="onCloseEditor"
+        <!-- 列表视图（无选中便签时） -->
+        <NoteList
+          v-if="!selectedNote"
+          ref="noteListRef"
+          class="app-list"
+          @select="onSelectNote"
+          @create="onCreateNote"
         />
-        <ScreenshotPicker
-          v-if="selectedNote"
-          :key="selectedNote.id"
-          :note-id="selectedNote.id"
-          mode="persist"
-          class="app-images"
-        />
-      </template>
-    </main>
 
-    <!-- 设置面板（底部弹出） -->
-    <SettingsPanel v-model:visible="showSettings" />
+        <!-- 编辑视图（选中便签时） -->
+        <template v-else>
+          <NoteEditor
+            :note="selectedNote"
+            class="app-editor"
+            @saved="onNoteSaved"
+            @close="onCloseEditor"
+          />
+          <ScreenshotPicker
+            v-if="selectedNote"
+            :key="selectedNote.id"
+            :note-id="selectedNote.id"
+            mode="persist"
+            class="app-images"
+          />
+        </template>
+      </main>
+    </div>
+
+    <!-- 设置面板关闭动画结束后将 visible 置为 false，随后真正卸载组件。 -->
+    <SettingsPanel v-if="showSettings" v-model:visible="showSettings" />
 
     <!-- 应用内消息弹窗（Apple 风格 Toast，固定顶部居中） -->
     <MessageToast />
@@ -226,7 +204,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column; /* 纵向排列：标题栏 → 内容区 */
   height: 100vh; /* 占满视口高度 */
-  border-radius: var(--window-radius, 12px); /* 用户可调的圆角，默认 12px */
+  border-radius: var(--window-radius); /* 用户可调的圆角 */
   -electron-corner-smoothing: system-ui; /* macOS 连续曲率圆角，Win/Linux 自动为 0% */
   overflow: hidden; /* 裁剪超出圆角的内容 */
   box-shadow: none; /* 主窗口主动取消阴影 */
@@ -237,6 +215,15 @@ onUnmounted(() => {
 
   /* 主窗口独立透明度（--window-opacity），与弹窗的 --popup-opacity 分离 */
   background-color: rgb(var(--bg-color) / var(--window-opacity));
+}
+
+/* 主界面独立成场景，便于模态设置面板统一隔离交互。 */
+.app-scene {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
 }
 
 /* 标题栏按钮通用样式 */
@@ -300,6 +287,6 @@ onUnmounted(() => {
   max-height: 25%;
   overflow-y: auto;
   padding-top: 8rem;
-  border-top: 1px solid rgb(var(--bg-color, 255 255 255) / 0.1);
+  border-top: 1px solid rgb(var(--bg-color) / 0.1);
 }
 </style>

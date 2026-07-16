@@ -197,7 +197,7 @@ public:
     }
 
 // ============================================================
-// GaussianBlurEffect — 高斯模糊（硬编码 30 DIP）
+// GaussianBlurEffect — 高斯模糊（创建管线时会由 BlurConfig 覆盖）
 // ============================================================
 class GaussianBlurEffect WrlFinal : public EffectBase<IGaussianBlurEffect>
 {
@@ -206,7 +206,7 @@ class GaussianBlurEffect WrlFinal : public EffectBase<IGaussianBlurEffect>
 public:
     DECLARE_D2D_GUID(CLSID_D2D1GaussianBlur);
     DECLARE_SINGLE_SOURCE(Source);
-    DECLARE_POD_PROPERTY(BlurAmount, float, 30.0f, value >= 0.0f && value <= 250.0f);
+    DECLARE_POD_PROPERTY(BlurAmount, float, 15.0f, value >= 0.0f && value <= 250.0f);
     DECLARE_POD_PROPERTY(Optimization, EffectOptimization, EffectOptimization_Balanced, true);
     DECLARE_POD_PROPERTY(BorderMode, EffectBorderMode, EffectBorderMode_Hard, true);
     DECLARE_NAMED_PROPERTY_MAPPING(

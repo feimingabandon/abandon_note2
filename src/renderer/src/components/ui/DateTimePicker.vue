@@ -437,12 +437,12 @@ function onLeave(el, done) {
   padding: 5rem 8rem 5rem 10rem;
   font-size: inherit; font-family: inherit; color: var(--text-color);
   background: rgba(255, 255, 255, 0.05);
-  border: 1rem solid rgb(var(--bg-color, 255 255 255) / 0.1);
+  border: 1rem solid rgb(var(--bg-color) / 0.1);
   border-radius: 6rem; cursor: pointer; outline: none;
   transition: border-color 150ms ease;
 }
-.dt-trigger:hover:not(.is-disabled) { border-color: rgb(var(--bg-color, 255 255 255) / 0.18); }
-.dt-trigger.is-open { border-color: rgb(var(--bg-color, 255 255 255) / 0.25); }
+.dt-trigger:hover:not(.is-disabled) { border-color: rgb(var(--bg-color) / 0.18); }
+.dt-trigger.is-open { border-color: rgb(var(--bg-color) / 0.25); }
 .dt-trigger.is-disabled { opacity: .4; cursor: not-allowed; }
 .dt-label { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .dt-label.is-placeholder { opacity: .4; }
@@ -463,7 +463,7 @@ function onLeave(el, done) {
   overflow: hidden;
 }
 .dt-panel { width: 320rem; height: 320rem; display: flex; flex-direction: column; }
-.dt-divider { height: 1px; margin: 0; background: rgb(var(--bg-color, 255 255 255) / 0.1); flex-shrink: 0; }
+.dt-divider { height: 1px; margin: 0; background: rgb(var(--bg-color) / 0.1); flex-shrink: 0; }
 
 /* ===== 上：time-header ===== */
 .dt-time-header { display: flex; align-items: stretch; padding: 0; flex: 2; min-height: 0; }

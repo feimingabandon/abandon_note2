@@ -13,6 +13,11 @@ import './assets/tokens.css' // 导入全局基础样式（唯一的全局 CSS �
 import './utils/smoothScroll.js' // 导入全局速度驱动平滑滚动（一次性，全应用生效）
 import { createApp } from 'vue' // Vue 3 应用创建函数
 import App from './App.vue' // 根组件
+import { DEFAULT_SETTINGS } from '../../shared/settings-schema.js'
+import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
+
+// Vue 首次渲染前先应用共享默认值；App 挂载后再用数据库解析出的完整快照覆盖。
+applySettingsSnapshot({ values: DEFAULT_SETTINGS })
 
 // 创建 Vue 应用实例并挂载到 index.html 中 id="app" 的 DOM 节点
 createApp(App).mount('#app')

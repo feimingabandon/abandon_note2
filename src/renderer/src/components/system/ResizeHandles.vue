@@ -29,7 +29,7 @@ const MIN_HEIGHT = 200
 defineProps({
   locked: {
     type: Boolean,
-    default: false
+    required: true
   }
 })
 

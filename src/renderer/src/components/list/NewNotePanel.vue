@@ -312,7 +312,7 @@ onBeforeUnmount(() => {
   font-weight: 500;
   color: var(--text-color);
   background: rgba(255, 255, 255, 0.05);
-  border: 1rem solid rgb(var(--bg-color, 255 255 255) / 0.1);
+  border: 1rem solid rgb(var(--bg-color) / 0.1);
   border-radius: 8rem;
   outline: none;
   resize: none;
@@ -321,7 +321,7 @@ onBeforeUnmount(() => {
   min-height: 90rem;
 }
 .nnp-textarea:focus {
-  border-color: rgb(var(--bg-color, 255 255 255) / 0.18);
+  border-color: rgb(var(--bg-color) / 0.18);
 }
 .nnp-textarea::placeholder {
   color: var(--text-color-secondary);

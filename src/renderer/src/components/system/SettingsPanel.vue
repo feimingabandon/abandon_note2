@@ -23,6 +23,8 @@ import AppSlider from '../ui/AppSlider.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import { useMessage } from '../../composables/useMessage.js' // 消息弹窗
+import { applySettingsSnapshot } from '../../utils/applySettingsSnapshot.js'
+import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
 
 // ---- 调度器健康数据 ----
 const schedulerHealth = ref(null)
@@ -63,60 +65,76 @@ const props = defineProps({
 
 const emit = defineEmits(['update:visible'])
 
-const WINDOW_NAME = 'main'
 const el = document.documentElement
 
 // ---- 面板动画控制 ----
 const rendered = ref(props.visible)
 const panelActive = ref(false)
 const panelRef = ref(null)
+const closeButtonRef = ref(null)
 const panelHeight = ref(70) // 面板高度百分比，默认 70%
+const isResetting = ref(false)
 
 /** 关闭动画定时器 ID，用于取消竞态关闭 */
 let closeTimer = null
+let openRaf = null
+let componentUnmounted = false
 
 // ---- 拖拽调整面板高度 ----
 let isDragging = false
+let dragPointerId = null
+let dragHandle = null
 let dragStartY = 0
 let dragStartHeight = 0
+let dragLatestY = 0
 let dragRaf = null
-const resizing = ref(false)
 
 function onDragStart(e) {
+  if (isResetting.value || e.button !== 0 || isDragging) return
+
   isDragging = true
-  resizing.value = true
+  dragPointerId = e.pointerId
+  dragHandle = e.currentTarget
   dragStartY = e.clientY
+  dragLatestY = e.clientY
   dragStartHeight = panelHeight.value
+  dragHandle.setPointerCapture(e.pointerId)
   if (panelRef.value) {
     panelRef.value.style.transition = 'none'
   }
-  document.addEventListener('mousemove', onDragMove)
-  document.addEventListener('mouseup', onDragEnd)
   e.preventDefault()
 }
 
 function onDragMove(e) {
-  if (!isDragging || !panelRef.value) return
+  if (!isDragging || e.pointerId !== dragPointerId || !panelRef.value) return
+  dragLatestY = e.clientY
   // RAF 节流：每帧只更新一次
   if (dragRaf) return
   dragRaf = requestAnimationFrame(() => {
     dragRaf = null
-    const wrapper = panelRef.value.parentElement
+    const panel = panelRef.value
+    if (!panel) return
+    const wrapper = panel.parentElement
     const wrapperHeight = wrapper ? wrapper.getBoundingClientRect().height : window.innerHeight
-    const deltaY = dragStartY - e.clientY
+    const deltaY = dragStartY - dragLatestY
     const deltaPct = (deltaY / wrapperHeight) * 100
     let newHeight = dragStartHeight + deltaPct
     newHeight = Math.max(25, Math.min(95, newHeight))
     newHeight = Math.round(newHeight)
     // 直接操作 DOM 绕过 Vue 响应式
-    panelRef.value.style.height = newHeight + '%'
+    panel.style.height = newHeight + '%'
     panelHeight.value = newHeight
   })
 }
 
-function onDragEnd() {
+function onDragEnd(e) {
+  if (!isDragging || (e && e.pointerId !== dragPointerId)) return
+
+  const pointerId = dragPointerId
+  const handle = dragHandle
   isDragging = false
-  resizing.value = false
+  dragPointerId = null
+  dragHandle = null
   if (dragRaf) {
     cancelAnimationFrame(dragRaf)
     dragRaf = null
@@ -125,15 +143,8 @@ function onDragEnd() {
     panelRef.value.style.transition = ''
     panelRef.value.style.height = panelHeight.value + '%'
   }
-  document.removeEventListener('mousemove', onDragMove)
-  document.removeEventListener('mouseup', onDragEnd)
+  if (handle?.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId)
 }
-
-// 清理拖拽监听（组件卸载时）
-onBeforeUnmount(() => {
-  document.removeEventListener('mousemove', onDragMove)
-  document.removeEventListener('mouseup', onDragEnd)
-})
 
 /** 点击面板外区域关闭（排除自身弹窗内的点击） */
 const onDocClick = (e) => {
@@ -149,7 +160,12 @@ onMounted(() => document.addEventListener('click', onDocClick, true))
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
 
 const close = () => {
+  if (isResetting.value || closeTimer) return
+  onDragEnd()
   panelActive.value = false
+  Promise.all([flushPendingSettingSaves(), flushPendingBlurConfig()]).catch((e) =>
+    console.warn('[SettingsPanel] 关闭前保存设置失败:', e)
+  )
   closeTimer = setTimeout(() => {
     closeTimer = null
     rendered.value = false
@@ -178,10 +194,10 @@ watch(
 )
 
 // ---- 基础样式设置 ----
-const bgColor = ref('255 255 255')
-const bgBorder = ref(true)
-const fontSizeBase = ref(18)
-const textColor = ref('#000000')
+const bgColor = ref(DEFAULT_SETTINGS.css.bgColor)
+const bgBorder = ref(DEFAULT_SETTINGS.css.bgBorder)
+const fontSizeBase = ref(DEFAULT_SETTINGS.css.fontSizeBase)
+const textColor = ref(DEFAULT_SETTINGS.css.textColor)
 
 /** 字体大小预设（datalist 选项） */
 const fontSizePresets = [14, 15, 16, 17, 18, 19, 20, 21, 22]
@@ -193,7 +209,7 @@ const hexPresets = [
 ]
 
 // ---- 文字颜色输入校验 ----
-const textColorInput = ref('#000000')
+const textColorInput = ref(textColor.value)
 const textColorInputError = ref(false)
 
 // ---- 背景颜色 hex 显示与校验 ----
@@ -204,7 +220,7 @@ const bgColorHex = computed(() => {
     '#' + parts.map((p) => Math.min(255, Math.max(0, p)).toString(16).padStart(2, '0')).join('')
   )
 })
-const bgColorInput = ref('#ffffff')
+const bgColorInput = ref(bgColorHex.value)
 const bgColorInputError = ref(false)
 
 /** 验证十六进制颜色格式 */
@@ -291,36 +307,39 @@ function setBgColorPreset(hex) {
 const autoStart = ref(false)
 const autoStartError = ref(null) // 持久错误（null = 无错误），恒显示不自动消失
 
-/** 开机自启状态是否已从 OS 同步完成（防止首次同步触发持久化） */
+/** 开机自启状态是否已从 OS 同步完成（防止首次读取触发重复设置） */
 let _autoStartSynced = false
+let _autoStartRequestRevision = 0
+const inFlightAutoStartWrites = new Set()
+let _settingsSynced = false
 
 // ---- 系统模糊设置 ----
 const blurCaps = ref({ supported: false, platform: '', strategy: 'none' })
-const blurEnabled = ref(true) // 启用毛玻璃，默认开启
+const blurEnabled = ref(DEFAULT_SETTINGS.blur.enabled)
 const blurError = ref(null) // 持久错误（如 DLL 未加载），恒显示不自动消失
-const blurRadius = ref(15) // 模糊半径，默认 15，范围 0-100
-const blurOpacity = ref(1.0) // 系统模糊层透明度，开启时默认 1.0
-const blurTintR = ref(255)
-const blurTintG = ref(255)
-const blurTintB = ref(255)
-const blurSaturation = ref(1.8)
-const blurCornerRadius = ref(12)
+const blurRadius = ref(DEFAULT_SETTINGS.blur.radius)
+const blurOpacity = ref(DEFAULT_SETTINGS.blur.opacity)
+const blurTintR = ref(DEFAULT_SETTINGS.blur.tint.r)
+const blurTintG = ref(DEFAULT_SETTINGS.blur.tint.g)
+const blurTintB = ref(DEFAULT_SETTINGS.blur.tint.b)
+const blurSaturation = ref(DEFAULT_SETTINGS.blur.saturation)
+const blurCornerRadius = ref(DEFAULT_SETTINGS.blur.cornerRadius)
 let _blurSynced = false
 
 // ---- 窗口透明度（仅系统模糊关闭时显示） ----
-const windowOpacity = ref(0.5) // 默认 0.5 = 半透明
+const windowOpacity = ref(DEFAULT_SETTINGS.css.windowOpacity)
 
 // ---- CSS 组件模糊设置 ----
-const cssBlur = ref(5) // CSS 模糊半径，默认 5px
-const cssOpacity = ref(0.5) // CSS 组件透明度，默认 50%
-const cssSaturation = ref(1.8) // CSS 饱和度，默认 1.8
+const cssBlur = ref(DEFAULT_SETTINGS.css.bgBlur)
+const cssOpacity = ref(DEFAULT_SETTINGS.css.popupOpacity)
+const cssSaturation = ref(DEFAULT_SETTINGS.css.bgSaturation)
 const blurTintHex = computed(() => {
   const r = blurTintR.value.toString(16).padStart(2, '0')
   const g = blurTintG.value.toString(16).padStart(2, '0')
   const b = blurTintB.value.toString(16).padStart(2, '0')
   return `#${r}${g}${b}`
 })
-const blurTintInput = ref('#ffffff')
+const blurTintInput = ref(blurTintHex.value)
 const blurTintInputError = ref(false)
 
 // ---- 模糊着色：输入变更 ----
@@ -362,15 +381,27 @@ function setBlurTintPreset(hex) {
 const { showMessage } = useMessage()
 
 // ---- 确认弹窗状态 ----
-const showResetDbDialog = ref(false)
-const showResetUIDialog = ref(false)
+const showClearNoteDataDialog = ref(false)
+const showResetSettingsDialog = ref(false)
+
+async function assignAutoStartWithoutWrite(value) {
+  _autoStartSynced = false
+  autoStart.value = Boolean(value)
+  await nextTick()
+  _autoStartSynced = true
+}
 
 watch(autoStart, async (v) => {
-  if (!_autoStartSynced) return
+  if (!_autoStartSynced || isResetting.value) return
+  const requestRevision = ++_autoStartRequestRevision
+  let request = null
 
   try {
-    // 写入 OS + 数据库，并获取 OS 确认的真实状态
-    const verified = await window.api.setAutoStart(v)
+    // 写入 OS，并获取 OS 回读确认的真实状态（不进入 app_settings）。
+    request = window.api.setAutoStart(v)
+    inFlightAutoStartWrites.add(request)
+    const verified = await request
+    if (requestRevision !== _autoStartRequestRevision) return
 
     if (verified === v) {
       // OS 确认成功 → 清除持久错误 + 成功 Toast
@@ -378,79 +409,115 @@ watch(autoStart, async (v) => {
       showMessage('success', v ? '开机自启已开启' : '开机自启已关闭')
     } else {
       // OS 状态与请求不符 → 回滚 UI + 持久错误
-      autoStart.value = verified
+      await assignAutoStartWithoutWrite(verified)
       autoStartError.value = v
         ? '开启失败，请检查系统安全软件是否拦截了开机启动权限'
         : '关闭失败，请检查系统权限设置'
     }
   } catch (e) {
+    if (requestRevision !== _autoStartRequestRevision) return
     console.warn('[SettingsPanel] 设置开机自启失败:', e)
+    try {
+      const actual = await window.api.verifyAutoStart()
+      if (requestRevision !== _autoStartRequestRevision) return
+      await assignAutoStartWithoutWrite(actual.value)
+    } catch {
+      // OS 回读也失败时保留当前控件值，并在下次打开设置时重新查询。
+    }
     autoStartError.value = '设置失败，请重试'
+  } finally {
+    if (request) inFlightAutoStartWrites.delete(request)
   }
 })
 
 // ---- 防抖保存工具 ----
 const debounceTimers = {}
-function debouncedSave(type, key, value, remark = '') {
-  if (debounceTimers[key]) clearTimeout(debounceTimers[key])
-  debounceTimers[key] = setTimeout(() => {
-    window.api.setSetting(WINDOW_NAME, type, key, String(value), remark)
+const pendingSaves = {}
+const inFlightSettingSaves = new Set()
+
+function persistSetting(pending) {
+  const request = window.api.setSettingValue(pending.id, pending.value)
+  inFlightSettingSaves.add(request)
+  request.then(
+    () => inFlightSettingSaves.delete(request),
+    () => inFlightSettingSaves.delete(request)
+  )
+  return request
+}
+
+function debouncedSave(id, value) {
+  if (!_settingsSynced || isResetting.value) return
+  if (debounceTimers[id]) clearTimeout(debounceTimers[id])
+  pendingSaves[id] = { id, value }
+  debounceTimers[id] = setTimeout(() => {
+    delete debounceTimers[id]
+    const pending = pendingSaves[id]
+    delete pendingSaves[id]
+    if (!pending || isResetting.value) return
+    persistSetting(pending)
+      .catch((e) => console.warn(`[SettingsPanel] 保存设置 ${pending.id} 失败:`, e))
   }, 300)
+}
+
+function clearPendingSettingSaves() {
+  Object.values(debounceTimers).forEach((timer) => clearTimeout(timer))
+  Object.keys(debounceTimers).forEach((key) => delete debounceTimers[key])
+  Object.keys(pendingSaves).forEach((key) => delete pendingSaves[key])
+}
+
+async function flushPendingSettingSaves() {
+  const saves = Object.values(pendingSaves)
+  clearPendingSettingSaves()
+  await Promise.all(saves.map(persistSetting))
 }
 // ---- 实时生效 watchers ----
 
 // 背景颜色 → CSS --bg-color (基础样式，主窗口+组件共用)
 watch(bgColor, (v) => {
   el.style.setProperty('--bg-color', v)
-  debouncedSave('css', 'bg_color', v, '背景颜色（十六进制，如 #ffffff）')
+  debouncedSave('css.bgColor', v)
 })
 
 // ---- CSS 组件模糊：模糊半径 → CSS --bg-blur ----
 watch(cssBlur, (v) => {
   el.style.setProperty('--bg-blur', v + 'px')
-  debouncedSave('css', 'bg_blur', String(v), 'CSS 背景模糊半径（像素值，如 5）')
+  debouncedSave('css.bgBlur', v)
 })
 
 // ---- CSS 组件模糊：透明度 → CSS --popup-opacity ----
 watch(cssOpacity, (v) => {
   el.style.setProperty('--popup-opacity', v)
-  debouncedSave('css', 'win_opacity', v, '组件透明度（0~1 浮点数）')
+  debouncedSave('css.popupOpacity', v)
 })
 
 // ---- CSS 组件模糊：饱和度 → CSS --bg-saturation ----
 watch(cssSaturation, (v) => {
   el.style.setProperty('--bg-saturation', v)
-  debouncedSave('css', 'bg_saturation', v, 'CSS 饱和度（0~2 浮点数）')
+  debouncedSave('css.bgSaturation', v)
 })
 
 // ---- 窗口透明度 ----
 watch(windowOpacity, (v) => {
   el.style.setProperty('--window-opacity', v)
-  debouncedSave('css', 'window_opacity', v, '窗口透明度（0~1 浮点数）')
+  debouncedSave('css.windowOpacity', v)
 })
 
 // ---- CSS 组件模糊：边框开关 → CSS --bg-border ----
 watch(bgBorder, (v) => {
   el.style.setProperty('--bg-border', v ? '1' : '0')
-  window.api.setSetting(
-    WINDOW_NAME,
-    'css',
-    'bg_border',
-    v ? '1' : '0',
-    '边框显示开关（1=显示, 0=隐藏）'
-  )
+  debouncedSave('css.bgBorder', v)
 })
 
 // 字体大小 → CSS --font-size-base
 watch(fontSizeBase, (v) => {
   el.style.setProperty('--font-size-base', v + 'rem')
-  debouncedSave('css', 'font_size_base', v, '基准字号（rem 单位数值）')
+  debouncedSave('css.fontSizeBase', v)
 })
 
 // 文字颜色 → CSS --text-color
 watch(textColor, (v) => {
   el.style.setProperty('--text-color', v)
-  debouncedSave('css', 'text_color', v, '文字颜色（十六进制，如 #333333）')
+  debouncedSave('css.textColor', v)
 })
 
 // 同步文字颜色输入显示值
@@ -472,24 +539,58 @@ watch(blurTintHex, (v) => {
 })
 
 // ---- 系统模糊 watch（防抖发送到主进程） ----
+const inFlightBlurSyncs = new Set()
+
 function syncBlurConfig() {
-  if (!_blurSynced) return
-  window.api
-    .setBlurConfig({
-      enabled: blurEnabled.value,
-      radius: blurRadius.value,
-      opacity: blurOpacity.value,
-      saturation: blurSaturation.value,
-      cornerRadius: blurCornerRadius.value,
-      tint: { r: blurTintR.value, g: blurTintG.value, b: blurTintB.value }
-    })
+  if (!_blurSynced || isResetting.value) return Promise.resolve()
+  const request = window.api.setBlurConfig({
+    enabled: blurEnabled.value,
+    radius: blurRadius.value,
+    opacity: blurOpacity.value,
+    saturation: blurSaturation.value,
+    cornerRadius: blurCornerRadius.value,
+    tint: { r: blurTintR.value, g: blurTintG.value, b: blurTintB.value }
+  })
+  inFlightBlurSyncs.add(request)
+  request.then(
+    () => inFlightBlurSyncs.delete(request),
+    () => inFlightBlurSyncs.delete(request)
+  )
+  return request
     .catch((e) => console.warn('[SettingsPanel] 同步模糊配置失败:', e))
 }
 
 let _blurSyncTimer = null
 function debouncedSyncBlur() {
+  if (!_blurSynced || isResetting.value) return
   if (_blurSyncTimer) clearTimeout(_blurSyncTimer)
-  _blurSyncTimer = setTimeout(syncBlurConfig, 150)
+  _blurSyncTimer = setTimeout(() => {
+    _blurSyncTimer = null
+    if (isResetting.value) return
+    syncBlurConfig()
+  }, 150)
+}
+
+function flushPendingBlurConfig() {
+  if (!_blurSyncTimer) return Promise.resolve()
+  clearTimeout(_blurSyncTimer)
+  _blurSyncTimer = null
+  return syncBlurConfig()
+}
+
+function cancelPendingBlurConfig() {
+  if (!_blurSyncTimer) return
+  clearTimeout(_blurSyncTimer)
+  _blurSyncTimer = null
+}
+
+async function waitForInFlightWrites() {
+  const requests = [
+    ...inFlightSettingSaves,
+    ...inFlightBlurSyncs,
+    ...inFlightAutoStartWrites
+  ]
+  await Promise.allSettled(requests)
 }
 
 watch(blurEnabled, debouncedSyncBlur)
@@ -505,82 +606,115 @@ watch(blurCornerRadius, (v) => {
   document.documentElement.style.setProperty('--window-radius', v + 'px')
 })
 
-// ---- 挂载时加载持久化设置 ----
-onMounted(async () => {
-  try {
-    const cssSettings = await window.api.getSettings(WINDOW_NAME, 'css')
-    cssSettings.forEach(({ key, value }) => {
-      if (key === 'bg_color') bgColor.value = value
-      else if (key === 'win_opacity') cssOpacity.value = parseFloat(value)
-      else if (key === 'bg_blur') cssBlur.value = parseInt(value)
-      else if (key === 'bg_saturation') cssSaturation.value = parseFloat(value)
-      else if (key === 'window_opacity') windowOpacity.value = parseFloat(value)
-      else if (key === 'bg_border') bgBorder.value = value === '1'
-      else if (key === 'font_size_base') fontSizeBase.value = parseInt(value)
-      else if (key === 'text_color') textColor.value = value
-    })
-  } catch (e) {
-    console.warn('[SettingsPanel] 加载设置失败:', e)
+function assignSettingsSnapshot(snapshot) {
+  const css = snapshot.values.css
+  const blur = snapshot.values.blur
+  const runtimeBlur = snapshot.runtime?.blur
+  const runtimeAutoStart = snapshot.runtime?.autoStart
+
+  bgColor.value = css.bgColor
+  cssOpacity.value = css.popupOpacity
+  cssBlur.value = css.bgBlur
+  cssSaturation.value = css.bgSaturation
+  windowOpacity.value = css.windowOpacity
+  bgBorder.value = css.bgBorder
+  fontSizeBase.value = css.fontSizeBase
+  textColor.value = css.textColor
+
+  blurEnabled.value = blur.enabled
+  blurRadius.value = blur.radius
+  blurOpacity.value = blur.opacity
+  blurSaturation.value = blur.saturation
+  blurCornerRadius.value = blur.cornerRadius
+  blurTintR.value = blur.tint.r
+  blurTintG.value = blur.tint.g
+  blurTintB.value = blur.tint.b
+
+  if (runtimeBlur) {
+    blurCaps.value = {
+      supported: runtimeBlur.supported,
+      platform: runtimeBlur.platform,
+      strategy: runtimeBlur.strategy
+    }
+    blurError.value = runtimeBlur.error ?? null
   }
 
-  // 校验开机自启（DB 为权威，同步 OS，失败则显示持久错误）
-  try {
-    _autoStartSynced = false
-    const result = await window.api.verifyAutoStart()
-    autoStart.value = result.value
-    autoStartError.value = result.error
-    await nextTick() // 等待 Vue watcher 冲刷完毕，避免首次赋值触发持久化
-    _autoStartSynced = true
-  } catch (e) {
-    console.warn('[SettingsPanel] 校验开机自启失败:', e)
-    _autoStartSynced = true // 即使失败也放开监听，允许用户手动切换
+  if (runtimeAutoStart) {
+    autoStart.value = runtimeAutoStart.value
+    autoStartError.value = runtimeAutoStart.error ?? null
   }
 
-  // 加载系统模糊配置
+  applySettingsSnapshot(snapshot)
+}
+
+async function loadSettingsSnapshot() {
+  _autoStartRequestRevision += 1
+  _settingsSynced = false
+  _blurSynced = false
+  _autoStartSynced = false
+  clearPendingSettingSaves()
+  cancelPendingBlurConfig()
+
   try {
-    blurCaps.value = await window.api.getBlurCapabilities()
-    const savedBlur = await window.api.getBlurConfig()
-    if (savedBlur) {
-      blurEnabled.value = savedBlur.enabled ?? true
-      blurRadius.value = savedBlur.radius ?? 10
-      blurOpacity.value = savedBlur.opacity ?? 1.0
-      blurSaturation.value = savedBlur.saturation ?? 1.8
-      blurCornerRadius.value = savedBlur.cornerRadius ?? 12
-      if (savedBlur.tint) {
-        blurTintR.value = savedBlur.tint.r ?? 255
-        blurTintG.value = savedBlur.tint.g ?? 255
-        blurTintB.value = savedBlur.tint.b ?? 255
+    const snapshot = await window.api.getSettingsSnapshot()
+    assignSettingsSnapshot(snapshot)
+  } catch (e) {
+    const message = '读取设置失败，当前显示共享默认值'
+    assignSettingsSnapshot({
+      values: DEFAULT_SETTINGS,
+      runtime: {
+        autoStart: { value: autoStart.value, error: message },
+        blur: {
+          supported: false,
+          platform: '',
+          strategy: 'none',
+          error: message
+        }
       }
-    }
-    _blurSynced = true
-  } catch (e) {
-    console.warn('[SettingsPanel] 加载模糊配置失败:', e)
-    _blurSynced = true
+    })
+    console.warn('[SettingsPanel] 加载设置快照失败，使用共享默认值:', e)
   }
 
-  // 校验毛玻璃运行时状态（DB 为权威，失败则显示持久错误）
-  try {
-    const result = await window.api.verifyBlurEnabled()
-    if (result.error) {
-      blurError.value = result.error
-      blurEnabled.value = result.value // 使用实际状态（如 DLL 未加载 → false）
-    }
-  } catch (e) {
-    console.warn('[SettingsPanel] 校验毛玻璃状态失败:', e)
-  }
+  await nextTick()
+  _settingsSynced = true
+  _blurSynced = true
+  _autoStartSynced = true
+}
 
-  // 启动调度器健康检查（每 10 秒刷新）
+// 每次父组件打开设置时都会重新挂载本组件，因此这里必定重新查询完整快照。
+onMounted(async () => {
+  await loadSettingsSnapshot()
+  if (componentUnmounted) return
+
   loadSchedulerHealth()
   _schedulerTimer = setInterval(loadSchedulerHealth, 10000)
+
+  await nextTick()
+  if (componentUnmounted) return
+  openRaf = requestAnimationFrame(() => {
+    openRaf = null
+    if (!props.visible || componentUnmounted) return
+    panelActive.value = true
+    closeButtonRef.value?.focus({ preventScroll: true })
+  })
 })
 
 onBeforeUnmount(() => {
-  // 清理所有待执行的防抖定时器，避免组件销毁后触发 IPC 写库
-  Object.values(debounceTimers).forEach((t) => clearTimeout(t))
+  componentUnmounted = true
+  onDragEnd()
+  // 正常关闭时这里已完成 flush；强制卸载时也不能丢失最后一次修改。
+  flushPendingSettingSaves().catch((e) =>
+    console.warn('[SettingsPanel] 卸载前保存设置失败:', e)
+  )
+  flushPendingBlurConfig()
   // 清理关闭动画定时器
   if (closeTimer) {
     clearTimeout(closeTimer)
     closeTimer = null
+  }
+  if (openRaf) {
+    cancelAnimationFrame(openRaf)
+    openRaf = null
   }
   // 清理模糊同步定时器
   if (_blurSyncTimer) {
@@ -594,53 +728,50 @@ onBeforeUnmount(() => {
   }
 })
 
-/** 确认重置数据库 —— 清空除设置外的所有业务数据（便签/模板/标签/附件），保留 app_settings */
-const onConfirmResetDatabase = async () => {
+/** 清空除设置外的业务数据（便签/模板/标签/附件），保留 app_settings。 */
+const onConfirmClearNoteData = async () => {
   try {
-    await window.api.resetDatabase()
-    showMessage('success', '业务数据已重置，设置已保留')
+    await window.api.clearNoteData()
+    showMessage('success', '便签数据已清空，设置已保留')
   } catch (e) {
-    console.warn('[SettingsPanel] 重置数据库失败:', e)
-    showMessage('error', '重置数据库失败，请重试', 4000)
+    console.warn('[SettingsPanel] 清空便签数据失败:', e)
+    showMessage('error', '清空便签数据失败，请重试', 4000)
   }
 }
 
-/** 确认恢复默认设置 —— 重置 UI + 窗口几何，并将默认值持久化到数据库 */
-const onConfirmResetUI = async () => {
-  resetUI()
-  try {
-    await window.api.resetWindowGeometry()
-  } catch (e) {
-    console.warn('[SettingsPanel] 重置窗口几何失败:', e)
-  }
-  showMessage('success', '已恢复默认设置')
-}
+/** 清空设置表，并使用主进程返回的共享默认快照同步运行时和控件。 */
+const onConfirmResetSettings = async () => {
+  if (isResetting.value) return
 
-/** 恢复默认设置 —— 重置 UI + 同步模糊/自启 */
-const resetUI = () => {
-  bgColor.value = '255 255 255'
-  cssOpacity.value = 0.5
-  cssBlur.value = 5
-  cssSaturation.value = 1.8
-  windowOpacity.value = 0.5
-  bgBorder.value = true
-  fontSizeBase.value = 18
-  textColor.value = '#000000'
-  blurEnabled.value = true
-  blurOpacity.value = 1.0
-  blurRadius.value = 15
-  blurTintR.value = 255
-  blurTintG.value = 255
-  blurTintB.value = 255
-  blurSaturation.value = 1.8
-  blurCornerRadius.value = 12
-  autoStart.value = true
-  // 清除所有持久错误
-  autoStartError.value = null
-  blurError.value = null
-  textColorInputError.value = false
-  bgColorInputError.value = false
-  blurTintInputError.value = false
+  // 立即进入临界区：新的交互和 watcher 写入均被阻断；尚未触发的修改直接丢弃，
+  // 已经发往主进程的写入则先等待完成，确保随后清表一定是最后一次持久化操作。
+  isResetting.value = true
+  _settingsSynced = false
+  _blurSynced = false
+  _autoStartSynced = false
+  _autoStartRequestRevision += 1
+  onDragEnd()
+  clearPendingSettingSaves()
+  cancelPendingBlurConfig()
+
+  try {
+    await waitForInFlightWrites()
+
+    const snapshot = await window.api.resetSettings()
+    assignSettingsSnapshot(snapshot)
+    await nextTick()
+
+    showMessage('success', '已恢复默认设置')
+  } catch (e) {
+    console.warn('[SettingsPanel] 恢复默认设置失败:', e)
+    showMessage('error', '恢复默认设置失败，请重试', 4000)
+    await loadSettingsSnapshot()
+  } finally {
+    _settingsSynced = true
+    _blurSynced = true
+    _autoStartSynced = true
+    isResetting.value = false
+  }
 }
 </script>
 
@@ -653,18 +784,36 @@ const resetUI = () => {
       <div
         ref="panelRef"
         class="settings-panel app-bg"
-        :class="{ active: panelActive, 'is-resizing': resizing }"
+        :class="{ active: panelActive, 'is-resetting': isResetting }"
         :style="{ height: panelHeight + '%' }"
+        :aria-busy="isResetting"
       >
         <!-- 顶部拖拽指示条（拖拽调整面板高度） -->
-        <div class="drag-indicator" @mousedown="onDragStart">
+        <div
+          class="drag-indicator"
+          :class="{ 'is-disabled': isResetting }"
+          @pointerdown="onDragStart"
+          @pointermove="onDragMove"
+          @pointerup="onDragEnd"
+          @pointercancel="onDragEnd"
+          @lostpointercapture="onDragEnd"
+        >
           <div class="drag-bar" />
         </div>
 
         <!-- 面板头部 -->
         <div class="panel-header">
           <h2 class="panel-title">设置</h2>
-          <button class="panel-close-btn" title="关闭" @click="close">
+          <span v-if="isResetting" class="panel-reset-status" role="status" aria-live="polite">
+            正在恢复默认设置…
+          </span>
+          <button
+            ref="closeButtonRef"
+            class="panel-close-btn"
+            title="关闭"
+            :disabled="isResetting"
+            @click="close"
+          >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
               <path
                 d="M1 1L13 13M1 13L13 1"
@@ -677,7 +826,12 @@ const resetUI = () => {
         </div>
 
         <!-- 面板内容（可滚动） -->
-        <div class="panel-body scroll-y">
+        <fieldset
+          class="panel-body scroll-y settings-controls"
+          :class="{ 'is-resetting': isResetting }"
+          :disabled="isResetting"
+          :inert="isResetting"
+        >
           <!-- ========== 系统窗口模糊玻璃效果 ========== -->
           <section v-if="blurCaps.supported" class="settings-section">
             <h3 class="section-title">系统窗口模糊玻璃效果</h3>
@@ -917,13 +1071,21 @@ const resetUI = () => {
             </div>
 
             <div class="setting-item setting-item-full">
-              <BaseButton variant="danger" style="width: 100%" @click="showResetDbDialog = true">
-                重置数据库
+              <BaseButton
+                variant="danger"
+                style="width: 100%"
+                @click="showClearNoteDataDialog = true"
+              >
+                清空便签数据
               </BaseButton>
             </div>
 
             <div class="setting-item setting-item-full">
-              <BaseButton variant="default" style="width: 100%" @click="showResetUIDialog = true">
+              <BaseButton
+                variant="default"
+                style="width: 100%"
+                @click="showResetSettingsDialog = true"
+              >
                 恢复默认设置
               </BaseButton>
             </div>
@@ -1047,30 +1209,30 @@ const resetUI = () => {
               </div>
             </div>
           </section>
-        </div>
+        </fieldset>
       </div>
     </div>
 
-    <!-- 重置数据库确认弹窗 -->
+    <!-- 清空便签数据确认弹窗 -->
     <ConfirmDialog
-      v-model:visible="showResetDbDialog"
-      title="重置数据库"
-      message="此操作将清空所有便签、模板、标签和附件数据（直接物理删除），设置项（样式、窗口等）不受影响。此操作不可撤销。"
-      confirm-text="重置"
+      v-model:visible="showClearNoteDataDialog"
+      title="清空便签数据"
+      message="此操作将清空所有便签、模板、标签和附件数据，设置不受影响。此操作不可撤销。"
+      confirm-text="清空"
       cancel-text="取消"
       variant="danger"
-      @confirm="onConfirmResetDatabase"
+      @confirm="onConfirmClearNoteData"
     />
 
     <!-- 恢复默认设置确认弹窗 -->
     <ConfirmDialog
-      v-model:visible="showResetUIDialog"
+      v-model:visible="showResetSettingsDialog"
       title="恢复默认设置"
-      message="将所有样式（透明度、模糊、颜色、字体缩放等）恢复为默认值，并将窗口宽高重置为默认（屏幕 25% × 90%），同时保存到数据库。"
+      message="此操作将清空设置表，并立即应用全局默认设置。已保存的窗口位置和大小也会被清除，但当前窗口不会立即移动；开机自启状态不受影响。"
       confirm-text="恢复"
       cancel-text="取消"
       variant="default"
-      @confirm="onConfirmResetUI"
+      @confirm="onConfirmResetSettings"
     />
   </Teleport>
 </template>
@@ -1081,8 +1243,9 @@ const resetUI = () => {
   position: fixed;
   inset: 0;
   z-index: 1000;
-  pointer-events: none;
-  border-radius: var(--window-radius, 12px); /* 同步窗口圆角，裁剪面板直角 */
+  /* 透明模态层接住面板外点击；底层 .app-scene 同时由 inert 阻断交互。 */
+  pointer-events: auto;
+  border-radius: var(--window-radius); /* 同步窗口圆角，裁剪面板直角 */
   overflow: hidden; /* 裁剪超出圆角的内容 */
 }
 
@@ -1105,14 +1268,6 @@ const resetUI = () => {
   overflow: hidden;
 }
 
-/* 拖拽时暂停 backdrop-filter 和 transition，避免卡顿 */
-.settings-panel.is-resizing,
-.settings-panel.is-resizing::before,
-.settings-panel.is-resizing::after {
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-}
-
 .settings-panel.active {
   transform: translateY(0);
 }
@@ -1125,6 +1280,11 @@ const resetUI = () => {
   flex-shrink: 0;
   cursor: ns-resize;
   user-select: none;
+  touch-action: none;
+}
+.drag-indicator.is-disabled {
+  cursor: wait;
+  opacity: 0.45;
 }
 .drag-bar {
   width: 36rem;
@@ -1147,6 +1307,12 @@ const resetUI = () => {
   color: var(--text-color);
   letter-spacing: -0.2rem;
 }
+.panel-reset-status {
+  margin-left: auto;
+  margin-right: 10rem;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+}
 .panel-close-btn {
   width: 28rem;
   height: 28rem;
@@ -1164,6 +1330,10 @@ const resetUI = () => {
 .panel-close-btn:hover {
   background-color: rgba(255, 255, 255, 0.15);
   opacity: 1;
+}
+.panel-close-btn:disabled {
+  cursor: wait;
+  opacity: 0.35;
 }
 
 /* ---- 面板内容区 ---- */
@@ -1189,6 +1359,14 @@ const resetUI = () => {
     black calc(100% - 30rem),
     transparent 100%
   );
+}
+.panel-body.is-resetting {
+  cursor: wait;
+  opacity: 0.55;
+}
+.settings-controls {
+  min-inline-size: 0;
+  border: 0;
 }
 
 /* ---- 设置分区 ---- */

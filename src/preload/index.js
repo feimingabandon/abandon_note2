@@ -27,14 +27,10 @@ const api = {
   // ---- 窗口锁定 ----
   /** 切换窗口锁定状态（禁止/允许移动和缩放），返回新的锁定状态 */
   toggleLock: () => ipcRenderer.invoke('toggle-lock'),
-  /** 获取当前锁定状态 */
-  getLockState: () => ipcRenderer.invoke('get-lock-state'),
 
   // ---- 窗口置顶 ----
   /** 切换窗口置顶状态，返回新的置顶状态 */
   toggleAlwaysOnTop: () => ipcRenderer.invoke('toggle-always-on-top'),
-  /** 获取当前置顶状态 */
-  getAlwaysOnTop: () => ipcRenderer.invoke('get-always-on-top'),
 
   // ---- 缩放手柄（窗口边界操作） ----
   /** 获取当前窗口的位置和尺寸（双向通信，返回 Promise） */
@@ -42,16 +38,19 @@ const api = {
   /** 设置窗口的位置和尺寸（单向通信） */
   setWindowBounds: (bounds) => ipcRenderer.send('window-set-bounds', bounds),
 
-  // ---- 数据库桥接（双向通信，均返回 Promise） ----
-  /** 按类型批量获取设置 */
-  getSettings: (windowName, type) => ipcRenderer.invoke('get-settings', windowName, type),
-  /** 获取单个设置值 */
-  getSetting: (windowName, key) => ipcRenderer.invoke('get-setting', windowName, key),
-  /** 写入/更新设置 */
-  setSetting: (windowName, type, key, value, remark = '') =>
-    ipcRenderer.invoke('set-setting', windowName, type, key, value, remark),
-  /** 删除设置 */
-  deleteSetting: (windowName, key) => ipcRenderer.invoke('delete-setting', windowName, key),
+  // ---- 设置桥接（双向通信，均返回 Promise） ----
+  /** 按共享 schema ID 写入设置；数据库键名和校验不暴露给 renderer */
+  setSettingValue: (id, value) => ipcRenderer.invoke('set-setting-value', id, value),
+  /** 获取 DB 值覆盖共享默认值后的完整设置快照 */
+  getSettingsSnapshot: () => ipcRenderer.invoke('get-settings-snapshot'),
+  /** 清空 app_settings 并恢复共享默认设置（不影响业务数据和开机自启） */
+  resetSettings: () => ipcRenderer.invoke('reset-settings'),
+  /** 监听设置快照变化；返回取消监听函数 */
+  onSettingsChanged: (callback) => {
+    const handler = (_event, snapshot) => callback(snapshot)
+    ipcRenderer.on('settings:changed', handler)
+    return () => ipcRenderer.removeListener('settings:changed', handler)
+  },
 
   // ---- 生命周期通知 ----
   /** 通知主进程渲染已就绪，可以显示窗口了 */
@@ -63,26 +62,17 @@ const api = {
   /** 边缘触发窗口：鼠标进入边缘时通知主进程恢复窗口 */
   triggerEnter: () => ipcRenderer.send('trigger-enter'),
 
-  // ---- 数据库重置 ----
-  resetDatabase: () => ipcRenderer.invoke('reset-database'),
-
-  // ---- 窗口几何重置 ----
-  /** 恢复窗口为默认宽高（屏幕 25% × 90%），保留当前位置 */
-  resetWindowGeometry: () => ipcRenderer.invoke('reset-window-geometry'),
+  // ---- 便签数据清理 ----
+  /** 清空便签、模板、标签和附件，保留 app_settings */
+  clearNoteData: () => ipcRenderer.invoke('clear-note-data'),
 
   // ---- 开机自启 ----
-  /** 校验开机自启状态（DB 为权威，同步 OS，失败返回错误信息） */
+  /** 直接读取操作系统的开机自启真实状态（不使用数据库副本） */
   verifyAutoStart: () => ipcRenderer.invoke('verify-auto-start'),
-  /** 设置开机自启（同步更新 OS + 数据库） */
+  /** 设置开机自启并回读操作系统真实状态（不写入 app_settings） */
   setAutoStart: (enabled) => ipcRenderer.invoke('set-auto-start', enabled),
 
   // ---- 系统模糊 ----
-  /** 校验毛玻璃启用状态（DB 为权威，同步运行时，失败返回错误信息） */
-  verifyBlurEnabled: () => ipcRenderer.invoke('verify-blur-enabled'),
-  /** 获取平台模糊能力信息（支持 / 不支持 / 策略等） */
-  getBlurCapabilities: () => ipcRenderer.invoke('get-blur-capabilities'),
-  /** 获取当前模糊配置 */
-  getBlurConfig: () => ipcRenderer.invoke('get-blur-config'),
   /** 设置模糊配置（立即生效 + 持久化） */
   setBlurConfig: (config) => ipcRenderer.invoke('set-blur-config', config),
   // ---- 便签 CRUD ----
@@ -93,7 +83,7 @@ const api = {
     ipcRenderer.invoke('notes:create-with-assets', { options, images, tagNames }),
   /** 更新便签（部分字段） */
   updateNote: (id, fields) => ipcRenderer.invoke('notes:update', { id, fields }),
-  /** 逻辑删除便签（附件随记录保留，重置数据库时物理清理） */
+  /** 逻辑删除便签（附件随记录保留，清空便签数据时物理清理） */
   deleteNote: (id) => ipcRenderer.invoke('notes:delete', { id }),
   /** 获取单条便签（含附件和标签） */
   getNote: (id) => ipcRenderer.invoke('notes:get', { id }),

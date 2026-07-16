@@ -10,11 +10,12 @@ import draggable from 'vuedraggable'
 import TagSelector from '../ui/TagSelector.vue'
 import FilterTabs from '../ui/FilterTabs.vue'
 import NoteCard from './NoteCard.vue'
+import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
 
 const emit = defineEmits(['select'])
 
 /** 排序模式：timeline | custom */
-const sortMode = ref('timeline')
+const sortMode = ref(DEFAULT_SETTINGS.listFilter.listMode)
 
 /** 排序模式显示文本 */
 const sortModeLabel = computed(() => (sortMode.value === 'timeline' ? '时间线' : '自定义'))
@@ -71,13 +72,13 @@ const timelineScrollRef = ref(null)
 const customScrollRef = ref(null)
 
 /** 标签筛选名称列表 */
-const tagFilterNames = ref([])
+const tagFilterNames = ref([...DEFAULT_SETTINGS.listFilter.tagNames])
 
 /** 筛选面板状态：tags | taiji | status（taiji=太极图默认折叠态） */
 const panelState = ref('taiji')
 
 /** 状态筛选列表 */
-const statusFilter = ref(['initialized', 'in_progress', 'completed'])
+const statusFilter = ref([...DEFAULT_SETTINGS.listFilter.statusFilter])
 
 /** FilterTabs 选项 */
 const panelOptions = [
@@ -640,9 +641,6 @@ async function switchMode(mode) {
 }
 
 
-const WINDOW_NAME = 'main'
-const FILTER_KEY = 'list_filter'
-
 /** 是否正在恢复持久化状态（恢复期间抑制自动重载/持久化，避免重复请求） */
 let restoring = false
 
@@ -653,26 +651,42 @@ async function saveFilterState() {
     tagNames: [...tagFilterNames.value],
     statusFilter: [...statusFilter.value]
   }
-  await window.api.setSetting(WINDOW_NAME, 'filter', FILTER_KEY, JSON.stringify(state))
+  await window.api.setSettingValue('listFilter', state)
 }
 
-/** 从数据库恢复筛选状态 */
+function isCurrentFilterState(state) {
+  return (
+    state.listMode === sortMode.value &&
+    JSON.stringify(state.tagNames) === JSON.stringify(tagFilterNames.value) &&
+    JSON.stringify(state.statusFilter) === JSON.stringify(statusFilter.value)
+  )
+}
+
+async function applyFilterState(state) {
+  if (!state || isCurrentFilterState(state)) return false
+  restoring = true
+  sortMode.value = state.listMode
+  tagFilterNames.value = [...state.tagNames]
+  statusFilter.value = [...state.statusFilter]
+  await nextTick()
+  restoring = false
+  return true
+}
+
+/** 从完整设置快照恢复筛选状态。 */
 async function loadFilterState() {
   restoring = true
   try {
-    const raw = await window.api.getSetting(WINDOW_NAME, FILTER_KEY)
-    if (raw) {
-      const state = JSON.parse(raw)
-      if (state.listMode) sortMode.value = state.listMode
-      if (state.tagNames) tagFilterNames.value = state.tagNames
-      if (state.statusFilter) {
-        const validStatuses = new Set(['initialized', 'in_progress', 'completed', 'cancelled'])
-        const restored = state.statusFilter.filter((status) => validStatuses.has(status))
-        statusFilter.value = restored.length ? restored : ['initialized', 'in_progress', 'completed']
-      }
-    }
+    const snapshot = await window.api.getSettingsSnapshot()
+    const state = snapshot.values.listFilter
+    sortMode.value = state.listMode
+    tagFilterNames.value = [...state.tagNames]
+    statusFilter.value = [...state.statusFilter]
   } catch (e) {
-    console.warn('[NoteList] 恢复筛选状态失败:', e)
+    sortMode.value = DEFAULT_SETTINGS.listFilter.listMode
+    tagFilterNames.value = [...DEFAULT_SETTINGS.listFilter.tagNames]
+    statusFilter.value = [...DEFAULT_SETTINGS.listFilter.statusFilter]
+    console.warn('[NoteList] 恢复筛选状态失败，使用共享默认值:', e)
   } finally {
     // 等响应式 flush 完成后再解除抑制，防止恢复赋值触发重复加载
     await nextTick()
@@ -692,10 +706,16 @@ const stopNotesChanged = window.api.onNotesChanged?.(() => {
   notesChangedTimer = setTimeout(refreshInBackground, 80)
 })
 
+const stopSettingsChanged = window.api.onSettingsChanged?.(async (snapshot) => {
+  const changed = await applyFilterState(snapshot?.values?.listFilter)
+  if (changed) await switchMode(sortMode.value)
+})
+
 onUnmounted(() => {
   clearTimeout(notesChangedTimer)
   clearTimeout(_customSyncTimer)
   stopNotesChanged?.()
+  stopSettingsChanged?.()
   earlierRequestSeq++
   customMoreRequestSeq++
 })
@@ -1146,7 +1166,7 @@ defineExpose({
   padding: 10rem 0 4rem;
   font-size: calc(var(--fs-secondary) * 0.85);
   color: var(--text-color-secondary);
-  border-top: 1px solid rgb(var(--bg-color, 255 255 255) / 0.08);
+  border-top: 1px solid rgb(var(--bg-color) / 0.08);
   margin-top: 4rem;
 }
 

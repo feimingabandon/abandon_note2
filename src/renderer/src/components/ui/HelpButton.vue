@@ -160,7 +160,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
 }
 .setting-help-btn:hover {
   background: rgba(128, 128, 128, 0.25);
-  color: var(--text-color, #333);
+  color: var(--text-color);
 }
 
 /* ---- tooltip ---- */

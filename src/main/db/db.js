@@ -36,10 +36,11 @@ export function initDatabase() {
   db.pragma('cache_size = -8000')
 
   // 旧表兼容性处理
-  const tableInfo = db.prepare("PRAGMA table_info('app_settings')").all()
+  let tableInfo = db.prepare("PRAGMA table_info('app_settings')").all()
   const hasWindowName = tableInfo.some((col) => col.name === 'window_name')
   if (tableInfo.length > 0 && !hasWindowName) {
     db.exec('DROP TABLE app_settings')
+    tableInfo = []
   }
 
   // 创建 app_settings 表
@@ -73,48 +74,53 @@ export function closeDatabase() {
   }
 }
 
-export function getSetting(windowName, key) {
-  const row = db
-    .prepare('SELECT value FROM app_settings WHERE window_name = ? AND key = ?')
-    .get(windowName, key)
-  return row?.value ?? null
+/** 获取指定窗口的全部持久化设置，供共享 schema 一次性解析完整快照。 */
+export function getAllSettings(windowName) {
+  return db
+    .prepare(
+      'SELECT type, key, value, remark, created_at, updated_at FROM app_settings WHERE window_name = ?'
+    )
+    .all(windowName)
 }
 
-export function setSetting(windowName, type, key, value, remark = '') {
-  const now = Date.now()
-  db.prepare(
-    `
+/**
+ * 在一个事务中批量写入设置。
+ * @param {string} windowName
+ * @param {Array<{type: string, key: string, value: unknown, remark?: string}>} settings
+ */
+export function setSettingsBatch(windowName, settings) {
+  if (!Array.isArray(settings) || settings.length === 0) return
+
+  const upsert = db.prepare(`
     INSERT INTO app_settings (window_name, type, key, value, remark, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(window_name, key) DO UPDATE SET
       value = excluded.value,
       type = excluded.type,
+      remark = excluded.remark,
       updated_at = excluded.updated_at
-  `
-  ).run(windowName, type, key, String(value), remark, now, now)
-}
-
-export function getSettingsByType(windowName, type) {
-  return db
-    .prepare('SELECT key, value FROM app_settings WHERE window_name = ? AND type = ?')
-    .all(windowName, type)
-}
-
-export function deleteSetting(windowName, key) {
-  db.prepare('DELETE FROM app_settings WHERE window_name = ? AND key = ?').run(windowName, key)
-}
-
-export function saveGeometry(windowName, x, y, width, height) {
-  const save = db.transaction(() => {
-    setSetting(windowName, 'geometry', 'pos_x', String(x), '窗口左上角 X 坐标（像素）')
-    setSetting(windowName, 'geometry', 'pos_y', String(y), '窗口左上角 Y 坐标（像素）')
-    setSetting(windowName, 'geometry', 'width', String(width), '窗口宽度（像素）')
-    setSetting(windowName, 'geometry', 'height', String(height), '窗口高度（像素）')
+  `)
+  const writeAll = db.transaction((rows) => {
+    const now = Date.now()
+    rows.forEach(({ type, key, value, remark = '' }) => {
+      upsert.run(windowName, type, key, value == null ? null : String(value), remark, now, now)
+    })
   })
-  save()
+  writeAll(settings)
 }
 
-export function resetDatabase() {
+/** 清空 app_settings；业务表和附件目录不受影响。 */
+export function clearAllSettings() {
+  return db.prepare('DELETE FROM app_settings').run().changes
+}
+
+/** 删除所有窗口下的旧设置键，供不再持久化的设置做一次性兼容清理。 */
+export function deleteSettingsByKey(key) {
+  db.prepare('DELETE FROM app_settings WHERE key = ?').run(key)
+}
+
+/** 清空便签业务数据；保留 app_settings 和开机自启等系统状态。 */
+export function clearNoteData() {
   const attachmentsDir = join(app.getPath('userData'), 'attachments')
 
   // SQLite 默认不启用 foreign_keys，因此显式清理关联表。
@@ -131,35 +137,10 @@ export function resetDatabase() {
         rmSync(attachmentsDir, { recursive: true, force: true })
       }
     } catch (e) {
-      console.error('[resetDatabase] 删除图片附件目录失败:', e.message)
+      console.error('[clearNoteData] 删除图片附件目录失败:', e.message)
       throw new Error(`删除图片附件目录失败: ${e.message}`)
     }
   })()
-}
-
-export function getGeometry(windowName) {
-  const rows = db
-    .prepare(
-      "SELECT key, value FROM app_settings WHERE window_name = ? AND key IN ('pos_x','pos_y','width','height')"
-    )
-    .all(windowName)
-  if (rows.length !== 4) return null
-  const map = {}
-  rows.forEach((r) => {
-    map[r.key] = r.value
-  })
-  return {
-    x: Number(map.pos_x),
-    y: Number(map.pos_y),
-    width: Number(map.width),
-    height: Number(map.height)
-  }
-}
-
-export function deleteGeometry(windowName) {
-  db.prepare(
-    "DELETE FROM app_settings WHERE window_name = ? AND key IN ('pos_x','pos_y','width','height')"
-  ).run(windowName)
 }
 
 // ============================================================

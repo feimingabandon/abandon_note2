@@ -61,10 +61,8 @@ html {
 
 /* ---- 全局 CSS 自定义属性（Design Tokens） ---- */
 :root {
-  --font-size-base: 18rem; /* 正文基准字号，默认 18rem，所有字号按比例跟随 */
   --font-family-text: 'OPPOSans', 'Segoe UI', 'Microsoft YaHei', sans-serif; /* OPPOSans 为主字体，Segoe UI / 微软雅黑为回退 */
   --font-family-mono: 'SF Mono', 'Consolas', monospace; /* 跨平台等宽字体：macOS 取 SF Mono，Windows 取 Consolas */
-  --text-color: #000000; /* 全局文字颜色 */
   --text-color-secondary: color-mix(in srgb, var(--text-color) 50%, transparent); /* 辅助文字颜色（主文字色 60% 混合透明） */
 
   /* ---- 字号层级（以 --font-size-base 为基准按比例缩放） ---- */
@@ -72,17 +70,7 @@ html {
   --fs-body:       var(--font-size-base);                 /* 正文/标签/按钮 */
   --fs-secondary:  calc(var(--font-size-base) * 0.8);  /* 所有辅助文字（base=18 → 15.75） */
 
-  /* ---- 玻璃态背景参数（仅弹窗/面板组件使用） ---- */
-  --bg-color: 255 255 255; /* 背景颜色（RGB 三通道） */
-  --bg-blur: 20px; /* 面板模糊半径，glassmorphism 标准 20px（0-30 有效范围） */
-  --bg-saturation: 1.8; /* 面板饱和度（0=黑白, 1=原色, 1.8=苹果风格） */
-  --bg-border: 1; /* 边框开关（0 = 无，1 = 有） */
-
-  /* ---- 组件透明度（仅弹窗/面板 .app-bg 玻璃层使用） ---- */
-  --popup-opacity: 0.15; /* glassmorphism 标准：15% 白底 + 强模糊 */
-
-  /* ---- 窗口透明度（仅主窗口 .app-root，独立于组件透明度） ---- */
-  --window-opacity: 0; /* 默认 0 = OS 毛玻璃透出；系统模糊关闭时由用户调节 */
+  /* 持久化 CSS 变量由 main.js 在挂载前从 shared/settings-schema.js 注入。 */
 }
 
 /* ---- body 基础样式 ---- */
@@ -127,7 +115,7 @@ body {
 }
 
 /* 第二道霜层：模糊结果之上再叠加半透明白底，
-   等效霜层约 1-(1-opacity)² ≈ 28%（默认 opacity=15%），
+   等效霜层约 1-(1-opacity)²；默认 opacity=50% 时约为 75%，
    解决窗口透明时模糊不够不透、背后文字仍可辨认的问题。 */
 .app-bg::after {
   content: '';
