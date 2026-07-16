@@ -17,18 +17,27 @@ defineProps({
 
 const imagePickerRef = ref(null)
 const capturing = ref(false)
+const launching = ref(false)
 
 async function onScreenshot() {
+  if (capturing.value) return
   capturing.value = true
+  launching.value = true
+  const stopListening = window.api.onScreenshotReady(() => {
+    launching.value = false
+  })
   try {
     const cropped = await window.api.captureScreen()
-    if (!cropped) { capturing.value = false; return }
+    if (!cropped) return
     const ts = Date.now()
     imagePickerRef.value?.addImage(cropped, 'png', `截图_${ts}.png`, 0)
   } catch (e) {
     console.error('[ScreenshotPicker] 截图失败:', e)
+  } finally {
+    stopListening()
+    launching.value = false
+    capturing.value = false
   }
-  capturing.value = false
 }
 
 // ---- 透传 ----
@@ -43,50 +52,49 @@ defineExpose({ getImages, clearImages })
 </script>
 
 <template>
-  <div class="sp-root">
-    <!-- 截图按钮 — 始终在第一位 -->
-    <div class="sp-btn" :class="{ 'sp-btn--busy': capturing }" title="截图" @click="capturing ? null : onScreenshot()">
-      <Transition name="sp-content" mode="out-in">
-        <div v-if="capturing" key="busy" class="sp-btn__content">
-          <div class="sp-btn__spinner" />
-          <span class="sp-btn__text">启动中…</span>
-        </div>
-        <div v-else key="idle" class="sp-btn__content">
-          <svg class="sp-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-            <circle cx="12" cy="13" r="4"/>
-          </svg>
-          <span class="sp-btn__text">截图</span>
-        </div>
-      </Transition>
-    </div>
-
-    <!-- 图片选择 -->
-    <ImagePicker
-      ref="imagePickerRef"
-      :note-id="noteId"
-      :mode="mode"
-      class="sp-ip"
-      @count-change="(n) => emit('count-change', n)"
-    />
-  </div>
+  <ImagePicker
+    ref="imagePickerRef"
+    :note-id="noteId"
+    :mode="mode"
+    @count-change="(n) => emit('count-change', n)"
+  >
+    <template #leading>
+      <!-- 与添加入口、缩略图共用同一个流式布局 -->
+      <div
+        class="sp-btn"
+        :class="{ 'sp-btn--busy': capturing }"
+        title="截图"
+        role="button"
+        :aria-disabled="capturing"
+        @click="onScreenshot"
+      >
+        <Transition name="sp-content" mode="out-in">
+          <div v-if="launching" key="busy" class="sp-btn__content">
+            <div class="sp-btn__spinner" />
+            <span class="sp-btn__text">启动中…</span>
+          </div>
+          <div v-else key="idle" class="sp-btn__content">
+            <svg class="sp-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 7h-3.2l-1.5-2.2H8.7L7.2 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2Z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+            <span class="sp-btn__text">截图</span>
+          </div>
+        </Transition>
+      </div>
+    </template>
+  </ImagePicker>
 </template>
 
 <style scoped>
-.sp-root {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8rem;
-  align-items: flex-start;
-}
-
 .sp-btn {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 4rem;
-  width: 100rem;
+  width: 100%;
+  min-width: 0;
   aspect-ratio: 1;
   border: 1px dashed rgba(128, 128, 128, 0.2);
   border-radius: 6rem;
@@ -119,6 +127,8 @@ defineExpose({ getImages, clearImages })
   transform: scale(0.94);
 }
 .sp-btn__icon {
+  display: block;
+  flex: none;
   width: 24rem;
   height: 24rem;
   color: var(--text-color-secondary);
@@ -144,8 +154,4 @@ defineExpose({ getImages, clearImages })
   to { transform: rotate(360deg); }
 }
 
-.sp-ip {
-  flex: 1;
-  min-width: 0;
-}
 </style>

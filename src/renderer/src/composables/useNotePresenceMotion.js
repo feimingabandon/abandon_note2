@@ -32,8 +32,8 @@ export function useNotePresenceMotion(getContainer) {
     detachedClones.add(clone)
     const animation = clone.animate(
       [
-        { opacity: 1, transform: 'translateX(0) scale(1)' },
-        { opacity: 0, transform: 'translateX(10px) scale(0.985)' }
+        { opacity: 1, translate: '0 0' },
+        { opacity: 0, translate: '10px 0' }
       ],
       { duration: 240, delay: Math.min(order, 10) * 36, easing: EASING, fill: 'both' }
     )
@@ -58,8 +58,8 @@ export function useNotePresenceMotion(getContainer) {
       if (Math.abs(deltaX) >= 0.5 || Math.abs(deltaY) >= 0.5) {
         current.element.animate(
           [
-            { transform: `translate3d(${deltaX}px, ${deltaY}px, 0)` },
-            { transform: 'translate3d(0, 0, 0)' }
+            { translate: `${deltaX}px ${deltaY}px` },
+            { translate: '0 0' }
           ],
           { duration: 320, easing: EASING }
         )
@@ -75,8 +75,8 @@ export function useNotePresenceMotion(getContainer) {
       const targetOpacity = getComputedStyle(current.element).opacity
       current.element.animate(
         [
-          { opacity: 0, transform: 'translate3d(10px, 0, 0) scale(0.985)' },
-          { opacity: targetOpacity, transform: 'translate3d(0, 0, 0) scale(1)' }
+          { opacity: 0, translate: '10px 0' },
+          { opacity: targetOpacity, translate: '0 0' }
         ],
         {
           duration: 240,
@@ -112,8 +112,8 @@ export function useNotePresenceMotion(getContainer) {
     const animations = [...captureVisibleCardLayout().values()].map(({ element }, index) => {
       const animation = element.animate(
         [
-          { opacity: getComputedStyle(element).opacity, transform: 'translateX(0) scale(1)' },
-          { opacity: 0, transform: 'translateX(10px) scale(0.985)' }
+          { opacity: getComputedStyle(element).opacity, translate: '0 0' },
+          { opacity: 0, translate: '10px 0' }
         ],
         {
           duration: 240,

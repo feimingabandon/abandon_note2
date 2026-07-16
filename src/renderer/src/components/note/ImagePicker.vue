@@ -307,6 +307,9 @@ function formatSize(bytes) {
 
 <template>
   <div class="ip-root" :class="{ 'ip-root--readonly': readonly }">
+    <!-- 外部入口也参与同一个流式布局（例如截图按钮） -->
+    <slot name="leading" />
+
     <!-- 拖拽区域 — 始终在第一位 -->
     <div
       v-if="!readonly && canAdd"
@@ -365,10 +368,15 @@ function formatSize(bytes) {
 <style scoped>
 .ip-root {
   position: relative;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8rem;
   align-items: flex-start;
+}
+
+.ip-root--readonly {
+  display: flex;
+  flex-wrap: wrap;
 }
 
 .ip-root--readonly .ip-thumb {
@@ -383,7 +391,8 @@ function formatSize(bytes) {
   align-items: center;
   justify-content: center;
   gap: 4rem;
-  width: 100rem;
+  width: 100%;
+  min-width: 0;
   aspect-ratio: 1;
   border: 1px dashed rgba(128, 128, 128, 0.2);
   border-radius: 6rem;
@@ -444,7 +453,8 @@ function formatSize(bytes) {
   flex-direction: column;
   align-items: center;
   gap: 4rem;
-  width: 100rem;
+  width: 100%;
+  min-width: 0;
   padding: 6rem;
   border-radius: 6rem;
   background: rgba(255, 255, 255, 0.03);

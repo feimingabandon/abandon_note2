@@ -167,6 +167,12 @@ const api = {
   // ---- 截图 ----
   /** 捕获全屏截图，返回 data URL */
   captureScreen: () => ipcRenderer.invoke('screenshot:capture'),
+  /** 截图窗口已经显示；后续选区和裁剪不再属于“启动中” */
+  onScreenshotReady: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('screenshot:ready', handler)
+    return () => ipcRenderer.removeListener('screenshot:ready', handler)
+  },
 
   // ---- 调度器健康检查 ----
   /** 获取调度器健康状态 */

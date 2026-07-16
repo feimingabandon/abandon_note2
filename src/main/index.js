@@ -1553,7 +1553,7 @@ app.whenReady().then(async () => {
   // ---- 截图 IPC ----
 
   /** 捕获全屏截图，打开独立窗口供用户选区，返回裁切后的 data URL */
-  ipcMain.handle('screenshot:capture', async () => {
+  ipcMain.handle('screenshot:capture', async (requestEvent) => {
     if (screenshotWindow && !screenshotWindow.isDestroyed()) {
       screenshotWindow.focus()
       return null
@@ -1749,6 +1749,9 @@ setTimeout(()=>{resize()},0)
       win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).then(() => {
         win.show()
         win.focus()
+        if (!requestEvent.sender.isDestroyed()) {
+          requestEvent.sender.send('screenshot:ready')
+        }
       }).catch(() => done(null))
     })
   })
