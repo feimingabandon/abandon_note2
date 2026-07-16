@@ -400,6 +400,11 @@ async function handleCancel() {
   opacity: 0.4;
   cursor: not-allowed;
 }
+.ne-action-btn:active:not(:disabled),
+.ne-submit:active:not(:disabled) {
+  transform: scale(0.96);
+  transition-duration: 70ms;
+}
 
 .ne-action-btn--start {
   background: rgba(0, 122, 255, 0.15);

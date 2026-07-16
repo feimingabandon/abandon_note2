@@ -148,7 +148,7 @@ const definitions = [
     id: 'css.fontSizeBase',
     path: ['css', 'fontSizeBase'],
     db: { type: 'css', key: 'font_size_base' },
-    defaultValue: 18,
+    defaultValue: 17,
     parse: (value, fallback) => parseNumber(value, fallback, { min: 14, max: 22, integer: true }),
     serialize: String,
     remark: '基准字号（rem 单位数值）'
@@ -157,7 +157,7 @@ const definitions = [
     id: 'css.textColor',
     path: ['css', 'textColor'],
     db: { type: 'css', key: 'text_color' },
-    defaultValue: '#000000',
+    defaultValue: '#1d1d1f',
     parse: parseHexColor,
     serialize: String,
     remark: '文字颜色（十六进制）'

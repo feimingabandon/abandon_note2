@@ -115,14 +115,15 @@ onUnmounted(() => {
 
 <template>
   <Teleport to="body">
-    <div
-      v-if="visible"
-      class="ipv-overlay"
-      @click.self="onClose"
-      @keydown="onKeydown"
-      tabindex="0"
-      ref="overlayRef"
-    >
+    <Transition name="ipv">
+      <div
+        v-if="visible"
+        ref="overlayRef"
+        class="ipv-overlay"
+        tabindex="0"
+        @click.self="onClose"
+        @keydown="onKeydown"
+      >
       <!-- 顶部工具栏 -->
       <div class="ipv-toolbar">
         <button class="ipv-btn" title="缩小" @click="zoomOut">
@@ -165,7 +166,8 @@ onUnmounted(() => {
           @click.stop
         />
       </div>
-    </div>
+      </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -180,6 +182,33 @@ onUnmounted(() => {
   justify-content: center;
   background: rgba(0, 0, 0, 0.8);
   outline: none;
+}
+.ipv-enter-active,
+.ipv-leave-active {
+  transition: opacity 180ms ease;
+}
+.ipv-enter-active .ipv-image,
+.ipv-leave-active .ipv-image,
+.ipv-enter-active .ipv-toolbar,
+.ipv-leave-active .ipv-toolbar {
+  transition:
+    opacity 180ms ease,
+    transform 220ms var(--ease-standard);
+}
+.ipv-enter-from,
+.ipv-leave-to,
+.ipv-enter-from .ipv-toolbar,
+.ipv-leave-to .ipv-toolbar {
+  opacity: 0;
+}
+.ipv-enter-from .ipv-image,
+.ipv-leave-to .ipv-image {
+  opacity: 0;
+  transform: scale(0.96) !important;
+}
+.ipv-enter-from .ipv-toolbar,
+.ipv-leave-to .ipv-toolbar {
+  transform: translateY(-6rem);
 }
 
 /* 工具栏 */
@@ -224,6 +253,10 @@ onUnmounted(() => {
 }
 .ipv-btn:hover {
   background: rgba(255, 255, 255, 0.22);
+}
+.ipv-btn:active {
+  transform: scale(0.9);
+  transition: transform 70ms ease;
 }
 .ipv-btn svg {
   width: 18rem;

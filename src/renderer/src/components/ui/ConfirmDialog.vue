@@ -123,7 +123,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   background-color: rgba(0, 0, 0, 0);
-  transition: background-color 250ms ease;
+  transition: background-color 220ms ease;
   pointer-events: none;
   border-radius: 12px;
   overflow: hidden;
@@ -144,10 +144,14 @@ onBeforeUnmount(() => {
 
   /* 不缩放文字图层，避免 Chromium 在动画结束时重新栅格化造成内容跳动。 */
   opacity: 0;
-  transition: opacity 180ms ease;
+  transform: translateY(6rem);
+  transition:
+    opacity var(--motion-control) ease,
+    transform 220ms var(--ease-standard);
 }
 .confirm-card.active {
   opacity: 1;
+  transform: translateY(0);
 }
 
 /* ---- 标题 ---- */

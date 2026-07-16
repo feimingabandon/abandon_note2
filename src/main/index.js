@@ -46,6 +46,7 @@ import {
   queryCustomNormal,
   countActiveNotes,
   reorderCustomSortOrder,
+  updateCustomSortOrders,
   startProgress,
   completeNote,
   cancelNote,
@@ -55,7 +56,6 @@ import {
 } from './db/db-notes.js'
 import {
   createTag,
-  updateTag,
   deleteTag as deleteTagFn,
   listTags,
   getTagByName,
@@ -74,7 +74,9 @@ import {
   resumeTemplate
 } from './db/db-templates.js'
 import {
-  saveImage,
+  stageImage,
+  commitStagedImage,
+  cleanupStagedImage,
   deleteImageFile,
   deleteNoteImages,
   getImageBase64,
@@ -212,6 +214,19 @@ let geometryDirty = false
 /** 统一调度器实例 */
 const scheduler = new Scheduler()
 
+function openSafeExternal(rawUrl) {
+  try {
+    const url = new URL(rawUrl)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false
+    shell.openExternal(url.toString()).catch((error) =>
+      console.warn('[navigation] 打开外部链接失败:', error.message)
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
 function syncBlurConfigFromResolved() {
   const next = resolvedSettings.blur
   blurConfig.enabled = next.enabled
@@ -229,6 +244,29 @@ function refreshResolvedSettings({ incrementRevision = false } = {}) {
   const revisionChanged = incrementRevision || changed
   if (revisionChanged) settingsRevision += 1
   return revisionChanged
+}
+
+/**
+ * 将旧版“出厂外观值”平滑升级为当前 Apple 风格默认值。
+ *
+ * app_settings 只保存用户实际改动，缺失值本来就会由 schema 回退；这里仅迁移
+ * 明确仍等于旧默认值的记录，绝不覆盖用户已选定的字号或文字颜色。
+ */
+function migrateAppearanceDefaults() {
+  const rows = getAllSettings(WINDOW_NAME)
+  const byKey = new Map(rows.map((row) => [row.key, row]))
+  const entries = []
+  const fontSizeRow = byKey.get('font_size_base')
+  const textColorRow = byKey.get('text_color')
+
+  if (Number(fontSizeRow?.value) === 18) {
+    entries.push(serializeSetting('css.fontSizeBase', DEFAULT_SETTINGS.css.fontSizeBase))
+  }
+  if (String(textColorRow?.value || '').trim().toLowerCase() === '#000000') {
+    entries.push(serializeSetting('css.textColor', DEFAULT_SETTINGS.css.textColor))
+  }
+
+  if (entries.length > 0) setSettingsBatch(WINDOW_NAME, entries)
 }
 
 function readAutoStartRuntime() {
@@ -434,7 +472,9 @@ function createWindow() {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false
     }
   })
 
@@ -462,8 +502,12 @@ function createWindow() {
 
   // 拦截新窗口打开请求，改为使用系统默认浏览器打开链接
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    openSafeExternal(details.url)
     return { action: 'deny' } // 拒绝在应用内打开新窗口
+  })
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    event.preventDefault()
+    openSafeExternal(url)
   })
 
   /**
@@ -677,8 +721,10 @@ function createTriggerWindow(side) {
     focusable: false,
     hasShadow: false,
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      preload: join(__dirname, '../preload/trigger.js'),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false
     }
   })
 
@@ -853,14 +899,16 @@ function toggleWindow() {
 // ============================================================
 // 应用就绪后的初始化逻辑
 // ============================================================
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return
 
   // 初始化数据库连接
   initDatabase()
-  cleanupPendingAttachmentDirs().catch((error) =>
+  try {
+    await cleanupPendingAttachmentDirs()
+  } catch (error) {
     console.warn('[attachments] 清理历史待删除目录失败:', error.message)
-  )
+  }
   // 开机自启以操作系统为唯一权威；移除旧版本遗留的数据库副本。
   deleteSettingsByKey('auto_start')
   // 清理已退出产品设置模型的历史键，避免不可见状态继续影响画面。
@@ -874,6 +922,7 @@ app.whenReady().then(() => {
   ]) {
     deleteSettingsByKey(key)
   }
+  migrateAppearanceDefaults()
   refreshResolvedSettings({ incrementRevision: true })
   handleProtocolArgs(process.argv)
 
@@ -885,7 +934,8 @@ app.whenReady().then(() => {
   // ---- IPC 通道注册 ----
 
   // 【渲染就绪】渲染进程初始化完成后发送此消息，主进程收到后显示窗口
-  ipcMain.on('renderer-ready', () => {
+  ipcMain.on('renderer-ready', (event) => {
+    if (event.sender !== mainWindow?.webContents) return
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (suppressInitialWindowShow) {
         suppressInitialWindowShow = false
@@ -896,7 +946,8 @@ app.whenReady().then(() => {
   })
 
   // 【窗口控制 - 关闭】渲染进程请求关闭窗口 → 最小化到托盘
-  ipcMain.on('window-close', () => {
+  ipcMain.on('window-close', (event) => {
+    if (event.sender !== mainWindow?.webContents) return
     hideToTray()
   })
 
@@ -921,13 +972,22 @@ app.whenReady().then(() => {
   // 【缩放手柄 - 设置边界】根据渲染进程传入的 bounds 调整窗口大小/位置
   ipcMain.on('window-set-bounds', (event, bounds) => {
     const win = BrowserWindow.fromWebContents(event.sender)
-    if (win && bounds) {
+    const values = bounds && [bounds.x, bounds.y, bounds.width, bounds.height].map(Number)
+    if (
+      win &&
+      win === mainWindow &&
+      values?.every(Number.isFinite) &&
+      values[2] >= 240 &&
+      values[3] >= 240 &&
+      values[2] <= 16_384 &&
+      values[3] <= 16_384
+    ) {
       // Math.round 确保像素值为整数，避免亚像素渲染问题
       win.setBounds({
-        x: Math.round(bounds.x),
-        y: Math.round(bounds.y),
-        width: Math.round(bounds.width),
-        height: Math.round(bounds.height)
+        x: Math.round(values[0]),
+        y: Math.round(values[1]),
+        width: Math.round(values[2]),
+        height: Math.round(values[3])
       })
     }
   })
@@ -978,7 +1038,8 @@ app.whenReady().then(() => {
   // ---- 贴边隐藏 IPC ----
 
   // 【贴边隐藏 - 鼠标悬停】渲染进程报告鼠标进入/离开主窗口
-  ipcMain.on('window-hover', (_event, isHovering) => {
+  ipcMain.on('window-hover', (event, isHovering) => {
+    if (event.sender !== mainWindow?.webContents) return
     if (isHovering) {
       // 鼠标进入窗口 —— 取消待执行的隐藏定时器
       if (hideTimer) {
@@ -1011,7 +1072,8 @@ app.whenReady().then(() => {
   })
 
   // 【贴边隐藏 - 触发窗口】边缘触发窗口检测到鼠标进入，恢复主窗口
-  ipcMain.on('trigger-enter', () => {
+  ipcMain.on('trigger-enter', (event) => {
+    if (event.sender !== triggerWin?.webContents) return
     if (isDockHidden) doShow()
   })
 
@@ -1209,17 +1271,25 @@ app.whenReady().then(() => {
   })
 
   // 【便签 - 原子创建（含图片 + 标签，事务保护，失败则自动回滚并清理文件）】
-  ipcMain.handle('notes:create-with-assets', (_event, { options, images, tagNames }) => {
+  ipcMain.handle('notes:create-with-assets', async (_event, { options, images, tagNames }) => {
     const db = getDb()
     const writtenFiles = []
+    const stagedImages = []
+
+    try {
+      for (const image of images || []) stagedImages.push(await stageImage(image.base64, image.ext))
+    } catch (error) {
+      await Promise.all(stagedImages.map(cleanupStagedImage))
+      throw error
+    }
 
     const txn = db.transaction(() => {
       const note = createNote(options || {})
       if (!note || !note.id) throw new Error('创建便签失败')
 
       // 保存图片
-      for (const img of images || []) {
-        const { relativePath, fileSize } = saveImage(note.id, img.base64, img.ext)
+      for (const staged of stagedImages) {
+        const { relativePath, fileSize } = commitStagedImage(note.id, staged)
         writtenFiles.push(relativePath)
         addImageRecord({ noteId: note.id, filePath: relativePath, fileSize })
       }
@@ -1241,13 +1311,8 @@ app.whenReady().then(() => {
       return txn()
     } catch (e) {
       // 事务回滚后，清理已写入磁盘的图片文件
-      for (const fp of writtenFiles) {
-        try {
-          deleteImageFile(fp)
-        } catch {
-          /* 忽略 */
-        }
-      }
+      await Promise.all(writtenFiles.map(deleteImageFile))
+      await Promise.all(stagedImages.map(cleanupStagedImage))
       console.error('[notes:create-with-assets] 创建失败，已回滚并清理文件:', e.message)
       throw e
     }
@@ -1303,8 +1368,12 @@ app.whenReady().then(() => {
   })
 
   // 【便签 - 自定义模式：全局重排 sort_order】
-  ipcMain.handle('notes:reorder-custom', (_event, options) => {
-    return reorderCustomSortOrder(options || {})
+  ipcMain.handle('notes:reorder-custom', () => {
+    return reorderCustomSortOrder()
+  })
+
+  ipcMain.handle('notes:update-custom-order', (_event, { items }) => {
+    return updateCustomSortOrders(items)
   })
 
   // 【便签 - 开始处理】
@@ -1327,11 +1396,6 @@ app.whenReady().then(() => {
   // 【标签 - 创建】
   ipcMain.handle('tags:create', (_event, { name, color }) => {
     return createTag(name, color)
-  })
-
-  // 【标签 - 更新】
-  ipcMain.handle('tags:update', (_event, { name, fields }) => {
-    return updateTag(name, fields || {})
   })
 
   // 【标签 - 删除】
@@ -1410,17 +1474,24 @@ app.whenReady().then(() => {
   // ---- 图片附件 IPC ----
 
   /** 批量保存图片（Base64 数组 → 磁盘 + DB） */
-  ipcMain.handle('images:save-batch', (_event, { noteId, images }) => {
+  ipcMain.handle('images:save-batch', async (_event, { noteId, images }) => {
     const batch = Array.isArray(images) ? images : []
     const remaining = 50 - getImageCount(noteId)
     if (batch.length > remaining) throw new Error(`最多还能添加 ${Math.max(0, remaining)} 张图片`)
 
     const db = getDb()
     const writtenFiles = []
+    const stagedImages = []
+    try {
+      for (const image of batch) stagedImages.push(await stageImage(image.base64, image.ext))
+    } catch (error) {
+      await Promise.all(stagedImages.map(cleanupStagedImage))
+      throw error
+    }
     const txn = db.transaction(() => {
       const results = []
-      for (const img of batch) {
-        const { relativePath, fileSize } = saveImage(noteId, img.base64, img.ext)
+      for (const staged of stagedImages) {
+        const { relativePath, fileSize } = commitStagedImage(noteId, staged)
         writtenFiles.push(relativePath)
         results.push(addImageRecord({ noteId, filePath: relativePath, fileSize }))
       }
@@ -1430,13 +1501,14 @@ app.whenReady().then(() => {
     try {
       return txn()
     } catch (error) {
-      for (const filePath of writtenFiles) deleteImageFile(filePath)
+      await Promise.all(writtenFiles.map(deleteImageFile))
+      await Promise.all(stagedImages.map(cleanupStagedImage))
       throw error
     }
   })
 
   /** 删除图片记录 + 文件 */
-  ipcMain.handle('images:delete', (_event, { id }) => {
+  ipcMain.handle('images:delete', async (_event, { id }) => {
     const db = getDb()
     const row = db
       .prepare(
@@ -1446,7 +1518,7 @@ app.whenReady().then(() => {
       )
       .get(id)
     if (!row) return false
-    if (!deleteImageFile(row.file_path)) throw new Error('删除图片文件失败')
+    if (!(await deleteImageFile(row.file_path))) throw new Error('删除图片文件失败')
     db.prepare('DELETE FROM note_attachments WHERE id = ?').run(id)
     db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(Date.now(), row.note_id)
     return true
@@ -1473,8 +1545,8 @@ app.whenReady().then(() => {
   })
 
   /** 物理删除便签的所有图片（逻辑删除时不调用） */
-  ipcMain.handle('images:delete-note-dir', (_event, { noteId }) => {
-    deleteNoteImages(noteId)
+  ipcMain.handle('images:delete-note-dir', async (_event, { noteId }) => {
+    await deleteNoteImages(noteId)
     return true
   })
 
@@ -1532,7 +1604,7 @@ app.whenReady().then(() => {
         hasShadow: false,
         webPreferences: {
           preload: join(__dirname, '../preload/screenshot.js'),
-          sandbox: false,
+          sandbox: true,
           contextIsolation: true,
           nodeIntegration: false
         }
@@ -1576,15 +1648,19 @@ app.whenReady().then(() => {
 <html><head><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{background:transparent}
-body{overflow:hidden;cursor:crosshair;user-select:none;width:100vw;height:100vh;font-family:system-ui,sans-serif}
+body{overflow:hidden;cursor:crosshair;user-select:none;width:100vw;height:100vh;font-family:system-ui,sans-serif;animation:sc-overlay-in 150ms ease-out both}
 canvas.sc-canvas{position:absolute;inset:0;z-index:1}
-.sc-hint{position:fixed;bottom:20px;right:24px;font-size:14px;color:rgba(255,255,255,.45);z-index:3;pointer-events:none;font-family:inherit}
-.sc-actions{position:fixed;display:none;align-items:center;gap:10px;z-index:3;font-family:inherit}
-.sc-btn{border:none;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;padding:6px 16px;font-weight:500}
+.sc-hint{position:fixed;bottom:20px;right:24px;font-size:14px;color:rgba(255,255,255,.45);z-index:3;pointer-events:none;font-family:inherit;opacity:1;transition:opacity 140ms ease,transform 180ms cubic-bezier(.32,.72,0,1)}
+.sc-hint.hidden{opacity:0;transform:translateY(4px)}
+.sc-actions{position:fixed;display:flex;align-items:center;gap:10px;z-index:3;font-family:inherit;opacity:0;transform:translateY(-4px) scale(.98);pointer-events:none;transition:opacity 150ms ease,transform 200ms cubic-bezier(.32,.72,0,1)}
+.sc-actions.visible{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
+.sc-btn{border:none;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;padding:6px 16px;font-weight:500;transition:background 120ms ease,transform 160ms cubic-bezier(.32,.72,0,1)}
+.sc-btn:active{transform:scale(.96);transition-duration:70ms}
 .sc-btn-exit{background:rgba(255,255,255,.12);color:#fff}
 .sc-btn-exit:hover{background:rgba(255,255,255,.22)}
 .sc-btn-save{background:#0071e3;color:#fff}
 .sc-btn-save:hover{background:#0077ed}
+@keyframes sc-overlay-in{from{opacity:0}to{opacity:1}}
 </style></head><body>
 <canvas class="sc-canvas"></canvas>
 <span class="sc-hint" id="hint">拖拽选择截图区域</span>
@@ -1619,10 +1695,10 @@ function selRect(){
 function inside(px,py){const r=selRect();return px>=r.x&&px<=r.x+r.w&&py>=r.y&&py<=r.y+r.h}
 
 function updateActions(){
-  if(!has){actions.style.display='none';return}
+  if(!has){actions.classList.remove('visible');return}
   const r=selRect();let tx=r.x,ty=r.y+r.h+8
   if(ty+36>window.innerHeight)ty=r.y-44
-  actions.style.left=tx+'px';actions.style.top=ty+'px';actions.style.display='flex'
+  actions.style.left=tx+'px';actions.style.top=ty+'px';actions.classList.add('visible')
 }
 
 function doSave(){
@@ -1630,7 +1706,7 @@ function doSave(){
   screenshot.confirm({...r,viewportWidth:window.innerWidth,viewportHeight:window.innerHeight})
 }
 
-function doClear(){has=false;hint.style.display='';actions.style.display='none';draw()}
+function doClear(){has=false;hint.classList.remove('hidden');actions.classList.remove('visible');draw()}
 
 btnExit.onclick=()=>screenshot.cancel()
 btnSave.onclick=()=>doSave()
@@ -1646,7 +1722,7 @@ document.addEventListener('mousedown',(ev)=>{
     return
   }
   if(has){doClear()}
-  mode='sel';s.x=e.x=ev.clientX;s.y=e.y=ev.clientY;has=false;hint.style.display='';actions.style.display='none';draw();document.body.style.cursor='crosshair'
+  mode='sel';s.x=e.x=ev.clientX;s.y=e.y=ev.clientY;has=false;hint.classList.remove('hidden');actions.classList.remove('visible');draw();document.body.style.cursor='crosshair'
 })
 
 document.addEventListener('mousemove',(ev)=>{
@@ -1663,7 +1739,7 @@ document.addEventListener('mouseup',(ev)=>{
   if(ev.button!==0)return
   if(mode==='sel'){
     mode='idle';const w=Math.abs(e.x-s.x),h=Math.abs(e.y-s.y);has=w>3&&h>3
-    if(has){hint.style.display='none';updateActions()}else{draw()}
+    if(has){hint.classList.add('hidden');updateActions()}else{draw()}
   }else if(mode==='move'){mode='idle';document.body.style.cursor=has&&inside(ev.clientX,ev.clientY)?'move':'crosshair'}
 })
 

@@ -9,7 +9,8 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/preload/index.js'),
-          screenshot: resolve('src/preload/screenshot.js')
+          screenshot: resolve('src/preload/screenshot.js'),
+          trigger: resolve('src/preload/trigger.js')
         }
       }
     }

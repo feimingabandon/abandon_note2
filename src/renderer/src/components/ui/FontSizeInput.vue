@@ -18,6 +18,7 @@
 
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useMessage } from '../../composables/useMessage.js'
+import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 
 const props = defineProps({
   modelValue: { type: Number, default: 16 },
@@ -161,30 +162,11 @@ function toggle() {
   }
 }
 
-// ============ 下拉动画（同 StyledSelect） ============
-function onBeforeEnter(el) {
-  el.style.height = '0'
-}
 function onEnter(el, done) {
-  const h = el.scrollHeight
-  el.animate([{ height: '0px' }, { height: h + 'px' }], {
-    duration: 350,
-    easing: 'cubic-bezier(0.2, 0, 0, 1)',
-    fill: 'forwards'
-  }).onfinish = () => {
-    el.style.height = 'auto'
-    done()
-  }
-}
-function onBeforeLeave(el) {
-  el.style.height = el.scrollHeight + 'px'
+  enterPopover(el, done, 'menu')
 }
 function onLeave(el, done) {
-  el.animate([{ height: el.scrollHeight + 'px' }, { height: '0px' }], {
-    duration: 200,
-    easing: 'cubic-bezier(0.42, 0, 1, 1)',
-    fill: 'forwards'
-  }).onfinish = done
+  leavePopover(el, done, 'menu')
 }
 
 // ============ 点击外部关闭 ============
@@ -242,9 +224,8 @@ onBeforeUnmount(() => {
 
     <!-- 下拉预设面板 -->
     <Transition
-      @before-enter="onBeforeEnter"
+      :css="false"
       @enter="onEnter"
-      @before-leave="onBeforeLeave"
       @leave="onLeave"
     >
       <div v-if="open" class="fsi-panel-wrap" @click.stop>
@@ -346,6 +327,8 @@ onBeforeUnmount(() => {
   border-radius: 10rem;
   box-shadow: 0 10rem 30rem rgba(0, 0, 0, 0.24);
   overflow: hidden;
+  transform-origin: top center;
+  will-change: transform, opacity;
 }
 .fsi-panel-glass {
   --glass-opacity: var(--glass-select-opacity);

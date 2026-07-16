@@ -23,7 +23,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:modelValue'])
+const emit = defineEmits(['update:modelValue', 'refresh'])
 
 // ---- 颜色预设（与 TagPanel 共享） ----
 const colorPresets = [
@@ -144,6 +144,7 @@ function replayChipAnim() {
 /** 刷新按钮处理：旋转图标 + 重新加载 + 重放芯片动画 */
 async function onRefresh() {
   restartRefreshSpin()
+  emit('refresh')
   await loadTags()
   replayChipAnim()
 }
@@ -514,6 +515,10 @@ onMounted(async () => {
   background: color-mix(in srgb, var(--chip-color) 14%, transparent);
   box-shadow: 0 0 0 1rem color-mix(in srgb, var(--chip-color) 20%, transparent);
 }
+.ts-chip--selected .ts-chip-dot {
+  transform: scale(1.18);
+  box-shadow: 0 0 0 3rem color-mix(in srgb, var(--chip-color) 14%, transparent);
+}
 .ts-chip--selected:hover {
   background: color-mix(in srgb, var(--chip-color) 20%, transparent);
 }
@@ -525,6 +530,9 @@ onMounted(async () => {
   border-radius: 50%;
   background-color: var(--chip-color);
   flex-shrink: 0;
+  transition:
+    transform var(--motion-control) var(--ease-standard),
+    box-shadow var(--motion-control) ease;
 }
 
 /* ---- 芯片名称 ---- */
@@ -590,7 +598,7 @@ onMounted(async () => {
 
 /* 点击刷新时图标旋转 360°（苹果弹性缓出，与项目动效体系一致） */
 .ts-refresh-icon--spin {
-  animation: ts-refresh-spin 500ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: ts-refresh-spin 320ms var(--ease-standard);
 }
 @keyframes ts-refresh-spin {
   from { transform: rotate(0deg); }
@@ -657,6 +665,16 @@ onMounted(async () => {
   border: 1rem solid rgba(255, 255, 255, 0.1);
   border-radius: 8rem;
   background: rgba(128, 128, 128, 0.03);
+  opacity: 0;
+  transform: translateY(-4rem);
+  transition:
+    opacity var(--motion-control) ease,
+    transform 220ms var(--ease-standard);
+}
+.ts-form-wrapper--open .ts-form {
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: 50ms;
 }
 
 /* ---- 名称输入 ---- */

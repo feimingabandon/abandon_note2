@@ -93,15 +93,15 @@ async function onClick(value) {
 /* ===== 点击动画 ===== */
 /* 太极：非匀速旋转（缓入缓出，速度全程变化） */
 .sg-btn--taiji.sg-btn--anim :deep(svg) {
-  animation: sg-spin 640ms cubic-bezier(0.5, 0, 0.2, 1);
+  animation: sg-spin 320ms var(--ease-standard);
 }
 /* 风扇：非匀速旋转（略带回弹缓动） */
 .sg-btn--status.sg-btn--anim :deep(svg) {
-  animation: sg-spin 760ms cubic-bezier(0.34, 1.32, 0.64, 1);
+  animation: sg-spin 360ms var(--ease-standard);
 }
 /* 标签：弹跳缩放 + 轻微摆动 */
 .sg-btn--tags.sg-btn--anim :deep(svg) {
-  animation: sg-pop 440ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation: sg-pop 300ms var(--ease-standard);
 }
 
 @keyframes sg-spin {
@@ -109,6 +109,7 @@ async function onClick(value) {
     transform: rotate(0deg);
   }
   to {
+    /* 360deg 与静止态 0deg 视觉等价，动画结束移除 transform 时不会跳帧。 */
     transform: rotate(360deg);
   }
 }
@@ -117,10 +118,10 @@ async function onClick(value) {
     transform: scale(1) rotate(0);
   }
   30% {
-    transform: scale(0.82) rotate(-10deg);
+    transform: scale(0.92) rotate(-4deg);
   }
   62% {
-    transform: scale(1.18) rotate(8deg);
+    transform: scale(1.04) rotate(3deg);
   }
   100% {
     transform: scale(1) rotate(0);

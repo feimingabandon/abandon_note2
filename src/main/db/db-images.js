@@ -10,7 +10,8 @@
 import { join, resolve, sep } from 'path'
 import { randomUUID } from 'crypto'
 import { app, nativeImage } from 'electron'
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, statSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, renameSync } from 'fs'
+import { mkdir, writeFile, unlink, stat, readFile, rm } from 'fs/promises'
 import { getDb } from './db.js'
 
 const ATTACHMENTS_ROOT = 'attachments'
@@ -25,6 +26,10 @@ function ensureDir(dirPath) {
   if (!existsSync(dirPath)) {
     mkdirSync(dirPath, { recursive: true })
   }
+}
+
+async function ensureDirAsync(dirPath) {
+  await mkdir(dirPath, { recursive: true })
 }
 
 /** 获取附件根目录绝对路径 */
@@ -55,28 +60,48 @@ export function resolveImagePath(relativePath) {
  * @param {string} ext - 文件扩展名（不含点），如 'png'
  * @returns {{ relativePath: string, fileSize: number }}
  */
-export function saveImage(noteId, base64Data, ext) {
-  if (!Number.isInteger(Number(noteId)) || Number(noteId) <= 0) throw new Error('无效的便签 ID')
+function decodeImage(base64Data, ext) {
   const normalizedExt = String(ext || '').toLowerCase()
   if (!IMAGE_EXTENSIONS.has(normalizedExt)) throw new Error('不支持的图片格式')
 
   const buffer = Buffer.from(String(base64Data || ''), 'base64')
   if (buffer.length === 0) throw new Error('图片内容为空')
   if (buffer.length > MAX_IMAGE_SIZE) throw new Error('单张图片不能超过 50MB')
+  return { buffer, normalizedExt }
+}
 
+/** 先异步写入暂存区，避免大文件写入阻塞 Electron 主线程。 */
+export async function stageImage(base64Data, ext) {
+  const { buffer, normalizedExt } = decodeImage(base64Data, ext)
+  const stagingDir = join(app.getPath('userData'), '.attachments-staging')
+  await ensureDirAsync(stagingDir)
+  const fileName = `${now()}-${randomUUID()}.${normalizedExt}`
+  const pendingPath = join(stagingDir, fileName)
+  await writeFile(pendingPath, buffer)
+  const fileSize = (await stat(pendingPath)).size
+  return { pendingPath, fileName, fileSize }
+}
+
+/** 在数据库事务内执行同卷重命名；大文件内容此前已经异步写完。 */
+export function commitStagedImage(noteId, staged) {
+  if (!Number.isInteger(Number(noteId)) || Number(noteId) <= 0) throw new Error('无效的便签 ID')
+  if (!staged?.pendingPath || !staged?.fileName) throw new Error('无效的暂存图片')
   const root = getAttachmentsRoot()
   const subDir = join(root, 'images', String(noteId))
   ensureDir(subDir)
+  const filePath = join(subDir, staged.fileName)
+  renameSync(staged.pendingPath, filePath)
+  const relativePath = join(ATTACHMENTS_ROOT, 'images', String(noteId), staged.fileName)
+  return { relativePath, fileSize: staged.fileSize }
+}
 
-  const fileName = `${now()}-${randomUUID()}.${normalizedExt}`
-  const filePath = join(subDir, fileName)
-
-  writeFileSync(filePath, buffer)
-
-  const fileSize = statSync(filePath).size
-  const relativePath = join(ATTACHMENTS_ROOT, 'images', String(noteId), fileName)
-
-  return { relativePath, fileSize }
+export async function cleanupStagedImage(staged) {
+  if (!staged?.pendingPath) return
+  try {
+    await unlink(staged.pendingPath)
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.warn('[images] 清理暂存图片失败:', error.message)
+  }
 }
 
 /**
@@ -84,9 +109,9 @@ export function saveImage(noteId, base64Data, ext) {
  * @param {string} relativePath
  * @returns {boolean}
  */
-export function deleteImageFile(relativePath) {
+export async function deleteImageFile(relativePath) {
   try {
-    unlinkSync(resolveImagePath(relativePath))
+    await unlink(resolveImagePath(relativePath))
     return true
   } catch (error) {
     if (error?.code === 'ENOENT') return true
@@ -98,14 +123,16 @@ export function deleteImageFile(relativePath) {
  * 删除某个便签的全部图片（物理删除目录）
  * @param {number} noteId
  */
-export function deleteNoteImages(noteId) {
+export async function deleteNoteImages(noteId) {
+  if (!Number.isInteger(Number(noteId)) || Number(noteId) <= 0) throw new Error('无效的便签 ID')
   const dir = join(getAttachmentsRoot(), 'images', String(noteId))
   try {
     if (existsSync(dir)) {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true })
     }
-  } catch {
-    // 目录不存在或无法删除，忽略
+  } catch (error) {
+    console.warn('[images] 删除便签附件目录失败:', error.message)
+    throw error
   }
 }
 
@@ -114,10 +141,10 @@ export function deleteNoteImages(noteId) {
  * @param {string} relativePath
  * @returns {string|null} 带 data:image/xxx;base64, 前缀的完整 data URL
  */
-export function getImageBase64(relativePath) {
+export async function getImageBase64(relativePath) {
   try {
     const absPath = resolveImagePath(relativePath)
-    const buffer = readFileSync(absPath)
+    const buffer = await readFile(absPath)
     const ext = relativePath.split('.').pop()?.toLowerCase() || 'png'
     const mime = ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext
     return `data:image/${mime};base64,${buffer.toString('base64')}`

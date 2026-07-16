@@ -5,12 +5,13 @@
  * 3.5 + 3.6: 新增自定义拖拽模式，集成 vuedraggable
  * - 四状态：initialized / in_progress / completed / cancelled
  */
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import draggable from 'vuedraggable'
 import TagSelector from '../ui/TagSelector.vue'
 import FilterTabs from '../ui/FilterTabs.vue'
 import NoteCard from './NoteCard.vue'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
+import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
 
 const emit = defineEmits(['select'])
 
@@ -23,14 +24,58 @@ const sortModeLabel = computed(() => (sortMode.value === 'timeline' ? '时间线
 /** 切换图标旋转动画标记 */
 const modeSpinning = ref(false)
 
-/**
- * 切换排序模式（时间线 <-> 自定义）
- * 只负责翻转模式 + 播放图标动画；数据加载交给 watch(sortMode) 响应式处理，
- * 与加载/查询彻底解耦，保证按钮点击永远即时生效、不会卡死。
- */
-function toggleSortMode() {
-  sortMode.value = sortMode.value === 'timeline' ? 'custom' : 'timeline'
+/** 时间线与自定义模式使用完整的依次离场、切换、依次进场。 */
+let modeSwitchRunning = false
+let modePresenceSwitching = false
+async function toggleSortMode() {
+  if (modeSwitchRunning || replayRefreshRunning) return
+  modeSwitchRunning = true
   restartModeSpin()
+  const previousMode = sortMode.value
+  const nextMode = sortMode.value === 'timeline' ? 'custom' : 'timeline'
+  const previousTimeline = noteList.value
+  const previousCustom = customList.value
+  const switchSeq = ++presenceMotionSeq
+  try {
+    await animateCurrentCardsOut({ includeAuxiliary: true })
+    if (switchSeq !== presenceMotionSeq) {
+      cancelCurrentPresenceExits()
+      return
+    }
+
+    // 只清空即将进入的目标列表；源列表保留为失败回滚快照。
+    if (nextMode === 'timeline') noteList.value = []
+    else {
+      customList.value = []
+      syncCustomZones()
+    }
+    await nextTick()
+
+    modePresenceSwitching = true
+    sortMode.value = nextMode
+    await nextTick()
+    const result = await switchMode(nextMode, { showLoading: false, preserveAnchor: false }, false)
+    if (result?.status !== 'success') {
+      noteList.value = previousTimeline
+      customList.value = previousCustom
+      syncCustomZones()
+      sortMode.value = previousMode
+      await nextTick()
+      animateAuxiliaryIn()
+      animateRetainedCards(new Map())
+      return
+    }
+    if (switchSeq !== presenceMotionSeq) {
+      cancelCurrentPresenceExits()
+      return
+    }
+    await nextTick()
+    animateAuxiliaryIn()
+    animateRetainedCards(new Map())
+  } finally {
+    modePresenceSwitching = false
+    modeSwitchRunning = false
+  }
 }
 
 /** 重启切换图标的旋转动画（双 rAF 强制重排，确保每次点击都能触发） */
@@ -43,29 +88,19 @@ function restartModeSpin() {
   })
 }
 
-// ============================================================
-// 列表逐条入场动效（与「新建面板」展开动画保持一致）
-// 关键帧/时长/缓动已与 NewNotePanel 完全相同（nl-card-in ↔ nnp-fade-up，250ms + 同款缓动）；
-// 此处仅需匹配其「等差递增」的延迟节奏：从 0 起步、每项约 40ms 递增。
-// ============================================================
-const STAGGER_STEP = 40 // 相邻卡片入场延迟步进(ms)——对齐新建面板字段的平均节奏
-const STAGGER_MAX = 16 // 延迟封顶序号（列表很长时不会无限延后）
+// 筛选面板 chip 的轻量错峰；便签本身的进出场由列表 ID 差分协调器统一处理。
+const STAGGER_STEP = 28 // 首屏轻量错峰，保持列表出现迅速
+const STAGGER_MAX = 7 // 只错峰前 8 张，长列表不再等待
 /**
  * 按全局序号计算卡片入场动画延迟（等差递增，与新建面板一致）。
  */
 function staggerDelay(index) {
   return Math.min(index, STAGGER_MAX) * STAGGER_STEP + 'ms'
 }
-/**
- * 列表入场动画重放键：每次 loadNotes 完成后自增，绑到列表容器 :key 上，
- * 强制整个列表子树重挂载以重放逐条入场动画。
- * 与 loading 卸载机制解耦——即使后续改动列表项结构或加载逻辑，重放依然生效。
- */
-const listAnimKey = ref(0)
-
 /** 便签列表 */
 /** 加载状态 */
 const loading = ref(false)
+const loadError = ref(null)
 /** 全部未删除便签总数，不受当前标签/状态筛选影响。 */
 const allNoteTotal = ref(0)
 const timelineScrollRef = ref(null)
@@ -91,11 +126,7 @@ const panelOptions = [
 function onPanelClick(value) {
   if (value === 'taiji') {
     panelState.value = 'taiji'
-    if (sortMode.value === 'timeline') {
-      loadAll()
-    } else {
-      loadCustom()
-    }
+    replayListRefresh()
     return
   }
   if (panelState.value === value) {
@@ -177,8 +208,9 @@ async function restoreScrollAnchor(anchor) {
   container.scrollTop += card.getBoundingClientRect().top - containerTop - anchor.offset
 }
 
-async function loadAll({ showLoading = true, replayAnimation = true, preserveAnchor = false } = {}) {
+async function loadAll({ showLoading = true, preserveAnchor = false } = {}) {
   const seq = ++loadSeq
+  loadError.value = null
   earlierRequestSeq++
   customMoreRequestSeq++
   earlierLoading.value = false
@@ -199,7 +231,7 @@ async function loadAll({ showLoading = true, replayAnimation = true, preserveAnc
       window.api.queryEarlierNotes({ statuses, tagNames, cutoffTime: cutoff, limit: 0, offset: 0 }),
       window.api.countActiveNotes()
     ])
-    if (seq !== loadSeq) return
+    if (seq !== loadSeq) return { status: 'cancelled' }
 
     // 合并到单一列表：置顶在前，三天在后
     noteList.value = [...(pinned || []), ...(recent || [])]
@@ -210,8 +242,6 @@ async function loadAll({ showLoading = true, replayAnimation = true, preserveAnc
     earlierTotal.value = earlierCount.total || 0
     earlierHasData.value = earlierTotal.value > 0
     allNoteTotal.value = Number(activeTotal) || 0
-    if (replayAnimation) listAnimKey.value++
-
     // 如果更早之前是展开的，自动重新加载
     if (!collapsedGroups.value['earlier'] && earlierHasData.value) {
       earlierHasMore.value = true
@@ -224,8 +254,11 @@ async function loadAll({ showLoading = true, replayAnimation = true, preserveAnc
       }
     }
     await restoreScrollAnchor(anchor)
+    return { status: 'success' }
   } catch (e) {
     console.error('[NoteList] 加载列表失败:', e)
+    if (seq === loadSeq && showLoading) loadError.value = '列表加载失败'
+    return { status: 'error', error: e }
   } finally {
     if (seq === loadSeq) loading.value = false
   }
@@ -253,6 +286,7 @@ async function loadEarlier() {
     })
     if (requestSeq !== earlierRequestSeq || parentLoadSeq !== loadSeq) return
     const newNotes = result.notes || []
+    const before = newNotes.length ? captureVisibleCardLayout() : null
     noteList.value = [...noteList.value, ...newNotes]
     for (const n of newNotes) {
       earlierIds.value.add(n.id)
@@ -262,6 +296,10 @@ async function loadEarlier() {
     // 首次加载后提升每批条数到 20
     if (earlierLimit.value === 10) {
       earlierLimit.value = 20
+    }
+    if (before) {
+      await nextTick()
+      animateRetainedCards(before)
     }
   } catch (e) {
     console.error('[NoteList] 加载更早便签失败:', e)
@@ -315,8 +353,9 @@ const customNormalLimit = ref(10)   // 首 10，滚动后 20
 const customNormalLoading = ref(false)
 
 /** 自定义模式：并行加载置顶 + 日常首 10 条 */
-async function loadCustom({ showLoading = true, replayAnimation = true, preserveAnchor = false } = {}) {
+async function loadCustom({ showLoading = true, preserveAnchor = false } = {}) {
   const seq = ++loadSeq
+  loadError.value = null
   earlierRequestSeq++
   customMoreRequestSeq++
   earlierLoading.value = false
@@ -337,17 +376,19 @@ async function loadCustom({ showLoading = true, replayAnimation = true, preserve
       window.api.queryCustomNormal({ statuses, tagNames, limit: normalLimit, offset: 0 }),
       window.api.countActiveNotes()
     ])
-    if (seq !== loadSeq) return
+    if (seq !== loadSeq) return { status: 'cancelled' }
 
     customList.value = [...(pinned || []), ...(normalCount.notes || [])]
     customNormalOffset.value = (normalCount.notes || []).length
     customNormalTotal.value = normalCount.total || 0
     customNormalHasMore.value = customNormalOffset.value < customNormalTotal.value
     allNoteTotal.value = Number(activeTotal) || 0
-    if (replayAnimation) listAnimKey.value++
     await restoreScrollAnchor(anchor)
+    return { status: 'success' }
   } catch (e) {
     console.error('[NoteList] 加载自定义列表失败:', e)
+    if (seq === loadSeq && showLoading) loadError.value = '列表加载失败'
+    return { status: 'error', error: e }
   } finally {
     if (seq === loadSeq) loading.value = false
   }
@@ -373,12 +414,17 @@ async function loadCustomMore() {
     })
     if (requestSeq !== customMoreRequestSeq || parentLoadSeq !== loadSeq) return
     const newNotes = result.notes || []
+    const before = newNotes.length ? captureVisibleCardLayout() : null
     customList.value = [...customList.value, ...newNotes]
     customNormalOffset.value += newNotes.length
     customNormalTotal.value = result.total || 0
     customNormalHasMore.value = customNormalOffset.value < customNormalTotal.value
     if (customNormalLimit.value === 10) {
       customNormalLimit.value = 20
+    }
+    if (before) {
+      await nextTick()
+      animateRetainedCards(before)
     }
   } catch (e) {
     console.error('[NoteList] 加载更多日常便签失败:', e)
@@ -529,55 +575,125 @@ watch(customList, () => {
 // ---- 拖拽排序回调 ----
 
 async function onCustomPinnedDragEnd() {
-  let order = 65536
-  for (const note of customPinnedNotes.value) {
-    note.sort_order = order
-    order += 65536
-  }
+  assignExistingSortSlots(customPinnedNotes.value)
   customList.value = [...customPinnedNotes.value, ...customNormalNotes.value]
   await persistSortOrder(customPinnedNotes.value)
 }
 
 async function onCustomNormalDragEnd() {
-  let order = 65536
-  for (const note of customNormalNotes.value) {
-    note.sort_order = order
-    order += 65536
-  }
+  assignExistingSortSlots(customNormalNotes.value)
   customList.value = [...customPinnedNotes.value, ...customNormalNotes.value]
   await persistSortOrder(customNormalNotes.value)
 }
 
+function assignExistingSortSlots(list) {
+  const slots = list.map((note) => Number(note.sort_order)).sort((a, b) => a - b)
+  list.forEach((note, index) => {
+    note.sort_order = slots[index]
+  })
+}
+
 async function persistSortOrder(list) {
-  for (const note of list) {
-    try {
-      await window.api.updateNote(note.id, { sort_order: note.sort_order })
-    } catch (e) {
-      console.error('[NoteList] sort_order 持久化失败:', note.id, e)
-    }
+  try {
+    await window.api.updateCustomSortOrders(
+      list.map((note) => ({ id: note.id, sortOrder: note.sort_order }))
+    )
+  } catch (e) {
+    console.error('[NoteList] sort_order 持久化失败，重新加载数据库顺序:', e)
+    await loadCustom({ showLoading: false, preserveAnchor: true })
+    syncCustomZones()
   }
+}
+
+const statusTransitions = reactive(new Map())
+const statusTransitionTimers = new Map()
+
+function statusTransitionFor(noteId) {
+  return statusTransitions.get(noteId) || null
+}
+
+function setStatusTransition(noteId, state) {
+  if (state) statusTransitions.set(noteId, state)
+  else statusTransitions.delete(noteId)
+}
+
+function statusTimerKey(noteId, kind) {
+  return `${noteId}:${kind}`
+}
+
+function clearStatusTimer(noteId, kind) {
+  const key = statusTimerKey(noteId, kind)
+  clearTimeout(statusTransitionTimers.get(key))
+  statusTransitionTimers.delete(key)
+}
+
+function scheduleStatusTransition(noteId, kind, delay, callback) {
+  const key = statusTimerKey(noteId, kind)
+  clearTimeout(statusTransitionTimers.get(key))
+  const timer = setTimeout(async () => {
+    statusTransitionTimers.delete(key)
+    await callback?.()
+  }, delay)
+  statusTransitionTimers.set(key, timer)
+}
+
+function finishStatusTransition(noteId, delay, callback) {
+  scheduleStatusTransition(noteId, 'finish', delay, async () => {
+    setStatusTransition(noteId, null)
+    await callback?.()
+  })
 }
 
 /** 状态圆环的主操作：初始化提前开始，进行中标记完成。 */
 async function onCardStatusAction(note) {
+  if (statusTransitions.has(note.id)) return
+  const from = note.status
+  const to = from === 'initialized' ? 'in_progress' : from === 'in_progress' ? 'completed' : null
+  if (!to) return
+
+  // 先给 0 延迟的点击确认；只有请求超过 120ms 才显示轨道等待光。
+  setStatusTransition(note.id, { from, to, phase: 'acknowledging' })
+  scheduleStatusTransition(note.id, 'waiting', 120, () => {
+    const current = statusTransitions.get(note.id)
+    if (current?.phase === 'acknowledging') {
+      setStatusTransition(note.id, { from, to, phase: 'waiting' })
+    }
+  })
+
   try {
     let updated = null
-    if (note.status === 'initialized') {
+    if (from === 'initialized') {
       updated = await window.api.startProgress(note.id)
-    } else if (note.status === 'in_progress') {
+    } else if (from === 'in_progress') {
       updated = await window.api.completeNote(note.id)
-    } else {
-      return
     }
-    if (updated && !patchVisibleNote(updated)) await refreshInBackground()
+
+    if (!updated) throw new Error('状态接口未返回更新后的便签')
+    clearStatusTimer(note.id, 'waiting')
+    const remainsVisible = statusFilter.value.length === 0 || statusFilter.value.includes(updated.status)
+    // 完成态的灰层必须等扫描真正抵达卡片右端后才出现。
+    const commitDelay = to === 'completed' ? 920 : 125
+    const totalDuration = 1000
+
+    // 主动画先使用旧状态起跑；颜色传播到中点后才提交文字、卡片和常驻发光颜色。
+    setStatusTransition(note.id, { from, to, phase: 'playing' })
+    scheduleStatusTransition(note.id, 'commit', commitDelay, () => {
+      patchVisibleNote(updated, true)
+    })
+    finishStatusTransition(note.id, totalDuration, async () => {
+      if (!remainsVisible) await refreshInBackground()
+    })
   } catch (e) {
+    clearStatusTimer(note.id, 'waiting')
     console.error('[NoteList] 状态修改失败:', note.id, e)
+    setStatusTransition(note.id, { from, to, phase: 'error' })
+    finishStatusTransition(note.id, 320)
   }
 }
 
-function patchVisibleNote(updated) {
+function patchVisibleNote(updated, force = false) {
   const allowed = statusFilter.value.length === 0 || statusFilter.value.includes(updated.status)
-  if (!allowed) return false
+  if (!allowed && !force) return false
   if (sortMode.value === 'timeline') {
     noteList.value = noteList.value.map((note) => note.id === updated.id ? mergeListItem(note, updated) : note)
     return true
@@ -610,34 +726,99 @@ async function refreshOne(noteOrId) {
   if (updated && !patchVisibleNote(updated)) await refreshInBackground()
 }
 
+let presenceMotionSeq = 0
+
+const {
+  captureVisibleCardLayout,
+  animateRetainedCards,
+  animateAuxiliaryIn,
+  cancelCurrentPresenceExits,
+  animateCurrentCardsOut,
+  disposePresenceMotion
+} = useNotePresenceMotion(() =>
+  sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
+)
+
+/** 用户主动刷新：完整播放依次离场 → 清空 → 重新查询 → 依次进场。 */
+let replayRefreshRunning = false
+async function replayListRefresh() {
+  if (replayRefreshRunning) return
+  replayRefreshRunning = true
+  const refreshSeq = ++presenceMotionSeq
+  try {
+    const container = sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
+    const scrollTop = container?.scrollTop || 0
+    await animateCurrentCardsOut()
+    if (refreshSeq !== presenceMotionSeq) {
+      cancelCurrentPresenceExits()
+      return
+    }
+
+    const options = { showLoading: false, preserveAnchor: false }
+    let result
+    if (sortMode.value === 'timeline') result = await loadAll(options)
+    else {
+      result = await loadCustom(options)
+      syncCustomZones()
+    }
+    if (result?.status !== 'success') {
+      cancelCurrentPresenceExits()
+      return
+    }
+    if (refreshSeq !== presenceMotionSeq) {
+      cancelCurrentPresenceExits()
+      return
+    }
+    await nextTick()
+    const refreshedContainer = sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
+    if (refreshedContainer) refreshedContainer.scrollTop = scrollTop
+    animateRetainedCards(new Map())
+  } finally {
+    replayRefreshRunning = false
+  }
+}
+
 async function refreshInBackground() {
-  const options = { showLoading: false, replayAnimation: false, preserveAnchor: true }
-  if (sortMode.value === 'timeline') return loadAll(options)
-  const result = await loadCustom(options)
-  syncCustomZones()
+  const motionSeq = ++presenceMotionSeq
+  const before = captureVisibleCardLayout()
+  const options = { showLoading: false, preserveAnchor: true }
+  let result
+  if (sortMode.value === 'timeline') {
+    result = await loadAll(options)
+  } else {
+    result = await loadCustom(options)
+    syncCustomZones()
+  }
+  if (result?.status !== 'success' || motionSeq !== presenceMotionSeq) return result
+  await nextTick()
+  if (motionSeq !== presenceMotionSeq) return result
+  animateRetainedCards(before)
   return result
 }
 
 // ---- 模式切换 ----
 
-async function switchMode(mode) {
+async function switchMode(mode, loadOptions, cancelPresence = true) {
+  if (cancelPresence) presenceMotionSeq++
   if (mode === 'custom') {
-    await loadCustom()
+    let result = await loadCustom(loadOptions)
+    if (result?.status !== 'success') return result
     syncCustomZones()
-    // 检查已加载的便签是否需要全局重排
-    const needsReorder = customList.value.some(n => n.sort_order === 0)
-    if (needsReorder) {
-      const statuses = statusFilter.value.length > 0
-        ? [...statusFilter.value]
-        : ['initialized', 'in_progress', 'completed', 'cancelled']
-      const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
-      await window.api.reorderCustomSortOrder({ statuses, tagNames })
-      await loadCustom()
+    // 主进程检查全部便签，修复早期版本可能留下的 0 或重复排序槽位。
+    const repaired = await window.api.reorderCustomSortOrder()
+    if (repaired) {
+      result = await loadCustom(loadOptions)
+      if (result?.status !== 'success') return result
       syncCustomZones()
     }
+    return result
   } else {
-    await loadAll()
+    return loadAll(loadOptions)
   }
+}
+
+function retryLoad() {
+  switchMode(sortMode.value, { showLoading: true, preserveAnchor: false })
 }
 
 
@@ -701,9 +882,16 @@ onMounted(async () => {
 })
 
 let notesChangedTimer = null
+function refreshNotesWhenStatusIdle() {
+  if (statusTransitions.size > 0) {
+    notesChangedTimer = setTimeout(refreshNotesWhenStatusIdle, 100)
+    return
+  }
+  refreshInBackground()
+}
 const stopNotesChanged = window.api.onNotesChanged?.(() => {
   clearTimeout(notesChangedTimer)
-  notesChangedTimer = setTimeout(refreshInBackground, 80)
+  notesChangedTimer = setTimeout(refreshNotesWhenStatusIdle, 80)
 })
 
 const stopSettingsChanged = window.api.onSettingsChanged?.(async (snapshot) => {
@@ -712,8 +900,13 @@ const stopSettingsChanged = window.api.onSettingsChanged?.(async (snapshot) => {
 })
 
 onUnmounted(() => {
+  presenceMotionSeq++
+  loadSeq++
+  disposePresenceMotion()
   clearTimeout(notesChangedTimer)
   clearTimeout(_customSyncTimer)
+  for (const timer of statusTransitionTimers.values()) clearTimeout(timer)
+  statusTransitionTimers.clear()
   stopNotesChanged?.()
   stopSettingsChanged?.()
   earlierRequestSeq++
@@ -724,9 +917,12 @@ onUnmounted(() => {
 // （切换按钮只翻转 sortMode，加载与持久化都由这里负责，二者与按钮解耦）
 watch(
   [sortMode, tagFilterNames, statusFilter],
-  () => {
+  ([nextMode], [previousMode]) => {
     if (restoring) return
-    switchMode(sortMode.value) // 按当前条件重载
+    if (nextMode !== previousMode) {
+      if (!modePresenceSwitching) switchMode(nextMode)
+    }
+    else refreshInBackground()
     saveFilterState() // 持久化筛选条件
   },
   { deep: true }
@@ -813,7 +1009,12 @@ defineExpose({
     <Transition :css="false" mode="out-in" @enter="onPanelEnter" @leave="onPanelLeave">
       <div v-if="panelState !== 'taiji'" :key="panelState" class="nl-panel-wrap">
         <div class="nl-panel-inner">
-          <TagSelector v-if="panelState === 'tags'" v-model="tagFilterNames" class="nl-tags" />
+          <TagSelector
+            v-if="panelState === 'tags'"
+            v-model="tagFilterNames"
+            class="nl-tags"
+            @refresh="replayListRefresh"
+          />
           <div v-else class="nl-status-filter">
             <div class="nl-status-chips">
               <button
@@ -832,10 +1033,14 @@ defineExpose({
 
     <!-- 加载状态 -->
     <div v-if="loading" class="nl-loading">加载中…</div>
+    <div v-else-if="loadError" class="nl-empty-state nl-load-error">
+      <span>{{ loadError }}</span>
+      <button @click="retryLoad">重试</button>
+    </div>
 
     <!-- ======== 时间线模式（时间标记 + 统一便签流） ======== -->
     <template v-else-if="sortMode === 'timeline'">
-      <div ref="timelineScrollRef" :key="listAnimKey" class="nl-timeline nl-list-scroll scroll-y" @scroll="onTimelineScroll">
+      <div ref="timelineScrollRef" class="nl-timeline nl-list-scroll scroll-y" @scroll="onTimelineScroll">
         <div v-if="timelineIsEmpty" class="nl-empty-state">暂无便签</div>
         <template v-else>
         <div
@@ -864,10 +1069,10 @@ defineExpose({
           </div>
           <template v-if="g.group !== 'earlier'">
             <NoteCard
-              v-for="(note, ni) in g.items"
+              v-for="note in g.items"
               :key="note.id"
               :note="note"
-              :animation-delay="staggerDelay(g.offset + ni)"
+              :status-transition="statusTransitionFor(note.id)"
               @select="emit('select', $event)"
               @status-action="onCardStatusAction"
             />
@@ -887,7 +1092,7 @@ defineExpose({
 
     <!-- ======== 自定义模式 ======== -->
     <template v-else>
-      <div ref="customScrollRef" :key="listAnimKey" class="nl-custom nl-list-scroll scroll-y" @scroll="onCustomScroll">
+      <div ref="customScrollRef" class="nl-custom nl-list-scroll scroll-y" @scroll="onCustomScroll">
       <div v-if="customTotalRendered === 0" class="nl-empty-state">暂无便签</div>
       <template v-else>
       <!-- 置顶区 -->
@@ -906,11 +1111,11 @@ defineExpose({
           :animation="180"
           @end="onCustomPinnedDragEnd"
         >
-          <template #item="{ element: note, index: i }">
+          <template #item="{ element: note }">
             <NoteCard
               :note="note"
               draggable
-              :animation-delay="staggerDelay(i)"
+              :status-transition="statusTransitionFor(note.id)"
               @select="emit('select', $event)"
               @status-action="onCardStatusAction"
             />
@@ -934,11 +1139,11 @@ defineExpose({
           :animation="180"
           @end="onCustomNormalDragEnd"
         >
-          <template #item="{ element: note, index: i }">
+          <template #item="{ element: note }">
             <NoteCard
               :note="note"
               draggable
-              :animation-delay="staggerDelay(customPinnedNotes.length + i)"
+              :status-transition="statusTransitionFor(note.id)"
               @select="emit('select', $event)"
               @status-action="onCardStatusAction"
             />
@@ -1033,7 +1238,7 @@ defineExpose({
 }
 /* 切换动效：图标向右移出深出，再从左侧滑回原位（与文字同向） */
 .nl-mode-icon--spin svg {
-  animation: nl-mode-swap 420ms cubic-bezier(0.45, 0, 0.25, 1);
+  animation: nl-mode-swap 220ms var(--ease-standard);
 }
 @keyframes nl-mode-swap {
   0% {
@@ -1041,11 +1246,11 @@ defineExpose({
     opacity: 1;
   }
   45% {
-    transform: translateX(14rem);
+    transform: translateX(5rem);
     opacity: 0;
   }
   46% {
-    transform: translateX(-14rem);
+    transform: translateX(-5rem);
     opacity: 0;
   }
   100% {
@@ -1058,16 +1263,16 @@ defineExpose({
 .nl-mode-text-enter-active,
 .nl-mode-text-leave-active {
   transition:
-    opacity 200ms ease,
-    transform 200ms ease;
+    opacity var(--motion-control) ease,
+    transform var(--motion-control) var(--ease-standard);
 }
 .nl-mode-text-enter-from {
   opacity: 0;
-  transform: translateX(-12rem);
+  transform: translateX(-5rem);
 }
 .nl-mode-text-leave-to {
   opacity: 0;
-  transform: translateX(12rem);
+  transform: translateX(5rem);
 }
 
 /* ===== 加载状态 ===== */
@@ -1080,6 +1285,7 @@ defineExpose({
   font-size: var(--fs-secondary);
   color: var(--text-color-secondary);
   gap: 12rem;
+  animation: nl-state-in var(--motion-control) ease both;
 }
 
 .nl-empty-state {
@@ -1090,6 +1296,21 @@ defineExpose({
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
   letter-spacing: 0.02em;
+  animation: nl-state-in var(--motion-control) ease both;
+}
+.nl-load-error { gap: 10rem; }
+.nl-load-error button {
+  border: 0;
+  border-radius: 6rem;
+  padding: 5rem 12rem;
+  color: var(--text-color);
+  background: rgb(var(--bg-color) / 0.12);
+  cursor: pointer;
+}
+
+@keyframes nl-state-in {
+  from { opacity: 0; transform: translateY(4rem); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* ===== 时间线 ===== */
@@ -1218,11 +1439,17 @@ defineExpose({
 }
 .nl-ghost {
   opacity: 0.3;
+  transform: scale(0.985);
 }
 
-/* 状态 chip 逐个淡入上浮（复用 NoteCard 全局 nl-card-in 关键帧，延迟由 :style 注入 animationDelay） */
+/* 状态 chip 逐个淡入上浮；与便签列表的进出场动画互不关联。 */
 .nl-chip-anim {
-  animation: nl-card-in 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: nl-chip-in 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes nl-chip-in {
+  from { opacity: 0; transform: translateY(4rem); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 
@@ -1261,7 +1488,11 @@ defineExpose({
   background: transparent;
   color: var(--text-color-secondary);
   cursor: pointer;
-  transition: all 200ms ease;
+  transition:
+    background-color var(--motion-control) ease,
+    border-color var(--motion-control) ease,
+    color var(--motion-control) ease,
+    transform var(--motion-control) var(--ease-standard);
   white-space: nowrap;
 }
 .nl-status-chip:hover {
@@ -1277,5 +1508,9 @@ defineExpose({
 .nl-status-chip--active:hover {
   background: #0066d6;
   border-color: #0066d6;
+}
+.nl-status-chip:active {
+  transform: scale(0.96);
+  transition-duration: 70ms;
 }
 </style>

@@ -46,13 +46,18 @@ const emit = defineEmits(['click'])
   cursor: pointer;
   outline: none;
   transition:
-    background-color 150ms ease,
-    border-color 150ms ease;
+    background-color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
   white-space: nowrap;
 }
 
 .base-btn:hover:not(:disabled) {
   background-color: rgba(255, 255, 255, 0.12);
+}
+.base-btn:active:not(:disabled) {
+  transform: scale(0.97);
+  transition-duration: 70ms;
 }
 .base-btn:disabled {
   opacity: 0.35;

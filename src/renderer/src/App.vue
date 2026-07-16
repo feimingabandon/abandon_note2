@@ -260,7 +260,9 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 150ms ease;
+  transition:
+    background-color var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
   background-color: #0071e3; /* 正常状态就是蓝色 */
 }
 
@@ -276,6 +278,11 @@ onUnmounted(() => {
 /* 悬停时显示图标 */
 .titlebar-actions-group:hover .btn-icon {
   opacity: 1;
+}
+
+.titlebar-btn:active {
+  transform: scale(0.9);
+  transition-duration: 70ms;
 }
 
 /* 按钮组容器 */

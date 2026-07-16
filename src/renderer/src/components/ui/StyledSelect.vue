@@ -18,6 +18,7 @@
  */
 
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 
 const props = defineProps({
   modelValue: { type: [String, Number, Boolean], default: '' },
@@ -79,33 +80,12 @@ function select(opt) {
   open.value = false
 }
 
-// ============ 下拉动画 ============
-function onBeforeEnter(el) {
-  el.style.height = '0'
-}
-
 function onEnter(el, done) {
-  const h = el.scrollHeight
-  el.animate([{ height: '0px' }, { height: h + 'px' }], {
-    duration: 350,
-    easing: 'cubic-bezier(0.2, 0, 0, 1)',
-    fill: 'forwards'
-  }).onfinish = () => {
-    el.style.height = 'auto'
-    done()
-  }
-}
-
-function onBeforeLeave(el) {
-  el.style.height = el.scrollHeight + 'px'
+  enterPopover(el, done, 'menu')
 }
 
 function onLeave(el, done) {
-  el.animate([{ height: el.scrollHeight + 'px' }, { height: '0px' }], {
-    duration: 200,
-    easing: 'cubic-bezier(0.42, 0, 1, 1)',
-    fill: 'forwards'
-  }).onfinish = done
+  leavePopover(el, done, 'menu')
 }
 
 // 点击外部关闭
@@ -160,9 +140,8 @@ onBeforeUnmount(() => {
 
     <Teleport to="body">
       <Transition
-        @before-enter="onBeforeEnter"
+        :css="false"
         @enter="onEnter"
-        @before-leave="onBeforeLeave"
         @leave="onLeave"
       >
         <div v-if="open" ref="panelRef" class="sel-panel-wrap" :style="panelStyle" @click.stop>
@@ -247,6 +226,8 @@ onBeforeUnmount(() => {
   border-radius: 10rem;
   box-shadow: 0 10rem 30rem rgba(0, 0, 0, 0.24);
   overflow: hidden;
+  transform-origin: top center;
+  will-change: transform, opacity;
 }
 .sel-panel-glass {
   --glass-opacity: var(--glass-select-opacity);

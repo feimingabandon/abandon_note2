@@ -35,27 +35,6 @@ export function createTag(name, color = null) {
 }
 
 /**
- * 更新标签（按名称查找）
- * @param {string} name - 标签名称
- * @param {Object} [fields={}] - { name?, color? }
- * @returns {Object|null} 标签不存在或名称冲突返回 null
- */
-export function updateTag(name, { newName, color } = {}) {
-  const old = getTagByName(name)
-  if (!old) return null
-  const targetName = newName ?? name
-  try {
-    getDb()
-      .prepare('UPDATE tags SET name = ?, color = ? WHERE name = ?')
-      .run(targetName, color ?? old.color, name)
-    return getTagByName(targetName)
-  } catch (err) {
-    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') return null
-    throw err
-  }
-}
-
-/**
  * 删除标签（按名称，级联删除关联关系）
  * @param {string} name
  * @returns {boolean}

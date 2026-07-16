@@ -80,6 +80,7 @@ const isResetting = ref(false)
 
 /** 关闭动画定时器 ID，用于取消竞态关闭 */
 let closeTimer = null
+let blurReleaseTimer = null
 let openRaf = null
 let componentUnmounted = false
 
@@ -165,8 +166,11 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
 const close = () => {
   if (isResetting.value || closeTimer) return
   onDragEnd()
-  // 不等待面板 350ms 退场结束，底层场景从关闭动作开始就恢复清晰。
-  emit('blur-release')
+  // 面板开始退场后再渐进恢复底层清晰度，避免抽屉仍在场时背景突然跳清。
+  blurReleaseTimer = setTimeout(() => {
+    blurReleaseTimer = null
+    emit('blur-release')
+  }, 160)
   panelActive.value = false
   Promise.all([flushPendingSettingSaves(), flushPendingBlurConfig()]).catch((e) =>
     console.warn('[SettingsPanel] 关闭前保存设置失败:', e)
@@ -186,6 +190,10 @@ watch(
       if (closeTimer) {
         clearTimeout(closeTimer)
         closeTimer = null
+      }
+      if (blurReleaseTimer) {
+        clearTimeout(blurReleaseTimer)
+        blurReleaseTimer = null
       }
       rendered.value = true
       await nextTick()
@@ -690,6 +698,10 @@ onBeforeUnmount(() => {
   if (closeTimer) {
     clearTimeout(closeTimer)
     closeTimer = null
+  }
+  if (blurReleaseTimer) {
+    clearTimeout(blurReleaseTimer)
+    blurReleaseTimer = null
   }
   if (openRaf) {
     cancelAnimationFrame(openRaf)
@@ -1230,7 +1242,7 @@ const onConfirmResetSettings = async () => {
   box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.3);
   transform: translateY(100%);
   transition:
-    transform 350ms cubic-bezier(0.25, 0.1, 0.25, 1),
+    transform 350ms var(--ease-standard),
     filter 100ms ease-out;
   pointer-events: auto;
   display: flex;
@@ -1263,6 +1275,11 @@ const onConfirmResetSettings = async () => {
   height: 4rem;
   border-radius: 2rem;
   background-color: rgba(255, 255, 255, 0.2);
+  transition: transform var(--motion-control) var(--ease-standard), background-color var(--motion-fast) ease;
+}
+.drag-indicator:hover .drag-bar {
+  transform: scaleX(1.18);
+  background-color: rgba(255, 255, 255, 0.32);
 }
 
 /* ---- 面板头部 ---- */
@@ -1297,12 +1314,16 @@ const onConfirmResetSettings = async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 150ms ease;
+  transition:
+    background-color var(--motion-fast) ease,
+    opacity var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
 }
 .panel-close-btn:hover {
   background-color: rgba(255, 255, 255, 0.15);
   opacity: 1;
 }
+.panel-close-btn:active:not(:disabled) { transform: scale(0.9); transition-duration: 70ms; }
 .panel-close-btn:disabled {
   cursor: wait;
   opacity: 0.35;
@@ -1336,6 +1357,7 @@ const onConfirmResetSettings = async () => {
   cursor: wait;
   opacity: 0.55;
 }
+.panel-body { transition: opacity var(--motion-control) ease; }
 .settings-controls {
   min-inline-size: 0;
   border: 0;
@@ -1613,6 +1635,10 @@ const onConfirmResetSettings = async () => {
 .sched-refresh-btn:hover {
   background: rgba(128, 128, 128, 0.2);
   color: var(--text-color);
+}
+.sched-refresh-btn:active {
+  transform: scale(0.92);
+  transition: transform 70ms ease;
 }
 .setting-hint-inline {
   color: var(--text-color-secondary);

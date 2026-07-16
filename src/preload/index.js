@@ -6,13 +6,10 @@
  *   通过 contextBridge 将受限的 API 暴露给渲染进程，
  *   避免直接暴露 Node.js 或 Electron 的完整能力，确保安全性。
  *
- * 暴露到 window 对象上的接口：
- *   - window.electron：electron-toolkit 提供的标准 Electron API
- *   - window.api：自定义的业务 API（窗口控制、数据库操作等）
+ * 仅暴露 window.api；渲染层不获得通用 Electron API。
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload' // electron-toolkit 标准 preload API
 
 /**
  * 自定义 API 对象
@@ -100,7 +97,9 @@ const api = {
   /** 查询全部未删除便签总数（不受筛选影响） */
   countActiveNotes: () => ipcRenderer.invoke('notes:count-active'),
   /** 全局重排 sort_order（自定义模式） */
-  reorderCustomSortOrder: (options) => ipcRenderer.invoke('notes:reorder-custom', options),
+  reorderCustomSortOrder: () => ipcRenderer.invoke('notes:reorder-custom'),
+  /** 原子提交拖拽后的排序槽位 */
+  updateCustomSortOrders: (items) => ipcRenderer.invoke('notes:update-custom-order', { items }),
   /** 开始处理 */
   startProgress: (id) => ipcRenderer.invoke('notes:start-progress', { id }),
   /** 完成便签 */
@@ -117,8 +116,6 @@ const api = {
   // ---- 标签管理 ----
   /** 创建标签 */
   createTag: (name, color) => ipcRenderer.invoke('tags:create', { name, color }),
-  /** 更新标签（按名称） */
-  updateTag: (name, fields) => ipcRenderer.invoke('tags:update', { name, fields }),
   /** 删除标签（按名称） */
   deleteTag: (name) => ipcRenderer.invoke('tags:delete', { name }),
   /** 获取全部标签 */
@@ -171,35 +168,9 @@ const api = {
   /** 捕获全屏截图，返回 data URL */
   captureScreen: () => ipcRenderer.invoke('screenshot:capture'),
 
-  // ---- 批量操作 ----
-  /** 批量更新状态 */
-  batchUpdateStatus: (ids, status) => ipcRenderer.invoke('batch:update-status', { ids, status }),
-  /** 批量设置置顶 */
-  batchSetPinned: (ids, pinned) => ipcRenderer.invoke('batch:set-pinned', { ids, pinned }),
-  /** 批量设置生效时间 */
-  batchSetEffectiveAt: (ids, effectiveAt) =>
-    ipcRenderer.invoke('batch:set-effective-at', { ids, effectiveAt }),
-  /** 批量添加标签 */
-  batchAddTags: (noteIds, tagNames) => ipcRenderer.invoke('batch:add-tags', { noteIds, tagNames }),
-
   // ---- 调度器健康检查 ----
   /** 获取调度器健康状态 */
   getSchedulerHealth: () => ipcRenderer.invoke('scheduler:health')
 }
 
-// ============================================================
-// 根据上下文隔离模式选择暴露方式
-// ============================================================
-if (process.contextIsolated) {
-  // 上下文隔离模式（推荐）：通过 contextBridge 安全暴露 API
-  try {
-    contextBridge.exposeInMainWorld('electron', electronAPI) // 暴露标准 Electron API
-    contextBridge.exposeInMainWorld('api', api) // 暴露自定义业务 API
-  } catch (error) {
-    console.error(error)
-  }
-} else {
-  // 非隔离模式（不推荐，仅作兼容）：直接挂载到 window 对象
-  window.electron = electronAPI
-  window.api = api
-}
+contextBridge.exposeInMainWorld('api', api)

@@ -8,6 +8,7 @@
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import TimeSpinner from './TimeSpinner.vue'
+import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
@@ -47,6 +48,7 @@ const second = ref(new Date().getSeconds())
 const viewYear = ref(year.value)
 const viewMonth = ref(month.value - 1)
 const currentView = ref('calendar')
+const calendarDirection = ref('next')
 
 // 可编辑输入框的临时值
 const inputDate = ref('')
@@ -112,12 +114,28 @@ function setFromDate(d) {
   hour.value = d.getHours(); minute.value = d.getMinutes(); second.value = d.getSeconds()
 }
 
+function parseDateTimeParts(val) {
+  if (typeof val !== 'string') return null
+  const match = val.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})$/)
+  if (!match) return null
+  const parts = match.slice(1).map(Number)
+  const [parsedYear, parsedMonth, parsedDay, parsedHour, parsedMinute, parsedSecond] = parts
+  if (
+    parsedYear < 1900 || parsedYear > 2100 ||
+    parsedMonth < 1 || parsedMonth > 12 ||
+    parsedHour < 0 || parsedHour > 23 ||
+    parsedMinute < 0 || parsedMinute > 59 ||
+    parsedSecond < 0 || parsedSecond > 59
+  ) return null
+  const maxDay = new Date(parsedYear, parsedMonth, 0).getDate()
+  if (parsedDay < 1 || parsedDay > maxDay) return null
+  return parts
+}
+
 function parseValue(val) {
-  if (!val) return false
-  const m = val.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/)
-  if (!m) return false
-  year.value = parseInt(m[1]); month.value = parseInt(m[2]); day.value = parseInt(m[3])
-  hour.value = parseInt(m[4]); minute.value = parseInt(m[5]); second.value = parseInt(m[6])
+  const parts = parseDateTimeParts(val)
+  if (!parts) return false
+  ;[year.value, month.value, day.value, hour.value, minute.value, second.value] = parts
   return true
 }
 
@@ -130,7 +148,10 @@ function resetToNow() {
 // ==================== 可编辑输入框 ====================
 function onDateFocus() { inputDate.value = dateDisplay.value }
 function onDateInput(e) { inputDate.value = e.target.value }
-function onDateBlur() { commitDate() }
+function onDateBlur() {
+  commitDate()
+  inputDate.value = ''
+}
 function onDateKeydown(e) { if (e.key === 'Enter') { commitDate(); e.target.blur() } }
 
 function commitDate() {
@@ -158,7 +179,10 @@ function commitDate() {
 
 function onTimeFocus() { inputTime.value = timeDisplay.value }
 function onTimeInput(e) { inputTime.value = e.target.value }
-function onTimeBlur() { commitTime() }
+function onTimeBlur() {
+  commitTime()
+  inputTime.value = ''
+}
 function onTimeKeydown(e) { if (e.key === 'Enter') { commitTime(); e.target.blur() } }
 
 function commitTime() {
@@ -193,18 +217,23 @@ watch(displayText, async () => {
 })
 
 // ==================== 日历导航 ====================
-function prevYear() { viewYear.value-- }
+function prevYear() { calendarDirection.value = 'prev'; viewYear.value-- }
 function prevMonth() {
+  calendarDirection.value = 'prev'
   if (viewMonth.value === 0) { viewMonth.value = 11; viewYear.value-- }
   else viewMonth.value--
 }
 function nextMonth() {
+  calendarDirection.value = 'next'
   if (viewMonth.value === 11) { viewMonth.value = 0; viewYear.value++ }
   else viewMonth.value++
 }
-function nextYear() { viewYear.value++ }
+function nextYear() { calendarDirection.value = 'next'; viewYear.value++ }
 function goToToday() {
   const n = new Date()
+  const current = viewYear.value * 12 + viewMonth.value
+  const target = n.getFullYear() * 12 + n.getMonth()
+  calendarDirection.value = target < current ? 'prev' : 'next'
   viewYear.value = n.getFullYear(); viewMonth.value = n.getMonth()
 }
 
@@ -302,40 +331,40 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', updatePanelPosition)
 })
 
-// ==================== 下拉动画 ====================
-function onBeforeEnter(el) { el.style.height = '0' }
 function onEnter(el, done) {
-  el.animate(
-    [{ height: '0px' }, { height: el.scrollHeight + 'px' }],
-    { duration: 350, easing: 'cubic-bezier(0.2, 0, 0, 1)', fill: 'forwards' }
-  ).onfinish = () => {
-    el.style.setProperty('height', 'auto', 'important')
-    done()
-  }
+  enterPopover(el, done, 'reveal')
 }
-function onBeforeLeave(el) { el.style.height = el.scrollHeight + 'px' }
 function onLeave(el, done) {
-  el.animate(
-    [{ height: el.scrollHeight + 'px' }, { height: '0px' }],
-    { duration: 200, easing: 'cubic-bezier(0.42, 0, 1, 1)', fill: 'forwards' }
-  ).onfinish = done
+  leavePopover(el, done, 'reveal')
 }
 </script>
 
 <template>
   <div ref="wrapperRef" class="dt-wrapper" :style="wrapperStyle">
-    <button class="dt-trigger" :class="{ 'is-open': open, 'is-disabled': disabled }" :disabled="disabled" @click="toggle">
+    <button
+      class="dt-trigger"
+      :class="{ 'is-open': open, 'is-disabled': disabled, 'has-clear': clearable && modelValue }"
+      :disabled="disabled"
+      @click="toggle"
+    >
       <span class="dt-label" :class="{ 'is-placeholder': !modelValue }">{{ displayText }}</span>
-      <button v-if="clearable && modelValue" class="dt-clear-btn" tabindex="-1" @click="doClear" title="清除">
-        <svg width="10" height="10"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
-      </button>
       <svg class="dt-arrow" :class="{ 'is-open': open }" width="10" height="6">
         <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
       </svg>
     </button>
+    <button
+      v-if="clearable && modelValue"
+      class="dt-clear-btn"
+      :disabled="disabled"
+      title="清除"
+      aria-label="清除日期时间"
+      @click="doClear"
+    >
+      <svg width="10" height="10"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+    </button>
 
     <Teleport to="body">
-      <Transition @before-enter="onBeforeEnter" @enter="onEnter" @before-leave="onBeforeLeave" @leave="onLeave">
+      <Transition :css="false" @enter="onEnter" @leave="onLeave">
         <div v-if="open" ref="panelRef" class="dt-panel-wrap" :style="panelStyle" @click.stop>
           <div class="dt-panel-glass app-bg">
             <div class="dt-panel">
@@ -353,9 +382,14 @@ function onLeave(el, done) {
           </div>
           <div class="dt-divider"/>
 
-          <!-- ===== 中：内容区（v-show 保持 DOM 常驻） ===== -->
+          <!-- ===== 中：内容区（双视图常驻，通过透明度与水平位移切换） ===== -->
           <div class="dt-content">
-            <div v-show="currentView === 'calendar'" class="dt-view">
+            <div
+              class="dt-view dt-view--calendar"
+              :class="{ 'is-active': currentView === 'calendar' }"
+              :inert="currentView !== 'calendar'"
+              :aria-hidden="currentView !== 'calendar'"
+            >
               <div class="dt-header-nav">
                 <button class="dt-nav-btn" title="上一年" @click="prevYear">
                   <svg width="12" height="12" viewBox="0 0 12 12">
@@ -384,14 +418,21 @@ function onLeave(el, done) {
               <div class="dt-weekdays">
                 <span v-for="w in WEEKDAYS" :key="w" class="dt-weekday">{{ w }}</span>
               </div>
-              <div class="dt-calendar">
+              <Transition :name="`dt-month-${calendarDirection}`" mode="out-in">
+              <div :key="`${viewYear}-${viewMonth}`" class="dt-calendar">
                 <button v-for="(c, i) in calendarCells" :key="i" class="dt-cell" :class="{ 'is-other': c.type !== 'curr', 'is-today': c.isToday, 'is-sel': c.isSelected, 'is-disabled': c.isDisabled }" :disabled="c.isDisabled" @click="selectDateCell(c)">
                   {{ c.day }}
                 </button>
               </div>
+              </Transition>
             </div>
 
-            <div v-show="currentView === 'time'" class="dt-view">
+            <div
+              class="dt-view dt-view--time"
+              :class="{ 'is-active': currentView === 'time' }"
+              :inert="currentView !== 'time'"
+              :aria-hidden="currentView !== 'time'"
+            >
               <div class="dt-time-picker">
                 <div class="dt-sp-col">
                   <div class="dt-sp-label">时</div>
@@ -443,19 +484,22 @@ function onLeave(el, done) {
   border-radius: 6rem; cursor: pointer; outline: none;
   transition: border-color 150ms ease;
 }
+.dt-trigger.has-clear { padding-right: 30rem; }
 .dt-trigger:hover:not(.is-disabled) { border-color: rgb(var(--bg-color) / 0.18); }
 .dt-trigger.is-open { border-color: rgb(var(--bg-color) / 0.25); }
 .dt-trigger.is-disabled { opacity: .4; cursor: not-allowed; }
 .dt-label { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .dt-label.is-placeholder { opacity: .4; }
 .dt-clear-btn {
-  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  position: absolute; right: 22rem; top: 50%; transform: translateY(-50%);
+  z-index: 1; display: flex; align-items: center; justify-content: center;
   width: 16rem; height: 16rem; padding: 0;
   border: none; border-radius: 50%; background: transparent;
   color: var(--text-color-secondary); cursor: pointer;
   opacity: .5; transition: opacity 120ms ease, background-color 120ms ease;
 }
 .dt-clear-btn:hover { opacity: 1; background: rgba(128,128,128,.15); }
+.dt-clear-btn:disabled { pointer-events: none; }
 .dt-arrow { flex-shrink: 0; opacity: .45; color: var(--text-color); transition: transform 200ms ease; }
 .dt-arrow.is-open { transform: rotate(180deg); }
 
@@ -464,6 +508,8 @@ function onLeave(el, done) {
   border-radius: 10rem;
   box-shadow: 0 12rem 34rem rgba(0, 0, 0, 0.26);
   overflow: hidden;
+  transform-origin: top center;
+  will-change: clip-path, transform, opacity;
 }
 .dt-panel-glass {
   --glass-opacity: var(--glass-complex-opacity);
@@ -495,8 +541,28 @@ function onLeave(el, done) {
 .dt-header-sep { width: 1px; background: color-mix(in srgb, var(--text-color) 10%, transparent); flex-shrink: 0; }
 
 /* ===== 中：内容区 ===== */
-.dt-content { flex: 7; min-height: 0; display: flex; flex-direction: column; }
-.dt-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.dt-content { position: relative; flex: 7; min-height: 0; overflow: hidden; }
+.dt-view {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 180ms ease,
+    transform 240ms var(--ease-standard);
+  will-change: opacity, transform;
+}
+.dt-view--calendar { transform: translateX(-10rem); }
+.dt-view--time { transform: translateX(10rem); }
+.dt-view.is-active {
+  z-index: 1;
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
 
 /* ---- 日历 ---- */
 .dt-header-nav { display: flex; align-items: center; justify-content: center; gap: 2rem; padding: 6rem 8rem 2rem; flex-shrink: 0; }
@@ -517,6 +583,16 @@ function onLeave(el, done) {
 .dt-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); padding: 2rem 8rem; flex-shrink: 0; }
 .dt-weekday { text-align: center; font-size: var(--fs-secondary); color: var(--text-color-secondary); font-weight: 500; padding: 1rem 0; }
 .dt-calendar { display: grid; grid-template-columns: repeat(7, 1fr); padding: 0 8rem 4rem; flex: 1; }
+.dt-month-next-enter-active,
+.dt-month-next-leave-active,
+.dt-month-prev-enter-active,
+.dt-month-prev-leave-active {
+  transition: opacity 150ms ease, transform var(--motion-control) var(--ease-standard);
+}
+.dt-month-next-enter-from,
+.dt-month-prev-leave-to { opacity: 0; transform: translateX(8rem); }
+.dt-month-next-leave-to,
+.dt-month-prev-enter-from { opacity: 0; transform: translateX(-8rem); }
 .dt-cell {
   display: flex; align-items: center; justify-content: center;
   font-size: var(--fs-secondary); font-family: inherit; font-weight: 500;
@@ -527,6 +603,11 @@ function onLeave(el, done) {
 .dt-cell.is-other { color: var(--text-color-secondary); opacity: .4; }
 .dt-cell.is-today { font-weight: 700; color: #0071e3; }
 .dt-cell.is-sel { background: #0071e3; color: #fff; font-weight: 700; }
+.dt-cell.is-sel { animation: dt-cell-select 180ms var(--ease-standard); }
+@keyframes dt-cell-select {
+  from { transform: scale(0.86); }
+  to { transform: scale(1); }
+}
 .dt-cell.is-sel:hover { background: #0077ed; }
 .dt-cell.is-disabled { opacity: .25; cursor: not-allowed; pointer-events: none; }
 
@@ -556,4 +637,7 @@ function onLeave(el, done) {
 .dt-btn--now:hover { background: rgba(0,113,227,.16); }
 .dt-btn--confirm { color: var(--text-color); background: #0071e3; }
 .dt-btn--confirm:hover { background: #0077ed; }
+.dt-nav-btn:active,
+.dt-sc-chip:active,
+.dt-btn:active { transform: scale(0.94); transition-duration: 70ms; }
 </style>

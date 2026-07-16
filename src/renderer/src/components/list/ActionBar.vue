@@ -352,6 +352,10 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
 .ab-box-btn:hover {
   background: rgba(128, 128, 128, 0.06);
 }
+.ab-box-btn:active {
+  transform: scale(0.92);
+  transition: transform 70ms ease;
+}
 
 /* === 按钮固定定位（脱离 Transition，始终可见） === */
 .ab-btn-fixed {
@@ -478,10 +482,23 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
 /* === 内容切换过渡 === */
 .ab-fade-enter-active,
 .ab-fade-leave-active {
-  transition: opacity 180ms ease;
+  transition:
+    opacity var(--motion-control) ease,
+    transform var(--motion-control) var(--ease-standard);
 }
 .ab-fade-enter-from,
 .ab-fade-leave-to {
   opacity: 0;
+  transform: translateY(-5rem);
+}
+
+.ab-drag-handle:hover .ab-drag-bar {
+  transform: scaleX(1.18);
+  background-color: rgba(255, 255, 255, 0.32);
+}
+.ab-drag-bar {
+  transition:
+    transform var(--motion-control) var(--ease-standard),
+    background-color var(--motion-fast) ease;
 }
 </style>

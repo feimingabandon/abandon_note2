@@ -123,7 +123,10 @@ const toggleLock = async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: opacity 120ms ease; /* 悬停过渡动画 */
+  transition:
+    opacity var(--motion-fast) ease,
+    background-color var(--motion-control) ease,
+    transform var(--motion-control) var(--ease-standard); /* 悬停与状态过渡 */
 }
 
 /* 按钮内的图标 */
@@ -138,6 +141,18 @@ const toggleLock = async () => {
 /* 鼠标悬停在按钮组上时，显示所有图标（模拟 macOS 行为） */
 .traffic-lights:hover .light-icon {
   opacity: 1;
+}
+.light:active {
+  transform: scale(0.86);
+  transition-duration: 70ms;
+}
+.light.pinned .light-icon,
+.light.locked .light-icon {
+  animation: light-state-in var(--motion-control) var(--ease-standard);
+}
+@keyframes light-state-in {
+  from { opacity: 0; transform: scale(0.75); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 /* 各按钮的默认背景色（模拟 macOS 红绿灯） */

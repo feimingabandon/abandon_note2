@@ -463,15 +463,26 @@ export function queryCustomNormal({ statuses, tagNames, search, limit = 10, offs
   return { notes: toNoteListItems(notes), total }
 }
 
-export function reorderCustomSortOrder({ statuses, tagNames, search } = {}) {
+export function reorderCustomSortOrder() {
   const db = getDb()
-  const { whereClause, params } = buildWhereClause({ statuses, tagNames, search })
+  const groups = db
+    .prepare(
+      `SELECT is_pinned, COUNT(*) AS total, COUNT(DISTINCT sort_order) AS distinct_total,
+              SUM(CASE WHEN sort_order <= 0 THEN 1 ELSE 0 END) AS invalid_total
+       FROM notes WHERE is_deleted = 0 GROUP BY is_pinned`
+    )
+    .all()
+  const needsRepair = groups.some(
+    (group) => group.total !== group.distinct_total || group.invalid_total > 0
+  )
+  if (!needsRepair) return false
+
   const all = db
     .prepare(
-      `SELECT n.id, n.is_pinned FROM notes n ${whereClause}
-       ORDER BY n.is_pinned DESC, n.effective_at DESC`
+      `SELECT n.id, n.is_pinned FROM notes n WHERE n.is_deleted = 0
+       ORDER BY n.is_pinned DESC, n.sort_order ASC, n.created_at DESC`
     )
-    .all(...params)
+    .all()
 
   if (!all.length) return false
 
@@ -486,4 +497,34 @@ export function reorderCustomSortOrder({ statuses, tagNames, search } = {}) {
     }
   })()
   return true
+}
+
+/** 在单个事务内提交一次拖拽产生的排序槽位交换。 */
+export function updateCustomSortOrders(items = []) {
+  if (!Array.isArray(items) || items.length === 0) return true
+  const normalized = items.map((item) => ({
+    id: Number(item?.id),
+    sortOrder: Number(item?.sortOrder)
+  }))
+  if (
+    normalized.some(
+      ({ id, sortOrder }) => !Number.isInteger(id) || id <= 0 || !Number.isFinite(sortOrder)
+    ) ||
+    new Set(normalized.map(({ id }) => id)).size !== normalized.length
+  ) {
+    throw new Error('无效的自定义排序数据')
+  }
+
+  const db = getDb()
+  const update = db.prepare(
+    'UPDATE notes SET sort_order = ?, updated_at = ? WHERE id = ? AND is_deleted = 0'
+  )
+  return db.transaction((rows) => {
+    const timestamp = now()
+    for (const { id, sortOrder } of rows) {
+      const result = update.run(sortOrder, timestamp, id)
+      if (result.changes !== 1) throw new Error(`便签不存在或已删除: ${id}`)
+    }
+    return true
+  })(normalized)
 }

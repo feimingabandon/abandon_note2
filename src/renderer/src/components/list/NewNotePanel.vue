@@ -422,4 +422,10 @@ onBeforeUnmount(() => {
   opacity: 0.4;
   cursor: not-allowed;
 }
+.nnp-submit:active:not(:disabled) {
+  transform: scale(0.985);
+  transition:
+    background-color var(--motion-fast) ease,
+    transform 70ms ease;
+}
 </style>

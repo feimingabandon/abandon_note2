@@ -46,17 +46,19 @@ defineExpose({ getImages, clearImages })
   <div class="sp-root">
     <!-- 截图按钮 — 始终在第一位 -->
     <div class="sp-btn" :class="{ 'sp-btn--busy': capturing }" title="截图" @click="capturing ? null : onScreenshot()">
-      <template v-if="capturing">
-        <div class="sp-btn__spinner" />
-        <span class="sp-btn__text">启动中…</span>
-      </template>
-      <template v-else>
-        <svg class="sp-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-          <circle cx="12" cy="13" r="4"/>
-        </svg>
-        <span class="sp-btn__text">截图</span>
-      </template>
+      <Transition name="sp-content" mode="out-in">
+        <div v-if="capturing" key="busy" class="sp-btn__content">
+          <div class="sp-btn__spinner" />
+          <span class="sp-btn__text">启动中…</span>
+        </div>
+        <div v-else key="idle" class="sp-btn__content">
+          <svg class="sp-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+          <span class="sp-btn__text">截图</span>
+        </div>
+      </Transition>
     </div>
 
     <!-- 图片选择 -->
@@ -96,6 +98,25 @@ defineExpose({ getImages, clearImages })
 .sp-btn:hover {
   border-color: rgba(128, 128, 128, 0.35);
   background: rgba(255, 255, 255, 0.04);
+}
+.sp-btn:active:not(.sp-btn--busy) {
+  transform: scale(0.98);
+  transition-duration: 70ms;
+}
+.sp-btn__content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4rem;
+}
+.sp-content-enter-active,
+.sp-content-leave-active {
+  transition: opacity var(--motion-fast) ease, transform var(--motion-control) var(--ease-standard);
+}
+.sp-content-enter-from,
+.sp-content-leave-to {
+  opacity: 0;
+  transform: scale(0.94);
 }
 .sp-btn__icon {
   width: 24rem;

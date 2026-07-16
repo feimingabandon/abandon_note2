@@ -49,6 +49,8 @@ function findScrollContainer(el) {
 document.addEventListener(
   'wheel',
   (e) => {
+    // 时间滚轮等组件拥有自己的离散对齐器，不能再叠加全局惯性 RAF。
+    if (e.target instanceof Element && e.target.closest('[data-scroll-mode="self"]')) return
     const container = findScrollContainer(e.target)
     if (!container) return // 无可滚动容器，走原生行为
 

@@ -35,6 +35,7 @@ export function initDatabase() {
   db.pragma('journal_mode = WAL')
   db.pragma('synchronous = NORMAL')
   db.pragma('cache_size = -8000')
+  db.pragma('foreign_keys = ON')
 
   // 旧表兼容性处理
   let tableInfo = db.prepare("PRAGMA table_info('app_settings')").all()
@@ -66,6 +67,14 @@ export function initDatabase() {
 
   // 便签模块建表（在 app_settings 之后，可安全重复调用）
   initNotesTables()
+
+  // 早期版本未启用外键，可能遗留已不存在便签或标签的关联记录。
+  // 先清理存量脏数据，之后由 foreign_keys 保证新增写入和删除级联的一致性。
+  db.prepare(
+    `DELETE FROM note_tags
+     WHERE note_id NOT IN (SELECT id FROM notes)
+        OR tag_name NOT IN (SELECT name FROM tags)`
+  ).run()
 }
 
 export function closeDatabase() {
@@ -125,7 +134,9 @@ export async function cleanupPendingAttachmentDirs() {
   const userDataDir = app.getPath('userData')
   const entries = await readdir(userDataDir, { withFileTypes: true })
   const pendingDirs = entries.filter(
-    (entry) => entry.isDirectory() && entry.name.startsWith('.attachments-deleting-')
+    (entry) =>
+      entry.isDirectory() &&
+      (entry.name.startsWith('.attachments-deleting-') || entry.name === '.attachments-staging')
   )
   await Promise.all(
     pendingDirs.map((entry) => rm(join(userDataDir, entry.name), { recursive: true, force: true }))
@@ -148,7 +159,7 @@ export async function clearNoteData() {
   }
 
   try {
-    // SQLite 默认不启用 foreign_keys，因此在一个短事务中显式清理关联表。
+    // 显式清理关联表，保持操作顺序清晰，也避免把大量级联工作留到最后一步。
     db.transaction(() => {
       db.prepare('DELETE FROM note_tags').run()
       db.prepare('DELETE FROM note_attachments').run()

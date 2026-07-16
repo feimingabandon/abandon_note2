@@ -135,6 +135,7 @@ async function processFiles(files) {
           const rec = results[0]
           images.value[idx] = {
             id: rec.id,
+            _key: tempId,
             name: file.name,
             size: file.size,
             dataUrl,
@@ -148,7 +149,7 @@ async function processFiles(files) {
       }
     } else {
       images.value[idx] = {
-        id: null, name: file.name, size: file.size,
+        id: null, _key: tempId, name: file.name, size: file.size,
         dataUrl, ext, base64: dataUrl.split(',')[1], saved: false
       }
     }
@@ -268,7 +269,16 @@ function addImage(dataUrl, ext, name, size) {
       }
     }).catch((e) => console.error('[ImagePicker] 截图保存失败:', e))
   } else {
-    images.value.push({ id: null, name, size, dataUrl, ext, base64, saved: false })
+    images.value.push({
+      id: null,
+      _key: `memory-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      size,
+      dataUrl,
+      ext,
+      base64,
+      saved: false
+    })
     emitCount()
   }
 }
@@ -325,18 +335,27 @@ function formatSize(bytes) {
       <span class="ip-dropzone__text ip-dropzone__text--full">已满</span>
     </div>
 
-    <!-- 缩略图列表 -->
-    <div v-for="(img, idx) in images" :key="img.id || idx" class="ip-thumb">
-      <!-- 加载中 spinner -->
-      <div v-if="img._loading" class="ip-thumb__spinner">
-        <div class="ip-spinner" />
+    <!-- 缩略图列表：新增、删除与补位保持连续 -->
+    <TransitionGroup name="ip-thumb" tag="div" class="ip-thumb-list">
+      <div v-for="(img, idx) in images" :key="img._key || img.id || `memory-${idx}`" class="ip-thumb">
+        <Transition name="ip-content" mode="out-in">
+          <div v-if="img._loading" key="loading" class="ip-thumb__spinner">
+            <div class="ip-spinner" />
+          </div>
+          <img
+            v-else
+            key="image"
+            :src="img.dataUrl"
+            class="ip-thumb__img"
+            :alt="img.name"
+            @click.stop="handlePreview(img)"
+          />
+        </Transition>
+        <button v-if="!readonly" class="ip-thumb__del" title="删除" @click.stop="handleDelete(img, idx)">×</button>
+        <span class="ip-thumb__name">{{ img.name }}</span>
+        <span class="ip-thumb__size">{{ img._loading ? '处理中…' : formatSize(img.size) }}</span>
       </div>
-      <!-- 已加载图片 -->
-      <img v-else :src="img.dataUrl" class="ip-thumb__img" :alt="img.name" @click.stop="handlePreview(img)" />
-      <button v-if="!readonly" class="ip-thumb__del" title="删除" @click.stop="handleDelete(img, idx)">×</button>
-      <span class="ip-thumb__name">{{ img.name }}</span>
-      <span class="ip-thumb__size">{{ img._loading ? '处理中…' : formatSize(img.size) }}</span>
-    </div>
+    </TransitionGroup>
 
     <!-- 大图预览 -->
     <ImagePreview :visible="previewVisible" :src="previewSrc" @close="closePreview" />
@@ -345,6 +364,7 @@ function formatSize(bytes) {
 
 <style scoped>
 .ip-root {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   gap: 8rem;
@@ -379,6 +399,8 @@ function formatSize(bytes) {
 .ip-dropzone--active {
   border-color: #0071e3;
   background: rgba(0, 113, 227, 0.06);
+  transform: scale(1.02);
+  box-shadow: 0 0 0 3rem rgba(0, 113, 227, 0.08);
 }
 .ip-dropzone--disabled {
   cursor: not-allowed;
@@ -389,6 +411,10 @@ function formatSize(bytes) {
   font-weight: 300;
   color: var(--text-color-secondary);
   line-height: 1;
+  transition: transform var(--motion-control) var(--ease-standard);
+}
+.ip-dropzone--active .ip-dropzone__icon {
+  transform: scale(1.1);
 }
 .ip-dropzone__text {
   font-size: var(--fs-secondary);
@@ -424,6 +450,36 @@ function formatSize(bytes) {
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(128, 128, 128, 0.08);
   flex-shrink: 0;
+  transition:
+    transform var(--motion-control) var(--ease-standard),
+    opacity var(--motion-control) ease,
+    box-shadow var(--motion-control) ease;
+}
+.ip-thumb-list {
+  display: contents;
+}
+.ip-thumb-enter-active,
+.ip-thumb-leave-active,
+.ip-thumb-move {
+  transition:
+    transform 220ms var(--ease-standard),
+    opacity var(--motion-control) ease;
+}
+.ip-thumb-enter-from,
+.ip-thumb-leave-to {
+  opacity: 0;
+  transform: scale(0.94);
+}
+.ip-thumb-leave-active {
+  position: absolute;
+}
+.ip-content-enter-active,
+.ip-content-leave-active {
+  transition: opacity var(--motion-control) ease;
+}
+.ip-content-enter-from,
+.ip-content-leave-to {
+  opacity: 0;
 }
 
 .ip-thumb__img {
@@ -431,6 +487,11 @@ function formatSize(bytes) {
   aspect-ratio: 1;
   object-fit: cover;
   border-radius: 4rem;
+  cursor: zoom-in;
+  transition: transform var(--motion-control) var(--ease-standard);
+}
+.ip-thumb__img:hover {
+  transform: scale(1.015);
 }
 
 .ip-thumb__del {

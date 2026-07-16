@@ -73,6 +73,13 @@ html {
   /* 持久化 CSS 变量由 main.js 在挂载前从 shared/settings-schema.js 注入。 */
   --glass-blur-base: var(--bg-blur);
   --glass-opacity-base: var(--popup-opacity);
+
+  /* ---- Motion Tokens：克制、连续的 Apple 风格反馈 ---- */
+  --motion-fast: 120ms;
+  --motion-control: 180ms;
+  --motion-panel: 300ms;
+  --ease-standard: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* ---- body 基础样式 ---- */

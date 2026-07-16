@@ -7,6 +7,7 @@
  */
 import { computed, ref, onMounted, onUnmounted, nextTick } from 'vue'
 import ImagePicker from '../note/ImagePicker.vue'
+import StatusRing from './StatusRing.vue'
 
 // 所有卡片共享一个分钟时钟，避免每张卡片各自创建定时器。
 const sharedNow = ref(Date.now())
@@ -41,7 +42,7 @@ const props = defineProps({
   note: { type: Object, required: true },
   draggable: { type: Boolean, default: false },
   muted: { type: Boolean, default: false },
-  animationDelay: { type: String, default: '0ms' }
+  statusTransition: { type: Object, default: null }
 })
 
 const emit = defineEmits(['select', 'status-action'])
@@ -190,16 +191,18 @@ async function toggleTags() {
 
 <template>
   <article
-    class="nl-card nl-card-anim"
+    class="nl-card"
     :class="[
       `nl-card--${note.status}`,
       {
         'nl-card--draggable': draggable,
         'nl-card--muted': muted,
-        'nl-card--empty': !String(note.content || '').trim()
-      }
+        'nl-card--empty': !String(note.content || '').trim(),
+        'nl-card--status-playing': statusTransition?.phase === 'playing'
+      },
+      statusTransition && `nl-card--${statusTransition.from}-to-${statusTransition.to}`
     ]"
-    :style="{ animationDelay, '--accent-color': status.color }"
+    :style="{ '--accent-color': status.color }"
     :data-note-id="note.id"
     tabindex="0"
     :aria-label="`${status.label}：${displayContent}`"
@@ -220,25 +223,11 @@ async function toggleTags() {
       </svg>
     </span>
 
-    <button
-      class="nl-status-control"
-      :class="{ 'nl-status-control--actionable': canChangeStatus }"
-      :disabled="!canChangeStatus"
-      :title="status.action || status.label"
-      :aria-label="status.action || status.label"
-      @click.stop="handleStatusAction"
-    >
-      <svg v-if="note.status === 'completed'" viewBox="0 0 20 20" aria-hidden="true">
-        <path d="m5.2 10.2 3.1 3.1 6.6-7" />
-      </svg>
-      <svg v-else-if="note.status === 'cancelled'" viewBox="0 0 20 20" aria-hidden="true">
-        <path d="m6.2 6.2 7.6 7.6M13.8 6.2l-7.6 7.6" />
-      </svg>
-      <svg v-else class="nl-status-hover-icon" viewBox="0 0 20 20" aria-hidden="true">
-        <path v-if="note.status === 'initialized'" d="m8 6 5 4-5 4Z" />
-        <path v-else d="m5.2 10.2 3.1 3.1 6.6-7" />
-      </svg>
-    </button>
+    <StatusRing
+      :status="note.status"
+      :transition-state="statusTransition"
+      @activate="handleStatusAction"
+    />
 
     <div class="nl-card-body">
       <p class="nl-card-text">{{ displayContent }}</p>
@@ -340,18 +329,7 @@ async function toggleTags() {
   </article>
 </template>
 
-<style>
-@keyframes nl-card-in {
-  from { opacity: 0; transform: translateY(6rem); }
-  to { opacity: 1; transform: translateY(0); }
-}
-</style>
-
 <style scoped>
-.nl-card-anim {
-  animation: nl-card-in 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
 .nl-card {
   --card-surface-opacity: 0.08;
   --card-surface-hover-opacity: 0.12;
@@ -377,10 +355,75 @@ async function toggleTags() {
     transform 100ms ease;
 }
 
+/* 状态成功后由左向右扫过一次；只使用合成层属性，不改变卡片布局。 */
+.nl-card::before {
+  content: '';
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background:
+    radial-gradient(
+      ellipse 15% 94% at 100% 50%,
+      color-mix(in srgb, #fff 14%, transparent) 0%,
+      color-mix(in srgb, var(--status-sweep-color) 16%, transparent) 28%,
+      color-mix(in srgb, var(--status-sweep-color) 8%, transparent) 58%,
+      transparent 100%
+    ),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--status-sweep-color) 2.5%, transparent) 0%,
+      color-mix(in srgb, var(--status-sweep-color) 4%, transparent) 34%,
+      color-mix(in srgb, var(--status-sweep-color) 6.5%, transparent) 68%,
+      color-mix(in srgb, var(--status-sweep-color) 10%, transparent) 90%,
+      color-mix(in srgb, var(--status-sweep-color) 14%, transparent) 100%
+    );
+}
+.nl-card--status-playing::before {
+  will-change: transform, opacity;
+}
+.nl-card--status-playing.nl-card--initialized-to-in_progress {
+  --status-sweep-color: #ff9f0a;
+}
+.nl-card--status-playing.nl-card--in_progress-to-completed {
+  --status-sweep-color: #30d158;
+}
+.nl-card--status-playing.nl-card--initialized-to-in_progress::before {
+  animation:
+    nl-status-sweep-motion 1000ms cubic-bezier(0.55, 0, 0.45, 1) both,
+    nl-status-sweep-opacity-start 1000ms linear both;
+}
+.nl-card--status-playing.nl-card--in_progress-to-completed::before {
+  animation:
+    nl-status-sweep-motion 1000ms cubic-bezier(0.55, 0, 0.45, 1) both,
+    nl-status-sweep-opacity-complete 1000ms linear both;
+}
+
 .nl-card:hover {
   border-color: color-mix(in srgb, var(--text-color) 12%, transparent);
   background: rgb(var(--bg-color) / var(--card-surface-hover-opacity));
   box-shadow: 0 5rem 18rem rgba(0, 0, 0, 0.05);
+}
+
+@keyframes nl-status-sweep-motion {
+  0% { transform: scaleX(0.02); }
+  90%, 100% { transform: scaleX(1); }
+}
+
+@keyframes nl-status-sweep-opacity-start {
+  0% { opacity: 0; }
+  14%, 92% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes nl-status-sweep-opacity-complete {
+  0% { opacity: 0; }
+  12%, 92% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 .nl-card--completed::after,
@@ -392,7 +435,6 @@ async function toggleTags() {
   pointer-events: none;
   border-radius: inherit;
   background: rgba(128, 128, 128, 0.1);
-  backdrop-filter: saturate(0.38);
   transition: background-color 180ms ease;
 }
 .nl-card--completed:hover::after { background: rgba(128, 128, 128, 0.075); }
@@ -403,7 +445,7 @@ async function toggleTags() {
   border-color: color-mix(in srgb, var(--accent-color) 55%, transparent);
   box-shadow: 0 0 0 3rem color-mix(in srgb, var(--accent-color) 14%, transparent);
 }
-.nl-card:active { transform: scale(0.993); }
+.nl-card:active:not(:has(button:active)) { transform: scale(0.993); }
 
 .nl-card--initialized {
   --card-surface-opacity: 0.08;
@@ -465,59 +507,11 @@ async function toggleTags() {
   opacity: 1;
 }
 
-.nl-status-control {
-  position: relative;
-  z-index: 2;
-  display: grid;
-  place-items: center;
-  width: 20rem;
-  height: 20rem;
-  margin: 2rem 0 0;
-  padding: 0;
-  border: 2.2rem solid var(--accent-color);
-  border-radius: 50%;
-  background: transparent;
-  color: var(--accent-color);
-  font-family: inherit;
-  cursor: default;
-  transition:
-    box-shadow 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 180ms ease;
-}
-.nl-status-control svg {
-  width: 13rem;
-  height: 13rem;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.nl-status-control--actionable { cursor: pointer; }
-.nl-card:hover .nl-status-control--actionable {
-  box-shadow:
-    0 0 3rem color-mix(in srgb, var(--accent-color) 30%, transparent),
-    0 0 8rem color-mix(in srgb, var(--accent-color) 17%, transparent),
-    0 0 16rem color-mix(in srgb, var(--accent-color) 8%, transparent);
-  transform: scale(1.035);
-}
-.nl-status-control--actionable:active { transform: scale(0.9); }
-.nl-status-hover-icon { opacity: 0; transition: opacity 130ms ease; }
-.nl-status-control--actionable:hover .nl-status-hover-icon { opacity: 1; }
-.nl-card--completed .nl-status-control {
-  border-color: color-mix(in srgb, var(--accent-color) 44%, #8a8a8a);
-  background: color-mix(in srgb, var(--accent-color) 38%, #8a8a8a);
-  color: #fff;
-}
-.nl-card--cancelled .nl-status-control { opacity: 0.7; }
-.nl-status-control:disabled { pointer-events: none; }
-
 /* 终结态降低内部信息层，而不是继续压暗卡片表面。 */
 .nl-card--completed .nl-card-body {
   opacity: 0.62;
 }
-.nl-card--completed .nl-status-control {
+.nl-card--completed :deep(.sr-control) {
   opacity: 0.68;
 }
 .nl-card--completed .nl-image-panel-shell {
@@ -529,7 +523,7 @@ async function toggleTags() {
 .nl-card--completed:hover .nl-card-body {
   opacity: 0.67;
 }
-.nl-card--completed:hover .nl-status-control {
+.nl-card--completed:hover :deep(.sr-control) {
   opacity: 0.72;
 }
 .nl-card--completed:hover .nl-image-panel-shell--expanded {
@@ -539,7 +533,7 @@ async function toggleTags() {
 .nl-card--cancelled .nl-card-body {
   opacity: 0.54;
 }
-.nl-card--cancelled .nl-status-control {
+.nl-card--cancelled :deep(.sr-control) {
   opacity: 0.6;
 }
 .nl-card--cancelled .nl-image-panel-shell {
@@ -551,7 +545,7 @@ async function toggleTags() {
 .nl-card--cancelled:hover .nl-card-body {
   opacity: 0.59;
 }
-.nl-card--cancelled:hover .nl-status-control {
+.nl-card--cancelled:hover :deep(.sr-control) {
   opacity: 0.64;
 }
 .nl-card--cancelled:hover .nl-image-panel-shell--expanded {

@@ -255,16 +255,25 @@ onBeforeUnmount(() => {
   box-shadow: 0 1rem 4rem rgba(0, 0, 0, 0.3);
   transform: translateY(-50%);
   pointer-events: none;
+  transition:
+    left 80ms ease,
+    transform var(--motion-control) var(--ease-standard),
+    box-shadow var(--motion-control) ease;
 }
 
 /* 拖动中关闭过渡，保证跟手 */
 .slider-root.dragging .slider-thumb {
   transition: none;
+  transform: translateY(-50%) scale(1.12);
+  box-shadow: 0 3rem 10rem rgba(0, 0, 0, 0.34);
 }
 .slider-root:not(.dragging) {
   transition: --s-fill 80ms ease;
 }
 .slider-root:not(.dragging) .slider-thumb {
-  transition: left 80ms ease;
+  transition:
+    left 80ms ease,
+    transform var(--motion-control) var(--ease-standard),
+    box-shadow var(--motion-control) ease;
 }
 </style>
