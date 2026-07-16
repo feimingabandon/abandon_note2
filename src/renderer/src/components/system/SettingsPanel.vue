@@ -318,13 +318,10 @@ const blurCaps = ref({ supported: false, platform: '', strategy: 'none' })
 const blurEnabled = ref(DEFAULT_SETTINGS.blur.enabled)
 const blurError = ref(null) // 持久错误（如 DLL 未加载），恒显示不自动消失
 const blurRadius = ref(DEFAULT_SETTINGS.blur.radius)
-const blurOpacity = ref(DEFAULT_SETTINGS.blur.opacity)
-const blurTintR = ref(DEFAULT_SETTINGS.blur.tint.r)
-const blurTintG = ref(DEFAULT_SETTINGS.blur.tint.g)
-const blurTintB = ref(DEFAULT_SETTINGS.blur.tint.b)
 const blurSaturation = ref(DEFAULT_SETTINGS.blur.saturation)
 const blurCornerRadius = ref(DEFAULT_SETTINGS.blur.cornerRadius)
 let _blurSynced = false
+let _blurEnableFeedbackPending = false
 
 // ---- 窗口透明度（仅系统模糊关闭时显示） ----
 const windowOpacity = ref(DEFAULT_SETTINGS.css.windowOpacity)
@@ -333,52 +330,32 @@ const windowOpacity = ref(DEFAULT_SETTINGS.css.windowOpacity)
 const cssBlur = ref(DEFAULT_SETTINGS.css.bgBlur)
 const cssOpacity = ref(DEFAULT_SETTINGS.css.popupOpacity)
 const cssSaturation = ref(DEFAULT_SETTINGS.css.bgSaturation)
-const blurTintHex = computed(() => {
-  const r = blurTintR.value.toString(16).padStart(2, '0')
-  const g = blurTintG.value.toString(16).padStart(2, '0')
-  const b = blurTintB.value.toString(16).padStart(2, '0')
-  return `#${r}${g}${b}`
-})
-const blurTintInput = ref(blurTintHex.value)
-const blurTintInputError = ref(false)
-
-// ---- 模糊着色：输入变更 ----
-function onBlurTintInput(e) {
-  blurTintInput.value = e.target.value
-  if (blurTintInputError.value) blurTintInputError.value = false
-}
-
-// ---- 模糊着色：提交校验 ----
-function commitBlurTint() {
-  const val = blurTintInput.value.trim()
-  if (val === '') {
-    blurTintInput.value = blurTintHex.value
-    return
-  }
-  if (isValidHex(val)) {
-    const normalized = normalizeHex(val)
-    const { r, g, b } = hexToRgb(normalized)
-    blurTintR.value = r
-    blurTintG.value = g
-    blurTintB.value = b
-    blurTintInput.value = normalized
-    blurTintInputError.value = false
-  } else {
-    blurTintInput.value = blurTintHex.value
-    showMessage('warning', '请输入有效的十六进制颜色值，如 #FFFFFF')
-    blurTintInputError.value = true
-  }
-}
-
-// ---- 模糊着色预设点击 ----
-function setBlurTintPreset(hex) {
-  const { r, g, b } = hexToRgb(hex)
-  blurTintR.value = r
-  blurTintG.value = g
-  blurTintB.value = b
-}
 
 const { showMessage } = useMessage()
+
+/**
+ * 使用元素的真实高度驱动原生模糊参数区动画。
+ * 相比 0fr/1fr CSS 插值，这在 Electron 当前布局中更稳定。
+ */
+function animateNativeBlurOptions(el, opening, done) {
+  const fullHeight = `${el.scrollHeight}px`
+  const collapsed = { height: '0px', opacity: 0, transform: 'translateY(-6rem)' }
+  const expanded = { height: fullHeight, opacity: 1, transform: 'translateY(0)' }
+  const animation = el.animate(opening ? [collapsed, expanded] : [expanded, collapsed], {
+    duration: 280,
+    easing: 'cubic-bezier(0.22, 1, 0.36, 1)'
+  })
+
+  animation.finished.then(done, done)
+}
+
+function onNativeBlurOptionsEnter(el, done) {
+  animateNativeBlurOptions(el, true, done)
+}
+
+function onNativeBlurOptionsLeave(el, done) {
+  animateNativeBlurOptions(el, false, done)
+}
 
 // ---- 确认弹窗状态 ----
 const showClearNoteDataDialog = ref(false)
@@ -532,24 +509,18 @@ watch(bgColorHex, (v) => {
   bgColorInputError.value = false
 })
 
-// 同步模糊着色输入显示值
-watch(blurTintHex, (v) => {
-  blurTintInput.value = v
-  blurTintInputError.value = false
-})
-
 // ---- 系统模糊 watch（防抖发送到主进程） ----
 const inFlightBlurSyncs = new Set()
 
 function syncBlurConfig() {
   if (!_blurSynced || isResetting.value) return Promise.resolve()
+  const shouldReportEnableResult = _blurEnableFeedbackPending
+  _blurEnableFeedbackPending = false
   const request = window.api.setBlurConfig({
     enabled: blurEnabled.value,
     radius: blurRadius.value,
-    opacity: blurOpacity.value,
     saturation: blurSaturation.value,
-    cornerRadius: blurCornerRadius.value,
-    tint: { r: blurTintR.value, g: blurTintG.value, b: blurTintB.value }
+    cornerRadius: blurCornerRadius.value
   })
   inFlightBlurSyncs.add(request)
   request.then(
@@ -557,7 +528,32 @@ function syncBlurConfig() {
     () => inFlightBlurSyncs.delete(request)
   )
   return request
-    .catch((e) => console.warn('[SettingsPanel] 同步模糊配置失败:', e))
+    .then((result) => {
+      if (result?.config && result.config.enabled !== blurEnabled.value) {
+        _blurSynced = false
+        blurEnabled.value = Boolean(result.config.enabled)
+        nextTick(() => {
+          _blurSynced = true
+        })
+      }
+      if (result?.runtime) blurError.value = result.error ?? result.runtime.error ?? null
+      if (shouldReportEnableResult && !result?.success) {
+        const nativeError = result?.nativeError
+        const codeSuffix = nativeError?.code ? `（错误码 ${nativeError.code}）` : ''
+        showMessage(
+          'error',
+          `毛玻璃启用失败：${result?.error || result?.runtime?.error || '原生模糊引擎不可用'}${codeSuffix}`,
+          5000
+        )
+      }
+      return result
+    })
+    .catch((e) => {
+      console.warn('[SettingsPanel] 同步模糊配置失败:', e)
+      if (shouldReportEnableResult && blurEnabled.value) {
+        showMessage('error', `毛玻璃启用失败：${e.message || '主进程通信失败'}`, 5000)
+      }
+    })
 }
 
 let _blurSyncTimer = null
@@ -593,12 +589,11 @@ async function waitForInFlightWrites() {
   await Promise.allSettled(requests)
 }
 
-watch(blurEnabled, debouncedSyncBlur)
+watch(blurEnabled, () => {
+  if (_blurSynced && !isResetting.value) _blurEnableFeedbackPending = true
+  debouncedSyncBlur()
+})
 watch(blurRadius, debouncedSyncBlur)
-watch(blurOpacity, debouncedSyncBlur)
-watch(blurTintR, debouncedSyncBlur)
-watch(blurTintG, debouncedSyncBlur)
-watch(blurTintB, debouncedSyncBlur)
 watch(blurSaturation, debouncedSyncBlur)
 watch(blurCornerRadius, debouncedSyncBlur)
 // 圆角 CSS 变量即时同步（不等防抖，视觉必须立即跟上）
@@ -623,12 +618,8 @@ function assignSettingsSnapshot(snapshot) {
 
   blurEnabled.value = blur.enabled
   blurRadius.value = blur.radius
-  blurOpacity.value = blur.opacity
   blurSaturation.value = blur.saturation
   blurCornerRadius.value = blur.cornerRadius
-  blurTintR.value = blur.tint.r
-  blurTintG.value = blur.tint.g
-  blurTintB.value = blur.tint.b
 
   if (runtimeBlur) {
     blurCaps.value = {
@@ -832,134 +823,6 @@ const onConfirmResetSettings = async () => {
           :disabled="isResetting"
           :inert="isResetting"
         >
-          <!-- ========== 系统窗口模糊玻璃效果 ========== -->
-          <section v-if="blurCaps.supported" class="settings-section">
-            <h3 class="section-title">系统窗口模糊玻璃效果</h3>
-
-            <!-- 启用开关（所有支持平台通用） -->
-            <div class="setting-item">
-              <div class="setting-left">
-                <span class="setting-label">启用毛玻璃</span>
-                <span v-if="blurError" class="setting-error">
-                  <svg class="warn-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                    <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" />
-                    <path d="M6 3.5v3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-                    <circle cx="6" cy="9" r="0.7" fill="currentColor" />
-                  </svg>
-                  {{ blurError }}
-                </span>
-              </div>
-              <div class="setting-right">
-                <AppToggle v-model="blurEnabled" />
-              </div>
-            </div>
-
-            <!-- 窗口透明度（始终显示，控制主窗口背景） -->
-            <div class="setting-item setting-item-slider">
-              <span class="setting-label">窗口透明度<HelpButton text="控制主窗口背景透明度。0=OS毛玻璃完全透出，1=不透明纯色底" /></span>
-              <span class="range-label-start"></span>
-              <AppSlider v-model="windowOpacity" :min="0" :max="1" :step="0.01" />
-              <span class="range-label-end"></span>
-              <span class="setting-value">{{ Math.round(windowOpacity * 100) }}%</span>
-            </div>
-
-            <!-- 开启时：显示系统模糊设置（仅 Windows） -->
-            <template v-if="blurEnabled && blurCaps.platform === 'Windows'">
-              <!-- 系统透明度 -->
-              <div class="setting-item setting-item-slider">
-                <span class="setting-label">系统透明度<HelpButton text="控制DComp模糊层的通透程度。1=不透明（最强模糊）" /></span>
-                <span class="range-label-start"></span>
-                <AppSlider v-model="blurOpacity" :min="0" :max="1" :step="0.01" />
-                <span class="range-label-end"></span>
-                <span class="setting-value">{{ Math.round(blurOpacity * 100) }}%</span>
-              </div>
-
-              <!-- 模糊半径 -->
-              <div class="setting-item setting-item-slider">
-                <span class="setting-label">模糊半径<HelpButton text="控制背景被打散的程度。推荐值10–20" /></span>
-                <span class="range-label-start">清晰</span>
-                <AppSlider v-model="blurRadius" :min="0" :max="100" :step="1" />
-                <span class="range-label-end">模糊</span>
-                <span class="setting-value">{{ blurRadius }} DIP</span>
-              </div>
-
-              <!-- 颜色 -->
-              <div class="setting-item">
-                <div class="setting-left">
-                <span class="setting-label">颜色<HelpButton text="选中颜色如染色玻璃盖在模糊层上。白色≈无色叠加（推荐）" /></span>
-                </div>
-                <div class="setting-right">
-                  <button
-                    v-for="c in hexPresets" :key="c.value" class="color-dot"
-                    :class="{ active: blurTintHex === c.value }"
-                    :style="{ backgroundColor: c.value }" :title="c.label"
-                    @click="setBlurTintPreset(c.value)"
-                  />
-                  <input type="color" class="color-input" :value="blurTintHex"
-                    @input="(e) => { const h = e.target.value; blurTintR = parseInt(h.slice(1,3),16); blurTintG = parseInt(h.slice(3,5),16); blurTintB = parseInt(h.slice(5,7),16) }"
-                  />
-                  <div class="color-hex-input-wrap">
-                    <input type="text" class="color-hex-input" spellcheck="false"
-                      :class="{ 'has-error': blurTintInputError }" :value="blurTintInput"
-                      placeholder="#FFFFFF" maxlength="7"
-                      @input="onBlurTintInput" @blur="commitBlurTint" @keydown.enter="commitBlurTint"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <!-- 饱和度 -->
-              <div class="setting-item setting-item-slider">
-                <span class="setting-label">饱和度<HelpButton text="模糊会让颜色变灰，提高饱和度能把鲜艳度补回来。推荐1.6–2.0（苹果用1.8）" /></span>
-                <span class="range-label-start">黑白</span>
-                <AppSlider v-model="blurSaturation" :min="0" :max="2" :step="0.1" />
-                <span class="range-label-end">鲜艳</span>
-                <span class="setting-value">{{ blurSaturation.toFixed(1) }}x</span>
-              </div>
-            </template>
-
-            <!-- 窗口圆角（所有平台通用，纯 CSS 控制） -->
-            <div class="setting-item setting-item-slider">
-              <span class="setting-label">窗口圆角<HelpButton text="四个角的圆润程度。0=直角，数值越大越圆。推荐8–16（苹果原生风格）" /></span>
-              <span class="range-label-start">直角</span>
-              <AppSlider v-model="blurCornerRadius" :min="0" :max="30" :step="1" />
-              <span class="range-label-end">圆润</span>
-              <span class="setting-value">{{ blurCornerRadius }}px</span>
-            </div>
-          </section>
-
-          <!-- ========== CSS组件模糊玻璃效果 ========== -->
-          <section class="settings-section">
-            <h3 class="section-title">CSS组件模糊玻璃效果</h3>
-
-            <!-- 模糊半径 -->
-            <div class="setting-item setting-item-slider">
-              <span class="setting-label">模糊半径<HelpButton text="控制弹窗、下拉框等浮动组件的背景模糊程度。推荐5px" /></span>
-              <span class="range-label-start"></span>
-              <AppSlider v-model="cssBlur" :min="0" :max="30" :step="1" />
-              <span class="range-label-end"></span>
-              <span class="setting-value">{{ cssBlur }}px</span>
-            </div>
-
-            <!-- 组件透明度 -->
-            <div class="setting-item setting-item-slider">
-              <span class="setting-label">组件透明度<HelpButton text="控制浮动组件的霜层厚薄。值越小越透，推荐50%" /></span>
-              <span class="range-label-start"></span>
-              <AppSlider v-model="cssOpacity" :min="0" :max="1" :step="0.01" />
-              <span class="range-label-end"></span>
-              <span class="setting-value">{{ Math.round(cssOpacity * 100) }}%</span>
-            </div>
-
-            <!-- 饱和度 -->
-            <div class="setting-item setting-item-slider">
-              <span class="setting-label">饱和度<HelpButton text="模糊会洗掉颜色，提高饱和度补偿回来。推荐1.6–2.0（苹果用1.8）" /></span>
-              <span class="range-label-start">黑白</span>
-              <AppSlider v-model="cssSaturation" :min="0" :max="2" :step="0.1" />
-              <span class="range-label-end">鲜艳</span>
-              <span class="setting-value">{{ cssSaturation.toFixed(1) }}x</span>
-            </div>
-          </section>
-
           <!-- ========== 基础样式 ========== -->
           <section class="settings-section">
             <h3 class="section-title">基础样式</h3>
@@ -967,7 +830,7 @@ const onConfirmResetSettings = async () => {
             <!-- 背景颜色 -->
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">背景颜色</span>
+                <span class="setting-label">背景颜色<HelpButton text="设置应用的基础背景色。它会参与主窗口玻璃着色、设置面板和浮动组件的背景计算；可选择预设色或输入十六进制颜色。" /></span>
               </div>
               <div class="setting-right">
                 <button
@@ -992,7 +855,7 @@ const onConfirmResetSettings = async () => {
             <!-- 字体大小（输入 + 下拉预设） -->
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">字体大小</span>
+                <span class="setting-label">字体大小<HelpButton text="调整应用的全局基础字号，列表、设置和编辑区域会按同一比例联动。" /></span>
               </div>
               <div class="setting-right">
                 <FontSizeInput v-model="fontSizeBase" :presets="fontSizePresets" :min="14" :max="22" width="90rem" />
@@ -1002,7 +865,7 @@ const onConfirmResetSettings = async () => {
             <!-- 文字颜色 -->
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">文字颜色</span>
+                <span class="setting-label">文字颜色<HelpButton text="设置应用的主要文字颜色，次要文字和边界颜色会基于它自动派生。" /></span>
               </div>
               <div class="setting-right">
                 <button
@@ -1023,13 +886,125 @@ const onConfirmResetSettings = async () => {
             </div>
           </section>
 
+          <!-- ========== 系统窗口模糊玻璃效果 ========== -->
+          <section class="settings-section">
+            <h3 class="section-title">窗口模糊玻璃与外观</h3>
+
+            <!-- 启用开关（所有支持平台通用） -->
+            <div v-if="blurCaps.supported" class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">启用毛玻璃<HelpButton text="平台限制：Windows 需要 Windows 10 1903（Build 18362）或更高版本，支持调节模糊半径和饱和度；macOS 使用系统原生 Vibrancy，只支持开启或关闭，模糊半径和饱和度由系统决定，不能单独设置。玻璃浓度、背景颜色和窗口圆角在两个平台上都可以调节。关闭后不再渲染原生模糊层。" /></span>
+                <span v-if="blurError" class="setting-error">
+                  <svg class="warn-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                    <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" />
+                    <path d="M6 3.5v3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                    <circle cx="6" cy="9" r="0.7" fill="currentColor" />
+                  </svg>
+                  {{ blurError }}
+                </span>
+              </div>
+              <div class="setting-right">
+                <AppToggle v-model="blurEnabled" />
+              </div>
+            </div>
+
+            <div v-else class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">系统毛玻璃不可用<HelpButton text="当前系统版本或运行环境无法创建原生模糊层，应用会自动回退到背景颜色、玻璃浓度和圆角效果。" /></span>
+                <span class="setting-error">当前系统将使用透明背景颜色和圆角回退</span>
+              </div>
+            </div>
+
+            <!-- 玻璃浓度始终显示；原生模糊不可用时也是主要回退控制。 -->
+            <div class="setting-item setting-item-slider">
+              <span class="setting-label">玻璃浓度<HelpButton text="控制主窗口背景颜色的覆盖强度。0=完全通透，1=不透明纯色底；不改变原生模糊强度" /></span>
+              <span class="range-label-start">通透</span>
+              <AppSlider v-model="windowOpacity" :min="0" :max="1" :step="0.01" />
+              <span class="range-label-end">浓厚</span>
+              <span class="setting-value">{{ Math.round(windowOpacity * 100) }}%</span>
+            </div>
+
+            <!-- 开启时：显示系统模糊设置（仅 Windows） -->
+            <Transition
+              :css="false"
+              @enter="onNativeBlurOptionsEnter"
+              @leave="onNativeBlurOptionsLeave"
+            >
+              <div
+                v-if="blurCaps.supported && blurEnabled && blurCaps.platform === 'Windows'"
+                class="native-blur-options"
+              >
+                <div class="native-blur-options-inner">
+                  <!-- 模糊半径 -->
+                  <div class="setting-item setting-item-slider">
+                    <span class="setting-label">模糊半径<HelpButton text="控制背景被打散的程度。推荐值10–20" /></span>
+                    <span class="range-label-start">清晰</span>
+                    <AppSlider v-model="blurRadius" :min="0" :max="40" :step="1" />
+                    <span class="range-label-end">模糊</span>
+                    <span class="setting-value">{{ blurRadius }} DIP</span>
+                  </div>
+
+                  <!-- 饱和度 -->
+                  <div class="setting-item setting-item-slider">
+                    <span class="setting-label">饱和度<HelpButton text="模糊会让颜色变灰，提高饱和度能把鲜艳度补回来。推荐1.6–2.0（苹果用1.8）" /></span>
+                    <span class="range-label-start">黑白</span>
+                    <AppSlider v-model="blurSaturation" :min="0" :max="2" :step="0.1" />
+                    <span class="range-label-end">鲜艳</span>
+                    <span class="setting-value">{{ blurSaturation.toFixed(1) }}x</span>
+                  </div>
+                </div>
+              </div>
+            </Transition>
+
+            <!-- 窗口圆角（所有平台通用，纯 CSS 控制） -->
+            <div class="setting-item setting-item-slider">
+              <span class="setting-label">窗口圆角<HelpButton text="四个角的圆润程度。0=直角，数值越大越圆。推荐8–16（苹果原生风格）" /></span>
+              <span class="range-label-start">直角</span>
+              <AppSlider v-model="blurCornerRadius" :min="0" :max="30" :step="1" />
+              <span class="range-label-end">圆润</span>
+              <span class="setting-value">{{ blurCornerRadius }}px</span>
+            </div>
+          </section>
+
+          <!-- ========== CSS组件模糊玻璃效果 ========== -->
+          <section class="settings-section">
+            <h3 class="section-title">CSS组件模糊玻璃效果</h3>
+
+            <!-- 模糊半径 -->
+            <div class="setting-item setting-item-slider">
+              <span class="setting-label">模糊半径<HelpButton text="控制弹窗、下拉框等浮动组件的背景模糊程度。推荐5px" /></span>
+              <span class="range-label-start">清晰</span>
+              <AppSlider v-model="cssBlur" :min="0" :max="30" :step="1" />
+              <span class="range-label-end">模糊</span>
+              <span class="setting-value">{{ cssBlur }}px</span>
+            </div>
+
+            <!-- 组件透明度 -->
+            <div class="setting-item setting-item-slider">
+              <span class="setting-label">组件透明度<HelpButton text="控制浮动组件的霜层厚薄。值越小越透，推荐50%" /></span>
+              <span class="range-label-start">通透</span>
+              <AppSlider v-model="cssOpacity" :min="0" :max="1" :step="0.01" />
+              <span class="range-label-end">不透</span>
+              <span class="setting-value">{{ Math.round(cssOpacity * 100) }}%</span>
+            </div>
+
+            <!-- 饱和度 -->
+            <div class="setting-item setting-item-slider">
+              <span class="setting-label">饱和度<HelpButton text="模糊会洗掉颜色，提高饱和度补偿回来。推荐1.6–2.0（苹果用1.8）" /></span>
+              <span class="range-label-start">黑白</span>
+              <AppSlider v-model="cssSaturation" :min="0" :max="2" :step="0.1" />
+              <span class="range-label-end">鲜艳</span>
+              <span class="setting-value">{{ cssSaturation.toFixed(1) }}x</span>
+            </div>
+          </section>
+
           <!-- ========== 系统设置 ========== -->
           <section class="settings-section">
             <h3 class="section-title">系统设置</h3>
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">开机自启</span>
+                <span class="setting-label">开机自启<HelpButton text="控制应用是否随系统登录自动启动。此状态直接读取并写入操作系统，不保存在应用数据库中。" /></span>
                 <span v-if="autoStartError" class="setting-error">
                   <svg
                     class="warn-icon"
@@ -1063,7 +1038,7 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">应用版本</span>
+                <span class="setting-label">应用版本<HelpButton text="当前安装或运行的应用版本，用于确认功能版本和排查兼容性问题。" /></span>
               </div>
               <div class="setting-right">
                 <span class="setting-value">v1.0.0</span>
@@ -1100,7 +1075,7 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">调度器状态</span>
+                <span class="setting-label">调度器状态<HelpButton text="显示后台定时任务调度器是否正在运行。调度器负责便签生效、提醒和循环模板等定时工作。" /></span>
               </div>
               <div class="setting-right">
                 <span
@@ -1116,7 +1091,7 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">最近执行</span>
+                <span class="setting-label">最近执行<HelpButton text="后台调度器最近一次完成任务检查的时间；长时间不更新可能表示调度线程被阻塞。" /></span>
                 <span class="setting-hint-caption">上次检查任务的时间</span>
               </div>
               <div class="setting-right">
@@ -1131,7 +1106,7 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">故障监控</span>
+                <span class="setting-label">故障监控<HelpButton text="独立看门狗会定期检查主调度器是否正常推进，并在检测到停滞时尝试恢复。" /></span>
                 <span class="setting-hint-caption">独立计时器，检测调度器是否卡死</span>
               </div>
               <div class="setting-right">
@@ -1146,7 +1121,7 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">执行保护</span>
+                <span class="setting-label">执行保护<HelpButton text="防止上一轮任务尚未结束时再次进入调度流程，避免同一便签被重复处理或重复提醒。" /></span>
                 <span class="setting-hint-caption">防止同一时刻重复执行</span>
               </div>
               <div class="setting-right">
@@ -1161,7 +1136,7 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">调度计数</span>
+                <span class="setting-label">调度计数<HelpButton text="记录当前主调度器的运行代次；发生故障并重建调度循环后会进入下一轮。" /></span>
                 <span class="setting-hint-caption">每发生一次故障恢复 +1</span>
               </div>
               <div class="setting-right">
@@ -1171,7 +1146,7 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">自动恢复</span>
+                <span class="setting-label">自动恢复<HelpButton text="显示看门狗连续恢复失败的次数。数值持续增加时通常需要重启应用并检查错误日志。" /></span>
                 <span class="setting-hint-caption">故障监控触发的恢复次数</span>
               </div>
               <div class="setting-right">
@@ -1403,6 +1378,14 @@ const onConfirmResetSettings = async () => {
   background-color: rgba(255, 255, 255, 0.07);
 }
 
+/* 原生模糊参数随启用状态平滑展开/收起；grid 可适应内容高度。 */
+.native-blur-options {
+  overflow: hidden;
+}
+.native-blur-options-inner {
+  min-height: 0;
+}
+
 /* 有辅助文字时，左列顶部对齐 */
 .setting-item.has-hint {
   align-items: start;
@@ -1495,12 +1478,15 @@ const onConfirmResetSettings = async () => {
 }
 
 /* ---- 滑块行各列按百分比 flex-basis 统一，保证所有进度条对齐 ---- */
-/* 标题+问号：固定 22% */
+/* 标题+问号：加宽并始终保留完整帮助按钮。 */
 .setting-item.setting-item-slider .setting-label {
-  flex: 0 0 22%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 27%;
+  min-width: 0;
+  overflow: visible;
   white-space: nowrap;
+}
+.setting-item.setting-item-slider .setting-label :deep(.help-btn-wrap) {
+  flex: 0 0 auto;
 }
 /* 左/右范围标签：各固定 6%，空 span 也占位 */
 .range-label-start,

@@ -14,6 +14,7 @@
 #include <windows.ui.composition.interop.h>
 #include <DispatcherQueue.h>
 #include <shellscalingapi.h>
+#include <chrono>
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "user32.lib")
@@ -30,11 +31,10 @@ namespace BlurEngine {
 #define WM_BLUR_SHOW             (WM_USER + 102)
 #define WM_BLUR_HIDE             (WM_USER + 103)
 #define WM_BLUR_DESTROY          (WM_USER + 104)
+#define WM_BLUR_SYNC_ZORDER      (WM_USER + 105)
 
 // ---- 效果管线硬编码参数 ----
-// 混合模式: Luminosity（保留底层明暗，仅替换色相）
-// 模糊优化: Balanced
-// 边框模式: Hard
+// 模糊优化: Balanced；边框模式: Hard
 
 // ---- 单例 ----
 Engine& Engine::Instance() {
@@ -50,37 +50,71 @@ bool Engine::s_classRegistered = false;
 
 bool Engine::Initialize(HWND parentHwnd) {
     if (m_initialized.load()) return true;
+    m_lastError.store(BlurErrorCode::None);
+    if (!parentHwnd || !IsWindow(parentHwnd)) {
+        m_lastError.store(BlurErrorCode::InvalidParentWindow);
+        return false;
+    }
+
+    // 失败的旧线程必须先回收，避免对 joinable std::thread 再赋值导致 terminate。
+    if (m_staThread.joinable()) m_staThread.join();
+
+    {
+        std::lock_guard<std::mutex> lock(m_initMutex);
+        m_initCompleted = false;
+        m_initSuccess = false;
+    }
     m_parentHwnd = parentHwnd;
     m_running.store(true);
     m_staThread = std::thread(&Engine::StaThreadProc, this, parentHwnd);
-    for (int i = 0; i < 50 && !m_initialized.load(); ++i) Sleep(100);
-    return m_initialized.load();
+
+    std::unique_lock<std::mutex> lock(m_initMutex);
+    const bool completed = m_initCv.wait_for(lock, std::chrono::seconds(5), [this] {
+        return m_initCompleted;
+    });
+    const bool success = completed && m_initSuccess;
+    lock.unlock();
+
+    if (!success) {
+        const bool timedOut = !completed;
+        if (timedOut) m_lastError.store(BlurErrorCode::InitializationTimeout);
+        StopStaThread();
+        if (timedOut) m_lastError.store(BlurErrorCode::InitializationTimeout);
+        return false;
+    }
+    return true;
 }
 
 void Engine::Destroy() {
-    if (!m_running.load()) return;
     StopStaThread();
     m_initialized.store(false);
     m_running.store(false);
 }
 
 void Engine::SetConfig(const BlurConfig& config) {
+    BlurConfig normalized = config;
+    normalized.radiusDip = (normalized.radiusDip < 0.0f) ? 0.0f :
+        (normalized.radiusDip > 40.0f) ? 40.0f : normalized.radiusDip;
+    normalized.saturation = (normalized.saturation < 0.0f) ? 0.0f :
+        (normalized.saturation > 2.0f) ? 2.0f : normalized.saturation;
+    normalized.cornerRadius = (normalized.cornerRadius < 0.0f) ? 0.0f :
+        (normalized.cornerRadius > 30.0f) ? 30.0f : normalized.cornerRadius;
     {
         std::lock_guard<std::mutex> lock(m_configMutex);
-        m_config = config;
+        m_config = normalized;
     }
-    if (m_overlayHwnd) PostMessage(m_overlayHwnd, WM_BLUR_APPLY_CONFIG, 0, 0);
+    if (HWND hwnd = m_messageHwnd.load()) {
+        if (!m_configUpdatePending.exchange(true)) {
+            if (!PostMessage(hwnd, WM_BLUR_APPLY_CONFIG, 0, 0)) {
+                m_configUpdatePending.store(false);
+            }
+        }
+    }
 }
 
 void Engine::SetRadius(float radiusDip) {
     BlurConfig cfg = GetConfig();
-    cfg.radiusDip = (radiusDip < 0) ? 0 : (radiusDip > 100) ? 100 : radiusDip;
-    SetConfig(cfg);
-}
-
-void Engine::SetTint(uint8_t r, uint8_t g, uint8_t b) {
-    BlurConfig cfg = GetConfig();
-    cfg.tintR = r; cfg.tintG = g; cfg.tintB = b;
+    cfg.radiusDip = radiusDip;
     SetConfig(cfg);
 }
 
@@ -88,24 +122,17 @@ void Engine::SetEnabled(bool enabled) {
     BlurConfig cfg = GetConfig();
     cfg.enabled = enabled;
     SetConfig(cfg);
-    if (m_overlayHwnd) PostMessage(m_overlayHwnd, enabled ? WM_BLUR_SHOW : WM_BLUR_HIDE, 0, 0);
-}
-
-void Engine::SetOpacity(float opacity) {
-    BlurConfig cfg = GetConfig();
-    cfg.opacity = (opacity < 0) ? 0 : (opacity > 1) ? 1 : opacity;
-    SetConfig(cfg);
 }
 
 void Engine::SetSaturation(float saturation) {
     BlurConfig cfg = GetConfig();
-    cfg.saturation = (saturation < 0) ? 0 : (saturation > 2) ? 2 : saturation;
+    cfg.saturation = saturation;
     SetConfig(cfg);
 }
 
 void Engine::SetCornerRadius(float radiusDip) {
     BlurConfig cfg = GetConfig();
-    cfg.cornerRadius = (radiusDip < 0) ? 0 : (radiusDip > 30) ? 30 : radiusDip;
+    cfg.cornerRadius = radiusDip;
     SetConfig(cfg);
 }
 
@@ -114,20 +141,22 @@ BlurConfig Engine::GetConfig() const {
     return m_config;
 }
 
-void Engine::UpdateGeometry(int x, int y, int width, int height) {
-    // 缓存到成员变量，STA 线程读取
-    m_cachedX = x; m_cachedY = y; m_cachedW = width; m_cachedH = height;
-    if (m_overlayHwnd) PostMessage(m_overlayHwnd, WM_BLUR_UPDATE_GEOMETRY, 0, 0);
+void Engine::UpdateGeometry() {
+    if (HWND hwnd = m_messageHwnd.load()) {
+        if (!m_geometryUpdatePending.exchange(true)) {
+            if (!PostMessage(hwnd, WM_BLUR_UPDATE_GEOMETRY, 0, 0)) {
+                m_geometryUpdatePending.store(false);
+            }
+        }
+    }
 }
 
 void Engine::ReSyncZOrder() {
-    if (!m_overlayHwnd || !m_parentHwnd) return;
-    SetWindowPos(m_overlayHwnd, m_parentHwnd,
-        0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (HWND hwnd = m_messageHwnd.load()) PostMessage(hwnd, WM_BLUR_SYNC_ZORDER, 0, 0);
 }
 
-void Engine::Show() { if (m_overlayHwnd) PostMessage(m_overlayHwnd, WM_BLUR_SHOW, 0, 0); }
-void Engine::Hide() { if (m_overlayHwnd) PostMessage(m_overlayHwnd, WM_BLUR_HIDE, 0, 0); }
+void Engine::Show() { if (HWND hwnd = m_messageHwnd.load()) PostMessage(hwnd, WM_BLUR_SHOW, 0, 0); }
+void Engine::Hide() { if (HWND hwnd = m_messageHwnd.load()) PostMessage(hwnd, WM_BLUR_HIDE, 0, 0); }
 Engine::~Engine() { Destroy(); }
 
 // ============================================================
@@ -136,12 +165,23 @@ Engine::~Engine() { Destroy(); }
 
 void Engine::StaThreadProc(HWND parentHwnd) {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) {
+        m_lastError.store(BlurErrorCode::ComInitializationFailed);
+        m_running.store(false);
+        SignalInitialization(false);
+        return;
+    }
 
     SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     EnsureDispatcherQueue();
-    if (!m_dispatcherQueueController) { CoUninitialize(); return; }
+    if (!m_dispatcherQueueController) {
+        m_lastError.store(BlurErrorCode::DispatcherQueueFailed);
+        CoUninitialize();
+        m_running.store(false);
+        SignalInitialization(false);
+        return;
+    }
 
     if (!s_classRegistered) {
         WNDCLASSEXW wc = {};
@@ -156,27 +196,75 @@ void Engine::StaThreadProc(HWND parentHwnd) {
     }
 
     CreateOverlayWindow(parentHwnd);
-    if (!m_overlayHwnd) { Cleanup(); return; }
+    if (!m_overlayHwnd) {
+        m_lastError.store(BlurErrorCode::OverlayWindowFailed);
+        Cleanup();
+        m_running.store(false);
+        SignalInitialization(false);
+        return;
+    }
 
-    CreateCompositor(m_overlayHwnd);
-    if (!m_compositor || !m_target) { Cleanup(); return; }
+    try {
+        CreateCompositor(m_overlayHwnd);
+    }
+    catch (...) {
+        m_compositor = nullptr;
+        m_target = nullptr;
+    }
+    if (!m_compositor || !m_target) {
+        m_lastError.store(BlurErrorCode::CompositionTargetFailed);
+        Cleanup();
+        m_running.store(false);
+        SignalInitialization(false);
+        return;
+    }
 
-    BuildEffectGraph();
+    if (!BuildEffectGraph()) {
+        m_lastError.store(BlurErrorCode::EffectGraphFailed);
+        Cleanup();
+        m_running.store(false);
+        SignalInitialization(false);
+        return;
+    }
+
+    InstallForegroundHook();
+    m_lastError.store(BlurErrorCode::None);
     m_initialized.store(true);
+    SignalInitialization(true);
 
-    MSG msg;
-    while (m_running.load() && GetMessage(&msg, nullptr, 0, 0)) {
+    MSG msg{};
+    BOOL messageResult = 0;
+    while (m_running.load() && (messageResult = GetMessage(&msg, nullptr, 0, 0)) > 0) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
 
     Cleanup();
+    m_initialized.store(false);
+    m_running.store(false);
+}
+
+void Engine::SignalInitialization(bool success) {
+    {
+        std::lock_guard<std::mutex> lock(m_initMutex);
+        m_initSuccess = success;
+        m_initCompleted = true;
+    }
+    m_initCv.notify_all();
 }
 
 void Engine::Cleanup() {
+    m_messageHwnd.store(nullptr);
+    m_configUpdatePending.store(false);
+    m_geometryUpdatePending.store(false);
+    if (m_foregroundHook) {
+        UnhookWinEvent(m_foregroundHook);
+        m_foregroundHook = nullptr;
+    }
     if (m_blurVisual && m_target) m_target.Root(nullptr);
     m_blurVisual = nullptr;
     m_clipGeometry = nullptr;
+    m_clip = nullptr;
     m_effectBrush = nullptr;
     m_target = nullptr;
     m_compositor = nullptr;
@@ -189,7 +277,7 @@ void Engine::Cleanup() {
 
 void Engine::StopStaThread() {
     m_running.store(false);
-    if (m_overlayHwnd) PostMessage(m_overlayHwnd, WM_BLUR_DESTROY, 0, 0);
+    if (HWND hwnd = m_messageHwnd.load()) PostMessage(hwnd, WM_BLUR_DESTROY, 0, 0);
     if (m_staThread.joinable()) m_staThread.join();
 }
 
@@ -203,18 +291,15 @@ void Engine::CreateOverlayWindow(HWND parentHwnd) {
     int w = parentRect.right - parentRect.left;
     int h = parentRect.bottom - parentRect.top;
 
-    m_cachedX = parentRect.left; m_cachedY = parentRect.top;
-    m_cachedW = w; m_cachedH = h;
-
     m_overlayHwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP,
         OVERLAY_CLASS, L"BlurOverlay", WS_POPUP,
-        m_cachedX, m_cachedY, m_cachedW, m_cachedH,
+        parentRect.left, parentRect.top, w, h,
         nullptr, nullptr, GetModuleHandle(nullptr), this);
 
     if (m_overlayHwnd) {
-        SetWindowPos(m_overlayHwnd, parentHwnd,
-            0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        m_messageHwnd.store(m_overlayHwnd);
+        SyncZOrder();
         ShowWindow(m_overlayHwnd, SW_HIDE);
     }
 }
@@ -242,11 +327,11 @@ void Engine::CreateCompositor(HWND hwnd) {
 }
 
 // ============================================================
-// Effect Graph 构建（4 节点：backdrop → 高斯模糊 → 颜色 → 混合）
+// Effect Graph 构建（backdrop → 高斯模糊 → 饱和度）
 // ============================================================
 
-void Engine::BuildEffectGraph() {
-    if (!m_compositor || !m_target) return;
+bool Engine::BuildEffectGraph() {
+    if (!m_compositor || !m_target) return false;
 
     BlurConfig cfg;
     { std::lock_guard<std::mutex> lock(m_configMutex); cfg = m_config; }
@@ -258,7 +343,9 @@ void Engine::BuildEffectGraph() {
             winrt::get_abi(backdropParam));
 
         // ---- 节点2: 高斯模糊 ----
-        ComPtr<IGaussianBlurEffect> blurWrl = Make<GaussianBlurEffect>();
+        ComPtr<GaussianBlurEffect> blurWrl = Make<GaussianBlurEffect>();
+        winrt::hstring blurName(L"Blur");
+        blurWrl->put_Name(reinterpret_cast<HSTRING>(winrt::get_abi(blurName)));
         blurWrl->put_BlurAmount(cfg.radiusDip);
         blurWrl->put_BorderMode(EffectBorderMode_Hard);
         blurWrl->put_Optimization(EffectOptimization_Balanced);
@@ -268,32 +355,20 @@ void Engine::BuildEffectGraph() {
 
         // ---- 节点3: 饱和度 —— 模糊后加浓颜色 ----
         ComPtr<SaturationEffect> satWrl = Make<SaturationEffect>();
+        winrt::hstring saturationName(L"Saturation");
+        satWrl->put_Name(reinterpret_cast<HSTRING>(winrt::get_abi(saturationName)));
         satWrl->put_Saturation(cfg.saturation);
         satWrl->put_Source(blurSrc.Get());
-        ComPtr<ABI::Windows::Graphics::Effects::IGraphicsEffectSource> satSrc;
-        satWrl.As(&satSrc);
-
-        // ---- 节点4: 纯色源 ----
-        ComPtr<ColorSourceEffect> colorWrl = Make<ColorSourceEffect>();
-        ABI::Windows::UI::Color tintColor{ 255, cfg.tintR, cfg.tintG, cfg.tintB };
-        colorWrl->put_Color(tintColor);
-        ComPtr<ABI::Windows::Graphics::Effects::IGraphicsEffectSource> colorSrc;
-        colorWrl.As(&colorSrc);
-
-        // ---- 节点5: MULTIPLY 混合 —— 白色=无形变，着色=有色玻璃 ----
-        ComPtr<BlendEffect> blendWrl = Make<BlendEffect>();
-        blendWrl->put_Mode(BlendEffectMode_Multiply);
-        blendWrl->put_Background(satSrc.Get());
-        blendWrl->put_Foreground(colorSrc.Get());
 
         // ---- WRL → C++/WinRT 桥接 ----
         winrt::Windows::Graphics::Effects::IGraphicsEffect rootEffect{ nullptr };
-        winrt::check_hresult(blendWrl.CopyTo(
+        winrt::check_hresult(satWrl.CopyTo(
             winrt::guid_of<winrt::Windows::Graphics::Effects::IGraphicsEffect>(),
             winrt::put_abi(rootEffect)));
 
-        // ---- EffectFactory + Brush ----
-        auto effectFactory = m_compositor.CreateEffectFactory(rootEffect);
+        // 只创建一次 EffectFactory；后续调节直接更新 CompositionPropertySet，避免重建 GPU 管线。
+        auto effectFactory = m_compositor.CreateEffectFactory(
+            rootEffect, { L"Blur.BlurAmount", L"Saturation.Saturation" });
         m_effectBrush = effectFactory.CreateBrush();
 
         auto backdropBrush = m_compositor.CreateBackdropBrush();
@@ -304,69 +379,35 @@ void Engine::BuildEffectGraph() {
         m_blurVisual.Brush(m_effectBrush);
         m_target.Root(m_blurVisual);
 
-        m_blurVisual.Opacity(cfg.opacity);
+        m_effectBrush.Properties().InsertScalar(L"Blur.BlurAmount", cfg.radiusDip);
+        m_effectBrush.Properties().InsertScalar(L"Saturation.Saturation", cfg.saturation);
+        // 不能把 Visual opacity 当作玻璃通透度，否则会重新混入未模糊的原始背景。
+        m_blurVisual.Opacity(1.0f);
         UpdateVisualSize();
         ApplyClip();
+        return true;
     }
     catch (...) {
         m_blurVisual = nullptr;
         m_effectBrush = nullptr;
+        return false;
     }
 }
 
 // ============================================================
-// 参数更新：全量重建（简化版，用户调节频率低）
+// 参数更新：直接写 Composition 属性，不重建 Effect Graph
 // ============================================================
 
 void Engine::UpdateEffectParameters() {
-    if (!m_compositor || !m_blurVisual) return;
+    if (!m_compositor || !m_blurVisual || !m_effectBrush) return;
 
     BlurConfig cfg;
     { std::lock_guard<std::mutex> lock(m_configMutex); cfg = m_config; }
 
     try {
-        // 重建 Effect Graph（同上单管线）
-        winrt::Windows::UI::Composition::CompositionEffectSourceParameter backdropParam(L"backdrop");
-        auto backdropAbi = reinterpret_cast<ABI::Windows::Graphics::Effects::IGraphicsEffectSource*>(
-            winrt::get_abi(backdropParam));
-
-        ComPtr<IGaussianBlurEffect> blurWrl = Make<GaussianBlurEffect>();
-        blurWrl->put_BlurAmount(cfg.radiusDip);
-        blurWrl->put_BorderMode(EffectBorderMode_Hard);
-        blurWrl->put_Optimization(EffectOptimization_Balanced);
-        blurWrl->put_Source(backdropAbi);
-        ComPtr<ABI::Windows::Graphics::Effects::IGraphicsEffectSource> blurSrc;
-        blurWrl.As(&blurSrc);
-
-        ComPtr<SaturationEffect> satWrl = Make<SaturationEffect>();
-        satWrl->put_Saturation(cfg.saturation);
-        satWrl->put_Source(blurSrc.Get());
-        ComPtr<ABI::Windows::Graphics::Effects::IGraphicsEffectSource> satSrc;
-        satWrl.As(&satSrc);
-
-        ComPtr<ColorSourceEffect> colorWrl = Make<ColorSourceEffect>();
-        ABI::Windows::UI::Color tintColor{ 255, cfg.tintR, cfg.tintG, cfg.tintB };
-        colorWrl->put_Color(tintColor);
-        ComPtr<ABI::Windows::Graphics::Effects::IGraphicsEffectSource> colorSrc;
-        colorWrl.As(&colorSrc);
-
-        ComPtr<BlendEffect> blendWrl = Make<BlendEffect>();
-        blendWrl->put_Mode(BlendEffectMode_Multiply);
-        blendWrl->put_Background(satSrc.Get());
-        blendWrl->put_Foreground(colorSrc.Get());
-
-        winrt::Windows::Graphics::Effects::IGraphicsEffect rootEffect{ nullptr };
-        winrt::check_hresult(blendWrl.CopyTo(
-            winrt::guid_of<winrt::Windows::Graphics::Effects::IGraphicsEffect>(),
-            winrt::put_abi(rootEffect)));
-
-        auto effectFactory = m_compositor.CreateEffectFactory(rootEffect);
-        auto newBrush = effectFactory.CreateBrush();
-        auto backdropBrush = m_compositor.CreateBackdropBrush();
-        newBrush.SetSourceParameter(L"backdrop", backdropBrush);
-        m_effectBrush = newBrush;
-        m_blurVisual.Brush(m_effectBrush);
-        m_blurVisual.Opacity(cfg.opacity);
+        m_effectBrush.Properties().InsertScalar(L"Blur.BlurAmount", cfg.radiusDip);
+        m_effectBrush.Properties().InsertScalar(L"Saturation.Saturation", cfg.saturation);
+        m_blurVisual.Opacity(1.0f);
         ApplyClip();
     }
     catch (...) { }
@@ -397,6 +438,10 @@ void Engine::ApplyClip() {
     if (!m_clipGeometry) {
         m_clipGeometry = m_compositor.CreateRoundedRectangleGeometry();
     }
+    if (!m_clip) {
+        m_clip = m_compositor.CreateGeometricClip(m_clipGeometry);
+        m_blurVisual.Clip(m_clip);
+    }
 
     m_clipGeometry.CornerRadius({ cfg.cornerRadius, cfg.cornerRadius });
 
@@ -404,25 +449,61 @@ void Engine::ApplyClip() {
     auto visSize = m_blurVisual.Size();
     m_clipGeometry.Size(visSize);
 
-    // 应用裁剪
-    auto clip = m_compositor.CreateGeometricClip(m_clipGeometry);
-    m_blurVisual.Clip(clip);
 }
 
 void Engine::HandleDpiChanged(WPARAM wParam, LPARAM lParam) {
-    if (!m_overlayHwnd) return;
-    RECT* suggested = reinterpret_cast<RECT*>(lParam);
-    if (suggested) {
-        SetWindowPos(m_overlayHwnd, nullptr,
-            suggested->left, suggested->top,
-            suggested->right - suggested->left,
-            suggested->bottom - suggested->top,
-            SWP_NOZORDER | SWP_NOACTIVATE);
-    }
+    UNREFERENCED_PARAMETER(wParam);
+    UNREFERENCED_PARAMETER(lParam);
+    SyncGeometryFromParent();
+}
+
+void Engine::SyncGeometryFromParent() {
+    if (!m_overlayHwnd || !m_parentHwnd || !IsWindow(m_parentHwnd)) return;
+    RECT rect{};
+    if (!GetWindowRect(m_parentHwnd, &rect)) return;
+
+    SetWindowPos(m_overlayHwnd, m_parentHwnd,
+        rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
+        SWP_NOACTIVATE);
     UpdateVisualSize();
-    if (m_parentHwnd && IsWindow(m_parentHwnd)) {
-        SetWindowPos(m_overlayHwnd, m_parentHwnd,
-            0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+void Engine::SyncZOrder() {
+    if (!m_overlayHwnd || !m_parentHwnd || !IsWindow(m_parentHwnd)) return;
+
+    const bool parentTopmost =
+        (GetWindowLongPtrW(m_parentHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+
+    // 先把 Overlay 放入和 Electron 一致的 topmost/non-topmost band，
+    // 再插到 Electron 正后方，避免其他程序窗口夹在两个 HWND 中间。
+    SetWindowPos(m_overlayHwnd, parentTopmost ? HWND_TOPMOST : HWND_NOTOPMOST,
+        0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(m_overlayHwnd, m_parentHwnd,
+        0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+void Engine::InstallForegroundHook() {
+    if (m_foregroundHook) return;
+    m_foregroundHook = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+        nullptr, ForegroundWinEventProc, 0, 0,
+        WINEVENT_OUTOFCONTEXT);
+}
+
+void CALLBACK Engine::ForegroundWinEventProc(
+    HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG objectId, LONG childId,
+    DWORD eventThread, DWORD eventTime) {
+    UNREFERENCED_PARAMETER(hook);
+    UNREFERENCED_PARAMETER(objectId);
+    UNREFERENCED_PARAMETER(childId);
+    UNREFERENCED_PARAMETER(eventThread);
+    UNREFERENCED_PARAMETER(eventTime);
+
+    auto& engine = Engine::Instance();
+    if (event == EVENT_SYSTEM_FOREGROUND && hwnd == engine.m_parentHwnd) {
+        if (HWND overlay = engine.m_messageHwnd.load()) {
+            PostMessage(overlay, WM_BLUR_SYNC_ZORDER, 0, 0);
+        }
     }
 }
 
@@ -443,11 +524,9 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
     switch (msg) {
     case WM_BLUR_UPDATE_GEOMETRY:
-        // 使用缓存坐标（来自 UpdateGeometry 调用）
-        SetWindowPos(hwnd, self->m_parentHwnd,
-            self->m_cachedX, self->m_cachedY, self->m_cachedW, self->m_cachedH,
-            SWP_NOACTIVATE | SWP_NOZORDER);
-        self->UpdateVisualSize();
+        self->m_geometryUpdatePending.store(false);
+        // 在 HWND 所属的 DPI-aware STA 线程直接读取物理坐标，避免 JS DIP 换算和跨线程数据竞争。
+        self->SyncGeometryFromParent();
         return 0;
 
     case WM_DPICHANGED:
@@ -455,23 +534,34 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         return 0;
 
     case WM_BLUR_APPLY_CONFIG:
+        self->m_configUpdatePending.store(false);
         self->UpdateEffectParameters();
         {
             auto cfg = self->GetConfig();
-            ShowWindow(hwnd, cfg.enabled ? SW_SHOWNOACTIVATE : SW_HIDE);
+            if (cfg.enabled) {
+                self->SyncGeometryFromParent();
+                self->SyncZOrder();
+                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            } else {
+                ShowWindow(hwnd, SW_HIDE);
+            }
         }
         return 0;
 
     case WM_BLUR_SHOW:
         if (self->GetConfig().enabled) {
-            if (self->m_parentHwnd)
-                SetWindowPos(hwnd, self->m_parentHwnd, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            self->SyncGeometryFromParent();
+            self->SyncZOrder();
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         }
         return 0;
 
     case WM_BLUR_HIDE:
         ShowWindow(hwnd, SW_HIDE);
+        return 0;
+
+    case WM_BLUR_SYNC_ZORDER:
+        self->SyncZOrder();
         return 0;
 
     case WM_BLUR_DESTROY:

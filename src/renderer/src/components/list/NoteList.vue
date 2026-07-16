@@ -892,7 +892,10 @@ defineExpose({
       <template v-else>
       <!-- 置顶区 -->
       <div v-if="customPinnedNotes.length > 0" class="nl-zone nl-section">
-        <div class="nl-zone-label">置顶 · {{ customPinnedNotes.length }}条</div>
+        <div class="nl-zone-label">
+          <span>置顶</span>
+          <span class="nl-group-count">· {{ customPinnedNotes.length }}条</span>
+        </div>
         <draggable
           v-model="customPinnedNotes"
           :group="{ name: 'custom-pinned', pull: false, put: false }"
@@ -917,7 +920,10 @@ defineExpose({
 
       <!-- 日常区 -->
       <div class="nl-zone nl-section">
-        <div class="nl-zone-label">日常 · {{ customNormalTotal }}条</div>
+        <div class="nl-zone-label">
+          <span>日常</span>
+          <span class="nl-group-count">· {{ customNormalTotal }}条</span>
+        </div>
         <draggable
           v-model="customNormalNotes"
           :group="{ name: 'custom-normal', pull: false, put: false }"
@@ -1190,6 +1196,9 @@ defineExpose({
   opacity: 0.6;
 }
 .nl-zone-label {
+  display: flex;
+  align-items: center;
+  gap: 6rem;
   font-size: var(--fs-secondary);
   font-weight: 500;
   color: var(--text-color-secondary);

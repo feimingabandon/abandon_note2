@@ -5,7 +5,7 @@
  *       https://github.com/microsoft/Windows.UI.Composition-Win32-Samples
  *
  * 包含：
- *   - GaussianBlurEffect  (CLSID_D2D1GaussianBlur)    // 高斯模糊，固定 30 DIP
+ *   - GaussianBlurEffect  (CLSID_D2D1GaussianBlur)    // 高斯模糊，可由 Composition 属性实时调节
  *   - BlendEffect  (CLSID_D2D1Blend)                  // 混合
  *   - OpacityEffect (CLSID_D2D1Opacity)               // 通透度
  *   - ColorSourceEffect (CLSID_D2D1Flood)             // 纯色源（自行实现）

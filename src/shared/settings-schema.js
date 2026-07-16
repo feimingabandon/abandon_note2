@@ -194,45 +194,9 @@ const definitions = [
     path: ['blur', 'radius'],
     db: { type: 'system', key: 'blur_radius' },
     defaultValue: 15,
-    parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 100 }),
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 40 }),
     serialize: String,
-    remark: '系统模糊半径（0~100 DIP）'
-  },
-  {
-    id: 'blur.opacity',
-    path: ['blur', 'opacity'],
-    db: { type: 'system', key: 'blur_opacity' },
-    defaultValue: 1,
-    parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 1 }),
-    serialize: String,
-    remark: '系统模糊层透明度（0~1 浮点数）'
-  },
-  {
-    id: 'blur.tint.r',
-    path: ['blur', 'tint', 'r'],
-    db: { type: 'system', key: 'blur_tint_r' },
-    defaultValue: 255,
-    parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 255, integer: true }),
-    serialize: String,
-    remark: '系统模糊着色红色通道'
-  },
-  {
-    id: 'blur.tint.g',
-    path: ['blur', 'tint', 'g'],
-    db: { type: 'system', key: 'blur_tint_g' },
-    defaultValue: 255,
-    parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 255, integer: true }),
-    serialize: String,
-    remark: '系统模糊着色绿色通道'
-  },
-  {
-    id: 'blur.tint.b',
-    path: ['blur', 'tint', 'b'],
-    db: { type: 'system', key: 'blur_tint_b' },
-    defaultValue: 255,
-    parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 255, integer: true }),
-    serialize: String,
-    remark: '系统模糊着色蓝色通道'
+    remark: '系统模糊半径（0~40 DIP）'
   },
   {
     id: 'blur.saturation',

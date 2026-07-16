@@ -192,11 +192,12 @@ const blurCaps = detectCapabilities()
 
 /** 系统模糊是否已初始化 */
 let blurInitialized = false
+let blurInitializationError = null
+let blurInitializationNativeError = null
 
 /** 当前模糊配置（由完整设置快照派生） */
 const blurConfig = {
-  ...DEFAULT_SETTINGS.blur,
-  tint: { ...DEFAULT_SETTINGS.blur.tint }
+  ...DEFAULT_SETTINGS.blur
 }
 
 /** DB 值覆盖共享默认值后的完整运行时设置快照。 */
@@ -216,8 +217,6 @@ function syncBlurConfigFromResolved() {
   const next = resolvedSettings.blur
   blurConfig.enabled = next.enabled
   blurConfig.radius = next.radius
-  blurConfig.opacity = next.opacity
-  blurConfig.tint = { ...next.tint }
   blurConfig.saturation = next.saturation
   blurConfig.cornerRadius = next.cornerRadius
 }
@@ -245,7 +244,7 @@ function getResolvedSettingsSnapshot() {
   const autoStart = readAutoStartRuntime()
   const blurRuntimeError =
     blurConfig.enabled && blurCaps.supported && !blurInitialized
-      ? '系统模糊引擎未加载（DLL 缺失或版本不兼容）'
+      ? blurInitializationError || '系统模糊引擎未加载（DLL 缺失或版本不兼容）'
       : null
 
   return {
@@ -262,8 +261,48 @@ function getResolvedSettingsSnapshot() {
         strategy: blurCaps.strategy,
         initialized: blurInitialized,
         effectiveEnabled: Boolean(blurCaps.supported && blurInitialized && blurConfig.enabled),
-        error: blurRuntimeError
+        error: blurRuntimeError,
+        nativeError: blurRuntimeError ? blurInitializationNativeError : null
       }
+    }
+  }
+}
+
+/** 初始化或重试初始化系统模糊，并保留可传给 renderer 的结构化错误。 */
+function initializeBlurRuntime() {
+  if (blurInitialized) return { success: true, strategy: blurCaps.strategy }
+  if (!blurCaps.supported || !mainWindow || mainWindow.isDestroyed()) {
+    const error = blurCaps.reason || '主窗口尚未就绪'
+    blurInitializationError = error
+    blurInitializationNativeError = null
+    return { success: false, error, nativeError: null }
+  }
+
+  try {
+    const result = blurInit(mainWindow)
+    if (!result.success) {
+      blurInitializationError = result.error
+      blurInitializationNativeError = result.nativeError ?? null
+      return result
+    }
+
+    blurInitialized = true
+    blurInitializationError = null
+    blurInitializationNativeError = null
+    if (process.platform === 'win32') blurSetConfig(blurConfig)
+    if (process.platform === 'darwin' && !blurConfig.enabled) mainWindow.setVibrancy(null)
+    return result
+  } catch (error) {
+    blurInitializationError = error.message
+    blurInitializationNativeError = {
+      code: null,
+      key: 'electron_initialization_exception',
+      message: error.message
+    }
+    return {
+      success: false,
+      error: error.message,
+      nativeError: blurInitializationNativeError
     }
   }
 }
@@ -404,24 +443,11 @@ function createWindow() {
 
   // ---- 初始化系统模糊 ----
   if (blurCaps.supported) {
-    try {
-      const result = blurInit(mainWindow)
-      if (result.success) {
-        blurInitialized = true
-        // 仅 Windows 需要设置初始参数（macOS 在构造时已设置 vibrancy）
-        if (process.platform === 'win32') {
-          blurSetConfig(blurConfig)
-        }
-        // macOS：若持久化配置中毛玻璃为关闭，需覆盖构造时硬编码的 vibrancy
-        if (process.platform === 'darwin' && !blurConfig.enabled) {
-          mainWindow.setVibrancy(null)
-        }
-        console.log('[blur] 系统模糊已初始化, 策略:', result.strategy)
-      } else {
-        console.warn('[blur] 初始化失败:', result.error)
-      }
-    } catch (e) {
-      console.warn('[blur] 初始化异常:', e.message)
+    const result = initializeBlurRuntime()
+    if (result.success) {
+      console.log('[blur] 系统模糊已初始化, 策略:', result.strategy)
+    } else {
+      console.warn('[blur] 初始化失败:', result.error, result.nativeError || '')
     }
   } else {
     console.log('[blur] 当前平台不支持系统模糊:', blurCaps.reason)
@@ -467,18 +493,22 @@ function createWindow() {
   if (blurInitialized && process.platform === 'win32') {
     mainWindow.on('resize', () => {
       try {
-        blurUpdateGeometry(mainWindow)
+        blurUpdateGeometry()
       } catch {
         /* DComp 会话失效时静默 */
       }
     })
     mainWindow.on('move', () => {
       try {
-        blurUpdateGeometry(mainWindow)
+        blurUpdateGeometry()
       } catch {
         /* DComp 会话失效时静默 */
       }
     })
+    // Overlay 使用 WS_EX_NOACTIVATE，不应抢焦点；Electron 成为前台窗口时只需把
+    // Overlay 调到同一 topmost band，并紧贴在 Electron 的后一位。
+    mainWindow.on('focus', blurReSyncZOrder)
+    mainWindow.on('always-on-top-changed', blurReSyncZOrder)
   }
 
   // 【贴边隐藏 - 边缘检测】窗口移动时检测是否靠近屏幕左/右边缘
@@ -507,6 +537,7 @@ function createWindow() {
   mainWindow.on('show', () => {
     if (blurInitialized && blurConfig.enabled) {
       blurSetConfig(blurConfig)
+      blurReSyncZOrder()
     }
   })
 
@@ -802,6 +833,10 @@ app.whenReady().then(() => {
   initDatabase()
   // 开机自启以操作系统为唯一权威；移除旧版本遗留的数据库副本。
   deleteSettingsByKey('auto_start')
+  // 原生模糊输出必须保持 100%；颜色和玻璃通透度统一由 CSS 背景层负责。
+  for (const key of ['blur_opacity', 'blur_tint_r', 'blur_tint_g', 'blur_tint_b']) {
+    deleteSettingsByKey(key)
+  }
   refreshResolvedSettings({ incrementRevision: true })
   handleProtocolArgs(process.argv)
 
@@ -950,26 +985,35 @@ app.whenReady().then(() => {
     // 合并到当前配置
     if (config.enabled !== undefined) blurConfig.enabled = config.enabled
     if (config.radius !== undefined) blurConfig.radius = config.radius
-    if (config.tint) {
-      if (config.tint.r !== undefined) blurConfig.tint.r = config.tint.r
-      if (config.tint.g !== undefined) blurConfig.tint.g = config.tint.g
-      if (config.tint.b !== undefined) blurConfig.tint.b = config.tint.b
-    }
     if (config.saturation !== undefined) blurConfig.saturation = config.saturation
-    if (config.opacity !== undefined) blurConfig.opacity = config.opacity
     if (config.cornerRadius !== undefined) blurConfig.cornerRadius = config.cornerRadius
 
-    persistSettingValues([
+    // 启用时若启动阶段初始化失败，则现场重试一次，以便把详细错误反馈给用户。
+    const enableRequested = blurConfig.enabled
+    const initializationResult =
+      enableRequested && blurCaps.supported && !blurInitialized
+        ? initializeBlurRuntime()
+        : null
+
+    // 初始化失败时不能让持久化值继续显示为“已启用”，否则设置值会与实际效果不一致。
+    if (enableRequested && initializationResult && !initializationResult.success) {
+      blurConfig.enabled = false
+    }
+
+    const snapshot = persistSettingValues([
       { id: 'blur.enabled', value: blurConfig.enabled },
       { id: 'blur.radius', value: blurConfig.radius },
-      { id: 'blur.opacity', value: blurConfig.opacity },
-      { id: 'blur.tint.r', value: blurConfig.tint.r },
-      { id: 'blur.tint.g', value: blurConfig.tint.g },
-      { id: 'blur.tint.b', value: blurConfig.tint.b },
       { id: 'blur.saturation', value: blurConfig.saturation },
       { id: 'blur.cornerRadius', value: blurConfig.cornerRadius }
     ])
-    return { ...blurConfig, tint: { ...blurConfig.tint } }
+    const runtime = snapshot.runtime.blur
+    return {
+      success: !enableRequested || runtime.effectiveEnabled,
+      config: { ...blurConfig },
+      runtime,
+      error: initializationResult?.error ?? runtime.error,
+      nativeError: initializationResult?.nativeError ?? runtime.nativeError
+    }
   })
 
   createWindow()

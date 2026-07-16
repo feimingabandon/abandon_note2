@@ -8,6 +8,25 @@ let koffi = null
 let lib = null
 let initialized = false
 
+const NATIVE_ERROR_MESSAGES = {
+  1: '当前 Windows 版本不支持原生模糊',
+  2: 'Electron 父窗口句柄无效',
+  3: '原生模糊线程 COM 初始化失败',
+  4: 'DispatcherQueue 创建失败',
+  5: '原生模糊 Overlay 窗口创建失败',
+  6: 'Windows Composition Target 创建失败',
+  7: '系统不支持当前模糊 Effect Graph',
+  8: '原生模糊初始化超时',
+  9: '原生模糊发生未知错误'
+}
+
+function getNativeError(fallback) {
+  if (!lib) return { code: null, key: null, message: fallback }
+  const code = lib.Blur_GetLastErrorCode()
+  const key = lib.Blur_GetLastErrorMessage()
+  return { code, key, message: NATIVE_ERROR_MESSAGES[code] || fallback }
+}
+
 export function detectCapabilities() {
   const { platform } = process
 
@@ -64,16 +83,13 @@ function initNative() {
     lib = koffi.load(dllPath)
     lib.Blur_Init = lib.func('Blur_Init', 'int', ['intptr_t'])
     lib.Blur_Destroy = lib.func('Blur_Destroy', 'void', [])
-    lib.Blur_SetRadius = lib.func('Blur_SetRadius', 'void', ['float'])
-    lib.Blur_SetTint = lib.func('Blur_SetTint', 'void', ['int', 'int', 'int'])
-    lib.Blur_SetEnabled = lib.func('Blur_SetEnabled', 'void', ['int'])
-    lib.Blur_SetSaturation = lib.func('Blur_SetSaturation', 'void', ['float'])
-    lib.Blur_SetOpacity = lib.func('Blur_SetOpacity', 'void', ['float'])
-    lib.Blur_SetCornerRadius = lib.func('Blur_SetCornerRadius', 'void', ['float'])
-    lib.Blur_UpdateGeometry = lib.func('Blur_UpdateGeometry', 'void', ['int', 'int', 'int', 'int'])
+    lib.Blur_ApplyConfig = lib.func('Blur_ApplyConfig', 'void', ['int', 'float', 'float', 'float'])
+    lib.Blur_UpdateGeometry = lib.func('Blur_UpdateGeometry', 'void', [])
     lib.Blur_ReSyncOrder = lib.func('Blur_ReSyncOrder', 'void', [])
     lib.Blur_IsInitialized = lib.func('Blur_IsInitialized', 'int', [])
     lib.Blur_IsSupported = lib.func('Blur_IsSupported', 'int', [])
+    lib.Blur_GetLastErrorCode = lib.func('Blur_GetLastErrorCode', 'int', [])
+    lib.Blur_GetLastErrorMessage = lib.func('Blur_GetLastErrorMessage', 'str', [])
     return true
   } catch (e) {
     console.warn('[blur] DLL 加载失败:', e.message)
@@ -88,34 +104,39 @@ export function initialize(mainWindow) {
   if (caps.platform === 'macOS') return { success: true, strategy: 'vibrancy' }
 
   if (!initNative()) return { success: false, error: 'DLL 加载失败' }
+  if (!lib.Blur_IsSupported()) {
+    const nativeError = getNativeError('当前 Windows 版本不支持原生模糊')
+    return { success: false, error: nativeError.message, nativeError }
+  }
 
   const hwndBuf = mainWindow.getNativeWindowHandle()
   // HWND 在 x64 上是 8 字节，读取为整数传给 DLL
   const hwndVal = hwndBuf.length >= 8 ? Number(hwndBuf.readBigUInt64LE()) : hwndBuf.readUInt32LE()
 
-  if (!lib.Blur_Init(hwndVal)) return { success: false, error: '引擎初始化失败' }
+  if (!lib.Blur_Init(hwndVal)) {
+    const nativeError = getNativeError('原生模糊引擎初始化失败')
+    return { success: false, error: nativeError.message, nativeError }
+  }
 
   initialized = true
-  const b = mainWindow.getBounds()
-  lib.Blur_UpdateGeometry(b.x, b.y, b.width, b.height)
+  lib.Blur_UpdateGeometry()
   return { success: true, strategy: 'dcomp' }
 }
 
 export function setConfig(config) {
   if (!initialized) return false
-  if (config.enabled !== undefined) lib.Blur_SetEnabled(config.enabled ? 1 : 0)
-  if (config.saturation !== undefined) lib.Blur_SetSaturation(config.saturation)
-  if (config.opacity !== undefined) lib.Blur_SetOpacity(config.opacity)
-  if (config.cornerRadius !== undefined) lib.Blur_SetCornerRadius(config.cornerRadius)
-  if (config.radius !== undefined) lib.Blur_SetRadius(config.radius)
-  if (config.tint) lib.Blur_SetTint(config.tint.r, config.tint.g, config.tint.b)
+  lib.Blur_ApplyConfig(
+    config.enabled ? 1 : 0,
+    config.radius,
+    config.saturation,
+    config.cornerRadius
+  )
   return true
 }
 
-export function updateGeometry(mainWindow) {
+export function updateGeometry() {
   if (!initialized) return
-  const b = mainWindow.getBounds()
-  lib.Blur_UpdateGeometry(b.x, b.y, b.width, b.height)
+  lib.Blur_UpdateGeometry()
 }
 
 export function reSyncZOrder() {

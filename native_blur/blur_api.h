@@ -18,16 +18,20 @@ extern "C" {
 BLUR_API int  Blur_Init(void* hwnd);
 BLUR_API void Blur_Destroy(void);
 
-// ---- 参数（2 个可控维度） ----
-BLUR_API void Blur_SetRadius(float radiusDip);       // 模糊半径 0~100
-BLUR_API void Blur_SetTint(int r, int g, int b);      // 颜色 RGB 0~255
+// ---- 参数 ----
+// 推荐入口：一次跨 FFI 调用完整更新，STA 线程只处理一次配置消息。
+BLUR_API void Blur_ApplyConfig(int enabled, float radiusDip, float saturation, float cornerRadiusDip);
+BLUR_API void Blur_SetRadius(float radiusDip);        // 模糊半径 0~40
 BLUR_API void Blur_SetSaturation(float saturation);    // 饱和度 0~2
-BLUR_API void Blur_SetOpacity(float opacity);          // 透明度 0~1
 BLUR_API void Blur_SetCornerRadius(float radiusDip);  // 圆角 0~30
 BLUR_API void Blur_SetEnabled(int enabled);            // 开关 0/1
 
+// 旧版 ABI 兼容：玻璃颜色/通透度已改由 Electron CSS 背景层负责，这两个调用不再改变画面。
+BLUR_API void Blur_SetTint(int r, int g, int b);
+BLUR_API void Blur_SetOpacity(float opacity);
+
 // ---- 位置同步 ----
-BLUR_API void Blur_UpdateGeometry(int x, int y, int width, int height);
+BLUR_API void Blur_UpdateGeometry(void);
 
 // ---- Z-order 重同步 ----
 BLUR_API void Blur_ReSyncOrder(void);
@@ -35,6 +39,8 @@ BLUR_API void Blur_ReSyncOrder(void);
 // ---- 查询 ----
 BLUR_API int Blur_IsInitialized(void);
 BLUR_API int Blur_IsSupported(void);
+BLUR_API int Blur_GetLastErrorCode(void);
+BLUR_API const char* Blur_GetLastErrorMessage(void);
 
 #ifdef __cplusplus
 }
