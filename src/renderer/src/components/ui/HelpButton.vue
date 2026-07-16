@@ -177,12 +177,12 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
   font-weight: 500;
   color: var(--text-color-secondary);
 
-  background-color: rgb(var(--bg-color) / var(--popup-opacity));
-  -webkit-backdrop-filter: blur(var(--bg-blur)) saturate(var(--bg-saturation));
-  backdrop-filter: blur(var(--bg-blur)) saturate(var(--bg-saturation));
-  border: calc(var(--bg-border) * 1px) solid rgba(255, 255, 255, 0.18);
+  background-color: rgb(var(--bg-color) / var(--glass-tooltip-opacity));
+  -webkit-backdrop-filter: blur(var(--glass-tooltip-blur));
+  backdrop-filter: blur(var(--glass-tooltip-blur));
+  border: 0;
   border-radius: 8rem;
-  box-shadow: 0 2rem 12rem rgba(0, 0, 0, 0.15);
+  box-shadow: 0 6rem 18rem rgba(0, 0, 0, 0.16);
 }
 
 /* ---- 箭头 ---- */
@@ -193,19 +193,19 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
 }
 .help-tooltip--bottom::after {
   bottom: 100%; left: 50%; transform: translateX(-50%);
-  border-bottom-color: rgb(var(--bg-color) / var(--popup-opacity));
+  border-bottom-color: rgb(var(--bg-color) / var(--glass-tooltip-opacity));
 }
 .help-tooltip--right::after {
   right: 100%; top: 50%; transform: translateY(-50%);
-  border-right-color: rgb(var(--bg-color) / var(--popup-opacity));
+  border-right-color: rgb(var(--bg-color) / var(--glass-tooltip-opacity));
 }
 .help-tooltip--top::after {
   top: 100%; left: 50%; transform: translateX(-50%);
-  border-top-color: rgb(var(--bg-color) / var(--popup-opacity));
+  border-top-color: rgb(var(--bg-color) / var(--glass-tooltip-opacity));
 }
 .help-tooltip--left::after {
   left: 100%; top: 50%; transform: translateY(-50%);
-  border-left-color: rgb(var(--bg-color) / var(--popup-opacity));
+  border-left-color: rgb(var(--bg-color) / var(--glass-tooltip-opacity));
 }
 
 /* ---- 过渡 ---- */

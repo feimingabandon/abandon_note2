@@ -14,7 +14,8 @@
 import Database from 'better-sqlite3' // SQLite3 同步驱动，适合 Electron 主进程
 import { join } from 'path' // Node.js 路径拼接工具
 import { app } from 'electron' // Electron app 模块，用于获取用户数据目录
-import { existsSync, rmSync } from 'fs' // 文件系统操作
+import { existsSync, renameSync } from 'fs' // 文件系统操作
+import { readdir, rm } from 'fs/promises'
 
 /** 数据库实例引用，整个应用生命周期内复用 */
 let db = null
@@ -119,28 +120,63 @@ export function deleteSettingsByKey(key) {
   db.prepare('DELETE FROM app_settings WHERE key = ?').run(key)
 }
 
+/** 后台重试清理先前已与数据库解绑、但因文件占用等原因遗留的附件目录。 */
+export async function cleanupPendingAttachmentDirs() {
+  const userDataDir = app.getPath('userData')
+  const entries = await readdir(userDataDir, { withFileTypes: true })
+  const pendingDirs = entries.filter(
+    (entry) => entry.isDirectory() && entry.name.startsWith('.attachments-deleting-')
+  )
+  await Promise.all(
+    pendingDirs.map((entry) => rm(join(userDataDir, entry.name), { recursive: true, force: true }))
+  )
+}
+
 /** 清空便签业务数据；保留 app_settings 和开机自启等系统状态。 */
-export function clearNoteData() {
+export async function clearNoteData() {
   const attachmentsDir = join(app.getPath('userData'), 'attachments')
+  const pendingDeleteDir = join(
+    app.getPath('userData'),
+    `.attachments-deleting-${Date.now()}-${process.pid}`
+  )
+  let attachmentsMoved = false
 
-  // SQLite 默认不启用 foreign_keys，因此显式清理关联表。
-  // 文件删除位于同一同步事务内：SQL 或文件删除失败都会抛错并回滚数据库变更。
-  db.transaction(() => {
-    db.prepare('DELETE FROM note_tags').run()
-    db.prepare('DELETE FROM note_attachments').run()
-    db.prepare('DELETE FROM notes').run()
-    db.prepare('DELETE FROM note_templates').run()
-    db.prepare('DELETE FROM tags').run()
+  // 同卷目录重命名是常量时间操作，先将旧附件与后续可能创建的新目录隔离。
+  if (existsSync(attachmentsDir)) {
+    renameSync(attachmentsDir, pendingDeleteDir)
+    attachmentsMoved = true
+  }
 
-    try {
-      if (existsSync(attachmentsDir)) {
-        rmSync(attachmentsDir, { recursive: true, force: true })
+  try {
+    // SQLite 默认不启用 foreign_keys，因此在一个短事务中显式清理关联表。
+    db.transaction(() => {
+      db.prepare('DELETE FROM note_tags').run()
+      db.prepare('DELETE FROM note_attachments').run()
+      db.prepare('DELETE FROM notes').run()
+      db.prepare('DELETE FROM note_templates').run()
+      db.prepare('DELETE FROM tags').run()
+    })()
+  } catch (error) {
+    // 数据库未提交时恢复附件目录，使数据库记录和文件仍保持一致。
+    if (attachmentsMoved && !existsSync(attachmentsDir)) {
+      try {
+        renameSync(pendingDeleteDir, attachmentsDir)
+      } catch (restoreError) {
+        console.error('[clearNoteData] 恢复附件目录失败:', restoreError.message)
       }
-    } catch (e) {
-      console.error('[clearNoteData] 删除图片附件目录失败:', e.message)
-      throw new Error(`删除图片附件目录失败: ${e.message}`)
     }
-  })()
+    throw error
+  }
+
+  // 递归删除移出主路径后异步执行，不阻塞 Electron 主线程，也不占用 SQLite 事务。
+  if (attachmentsMoved) {
+    try {
+      await rm(pendingDeleteDir, { recursive: true, force: true })
+    } catch (error) {
+      console.error('[clearNoteData] 清理待删除附件目录失败:', error.message)
+      // 数据库已经成功提交，不能再向 UI 报告“清空失败”。遗留目录会在下次启动重试。
+    }
+  }
 }
 
 // ============================================================

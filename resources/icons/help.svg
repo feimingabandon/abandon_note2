@@ -1,5 +1,6 @@
 <svg viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" width="24" height="24">
-  <g transform="translate(102.4,102.4) scale(0.8)">
+  <!-- 保留 80% 的图标留白，但将可视图形中心对齐到 viewBox 中心。 -->
+  <g transform="translate(102.4,-7.6) scale(0.8)">
     <!-- 问号主体：顶部圆弧 + 过渡曲线 + 竖线，stroke-width=100 -->
     <path d="M 270 310
              c 0 -240 480 -240 480 0

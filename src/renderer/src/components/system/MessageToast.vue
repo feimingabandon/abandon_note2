@@ -70,10 +70,6 @@ const colorMap = {
   /* 背景 = 窗口文字色（反色） + 透明度 */
   background: color-mix(in srgb, var(--text-color) 88%, transparent);
 
-  /* 毛玻璃效果 */
-  -webkit-backdrop-filter: blur(var(--bg-blur)) saturate(var(--bg-saturation));
-  backdrop-filter: blur(var(--bg-blur)) saturate(var(--bg-saturation));
-
   box-shadow:
     0 4px 16px rgba(0, 0, 0, 0.28),
     0 0 0 0.5px color-mix(in srgb, var(--text-color) 12%, transparent);

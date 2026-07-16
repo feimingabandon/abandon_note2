@@ -23,6 +23,7 @@
 
 import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import BaseButton from './BaseButton.vue'
+import { releaseModalBlur, retainModalBlur } from '../../utils/modalBlur.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -39,9 +40,25 @@ const emit = defineEmits(['update:visible', 'confirm', 'cancel'])
 const rendered = ref(props.visible)
 const active = ref(false)
 let animTimer = null
+let ownsModalBlur = false
+
+function acquireModalBlur() {
+  if (ownsModalBlur) return
+  ownsModalBlur = true
+  retainModalBlur()
+}
+
+function freeModalBlur() {
+  if (!ownsModalBlur) return
+  ownsModalBlur = false
+  releaseModalBlur()
+}
 
 const close = (type) => {
+  if (animTimer) return
   active.value = false
+  // 弹窗开始淡出时立即释放底层模糊，不再额外等待 250ms 卸载计时。
+  freeModalBlur()
   animTimer = setTimeout(() => {
     animTimer = null
     rendered.value = false
@@ -59,6 +76,7 @@ watch(
         clearTimeout(animTimer)
         animTimer = null
       }
+      acquireModalBlur()
       rendered.value = true
       await nextTick()
       requestAnimationFrame(() => {
@@ -72,13 +90,14 @@ watch(
 
 onBeforeUnmount(() => {
   if (animTimer) clearTimeout(animTimer)
+  freeModalBlur()
 })
 </script>
 
 <template>
   <Teleport to="body">
     <div v-if="rendered" class="confirm-overlay" :class="{ active }" @click.self="close()">
-      <div class="confirm-card app-bg" :class="{ active }" @click.stop>
+      <div class="confirm-card" :class="{ active }" @click.stop>
         <h3 class="confirm-title">{{ title }}</h3>
         <p class="confirm-message">{{ message }}</p>
         <div class="confirm-actions">
@@ -110,7 +129,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 .confirm-overlay.active {
-  background-color: rgba(0, 0, 0, 0.35);
+  background-color: rgba(12, 14, 18, 0.14);
   pointer-events: auto;
 }
 
@@ -120,21 +139,14 @@ onBeforeUnmount(() => {
   max-width: calc(100vw - 48rem);
   padding: 24rem;
   border-radius: 14rem;
-  box-shadow:
-    0 8px 40px rgba(0, 0, 0, 0.42),
-    0 0 0 0.5px rgba(255, 255, 255, 0.12);
+  background-color: rgb(var(--bg-color) / var(--glass-complex-opacity));
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.42);
 
-  /* 玻璃态样式由 .app-bg 类统一提供 */
-
-  /* 入场动画 */
-  transform: scale(0.92);
+  /* 不缩放文字图层，避免 Chromium 在动画结束时重新栅格化造成内容跳动。 */
   opacity: 0;
-  transition:
-    transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 220ms ease;
+  transition: opacity 180ms ease;
 }
 .confirm-card.active {
-  transform: scale(1);
   opacity: 1;
 }
 

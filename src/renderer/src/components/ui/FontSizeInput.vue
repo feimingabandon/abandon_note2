@@ -247,17 +247,19 @@ onBeforeUnmount(() => {
       @before-leave="onBeforeLeave"
       @leave="onLeave"
     >
-      <div v-if="open" class="fsi-panel-wrap app-bg" @click.stop>
-        <div class="fsi-panel scroll-y">
-          <button
-            v-for="n in presets"
-            :key="n"
-            class="fsi-option"
-            :class="{ 'is-active': modelValue === n }"
-            @mousedown.prevent="selectPreset(n)"
-          >
-            {{ n }}
-          </button>
+      <div v-if="open" class="fsi-panel-wrap" @click.stop>
+        <div class="fsi-panel-glass app-bg">
+          <div class="fsi-panel scroll-y">
+            <button
+              v-for="n in presets"
+              :key="n"
+              class="fsi-option"
+              :class="{ 'is-active': modelValue === n }"
+              @mousedown.prevent="selectPreset(n)"
+            >
+              {{ n }}
+            </button>
+          </div>
         </div>
       </div>
     </Transition>
@@ -342,8 +344,13 @@ onBeforeUnmount(() => {
   right: 0;
   z-index: 100;
   border-radius: 10rem;
-  box-shadow: 0 4rem 24rem rgba(0, 0, 0, 0.35);
+  box-shadow: 0 10rem 30rem rgba(0, 0, 0, 0.24);
   overflow: hidden;
+}
+.fsi-panel-glass {
+  --glass-opacity: var(--glass-select-opacity);
+  --glass-blur: var(--glass-select-blur);
+  border-radius: inherit;
 }
 .fsi-panel {
   padding: 4rem 0;

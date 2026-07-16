@@ -4,7 +4,7 @@
  *
  * 职责：
  *   1. 从主窗口底部向上滑入，占主窗口 70% 高度
- *   2. 使用 .app-bg 类继承全局玻璃态样式 + 单独阴影
+ *   2. 使用全局玻璃基准值渲染设置面板，并让其他浮层按比例派生
  *   3. 展示并实时控制各类设置（基础样式、窗口、关于）
  *   4. 所有设置修改立即生效（CSS变量 / IPC / 系统API）
  *
@@ -23,7 +23,10 @@ import AppSlider from '../ui/AppSlider.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import { useMessage } from '../../composables/useMessage.js' // 消息弹窗
-import { applySettingsSnapshot } from '../../utils/applySettingsSnapshot.js'
+import {
+  applyGlassBaseSettings,
+  applySettingsSnapshot
+} from '../../utils/applySettingsSnapshot.js'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
 
 // ---- 调度器健康数据 ----
@@ -63,7 +66,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:visible'])
+const emit = defineEmits(['update:visible', 'blur-release'])
 
 const el = document.documentElement
 
@@ -162,6 +165,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
 const close = () => {
   if (isResetting.value || closeTimer) return
   onDragEnd()
+  // 不等待面板 350ms 退场结束，底层场景从关闭动作开始就恢复清晰。
+  emit('blur-release')
   panelActive.value = false
   Promise.all([flushPendingSettingSaves(), flushPendingBlurConfig()]).catch((e) =>
     console.warn('[SettingsPanel] 关闭前保存设置失败:', e)
@@ -195,7 +200,6 @@ watch(
 
 // ---- 基础样式设置 ----
 const bgColor = ref(DEFAULT_SETTINGS.css.bgColor)
-const bgBorder = ref(DEFAULT_SETTINGS.css.bgBorder)
 const fontSizeBase = ref(DEFAULT_SETTINGS.css.fontSizeBase)
 const textColor = ref(DEFAULT_SETTINGS.css.textColor)
 
@@ -329,7 +333,6 @@ const windowOpacity = ref(DEFAULT_SETTINGS.css.windowOpacity)
 // ---- CSS 组件模糊设置 ----
 const cssBlur = ref(DEFAULT_SETTINGS.css.bgBlur)
 const cssOpacity = ref(DEFAULT_SETTINGS.css.popupOpacity)
-const cssSaturation = ref(DEFAULT_SETTINGS.css.bgSaturation)
 
 const { showMessage } = useMessage()
 
@@ -455,34 +458,21 @@ watch(bgColor, (v) => {
   debouncedSave('css.bgColor', v)
 })
 
-// ---- CSS 组件模糊：模糊半径 → CSS --bg-blur ----
+// ---- CSS 玻璃基准：所有组件按预设比例派生 ----
 watch(cssBlur, (v) => {
-  el.style.setProperty('--bg-blur', v + 'px')
+  applyGlassBaseSettings({ blur: v, opacity: cssOpacity.value }, el)
   debouncedSave('css.bgBlur', v)
 })
 
-// ---- CSS 组件模糊：透明度 → CSS --popup-opacity ----
 watch(cssOpacity, (v) => {
-  el.style.setProperty('--popup-opacity', v)
+  applyGlassBaseSettings({ blur: cssBlur.value, opacity: v }, el)
   debouncedSave('css.popupOpacity', v)
-})
-
-// ---- CSS 组件模糊：饱和度 → CSS --bg-saturation ----
-watch(cssSaturation, (v) => {
-  el.style.setProperty('--bg-saturation', v)
-  debouncedSave('css.bgSaturation', v)
 })
 
 // ---- 窗口透明度 ----
 watch(windowOpacity, (v) => {
   el.style.setProperty('--window-opacity', v)
   debouncedSave('css.windowOpacity', v)
-})
-
-// ---- CSS 组件模糊：边框开关 → CSS --bg-border ----
-watch(bgBorder, (v) => {
-  el.style.setProperty('--bg-border', v ? '1' : '0')
-  debouncedSave('css.bgBorder', v)
 })
 
 // 字体大小 → CSS --font-size-base
@@ -610,9 +600,7 @@ function assignSettingsSnapshot(snapshot) {
   bgColor.value = css.bgColor
   cssOpacity.value = css.popupOpacity
   cssBlur.value = css.bgBlur
-  cssSaturation.value = css.bgSaturation
   windowOpacity.value = css.windowOpacity
-  bgBorder.value = css.bgBorder
   fontSizeBase.value = css.fontSizeBase
   textColor.value = css.textColor
 
@@ -768,13 +756,13 @@ const onConfirmResetSettings = async () => {
 
 <template>
   <Teleport to="body">
-    <div v-if="rendered" class="settings-wrapper">
+    <div v-if="rendered" class="settings-wrapper" :class="{ active: panelActive }">
       <!-- 遮罩层（已移除） -->
 
-      <!-- 面板主体（玻璃态样式由 .app-bg 统一提供） -->
+      <!-- 面板主体：直接使用全局霜层基准，不参与底层场景失焦。 -->
       <div
         ref="panelRef"
-        class="settings-panel app-bg"
+        class="settings-panel"
         :class="{ active: panelActive, 'is-resetting': isResetting }"
         :style="{ height: panelHeight + '%' }"
         :aria-busy="isResetting"
@@ -917,7 +905,7 @@ const onConfirmResetSettings = async () => {
 
             <!-- 玻璃浓度始终显示；原生模糊不可用时也是主要回退控制。 -->
             <div class="setting-item setting-item-slider">
-              <span class="setting-label">玻璃浓度<HelpButton text="控制主窗口背景颜色的覆盖强度。0=完全通透，1=不透明纯色底；不改变原生模糊强度" /></span>
+              <span class="setting-label">玻璃浓度<HelpButton text="控制主窗口背景颜色的覆盖强度。0=完全通透，1=不透明纯色底；不改变原生模糊强度。推荐20%" /></span>
               <span class="range-label-start">通透</span>
               <AppSlider v-model="windowOpacity" :min="0" :max="1" :step="0.01" />
               <span class="range-label-end">浓厚</span>
@@ -966,13 +954,13 @@ const onConfirmResetSettings = async () => {
             </div>
           </section>
 
-          <!-- ========== CSS组件模糊玻璃效果 ========== -->
+          <!-- ========== CSS 玻璃全局基准 ========== -->
           <section class="settings-section">
-            <h3 class="section-title">CSS组件模糊玻璃效果</h3>
+            <h3 class="section-title">CSS 玻璃全局基准</h3>
 
             <!-- 模糊半径 -->
             <div class="setting-item setting-item-slider">
-              <span class="setting-label">模糊半径<HelpButton text="控制弹窗、下拉框等浮动组件的背景模糊程度。推荐5px" /></span>
+              <span class="setting-label">模糊基准<HelpButton text="设置页按此值直接失焦；普通下拉框、复杂浮层和提示框会按各自比例同步增减。推荐5px" /></span>
               <span class="range-label-start">清晰</span>
               <AppSlider v-model="cssBlur" :min="0" :max="30" :step="1" />
               <span class="range-label-end">模糊</span>
@@ -981,21 +969,13 @@ const onConfirmResetSettings = async () => {
 
             <!-- 组件透明度 -->
             <div class="setting-item setting-item-slider">
-              <span class="setting-label">组件透明度<HelpButton text="控制浮动组件的霜层厚薄。值越小越透，推荐50%" /></span>
+              <span class="setting-label">霜层基准<HelpButton text="设置面板按此浓度显示；其他浮层会按组件类型成比例调整并限制最大值。推荐22%" /></span>
               <span class="range-label-start">通透</span>
               <AppSlider v-model="cssOpacity" :min="0" :max="1" :step="0.01" />
               <span class="range-label-end">不透</span>
               <span class="setting-value">{{ Math.round(cssOpacity * 100) }}%</span>
             </div>
 
-            <!-- 饱和度 -->
-            <div class="setting-item setting-item-slider">
-              <span class="setting-label">饱和度<HelpButton text="模糊会洗掉颜色，提高饱和度补偿回来。推荐1.6–2.0（苹果用1.8）" /></span>
-              <span class="range-label-start">黑白</span>
-              <AppSlider v-model="cssSaturation" :min="0" :max="2" :step="0.1" />
-              <span class="range-label-end">鲜艳</span>
-              <span class="setting-value">{{ cssSaturation.toFixed(1) }}x</span>
-            </div>
           </section>
 
           <!-- ========== 系统设置 ========== -->
@@ -1224,9 +1204,22 @@ const onConfirmResetSettings = async () => {
   overflow: hidden; /* 裁剪超出圆角的内容 */
 }
 
-/* ---- 遮罩层（已移除） ---- */
+/* 轻微压低底层对比度，避免便签文字透过玻璃抢占焦点。 */
+.settings-wrapper::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(18, 20, 24, 0.04);
+  opacity: 0;
+  transition: opacity 250ms ease;
+  pointer-events: none;
+}
 
-/* ---- 面板主体（玻璃态样式由 .app-bg 统一提供，此处仅保留位置/动画/阴影等独有样式） ---- */
+.settings-wrapper.active::before {
+  opacity: 1;
+}
+
+/* ---- 面板主体：设置页使用 1× 全局霜层基准 ---- */
 .settings-panel {
   position: absolute;
   left: 0;
@@ -1234,13 +1227,17 @@ const onConfirmResetSettings = async () => {
   bottom: 0;
   height: 70%;
   border-radius: 16rem 16rem 0 0;
-  box-shadow: 0px -8px 32px 0px rgba(0, 0, 0, 0.37);
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.3);
   transform: translateY(100%);
-  transition: transform 350ms cubic-bezier(0.25, 0.1, 0.25, 1);
+  transition:
+    transform 350ms cubic-bezier(0.25, 0.1, 0.25, 1),
+    filter 100ms ease-out;
   pointer-events: auto;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  background-color: rgb(var(--bg-color) / var(--glass-opacity-base));
+  border: 0;
 }
 
 .settings-panel.active {

@@ -336,8 +336,9 @@ function onLeave(el, done) {
 
     <Teleport to="body">
       <Transition @before-enter="onBeforeEnter" @enter="onEnter" @before-leave="onBeforeLeave" @leave="onLeave">
-        <div v-if="open" ref="panelRef" class="dt-panel-wrap app-bg" :style="panelStyle" @click.stop>
-          <div class="dt-panel">
+        <div v-if="open" ref="panelRef" class="dt-panel-wrap" :style="panelStyle" @click.stop>
+          <div class="dt-panel-glass app-bg">
+            <div class="dt-panel">
           <!-- ===== 上：日期+时间可编辑区 ===== -->
           <div class="dt-time-header">
             <div class="dt-header-field" :class="{ active: currentView === 'calendar' }" @click="currentView = 'calendar'">
@@ -421,6 +422,7 @@ function onLeave(el, done) {
           </div>
           </div>
         </div>
+        </div>
       </Transition>
     </Teleport>
   </div>
@@ -459,8 +461,14 @@ function onLeave(el, done) {
 
 /* ===== 面板 ===== */
 .dt-panel-wrap {
-  border-radius: 10rem; box-shadow: 0 4rem 24rem rgba(0,0,0,.35);
+  border-radius: 10rem;
+  box-shadow: 0 12rem 34rem rgba(0, 0, 0, 0.26);
   overflow: hidden;
+}
+.dt-panel-glass {
+  --glass-opacity: var(--glass-complex-opacity);
+  --glass-blur: var(--glass-complex-blur);
+  border-radius: inherit;
 }
 .dt-panel { width: 320rem; height: 320rem; display: flex; flex-direction: column; }
 .dt-divider { height: 1px; margin: 0; background: rgb(var(--bg-color) / 0.1); flex-shrink: 0; }

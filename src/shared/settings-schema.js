@@ -121,10 +121,10 @@ const definitions = [
     id: 'css.popupOpacity',
     path: ['css', 'popupOpacity'],
     db: { type: 'css', key: 'win_opacity' },
-    defaultValue: 0.5,
+    defaultValue: 0.22,
     parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 1 }),
     serialize: String,
-    remark: '组件透明度（0~1 浮点数）'
+    remark: 'CSS 玻璃霜层全局基准（0~1 浮点数）'
   },
   {
     id: 'css.bgBlur',
@@ -133,34 +133,16 @@ const definitions = [
     defaultValue: 5,
     parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 30 }),
     serialize: String,
-    remark: 'CSS 背景模糊半径（像素）'
-  },
-  {
-    id: 'css.bgSaturation',
-    path: ['css', 'bgSaturation'],
-    db: { type: 'css', key: 'bg_saturation' },
-    defaultValue: 1.8,
-    parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 2 }),
-    serialize: String,
-    remark: 'CSS 饱和度（0~2 浮点数）'
+    remark: 'CSS 玻璃模糊全局基准（像素）'
   },
   {
     id: 'css.windowOpacity',
     path: ['css', 'windowOpacity'],
     db: { type: 'css', key: 'window_opacity' },
-    defaultValue: 0.5,
+    defaultValue: 0.2,
     parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 1 }),
     serialize: String,
     remark: '窗口透明度（0~1 浮点数）'
-  },
-  {
-    id: 'css.bgBorder',
-    path: ['css', 'bgBorder'],
-    db: { type: 'css', key: 'bg_border' },
-    defaultValue: true,
-    parse: parseBoolean,
-    serialize: (value) => (value ? '1' : '0'),
-    remark: '边框显示开关（1=显示, 0=隐藏）'
   },
   {
     id: 'css.fontSizeBase',
@@ -193,7 +175,7 @@ const definitions = [
     id: 'blur.radius',
     path: ['blur', 'radius'],
     db: { type: 'system', key: 'blur_radius' },
-    defaultValue: 15,
+    defaultValue: 20,
     parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 40 }),
     serialize: String,
     remark: '系统模糊半径（0~40 DIP）'

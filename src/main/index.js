@@ -22,6 +22,7 @@ import {
   setSettingsBatch,
   clearAllSettings,
   deleteSettingsByKey,
+  cleanupPendingAttachmentDirs,
   clearNoteData
 } from './db/db.js'
 import {
@@ -101,9 +102,7 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'css.bgColor',
   'css.popupOpacity',
   'css.bgBlur',
-  'css.bgSaturation',
   'css.windowOpacity',
-  'css.bgBorder',
   'css.fontSizeBase',
   'css.textColor',
   'listFilter'
@@ -293,6 +292,14 @@ function initializeBlurRuntime() {
     if (process.platform === 'darwin' && !blurConfig.enabled) mainWindow.setVibrancy(null)
     return result
   } catch (error) {
+    // blurInit 成功而首次配置失败时也必须完整回滚，否则 JS、bridge 和
+    // native 三层会处于互相矛盾的初始化状态，后续重试还会被短路。
+    try {
+      blurDestroy()
+    } catch (destroyError) {
+      console.error('[blur] 初始化回滚时销毁原生资源失败:', destroyError)
+    }
+    blurInitialized = false
     blurInitializationError = error.message
     blurInitializationNativeError = {
       code: null,
@@ -335,7 +342,7 @@ function applyResolvedWindowRuntime() {
  * 通过共享 schema 持久化逻辑设置 ID；renderer 不再接触 type/key/raw value。
  * 返回广播出去的同一份完整快照。
  */
-function persistSettingValues(entries) {
+function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
   const normalizedEntries = entries.map(({ id, value }) => ({ id, ...serializeSetting(id, value) }))
   setSettingsBatch(WINDOW_NAME, normalizedEntries)
   refreshResolvedSettings({ incrementRevision: true })
@@ -343,7 +350,7 @@ function persistSettingValues(entries) {
   if (normalizedEntries.some(({ id }) => id.startsWith('window.'))) {
     applyResolvedWindowRuntime()
   }
-  if (normalizedEntries.some(({ id }) => id.startsWith('blur.'))) {
+  if (applyBlurRuntime && normalizedEntries.some(({ id }) => id.startsWith('blur.'))) {
     applyResolvedBlurRuntime()
   }
 
@@ -505,9 +512,7 @@ function createWindow() {
         /* DComp 会话失效时静默 */
       }
     })
-    // Overlay 使用 WS_EX_NOACTIVATE，不应抢焦点；Electron 成为前台窗口时只需把
-    // Overlay 调到同一 topmost band，并紧贴在 Electron 的后一位。
-    mainWindow.on('focus', blurReSyncZOrder)
+    // 前台切换由 C++ WinEvent Hook 唯一处理，避免 focus 事件重复提交 Z-order。
     mainWindow.on('always-on-top-changed', blurReSyncZOrder)
   }
 
@@ -535,10 +540,16 @@ function createWindow() {
 
   // 窗口显示时恢复模糊（从托盘恢复）
   mainWindow.on('show', () => {
-    if (blurInitialized && blurConfig.enabled) {
+    if (!blurConfig.enabled) return
+
+    // 隐藏阶段若因原生异常销毁过 Overlay，恢复窗口时重新初始化。
+    if (!blurInitialized) {
+      const result = initializeBlurRuntime()
+      if (!result.success) return
+    } else {
       blurSetConfig(blurConfig)
-      blurReSyncZOrder()
     }
+    blurReSyncZOrder()
   })
 
   // 窗口销毁时清除引用和贴边资源
@@ -562,9 +573,25 @@ function createWindow() {
 /** 窗口关闭/隐藏时统一执行：隐藏窗口 + 清理贴边 + 禁用系统模糊 */
 function hideToTray() {
   if (!mainWindow || mainWindow.isDestroyed()) return
+
+  // Blur_ApplyConfig 要求完整的四项配置，不能只传 { enabled: false }。
+  // 先隐藏 Overlay 再隐藏 Electron，避免异常中断后留下孤立模糊窗口。
+  if (blurInitialized) {
+    try {
+      blurSetConfig({ ...blurConfig, enabled: false })
+    } catch (error) {
+      console.error('[blur] 隐藏窗口时禁用原生模糊失败，销毁 Overlay 兜底:', error)
+      try {
+        blurDestroy()
+      } catch (destroyError) {
+        console.error('[blur] 销毁残留 Overlay 失败:', destroyError)
+      }
+      blurInitialized = false
+    }
+  }
+
   mainWindow.hide()
   resetDockState()
-  if (blurInitialized) blurSetConfig({ enabled: false })
 }
 
 // ============================================================
@@ -831,10 +858,20 @@ app.whenReady().then(() => {
 
   // 初始化数据库连接
   initDatabase()
+  cleanupPendingAttachmentDirs().catch((error) =>
+    console.warn('[attachments] 清理历史待删除目录失败:', error.message)
+  )
   // 开机自启以操作系统为唯一权威；移除旧版本遗留的数据库副本。
   deleteSettingsByKey('auto_start')
-  // 原生模糊输出必须保持 100%；颜色和玻璃通透度统一由 CSS 背景层负责。
-  for (const key of ['blur_opacity', 'blur_tint_r', 'blur_tint_g', 'blur_tint_b']) {
+  // 清理已退出产品设置模型的历史键，避免不可见状态继续影响画面。
+  for (const key of [
+    'blur_opacity',
+    'blur_tint_r',
+    'blur_tint_g',
+    'blur_tint_b',
+    'bg_saturation',
+    'bg_border'
+  ]) {
     deleteSettingsByKey(key)
   }
   refreshResolvedSettings({ incrementRevision: true })
@@ -1000,12 +1037,16 @@ app.whenReady().then(() => {
       blurConfig.enabled = false
     }
 
-    const snapshot = persistSettingValues([
-      { id: 'blur.enabled', value: blurConfig.enabled },
-      { id: 'blur.radius', value: blurConfig.radius },
-      { id: 'blur.saturation', value: blurConfig.saturation },
-      { id: 'blur.cornerRadius', value: blurConfig.cornerRadius }
-    ])
+    const snapshot = persistSettingValues(
+      [
+        { id: 'blur.enabled', value: blurConfig.enabled },
+        { id: 'blur.radius', value: blurConfig.radius },
+        { id: 'blur.saturation', value: blurConfig.saturation },
+        { id: 'blur.cornerRadius', value: blurConfig.cornerRadius }
+      ],
+      // 新初始化路径已经在 initializeBlurRuntime 中提交过完整配置。
+      { applyBlurRuntime: !initializationResult?.success }
+    )
     const runtime = snapshot.runtime.blur
     return {
       success: !enableRequested || runtime.effectiveEnabled,
@@ -1131,8 +1172,8 @@ app.whenReady().then(() => {
   })
 
   // 【清空便签数据】仅清理便签、模板、标签和附件，保留 app_settings。
-  ipcMain.handle('clear-note-data', () => {
-    clearNoteData()
+  ipcMain.handle('clear-note-data', async () => {
+    await clearNoteData()
     mainWindow?.webContents.send('notes:changed', { reason: 'note-data-cleared' })
     return true
   })

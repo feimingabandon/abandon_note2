@@ -32,6 +32,13 @@ createMessageProvider()
 
 /** 设置面板显隐状态 */
 const showSettings = ref(false)
+/** 与面板卸载动画解耦，使关闭动作开始时即可恢复底层清晰度。 */
+const settingsBlurActive = ref(false)
+
+function openSettings() {
+  settingsBlurActive.value = true
+  showSettings.value = true
+}
 
 /** 当前选中的便签 */
 const selectedNote = ref(null)
@@ -116,7 +123,11 @@ onUnmounted(() => {
   <!-- 应用根容器：同时承载背景样式（.app-bg）和布局（.app-root） -->
   <div class="app-root app-bg">
     <!-- 设置打开时，底层场景不可点击且不可获取键盘焦点。 -->
-    <div class="app-scene" :inert="showSettings">
+    <div
+      class="app-scene"
+      :class="{ 'is-settings-open': settingsBlurActive }"
+      :inert="showSettings"
+    >
       <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
       <ResizeHandles :locked="locked" />
       <!-- Mac 风格标题栏，包含红绿灯按钮和标题文字 -->
@@ -146,7 +157,7 @@ onUnmounted(() => {
           <button
             class="titlebar-btn titlebar-btn-settings"
             title="设置"
-            @click="showSettings = true"
+            @click="openSettings"
           >
             <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
           </button>
@@ -190,7 +201,11 @@ onUnmounted(() => {
     </div>
 
     <!-- 设置面板关闭动画结束后将 visible 置为 false，随后真正卸载组件。 -->
-    <SettingsPanel v-if="showSettings" v-model:visible="showSettings" />
+    <SettingsPanel
+      v-if="showSettings"
+      v-model:visible="showSettings"
+      @blur-release="settingsBlurActive = false"
+    />
 
     <!-- 应用内消息弹窗（Apple 风格 Toast，固定顶部居中） -->
     <MessageToast />
@@ -224,6 +239,14 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   flex-direction: column;
+  transition: filter 100ms ease-out;
+}
+
+/* 设置是模态界面：直接模糊已渲染好的底层场景，不再从透明窗口反向采样。 */
+.app-scene.is-settings-open {
+  filter: blur(var(--glass-blur-base));
+  transition-duration: 180ms;
+  will-change: filter;
 }
 
 /* 标题栏按钮通用样式 */

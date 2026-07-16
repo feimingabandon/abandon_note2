@@ -71,6 +71,8 @@ html {
   --fs-secondary:  calc(var(--font-size-base) * 0.8);  /* 所有辅助文字（base=18 → 15.75） */
 
   /* 持久化 CSS 变量由 main.js 在挂载前从 shared/settings-schema.js 注入。 */
+  --glass-blur-base: var(--bg-blur);
+  --glass-opacity-base: var(--popup-opacity);
 }
 
 /* ---- body 基础样式 ---- */
@@ -89,52 +91,36 @@ body {
 }
 
 /* ---- 玻璃态背景容器 ----
- * .app-bg 类应用于弹出面板（非主窗口），提供统一 glassmorphism 效果
- * 公式：低透明度白底 + 强模糊 + 饱和度补偿（仅 blur + saturate）
- * 主窗口 .app-root 覆写 backdrop-filter: none 并单独使用 --window-opacity
- *
- * 关键：backdrop-filter 放在 ::before 伪元素上，而非元素本体。
- * 这样面板的半透明白底会先渲染，再被 ::before 的 backdrop-filter 一起模糊，
- * 确保模糊输入包含白色霜层，所有 .app-bg 组件模糊效果一致。
+ * 原生层负责窗口背后的桌面模糊；这里只负责应用内部浮层材质。
+ * 每个浮层只做一次 backdrop-filter 和一次色彩覆盖，避免透明度被重复叠加。
+ * 组件可以通过 --glass-* 覆写自己的材质强度。
  */
 .app-bg {
   position: relative;
-  background-color: rgb(var(--bg-color) / var(--popup-opacity));
-  border: calc(var(--bg-border) * 1px) solid rgba(255, 255, 255, 0.18);
+  border: 0;
 }
 
-.app-bg::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  -webkit-backdrop-filter: blur(var(--bg-blur)) saturate(var(--bg-saturation));
-  backdrop-filter: blur(var(--bg-blur)) saturate(var(--bg-saturation));
-  pointer-events: none;
-  z-index: 0;
+.app-bg:not(.app-root) {
+  background-color: rgb(var(--bg-color) / var(--glass-opacity, var(--glass-opacity-base)));
+  -webkit-backdrop-filter: blur(var(--glass-blur, var(--glass-blur-base)));
+  backdrop-filter: blur(var(--glass-blur, var(--glass-blur-base)));
 }
 
-/* 第二道霜层：模糊结果之上再叠加半透明白底，
-   等效霜层约 1-(1-opacity)²；默认 opacity=50% 时约为 75%，
-   解决窗口透明时模糊不够不透、背后文字仍可辨认的问题。 */
+/* 历史版本使用两个伪元素叠加霜层；现在真实元素只渲染一次材质。 */
+.app-bg::before,
 .app-bg::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background-color: rgb(var(--bg-color) / var(--popup-opacity));
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* 确保面板内容显示在模糊层之上 */
-.app-bg > * {
-  position: relative;
-  z-index: 1;
+  display: none;
 }
 
 /* 主窗口禁用 ::before / ::after 模糊层（由 OS 系统模糊接管） */
 .app-root::before,
 .app-root::after {
   display: none;
+}
+
+/* 模态弹窗直接模糊当前内容层；弹窗本身 Teleport 到 body，保持清晰。 */
+body.has-modal-blur .app-scene,
+body.has-modal-blur .settings-panel {
+  filter: blur(var(--glass-blur-base));
+  will-change: filter;
 }

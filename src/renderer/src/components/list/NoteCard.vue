@@ -302,18 +302,20 @@ async function toggleTags() {
       <Transition name="nl-tag-popover">
         <div
           v-if="tagsExpanded"
-          class="nl-tag-popover"
+          class="nl-tag-popover-shell"
           :style="tagPopoverStyle"
           role="dialog"
           aria-label="全部标签"
           @click.stop
         >
-          <span
-            v-for="tag in tags"
-            :key="tag.id || tag.name"
-            class="nl-tag-popover__tag"
-            :style="tag.color ? { '--tag-color': tag.color } : {}"
-          >{{ tag.name }}</span>
+          <div class="nl-tag-popover app-bg">
+            <span
+              v-for="tag in tags"
+              :key="tag.id || tag.name"
+              class="nl-tag-popover__tag"
+              :style="tag.color ? { '--tag-color': tag.color } : {}"
+            >{{ tag.name }}</span>
+          </div>
         </div>
       </Transition>
     </Teleport>
@@ -695,23 +697,29 @@ async function toggleTags() {
   border-top: 1px solid color-mix(in srgb, var(--text-color) 7%, transparent);
 }
 
-.nl-tag-popover {
+.nl-tag-popover-shell {
   position: fixed;
   z-index: 10000;
+  width: max-content;
+  max-width: min(260px, calc(100vw - 16px));
+  border-radius: 10rem;
+  box-shadow: 0 12rem 34rem rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+.nl-tag-popover {
+  --glass-opacity: var(--glass-select-opacity);
+  --glass-blur: var(--glass-select-blur);
+
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6rem;
-  width: max-content;
-  max-width: min(260px, calc(100vw - 16px));
+  width: 100%;
+  max-width: inherit;
   max-height: min(220px, calc(100vh - 24px));
   padding: 10rem;
   overflow-y: auto;
-  border: 1px solid color-mix(in srgb, var(--text-color) 10%, transparent);
   border-radius: 10rem;
-  background: rgb(var(--bg-color) / 0.92);
-  box-shadow: 0 12rem 34rem rgba(0, 0, 0, 0.18);
-  backdrop-filter: blur(22px) saturate(1.25);
 }
 .nl-tag-popover__tag {
   max-width: 180px;

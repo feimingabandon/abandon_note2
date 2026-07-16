@@ -20,7 +20,7 @@
  *   update:modelValue — v-model 双向绑定，拖动中实时触发
  *   change            — 滑动停止（pointerup）时触发一次，携带最终值
  */
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 
 const props = defineProps({
   modelValue: { type: Number, default: 0 },
@@ -46,6 +46,8 @@ const thumbRef = ref(null)
 let rafId = null
 /** 暂存最新的 clientX，供 RAF 回调消费 */
 let pendingClientX = null
+/** 指针交互被系统取消时恢复到拖拽前的值。 */
+let dragStartValue = null
 
 /** 百分比进度 */
 const progress = computed(() => {
@@ -109,6 +111,7 @@ function onDown(e) {
   e.currentTarget.focus({ preventScroll: true })
   e.preventDefault()
   dragging.value = true
+  dragStartValue = props.modelValue
   const val = posToValue(e.clientX)
   emit('update:modelValue', val)
   e.currentTarget.setPointerCapture(e.pointerId)
@@ -136,6 +139,19 @@ function onUp(e) {
   emit('update:modelValue', val)
   emit('change', val)
   dragging.value = false
+  dragStartValue = null
+}
+
+function onCancel() {
+  if (!dragging.value) return
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId)
+    rafId = null
+  }
+  pendingClientX = null
+  if (dragStartValue !== null) emit('update:modelValue', dragStartValue)
+  dragging.value = false
+  dragStartValue = null
 }
 
 function onKeydown(e) {
@@ -152,6 +168,12 @@ function onKeydown(e) {
   emit('update:modelValue', value)
   emit('change', value)
 }
+
+onBeforeUnmount(() => {
+  if (rafId !== null) cancelAnimationFrame(rafId)
+  rafId = null
+  pendingClientX = null
+})
 </script>
 
 <template>
@@ -169,8 +191,8 @@ function onKeydown(e) {
     @pointerdown="onDown"
     @pointermove="onMove"
     @pointerup="onUp"
-    @lostpointercapture="onUp"
-    @pointercancel="onUp"
+    @lostpointercapture="onCancel"
+    @pointercancel="onCancel"
     @keydown="onKeydown"
   >
     <!-- 单一完整轨道：硬分界渐变表示进度，不缩放圆角矩形。 -->

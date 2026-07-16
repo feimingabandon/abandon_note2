@@ -165,18 +165,20 @@ onBeforeUnmount(() => {
         @before-leave="onBeforeLeave"
         @leave="onLeave"
       >
-        <div v-if="open" ref="panelRef" class="sel-panel-wrap app-bg" :style="panelStyle" @click.stop>
-          <div class="sel-panel scroll-y">
-            <button
-              v-for="opt in options"
-              :key="opt.value"
-              class="sel-option"
-              :class="{ 'is-active': modelValue === opt.value, 'is-disabled': opt.disabled }"
-              :disabled="opt.disabled"
-              @click="select(opt)"
-            >
-              {{ opt.label }}
-            </button>
+        <div v-if="open" ref="panelRef" class="sel-panel-wrap" :style="panelStyle" @click.stop>
+          <div class="sel-panel-glass app-bg">
+            <div class="sel-panel scroll-y">
+              <button
+                v-for="opt in options"
+                :key="opt.value"
+                class="sel-option"
+                :class="{ 'is-active': modelValue === opt.value, 'is-disabled': opt.disabled }"
+                :disabled="opt.disabled"
+                @click="select(opt)"
+              >
+                {{ opt.label }}
+              </button>
+            </div>
           </div>
         </div>
       </Transition>
@@ -243,8 +245,14 @@ onBeforeUnmount(() => {
 /* ============ 下拉面板 ============ */
 .sel-panel-wrap {
   border-radius: 10rem;
-  box-shadow: 0 4rem 24rem rgba(0, 0, 0, 0.35);
+  box-shadow: 0 10rem 30rem rgba(0, 0, 0, 0.24);
   overflow: hidden;
+}
+.sel-panel-glass {
+  --glass-opacity: var(--glass-select-opacity);
+  --glass-blur: var(--glass-select-blur);
+  min-width: 100%;
+  border-radius: inherit;
 }
 .sel-panel {
   padding: 4rem 0;

@@ -473,11 +473,16 @@ void Engine::SyncZOrder() {
 
     const bool parentTopmost =
         (GetWindowLongPtrW(m_parentHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    const bool overlayTopmost =
+        (GetWindowLongPtrW(m_overlayHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
 
-    // 先把 Overlay 放入和 Electron 一致的 topmost/non-topmost band，
-    // 再插到 Electron 正后方，避免其他程序窗口夹在两个 HWND 中间。
-    SetWindowPos(m_overlayHwnd, parentTopmost ? HWND_TOPMOST : HWND_NOTOPMOST,
-        0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    // 只在置顶分组真正变化时切换 band。否则 DWM 可能在两次
+    // SetWindowPos 之间提交一帧，造成 Overlay 瞬间盖住 Electron。
+    if (parentTopmost != overlayTopmost) {
+        SetWindowPos(m_overlayHwnd, parentTopmost ? HWND_TOPMOST : HWND_NOTOPMOST,
+            0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    // 焦点切换的常规路径只提交一次：紧贴在 Electron 正后方。
     SetWindowPos(m_overlayHwnd, m_parentHwnd,
         0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
