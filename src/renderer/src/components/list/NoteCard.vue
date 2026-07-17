@@ -3,7 +3,7 @@
  * NoteCard.vue — 便签列表项
  *
  * 左侧状态圆环既表达状态，也承担主要状态操作：
- * initialized → 提前开始；in_progress → 完成。
+ * initialized → 提前开始；in_progress → 完成；completed → 重新进行。
  */
 import { computed, ref, onMounted, onUnmounted, nextTick } from 'vue'
 import ImagePicker from '../note/ImagePicker.vue'
@@ -45,18 +45,18 @@ const props = defineProps({
   statusTransition: { type: Object, default: null }
 })
 
-const emit = defineEmits(['select', 'status-action'])
+const emit = defineEmits(['select', 'status-action', 'edit'])
 
 const STATUS_META = {
   initialized: { label: '初始化', color: '#0A84FF', action: '提前开始' },
   in_progress: { label: '进行中', color: '#FF9F0A', action: '标记完成' },
-  completed: { label: '已完成', color: '#30D158', action: '' },
-  cancelled: { label: '已取消', color: '#8E8E93', action: '' }
+  completed: { label: '已完成', color: '#30D158', action: '重新进行' },
+  cancelled: { label: '已弃用', color: '#8E8E93', action: '' }
 }
 
 const status = computed(() => STATUS_META[props.note.status] || STATUS_META.cancelled)
 const isTerminal = computed(() => ['completed', 'cancelled'].includes(props.note.status))
-const canChangeStatus = computed(() => ['initialized', 'in_progress'].includes(props.note.status))
+const canChangeStatus = computed(() => ['initialized', 'in_progress', 'completed'].includes(props.note.status))
 const showReminder = computed(
   () => props.note.status === 'initialized' && Number(props.note.notify_enabled) === 1
 )
@@ -70,6 +70,9 @@ const imagesMounted = ref(false)
 const tagsExpanded = ref(false)
 const moreTagsButtonRef = ref(null)
 const tagPopoverStyle = ref({})
+const contextMenuVisible = ref(false)
+const contextMenuRef = ref(null)
+const contextMenuStyle = ref({})
 
 onMounted(startSharedClock)
 
@@ -79,6 +82,7 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onTagPopoverKeydown)
   window.removeEventListener('resize', closeTags)
   window.removeEventListener('scroll', closeTags, true)
+  closeContextMenu()
 })
 
 const displayContent = computed(() => {
@@ -111,7 +115,7 @@ const effectiveIso = computed(() => {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
 })
 const finishedTime = computed(() => formatDateTime(props.note.finished_at))
-const finishedLabel = computed(() => (props.note.status === 'completed' ? '完成' : '取消'))
+const finishedLabel = computed(() => (props.note.status === 'completed' ? '完成' : '弃用'))
 const effectiveDisplay = computed(() => {
   if (props.note.status !== 'initialized') return `生效 ${effectiveTime.value}`
   const timestamp = Number(props.note.effective_at)
@@ -169,11 +173,56 @@ function onTagPopoverOutside(event) {
   closeTags()
 }
 
+function closeContextMenu() {
+  contextMenuVisible.value = false
+  document.removeEventListener('pointerdown', onContextMenuOutside)
+  document.removeEventListener('keydown', onContextMenuKeydown)
+  window.removeEventListener('resize', closeContextMenu)
+  window.removeEventListener('scroll', closeContextMenu, true)
+}
+
+function onContextMenuOutside(event) {
+  if (contextMenuRef.value?.contains(event.target)) return
+  closeContextMenu()
+}
+
+function onContextMenuKeydown(event) {
+  if (event.key === 'Escape') closeContextMenu()
+}
+
+async function openContextMenu(event) {
+  event.preventDefault()
+  closeTags()
+  closeContextMenu()
+  contextMenuStyle.value = { left: `${event.clientX}px`, top: `${event.clientY}px` }
+  contextMenuVisible.value = true
+  await nextTick()
+
+  const rect = contextMenuRef.value?.getBoundingClientRect()
+  if (!rect) return
+  const gap = 8
+  contextMenuStyle.value = {
+    left: `${Math.max(gap, Math.min(event.clientX, window.innerWidth - rect.width - gap))}px`,
+    top: `${Math.max(gap, Math.min(event.clientY, window.innerHeight - rect.height - gap))}px`
+  }
+  document.addEventListener('pointerdown', onContextMenuOutside)
+  document.addEventListener('keydown', onContextMenuKeydown)
+  window.addEventListener('resize', closeContextMenu)
+  window.addEventListener('scroll', closeContextMenu, true)
+}
+
+/** 删除与取消暂未接入；修改打开现有编辑器。 */
+function onContextMenuAction(action) {
+  closeContextMenu()
+  if (action === 'edit') emit('edit', props.note)
+}
+
 async function toggleTags() {
   if (tagsExpanded.value) {
     closeTags()
     return
   }
+  closeContextMenu()
   const rect = moreTagsButtonRef.value?.getBoundingClientRect()
   if (!rect) return
   const horizontal = { right: `${Math.max(8, window.innerWidth - rect.right)}px` }
@@ -208,6 +257,7 @@ async function toggleTags() {
     :aria-label="`${status.label}：${displayContent}`"
     @click="selectCard"
     @keydown.enter="selectCard"
+    @contextmenu="openContextMenu"
   >
     <span
       v-if="draggable"
@@ -309,6 +359,28 @@ async function toggleTags() {
       </Transition>
     </Teleport>
 
+    <Teleport to="body">
+      <Transition name="nl-context-menu">
+        <div
+          v-if="contextMenuVisible"
+          ref="contextMenuRef"
+          class="nl-context-menu-shell"
+          :style="contextMenuStyle"
+          role="menu"
+          aria-label="便签操作"
+          @click.stop
+          @contextmenu.prevent
+        >
+          <div class="nl-context-menu">
+            <button role="menuitem" @click="onContextMenuAction('edit')">修改</button>
+            <button role="menuitem" @click="onContextMenuAction('cancel')">弃用</button>
+            <div class="nl-context-menu__divider" role="separator" />
+            <button class="nl-context-menu__delete" role="menuitem" @click="onContextMenuAction('delete')">删除</button>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
     <div
       v-if="attachmentCount"
       class="nl-image-panel-shell"
@@ -361,7 +433,8 @@ async function toggleTags() {
   position: absolute;
   z-index: 3;
   inset: 0;
-  border-radius: inherit;
+  border-radius: 0;
+  clip-path: inset(0 round 11rem);
   pointer-events: none;
   opacity: 0;
   transform: scaleX(0);
@@ -392,6 +465,9 @@ async function toggleTags() {
 .nl-card--status-playing.nl-card--in_progress-to-completed {
   --status-sweep-color: #30d158;
 }
+.nl-card--status-playing.nl-card--completed-to-in_progress {
+  --status-sweep-color: #ff9f0a;
+}
 .nl-card--status-playing.nl-card--initialized-to-in_progress::before {
   animation:
     nl-status-sweep-motion 1000ms cubic-bezier(0.55, 0, 0.45, 1) both,
@@ -401,6 +477,11 @@ async function toggleTags() {
   animation:
     nl-status-sweep-motion 1000ms cubic-bezier(0.55, 0, 0.45, 1) both,
     nl-status-sweep-opacity-complete 1000ms linear both;
+}
+.nl-card--status-playing.nl-card--completed-to-in_progress::before {
+  animation:
+    nl-status-sweep-motion 1000ms cubic-bezier(0.55, 0, 0.45, 1) both,
+    nl-status-sweep-opacity-start 1000ms linear both;
 }
 
 .nl-card:hover {
@@ -730,6 +811,57 @@ async function toggleTags() {
 .nl-tag-popover-leave-active { transition: opacity 150ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1); }
 .nl-tag-popover-enter-from,
 .nl-tag-popover-leave-to { opacity: 0; transform: translateY(-4px) scale(0.98); }
+
+.nl-context-menu-shell {
+  position: fixed;
+  z-index: 10001;
+  width: 128rem;
+  border-radius: 10rem;
+  box-shadow: 0 12rem 34rem rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+.nl-context-menu {
+  display: grid;
+  gap: 1rem;
+  padding: 5rem;
+  border: 1px solid var(--surface-float-border);
+  border-radius: inherit;
+  background-color: var(--surface-float);
+}
+.nl-context-menu__divider {
+  height: 1px;
+  margin: 3rem 4rem;
+  background: color-mix(in srgb, var(--text-color) 10%, transparent);
+}
+.nl-context-menu button {
+  width: 100%;
+  padding: 7rem 9rem;
+  border: 0;
+  border-radius: 6rem;
+  background: transparent;
+  color: var(--text-color);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.nl-context-menu button:hover,
+.nl-context-menu button:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+.nl-context-menu .nl-context-menu__delete {
+  color: #ff453a;
+}
+.nl-context-menu .nl-context-menu__delete:hover,
+.nl-context-menu .nl-context-menu__delete:focus-visible {
+  background: color-mix(in srgb, #ff453a 11%, transparent);
+}
+.nl-context-menu-enter-active,
+.nl-context-menu-leave-active { transition: opacity 130ms ease, transform 180ms cubic-bezier(0.32, 0.72, 0, 1); }
+.nl-context-menu-enter-from,
+.nl-context-menu-leave-to { opacity: 0; transform: translateY(-4px) scale(0.98); }
 
 @media (max-width: 390px) {
   .nl-card-tag { max-width: 86rem; }

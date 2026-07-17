@@ -229,7 +229,7 @@ onBeforeUnmount(() => {
       @leave="onLeave"
     >
       <div v-if="open" class="fsi-panel-wrap" @click.stop>
-        <div class="fsi-panel-glass app-bg">
+        <div class="fsi-panel-glass">
           <div class="fsi-panel scroll-y">
             <button
               v-for="n in presets"
@@ -331,8 +331,8 @@ onBeforeUnmount(() => {
   will-change: transform, opacity;
 }
 .fsi-panel-glass {
-  --glass-opacity: var(--glass-select-opacity);
-  --glass-blur: var(--glass-select-blur);
+  background-color: var(--surface-float);
+  border: 1px solid var(--surface-float-border);
   border-radius: inherit;
 }
 .fsi-panel {

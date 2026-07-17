@@ -5,6 +5,7 @@
  * 两种模式：
  *   mode="memory" — 图片暂存内存，由父组件决定何时持久化
  *   mode="persist" — 图片即时写入磁盘（需提供 noteId）
+ *   mode="draft"   — 加载已有图片，新增和删除只记录为前端草稿
  *   readonly        — 只展示已保存图片，隐藏上传和删除操作
  *
  * Props:
@@ -24,10 +25,12 @@ const props = defineProps({
   readonly: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['count-change'])
+const emit = defineEmits(['count-change', 'draft-change'])
 
 /** 图片列表（统一数据格式） */
 const images = ref([])
+/** draft 模式下等待保存时删除的已有附件 ID。 */
+const deletedImageIds = ref([])
 /** 是否拖拽悬停 */
 const dragover = ref(false)
 /** 文件选择器 */
@@ -53,7 +56,7 @@ const previewSrc = ref('')
 // ============================================================
 async function loadImages() {
   const seq = ++imageLoadSeq
-  if (!props.noteId || props.mode !== 'persist') return
+  if (!props.noteId || !['persist', 'draft'].includes(props.mode)) return
   try {
     const records = await window.api.listImages(props.noteId)
 
@@ -72,6 +75,7 @@ async function loadImages() {
     }))
     if (seq !== imageLoadSeq) return
     images.value = items
+    deletedImageIds.value = []
   } catch (e) {
     console.error('[ImagePicker] 加载图片失败:', e)
   }
@@ -156,6 +160,7 @@ async function processFiles(files) {
   }
 
   emitCount()
+  emitDraftChange()
 }
 
 function readFileAsDataURL(file) {
@@ -202,16 +207,21 @@ async function handleDelete(img, index) {
     return
   }
   if (img.saved && img.id) {
-    // 已保存的图片：删 DB + 磁盘
-    try {
-      await window.api.deleteImage(img.id)
-    } catch (e) {
-      console.error('[ImagePicker] 删除图片失败:', e)
-      return
+    if (props.mode === 'draft') {
+      if (!deletedImageIds.value.includes(img.id)) deletedImageIds.value.push(img.id)
+    } else {
+      // persist 模式：已保存的图片立即删 DB + 磁盘。
+      try {
+        await window.api.deleteImage(img.id)
+      } catch (e) {
+        console.error('[ImagePicker] 删除图片失败:', e)
+        return
+      }
     }
   }
   images.value.splice(index, 1)
   emitCount()
+  emitDraftChange()
 }
 
 /** 打开大图预览 */
@@ -235,6 +245,22 @@ function emitCount() {
   emit('count-change', images.value.length)
 }
 
+function getDraftChanges() {
+  return {
+    addedImages: getImages(),
+    deletedImageIds: [...deletedImageIds.value]
+  }
+}
+
+function emitDraftChange() {
+  if (props.mode !== 'draft') return
+  const changes = getDraftChanges()
+  emit('draft-change', {
+    ...changes,
+    dirty: changes.addedImages.length > 0 || changes.deletedImageIds.length > 0
+  })
+}
+
 // ============================================================
 // memory 模式暴露给父组件
 // ============================================================
@@ -246,12 +272,22 @@ function getImages() {
 
 function clearImages() {
   images.value = []
+  deletedImageIds.value = []
+  emitDraftChange()
+}
+
+function getDataUrlSize(dataUrl) {
+  const base64 = String(dataUrl || '').split(',')[1] || ''
+  if (!base64) return 0
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding)
 }
 
 /** 程序化添加图片（供 ScreenshotPicker 等外部调用） */
 function addImage(dataUrl, ext, name, size) {
   if (!canAdd.value) return
   const base64 = dataUrl.split(',')[1]
+  const resolvedSize = Number(size) > 0 ? Number(size) : getDataUrlSize(dataUrl)
   if (props.mode === 'persist' && props.noteId) {
     window.api.saveImages(props.noteId, [{ base64, ext }]).then((results) => {
       if (results && results.length > 0) {
@@ -259,7 +295,7 @@ function addImage(dataUrl, ext, name, size) {
         images.value.push({
           id: rec.id,
           name,
-          size,
+          size: rec.file_size || resolvedSize,
           dataUrl,
           fullDataUrl: dataUrl,
           filePath: rec.file_path,
@@ -273,17 +309,18 @@ function addImage(dataUrl, ext, name, size) {
       id: null,
       _key: `memory-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       name,
-      size,
+      size: resolvedSize,
       dataUrl,
       ext,
       base64,
       saved: false
     })
     emitCount()
+    emitDraftChange()
   }
 }
 
-defineExpose({ getImages, clearImages, addImage, images })
+defineExpose({ getImages, getDraftChanges, clearImages, addImage, images })
 
 // ============================================================
 // noteId 变化时重新加载
@@ -355,8 +392,7 @@ function formatSize(bytes) {
           />
         </Transition>
         <button v-if="!readonly" class="ip-thumb__del" title="删除" @click.stop="handleDelete(img, idx)">×</button>
-        <span class="ip-thumb__name">{{ img.name }}</span>
-        <span class="ip-thumb__size">{{ img._loading ? '处理中…' : formatSize(img.size) }}</span>
+        <span v-if="!img._loading" class="ip-thumb__size">{{ formatSize(img.size) }}</span>
       </div>
     </TransitionGroup>
 
@@ -449,12 +485,10 @@ function formatSize(bytes) {
 /* 缩略图 — 固定宽度方块 */
 .ip-thumb {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4rem;
+  display: block;
   width: 100%;
   min-width: 0;
+  aspect-ratio: 1;
   padding: 6rem;
   border-radius: 6rem;
   background: rgba(255, 255, 255, 0.03);
@@ -494,7 +528,7 @@ function formatSize(bytes) {
 
 .ip-thumb__img {
   width: 100%;
-  aspect-ratio: 1;
+  height: 100%;
   object-fit: cover;
   border-radius: 4rem;
   cursor: zoom-in;
@@ -527,20 +561,25 @@ function formatSize(bytes) {
   opacity: 1;
 }
 
-.ip-thumb__name {
-  font-size: calc(var(--fs-secondary) * 0.8);
-  color: var(--text-color-secondary);
-  text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
-
 .ip-thumb__size {
-  font-size: calc(var(--fs-secondary) * 0.7);
-  color: var(--text-color-secondary);
-  opacity: 0.6;
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: 50%;
+  padding: 4rem 7rem;
+  border-radius: 6rem;
+  background: rgba(0, 0, 0, 0.58);
+  color: #fff;
+  font-size: calc(var(--fs-secondary) * 0.76);
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  transition: opacity 140ms ease;
+}
+.ip-thumb:hover .ip-thumb__size {
+  opacity: 1;
 }
 
 /* 加载 spinner */

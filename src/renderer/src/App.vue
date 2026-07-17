@@ -22,7 +22,6 @@ import MessageToast from './components/system/MessageToast.vue'
 import NoteList from './components/list/NoteList.vue'
 import NoteEditor from './components/note/NoteEditor.vue'
 import ActionBar from './components/list/ActionBar.vue'
-import ScreenshotPicker from './components/note/ScreenshotPicker.vue'
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { DEFAULT_SETTINGS } from '../../shared/settings-schema.js'
@@ -34,6 +33,9 @@ createMessageProvider()
 const showSettings = ref(false)
 /** 与面板卸载动画解耦，使关闭动作开始时即可恢复底层清晰度。 */
 const settingsBlurActive = ref(false)
+/** 编辑弹窗沿用设置页策略：模糊底层场景，弹窗本身保持清晰。 */
+const editorBlurActive = ref(false)
+let editorBlurReleaseTimer = null
 
 function openSettings() {
   settingsBlurActive.value = true
@@ -42,6 +44,7 @@ function openSettings() {
 
 /** 当前选中的便签 */
 const selectedNote = ref(null)
+const noteEditorRef = ref(null)
 
 /** NoteList 引用 */
 const noteListRef = ref(null)
@@ -94,15 +97,38 @@ const onMouseLeave = () => window.api.windowHover(false)
 document.addEventListener('mouseenter', onMouseEnter)
 document.addEventListener('mouseleave', onMouseLeave)
 // ---- 便签交互 ----
-function onSelectNote() {
-  // 暂时禁用编辑功能，后续统一处理
+async function onEditNote(note) {
+  if (!note?.id) return
+  // 列表项是摘要数据；打开编辑器前重新读取完整记录，避免编辑旧标签或附件数据。
+  const fullNote = await window.api.getNote(note.id)
+  if (editorBlurReleaseTimer) {
+    clearTimeout(editorBlurReleaseTimer)
+    editorBlurReleaseTimer = null
+  }
+  editorBlurActive.value = true
+  selectedNote.value = fullNote || note
 }
 
 function onCloseEditor() {
   selectedNote.value = null
+  if (editorBlurReleaseTimer) clearTimeout(editorBlurReleaseTimer)
+  // 让弹窗先开始退场，再恢复底层清晰度，避免视觉跳变。
+  editorBlurReleaseTimer = setTimeout(() => {
+    editorBlurReleaseTimer = null
+    editorBlurActive.value = false
+  }, 160)
+}
+
+function requestCloseEditor() {
+  noteEditorRef.value?.requestClose?.()
 }
 
 async function onNoteSaved(updated) {
+  if (updated?.id) await noteListRef.value?.refreshOne(updated)
+  onCloseEditor()
+}
+
+async function onNoteUpdated(updated) {
   if (updated) selectedNote.value = updated
   if (updated?.id) await noteListRef.value?.refreshOne(updated)
 }
@@ -116,6 +142,7 @@ onUnmounted(() => {
   stopNotesChangedListener?.()
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
+  if (editorBlurReleaseTimer) clearTimeout(editorBlurReleaseTimer)
 })
 </script>
 
@@ -125,8 +152,8 @@ onUnmounted(() => {
     <!-- 设置打开时，底层场景不可点击且不可获取键盘焦点。 -->
     <div
       class="app-scene"
-      :class="{ 'is-settings-open': settingsBlurActive }"
-      :inert="showSettings"
+      :class="{ 'is-settings-open': settingsBlurActive, 'is-editor-open': editorBlurActive }"
+      :inert="showSettings || !!selectedNote"
     >
       <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
       <ResizeHandles :locked="locked" />
@@ -172,33 +199,45 @@ onUnmounted(() => {
         <!-- 操作栏（新建 + 搜索，双模切换） -->
         <ActionBar class="app-search" @create="onCreateNote" />
 
-        <!-- 列表视图（无选中便签时） -->
+        <!-- 列表视图 -->
         <NoteList
-          v-if="!selectedNote"
           ref="noteListRef"
           class="app-list"
-          @select="onSelectNote"
+          @edit="onEditNote"
           @create="onCreateNote"
         />
+      </main>
+    </div>
 
-        <!-- 编辑视图（选中便签时） -->
-        <template v-else>
+    <!-- 便签编辑弹窗：复用 NoteEditor，底层列表保持可见但不可交互。 -->
+    <Transition name="app-editor-modal">
+      <div
+        v-if="selectedNote"
+        class="app-editor-overlay"
+        role="presentation"
+      >
+        <section
+          class="app-editor-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="修改便签"
+        >
+          <header class="app-editor-header">
+            <span>修改便签</span>
+            <button class="app-editor-close" aria-label="关闭编辑" title="关闭" @click="requestCloseEditor">×</button>
+          </header>
           <NoteEditor
+            ref="noteEditorRef"
+            :key="selectedNote.id"
             :note="selectedNote"
             class="app-editor"
             @saved="onNoteSaved"
-            @close="onCloseEditor"
+            @updated="onNoteUpdated"
+            @cancel="onCloseEditor"
           />
-          <ScreenshotPicker
-            v-if="selectedNote"
-            :key="selectedNote.id"
-            :note-id="selectedNote.id"
-            mode="persist"
-            class="app-images"
-          />
-        </template>
-      </main>
-    </div>
+        </section>
+      </div>
+    </Transition>
 
     <!-- 设置面板关闭动画结束后将 visible 置为 false，随后真正卸载组件。 -->
     <SettingsPanel
@@ -244,6 +283,11 @@ onUnmounted(() => {
 
 /* 设置是模态界面：直接模糊已渲染好的底层场景，不再从透明窗口反向采样。 */
 .app-scene.is-settings-open {
+  filter: blur(var(--glass-blur-base));
+  transition-duration: 180ms;
+  will-change: filter;
+}
+.app-scene.is-editor-open {
   filter: blur(var(--glass-blur-base));
   transition-duration: 180ms;
   will-change: filter;
@@ -305,18 +349,73 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-/* 列表/编辑器/附件弹性填充 */
+/* 列表弹性填充 */
 .app-list,
 .app-editor {
   flex: 1;
   min-height: 0;
 }
 
-.app-images {
-  flex-shrink: 0;
-  max-height: 25%;
-  overflow-y: auto;
-  padding-top: 8rem;
-  border-top: 1px solid rgb(var(--bg-color) / 0.1);
+.app-editor-overlay {
+  position: absolute;
+  z-index: 20000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 22rem;
+  background: rgba(18, 20, 24, 0.04);
 }
+.app-editor-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(620rem, 100%);
+  height: min(620rem, 100%);
+  min-height: 0;
+  overflow: hidden;
+  background-color: rgb(var(--bg-color) / var(--glass-opacity-base));
+  border: 1px solid color-mix(in srgb, var(--text-color) 10%, transparent);
+  border-radius: 16rem;
+  box-shadow: 0 22rem 56rem rgba(0, 0, 0, 0.28);
+}
+.app-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  min-height: 42rem;
+  padding: 0 12rem 0 16rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--text-color) 8%, transparent);
+  color: var(--text-color);
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+.app-editor-close {
+  display: grid;
+  place-items: center;
+  width: 26rem;
+  height: 26rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-color-secondary);
+  font: inherit;
+  font-size: 22rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease, transform 140ms var(--ease-standard);
+}
+.app-editor-close:hover {
+  background: color-mix(in srgb, var(--text-color) 9%, transparent);
+  color: var(--text-color);
+}
+.app-editor-close:active { transform: scale(0.9); }
+.app-editor-modal-enter-active,
+.app-editor-modal-leave-active { transition: opacity 180ms ease; }
+.app-editor-modal-enter-active .app-editor-dialog,
+.app-editor-modal-leave-active .app-editor-dialog { transition: opacity 180ms ease, transform 240ms cubic-bezier(0.32, 0.72, 0, 1); }
+.app-editor-modal-enter-from,
+.app-editor-modal-leave-to { opacity: 0; }
+.app-editor-modal-enter-from .app-editor-dialog,
+.app-editor-modal-leave-to .app-editor-dialog { opacity: 0; transform: translateY(10rem) scale(0.985); }
 </style>

@@ -80,6 +80,8 @@ const api = {
     ipcRenderer.invoke('notes:create-with-assets', { options, images, tagNames }),
   /** 更新便签（部分字段） */
   updateNote: (id, fields) => ipcRenderer.invoke('notes:update', { id, fields }),
+  /** 原子保存编辑草稿（字段、标签及附件变更） */
+  saveNoteDraft: (payload) => ipcRenderer.invoke('notes:save-draft', payload),
   /** 逻辑删除便签（附件随记录保留，清空便签数据时物理清理） */
   deleteNote: (id) => ipcRenderer.invoke('notes:delete', { id }),
   /** 获取单条便签（含附件和标签） */
@@ -104,6 +106,8 @@ const api = {
   startProgress: (id) => ipcRenderer.invoke('notes:start-progress', { id }),
   /** 完成便签 */
   completeNote: (id) => ipcRenderer.invoke('notes:complete', { id }),
+  /** 将已完成便签重新恢复为进行中 */
+  reopenNote: (id) => ipcRenderer.invoke('notes:reopen', { id }),
   /** 取消便签 */
   cancelNote: (id) => ipcRenderer.invoke('notes:cancel', { id }),
   /** 监听调度器等主进程来源的便签变化；返回取消监听函数。 */

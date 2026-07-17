@@ -74,6 +74,11 @@ html {
   --glass-blur-base: var(--bg-blur);
   --glass-opacity-base: var(--popup-opacity);
 
+  /* 高频交互浮层使用稳定的实体表面，而非局部毛玻璃。
+   * 背景色与文字色均来自运行时设置，因此主题改变时会同步更新。 */
+  --surface-float: color-mix(in srgb, rgb(var(--bg-color)) 96%, var(--text-color) 4%);
+  --surface-float-border: color-mix(in srgb, var(--text-color) 10%, transparent);
+
   /* ---- Motion Tokens：克制、连续的 Apple 风格反馈 ---- */
   --motion-fast: 120ms;
   --motion-control: 180ms;
@@ -100,7 +105,7 @@ body {
 /* ---- 玻璃态背景容器 ----
  * 原生层负责窗口背后的桌面模糊；这里只负责应用内部浮层材质。
  * 每个浮层只做一次 backdrop-filter 和一次色彩覆盖，避免透明度被重复叠加。
- * 组件可以通过 --glass-* 覆写自己的材质强度。
+ * 仅用于需要玻璃材质的非关键浮层；菜单与日期选择器使用 --surface-float。
  */
 .app-bg {
   position: relative;
@@ -127,7 +132,8 @@ body {
 
 /* 模态弹窗直接模糊当前内容层；弹窗本身 Teleport 到 body，保持清晰。 */
 body.has-modal-blur .app-scene,
-body.has-modal-blur .settings-panel {
+body.has-modal-blur .settings-panel,
+body.has-modal-blur .app-editor-dialog {
   filter: blur(var(--glass-blur-base));
   will-change: filter;
 }

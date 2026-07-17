@@ -121,7 +121,7 @@ const definitions = [
     id: 'css.popupOpacity',
     path: ['css', 'popupOpacity'],
     db: { type: 'css', key: 'win_opacity' },
-    defaultValue: 0.22,
+    defaultValue: 0.2,
     parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 1 }),
     serialize: String,
     remark: 'CSS 玻璃霜层全局基准（0~1 浮点数）'
@@ -130,7 +130,7 @@ const definitions = [
     id: 'css.bgBlur',
     path: ['css', 'bgBlur'],
     db: { type: 'css', key: 'bg_blur' },
-    defaultValue: 5,
+    defaultValue: 10,
     parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 30 }),
     serialize: String,
     remark: 'CSS 玻璃模糊全局基准（像素）'
@@ -139,7 +139,7 @@ const definitions = [
     id: 'css.windowOpacity',
     path: ['css', 'windowOpacity'],
     db: { type: 'css', key: 'window_opacity' },
-    defaultValue: 0.2,
+    defaultValue: 0.6,
     parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 1 }),
     serialize: String,
     remark: '窗口透明度（0~1 浮点数）'

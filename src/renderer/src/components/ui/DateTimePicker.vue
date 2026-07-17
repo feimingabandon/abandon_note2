@@ -366,7 +366,7 @@ function onLeave(el, done) {
     <Teleport to="body">
       <Transition :css="false" @enter="onEnter" @leave="onLeave">
         <div v-if="open" ref="panelRef" class="dt-panel-wrap" :style="panelStyle" @click.stop>
-          <div class="dt-panel-glass app-bg">
+          <div class="dt-panel-glass">
             <div class="dt-panel">
           <!-- ===== 上：日期+时间可编辑区 ===== -->
           <div class="dt-time-header">
@@ -512,8 +512,8 @@ function onLeave(el, done) {
   will-change: clip-path, transform, opacity;
 }
 .dt-panel-glass {
-  --glass-opacity: var(--glass-complex-opacity);
-  --glass-blur: var(--glass-complex-blur);
+  background-color: var(--surface-float);
+  border: 1px solid var(--surface-float-border);
   border-radius: inherit;
 }
 .dt-panel { width: 320rem; height: 320rem; display: flex; flex-direction: column; }

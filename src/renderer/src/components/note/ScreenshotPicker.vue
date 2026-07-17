@@ -8,7 +8,7 @@
 import { ref } from 'vue'
 import ImagePicker from './ImagePicker.vue'
 
-const emit = defineEmits(['count-change'])
+const emit = defineEmits(['count-change', 'draft-change'])
 
 defineProps({
   noteId: { type: Number, default: null },
@@ -48,7 +48,11 @@ function clearImages() {
   imagePickerRef.value?.clearImages()
 }
 
-defineExpose({ getImages, clearImages })
+function getDraftChanges() {
+  return imagePickerRef.value?.getDraftChanges() || { addedImages: [], deletedImageIds: [] }
+}
+
+defineExpose({ getImages, getDraftChanges, clearImages })
 </script>
 
 <template>
@@ -57,6 +61,7 @@ defineExpose({ getImages, clearImages })
     :note-id="noteId"
     :mode="mode"
     @count-change="(n) => emit('count-change', n)"
+    @draft-change="(changes) => emit('draft-change', changes)"
   >
     <template #leading>
       <!-- 与添加入口、缩略图共用同一个流式布局 -->

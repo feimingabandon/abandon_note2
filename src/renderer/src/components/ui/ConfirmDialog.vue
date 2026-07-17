@@ -118,7 +118,7 @@ onBeforeUnmount(() => {
 .confirm-overlay {
   position: fixed;
   inset: 0;
-  z-index: 2000;
+  z-index: 40000;
   display: flex;
   align-items: center;
   justify-content: center;

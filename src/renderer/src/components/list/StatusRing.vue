@@ -12,13 +12,13 @@ const emit = defineEmits(['activate'])
 const STATUS_META = {
   initialized: { label: '初始化', action: '提前开始', color: '#0A84FF' },
   in_progress: { label: '进行中', action: '标记完成', color: '#FF9F0A' },
-  completed: { label: '已完成', action: '', color: '#30D158' },
-  cancelled: { label: '已取消', action: '', color: '#8E8E93' }
+  completed: { label: '已完成', action: '重新进行', color: '#30D158' },
+  cancelled: { label: '已弃用', action: '', color: '#8E8E93' }
 }
 
 const meta = computed(() => STATUS_META[props.status] || STATUS_META.cancelled)
-const actionable = computed(() => ['initialized', 'in_progress'].includes(props.status))
-const terminal = computed(() => ['completed', 'cancelled'].includes(props.status))
+const actionable = computed(() => ['initialized', 'in_progress', 'completed'].includes(props.status))
+const terminal = computed(() => props.status === 'cancelled')
 const phase = computed(() => props.transitionState?.phase || 'idle')
 const from = computed(() => props.transitionState?.from || props.status)
 const to = computed(() => props.transitionState?.to || props.status)
@@ -54,6 +54,7 @@ function activate() {
       <circle class="sr-track" cx="10" cy="10" r="7.6" pathLength="100" />
       <circle class="sr-wait-track" cx="10" cy="10" r="7.6" pathLength="100" />
       <circle class="sr-target-track" cx="10" cy="10" r="7.6" pathLength="100" />
+      <circle class="sr-reopen-preview-track" cx="10" cy="10" r="7.6" pathLength="100" />
       <circle class="sr-complete-fill" cx="10" cy="10" r="6.55" />
 
       <!-- 所有图标常驻，避免状态提交时销毁/重建 SVG。 -->
@@ -104,7 +105,10 @@ function activate() {
 .sr-track {
   stroke: currentColor;
   stroke-width: 2.2;
-  transition: stroke 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  clip-path: inset(0);
+  transition:
+    stroke 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    clip-path 300ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 .sr-icon {
@@ -128,9 +132,25 @@ function activate() {
   stroke-linejoin: round;
 }
 .sr-icon--progress { opacity: 0; transform: scale(0.82); transition: opacity 150ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1); }
-.sr-icon--complete { color: #fff; opacity: 0; }
+.sr-icon--complete {
+  color: #fff;
+  opacity: 0;
+  clip-path: inset(0);
+  transition:
+    opacity 150ms ease,
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    clip-path 300ms cubic-bezier(0.32, 0.72, 0, 1);
+}
 .sr-icon--cancelled { opacity: 0; }
-.sr-complete-fill { fill: #30d158; opacity: 0; }
+.sr-complete-fill {
+  fill: #30d158;
+  opacity: 0;
+  transform-origin: 10px 10px;
+  clip-path: inset(0);
+  transition:
+    opacity 160ms ease,
+    clip-path 300ms cubic-bezier(0.32, 0.72, 0, 1);
+}
 .sr-control--completed .sr-track { stroke: color-mix(in srgb, #30d158 72%, #8a8a8a); }
 .sr-control--completed .sr-complete-fill,
 .sr-control--completed .sr-icon--complete,
@@ -155,6 +175,17 @@ function activate() {
   opacity: 1;
   transform: scale(0.9);
 }
+.sr-control--completed-to-in_progress.sr-control--acknowledging .sr-track,
+.sr-control--completed-to-in_progress.sr-control--acknowledging .sr-complete-fill,
+.sr-control--completed-to-in_progress.sr-control--acknowledging .sr-icon--complete,
+.sr-control--completed-to-in_progress.sr-control--waiting .sr-track,
+.sr-control--completed-to-in_progress.sr-control--waiting .sr-complete-fill,
+.sr-control--completed-to-in_progress.sr-control--waiting .sr-icon--complete,
+.sr-control--completed-to-in_progress.sr-control--playing .sr-track,
+.sr-control--completed-to-in_progress.sr-control--playing .sr-complete-fill,
+.sr-control--completed-to-in_progress.sr-control--playing .sr-icon--complete {
+  clip-path: inset(0 100% 0 0);
+}
 .sr-wait-track {
   stroke: var(--sr-from-color);
   stroke-width: 2.25;
@@ -168,6 +199,10 @@ function activate() {
   opacity: 1;
   animation: sr-wait-orbit 780ms linear infinite;
 }
+.sr-control--completed-to-in_progress.sr-control--waiting .sr-wait-track {
+  opacity: 0;
+  animation: none;
+}
 
 .sr-target-track {
   stroke: var(--sr-to-color);
@@ -176,6 +211,30 @@ function activate() {
   stroke-dasharray: 0 100;
   opacity: 0;
   transform: rotate(-28deg);
+}
+.sr-reopen-preview-track {
+  fill: none;
+  stroke: #ff9f0a;
+  stroke-width: 2.25;
+  stroke-linecap: butt;
+  stroke-dasharray: 0 100;
+  stroke-dashoffset: 0;
+  opacity: 0;
+  vector-effect: non-scaling-stroke;
+  transform-origin: 10px 10px;
+  transform: rotate(-28deg);
+  transition:
+    stroke-dasharray 420ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 0ms linear 420ms;
+}
+.sr-control--completed.sr-control--actionable:not(:disabled):hover .sr-reopen-preview-track,
+.sr-control--completed.sr-control--actionable:not(:disabled):focus-visible .sr-reopen-preview-track,
+.sr-control--completed-to-in_progress.sr-control--acknowledging .sr-reopen-preview-track,
+.sr-control--completed-to-in_progress.sr-control--waiting .sr-reopen-preview-track,
+.sr-control--completed-to-in_progress.sr-control--playing .sr-reopen-preview-track {
+  stroke-dasharray: 100 0;
+  opacity: 1;
+  transition-delay: 0ms;
 }
 .sr-success-wave { stroke: #30d158; stroke-width: 1.15; opacity: 0; }
 .sr-error-flash { stroke: #ff453a; stroke-width: 2.4; stroke-linecap: round; stroke-dasharray: 18 82; opacity: 0; transform: rotate(-90deg); }
@@ -212,6 +271,11 @@ function activate() {
 .sr-control--playing.sr-control--in_progress-to-completed .sr-success-wave {
   animation: sr-success-wave 380ms 390ms ease-out both;
 }
+
+/* 已完成 → 进行中：悬停预览轨道保持闭合，底层轨道在其下方无缝接管。 */
+.sr-control--playing.sr-control--completed-to-in_progress .sr-track {
+  animation: sr-reopen-base-handoff 1ms 500ms step-end both;
+}
 .sr-control--error .sr-error-flash { animation: sr-error-track 320ms ease-out both; }
 
 @keyframes sr-wait-orbit { to { transform: rotate(270deg); } }
@@ -224,6 +288,10 @@ function activate() {
 @keyframes sr-start-track {
   0% { stroke-dasharray: 0 100; stroke-dashoffset: 0; }
   100% { stroke-dasharray: 100 0; stroke-dashoffset: -50; }
+}
+@keyframes sr-reopen-base-handoff {
+  0% { clip-path: inset(0 100% 0 0); }
+  100% { clip-path: inset(0); }
 }
 @keyframes sr-progress-fold {
   0% { transform: scale(1); opacity: 1; }

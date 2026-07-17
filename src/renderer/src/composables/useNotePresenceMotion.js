@@ -44,12 +44,13 @@ export function useNotePresenceMotion(getContainer) {
     animation.finished.then(removeClone, removeClone)
   }
 
-  function animateRetainedCards(before) {
+  function animateRetainedCards(before, { reenterIds = [] } = {}) {
     const after = captureVisibleCardLayout()
+    const reenterIdSet = new Set([...reenterIds].map(String))
     let removedIndex = 0
     for (const [id, snapshot] of before) {
       const current = after.get(id)
-      if (!current) {
+      if (!current || reenterIdSet.has(id)) {
         animateRemovedCard(snapshot, removedIndex++)
         continue
       }
@@ -68,7 +69,7 @@ export function useNotePresenceMotion(getContainer) {
 
     let addedIndex = 0
     for (const [id, current] of after) {
-      if (before.has(id)) continue
+      if (before.has(id) && !reenterIdSet.has(id)) continue
       for (const animation of current.element.getAnimations()) {
         if (animation.id === 'nl-presence-exit') animation.cancel()
       }

@@ -49,6 +49,7 @@ import {
   updateCustomSortOrders,
   startProgress,
   completeNote,
+  reopenNote,
   cancelNote,
   activateNotes,
   snoozeNote,
@@ -77,6 +78,8 @@ import {
   stageImage,
   commitStagedImage,
   cleanupStagedImage,
+  stageImageDeletion,
+  restoreStagedImageDeletion,
   deleteImageFile,
   deleteNoteImages,
   getImageBase64,
@@ -1323,6 +1326,147 @@ app.whenReady().then(async () => {
     return updateNote(id, fields || {})
   })
 
+  // 【便签 - 原子保存编辑草稿（字段 + 标签 + 附件）】
+  ipcMain.handle('notes:save-draft', async (_event, payload = {}) => {
+    const db = getDb()
+    const id = Number(payload.id)
+    const fields = payload.fields || {}
+    const tagNames = Array.isArray(payload.tagNames)
+      ? [...new Set(payload.tagNames.map((name) => String(name).trim()).filter(Boolean))]
+      : []
+    const addedImages = Array.isArray(payload.addedImages) ? payload.addedImages : []
+    const deletedImageIds = [...new Set(
+      (Array.isArray(payload.deletedImageIds) ? payload.deletedImageIds : [])
+        .map(Number)
+        .filter((imageId) => Number.isInteger(imageId) && imageId > 0)
+    )]
+
+    if (!Number.isInteger(id) || id <= 0) throw new Error('无效的便签 ID')
+    const original = getNoteById(id)
+    if (!original) throw new Error('便签不存在或已删除')
+
+    const content = String(fields.content ?? '').trim()
+    if (!content) throw new Error('请输入便签内容')
+
+    const requestedStatus = String(fields.status || original.status)
+    const isCancelling = requestedStatus === 'cancelled' && original.status !== 'cancelled'
+    if (requestedStatus !== original.status && !(
+      isCancelling && ['initialized', 'in_progress'].includes(original.status)
+    )) {
+      throw new Error(`不允许的状态修改：${original.status} → ${requestedStatus}`)
+    }
+
+    const ownedDeletedRows = deletedImageIds.length
+      ? db.prepare(
+        `SELECT id, file_path FROM note_attachments
+         WHERE note_id = ? AND id IN (${deletedImageIds.map(() => '?').join(',')})`
+      ).all(id, ...deletedImageIds)
+      : []
+    if (ownedDeletedRows.length !== deletedImageIds.length) throw new Error('附件不存在或不属于当前便签')
+
+    const resultingCount = original.attachments.length - deletedImageIds.length + addedImages.length
+    if (resultingCount > 50) throw new Error('单条便签最多只能保存 50 张图片')
+
+    const stagedImages = []
+    const writtenFiles = []
+    try {
+      for (const image of addedImages) stagedImages.push(await stageImage(image.base64, image.ext))
+    } catch (error) {
+      await Promise.all(stagedImages.map(cleanupStagedImage))
+      throw error
+    }
+
+    const stagedDeletions = []
+    try {
+      for (const row of ownedDeletedRows) stagedDeletions.push(stageImageDeletion(row.file_path))
+    } catch (error) {
+      for (const staged of stagedDeletions.reverse()) restoreStagedImageDeletion(staged)
+      await Promise.all(stagedImages.map(cleanupStagedImage))
+      throw error
+    }
+
+    const txn = db.transaction(() => {
+      const current = db.prepare('SELECT * FROM notes WHERE id = ? AND is_deleted = 0').get(id)
+      if (!current) throw new Error('便签不存在或已删除')
+      if (current.status !== original.status) throw new Error('便签状态已发生变化，请重新打开后再修改')
+
+      const timestamp = Date.now()
+      let status = current.status
+      let effectiveAt = current.effective_at
+      let notifyEnabled = current.notify_enabled
+      let finishedAt = current.finished_at
+      let remindAgainAt = current.remind_again_at
+
+      if (isCancelling) {
+        status = 'cancelled'
+        effectiveAt = timestamp
+        notifyEnabled = 0
+        finishedAt = timestamp
+        remindAgainAt = null
+      } else if (current.status === 'initialized') {
+        const requestedEffectiveAt = Number(fields.effectiveAt)
+        if (!Number.isFinite(requestedEffectiveAt) || requestedEffectiveAt <= 0) {
+          throw new Error('请选择有效的生效时间')
+        }
+        const effectiveAtChanged =
+          Math.floor(requestedEffectiveAt / 1000) !== Math.floor(current.effective_at / 1000)
+        if (effectiveAtChanged && requestedEffectiveAt - timestamp < 5 * 60 * 1000) {
+          throw new Error('生效时间需在当前时间 5 分钟之后')
+        }
+        // UI 只显示到秒；未修改时保留数据库原有的毫秒精度。
+        effectiveAt = effectiveAtChanged ? requestedEffectiveAt : current.effective_at
+        notifyEnabled = fields.notifyEnabled ? 1 : 0
+      }
+
+      db.prepare(
+        `UPDATE notes SET
+           content = ?, status = ?, is_pinned = ?, notify_enabled = ?, effective_at = ?,
+           finished_at = ?, remind_again_at = ?, updated_at = ?
+         WHERE id = ? AND is_deleted = 0`
+      ).run(
+        content,
+        status,
+        fields.isPinned ? 1 : 0,
+        notifyEnabled,
+        effectiveAt,
+        finishedAt,
+        remindAgainAt,
+        timestamp,
+        id
+      )
+
+      db.prepare('DELETE FROM note_tags WHERE note_id = ?').run(id)
+      const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)')
+      for (const tagName of tagNames) insertTag.run(id, tagName)
+
+      if (deletedImageIds.length) {
+        db.prepare(
+          `DELETE FROM note_attachments
+           WHERE note_id = ? AND id IN (${deletedImageIds.map(() => '?').join(',')})`
+        ).run(id, ...deletedImageIds)
+      }
+
+      for (const staged of stagedImages) {
+        const { relativePath, fileSize } = commitStagedImage(id, staged)
+        writtenFiles.push(relativePath)
+        addImageRecord({ noteId: id, filePath: relativePath, fileSize })
+      }
+
+      return getNoteById(id)
+    })
+
+    try {
+      const updated = txn()
+      await Promise.all(stagedDeletions.map(cleanupStagedImage))
+      return updated
+    } catch (error) {
+      await Promise.all(writtenFiles.map(deleteImageFile))
+      await Promise.all(stagedImages.map(cleanupStagedImage))
+      for (const staged of stagedDeletions.reverse()) restoreStagedImageDeletion(staged)
+      throw error
+    }
+  })
+
   // 【便签 - 逻辑删除】
   ipcMain.handle('notes:delete', (_event, { id }) => {
     const deleted = deleteNote(id)
@@ -1384,6 +1528,11 @@ app.whenReady().then(async () => {
   // 【便签 - 完成】
   ipcMain.handle('notes:complete', (_event, { id }) => {
     return completeNote(id)
+  })
+
+  // 【便签 - 重新进行】
+  ipcMain.handle('notes:reopen', (_event, { id }) => {
+    return reopenNote(id)
   })
 
   // 【便签 - 取消】

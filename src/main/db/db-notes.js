@@ -10,7 +10,7 @@ const now = () => Date.now()
 const TRANSITIONS = {
   initialized: new Set(['in_progress', 'cancelled']),
   in_progress: new Set(['completed', 'cancelled']),
-  completed: new Set(),
+  completed: new Set(['in_progress']),
   cancelled: new Set()
 }
 
@@ -133,7 +133,7 @@ export function countActiveNotes() {
 // 状态流转
 // ============================================================
 
-function transitionNote(id, targetStatus) {
+function transitionNote(id, targetStatus, { setEffectiveAtToNow = false } = {}) {
   const db = getDb()
   const current = db.prepare('SELECT status FROM notes WHERE id = ? AND is_deleted = 0').get(id)
   if (!current) return null
@@ -144,26 +144,40 @@ function transitionNote(id, targetStatus) {
   }
 
   const ts = now()
-  const result = db
-    .prepare(
-      `UPDATE notes
-       SET status = ?, notify_enabled = 0, remind_again_at = NULL,
-           finished_at = ?, updated_at = ?
-       WHERE id = ? AND status = ? AND is_deleted = 0`
-    )
-    .run(targetStatus, ts, ts, id, current.status)
+  const result = setEffectiveAtToNow
+    ? db
+      .prepare(
+        `UPDATE notes
+         SET status = ?, effective_at = ?, notify_enabled = 0, remind_again_at = NULL,
+             finished_at = ?, updated_at = ?
+         WHERE id = ? AND status = ? AND is_deleted = 0`
+      )
+      .run(targetStatus, ts, ts, ts, id, current.status)
+    : db
+      .prepare(
+        `UPDATE notes
+         SET status = ?, notify_enabled = 0, remind_again_at = NULL,
+             finished_at = ?, updated_at = ?
+         WHERE id = ? AND status = ? AND is_deleted = 0`
+      )
+      .run(targetStatus, ts, ts, id, current.status)
 
   return result.changes === 1 ? getNoteById(id) : null
 }
 
-/** initialized → in_progress（提前开始时也会取消待触发提醒）。 */
+/** initialized → in_progress：手动提前开始时，实际生效时间同步为当前时间。 */
 export function startProgress(id) {
-  return transitionNote(id, 'in_progress')
+  return transitionNote(id, 'in_progress', { setEffectiveAtToNow: true })
 }
 
 /** in_progress → completed。 */
 export function completeNote(id) {
   return transitionNote(id, 'completed')
+}
+
+/** completed → in_progress：重新进行时按当前时间重新进入时间线。 */
+export function reopenNote(id) {
+  return transitionNote(id, 'in_progress', { setEffectiveAtToNow: true })
 }
 
 /** initialized/in_progress → cancelled。 */

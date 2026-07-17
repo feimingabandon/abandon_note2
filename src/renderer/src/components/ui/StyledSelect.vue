@@ -145,7 +145,7 @@ onBeforeUnmount(() => {
         @leave="onLeave"
       >
         <div v-if="open" ref="panelRef" class="sel-panel-wrap" :style="panelStyle" @click.stop>
-          <div class="sel-panel-glass app-bg">
+          <div class="sel-panel-glass">
             <div class="sel-panel scroll-y">
               <button
                 v-for="opt in options"
@@ -230,9 +230,9 @@ onBeforeUnmount(() => {
   will-change: transform, opacity;
 }
 .sel-panel-glass {
-  --glass-opacity: var(--glass-select-opacity);
-  --glass-blur: var(--glass-select-blur);
   min-width: 100%;
+  background-color: var(--surface-float);
+  border: 1px solid var(--surface-float-border);
   border-radius: inherit;
 }
 .sel-panel {

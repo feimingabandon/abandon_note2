@@ -1,350 +1,329 @@
 <script setup>
 /**
- * NoteEditor.vue — 便签修改面板
- *
- * 职责：
- *   1. 接收 note prop，预填表单字段
- *   2. content / tags / images / is_pinned — 始终可修改
- *   3. effective_at / notify_enabled — 创建后不可修改
- *   4. 状态流转按钮（开始处理 / 完成 / 取消）
- *   5. 保存后 emit('saved')
- *
- * 面板结构（flex column + scroll-y body + 底部渐隐 + 逐层淡入）与 NewNotePanel 一致。
+ * NoteEditor.vue — 便签修改草稿。
+ * 所有字段（含弃用状态和附件）只修改前端草稿，点击保存后统一持久化。
  */
 import { ref, watch, computed, onMounted, nextTick } from 'vue'
+import DateTimePicker from '../ui/DateTimePicker.vue'
 import TagSelector from '../ui/TagSelector.vue'
-import ScreenshotPicker from '../note/ScreenshotPicker.vue'
+import ScreenshotPicker from './ScreenshotPicker.vue'
 import AppToggle from '../ui/AppToggle.vue'
 import HelpButton from '../ui/HelpButton.vue'
+import ConfirmDialog from '../ui/ConfirmDialog.vue'
+import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import { useMessage } from '../../composables/useMessage.js'
 
 const props = defineProps({
   note: { type: Object, required: true }
 })
 
-const emit = defineEmits(['saved'])
-
+const emit = defineEmits(['saved', 'cancel'])
 const { showMessage } = useMessage()
 
-// ============================================================
-// 入场动效
-// ============================================================
+const content = ref('')
+const status = ref('initialized')
+const effectiveAt = ref('')
+const notifyEnabled = ref(false)
+const isPinned = ref(false)
+const tagNames = ref([])
+const saving = ref(false)
 const mounted = ref(false)
+const imagePickerRef = ref(null)
+const attachmentDirty = ref(false)
+const initialSnapshot = ref(null)
+const confirmVisible = ref(false)
+const confirmKind = ref('')
+
+const FIVE_MINUTES = 5 * 60 * 1000
+
+function pad(value) {
+  return String(value).padStart(2, '0')
+}
+
+function formatDateTime(timestamp) {
+  const date = new Date(Number(timestamp))
+  if (Number.isNaN(date.getTime())) return ''
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+function normalizedTags(tags) {
+  return [...tags].map(String).sort((a, b) => a.localeCompare(b))
+}
+
+function createSnapshot(note) {
+  return {
+    content: note.content || '',
+    status: note.status,
+    effectiveAt: formatDateTime(note.effective_at),
+    notifyEnabled: !!note.notify_enabled,
+    isPinned: !!note.is_pinned,
+    tagNames: normalizedTags(note.tags?.map((tag) => tag.name) || [])
+  }
+}
+
+function resetFromNote(note) {
+  if (!note) return
+  const snapshot = createSnapshot(note)
+  initialSnapshot.value = snapshot
+  content.value = snapshot.content
+  status.value = snapshot.status
+  effectiveAt.value = snapshot.effectiveAt
+  notifyEnabled.value = snapshot.notifyEnabled
+  isPinned.value = snapshot.isPinned
+  tagNames.value = [...snapshot.tagNames]
+  attachmentDirty.value = false
+}
+
+watch(() => props.note, resetFromNote, { immediate: true })
+
 onMounted(async () => {
   await nextTick()
   requestAnimationFrame(() => { mounted.value = true })
 })
 
-// ============================================================
-// 表单状态
-// ============================================================
-const content = ref('')
-const tagNames = ref([])
-const isPinned = ref(false)
-const saving = ref(false)
-/** ScreenshotPicker 引用 */
-const imagePickerRef = ref(null)
+const statusLabel = computed(() => ({
+  initialized: '初始化',
+  in_progress: '进行中',
+  completed: '已完成',
+  cancelled: '已弃用'
+})[status.value] || status.value)
 
-// ---- 状态标签 ----
-const statusLabel = computed(() => {
-  const map = {
-    initialized: '初始化',
-    in_progress: '进行中',
-    completed: '已完成',
-    cancelled: '已取消'
-  }
-  return map[props.note.status] || props.note.status
+const canCancel = computed(() => ['initialized', 'in_progress'].includes(status.value))
+const canEditSchedule = computed(() => status.value === 'initialized')
+const today = computed(() => {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
+})
+const dateShortcuts = [
+  { label: '今天', getValue: () => new Date(Date.now() + FIVE_MINUTES) },
+  { label: '明天', getValue: () => { const date = new Date(); date.setDate(date.getDate() + 1); return date } },
+  { label: '三天后', getValue: () => { const date = new Date(); date.setDate(date.getDate() + 3); return date } }
+]
+
+const scheduleHelp = computed(() => {
+  if (status.value === 'initialized') return '仅初始化状态允许修改，新的生效时间需在当前时间 5 分钟之后。'
+  if (status.value === 'in_progress') return '便签生效后不能修改原始生效时间。'
+  if (status.value === 'completed') return '已完成便签的生效时间不可修改。'
+  return '弃用便签时，生效时间记录为弃用操作发生的时间。'
 })
 
-const isInitialized = computed(() => props.note.status === 'initialized')
-const isTerminal = computed(() => ['completed', 'cancelled'].includes(props.note.status))
+const notifyHelp = computed(() => {
+  if (status.value === 'initialized') return '初始化状态可以修改系统提醒设置。'
+  if (status.value === 'cancelled') return '已弃用便签不会发送系统提醒。'
+  return '便签进入当前状态后，系统提醒设置不可修改。'
+})
 
-// ============================================================
-// 预填数据
-// ============================================================
-watch(() => props.note, (n) => {
-  if (!n) return
-  content.value = n.content || ''
-  tagNames.value = n.tags?.map(t => t.name) || []
-  isPinned.value = !!n.is_pinned
-}, { immediate: true })
+const hasChanges = computed(() => {
+  const initial = initialSnapshot.value
+  if (!initial) return false
+  return attachmentDirty.value ||
+    content.value !== initial.content ||
+    status.value !== initial.status ||
+    effectiveAt.value !== initial.effectiveAt ||
+    notifyEnabled.value !== initial.notifyEnabled ||
+    isPinned.value !== initial.isPinned ||
+    JSON.stringify(normalizedTags(tagNames.value)) !== JSON.stringify(initial.tagNames)
+})
 
-// ============================================================
-// 保存
-// ============================================================
-async function handleSave() {
+const confirmCopy = computed(() => confirmKind.value === 'cancel-note'
+  ? {
+      title: '弃用这条便签？',
+      message: '弃用表示不再使用这条便签，但不会将其删除。确认后会在当前草稿中关闭提醒并把生效时间设为当前时间，只有保存修改后才会写入数据库。',
+      confirmText: '确认弃用',
+      cancelText: '返回编辑'
+    }
+  : {
+      title: '放弃未保存的修改？',
+      message: '正文、属性、状态和附件草稿都将恢复为打开编辑器时的内容。',
+      confirmText: '放弃修改',
+      cancelText: '继续编辑'
+    })
+
+function onAttachmentDraftChange(changes) {
+  attachmentDirty.value = !!changes?.dirty
+}
+
+function requestCancelNote() {
+  if (!canCancel.value || saving.value) return
+  confirmKind.value = 'cancel-note'
+  confirmVisible.value = true
+}
+
+function requestClose() {
   if (saving.value) return
+  if (!hasChanges.value) {
+    emit('cancel')
+    return
+  }
+  confirmKind.value = 'discard'
+  confirmVisible.value = true
+}
 
+function handleConfirm() {
+  if (confirmKind.value === 'cancel-note') {
+    status.value = 'cancelled'
+    effectiveAt.value = formatDateTime(Date.now())
+    notifyEnabled.value = false
+    return
+  }
+  emit('cancel')
+}
+
+async function handleSave() {
+  if (saving.value || !hasChanges.value) return
   const text = content.value.trim()
   if (!text) {
     showMessage('warning', '请输入便签内容')
     return
   }
 
+  let effectiveTimestamp = new Date(effectiveAt.value).getTime()
+  if (status.value === 'initialized') {
+    if (!Number.isFinite(effectiveTimestamp)) {
+      showMessage('warning', '请选择有效的生效时间')
+      return
+    }
+    const effectiveAtChanged = effectiveAt.value !== initialSnapshot.value?.effectiveAt
+    if (effectiveAtChanged && effectiveTimestamp - Date.now() < FIVE_MINUTES) {
+      showMessage('warning', '生效时间需在当前时间 5 分钟之后')
+      return
+    }
+  } else if (status.value === 'cancelled') {
+    effectiveTimestamp = Date.now()
+  }
+
   saving.value = true
   try {
-    const fields = {
-      content: text,
-      is_pinned: isPinned.value ? 1 : 0
+    const attachmentChanges = imagePickerRef.value?.getDraftChanges() || {
+      addedImages: [],
+      deletedImageIds: []
     }
-
-    await window.api.updateNote(props.note.id, fields)
-    await window.api.setNoteTags(props.note.id, [...tagNames.value])
-    const updated = await window.api.getNote(props.note.id)
-
+    const updated = await window.api.saveNoteDraft({
+      id: props.note.id,
+      fields: {
+        content: text,
+        status: status.value,
+        effectiveAt: effectiveTimestamp,
+        notifyEnabled: notifyEnabled.value,
+        isPinned: isPinned.value
+      },
+      tagNames: [...tagNames.value],
+      ...attachmentChanges
+    })
     showMessage('success', '便签已保存')
     emit('saved', updated)
-  } catch (e) {
-    console.error('[NoteEditor] 保存失败:', e)
-    showMessage('error', e.message || '保存失败，请重试')
+  } catch (error) {
+    console.error('[NoteEditor] 保存失败:', error)
+    showMessage('error', error.message || '保存失败，请重试')
   } finally {
     saving.value = false
   }
 }
 
-// ============================================================
-// 状态流转
-// ============================================================
-async function handleStartProgress() {
-  try {
-    const updated = await window.api.startProgress(props.note.id)
-    if (updated) {
-      showMessage('success', '已切换为进行中')
-      emit('saved', updated)
-    }
-  } catch {
-    showMessage('error', '状态切换失败')
-  }
-}
-
-async function handleComplete() {
-  try {
-    const updated = await window.api.completeNote(props.note.id)
-    if (updated) {
-      showMessage('success', '已完成')
-      emit('saved', updated)
-    }
-  } catch {
-    showMessage('error', '状态切换失败')
-  }
-}
-
-async function handleCancel() {
-  try {
-    const updated = await window.api.cancelNote(props.note.id)
-    if (updated) {
-      showMessage('success', '已取消')
-      emit('saved', updated)
-    }
-  } catch {
-    showMessage('error', '状态切换失败')
-  }
-}
+defineExpose({ requestClose })
 </script>
 
 <template>
   <div class="ne-root" :class="{ 'ne-enter': mounted }">
-    <!-- 可滚动表单区域 -->
     <div class="ne-body scroll-y">
-      <!-- 状态标签 -->
-      <div class="ne-status-row ne-stagger" style="animation-delay: 0ms">
-        <span class="ne-status-label">状态</span>
-        <span class="ne-status-tag" :class="'ne-status--' + note.status">{{ statusLabel }}</span>
-      </div>
-
-      <!-- 便签内容 -->
-      <textarea
+      <ResizableTextarea
         v-model="content"
-        class="ne-textarea ne-stagger"
-        style="animation-delay: 30ms"
+        class="ne-stagger"
+        style="animation-delay: 0ms"
         placeholder="输入便签内容…（Enter 换行）"
-        rows="4"
+        :rows="4"
       />
 
-      <!-- 置顶 -->
-      <div class="ne-field-row ne-stagger" style="animation-delay: 120ms">
+      <div class="ne-field-row ne-stagger" style="animation-delay: 40ms">
+        <label class="ne-field-label">状态</label>
+        <span class="ne-status-tag" :class="'ne-status--' + status">{{ statusLabel }}</span>
+      </div>
+
+      <div class="ne-field-row ne-stagger" style="animation-delay: 70ms">
+        <label class="ne-field-label">生效时间<HelpButton :text="scheduleHelp" /></label>
+        <DateTimePicker
+          v-model="effectiveAt"
+          :disabled="!canEditSchedule"
+          :clearable="false"
+          :min-date="today"
+          :shortcuts="dateShortcuts"
+        />
+      </div>
+
+      <div class="ne-field-row ne-stagger" style="animation-delay: 100ms">
+        <label class="ne-field-label">系统提醒<HelpButton :text="notifyHelp" /></label>
+        <AppToggle v-model="notifyEnabled" :disabled="!canEditSchedule" />
+      </div>
+
+      <div class="ne-field-row ne-stagger" style="animation-delay: 130ms">
         <label class="ne-field-label">置顶<HelpButton text="开启后便签将固定在列表顶部。" /></label>
         <AppToggle v-model="isPinned" />
       </div>
 
-      <!-- 标签 -->
       <div class="ne-field ne-group-gap ne-stagger" style="animation-delay: 160ms">
         <label class="ne-field-label">标签<HelpButton text="为便签添加分类标签，便于筛选和管理。" /></label>
         <TagSelector v-model="tagNames" />
       </div>
 
-      <!-- 图片 -->
       <div class="ne-field ne-stagger" style="animation-delay: 190ms">
-        <label class="ne-field-label">图片<HelpButton text="支持截图、拖拽或点击上传。单张最大 50MB，单条便签最多 50 张。" /></label>
+        <label class="ne-field-label">附件<HelpButton text="附件修改会保存在草稿中，点击保存修改后才会写入数据库和附件目录。" /></label>
         <ScreenshotPicker
           ref="imagePickerRef"
           :note-id="note.id"
-          mode="persist"
+          mode="draft"
+          @draft-change="onAttachmentDraftChange"
         />
       </div>
     </div>
 
-    <!-- 底部操作区：状态流转 + 保存按钮 -->
-    <div class="ne-footer ne-stagger" style="animation-delay: 240ms">
-      <!-- 状态流转按钮（非终态时显示） -->
-      <div v-if="!isTerminal" class="ne-actions">
-        <button
-          v-if="isInitialized"
-          class="ne-action-btn ne-action-btn--start"
-          :disabled="saving"
-          @click="handleStartProgress"
-        >开始处理</button>
-        <button
-          v-if="note.status === 'in_progress'"
-          class="ne-action-btn ne-action-btn--complete"
-          :disabled="saving"
-          @click="handleComplete"
-        >完成</button>
-        <button
-          class="ne-action-btn ne-action-btn--cancel"
-          :disabled="saving"
-          @click="handleCancel"
-        >取消</button>
-      </div>
-      <div class="ne-spacer" />
-      <button
-        class="ne-submit"
-        :disabled="!content.trim() || saving"
-        @click="handleSave"
-      >
+    <div class="ne-footer ne-stagger" style="animation-delay: 230ms">
+      <button v-if="canCancel" class="ne-cancel-note" :disabled="saving" @click="requestCancelNote">
+        弃用便签
+      </button>
+      <div class="ne-footer-spacer" />
+      <button class="ne-dismiss" :disabled="saving" @click="requestClose">
+        {{ hasChanges ? '放弃修改' : '关闭' }}
+      </button>
+      <button class="ne-submit" :disabled="!content.trim() || !hasChanges || saving" @click="handleSave">
         {{ saving ? '保存中…' : '保存修改' }}
       </button>
     </div>
+
+    <ConfirmDialog
+      v-model:visible="confirmVisible"
+      :title="confirmCopy.title"
+      :message="confirmCopy.message"
+      :confirm-text="confirmCopy.confirmText"
+      :cancel-text="confirmCopy.cancelText"
+      variant="danger"
+      @confirm="handleConfirm"
+    />
   </div>
 </template>
 
 <style scoped>
-/* === 根容器（与 NewNotePanel .nnp-root 结构一致） === */
 .ne-root {
   flex: 1;
   display: flex;
   flex-direction: column;
-  min-height: 0;
   min-width: 0;
+  min-height: 0;
 }
-
-/* === 可滚动表单体 === */
 .ne-body {
   flex: 1;
+  min-width: 0;
   min-height: 0;
-  min-width: 0;
   overflow-x: hidden;
-  padding: 0 14rem;
-  padding-bottom: 16rem;
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    black 0%,
-    black calc(100% - 30rem),
-    transparent 100%
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    black 0%,
-    black calc(100% - 30rem),
-    transparent 100%
-  );
+  padding: 0 14rem 16rem;
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
+  mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
 }
-
-/* === 逐层淡入动效 === */
-.ne-stagger {
-  opacity: 0;
-}
-
-.ne-enter .ne-stagger {
-  animation: ne-fade-up 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
+.ne-stagger { opacity: 0; }
+.ne-enter .ne-stagger { animation: ne-fade-up 250ms cubic-bezier(0.22, 1, 0.36, 1) both; }
 @keyframes ne-fade-up {
-  from {
-    opacity: 0;
-    transform: translateY(6rem);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(6rem); }
+  to { opacity: 1; transform: translateY(0); }
 }
-
-/* === 状态标签行 === */
-.ne-status-row {
-  display: flex;
-  align-items: center;
-  gap: 10rem;
-  padding: 6rem 0 10rem;
-}
-
-.ne-status-label {
-  font-size: var(--fs-secondary);
-  color: var(--text-color-secondary);
-  font-weight: 500;
-  flex-shrink: 0;
-}
-
-.ne-status-tag {
-  display: inline-flex;
-  align-items: center;
-  padding: 3rem 10rem;
-  border-radius: 4rem;
-  font-size: var(--fs-secondary);
-  font-weight: 500;
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
-  white-space: nowrap;
-}
-
-.ne-status--initialized  { color: #007aff; }
-.ne-status--in_progress  { color: #ff9500; }
-.ne-status--completed    { color: #34c759; }
-.ne-status--cancelled    { color: #ff3b30; }
-
-/* === 文本域 === */
-.ne-textarea {
-  display: block;
-  width: 100%;
-  padding: 10rem 12rem;
-  font-size: var(--fs-body);
-  font-family: inherit;
-  font-weight: 500;
-  color: var(--text-color);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
-  border-radius: 8rem;
-  outline: none;
-  resize: none;
-  transition: border-color 150ms ease;
-  line-height: 1.5;
-  min-height: 90rem;
-}
-
-.ne-textarea:focus {
-  border-color: rgb(var(--bg-color) / 0.18);
-}
-
-.ne-textarea::placeholder {
-  color: var(--text-color-secondary);
-  opacity: 0.5;
-}
-
-/* === 表单字段 === */
-.ne-field {
-  margin-top: 12rem;
-  display: flex;
-  flex-direction: column;
-  gap: 6rem;
-  min-width: 0;
-}
-
-.ne-field-label {
-  font-size: var(--fs-secondary);
-  color: var(--text-color-secondary);
-  font-weight: 500;
-}
-
-/* === 行内字段：label 左 + 组件右 === */
 .ne-field-row {
   margin-top: 12rem;
   display: flex;
@@ -352,109 +331,84 @@ async function handleCancel() {
   justify-content: space-between;
   min-width: 0;
 }
-
 .ne-field-row .ne-field-label {
   flex-shrink: 0;
 }
-
-/* === 视觉分组间距 === */
-.ne-group-gap {
-  margin-top: 20rem;
+.ne-field {
+  margin-top: 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 6rem;
+  min-width: 0;
 }
-
-/* === 底部操作区 === */
+.ne-field-label {
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  font-weight: 500;
+}
+.ne-group-gap { margin-top: 20rem; }
+.ne-status-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 3rem 9rem;
+  border-radius: 6rem;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ne-status--initialized { color: #007aff; }
+.ne-status--in_progress { color: #ff9500; }
+.ne-status--completed { color: #34c759; }
+.ne-status--cancelled { color: #ff3b30; }
+.ne-cancel-note {
+  padding: 10rem 14rem;
+  border: 0;
+  border-radius: 7rem;
+  background: color-mix(in srgb, #ff3b30 12%, transparent);
+  color: #ff3b30;
+  font-family: inherit;
+  font-size: var(--fs-body);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 140ms ease, transform 70ms ease;
+}
+.ne-cancel-note:hover:not(:disabled) { background: color-mix(in srgb, #ff3b30 20%, transparent); }
+.ne-cancel-note:active:not(:disabled) { transform: scale(0.96); }
 .ne-footer {
   display: flex;
-  align-items: center;
+  justify-content: flex-end;
   gap: 8rem;
-  padding: 0 14rem;
+  width: calc(100% - 28rem);
+  margin: 0 14rem 14rem;
   flex-shrink: 0;
 }
-
-.ne-actions {
-  display: flex;
-  gap: 6rem;
-  flex-shrink: 0;
-}
-
-.ne-spacer {
-  flex: 1;
-}
-
-/* 状态流转按钮 */
-.ne-action-btn {
-  padding: 6rem 12rem;
-  font-size: var(--fs-secondary);
-  font-family: inherit;
-  font-weight: 500;
-  border: none;
-  border-radius: 6rem;
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background-color 150ms ease,
-    opacity 150ms ease;
-}
-
-.ne-action-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.ne-action-btn:active:not(:disabled),
-.ne-submit:active:not(:disabled) {
-  transform: scale(0.96);
-  transition-duration: 70ms;
-}
-
-.ne-action-btn--start {
-  background: rgba(0, 122, 255, 0.15);
-  color: #007aff;
-}
-
-.ne-action-btn--start:hover:not(:disabled) {
-  background: rgba(0, 122, 255, 0.25);
-}
-
-.ne-action-btn--complete {
-  background: rgba(52, 199, 89, 0.15);
-  color: #34c759;
-}
-
-.ne-action-btn--complete:hover:not(:disabled) {
-  background: rgba(52, 199, 89, 0.25);
-}
-
-.ne-action-btn--cancel {
-  background: rgba(255, 59, 48, 0.12);
-  color: #ff3b30;
-}
-
-.ne-action-btn--cancel:hover:not(:disabled) {
-  background: rgba(255, 59, 48, 0.22);
-}
-
-/* 保存按钮 */
+.ne-footer-spacer { flex: 1; }
+.ne-dismiss,
 .ne-submit {
-  padding: 8rem 20rem;
-  font-size: var(--fs-body);
-  font-family: inherit;
-  font-weight: 600;
-  color: #fff;
-  background: #0071e3;
-  border: none;
+  padding: 10rem 16rem;
+  border: 0;
   border-radius: 8rem;
-  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-body);
+  font-weight: 600;
   white-space: nowrap;
-  flex-shrink: 0;
-  transition: background-color 150ms ease;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease, transform 70ms ease;
 }
-
-.ne-submit:hover:not(:disabled) {
-  background: #0077ed;
+.ne-dismiss {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  color: var(--text-color-secondary);
 }
-
-.ne-submit:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+.ne-dismiss:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-color) 13%, transparent);
+  color: var(--text-color);
 }
+.ne-submit { flex: 1; min-width: 104rem; background: #0071e3; color: #fff; }
+.ne-submit:hover:not(:disabled) { background: #0077ed; }
+.ne-dismiss:active:not(:disabled),
+.ne-submit:active:not(:disabled) { transform: scale(0.97); }
+.ne-dismiss:disabled,
+.ne-submit:disabled,
+.ne-cancel-note:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

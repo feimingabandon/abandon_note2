@@ -7,7 +7,7 @@
  *   3. 提供图片 CRUD（通过 IPC 调用）
  */
 
-import { join, resolve, sep } from 'path'
+import { dirname, join, resolve, sep } from 'path'
 import { randomUUID } from 'crypto'
 import { app, nativeImage } from 'electron'
 import { existsSync, mkdirSync, renameSync } from 'fs'
@@ -101,6 +101,28 @@ export async function cleanupStagedImage(staged) {
     await unlink(staged.pendingPath)
   } catch (error) {
     if (error?.code !== 'ENOENT') console.warn('[images] 清理暂存图片失败:', error.message)
+  }
+}
+
+/** 保存编辑草稿时先把待删除文件移入暂存区，数据库回滚时可以原位恢复。 */
+export function stageImageDeletion(relativePath) {
+  const originalPath = resolveImagePath(relativePath)
+  if (!existsSync(originalPath)) return { missing: true, originalPath }
+  const stagingDir = join(app.getPath('userData'), '.attachments-staging')
+  ensureDir(stagingDir)
+  const pendingPath = join(stagingDir, `delete-${randomUUID()}`)
+  renameSync(originalPath, pendingPath)
+  return { pendingPath, originalPath }
+}
+
+/** 恢复一次尚未提交的附件删除。 */
+export function restoreStagedImageDeletion(staged) {
+  if (!staged?.pendingPath || !existsSync(staged.pendingPath)) return
+  try {
+    ensureDir(dirname(staged.originalPath))
+    renameSync(staged.pendingPath, staged.originalPath)
+  } catch (error) {
+    console.warn('[images] 恢复待删除附件失败:', error.message)
   }
 }
 

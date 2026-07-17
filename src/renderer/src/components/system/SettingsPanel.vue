@@ -917,7 +917,7 @@ const onConfirmResetSettings = async () => {
 
             <!-- 玻璃浓度始终显示；原生模糊不可用时也是主要回退控制。 -->
             <div class="setting-item setting-item-slider">
-              <span class="setting-label">玻璃浓度<HelpButton text="控制主窗口背景颜色的覆盖强度。0=完全通透，1=不透明纯色底；不改变原生模糊强度。推荐20%" /></span>
+              <span class="setting-label">玻璃浓度<HelpButton text="控制主窗口背景颜色的覆盖强度。0=完全通透，1=不透明纯色底；不改变原生模糊强度。推荐60%" /></span>
               <span class="range-label-start">通透</span>
               <AppSlider v-model="windowOpacity" :min="0" :max="1" :step="0.01" />
               <span class="range-label-end">浓厚</span>
@@ -972,7 +972,7 @@ const onConfirmResetSettings = async () => {
 
             <!-- 模糊半径 -->
             <div class="setting-item setting-item-slider">
-              <span class="setting-label">模糊基准<HelpButton text="设置页按此值直接失焦；普通下拉框、复杂浮层和提示框会按各自比例同步增减。推荐5px" /></span>
+              <span class="setting-label">模糊基准<HelpButton text="设置页按此值直接失焦；使用玻璃材质的浮层会按各自比例同步增减。推荐10px" /></span>
               <span class="range-label-start">清晰</span>
               <AppSlider v-model="cssBlur" :min="0" :max="30" :step="1" />
               <span class="range-label-end">模糊</span>
@@ -981,7 +981,7 @@ const onConfirmResetSettings = async () => {
 
             <!-- 组件透明度 -->
             <div class="setting-item setting-item-slider">
-              <span class="setting-label">霜层基准<HelpButton text="设置面板按此浓度显示；其他浮层会按组件类型成比例调整并限制最大值。推荐22%" /></span>
+              <span class="setting-label">霜层基准<HelpButton text="设置面板按此浓度显示；使用玻璃材质的浮层会按组件类型成比例调整并限制最大值。推荐20%" /></span>
               <span class="range-label-start">通透</span>
               <AppSlider v-model="cssOpacity" :min="0" :max="1" :step="0.01" />
               <span class="range-label-end">不透</span>

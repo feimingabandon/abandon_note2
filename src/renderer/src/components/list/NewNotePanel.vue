@@ -9,12 +9,13 @@
  *
  * 不负责：面板标题栏、面板高度拖拽（由 ActionBar 统一管理）
  */
-import { ref, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, watch, computed, onMounted, nextTick } from 'vue'
 import DateTimePicker from '../ui/DateTimePicker.vue'
 import TagSelector from '../ui/TagSelector.vue'
 import ScreenshotPicker from '../note/ScreenshotPicker.vue'
 import AppToggle from '../ui/AppToggle.vue'
 import HelpButton from '../ui/HelpButton.vue'
+import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import { useMessage } from '../../composables/useMessage.js'
 
 const emit = defineEmits(['create'])
@@ -138,50 +139,6 @@ async function handleCreate() {
   }
 }
 
-// ============================================================
-// 拖拽调整文本域高度
-// ============================================================
-let isDragging = false
-let dragStartY = 0
-let dragStartHeight = 0
-let dragRaf = null
-
-function onTextareaDragStart(e) {
-  isDragging = true
-  dragStartY = e.clientY
-  dragStartHeight = textareaRef.value ? textareaRef.value.clientHeight : 80
-  document.addEventListener('mousemove', onTextareaDragMove)
-  document.addEventListener('mouseup', onTextareaDragEnd)
-  e.preventDefault()
-}
-
-function onTextareaDragMove(e) {
-  if (!isDragging || !textareaRef.value) return
-  if (dragRaf) return
-  dragRaf = requestAnimationFrame(() => {
-    dragRaf = null
-    const deltaY = e.clientY - dragStartY
-    let h = dragStartHeight + deltaY
-    // 最小 3 行约 60px，最大 300px
-    h = Math.max(60, Math.min(300, h))
-    textareaRef.value.style.height = h + 'px'
-  })
-}
-
-function onTextareaDragEnd() {
-  isDragging = false
-  if (dragRaf) {
-    cancelAnimationFrame(dragRaf)
-    dragRaf = null
-  }
-  document.removeEventListener('mousemove', onTextareaDragMove)
-  document.removeEventListener('mouseup', onTextareaDragEnd)
-}
-
-onBeforeUnmount(() => {
-  document.removeEventListener('mousemove', onTextareaDragMove)
-  document.removeEventListener('mouseup', onTextareaDragEnd)
-})
 </script>
 
 <template>
@@ -189,18 +146,14 @@ onBeforeUnmount(() => {
     <!-- 可滚动表单区域 -->
     <div class="nnp-body scroll-y">
       <!-- 便签内容 -->
-      <textarea
+      <ResizableTextarea
         ref="textareaRef"
         v-model="content"
-        class="nnp-textarea nnp-stagger"
+        class="nnp-stagger"
         style="animation-delay: 0ms"
         placeholder="请新建一次性便签内容…（Enter 换行）"
-        rows="4"
+        :rows="4"
       />
-      <!-- 文本域拖拽调整条 -->
-      <div class="nnp-resize nnp-stagger" style="animation-delay: 20ms" @mousedown="onTextareaDragStart">
-        <div class="nnp-resize-bar" />
-      </div>
 
       <!-- 生效时间（label 左，picker 右） -->
       <div class="nnp-field-row nnp-stagger" style="animation-delay: 60ms">
@@ -300,51 +253,6 @@ onBeforeUnmount(() => {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-/* === 文本域 === */
-.nnp-textarea {
-  display: block;
-  width: 100%;
-  padding: 10rem 12rem;
-  font-size: var(--fs-body);
-  font-family: inherit;
-  font-weight: 500;
-  color: var(--text-color);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
-  border-radius: 8rem;
-  outline: none;
-  resize: none;
-  transition: border-color 150ms ease;
-  line-height: 1.5;
-  min-height: 90rem;
-}
-.nnp-textarea:focus {
-  border-color: rgb(var(--bg-color) / 0.18);
-}
-.nnp-textarea::placeholder {
-  color: var(--text-color-secondary);
-  opacity: 0.5;
-}
-
-/* === 文本域拖拽调整条 === */
-.nnp-resize {
-  display: flex;
-  justify-content: center;
-  padding: 2rem 0 4rem;
-  cursor: row-resize;
-  user-select: none;
-}
-.nnp-resize-bar {
-  width: 32rem;
-  height: 3rem;
-  border-radius: 1.5rem;
-  background-color: rgba(255, 255, 255, 0.1);
-  transition: background-color 150ms ease;
-}
-.nnp-resize:hover .nnp-resize-bar {
-  background-color: rgba(255, 255, 255, 0.22);
 }
 
 /* === 表单字段 === */

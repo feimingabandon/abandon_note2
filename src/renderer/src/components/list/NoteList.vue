@@ -13,7 +13,7 @@ import NoteCard from './NoteCard.vue'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
 
-const emit = defineEmits(['select'])
+const emit = defineEmits(['select', 'edit'])
 
 /** 排序模式：timeline | custom */
 const sortMode = ref(DEFAULT_SETTINGS.listFilter.listMode)
@@ -141,7 +141,7 @@ const statusOptions = [
   { value: 'initialized', label: '初始化' },
   { value: 'in_progress', label: '进行中' },
   { value: 'completed', label: '完成' },
-  { value: 'cancelled', label: '取消' }
+  { value: 'cancelled', label: '弃用' }
 ]
 
 /** 切换状态筛选 */
@@ -644,11 +644,15 @@ function finishStatusTransition(noteId, delay, callback) {
   })
 }
 
-/** 状态圆环的主操作：初始化提前开始，进行中标记完成。 */
+/** 状态圆环的主操作：初始化提前开始，进行中标记完成，已完成重新进行。 */
 async function onCardStatusAction(note) {
   if (statusTransitions.has(note.id)) return
   const from = note.status
-  const to = from === 'initialized' ? 'in_progress' : from === 'in_progress' ? 'completed' : null
+  const to = from === 'initialized' || from === 'completed'
+    ? 'in_progress'
+    : from === 'in_progress'
+      ? 'completed'
+      : null
   if (!to) return
 
   // 先给 0 延迟的点击确认；只有请求超过 120ms 才显示轨道等待光。
@@ -666,6 +670,8 @@ async function onCardStatusAction(note) {
       updated = await window.api.startProgress(note.id)
     } else if (from === 'in_progress') {
       updated = await window.api.completeNote(note.id)
+    } else if (from === 'completed') {
+      updated = await window.api.reopenNote(note.id)
     }
 
     if (!updated) throw new Error('状态接口未返回更新后的便签')
@@ -678,10 +684,25 @@ async function onCardStatusAction(note) {
     // 主动画先使用旧状态起跑；颜色传播到中点后才提交文字、卡片和常驻发光颜色。
     setStatusTransition(note.id, { from, to, phase: 'playing' })
     scheduleStatusTransition(note.id, 'commit', commitDelay, () => {
-      patchVisibleNote(updated, true)
+      // 提前开始会改变时间线分组。动画期间保留旧生效时间，避免卡片在圆环
+      // 过渡尚未完成时被 Vue 从“未来”卸载、又在“今天”重新挂载。
+      const resetsEffectiveTime = ['initialized', 'completed'].includes(from) && to === 'in_progress'
+      const displayUpdate = resetsEffectiveTime
+        ? { ...updated, effective_at: note.effective_at }
+        : updated
+      patchVisibleNote(displayUpdate, true)
     })
     finishStatusTransition(note.id, totalDuration, async () => {
-      if (!remainsVisible) await refreshInBackground()
+      const movedAcrossTimelineGroups =
+        sortMode.value === 'timeline' &&
+        !note.is_pinned &&
+        ['initialized', 'completed'].includes(from) &&
+        to === 'in_progress'
+      if (!remainsVisible || movedAcrossTimelineGroups) {
+        await refreshInBackground({
+          reenterIds: movedAcrossTimelineGroups && remainsVisible ? [note.id] : []
+        })
+      }
     })
   } catch (e) {
     clearStatusTimer(note.id, 'waiting')
@@ -778,7 +799,7 @@ async function replayListRefresh() {
   }
 }
 
-async function refreshInBackground() {
+async function refreshInBackground({ reenterIds = [] } = {}) {
   const motionSeq = ++presenceMotionSeq
   const before = captureVisibleCardLayout()
   const options = { showLoading: false, preserveAnchor: true }
@@ -792,7 +813,7 @@ async function refreshInBackground() {
   if (result?.status !== 'success' || motionSeq !== presenceMotionSeq) return result
   await nextTick()
   if (motionSeq !== presenceMotionSeq) return result
-  animateRetainedCards(before)
+  animateRetainedCards(before, { reenterIds })
   return result
 }
 
@@ -1074,6 +1095,7 @@ defineExpose({
               :note="note"
               :status-transition="statusTransitionFor(note.id)"
               @select="emit('select', $event)"
+              @edit="emit('edit', $event)"
               @status-action="onCardStatusAction"
             />
           </template>
@@ -1117,6 +1139,7 @@ defineExpose({
               draggable
               :status-transition="statusTransitionFor(note.id)"
               @select="emit('select', $event)"
+              @edit="emit('edit', $event)"
               @status-action="onCardStatusAction"
             />
           </template>
@@ -1145,6 +1168,7 @@ defineExpose({
               draggable
               :status-transition="statusTransitionFor(note.id)"
               @select="emit('select', $event)"
+              @edit="emit('edit', $event)"
               @status-action="onCardStatusAction"
             />
           </template>

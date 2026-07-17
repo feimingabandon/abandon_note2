@@ -9,6 +9,7 @@
  *   - ESC / 点击遮罩关闭
  */
 import { ref, watch, onUnmounted } from 'vue'
+import { releaseModalBlur, retainModalBlur } from '../../utils/modalBlur.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -24,6 +25,19 @@ const rotate = ref(0)
 /** 平移偏移（屏幕像素） */
 const translateX = ref(0)
 const translateY = ref(0)
+let ownsModalBlur = false
+
+function acquireModalBlur() {
+  if (ownsModalBlur) return
+  ownsModalBlur = true
+  retainModalBlur()
+}
+
+function freeModalBlur() {
+  if (!ownsModalBlur) return
+  ownsModalBlur = false
+  releaseModalBlur()
+}
 
 /** 拖拽状态 */
 const isDragging = ref(false)
@@ -35,11 +49,12 @@ let dragStartTY = 0
 /** 打开时重置状态 */
 watch(() => props.visible, (v) => {
   if (v) {
+    acquireModalBlur()
     scale.value = 1
     rotate.value = 0
     translateX.value = 0
     translateY.value = 0
-  }
+  } else freeModalBlur()
 })
 
 function onClose() {
@@ -108,6 +123,7 @@ function onMouseUp() {
 }
 
 onUnmounted(() => {
+  freeModalBlur()
   document.removeEventListener('mousemove', onMouseMove)
   document.removeEventListener('mouseup', onMouseUp)
 })
@@ -175,7 +191,7 @@ onUnmounted(() => {
 .ipv-overlay {
   position: fixed;
   inset: 0;
-  z-index: 9999;
+  z-index: 35000;
   display: flex;
   flex-direction: column;
   align-items: center;
