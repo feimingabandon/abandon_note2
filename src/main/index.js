@@ -214,6 +214,9 @@ let geometryTimer = null
 /** 窗口几何是否在最近一次成功持久化（或恢复默认）后发生过变化 */
 let geometryDirty = false
 
+/** 恢复默认时忽略程序化缩放触发的 resize，避免把默认边界重新写回设置表。 */
+let suppressGeometryPersistenceUntil = 0
+
 /** 统一调度器实例 */
 const scheduler = new Scheduler()
 
@@ -518,6 +521,7 @@ function createWindow() {
    * 窗口 resize/move 事件触发频繁，使用 500ms 防抖避免频繁写数据库
    */
   const debouncedSaveGeometry = () => {
+    if (Date.now() < suppressGeometryPersistenceUntil) return
     geometryDirty = true
     if (geometryTimer) clearTimeout(geometryTimer)
     geometryTimer = setTimeout(() => {
@@ -1019,7 +1023,7 @@ app.whenReady().then(async () => {
   /**
    * 恢复全部持久化设置默认值。
    * 仅清空 app_settings，不触碰便签、标签、模板、附件或开机自启 OS 状态。
-   * 当前窗口几何保持不变，但已清除其下次启动时的持久化记录。
+   * 当前窗口立即恢复默认宽高并保留当前位置，同时清除下次启动时的几何记录。
    */
   ipcMain.handle('reset-settings', () => {
     if (geometryTimer) {
@@ -1032,6 +1036,15 @@ app.whenReady().then(async () => {
     refreshResolvedSettings({ incrementRevision: true })
     applyResolvedWindowRuntime()
     applyResolvedBlurRuntime()
+
+    // 宽高立即恢复为当前显示器工作区的默认比例；位置仍保持当前值。
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const display = screen.getDisplayMatching(mainWindow.getBounds())
+      const defaultWidth = Math.round(display.workAreaSize.width * DEFAULT_WIDTH_RATIO)
+      const defaultHeight = Math.round(display.workAreaSize.height * DEFAULT_HEIGHT_RATIO)
+      suppressGeometryPersistenceUntil = Date.now() + 750
+      mainWindow.setSize(defaultWidth, defaultHeight)
+    }
 
     const snapshot = getResolvedSettingsSnapshot()
     broadcastSettingsChanged(snapshot)

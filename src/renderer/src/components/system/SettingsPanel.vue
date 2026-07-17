@@ -1195,7 +1195,7 @@ const onConfirmResetSettings = async () => {
     <ConfirmDialog
       v-model:visible="showResetSettingsDialog"
       title="恢复默认设置"
-      message="此操作将清空设置表，并立即应用全局默认设置。已保存的窗口位置和大小也会被清除，但当前窗口不会立即移动；开机自启状态不受影响。"
+      message="此操作将清空设置表，并立即应用全局默认设置。当前窗口宽高会立即恢复默认，已保存的位置和大小也会被清除，但窗口位置不会立即移动；开机自启状态不受影响。"
       confirm-text="恢复"
       cancel-text="取消"
       variant="default"
