@@ -9,7 +9,7 @@
  *
  * 不负责：面板标题栏、面板高度拖拽（由 ActionBar 统一管理）
  */
-import { ref, watch, computed, onMounted, nextTick } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import DateTimePicker from '../ui/DateTimePicker.vue'
 import TagSelector from '../ui/TagSelector.vue'
 import ScreenshotPicker from '../note/ScreenshotPicker.vue'
@@ -19,21 +19,110 @@ import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import { useMessage } from '../../composables/useMessage.js'
 
 const emit = defineEmits(['create'])
+const props = defineProps({
+  active: { type: Boolean, default: false }
+})
 
 const { showMessage } = useMessage()
 
 // ============================================================
-// 入场动效：挂载一帧后触发逐层淡入
+// 入场动效：按一级 DOM 顺序自动编排，组件常驻以保留草稿。
 // ============================================================
-const mounted = ref(false)
+const entranceBodyRef = ref(null)
+const submitRef = ref(null)
+const textareaRef = ref(null)
+const ENTER_DURATION = 250
+const ENTER_TOTAL_WINDOW = 520
+let enterRaf = null
+let entranceSeq = 0
+let entranceAnimations = []
 
-onMounted(async () => {
+function entranceItems() {
+  const bodyItems = entranceBodyRef.value ? Array.from(entranceBodyRef.value.children) : []
+  return submitRef.value ? [...bodyItems, submitRef.value] : bodyItems
+}
+
+function focusTextareaAtTop() {
+  if (entranceBodyRef.value) entranceBodyRef.value.scrollTop = 0
+  textareaRef.value?.focus({ preventScroll: true })
+}
+
+function cancelEntranceAnimations() {
+  entranceSeq++
+  if (enterRaf) cancelAnimationFrame(enterRaf)
+  enterRaf = null
+  for (const animation of entranceAnimations) animation.cancel()
+  entranceAnimations = []
+  for (const element of entranceItems()) {
+    element.style.removeProperty('opacity')
+    element.style.removeProperty('filter')
+    element.style.removeProperty('translate')
+  }
+}
+
+async function replayEntrance() {
+  cancelEntranceAnimations()
+  const seq = entranceSeq
   await nextTick()
-  requestAnimationFrame(() => {
-    mounted.value = true
-    // 面板展开后自动聚焦文本域
-    textareaRef.value?.focus()
+  if (!props.active || seq !== entranceSeq) return
+  if (entranceBodyRef.value) entranceBodyRef.value.scrollTop = 0
+
+  const items = entranceItems()
+  const step = items.length > 1 ? (ENTER_TOTAL_WINDOW - ENTER_DURATION) / (items.length - 1) : 0
+  for (const element of items) {
+    if (element === submitRef.value) element.style.filter = 'opacity(0)'
+    else element.style.opacity = '0'
+    element.style.translate = '0 6px'
+  }
+
+  enterRaf = requestAnimationFrame(() => {
+    enterRaf = null
+    if (!props.active || seq !== entranceSeq) return
+    entranceAnimations = items.map((element, index) => {
+      const keyframes =
+        element === submitRef.value
+          ? [
+              { filter: 'opacity(0)', translate: '0 6px' },
+              { filter: 'opacity(1)', translate: '0 0' }
+            ]
+          : [
+              { opacity: 0, translate: '0 6px' },
+              { opacity: 1, translate: '0 0' }
+            ]
+      return element.animate(keyframes, {
+        duration: ENTER_DURATION,
+        delay: index * step,
+        easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+        fill: 'both'
+      })
+    })
+    focusTextareaAtTop()
+
+    Promise.allSettled(entranceAnimations.map((animation) => animation.finished)).then(() => {
+      if (seq !== entranceSeq) return
+      for (const element of items) {
+        element.style.removeProperty('opacity')
+        element.style.removeProperty('filter')
+        element.style.removeProperty('translate')
+      }
+      for (const animation of entranceAnimations) animation.cancel()
+      entranceAnimations = []
+    })
   })
+}
+
+watch(
+  () => props.active,
+  (active) => {
+    if (active) replayEntrance()
+    else cancelEntranceAnimations()
+  },
+  { immediate: true }
+)
+
+onBeforeUnmount(() => {
+  cancelEntranceAnimations()
+  finishSuccessHold()
 })
 
 // ============================================================
@@ -44,15 +133,21 @@ const effectiveAt = ref('') // "YYYY-MM-DD HH:mm:ss" 或空（空 = 立即生效
 const tagNames = ref([]) // 仅保存用户自定义标签；内容类型由正文和附件推导
 const notifyEnabled = ref(false) // 启用系统提醒开关
 const isPinned = ref(false) // 置顶开关
-const creating = ref(false) // 防止重复提交
+const submitState = ref('idle') // idle | creating | success
 /** ScreenshotPicker 组件引用 */
 const imagePickerRef = ref(null)
-/** 文本域 DOM 引用（拖拽调整高度） */
-const textareaRef = ref(null)
+let successTimer = null
+let successHoldResolve = null
 
 // ---- 联动逻辑 ----
 /** 只有设置了生效时间才能开启系统提醒 */
 const canEnableNotify = computed(() => !!effectiveAt.value)
+const submitLabel = computed(() => {
+  if (submitState.value === 'creating') return '创建中…'
+  if (submitState.value === 'success') return '✓ 已创建'
+  return '创建便签'
+})
+const submitEmpty = computed(() => submitState.value === 'idle' && !content.value.trim())
 
 /** 今天零点，作为日期选择下限 */
 const today = computed(() => {
@@ -63,8 +158,22 @@ const today = computed(() => {
 /** 自定义快捷选项（不含过去日期） */
 const dateShortcuts = [
   { label: '今天', getValue: () => new Date() },
-  { label: '明天', getValue: () => { const d = new Date(); d.setDate(d.getDate() + 1); return d } },
-  { label: '三天后', getValue: () => { const d = new Date(); d.setDate(d.getDate() + 3); return d } }
+  {
+    label: '明天',
+    getValue: () => {
+      const d = new Date()
+      d.setDate(d.getDate() + 1)
+      return d
+    }
+  },
+  {
+    label: '三天后',
+    getValue: () => {
+      const d = new Date()
+      d.setDate(d.getDate() + 3)
+      return d
+    }
+  }
 ]
 
 // 生效时间被清空时，强制关闭系统提醒
@@ -78,12 +187,41 @@ watch(effectiveAt, (val) => {
 // 创建便签
 // ============================================================
 const FIVE_MINUTES = 5 * 60 * 1000
+const SUCCESS_HOLD = 300
+
+function resetForm() {
+  content.value = ''
+  effectiveAt.value = ''
+  tagNames.value = []
+  notifyEnabled.value = false
+  isPinned.value = false
+  imagePickerRef.value?.clearImages()
+}
+
+function holdSuccessState() {
+  return new Promise((resolve) => {
+    successHoldResolve = resolve
+    successTimer = setTimeout(() => {
+      successTimer = null
+      successHoldResolve = null
+      resolve()
+    }, SUCCESS_HOLD)
+  })
+}
+
+function finishSuccessHold() {
+  if (successTimer) clearTimeout(successTimer)
+  successTimer = null
+  const resolve = successHoldResolve
+  successHoldResolve = null
+  resolve?.()
+}
 
 async function handleCreate() {
-  const text = content.value.trim()
+  const text = content.value
 
   // 校验：内容不能为空
-  if (!text) {
+  if (!text.trim()) {
     showMessage('warning', '请输入便签内容')
     return
   }
@@ -97,8 +235,8 @@ async function handleCreate() {
     }
   }
 
-  if (creating.value) return
-  creating.value = true
+  if (submitState.value !== 'idle') return
+  submitState.value = 'creating'
 
   try {
     const options = {
@@ -121,43 +259,40 @@ async function handleCreate() {
       tagNames: [...tagNames.value]
     })
 
-    showMessage('success', '便签创建成功')
-
-    // 重置表单
-    content.value = ''
-    effectiveAt.value = ''
-    tagNames.value = []
-    notifyEnabled.value = false
-    isPinned.value = false
-    imagePickerRef.value?.clearImages()
+    submitState.value = 'success'
     emit('create')
+    await holdSuccessState()
+    resetForm()
+    submitState.value = 'idle'
+    await nextTick()
+    if (props.active) requestAnimationFrame(focusTextareaAtTop)
   } catch (e) {
     console.error('[NewNotePanel] 创建便签失败:', e)
     showMessage('error', e.message || '创建失败，请重试')
+    submitState.value = 'idle'
   } finally {
-    creating.value = false
+    if (submitState.value === 'creating') submitState.value = 'idle'
   }
 }
-
 </script>
 
 <template>
-  <div class="nnp-root" :class="{ 'nnp-enter': mounted }">
+  <div class="nnp-root">
     <!-- 可滚动表单区域 -->
-    <div class="nnp-body scroll-y">
+    <div ref="entranceBodyRef" class="nnp-body scroll-y" :inert="submitState !== 'idle'">
       <!-- 便签内容 -->
       <ResizableTextarea
         ref="textareaRef"
         v-model="content"
-        class="nnp-stagger"
-        style="animation-delay: 0ms"
         placeholder="请新建一次性便签内容…（Enter 换行）"
         :rows="4"
       />
 
       <!-- 生效时间（label 左，picker 右） -->
-      <div class="nnp-field-row nnp-stagger" style="animation-delay: 60ms">
-        <label class="nnp-field-label">生效时间<HelpButton text="设置后便签将在指定时间生效。未设置则立即生效。" /></label>
+      <div class="nnp-field-row">
+        <label class="nnp-field-label"
+          >生效时间<HelpButton text="设置后便签将在指定时间生效。未设置则立即生效。"
+        /></label>
         <DateTimePicker
           v-model="effectiveAt"
           placeholder="立即生效"
@@ -167,38 +302,55 @@ async function handleCreate() {
       </div>
 
       <!-- 启用系统提醒 -->
-      <div class="nnp-field-row nnp-stagger" style="animation-delay: 110ms">
-        <label class="nnp-field-label">启用系统提醒<HelpButton text="仅在设置生效时间后才可开启。到达生效时间时通过操作系统发送通知提醒" /></label>
+      <div class="nnp-field-row">
+        <label class="nnp-field-label"
+          >启用系统提醒<HelpButton
+            text="仅在设置生效时间后才可开启。到达生效时间时通过操作系统发送通知提醒"
+        /></label>
         <AppToggle v-model="notifyEnabled" :disabled="!canEnableNotify" />
       </div>
 
       <!-- 置顶 -->
-      <div class="nnp-field-row nnp-stagger" style="animation-delay: 140ms">
-        <label class="nnp-field-label">置顶<HelpButton text="开启后便签将固定在列表顶部，不受排序方式影响" /></label>
+      <div class="nnp-field-row">
+        <label class="nnp-field-label"
+          >置顶<HelpButton text="开启后便签将固定在列表顶部，不受排序方式影响"
+        /></label>
         <AppToggle v-model="isPinned" />
       </div>
 
       <!-- 标签 -->
-      <div class="nnp-field nnp-group-gap nnp-stagger" style="animation-delay: 190ms">
-        <label class="nnp-field-label">标签<HelpButton text="添加自定义分类标签；正文和图片类型由系统自动识别。" /></label>
+      <div class="nnp-field nnp-group-gap">
+        <label class="nnp-field-label"
+          >标签<HelpButton text="添加自定义分类标签；正文和图片类型由系统自动识别。"
+        /></label>
         <TagSelector v-model="tagNames" />
       </div>
 
       <!-- 图片 -->
-      <div class="nnp-field nnp-stagger" style="animation-delay: 220ms">
-        <label class="nnp-field-label">图片<HelpButton text="支持截图、拖拽或点击上传图片附件。单张最大 50MB，单条便签最多 50 张" /></label>
+      <div class="nnp-field">
+        <label class="nnp-field-label"
+          >图片<HelpButton
+            text="支持截图、拖拽或点击上传图片附件。单张最大 50MB，单条便签最多 50 张"
+        /></label>
         <ScreenshotPicker ref="imagePickerRef" mode="memory" />
       </div>
     </div>
 
     <!-- 创建按钮（始终可见，不受面板内容滚动和底部渐隐影响） -->
     <button
-      class="nnp-submit nnp-stagger"
-      style="animation-delay: 270ms"
-      :disabled="!content.trim() || creating"
+      ref="submitRef"
+      class="nnp-submit"
+      :class="{
+        'is-empty': submitEmpty,
+        'is-creating': submitState === 'creating',
+        'is-success': submitState === 'success'
+      }"
+      :disabled="submitState !== 'idle' || !content.trim()"
       @click="handleCreate"
     >
-      {{ creating ? '创建中…' : '创建便签' }}
+      <Transition name="nnp-submit-label">
+        <span :key="submitState" class="nnp-submit-label">{{ submitLabel }}</span>
+      </Transition>
     </button>
   </div>
 </template>
@@ -227,32 +379,7 @@ async function handleCreate() {
     black calc(100% - 30rem),
     transparent 100%
   );
-  mask-image: linear-gradient(
-    to bottom,
-    black 0%,
-    black calc(100% - 30rem),
-    transparent 100%
-  );
-}
-
-/* === 逐层淡入动效：挂载前隐藏，挂载后逐元素延迟触发 === */
-.nnp-stagger {
-  opacity: 0;
-}
-
-.nnp-enter .nnp-stagger {
-  animation: nnp-fade-up 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-@keyframes nnp-fade-up {
-  from {
-    opacity: 0;
-    transform: translateY(6rem);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
 }
 
 /* === 表单字段 === */
@@ -305,8 +432,10 @@ async function handleCreate() {
 
 /* === 创建按钮 === */
 .nnp-submit {
+  position: relative;
   margin-top: 0;
-  display: block;
+  display: grid;
+  place-items: center;
   width: calc(100% - 28rem);
   margin-left: 14rem;
   margin-right: 14rem;
@@ -321,14 +450,41 @@ async function handleCreate() {
   cursor: pointer;
   outline: none;
   flex-shrink: 0;
-  transition: background-color 150ms ease;
+  transform: scale(1);
+  transition:
+    background-color 180ms ease,
+    opacity 170ms ease,
+    transform 170ms var(--ease-standard);
 }
 .nnp-submit:hover:not(:disabled) {
   background: #0077ed;
 }
 .nnp-submit:disabled {
-  opacity: 0.4;
   cursor: not-allowed;
+}
+.nnp-submit.is-empty {
+  opacity: 0.4;
+  transform: scale(0.99);
+}
+.nnp-submit.is-success {
+  background: #30d158;
+}
+.nnp-submit-label {
+  grid-area: 1 / 1;
+}
+.nnp-submit-label-enter-active,
+.nnp-submit-label-leave-active {
+  transition:
+    opacity 120ms ease,
+    translate 150ms var(--ease-standard);
+}
+.nnp-submit-label-enter-from {
+  opacity: 0;
+  translate: 0 2rem;
+}
+.nnp-submit-label-leave-to {
+  opacity: 0;
+  translate: 0 -2rem;
 }
 .nnp-submit:active:not(:disabled) {
   transform: scale(0.985);

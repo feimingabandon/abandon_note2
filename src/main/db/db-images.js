@@ -126,6 +126,29 @@ export function restoreStagedImageDeletion(staged) {
   }
 }
 
+/** 彻底删除便签前，先把整个附件目录移出正式路径，数据库失败时可以原位恢复。 */
+export function stageNoteImagesDeletion(noteId) {
+  if (!Number.isInteger(Number(noteId)) || Number(noteId) <= 0) throw new Error('无效的便签 ID')
+  const originalPath = join(getAttachmentsRoot(), 'images', String(noteId))
+  if (!existsSync(originalPath)) return { missing: true, originalPath }
+  const pendingPath = join(
+    app.getPath('userData'),
+    `.attachments-deleting-note-${noteId}-${randomUUID()}`
+  )
+  renameSync(originalPath, pendingPath)
+  return { pendingPath, originalPath }
+}
+
+/** 数据库提交后清理已经移出的便签附件目录。失败时由启动清理流程再次处理。 */
+export async function cleanupStagedNoteImages(staged) {
+  if (!staged?.pendingPath) return
+  try {
+    await rm(staged.pendingPath, { recursive: true, force: true })
+  } catch (error) {
+    console.warn('[images] 清理待彻底删除附件目录失败:', error.message)
+  }
+}
+
 /**
  * 删除单张图片文件
  * @param {string} relativePath

@@ -41,7 +41,8 @@ const emit = defineEmits(['update:modelValue'])
   background-color: rgba(255, 255, 255, 0.06);
   transition:
     background-color 220ms var(--ease-standard),
-    transform var(--motion-fast) ease;
+    transform var(--motion-fast) ease,
+    opacity 170ms ease;
   flex-shrink: 0;
   outline: none;
   -webkit-appearance: none;

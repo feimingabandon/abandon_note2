@@ -57,6 +57,7 @@ const inputTime = ref('')
 // ==================== 计算属性 ====================
 const displayText = computed(() => props.modelValue ? props.modelValue.replace('T', ' ') : props.placeholder)
 const wrapperStyle = computed(() => props.width ? { width: typeof props.width === 'number' ? props.width + 'px' : props.width } : {})
+const showClearAction = computed(() => props.clearable && !!props.modelValue)
 
 const daysInMonth = computed(() => new Date(viewYear.value, viewMonth.value + 1, 0).getDate())
 const firstDayOfWeek = computed(() => new Date(viewYear.value, viewMonth.value, 1).getDay())
@@ -343,19 +344,21 @@ function onLeave(el, done) {
   <div ref="wrapperRef" class="dt-wrapper" :style="wrapperStyle">
     <button
       class="dt-trigger"
-      :class="{ 'is-open': open, 'is-disabled': disabled, 'has-clear': clearable && modelValue }"
+      :class="{ 'is-open': open, 'is-disabled': disabled }"
       :disabled="disabled"
       @click="toggle"
     >
       <span class="dt-label" :class="{ 'is-placeholder': !modelValue }">{{ displayText }}</span>
-      <svg class="dt-arrow" :class="{ 'is-open': open }" width="10" height="6">
+      <svg class="dt-arrow" :class="{ 'is-open': open, 'is-concealed': showClearAction }" width="10" height="6">
         <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
       </svg>
     </button>
     <button
-      v-if="clearable && modelValue"
       class="dt-clear-btn"
-      :disabled="disabled"
+      :class="{ 'is-visible': showClearAction }"
+      :disabled="disabled || !showClearAction"
+      :tabindex="showClearAction ? 0 : -1"
+      :aria-hidden="!showClearAction"
       title="清除"
       aria-label="清除日期时间"
       @click="doClear"
@@ -484,24 +487,26 @@ function onLeave(el, done) {
   border-radius: 6rem; cursor: pointer; outline: none;
   transition: border-color 150ms ease;
 }
-.dt-trigger.has-clear { padding-right: 30rem; }
 .dt-trigger:hover:not(.is-disabled) { border-color: rgb(var(--bg-color) / 0.18); }
 .dt-trigger.is-open { border-color: rgb(var(--bg-color) / 0.25); }
 .dt-trigger.is-disabled { opacity: .4; cursor: not-allowed; }
 .dt-label { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .dt-label.is-placeholder { opacity: .4; }
 .dt-clear-btn {
-  position: absolute; right: 22rem; top: 50%; transform: translateY(-50%);
+  position: absolute; right: 5rem; top: 50%; transform: translateY(-50%) scale(.9);
   z-index: 1; display: flex; align-items: center; justify-content: center;
   width: 16rem; height: 16rem; padding: 0;
   border: none; border-radius: 50%; background: transparent;
   color: var(--text-color-secondary); cursor: pointer;
-  opacity: .5; transition: opacity 120ms ease, background-color 120ms ease;
+  opacity: 0; pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease;
 }
-.dt-clear-btn:hover { opacity: 1; background: rgba(128,128,128,.15); }
+.dt-clear-btn.is-visible { opacity: .5; pointer-events: auto; transform: translateY(-50%) scale(1); }
+.dt-clear-btn.is-visible:hover { opacity: 1; background: rgba(128,128,128,.15); }
 .dt-clear-btn:disabled { pointer-events: none; }
-.dt-arrow { flex-shrink: 0; opacity: .45; color: var(--text-color); transition: transform 200ms ease; }
+.dt-arrow { flex-shrink: 0; opacity: .45; color: var(--text-color); transition: transform 200ms ease, opacity 120ms ease; }
 .dt-arrow.is-open { transform: rotate(180deg); }
+.dt-arrow.is-concealed { opacity: 0; }
 
 /* ===== 面板 ===== */
 .dt-panel-wrap {

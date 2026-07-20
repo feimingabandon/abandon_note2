@@ -219,7 +219,7 @@ export function initNotesTables() {
                           CHECK(note_type IN ('one_time')),
       content             TEXT    NOT NULL DEFAULT '',
       status              TEXT    NOT NULL DEFAULT 'initialized'
-                          CHECK(status IN ('initialized','in_progress','completed','cancelled')),
+                          CHECK(status IN ('initialized','in_progress','completed')),
       is_deleted          INTEGER NOT NULL DEFAULT 0
                           CHECK(is_deleted IN (0, 1)),
       is_pinned           INTEGER NOT NULL DEFAULT 0,
@@ -273,6 +273,13 @@ export function initNotesTables() {
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_notes_remind_again_at ON notes(remind_again_at)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_notes_is_deleted ON notes(is_deleted)')
+
+  // “弃用”状态已从产品移除；旧记录统一转为逻辑删除，正文和附件仍保留。
+  db.prepare(
+    `UPDATE notes
+     SET is_deleted = 1, notify_enabled = 0, remind_again_at = NULL, updated_at = ?
+     WHERE status = 'cancelled' AND is_deleted = 0`
+  ).run(Date.now())
 }
 
 /**

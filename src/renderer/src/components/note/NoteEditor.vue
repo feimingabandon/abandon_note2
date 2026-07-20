@@ -1,7 +1,7 @@
 <script setup>
 /**
  * NoteEditor.vue — 便签修改草稿。
- * 所有字段（含弃用状态和附件）只修改前端草稿，点击保存后统一持久化。
+ * 所有可编辑字段和附件只修改前端草稿，点击保存后统一持久化。
  */
 import { ref, watch, computed, onMounted, nextTick } from 'vue'
 import DateTimePicker from '../ui/DateTimePicker.vue'
@@ -32,7 +32,6 @@ const imagePickerRef = ref(null)
 const attachmentDirty = ref(false)
 const initialSnapshot = ref(null)
 const confirmVisible = ref(false)
-const confirmKind = ref('')
 
 const FIVE_MINUTES = 5 * 60 * 1000
 
@@ -84,11 +83,9 @@ onMounted(async () => {
 const statusLabel = computed(() => ({
   initialized: '初始化',
   in_progress: '进行中',
-  completed: '已完成',
-  cancelled: '已弃用'
+  completed: '已完成'
 })[status.value] || status.value)
 
-const canCancel = computed(() => ['initialized', 'in_progress'].includes(status.value))
 const canEditSchedule = computed(() => status.value === 'initialized')
 const today = computed(() => {
   const now = new Date()
@@ -103,13 +100,11 @@ const dateShortcuts = [
 const scheduleHelp = computed(() => {
   if (status.value === 'initialized') return '仅初始化状态允许修改，新的生效时间需在当前时间 5 分钟之后。'
   if (status.value === 'in_progress') return '便签生效后不能修改原始生效时间。'
-  if (status.value === 'completed') return '已完成便签的生效时间不可修改。'
-  return '弃用便签时，生效时间记录为弃用操作发生的时间。'
+  return '已完成便签的生效时间不可修改。'
 })
 
 const notifyHelp = computed(() => {
   if (status.value === 'initialized') return '初始化状态可以修改系统提醒设置。'
-  if (status.value === 'cancelled') return '已弃用便签不会发送系统提醒。'
   return '便签进入当前状态后，系统提醒设置不可修改。'
 })
 
@@ -125,28 +120,8 @@ const hasChanges = computed(() => {
     JSON.stringify(normalizedTags(tagNames.value)) !== JSON.stringify(initial.tagNames)
 })
 
-const confirmCopy = computed(() => confirmKind.value === 'cancel-note'
-  ? {
-      title: '弃用这条便签？',
-      message: '弃用表示不再使用这条便签，但不会将其删除。确认后会在当前草稿中关闭提醒并把生效时间设为当前时间，只有保存修改后才会写入数据库。',
-      confirmText: '确认弃用',
-      cancelText: '返回编辑'
-    }
-  : {
-      title: '放弃未保存的修改？',
-      message: '正文、属性、状态和附件草稿都将恢复为打开编辑器时的内容。',
-      confirmText: '放弃修改',
-      cancelText: '继续编辑'
-    })
-
 function onAttachmentDraftChange(changes) {
   attachmentDirty.value = !!changes?.dirty
-}
-
-function requestCancelNote() {
-  if (!canCancel.value || saving.value) return
-  confirmKind.value = 'cancel-note'
-  confirmVisible.value = true
 }
 
 function requestClose() {
@@ -155,24 +130,17 @@ function requestClose() {
     emit('cancel')
     return
   }
-  confirmKind.value = 'discard'
   confirmVisible.value = true
 }
 
 function handleConfirm() {
-  if (confirmKind.value === 'cancel-note') {
-    status.value = 'cancelled'
-    effectiveAt.value = formatDateTime(Date.now())
-    notifyEnabled.value = false
-    return
-  }
   emit('cancel')
 }
 
 async function handleSave() {
   if (saving.value || !hasChanges.value) return
-  const text = content.value.trim()
-  if (!text) {
+  const text = content.value
+  if (!text.trim()) {
     showMessage('warning', '请输入便签内容')
     return
   }
@@ -188,8 +156,6 @@ async function handleSave() {
       showMessage('warning', '生效时间需在当前时间 5 分钟之后')
       return
     }
-  } else if (status.value === 'cancelled') {
-    effectiveTimestamp = Date.now()
   }
 
   saving.value = true
@@ -277,10 +243,6 @@ defineExpose({ requestClose })
     </div>
 
     <div class="ne-footer ne-stagger" style="animation-delay: 230ms">
-      <button v-if="canCancel" class="ne-cancel-note" :disabled="saving" @click="requestCancelNote">
-        弃用便签
-      </button>
-      <div class="ne-footer-spacer" />
       <button class="ne-dismiss" :disabled="saving" @click="requestClose">
         {{ hasChanges ? '放弃修改' : '关闭' }}
       </button>
@@ -291,10 +253,10 @@ defineExpose({ requestClose })
 
     <ConfirmDialog
       v-model:visible="confirmVisible"
-      :title="confirmCopy.title"
-      :message="confirmCopy.message"
-      :confirm-text="confirmCopy.confirmText"
-      :cancel-text="confirmCopy.cancelText"
+      title="放弃未保存的修改？"
+      message="正文、属性、状态和附件草稿都将恢复为打开编辑器时的内容。"
+      confirm-text="放弃修改"
+      cancel-text="继续编辑"
       variant="danger"
       @confirm="handleConfirm"
     />
@@ -314,7 +276,7 @@ defineExpose({ requestClose })
   min-width: 0;
   min-height: 0;
   overflow-x: hidden;
-  padding: 0 14rem 16rem;
+  padding: 14rem 14rem 16rem;
   -webkit-mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
 }
@@ -360,21 +322,6 @@ defineExpose({ requestClose })
 .ne-status--initialized { color: #007aff; }
 .ne-status--in_progress { color: #ff9500; }
 .ne-status--completed { color: #34c759; }
-.ne-status--cancelled { color: #ff3b30; }
-.ne-cancel-note {
-  padding: 10rem 14rem;
-  border: 0;
-  border-radius: 7rem;
-  background: color-mix(in srgb, #ff3b30 12%, transparent);
-  color: #ff3b30;
-  font-family: inherit;
-  font-size: var(--fs-body);
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color 140ms ease, transform 70ms ease;
-}
-.ne-cancel-note:hover:not(:disabled) { background: color-mix(in srgb, #ff3b30 20%, transparent); }
-.ne-cancel-note:active:not(:disabled) { transform: scale(0.96); }
 .ne-footer {
   display: flex;
   justify-content: flex-end;
@@ -383,7 +330,6 @@ defineExpose({ requestClose })
   margin: 0 14rem 14rem;
   flex-shrink: 0;
 }
-.ne-footer-spacer { flex: 1; }
 .ne-dismiss,
 .ne-submit {
   padding: 10rem 16rem;
@@ -409,6 +355,5 @@ defineExpose({ requestClose })
 .ne-dismiss:active:not(:disabled),
 .ne-submit:active:not(:disabled) { transform: scale(0.97); }
 .ne-dismiss:disabled,
-.ne-submit:disabled,
-.ne-cancel-note:disabled { opacity: 0.4; cursor: not-allowed; }
+.ne-submit:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

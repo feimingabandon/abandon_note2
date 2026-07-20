@@ -38,19 +38,20 @@ import {
   createNote,
   updateNote,
   deleteNote,
+  purgeNote,
   getNoteById,
   queryPinnedNotes,
   queryRecentNotes,
   queryEarlierNotes,
   queryCustomPinned,
   queryCustomNormal,
+  searchNotes,
   countActiveNotes,
   reorderCustomSortOrder,
   updateCustomSortOrders,
   startProgress,
   completeNote,
   reopenNote,
-  cancelNote,
   activateNotes,
   snoozeNote,
   claimDueSnoozedNotes
@@ -80,6 +81,8 @@ import {
   cleanupStagedImage,
   stageImageDeletion,
   restoreStagedImageDeletion,
+  stageNoteImagesDeletion,
+  cleanupStagedNoteImages,
   deleteImageFile,
   deleteNoteImages,
   getImageBase64,
@@ -1362,10 +1365,7 @@ app.whenReady().then(async () => {
     if (!content) throw new Error('请输入便签内容')
 
     const requestedStatus = String(fields.status || original.status)
-    const isCancelling = requestedStatus === 'cancelled' && original.status !== 'cancelled'
-    if (requestedStatus !== original.status && !(
-      isCancelling && ['initialized', 'in_progress'].includes(original.status)
-    )) {
+    if (requestedStatus !== original.status) {
       throw new Error(`不允许的状态修改：${original.status} → ${requestedStatus}`)
     }
 
@@ -1410,13 +1410,7 @@ app.whenReady().then(async () => {
       let finishedAt = current.finished_at
       let remindAgainAt = current.remind_again_at
 
-      if (isCancelling) {
-        status = 'cancelled'
-        effectiveAt = timestamp
-        notifyEnabled = 0
-        finishedAt = timestamp
-        remindAgainAt = null
-      } else if (current.status === 'initialized') {
+      if (current.status === 'initialized') {
         const requestedEffectiveAt = Number(fields.effectiveAt)
         if (!Number.isFinite(requestedEffectiveAt) || requestedEffectiveAt <= 0) {
           throw new Error('请选择有效的生效时间')
@@ -1487,6 +1481,29 @@ app.whenReady().then(async () => {
     return deleted
   })
 
+  // 【便签 - 彻底删除】先隔离附件目录，数据库失败时恢复；成功后异步清理文件。
+  ipcMain.handle('notes:purge', async (_event, { id }) => {
+    const noteId = Number(id)
+    if (!Number.isInteger(noteId) || noteId <= 0) throw new Error('无效的便签 ID')
+    if (!getDb().prepare('SELECT id FROM notes WHERE id = ?').get(noteId)) return false
+
+    const stagedImages = stageNoteImagesDeletion(noteId)
+    try {
+      const purged = purgeNote(noteId)
+      if (!purged) {
+        restoreStagedImageDeletion(stagedImages)
+        return false
+      }
+    } catch (error) {
+      restoreStagedImageDeletion(stagedImages)
+      throw error
+    }
+
+    await cleanupStagedNoteImages(stagedImages)
+    mainWindow?.webContents.send('notes:changed', { reason: 'purge', id: noteId })
+    return true
+  })
+
   // 【便签 - 获取单条（含附件和标签）】
   ipcMain.handle('notes:get', (_event, { id }) => {
     return getNoteById(id)
@@ -1519,6 +1536,11 @@ app.whenReady().then(async () => {
     return queryCustomNormal(options || {})
   })
 
+  // 【便签 - 独立搜索工作区】
+  ipcMain.handle('notes:search', (_event, options) => {
+    return searchNotes(options || {})
+  })
+
   // 【便签 - 未删除总数（不受列表筛选影响）】
   ipcMain.handle('notes:count-active', () => {
     return countActiveNotes()
@@ -1546,11 +1568,6 @@ app.whenReady().then(async () => {
   // 【便签 - 重新进行】
   ipcMain.handle('notes:reopen', (_event, { id }) => {
     return reopenNote(id)
-  })
-
-  // 【便签 - 取消】
-  ipcMain.handle('notes:cancel', (_event, { id }) => {
-    return cancelNote(id)
   })
 
   // ---- 标签 CRUD IPC ----

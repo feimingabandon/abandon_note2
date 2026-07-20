@@ -29,7 +29,10 @@ function onDragMove(event) {
   if (!dragging || !textareaRef.value || dragRaf) return
   dragRaf = requestAnimationFrame(() => {
     dragRaf = null
-    const height = Math.max(props.minHeight, Math.min(props.maxHeight, startHeight + event.clientY - startY))
+    const height = Math.max(
+      props.minHeight,
+      Math.min(props.maxHeight, startHeight + event.clientY - startY)
+    )
     textareaRef.value.style.height = `${height}px`
   })
 }
@@ -42,8 +45,8 @@ function onDragEnd() {
   document.removeEventListener('mouseup', onDragEnd)
 }
 
-function focus() {
-  textareaRef.value?.focus()
+function focus(options) {
+  textareaRef.value?.focus(options)
 }
 
 onBeforeUnmount(onDragEnd)
@@ -67,7 +70,9 @@ defineExpose({ focus })
 </template>
 
 <style scoped>
-.rt-root { min-width: 0; }
+.rt-root {
+  min-width: 0;
+}
 .rt-textarea {
   display: block;
   width: 100%;
@@ -85,8 +90,13 @@ defineExpose({ focus })
   line-height: 1.5;
   transition: border-color 150ms ease;
 }
-.rt-textarea:focus { border-color: rgb(var(--bg-color) / 0.18); }
-.rt-textarea::placeholder { color: var(--text-color-secondary); opacity: 0.5; }
+.rt-textarea:focus {
+  border-color: rgb(var(--bg-color) / 0.18);
+}
+.rt-textarea::placeholder {
+  color: var(--text-color-secondary);
+  opacity: 0.5;
+}
 .rt-resize {
   display: flex;
   justify-content: center;

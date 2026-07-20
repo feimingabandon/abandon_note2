@@ -3,7 +3,7 @@
  * NoteList.vue — 便签列表（时间线 + 自定义拖拽双模式）
  *
  * 3.5 + 3.6: 新增自定义拖拽模式，集成 vuedraggable
- * - 四状态：initialized / in_progress / completed / cancelled
+ * - 三状态：initialized / in_progress / completed
  */
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import draggable from 'vuedraggable'
@@ -13,7 +13,7 @@ import NoteCard from './NoteCard.vue'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
 
-const emit = defineEmits(['select', 'edit'])
+const emit = defineEmits(['edit'])
 
 /** 排序模式：timeline | custom */
 const sortMode = ref(DEFAULT_SETTINGS.listFilter.listMode)
@@ -103,8 +103,18 @@ const loading = ref(false)
 const loadError = ref(null)
 /** 全部未删除便签总数，不受当前标签/状态筛选影响。 */
 const allNoteTotal = ref(0)
+const lastRefreshedAt = ref(null)
+const lastRefreshLabel = computed(() => formatRefreshTime(lastRefreshedAt.value))
 const timelineScrollRef = ref(null)
 const customScrollRef = ref(null)
+
+function formatRefreshTime(timestamp) {
+  if (!timestamp) return ''
+  const date = new Date(timestamp)
+  return [date.getHours(), date.getMinutes(), date.getSeconds()]
+    .map((value) => String(value).padStart(2, '0'))
+    .join(':')
+}
 
 /** 标签筛选名称列表 */
 const tagFilterNames = ref([...DEFAULT_SETTINGS.listFilter.tagNames])
@@ -140,8 +150,7 @@ function onPanelClick(value) {
 const statusOptions = [
   { value: 'initialized', label: '初始化' },
   { value: 'in_progress', label: '进行中' },
-  { value: 'completed', label: '完成' },
-  { value: 'cancelled', label: '弃用' }
+  { value: 'completed', label: '完成' }
 ]
 
 /** 切换状态筛选 */
@@ -254,6 +263,7 @@ async function loadAll({ showLoading = true, preserveAnchor = false } = {}) {
       }
     }
     await restoreScrollAnchor(anchor)
+    lastRefreshedAt.value = Date.now()
     return { status: 'success' }
   } catch (e) {
     console.error('[NoteList] 加载列表失败:', e)
@@ -365,7 +375,7 @@ async function loadCustom({ showLoading = true, preserveAnchor = false } = {}) {
   try {
     const statuses = statusFilter.value.length > 0
       ? [...statusFilter.value]
-      : ['initialized', 'in_progress', 'completed', 'cancelled']
+      : ['initialized', 'in_progress', 'completed']
     const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
 
     const normalLimit = preserveAnchor
@@ -384,6 +394,7 @@ async function loadCustom({ showLoading = true, preserveAnchor = false } = {}) {
     customNormalHasMore.value = customNormalOffset.value < customNormalTotal.value
     allNoteTotal.value = Number(activeTotal) || 0
     await restoreScrollAnchor(anchor)
+    lastRefreshedAt.value = Date.now()
     return { status: 'success' }
   } catch (e) {
     console.error('[NoteList] 加载自定义列表失败:', e)
@@ -403,7 +414,7 @@ async function loadCustomMore() {
   try {
     const statuses = statusFilter.value.length > 0
       ? [...statusFilter.value]
-      : ['initialized', 'in_progress', 'completed', 'cancelled']
+      : ['initialized', 'in_progress', 'completed']
     const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
 
     const result = await window.api.queryCustomNormal({
@@ -744,7 +755,10 @@ async function refreshOne(noteOrId) {
   const updated = typeof noteOrId === 'object' && Array.isArray(noteOrId.tags)
     ? noteOrId
     : await window.api.getNote(id)
-  if (updated && !patchVisibleNote(updated)) await refreshInBackground()
+  if (updated) {
+    if (!patchVisibleNote(updated)) await refreshInBackground()
+    else lastRefreshedAt.value = Date.now()
+  }
 }
 
 let presenceMotionSeq = 0
@@ -1077,6 +1091,9 @@ defineExpose({
           >
             <span class="nl-group-label">{{ g.label }}</span>
             <span class="nl-group-count">· {{ g.count ?? g.items.length }}条</span>
+            <span v-if="lastRefreshLabel" class="nl-group-refresh-time">
+              · 刷新 {{ lastRefreshLabel }}
+            </span>
             <svg
               v-if="g.group === 'earlier'"
               width="12" height="12" viewBox="0 0 24 24"
@@ -1094,7 +1111,6 @@ defineExpose({
               :key="note.id"
               :note="note"
               :status-transition="statusTransitionFor(note.id)"
-              @select="emit('select', $event)"
               @edit="emit('edit', $event)"
               @status-action="onCardStatusAction"
             />
@@ -1122,6 +1138,9 @@ defineExpose({
         <div class="nl-zone-label">
           <span>置顶</span>
           <span class="nl-group-count">· {{ customPinnedNotes.length }}条</span>
+          <span v-if="lastRefreshLabel" class="nl-group-refresh-time">
+            · 刷新 {{ lastRefreshLabel }}
+          </span>
         </div>
         <draggable
           v-model="customPinnedNotes"
@@ -1138,7 +1157,6 @@ defineExpose({
               :note="note"
               draggable
               :status-transition="statusTransitionFor(note.id)"
-              @select="emit('select', $event)"
               @edit="emit('edit', $event)"
               @status-action="onCardStatusAction"
             />
@@ -1151,6 +1169,9 @@ defineExpose({
         <div class="nl-zone-label">
           <span>日常</span>
           <span class="nl-group-count">· {{ customNormalTotal }}条</span>
+          <span v-if="lastRefreshLabel" class="nl-group-refresh-time">
+            · 刷新 {{ lastRefreshLabel }}
+          </span>
         </div>
         <draggable
           v-model="customNormalNotes"
@@ -1167,7 +1188,6 @@ defineExpose({
               :note="note"
               draggable
               :status-transition="statusTransitionFor(note.id)"
-              @select="emit('select', $event)"
               @edit="emit('edit', $event)"
               @status-action="onCardStatusAction"
             />
@@ -1383,11 +1403,18 @@ defineExpose({
 }
 .nl-group-label,
 .nl-group-count,
+.nl-group-refresh-time,
 .nl-group-chevron { flex-shrink: 0; }
 .nl-group-count {
   font-size: calc(var(--fs-secondary) * 0.82);
   font-weight: 400;
   opacity: 0.66;
+}
+.nl-group-refresh-time {
+  font-size: calc(var(--fs-secondary) * 0.78);
+  font-weight: 400;
+  opacity: 0.52;
+  white-space: nowrap;
 }
 .nl-group--earlier-toggle + .nl-section { margin-top: 8rem; }
 

@@ -7,7 +7,7 @@
  * autoStart 刻意不在这里：开机自启以操作系统真实状态为准，不写入 app_settings。
  */
 
-const VALID_NOTE_STATUSES = new Set(['initialized', 'in_progress', 'completed', 'cancelled'])
+const VALID_NOTE_STATUSES = new Set(['initialized', 'in_progress', 'completed'])
 
 const DEFAULT_LIST_FILTER = {
   listMode: 'timeline',

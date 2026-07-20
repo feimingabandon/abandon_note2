@@ -48,6 +48,8 @@ const noteEditorRef = ref(null)
 
 /** NoteList 引用 */
 const noteListRef = ref(null)
+/** ActionBar 引用：编辑保存后同步刷新仍处于会话中的搜索结果。 */
+const actionBarRef = ref(null)
 
 /** 窗口锁定状态 */
 const locked = ref(DEFAULT_SETTINGS.window.lockState)
@@ -125,16 +127,19 @@ function requestCloseEditor() {
 
 async function onNoteSaved(updated) {
   if (updated?.id) await noteListRef.value?.refreshOne(updated)
+  actionBarRef.value?.refreshSearch?.()
   onCloseEditor()
 }
 
 async function onNoteUpdated(updated) {
   if (updated) selectedNote.value = updated
   if (updated?.id) await noteListRef.value?.refreshOne(updated)
+  actionBarRef.value?.refreshSearch?.()
 }
 
 async function onCreateNote() {
   noteListRef.value?.refresh()
+  actionBarRef.value?.refreshSearch?.()
 }
 
 onUnmounted(() => {
@@ -197,7 +202,12 @@ onUnmounted(() => {
       <!-- 主内容区域，flex:1 占据剩余空间，支持垂直滚动 -->
       <main class="content">
         <!-- 操作栏（新建 + 搜索，双模切换） -->
-        <ActionBar class="app-search" @create="onCreateNote" />
+        <ActionBar
+          ref="actionBarRef"
+          class="app-search"
+          @create="onCreateNote"
+          @edit="onEditNote"
+        />
 
         <!-- 列表视图 -->
         <NoteList
@@ -369,7 +379,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   width: min(620rem, 100%);
-  height: min(620rem, 100%);
+  height: min(639rem, 100%);
   min-height: 0;
   overflow: hidden;
   background-color: rgb(var(--bg-color) / var(--glass-opacity-base));

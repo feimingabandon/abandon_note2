@@ -1,92 +1,108 @@
 <script setup>
-/**
- * ActionBar.vue — 首页顶部工具栏
- *
- * 折叠态：两个圆角矩形框，flex-grow 跷跷板切换
- * 展开态：活跃框在文档流内向下生长，挤占下方内容
- * 新建表单内容由 NewNotePanel.vue 独立管理
- */
-import { ref, computed, onBeforeUnmount } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import NewNotePanel from './NewNotePanel.vue'
 import SearchBox from './SearchBox.vue'
 
-const emit = defineEmits(['create'])
+const emit = defineEmits(['create', 'edit'])
 
-// ============================================================
-// 状态
-// ============================================================
-const mode = ref('new') // 'new' | 'search'
-const expanded = ref(false)
-const collapsing = ref(false) // 收起动画进行中，保持展开内容但缩高
-const expandHeight = ref(50) // vh，默认 50vh
+const mode = ref('new')
+const phase = ref('collapsed') // collapsed | opening | open | closing-content | closing
+const expandHeight = ref(58)
 const resizing = ref(false)
+const searchBoxRef = ref(null)
+let pendingMode = null
+let pendingOpen = false
 
-// ============================================================
-// 每个框的动态 class
-// ============================================================
+const geometryExpanded = computed(() =>
+  ['opening', 'open', 'closing-content'].includes(phase.value)
+)
+const contentVisible = computed(() => phase.value === 'open')
+const activeUntilCollapsed = computed(() => phase.value !== 'collapsed')
+
 const newBoxClass = computed(() => {
-  if (expanded.value && !collapsing.value) {
-    return mode.value === 'new' ? 'ab-box--expand' : 'ab-box--hidden'
-  }
-  // 收起中 & 完全折叠：都用跷跷板布局，flex-grow 参与宽度过渡
+  if (geometryExpanded.value) return mode.value === 'new' ? 'ab-box--expand' : 'ab-box--hidden'
   return { 'ab-box--grow': mode.value === 'new' }
 })
 const searchBoxClass = computed(() => {
-  if (expanded.value && !collapsing.value) {
-    return mode.value === 'search' ? 'ab-box--expand' : 'ab-box--hidden'
-  }
+  if (geometryExpanded.value) return mode.value === 'search' ? 'ab-box--expand' : 'ab-box--hidden'
   return { 'ab-box--grow': mode.value === 'search' }
 })
 
-// ============================================================
-// 展开/收起
-// ============================================================
-function toggleExpand() {
-  if (collapsing.value) return // 收起动画中忽略
-  expanded.value = !expanded.value
-}
-function closeExpanded() {
-  collapsing.value = true
-  setTimeout(() => {
-    expanded.value = false
-    collapsing.value = false
-  }, 300)
+function openExpanded() {
+  if (phase.value !== 'collapsed') return
+  phase.value = 'opening'
 }
 
-// ============================================================
-// 按钮点击 → 切换模式；展开时自身按钮变为折叠按钮
-// ============================================================
-function onNewBtnClick() {
-  if (expanded.value && mode.value === 'new') {
-    closeExpanded()
-    return
-  }
-  if (expanded.value) {
-    closeExpanded()
-    mode.value = 'new'
-    return
-  }
-  if (mode.value === 'new') {
-    toggleExpand()
-    return
-  }
-  mode.value = 'new'
+function closeExpanded(nextMode = null, reopen = false) {
+  if (phase.value !== 'open') return
+  pendingMode = nextMode
+  pendingOpen = reopen
+  // 新建面板的内容淡出与外壳收缩并行；搜索结果较密集，仍先淡出内容再收壳。
+  phase.value = mode.value === 'new' ? 'closing' : 'closing-content'
 }
+
+function onContentTransitionEnd(event, kind) {
+  if (event.target !== event.currentTarget || event.propertyName !== 'opacity') return
+  if (phase.value === 'closing-content' && mode.value === kind) phase.value = 'closing'
+}
+
+function onBoxTransitionEnd(event, kind) {
+  if (event.target !== event.currentTarget || event.propertyName !== 'height') return
+  if (mode.value !== kind) return
+  if (phase.value === 'opening') {
+    phase.value = 'open'
+    return
+  }
+  if (phase.value !== 'closing') return
+  phase.value = 'collapsed'
+  const nextMode = pendingMode
+  const shouldReopen = pendingOpen
+  pendingMode = null
+  pendingOpen = false
+  if (nextMode) mode.value = nextMode
+  if (shouldReopen) requestAnimationFrame(openExpanded)
+}
+
+function onModeButtonClick(targetMode) {
+  if (phase.value !== 'collapsed') {
+    if (phase.value === 'open') closeExpanded(targetMode === mode.value ? null : targetMode)
+    return
+  }
+  // 折叠态点击另一侧时只切换宽度权重，保留原有的左右推拉反馈；
+  // 再次点击当前侧才真正展开面板。
+  if (targetMode !== mode.value) {
+    mode.value = targetMode
+    return
+  }
+  openExpanded()
+}
+
+function onNewBtnClick() {
+  onModeButtonClick('new')
+}
+
 function onSearchBtnClick() {
-  if (expanded.value && mode.value === 'search') {
-    closeExpanded()
+  onModeButtonClick('search')
+}
+
+function openSearch() {
+  if (phase.value === 'open' && mode.value === 'search') {
+    searchBoxRef.value?.focus?.()
     return
   }
-  if (expanded.value) {
-    closeExpanded()
+  if (phase.value === 'collapsed') {
     mode.value = 'search'
+    openExpanded()
     return
   }
-  if (mode.value === 'search') {
-    toggleExpand()
-    return
-  }
-  mode.value = 'search'
+  if (phase.value === 'open') closeExpanded('search', true)
+}
+
+function onGlobalKeydown(event) {
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f') return
+  if (document.querySelector('.app-scene[inert]')) return
+  event.preventDefault()
+  openSearch()
 }
 
 // ============================================================
@@ -115,7 +131,7 @@ function onDragMove(e) {
     const deltaY = e.clientY - dragStartY
     const deltaVh = (deltaY / window.innerHeight) * 100
     let h = Math.round(dragStartHeight + deltaVh)
-    h = Math.max(25, Math.min(85, h))
+    h = Math.max(30, Math.min(85, h))
     expandHeight.value = h
   })
 }
@@ -134,7 +150,10 @@ function onDragEnd() {
 onBeforeUnmount(() => {
   document.removeEventListener('mousemove', onDragMove)
   document.removeEventListener('mouseup', onDragEnd)
+  window.removeEventListener('keydown', onGlobalKeydown)
 })
+
+onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
 
 // ============================================================
 // 新建便签创建完成回调
@@ -143,25 +162,53 @@ function onNoteCreated() {
   emit('create')
 }
 
+function onSearchEdit(note) {
+  emit('edit', note)
+}
+
 // ============================================================
 // 展开态高度
 // ============================================================
 const expandBoxStyle = computed(() => {
-  if (!expanded.value || collapsing.value) return {}
+  if (!geometryExpanded.value) return {}
   return { height: expandHeight.value + 'vh' }
 })
 
-// ============================================================
-// 当前是否展开（含收起动画中）
-// ============================================================
-const isNewExpanded = computed(() => (expanded.value || collapsing.value) && mode.value === 'new')
-const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && mode.value === 'search')
+const isNewExpanded = computed(() => activeUntilCollapsed.value && mode.value === 'new')
+const isSearchExpanded = computed(() => activeUntilCollapsed.value && mode.value === 'search')
+
+function isHintInteractive(kind) {
+  return mode.value === kind && phase.value === 'collapsed'
+}
+
+function hintClass(kind) {
+  return {
+    'is-selected': mode.value === kind
+  }
+}
+
+defineExpose({
+  refreshSearch: () => searchBoxRef.value?.refresh?.()
+})
 </script>
 
 <template>
-  <div class="ab-root" :class="{ 'ab-root--expanded': expanded && !collapsing }">
+  <div
+    class="ab-root"
+    :class="{
+      'ab-root--expanded': geometryExpanded,
+      'ab-root--resizing': resizing,
+      'ab-root--collapsed': phase === 'collapsed'
+    }"
+    :data-phase="phase"
+  >
     <!-- ===== 新建框 ===== -->
-    <div class="ab-box" :class="newBoxClass" :style="expandBoxStyle">
+    <div
+      class="ab-box"
+      :class="newBoxClass"
+      :style="expandBoxStyle"
+      @transitionend="onBoxTransitionEnd($event, 'new')"
+    >
       <!-- 按钮始终可见，固定在左上角 -->
       <button
         class="ab-box-btn ab-btn-fixed"
@@ -190,28 +237,48 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
         </svg>
       </button>
 
-      <!-- 内容区域：折叠 ↔ 展开 过渡 -->
-      <Transition name="ab-fade" mode="out-in">
-        <!-- 折叠态：仅提示文字 -->
-        <div v-if="!isNewExpanded" key="collapsed" class="ab-rest ab-rest--start">
-          <span
-            v-if="mode === 'new'"
-            class="ab-box-hint"
-            @click.stop="toggleExpand"
-          >请新建一次性便签内容…</span>
-        </div>
+      <button
+        type="button"
+        class="ab-inline-hint ab-inline-hint--new"
+        :class="hintClass('new')"
+        aria-label="展开新建面板"
+        :aria-hidden="!isHintInteractive('new')"
+        :tabindex="isHintInteractive('new') ? 0 : -1"
+        @click.stop="openExpanded"
+      >
+        <span class="ab-box-hint-motion">
+          <span class="ab-box-hint">请新建一次性便签内容…</span>
+        </span>
+      </button>
 
-        <div v-else key="expanded" class="ab-rest ab-rest--column">
-          <NewNotePanel @create="onNoteCreated" />
-          <div class="ab-drag-handle" @mousedown="onDragStart">
-            <div class="ab-drag-bar" />
-          </div>
+      <button
+        v-if="contentVisible && mode === 'new'"
+        type="button"
+        class="ab-collapse-row-hit ab-collapse-row-hit--start"
+        title="折叠新建面板"
+        aria-label="折叠新建面板"
+        @click.stop="closeExpanded()"
+      />
+
+      <div
+        class="ab-content-layer ab-content-layer--expanded"
+        :class="{ 'is-visible': contentVisible && mode === 'new' }"
+        @transitionend="onContentTransitionEnd($event, 'new')"
+      >
+        <NewNotePanel :active="contentVisible && mode === 'new'" @create="onNoteCreated" />
+        <div class="ab-drag-handle" @mousedown="onDragStart">
+          <div class="ab-drag-bar" />
         </div>
-      </Transition>
+      </div>
     </div>
 
     <!-- ===== 搜索框 ===== -->
-    <div class="ab-box ab-box--search" :class="searchBoxClass" :style="expandBoxStyle">
+    <div
+      class="ab-box ab-box--search"
+      :class="searchBoxClass"
+      :style="expandBoxStyle"
+      @transitionend="onBoxTransitionEnd($event, 'search')"
+    >
       <!-- 按钮始终可见，固定在右上角 -->
       <button
         class="ab-box-btn ab-btn-fixed ab-btn-fixed--right"
@@ -224,14 +291,7 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
           :class="{ 'ab-icon--hide': isSearchExpanded }"
           viewBox="0 0 1024 1024"
         >
-          <circle
-            cx="370"
-            cy="370"
-            r="210"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="100"
-          />
+          <circle cx="370" cy="370" r="210" fill="none" stroke="currentColor" stroke-width="100" />
           <path
             d="M 530 530 L 780 780"
             fill="none"
@@ -263,25 +323,45 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
         </svg>
       </button>
 
-      <!-- 内容区域：折叠 ↔ 展开 过渡 -->
-      <Transition name="ab-fade" mode="out-in">
-        <!-- 折叠态：仅提示文字 -->
-        <div v-if="!isSearchExpanded" key="collapsed" class="ab-rest ab-rest--end">
-          <span
-            v-if="mode === 'search'"
-            class="ab-box-hint"
-            @click.stop="toggleExpand"
-          >请输入搜索内容</span>
-        </div>
+      <button
+        type="button"
+        class="ab-inline-hint ab-inline-hint--search"
+        :class="hintClass('search')"
+        aria-label="展开搜索面板"
+        :aria-hidden="!isHintInteractive('search')"
+        :tabindex="isHintInteractive('search') ? 0 : -1"
+        @click.stop="openExpanded"
+      >
+        <span class="ab-box-hint-motion">
+          <span class="ab-box-hint">请输入搜索内容</span>
+        </span>
+      </button>
 
-        <!-- 展开态：标题 + 面板 + 拖拽条 -->
-        <div v-else key="expanded" class="ab-rest ab-rest--column">
-          <SearchBox />
-          <div class="ab-drag-handle" @mousedown="onDragStart">
-            <div class="ab-drag-bar" />
-          </div>
+      <button
+        v-if="contentVisible && mode === 'search'"
+        type="button"
+        class="ab-collapse-row-hit ab-collapse-row-hit--end"
+        title="折叠搜索面板"
+        aria-label="折叠搜索面板"
+        @click.stop="closeExpanded()"
+      />
+
+      <div
+        class="ab-content-layer ab-content-layer--expanded"
+        :class="{ 'is-visible': contentVisible && mode === 'search' }"
+        @transitionend="onContentTransitionEnd($event, 'search')"
+      >
+        <SearchBox
+          ref="searchBoxRef"
+          :active="contentVisible && mode === 'search'"
+          :motion-phase="phase"
+          @edit="onSearchEdit"
+          @request-close="closeExpanded()"
+        />
+        <div class="ab-drag-handle" @mousedown="onDragStart">
+          <div class="ab-drag-bar" />
         </div>
-      </Transition>
+      </div>
     </div>
   </div>
 </template>
@@ -289,6 +369,7 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
 <style scoped>
 /* === 根容器 === */
 .ab-root {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 6rem;
@@ -330,8 +411,14 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
 /* 展开时非活跃框：宽度收缩到 0 + 淡出（不用 display:none，保证可过渡） */
 .ab-box--hidden {
   flex-basis: 0;
+  flex-grow: 0;
   opacity: 0;
   pointer-events: none;
+}
+
+/* 拖动高度时直接跟手，松开后再恢复常规高度过渡。 */
+.ab-root--resizing .ab-box {
+  transition-property: flex-grow, flex-basis, opacity;
 }
 
 /* === 通用按钮 === */
@@ -369,6 +456,29 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
   right: 0;
 }
 
+/* 展开后保留整条顶部行作为折叠热区，与折叠态辅助文字的点击位置相呼应。 */
+.ab-collapse-row-hit {
+  position: absolute;
+  top: 0;
+  z-index: 1;
+  height: 36rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.ab-collapse-row-hit--start {
+  left: 36rem;
+  right: 0;
+}
+.ab-collapse-row-hit--end {
+  left: 0;
+  right: 36rem;
+}
+.ab-collapse-row-hit:hover {
+  background: rgba(128, 128, 128, 0.025);
+}
+
 /* === SVG 图标 === */
 .ab-icon {
   width: 16rem;
@@ -397,25 +507,99 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
   pointer-events: none;
 }
 
-/* === 折叠态内容区（按钮之外的剩余空间） === */
-.ab-rest {
+/* === 展开态内容层 === */
+.ab-content-layer {
+  position: absolute;
+  inset: 0;
   display: flex;
-  flex: 1;
   min-height: 0;
   min-width: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 130ms ease,
+    visibility 0s linear 130ms;
 }
-.ab-rest--start {
-  padding-left: 36rem;
-  align-items: center;
-}
-.ab-rest--end {
-  padding-right: 36rem;
-  justify-content: flex-end;
-  align-items: center;
+.ab-content-layer.is-visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
 }
 
+/* === 单实例辅助文字：外层补偿横向几何，内层负责纵向显隐 === */
+.ab-inline-hint {
+  position: absolute;
+  top: 0;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 36rem;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-color-secondary);
+  font: inherit;
+  pointer-events: none;
+  transform: translateX(0);
+  transition: transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.ab-inline-hint--new {
+  left: 36rem;
+  right: 0;
+}
+.ab-inline-hint--search {
+  left: 0;
+  right: 36rem;
+}
+.ab-root--collapsed .ab-inline-hint.is-selected {
+  pointer-events: auto;
+}
+
+/*
+ * 展开后活跃框的文字区域中心会横移半个“方形按钮 + 间距”，即 21rem。
+ * 外层用同曲线反向补偿，确保文字在宽度变化期间保持屏幕横坐标稳定。
+ */
+.ab-root[data-phase='opening'] .ab-inline-hint--new,
+.ab-root[data-phase='open'] .ab-inline-hint--new,
+.ab-root[data-phase='closing-content'] .ab-inline-hint--new {
+  transform: translateX(-21rem);
+}
+.ab-root[data-phase='opening'] .ab-inline-hint--search,
+.ab-root[data-phase='open'] .ab-inline-hint--search,
+.ab-root[data-phase='closing-content'] .ab-inline-hint--search {
+  transform: translateX(21rem);
+}
+
+.ab-box-hint-motion {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  opacity: 0;
+  transform: translateY(-9rem);
+  transition:
+    opacity 180ms ease,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.ab-root--collapsed .ab-box-hint-motion {
+  transform: translateY(0);
+}
+.ab-root--collapsed .ab-inline-hint.is-selected .ab-box-hint-motion {
+  opacity: 1;
+}
+.ab-inline-hint .ab-box-hint {
+  width: 100%;
+  padding: 0 12rem;
+  box-sizing: border-box;
+}
 /* === 展开态内容区（按钮下方，填满剩余高度） === */
-.ab-rest--column {
+.ab-content-layer--expanded {
   flex-direction: column;
   padding-top: 36rem;
 }
@@ -431,13 +615,13 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
 
 /* === 折叠态提示文字 === */
 .ab-box-hint {
-  flex: 1;
-  padding: 0 12rem;
+  display: block;
+  max-width: 100%;
   text-align: center;
   font-size: var(--fs-secondary);
-  color: var(--text-color-secondary);
   white-space: nowrap;
   overflow: hidden;
+  text-overflow: clip;
   cursor: pointer;
 }
 
@@ -455,12 +639,7 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
     black calc(100% - 30rem),
     transparent 100%
   );
-  mask-image: linear-gradient(
-    to bottom,
-    black 0%,
-    black calc(100% - 30rem),
-    transparent 100%
-  );
+  mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
 }
 
 /* === 拖拽条（底部） === */
@@ -477,19 +656,6 @@ const isSearchExpanded = computed(() => (expanded.value || collapsing.value) && 
   height: 4rem;
   border-radius: 2rem;
   background-color: rgba(255, 255, 255, 0.2);
-}
-
-/* === 内容切换过渡 === */
-.ab-fade-enter-active,
-.ab-fade-leave-active {
-  transition:
-    opacity var(--motion-control) ease,
-    transform var(--motion-control) var(--ease-standard);
-}
-.ab-fade-enter-from,
-.ab-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-5rem);
 }
 
 .ab-drag-handle:hover .ab-drag-bar {

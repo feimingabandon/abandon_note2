@@ -1,17 +1,15 @@
 /**
- * db-notes.js — 便签实例、四状态流转与列表摘要查询
+ * db-notes.js — 便签实例、三状态流转与列表摘要查询
  *
- * 状态模型：initialized → in_progress → completed
- *                    └───────────────→ cancelled
+ * 状态模型：initialized → in_progress ⇄ completed
  */
 import { getDb } from './db.js'
 
 const now = () => Date.now()
 const TRANSITIONS = {
-  initialized: new Set(['in_progress', 'cancelled']),
-  in_progress: new Set(['completed', 'cancelled']),
-  completed: new Set(['in_progress']),
-  cancelled: new Set()
+  initialized: new Set(['in_progress']),
+  in_progress: new Set(['completed']),
+  completed: new Set(['in_progress'])
 }
 
 // ============================================================
@@ -124,6 +122,12 @@ export function deleteNote(id) {
   return result.changes === 1
 }
 
+/** 物理删除：供明确的“彻底删除”入口使用，关联记录由外键级联清理。 */
+export function purgeNote(id) {
+  const result = getDb().prepare('DELETE FROM notes WHERE id = ?').run(id)
+  return result.changes === 1
+}
+
 /** 所有未删除便签总数，不受当前列表筛选条件影响。 */
 export function countActiveNotes() {
   return getDb().prepare('SELECT COUNT(*) AS total FROM notes WHERE is_deleted = 0').get().total
@@ -178,11 +182,6 @@ export function completeNote(id) {
 /** completed → in_progress：重新进行时按当前时间重新进入时间线。 */
 export function reopenNote(id) {
   return transitionNote(id, 'in_progress', { setEffectiveAtToNow: true })
-}
-
-/** initialized/in_progress → cancelled。 */
-export function cancelNote(id) {
-  return transitionNote(id, 'cancelled')
 }
 
 /**
@@ -292,8 +291,9 @@ export function claimDueSnoozedNotes() {
  * @typedef {Object} NoteListItem
  * @property {number} id
  * @property {string} content
- * @property {'initialized'|'in_progress'|'completed'|'cancelled'} status
+ * @property {'initialized'|'in_progress'|'completed'} status
  * @property {number} is_pinned
+ * @property {number} is_deleted
  * @property {number} notify_enabled
  * @property {number} effective_at
  * @property {number|null} finished_at
@@ -304,8 +304,15 @@ export function claimDueSnoozedNotes() {
  * @property {boolean} has_image
  */
 
-function buildWhereClause({ statuses, tagNames, search, extraWhere = [], extraParams = [] } = {}) {
-  const where = ['n.is_deleted = 0', ...extraWhere]
+function buildWhereClause({
+  statuses,
+  tagNames,
+  search,
+  includeDeleted = false,
+  extraWhere = [],
+  extraParams = []
+} = {}) {
+  const where = [...(includeDeleted ? [] : ['n.is_deleted = 0']), ...extraWhere]
   const params = [...extraParams]
 
   if (statuses?.length) {
@@ -375,6 +382,7 @@ function toNoteListItems(notes) {
       content: note.content,
       status: note.status,
       is_pinned: note.is_pinned,
+      is_deleted: note.is_deleted,
       notify_enabled: note.notify_enabled,
       effective_at: note.effective_at,
       finished_at: note.finished_at,
@@ -474,6 +482,67 @@ export function queryCustomNormal({ statuses, tagNames, search, limit = 10, offs
        ORDER BY n.sort_order ASC, n.created_at DESC LIMIT ? OFFSET ?`
     )
     .all(...params, limit, offset)
+  return { notes: toNoteListItems(notes), total }
+}
+
+// ============================================================
+// 独立搜索工作区
+// ============================================================
+
+/**
+ * 搜索全部便签。搜索拥有独立筛选状态，不继承首页列表条件。
+ * 标签沿用列表查询的 AND 语义；分页参数在主进程内收敛，避免异常大查询。
+ */
+export function searchNotes({
+  search,
+  statuses,
+  tagNames,
+  timeFrom,
+  timeTo,
+  onlyPinned = false,
+  hasAttachments = false,
+  includeDeleted = true,
+  sort = 'effective',
+  limit = 15,
+  offset = 0
+} = {}) {
+  const db = getDb()
+  const extraWhere = []
+  const extraParams = []
+  const parsedFrom = Number(timeFrom)
+  const parsedTo = Number(timeTo)
+
+  if (Number.isFinite(parsedFrom) && parsedFrom > 0) {
+    extraWhere.push('n.effective_at >= ?')
+    extraParams.push(parsedFrom)
+  }
+  if (Number.isFinite(parsedTo) && parsedTo > 0) {
+    extraWhere.push('n.effective_at <= ?')
+    extraParams.push(parsedTo)
+  }
+  if (onlyPinned) extraWhere.push('n.is_pinned = 1')
+  if (hasAttachments) {
+    extraWhere.push('EXISTS (SELECT 1 FROM note_attachments a WHERE a.note_id = n.id)')
+  }
+
+  const { whereClause, params } = buildWhereClause({
+    search,
+    statuses,
+    tagNames,
+    includeDeleted,
+    extraWhere,
+    extraParams
+  })
+  const safeLimit = Math.min(100, Math.max(1, Math.trunc(Number(limit)) || 15))
+  const safeOffset = Math.max(0, Math.trunc(Number(offset)) || 0)
+  const orderBy = sort === 'updated'
+    ? 'n.updated_at DESC, n.id DESC'
+    : 'n.effective_at DESC, n.created_at DESC'
+  const { total } = db.prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`).get(...params)
+  const notes = db
+    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
+    .all(...params, safeLimit, safeOffset)
+
   return { notes: toNoteListItems(notes), total }
 }
 

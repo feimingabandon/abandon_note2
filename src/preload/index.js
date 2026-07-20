@@ -84,6 +84,8 @@ const api = {
   saveNoteDraft: (payload) => ipcRenderer.invoke('notes:save-draft', payload),
   /** 逻辑删除便签（附件随记录保留，清空便签数据时物理清理） */
   deleteNote: (id) => ipcRenderer.invoke('notes:delete', { id }),
+  /** 彻底删除便签及其附件文件（不可恢复） */
+  purgeNote: (id) => ipcRenderer.invoke('notes:purge', { id }),
   /** 获取单条便签（含附件和标签） */
   getNote: (id) => ipcRenderer.invoke('notes:get', { id }),
   /** 查询便签列表 */
@@ -96,6 +98,8 @@ const api = {
   queryCustomPinned: (options) => ipcRenderer.invoke('notes:query-custom-pinned', options),
   /** 查询日常便签（自定义模式，分页） */
   queryCustomNormal: (options) => ipcRenderer.invoke('notes:query-custom-normal', options),
+  /** 在独立搜索工作区查询全部未删除便签 */
+  searchNotes: (options) => ipcRenderer.invoke('notes:search', options),
   /** 查询全部未删除便签总数（不受筛选影响） */
   countActiveNotes: () => ipcRenderer.invoke('notes:count-active'),
   /** 全局重排 sort_order（自定义模式） */
@@ -108,8 +112,6 @@ const api = {
   completeNote: (id) => ipcRenderer.invoke('notes:complete', { id }),
   /** 将已完成便签重新恢复为进行中 */
   reopenNote: (id) => ipcRenderer.invoke('notes:reopen', { id }),
-  /** 取消便签 */
-  cancelNote: (id) => ipcRenderer.invoke('notes:cancel', { id }),
   /** 监听调度器等主进程来源的便签变化；返回取消监听函数。 */
   onNotesChanged: (callback) => {
     const handler = (_event, payload) => callback(payload)

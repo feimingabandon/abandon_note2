@@ -4,7 +4,8 @@ import { computed } from 'vue'
 
 const props = defineProps({
   status: { type: String, required: true },
-  transitionState: { type: Object, default: null }
+  transitionState: { type: Object, default: null },
+  interactive: { type: Boolean, default: true }
 })
 
 const emit = defineEmits(['activate'])
@@ -13,12 +14,13 @@ const STATUS_META = {
   initialized: { label: '初始化', action: '提前开始', color: '#0A84FF' },
   in_progress: { label: '进行中', action: '标记完成', color: '#FF9F0A' },
   completed: { label: '已完成', action: '重新进行', color: '#30D158' },
-  cancelled: { label: '已弃用', action: '', color: '#8E8E93' }
+  deleted: { label: '已删除', action: '', color: '#FF453A' }
 }
 
-const meta = computed(() => STATUS_META[props.status] || STATUS_META.cancelled)
-const actionable = computed(() => ['initialized', 'in_progress', 'completed'].includes(props.status))
-const terminal = computed(() => props.status === 'cancelled')
+const meta = computed(() => STATUS_META[props.status] || STATUS_META.initialized)
+const actionable = computed(
+  () => props.interactive && ['initialized', 'in_progress', 'completed'].includes(props.status)
+)
 const phase = computed(() => props.transitionState?.phase || 'idle')
 const from = computed(() => props.transitionState?.from || props.status)
 const to = computed(() => props.transitionState?.to || props.status)
@@ -42,12 +44,12 @@ function activate() {
       `sr-control--${status}`,
       `sr-control--${phase}`,
       transitionName && `sr-control--${transitionName}`,
-      { 'sr-control--actionable': actionable, 'sr-control--terminal': terminal }
+      { 'sr-control--actionable': actionable }
     ]"
     :style="styleVars"
     :disabled="!actionable || busy"
-    :title="meta.action || meta.label"
-    :aria-label="meta.action || meta.label"
+    :title="actionable ? meta.action : meta.label"
+    :aria-label="actionable ? meta.action : meta.label"
     @click.stop="activate"
   >
     <svg class="sr-visual" viewBox="0 0 20 20" aria-hidden="true">
@@ -61,7 +63,6 @@ function activate() {
       <path class="sr-icon sr-icon--play" d="m8 6 5 4-5 4Z" />
       <path class="sr-icon sr-icon--progress" d="m5.2 10.2 3.1 3.1 6.6-7" pathLength="24" />
       <path class="sr-icon sr-icon--complete" d="m5.2 10.2 3.1 3.1 6.6-7" pathLength="24" />
-      <path class="sr-icon sr-icon--cancelled" d="m6.2 6.2 7.6 7.6M13.8 6.2l-7.6 7.6" />
       <circle class="sr-success-wave" cx="10" cy="10" r="7.6" />
       <circle class="sr-error-flash" cx="10" cy="10" r="7.6" pathLength="100" />
     </svg>
@@ -123,8 +124,7 @@ function activate() {
   transition: opacity 150ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .sr-icon--progress,
-.sr-icon--complete,
-.sr-icon--cancelled {
+.sr-icon--complete {
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
@@ -141,7 +141,6 @@ function activate() {
     transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
     clip-path 300ms cubic-bezier(0.32, 0.72, 0, 1);
 }
-.sr-icon--cancelled { opacity: 0; }
 .sr-complete-fill {
   fill: #30d158;
   opacity: 0;
@@ -153,9 +152,7 @@ function activate() {
 }
 .sr-control--completed .sr-track { stroke: color-mix(in srgb, #30d158 72%, #8a8a8a); }
 .sr-control--completed .sr-complete-fill,
-.sr-control--completed .sr-icon--complete,
-.sr-control--cancelled .sr-icon--cancelled { opacity: 1; }
-.sr-control--cancelled { opacity: 0.7; }
+.sr-control--completed .sr-icon--complete { opacity: 1; }
 
 /* 只显示内部图标，圆环本身没有 scale，因此不会发生亚像素挤压。 */
 .sr-control--initialized:hover .sr-icon--play,

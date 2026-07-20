@@ -1,6 +1,6 @@
 /** 循环便签生成的数据库编排；日期计算位于纯函数模块 recurrence-rules.js。 */
 import { getActiveTemplates, updateLastGeneratedAt } from '../db/db-templates.js'
-import { createNote, cancelNote } from '../db/db-notes.js'
+import { createNote, deleteNote } from '../db/db-notes.js'
 import { getDb } from '../db/db.js'
 import { shouldGenerate } from './recurrence-rules.js'
 
@@ -35,7 +35,7 @@ export function generateRecurringNotes() {
              AND status IN ('initialized','in_progress')`
         )
         .all(template.id)
-      for (const row of oldInstances) cancelNote(row.id)
+      for (const row of oldInstances) deleteNote(row.id)
 
       const newNote = createNote({
         content: template.content || '',

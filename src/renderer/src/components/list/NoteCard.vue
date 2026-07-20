@@ -5,9 +5,11 @@
  * 左侧状态圆环既表达状态，也承担主要状态操作：
  * initialized → 提前开始；in_progress → 完成；completed → 重新进行。
  */
-import { computed, ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { computed, ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import ImagePicker from '../note/ImagePicker.vue'
+import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import StatusRing from './StatusRing.vue'
+import { useMessage } from '../../composables/useMessage.js'
 
 // 所有卡片共享一个分钟时钟，避免每张卡片各自创建定时器。
 const sharedNow = ref(Date.now())
@@ -45,17 +47,17 @@ const props = defineProps({
   statusTransition: { type: Object, default: null }
 })
 
-const emit = defineEmits(['select', 'status-action', 'edit'])
+const emit = defineEmits(['status-action', 'edit'])
+const { showMessage } = useMessage()
 
 const STATUS_META = {
   initialized: { label: '初始化', color: '#0A84FF', action: '提前开始' },
   in_progress: { label: '进行中', color: '#FF9F0A', action: '标记完成' },
-  completed: { label: '已完成', color: '#30D158', action: '重新进行' },
-  cancelled: { label: '已弃用', color: '#8E8E93', action: '' }
+  completed: { label: '已完成', color: '#30D158', action: '重新进行' }
 }
 
-const status = computed(() => STATUS_META[props.note.status] || STATUS_META.cancelled)
-const isTerminal = computed(() => ['completed', 'cancelled'].includes(props.note.status))
+const status = computed(() => STATUS_META[props.note.status] || STATUS_META.initialized)
+const isTerminal = computed(() => props.note.status === 'completed')
 const canChangeStatus = computed(() => ['initialized', 'in_progress', 'completed'].includes(props.note.status))
 const showReminder = computed(
   () => props.note.status === 'initialized' && Number(props.note.notify_enabled) === 1
@@ -73,11 +75,33 @@ const tagPopoverStyle = ref({})
 const contextMenuVisible = ref(false)
 const contextMenuRef = ref(null)
 const contextMenuStyle = ref({})
+const contentShellRef = ref(null)
+const contentTextRef = ref(null)
+const contentExpanded = ref(false)
+const contentOverflows = ref(false)
+const contentAnimating = ref(false)
+const contentShellHeight = ref('auto')
+const deleting = ref(false)
+const showDeleteDialog = ref(false)
+const CONTENT_PREVIEW_LINES = 3
+// 产品要求：正文展开/收起始终保留动效，不跟随系统 MinAnimate / reduced-motion 设置。
+const CONTENT_ANIMATION_DURATION = 280
+let contentResizeObserver = null
+let contentAnimation = null
 
-onMounted(startSharedClock)
+onMounted(async () => {
+  startSharedClock()
+  await nextTick()
+  measureContentOverflow()
+  contentResizeObserver = new ResizeObserver(measureContentOverflow)
+  if (contentTextRef.value) contentResizeObserver.observe(contentTextRef.value)
+  document.fonts?.ready.then(measureContentOverflow)
+})
 
 onUnmounted(() => {
   stopSharedClock()
+  contentResizeObserver?.disconnect()
+  contentAnimation?.cancel()
   document.removeEventListener('pointerdown', onTagPopoverOutside)
   document.removeEventListener('keydown', onTagPopoverKeydown)
   window.removeEventListener('resize', closeTags)
@@ -86,9 +110,70 @@ onUnmounted(() => {
 })
 
 const displayContent = computed(() => {
-  const text = String(props.note.content || '').trim()
-  if (text) return text
+  const text = String(props.note.content || '')
+  if (text.trim()) return text
   return attachmentCount.value > 0 ? '图片便签' : '空白便签'
+})
+
+function measureContentOverflow() {
+  const element = contentTextRef.value
+  if (!element) return
+  const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight)
+  if (!Number.isFinite(lineHeight)) return
+  const fullHeight = element.scrollHeight
+  const collapsedHeight = Math.min(fullHeight, lineHeight * CONTENT_PREVIEW_LINES)
+  contentOverflows.value = fullHeight > collapsedHeight + 1
+  if (contentAnimating.value) return
+  contentShellHeight.value = contentExpanded.value ? 'auto' : `${collapsedHeight}px`
+}
+
+function finishContentAnimation(animation) {
+  if (contentAnimation !== animation) return
+  contentAnimation = null
+  contentAnimating.value = false
+  contentShellHeight.value = contentExpanded.value ? 'auto' : contentShellHeight.value
+  nextTick(measureContentOverflow)
+}
+
+async function toggleContent() {
+  const shell = contentShellRef.value
+  const element = contentTextRef.value
+  if (!shell || !element || !contentOverflows.value || contentAnimating.value) return
+
+  const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight)
+  if (!Number.isFinite(lineHeight)) return
+  const nextExpanded = !contentExpanded.value
+  const targetHeight = nextExpanded
+    ? element.scrollHeight
+    : Math.min(element.scrollHeight, lineHeight * CONTENT_PREVIEW_LINES)
+
+  const startHeight = shell.getBoundingClientRect().height
+  const distance = Math.abs(targetHeight - startHeight)
+  const duration = Math.min(420, CONTENT_ANIMATION_DURATION + distance * 0.24)
+  contentAnimating.value = true
+  contentExpanded.value = nextExpanded
+  contentShellHeight.value = `${targetHeight}px`
+  await nextTick()
+
+  const animation = shell.animate(
+    [{ height: `${startHeight}px` }, { height: `${targetHeight}px` }],
+    {
+      duration,
+      easing: 'cubic-bezier(0.4, 0, 0.2, 1)'
+    }
+  )
+  contentAnimation = animation
+  animation.onfinish = () => finishContentAnimation(animation)
+}
+
+watch(displayContent, async () => {
+  contentAnimation?.cancel()
+  contentAnimation = null
+  contentAnimating.value = false
+  contentExpanded.value = false
+  contentShellHeight.value = 'auto'
+  await nextTick()
+  measureContentOverflow()
 })
 
 function formatDateTime(timestamp) {
@@ -115,7 +200,7 @@ const effectiveIso = computed(() => {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
 })
 const finishedTime = computed(() => formatDateTime(props.note.finished_at))
-const finishedLabel = computed(() => (props.note.status === 'completed' ? '完成' : '弃用'))
+const finishedLabel = '完成'
 const effectiveDisplay = computed(() => {
   if (props.note.status !== 'initialized') return `生效 ${effectiveTime.value}`
   const timestamp = Number(props.note.effective_at)
@@ -141,10 +226,6 @@ const effectiveDisplay = computed(() => {
     : `${target.getFullYear()}年${target.getMonth() + 1}月${target.getDate()}日`
   return `${dateLabel} (${dayDiff}天后) 生效`
 })
-
-function selectCard() {
-  emit('select', props.note)
-}
 
 function handleStatusAction() {
   if (canChangeStatus.value) emit('status-action', props.note)
@@ -211,10 +292,39 @@ async function openContextMenu(event) {
   window.addEventListener('scroll', closeContextMenu, true)
 }
 
-/** 删除与取消暂未接入；修改打开现有编辑器。 */
-function onContextMenuAction(action) {
+/** 修改打开现有编辑器；删除复用主进程的逻辑删除能力。 */
+async function onContextMenuAction(action) {
   closeContextMenu()
   if (action === 'edit') emit('edit', props.note)
+  if (action !== 'delete' || deleting.value) return
+  showDeleteDialog.value = true
+}
+
+async function confirmDelete() {
+  if (deleting.value) return
+  deleting.value = true
+  try {
+    const deleted = await window.api.deleteNote(props.note.id)
+    if (!deleted) throw new Error('便签不存在或已被删除')
+    showMessage('success', '便签已删除')
+  } catch (error) {
+    console.error('[NoteCard] 删除便签失败:', props.note.id, error)
+    showMessage('error', error.message || '删除失败，请重试')
+  } finally {
+    deleting.value = false
+  }
+}
+
+async function copyContent() {
+  const text = String(props.note.content || '')
+  if (!text.trim()) return
+  try {
+    await navigator.clipboard.writeText(text)
+    showMessage('success', '便签正文已复制')
+  } catch (error) {
+    console.error('[NoteCard] 复制便签失败:', props.note.id, error)
+    showMessage('error', '复制失败，请重试')
+  }
 }
 
 async function toggleTags() {
@@ -253,10 +363,7 @@ async function toggleTags() {
     ]"
     :style="{ '--accent-color': status.color }"
     :data-note-id="note.id"
-    tabindex="0"
     :aria-label="`${status.label}：${displayContent}`"
-    @click="selectCard"
-    @keydown.enter="selectCard"
     @contextmenu="openContextMenu"
   >
     <span
@@ -280,8 +387,17 @@ async function toggleTags() {
     />
 
     <div class="nl-card-body">
-      <p class="nl-card-text">{{ displayContent }}</p>
-
+      <div
+        ref="contentShellRef"
+        class="nl-card-text-shell"
+        :class="{
+          'nl-card-text-shell--collapsed': contentOverflows && !contentExpanded && !contentAnimating,
+          'nl-card-text-shell--animating': contentAnimating
+        }"
+        :style="{ height: contentShellHeight }"
+      >
+        <p ref="contentTextRef" class="nl-card-text">{{ displayContent }}</p>
+      </div>
       <div class="nl-card-meta">
         <div class="nl-card-context">
           <span class="nl-card-status">{{ status.label }}</span>
@@ -294,7 +410,7 @@ async function toggleTags() {
         </div>
 
         <div
-          v-if="visibleTags.length || hiddenTagCount || showReminder || attachmentCount"
+          v-if="visibleTags.length || hiddenTagCount || showReminder || attachmentCount || contentOverflows || String(note.content || '').trim()"
           class="nl-card-utilities"
         >
           <span
@@ -320,6 +436,20 @@ async function toggleTags() {
           </span>
 
           <button
+            v-if="String(note.content || '').trim()"
+            class="nl-card-copy"
+            type="button"
+            title="复制正文"
+            aria-label="复制便签正文"
+            @click.stop="copyContent"
+          >
+            <svg viewBox="0 0 20 20" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="7" y="6" width="9" height="10" rx="2" />
+              <path d="M13 6V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2" />
+            </svg>
+          </button>
+
+          <button
             v-if="attachmentCount"
             class="nl-card-attachment"
             title="展开图片附件"
@@ -332,6 +462,22 @@ async function toggleTags() {
               <path d="m5 14 3.2-3 2.2 2 1.8-1.6L15 14" />
             </svg>
             <span>{{ attachmentCount }}</span>
+          </button>
+
+          <button
+            v-if="contentOverflows"
+            class="nl-card-disclosure"
+            type="button"
+            :class="{ 'nl-card-disclosure--expanded': contentExpanded }"
+            :aria-expanded="contentExpanded"
+            :aria-label="contentExpanded ? '收起正文' : '展开正文'"
+            :title="contentExpanded ? '收起正文' : '展开正文'"
+            @click.stop="toggleContent"
+            @keydown.enter.stop
+          >
+            <svg viewBox="0 0 16 10" aria-hidden="true">
+              <path d="m2 2 6 6 6-6" />
+            </svg>
           </button>
         </div>
       </div>
@@ -373,13 +519,27 @@ async function toggleTags() {
         >
           <div class="nl-context-menu">
             <button role="menuitem" @click="onContextMenuAction('edit')">修改</button>
-            <button role="menuitem" @click="onContextMenuAction('cancel')">弃用</button>
             <div class="nl-context-menu__divider" role="separator" />
-            <button class="nl-context-menu__delete" role="menuitem" @click="onContextMenuAction('delete')">删除</button>
+            <button
+              class="nl-context-menu__delete"
+              role="menuitem"
+              :disabled="deleting"
+              @click="onContextMenuAction('delete')"
+            >删除</button>
           </div>
         </div>
       </Transition>
     </Teleport>
+
+    <ConfirmDialog
+      v-model:visible="showDeleteDialog"
+      title="删除便签？"
+      message="便签会从列表中移除，但正文和图片仍会保留，可在搜索中启用“包含已删除”查看。"
+      confirm-text="删除"
+      cancel-text="取消"
+      variant="danger"
+      @confirm="confirmDelete"
+    />
 
     <div
       v-if="attachmentCount"
@@ -419,7 +579,7 @@ async function toggleTags() {
   border-radius: 11rem;
   outline: none;
   background: rgb(var(--bg-color) / var(--card-surface-opacity));
-  cursor: pointer;
+  cursor: default;
   transition:
     background-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
     border-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -507,8 +667,7 @@ async function toggleTags() {
   100% { opacity: 0; }
 }
 
-.nl-card--completed::after,
-.nl-card--cancelled::after {
+.nl-card--completed::after {
   content: '';
   position: absolute;
   z-index: 4;
@@ -519,14 +678,6 @@ async function toggleTags() {
   transition: background-color 180ms ease;
 }
 .nl-card--completed:hover::after { background: rgba(128, 128, 128, 0.075); }
-.nl-card--cancelled::after { background: rgba(128, 128, 128, 0.15); }
-.nl-card--cancelled:hover::after { background: rgba(128, 128, 128, 0.125); }
-
-.nl-card:focus-visible {
-  border-color: color-mix(in srgb, var(--accent-color) 55%, transparent);
-  box-shadow: 0 0 0 3rem color-mix(in srgb, var(--accent-color) 14%, transparent);
-}
-.nl-card:active:not(:has(button:active)) { transform: scale(0.993); }
 
 .nl-card--initialized {
   --card-surface-opacity: 0.08;
@@ -540,11 +691,6 @@ async function toggleTags() {
   --card-surface-opacity: 0.075;
   --card-surface-hover-opacity: 0.095;
   --content-strength: 60%;
-}
-.nl-card--cancelled {
-  --card-surface-opacity: 0.035;
-  --card-surface-hover-opacity: 0.055;
-  --content-strength: 52%;
 }
 .nl-card--muted { opacity: 0.66; }
 
@@ -611,28 +757,6 @@ async function toggleTags() {
   opacity: 0.74;
 }
 
-.nl-card--cancelled .nl-card-body {
-  opacity: 0.54;
-}
-.nl-card--cancelled :deep(.sr-control) {
-  opacity: 0.6;
-}
-.nl-card--cancelled .nl-image-panel-shell {
-  opacity: 0;
-}
-.nl-card--cancelled .nl-image-panel-shell--expanded {
-  opacity: 0.62;
-}
-.nl-card--cancelled:hover .nl-card-body {
-  opacity: 0.59;
-}
-.nl-card--cancelled:hover :deep(.sr-control) {
-  opacity: 0.64;
-}
-.nl-card--cancelled:hover .nl-image-panel-shell--expanded {
-  opacity: 0.66;
-}
-
 .nl-card-body {
   position: relative;
   z-index: 1;
@@ -640,19 +764,67 @@ async function toggleTags() {
   transition: opacity 180ms ease;
 }
 .nl-card-text {
-  display: -webkit-box;
   margin: 0;
-  overflow: hidden;
   color: color-mix(in srgb, var(--text-color) var(--content-strength), transparent);
   font-size: var(--fs-body);
   font-weight: 500;
   line-height: 1.45;
   overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  white-space: pre-wrap;
+  user-select: text;
+  cursor: text;
 }
-.nl-card--completed .nl-card-text,
-.nl-card--cancelled .nl-card-text { font-weight: 400; }
+.nl-card-text-shell {
+  overflow: hidden;
+}
+.nl-card-text-shell--collapsed .nl-card-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.nl-card-text-shell--animating {
+  will-change: height;
+}
+.nl-card-disclosure {
+  display: grid;
+  place-items: center;
+  flex: 0 0 22rem;
+  width: 22rem;
+  height: 18rem;
+  margin-left: 1rem;
+  padding: 0;
+  border: 0;
+  border-radius: 980px;
+  outline: none;
+  background: transparent;
+  color: color-mix(in srgb, var(--text-color-secondary) 72%, transparent);
+  cursor: pointer;
+  transition: color 160ms ease, background-color 160ms ease;
+}
+.nl-card-disclosure svg {
+  display: block;
+  width: 10rem;
+  height: 6rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+  transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.nl-card-disclosure--expanded svg {
+  transform: rotate(180deg);
+}
+.nl-card-disclosure:hover,
+.nl-card-disclosure:focus-visible {
+  background: color-mix(in srgb, var(--text-color) 7%, transparent);
+  color: color-mix(in srgb, var(--text-color) 82%, transparent);
+}
+.nl-card-disclosure:focus-visible {
+  box-shadow: 0 0 0 2rem color-mix(in srgb, var(--accent-color) 22%, transparent);
+}
+.nl-card--completed .nl-card-text { font-weight: 400; }
 .nl-card--empty .nl-card-text { color: var(--text-color-secondary); font-weight: 400; }
 
 .nl-card-meta {
@@ -686,6 +858,7 @@ async function toggleTags() {
 .nl-card-time { white-space: nowrap; }
 .nl-card-time--finished { color: color-mix(in srgb, var(--text-color) 58%, transparent); }
 .nl-card-utilities,
+.nl-card-copy,
 .nl-card-attachment {
   display: flex;
   align-items: center;
@@ -724,6 +897,7 @@ async function toggleTags() {
   color: var(--text-color);
 }
 .nl-card-icon,
+.nl-card-copy,
 .nl-card-attachment {
   appearance: none;
   gap: 2rem;
@@ -737,12 +911,14 @@ async function toggleTags() {
   cursor: pointer;
   transition: color 140ms ease, background-color 140ms ease;
 }
+.nl-card-copy:hover,
 .nl-card-attachment:hover,
 .nl-card-attachment[aria-expanded='true'] {
   color: var(--text-color);
   background: color-mix(in srgb, var(--text-color) 7%, transparent);
 }
 .nl-card-icon svg,
+.nl-card-copy svg,
 .nl-card-attachment svg { display: block; }
 
 .nl-image-panel-shell {
@@ -846,10 +1022,14 @@ async function toggleTags() {
   cursor: pointer;
   transition: background-color 140ms ease, color 140ms ease;
 }
-.nl-context-menu button:hover,
-.nl-context-menu button:focus-visible {
+.nl-context-menu button:hover:not(:disabled),
+.nl-context-menu button:focus-visible:not(:disabled) {
   outline: none;
   background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+.nl-context-menu button:disabled {
+  opacity: 0.38;
+  cursor: default;
 }
 .nl-context-menu .nl-context-menu__delete {
   color: #ff453a;
@@ -866,4 +1046,5 @@ async function toggleTags() {
 @media (max-width: 390px) {
   .nl-card-tag { max-width: 86rem; }
 }
+
 </style>

@@ -455,15 +455,19 @@ onMounted(async () => {
   border: 1rem solid rgba(255, 255, 255, 0.1);
   border-radius: 14rem;
   background: rgba(128, 128, 128, 0.05);
+  background-clip: padding-box;
   transition:
     background-color 150ms ease,
     border-color 150ms ease,
-    box-shadow 150ms ease;
+    transform 120ms ease;
   user-select: none;
   white-space: nowrap;
 }
 .ts-chip:hover {
   background: rgba(128, 128, 128, 0.1);
+}
+.ts-chip:active {
+  transform: scale(0.97);
 }
 
 /* 芯片主体（点击切换选中） */
@@ -509,18 +513,13 @@ onMounted(async () => {
   display: block;
 }
 
-/* 选中态：标签主题色透出 */
+/* 选中态：仅用克制的主题色浅填充表达，不叠加描边和光圈。 */
 .ts-chip--selected {
-  border-color: var(--chip-color);
-  background: color-mix(in srgb, var(--chip-color) 14%, transparent);
-  box-shadow: 0 0 0 1rem color-mix(in srgb, var(--chip-color) 20%, transparent);
-}
-.ts-chip--selected .ts-chip-dot {
-  transform: scale(1.18);
-  box-shadow: 0 0 0 3rem color-mix(in srgb, var(--chip-color) 14%, transparent);
+  border-color: rgba(255, 255, 255, 0.1);
+  background: color-mix(in srgb, var(--chip-color) 16%, transparent);
 }
 .ts-chip--selected:hover {
-  background: color-mix(in srgb, var(--chip-color) 20%, transparent);
+  background: color-mix(in srgb, var(--chip-color) 21%, transparent);
 }
 
 /* ---- 芯片圆点 ---- */
@@ -530,9 +529,6 @@ onMounted(async () => {
   border-radius: 50%;
   background-color: var(--chip-color);
   flex-shrink: 0;
-  transition:
-    transform var(--motion-control) var(--ease-standard),
-    box-shadow var(--motion-control) ease;
 }
 
 /* ---- 芯片名称 ---- */
