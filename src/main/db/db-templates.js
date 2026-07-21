@@ -1,183 +1,286 @@
-/**
- * db-templates.js — 循环模板 CRUD 模块（主进程）
- *
- * 职责：
- *   1. 循环便签模板的创建、查询、更新、软删除
- *   2. 暂停/恢复模板生成
- *   3. 获取活跃模板（供调度器使用）
- */
-
-import { getDb } from './db.js'
+/** 循环模板 CRUD、标签快照配置与可恢复删除。 */
+import { getDb } from './db-connection.js'
+import { calculateNextRun, normalizeRecurrenceRule } from '../services/recurrence-rules.js'
 
 const now = () => Date.now()
 
-/**
- * 校验 recurrence_rule JSON 字符串格式合法性
- * @param {string} rule - JSON 字符串
- * @returns {boolean}
- */
-function isValidRecurrenceRule(rule) {
-  if (!rule || typeof rule !== 'string') return false
-  try {
-    const parsed = JSON.parse(rule)
-    return typeof parsed.frequency === 'string'
-  } catch {
-    return false
-  }
+function normalizeTemplateId(id) {
+  const value = Number(id)
+  if (!Number.isInteger(value) || value <= 0) throw new Error('无效的模板 ID')
+  return value
 }
 
-// ============================================================
-// CRUD
-// ============================================================
+function normalizeContent(content) {
+  const value = String(content ?? '')
+  if (!value.trim()) throw new Error('模板内容不能为空')
+  return value
+}
 
-/**
- * 创建循环模板
- * @param {Object} options
- * @param {string} options.recurrenceRule - JSON 字符串，循环规则
- * @param {string} [options.content=''] - 模板默认正文
- * @param {boolean} [options.notifyEnabled=true] - 生成实例时是否发送操作系统通知
- * @returns {Object} 创建的模板对象
- * @throws {Error} recurrenceRule 为空或 JSON 格式无效时抛出
- */
-export function createTemplate({ recurrenceRule, content = '', notifyEnabled = true }) {
-  if (!isValidRecurrenceRule(recurrenceRule)) {
-    throw new Error('recurrenceRule 必须是一个合法的 JSON 字符串，且包含 frequency 字段')
-  }
+function normalizeTagNames(tagNames = []) {
+  if (!Array.isArray(tagNames)) throw new Error('tagNames 必须是数组')
+  return [...new Set(tagNames.map((name) => String(name).trim()).filter(Boolean))]
+}
 
-  const ts = now()
+function ensureTagsExist(db, tagNames) {
+  if (tagNames.length === 0) return
+  const placeholders = tagNames.map(() => '?').join(',')
+  const rows = db.prepare(`SELECT name FROM tags WHERE name IN (${placeholders})`).all(...tagNames)
+  if (rows.length !== tagNames.length) throw new Error('模板包含不存在的标签')
+}
+
+function replaceTemplateTags(db, templateId, tagNames) {
+  ensureTagsExist(db, tagNames)
+  db.prepare('DELETE FROM template_tags WHERE template_id = ?').run(templateId)
+  const insert = db.prepare('INSERT INTO template_tags (template_id, tag_name) VALUES (?, ?)')
+  for (const tagName of tagNames) insert.run(templateId, tagName)
+}
+
+function getTemplateRow(db, id) {
+  return db.prepare('SELECT * FROM note_templates WHERE id = ?').get(id) || null
+}
+
+function attachTags(db, template) {
+  if (!template) return null
+  template.tags = db
+    .prepare(
+      `SELECT t.* FROM tags t
+       INNER JOIN template_tags tt ON tt.tag_name = t.name
+       WHERE tt.template_id = ?
+       ORDER BY t.created_at ASC`
+    )
+    .all(template.id)
+  return template
+}
+
+export function createTemplate(
+  { recurrenceRule, content = '', notifyEnabled = true, isPinned = false, tagNames = [] } = {},
+  timestamp = now()
+) {
+  const db = getDb()
+  const normalizedContent = normalizeContent(content)
+  const normalizedRule = normalizeRecurrenceRule(recurrenceRule)
+  const normalizedTags = normalizeTagNames(tagNames)
+  const nextRunAt = calculateNextRun(normalizedRule, timestamp, timestamp)
+
+  return db.transaction(() => {
+    ensureTagsExist(db, normalizedTags)
+    const result = db
+      .prepare(
+        `INSERT INTO note_templates (
+         content, recurrence_rule, is_pinned, notify_enabled, is_paused, is_deleted,
+           deleted_at, schedule_anchor_at, next_run_at, last_generated_at,
+           last_generated_note_id, consecutive_failures, last_error, last_failed_at,
+           pause_reason, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, 0, 0, NULL, ?, ?, NULL, NULL, 0, NULL, NULL, NULL, ?, ?)`
+      )
+      .run(
+        normalizedContent,
+        JSON.stringify(normalizedRule),
+        isPinned ? 1 : 0,
+        notifyEnabled ? 1 : 0,
+        timestamp,
+        nextRunAt,
+        timestamp,
+        timestamp
+      )
+    const templateId = Number(result.lastInsertRowid)
+    replaceTemplateTags(db, templateId, normalizedTags)
+    return attachTags(db, getTemplateRow(db, templateId))
+  })()
+}
+
+export function updateTemplate(id, fields = {}, timestamp = now()) {
+  const templateId = normalizeTemplateId(id)
+  const db = getDb()
+
+  return db.transaction(() => {
+    const old = getTemplateRow(db, templateId)
+    if (!old || old.is_deleted) throw new Error('模板不存在或已删除')
+
+    const content = fields.content === undefined ? old.content : normalizeContent(fields.content)
+    const rule =
+      fields.recurrenceRule === undefined
+        ? normalizeRecurrenceRule(old.recurrence_rule)
+        : normalizeRecurrenceRule(fields.recurrenceRule)
+    const scheduleChanged = fields.recurrenceRule !== undefined
+    const scheduleAnchorAt = scheduleChanged ? timestamp : old.schedule_anchor_at
+    const nextRunAt = old.is_paused
+      ? null
+      : scheduleChanged
+        ? calculateNextRun(rule, timestamp, timestamp)
+        : old.next_run_at
+
+    db.prepare(
+      `UPDATE note_templates SET
+         content = ?, recurrence_rule = ?, is_pinned = ?, notify_enabled = ?,
+         schedule_anchor_at = ?, next_run_at = ?, consecutive_failures = 0,
+         last_error = NULL, last_failed_at = NULL,
+         pause_reason = CASE WHEN is_paused = 1 THEN 'manual' ELSE NULL END,
+         updated_at = ?
+       WHERE id = ? AND is_deleted = 0`
+    ).run(
+      content,
+      JSON.stringify(rule),
+      fields.isPinned === undefined ? old.is_pinned : fields.isPinned ? 1 : 0,
+      fields.notifyEnabled === undefined ? old.notify_enabled : fields.notifyEnabled ? 1 : 0,
+      scheduleAnchorAt,
+      nextRunAt,
+      timestamp,
+      templateId
+    )
+
+    if (fields.tagNames !== undefined)
+      replaceTemplateTags(db, templateId, normalizeTagNames(fields.tagNames))
+    return attachTags(db, getTemplateRow(db, templateId))
+  })()
+}
+
+export function deleteTemplate(id, timestamp = now()) {
+  const templateId = normalizeTemplateId(id)
   const result = getDb()
     .prepare(
-      `
-    INSERT INTO note_templates (content, recurrence_rule, is_paused, is_deleted, notify_enabled, created_at, updated_at)
-    VALUES (?, ?, 0, 0, ?, ?, ?)
-  `
+      `UPDATE note_templates
+       SET is_deleted = 1, is_paused = 1, deleted_at = ?, next_run_at = NULL,
+           pause_reason = NULL, updated_at = ?
+       WHERE id = ? AND is_deleted = 0`
     )
-    .run(content, recurrenceRule, notifyEnabled ? 1 : 0, ts, ts)
-
-  return getTemplateById(result.lastInsertRowid)
+    .run(timestamp, timestamp, templateId)
+  return result.changes === 1
 }
 
-/**
- * 更新模板
- * @param {number} id
- * @param {Object} [fields={}] - { content?, recurrenceRule?, isPaused?, notifyEnabled? }
- * @returns {Object|null}
- * @throws {Error} recurrenceRule JSON 格式无效时抛出
- */
-export function updateTemplate(id, fields = {}) {
-  const old = getTemplateById(id)
-  if (!old) return null
-
-  // 如果传入了 recurrenceRule，校验 JSON 合法性
-  if (fields.recurrenceRule !== undefined && !isValidRecurrenceRule(fields.recurrenceRule)) {
-    throw new Error('recurrenceRule 必须是一个合法的 JSON 字符串，且包含 frequency 字段')
-  }
-
-  const ts = now()
-  getDb()
-    .prepare(
-      `
-    UPDATE note_templates SET
-      content = ?, recurrence_rule = ?, is_paused = ?, notify_enabled = ?, updated_at = ?
-    WHERE id = ?
-  `
-    )
-    .run(
-      fields.content ?? old.content,
-      fields.recurrenceRule ?? old.recurrence_rule,
-      fields.isPaused ?? old.is_paused,
-      fields.notifyEnabled ?? old.notify_enabled,
-      ts,
-      id
-    )
-
-  return getTemplateById(id)
+export function restoreTemplate(id, timestamp = now()) {
+  const templateId = normalizeTemplateId(id)
+  const db = getDb()
+  return db.transaction(() => {
+    const old = getTemplateRow(db, templateId)
+    if (!old || !old.is_deleted) throw new Error('模板不存在或未删除')
+    const rule = normalizeRecurrenceRule(old.recurrence_rule)
+    const nextRunAt = calculateNextRun(rule, timestamp, old.schedule_anchor_at)
+    db.prepare(
+      `UPDATE note_templates
+       SET is_deleted = 0, is_paused = 0, deleted_at = NULL,
+           next_run_at = ?, consecutive_failures = 0, last_error = NULL,
+           last_failed_at = NULL, pause_reason = NULL, updated_at = ?
+       WHERE id = ? AND is_deleted = 1`
+    ).run(nextRunAt, timestamp, templateId)
+    return attachTags(db, getTemplateRow(db, templateId))
+  })()
 }
 
-/**
- * 软删除模板
- * @param {number} id
- * @returns {boolean}
- */
-export function deleteTemplate(id) {
+export function purgeTemplate(id) {
+  const templateId = normalizeTemplateId(id)
+  const result = getDb()
+    .prepare('DELETE FROM note_templates WHERE id = ? AND is_deleted = 1')
+    .run(templateId)
+  return result.changes === 1
+}
+
+export function pauseTemplate(id, timestamp = now()) {
+  const templateId = normalizeTemplateId(id)
   const result = getDb()
     .prepare(
-      `
-    UPDATE note_templates SET is_deleted = 1, updated_at = ? WHERE id = ?
-  `
+      `UPDATE note_templates
+       SET is_paused = 1, next_run_at = NULL, pause_reason = 'manual', updated_at = ?
+       WHERE id = ? AND is_deleted = 0 AND is_paused = 0`
     )
-    .run(now(), id)
-  return result.changes > 0
+    .run(timestamp, templateId)
+  if (result.changes !== 1) throw new Error('模板不存在、已删除或已暂停')
+  return getTemplateById(templateId)
 }
 
-/**
- * 按 ID 获取模板
- * @param {number} id
- * @returns {Object|null}
- */
-export function getTemplateById(id) {
-  return getDb().prepare('SELECT * FROM note_templates WHERE id = ?').get(id)
+export function resumeTemplate(id, timestamp = now()) {
+  const templateId = normalizeTemplateId(id)
+  const db = getDb()
+  return db.transaction(() => {
+    const old = getTemplateRow(db, templateId)
+    if (!old || old.is_deleted || !old.is_paused) throw new Error('模板不存在、已删除或未暂停')
+    const rule = normalizeRecurrenceRule(old.recurrence_rule)
+    const nextRunAt = calculateNextRun(rule, timestamp, old.schedule_anchor_at)
+    db.prepare(
+      `UPDATE note_templates
+       SET is_paused = 0, next_run_at = ?, consecutive_failures = 0,
+           last_error = NULL, last_failed_at = NULL, pause_reason = NULL, updated_at = ?
+       WHERE id = ? AND is_deleted = 0 AND is_paused = 1`
+    ).run(nextRunAt, timestamp, templateId)
+    return attachTags(db, getTemplateRow(db, templateId))
+  })()
 }
 
-/**
- * 获取所有模板（不含已删除）
- * @returns {Object[]}
- */
-export function listTemplates() {
+export function getTemplateById(id, { includeDeleted = false } = {}) {
+  const templateId = normalizeTemplateId(id)
+  const db = getDb()
+  const row = includeDeleted
+    ? getTemplateRow(db, templateId)
+    : db.prepare('SELECT * FROM note_templates WHERE id = ? AND is_deleted = 0').get(templateId)
+  return attachTags(db, row || null)
+}
+
+export function listTemplates({ state = 'active' } = {}) {
+  const where = {
+    active: 'WHERE is_deleted = 0',
+    running: 'WHERE is_deleted = 0 AND is_paused = 0',
+    paused: 'WHERE is_deleted = 0 AND is_paused = 1',
+    deleted: 'WHERE is_deleted = 1',
+    all: ''
+  }[state]
+  if (where === undefined) throw new Error('无效的模板列表状态')
+  const db = getDb()
+  return db
+    .prepare(`SELECT * FROM note_templates ${where} ORDER BY created_at DESC`)
+    .all()
+    .map((template) => attachTags(db, template))
+}
+
+/** 只读取已经到达生成节点的运行中模板，避免每分钟扫描未来模板。 */
+export function getDueTemplates(timestamp) {
+  const dueAt = Number(timestamp)
+  if (!Number.isFinite(dueAt)) throw new Error('调度时间无效')
   return getDb()
     .prepare(
-      `
-    SELECT * FROM note_templates WHERE is_deleted = 0 ORDER BY created_at DESC
-  `
+      `SELECT * FROM note_templates
+       WHERE is_deleted = 0 AND is_paused = 0
+         AND next_run_at IS NOT NULL AND next_run_at <= ?
+       ORDER BY next_run_at ASC, id ASC`
     )
-    .all()
+    .all(dueAt)
 }
 
-// ============================================================
-// 暂停/恢复
-// ============================================================
+/** 记录单模板连续失败；第三次失败时原子切换为错误暂停。 */
+export function recordTemplateFailure(id, error, timestamp = now(), threshold = 3) {
+  const templateId = normalizeTemplateId(id)
+  const message = String(error?.message || error || '未知错误').slice(0, 1000)
+  const failureThreshold = Math.max(1, Math.trunc(Number(threshold)) || 3)
+  const db = getDb()
 
-export function pauseTemplate(id) {
-  return updateTemplate(id, { isPaused: 1 })
-}
+  return db.transaction(() => {
+    const template = db
+      .prepare(
+        `SELECT id, content, consecutive_failures FROM note_templates
+         WHERE id = ? AND is_deleted = 0 AND is_paused = 0`
+      )
+      .get(templateId)
+    if (!template) return null
 
-export function resumeTemplate(id) {
-  return updateTemplate(id, { isPaused: 0 })
-}
-
-// ============================================================
-// 调度器接口
-// ============================================================
-
-/**
- * 获取所有活跃模板（未暂停、未删除），供调度器遍历
- * @returns {Object[]} 模板对象数组
- */
-export function getActiveTemplates() {
-  return getDb()
-    .prepare(
-      `
-    SELECT * FROM note_templates
-    WHERE is_paused = 0 AND is_deleted = 0
-    ORDER BY id ASC
-  `
+    const failures = Number(template.consecutive_failures || 0) + 1
+    const autoPaused = failures >= failureThreshold
+    db.prepare(
+      `UPDATE note_templates SET
+         consecutive_failures = ?, last_error = ?, last_failed_at = ?,
+         is_paused = ?, next_run_at = CASE WHEN ? = 1 THEN NULL ELSE next_run_at END,
+         pause_reason = CASE WHEN ? = 1 THEN 'error' ELSE pause_reason END,
+         updated_at = ?
+       WHERE id = ? AND is_deleted = 0 AND is_paused = 0`
+    ).run(
+      failures,
+      message,
+      timestamp,
+      autoPaused ? 1 : 0,
+      autoPaused ? 1 : 0,
+      autoPaused ? 1 : 0,
+      timestamp,
+      templateId
     )
-    .all()
-}
 
-/**
- * 更新模板的上次生成时间（生成实例后调用）
- * @param {number} templateId
- * @param {number} scheduledAt - 本次生成对应的时间戳（毫秒）
- * @returns {Object|null}
- */
-export function updateLastGeneratedAt(templateId, scheduledAt) {
-  const result = getDb()
-    .prepare(
-      `
-    UPDATE note_templates SET last_generated_at = ?, updated_at = ? WHERE id = ?
-  `
-    )
-    .run(scheduledAt, now(), templateId)
-  return result.changes > 0
+    return { id: templateId, content: template.content, failures, autoPaused, error: message }
+  })()
 }

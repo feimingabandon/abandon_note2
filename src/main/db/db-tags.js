@@ -7,7 +7,7 @@
  *   3. 多标签 AND 筛选
  */
 
-import { getDb } from './db.js'
+import { getDb } from './db-connection.js'
 
 const now = () => Date.now()
 
@@ -161,6 +161,25 @@ export function getNoteTags(noteId) {
  * @returns {number}
  */
 export function getTagNoteCount(tagName) {
-  const row = getDb().prepare('SELECT COUNT(*) as count FROM note_tags WHERE tag_name = ?').get(tagName)
+  const row = getDb()
+    .prepare('SELECT COUNT(*) as count FROM note_tags WHERE tag_name = ?')
+    .get(tagName)
   return row?.count ?? 0
+}
+
+/**
+ * 获取全局标签删除会影响的全部关联数量。
+ * 逻辑删除记录仍保留关联，因此计数同时包含未彻底删除的便签和模板。
+ */
+export function getTagUsage(tagName) {
+  const db = getDb()
+  const noteCount =
+    db
+      .prepare('SELECT COUNT(DISTINCT note_id) AS count FROM note_tags WHERE tag_name = ?')
+      .get(tagName)?.count ?? 0
+  const templateCount =
+    db
+      .prepare('SELECT COUNT(DISTINCT template_id) AS count FROM template_tags WHERE tag_name = ?')
+      .get(tagName)?.count ?? 0
+  return { noteCount, templateCount }
 }

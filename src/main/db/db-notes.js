@@ -3,7 +3,7 @@
  *
  * 状态模型：initialized → in_progress ⇄ completed
  */
-import { getDb } from './db.js'
+import { getDb } from './db-connection.js'
 
 const now = () => Date.now()
 const TRANSITIONS = {
@@ -25,7 +25,6 @@ export function createNote({
   content = '',
   effectiveAt = null,
   noteType = 'one_time',
-  templateId = null,
   notifyEnabled = 0,
   isPinned = 0,
   sortOrder = 0
@@ -41,12 +40,11 @@ export function createNote({
   const result = getDb()
     .prepare(
       `INSERT INTO notes (
-         template_id, note_type, content, status, is_pinned, notify_enabled,
+         note_type, content, status, is_pinned, notify_enabled,
          effective_at, finished_at, sort_order, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
-      templateId,
       noteType,
       content,
       status,
@@ -60,6 +58,39 @@ export function createNote({
     )
 
   return getNoteById(result.lastInsertRowid)
+}
+
+/**
+ * 创建循环模板的一次性快照实例。
+ * 生成实例固定为进行中、关闭便签自身提醒，并在当前事务中复制标签关联。
+ */
+export function createRecurringNoteSnapshot({
+  content = '',
+  effectiveAt,
+  isPinned = 0,
+  tagNames = []
+} = {}) {
+  const db = getDb()
+  const ts = now()
+  const scheduledAt = Number(effectiveAt)
+  if (!Number.isFinite(scheduledAt) || scheduledAt <= 0) {
+    throw new Error('循环便签缺少有效的计划时间')
+  }
+
+  const result = db
+    .prepare(
+      `INSERT INTO notes (
+         note_type, content, status, is_pinned, notify_enabled,
+         effective_at, finished_at, remind_again_at, sort_order, created_at, updated_at
+       ) VALUES ('one_time', ?, 'in_progress', ?, 0, ?, ?, NULL, 0, ?, ?)`
+    )
+    .run(content, isPinned ? 1 : 0, scheduledAt, ts, ts, ts)
+
+  const noteId = Number(result.lastInsertRowid)
+  const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)')
+  for (const tagName of [...new Set(tagNames)]) insertTag.run(noteId, tagName)
+
+  return getNoteById(noteId)
 }
 
 /**
@@ -150,21 +181,21 @@ function transitionNote(id, targetStatus, { setEffectiveAtToNow = false } = {}) 
   const ts = now()
   const result = setEffectiveAtToNow
     ? db
-      .prepare(
-        `UPDATE notes
+        .prepare(
+          `UPDATE notes
          SET status = ?, effective_at = ?, notify_enabled = 0, remind_again_at = NULL,
              finished_at = ?, updated_at = ?
          WHERE id = ? AND status = ? AND is_deleted = 0`
-      )
-      .run(targetStatus, ts, ts, ts, id, current.status)
+        )
+        .run(targetStatus, ts, ts, ts, id, current.status)
     : db
-      .prepare(
-        `UPDATE notes
+        .prepare(
+          `UPDATE notes
          SET status = ?, notify_enabled = 0, remind_again_at = NULL,
              finished_at = ?, updated_at = ?
          WHERE id = ? AND status = ? AND is_deleted = 0`
-      )
-      .run(targetStatus, ts, ts, id, current.status)
+        )
+        .run(targetStatus, ts, ts, id, current.status)
 
   return result.changes === 1 ? getNoteById(id) : null
 }
@@ -233,7 +264,12 @@ export function activateNotes() {
 export function snoozeNote(id, delayMs = 10 * 60 * 1000) {
   const parsedId = Number(id)
   const parsedDelay = Number(delayMs)
-  if (!Number.isInteger(parsedId) || parsedId <= 0 || !Number.isFinite(parsedDelay) || parsedDelay <= 0) {
+  if (
+    !Number.isInteger(parsedId) ||
+    parsedId <= 0 ||
+    !Number.isFinite(parsedDelay) ||
+    parsedDelay <= 0
+  ) {
     return null
   }
 
@@ -378,7 +414,6 @@ function toNoteListItems(notes) {
     const attachmentCount = attachmentCounts.get(note.id) || 0
     return {
       id: note.id,
-      template_id: note.template_id,
       content: note.content,
       status: note.status,
       is_pinned: note.is_pinned,
@@ -410,7 +445,9 @@ export function queryPinnedNotes({ statuses, tagNames, search } = {}) {
     extraWhere: ['n.is_pinned = 1']
   })
   const notes = db
-    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`)
+    .prepare(
+      `SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`
+    )
     .all(...params)
   return toNoteListItems(notes)
 }
@@ -425,12 +462,21 @@ export function queryRecentNotes({ statuses, tagNames, search, cutoffTime } = {}
     extraParams: [cutoffTime]
   })
   const notes = db
-    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`)
+    .prepare(
+      `SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`
+    )
     .all(...params)
   return toNoteListItems(notes)
 }
 
-export function queryEarlierNotes({ statuses, tagNames, search, cutoffTime, limit = 10, offset = 0 } = {}) {
+export function queryEarlierNotes({
+  statuses,
+  tagNames,
+  search,
+  cutoffTime,
+  limit = 10,
+  offset = 0
+} = {}) {
   const db = getDb()
   const { whereClause, params } = buildWhereClause({
     statuses,
@@ -439,7 +485,9 @@ export function queryEarlierNotes({ statuses, tagNames, search, cutoffTime, limi
     extraWhere: ['n.is_pinned = 0', 'n.effective_at <= ?'],
     extraParams: [cutoffTime]
   })
-  const { total } = db.prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`).get(...params)
+  const { total } = db
+    .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
+    .get(...params)
   const notes = db
     .prepare(
       `SELECT n.* FROM notes n ${whereClause}
@@ -475,7 +523,9 @@ export function queryCustomNormal({ statuses, tagNames, search, limit = 10, offs
     search,
     extraWhere: ['n.is_pinned = 0']
   })
-  const { total } = db.prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`).get(...params)
+  const { total } = db
+    .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
+    .get(...params)
   const notes = db
     .prepare(
       `SELECT n.* FROM notes n ${whereClause}
@@ -535,10 +585,11 @@ export function searchNotes({
   })
   const safeLimit = Math.min(100, Math.max(1, Math.trunc(Number(limit)) || 15))
   const safeOffset = Math.max(0, Math.trunc(Number(offset)) || 0)
-  const orderBy = sort === 'updated'
-    ? 'n.updated_at DESC, n.id DESC'
-    : 'n.effective_at DESC, n.created_at DESC'
-  const { total } = db.prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`).get(...params)
+  const orderBy =
+    sort === 'updated' ? 'n.updated_at DESC, n.id DESC' : 'n.effective_at DESC, n.created_at DESC'
+  const { total } = db
+    .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
+    .get(...params)
   const notes = db
     .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
     .all(...params, safeLimit, safeOffset)

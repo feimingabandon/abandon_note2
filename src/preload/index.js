@@ -128,6 +128,8 @@ const api = {
   listTags: () => ipcRenderer.invoke('tags:list'),
   /** 获取单个标签（按名称） */
   getTag: (name) => ipcRenderer.invoke('tags:get', { name }),
+  /** 获取删除标签会影响的便签与模板数量 */
+  getTagUsage: (name) => ipcRenderer.invoke('tags:usage', { name }),
 
   // ---- 便签-标签关联 ----
   /** 绑定标签到便签 */
@@ -147,13 +149,24 @@ const api = {
   /** 删除模板（软删） */
   deleteTemplate: (id) => ipcRenderer.invoke('templates:delete', { id }),
   /** 获取模板列表 */
-  listTemplates: () => ipcRenderer.invoke('templates:list'),
+  listTemplates: (options) => ipcRenderer.invoke('templates:list', options),
   /** 获取单个模板 */
-  getTemplate: (id) => ipcRenderer.invoke('templates:get', { id }),
+  getTemplate: (id, includeDeleted = false) =>
+    ipcRenderer.invoke('templates:get', { id, includeDeleted }),
   /** 暂停模板 */
   pauseTemplate: (id) => ipcRenderer.invoke('templates:pause', { id }),
   /** 恢复模板 */
   resumeTemplate: (id) => ipcRenderer.invoke('templates:resume', { id }),
+  /** 从已删除恢复模板（恢复后默认运行） */
+  restoreTemplate: (id) => ipcRenderer.invoke('templates:restore', { id }),
+  /** 彻底删除已删除模板 */
+  purgeTemplate: (id) => ipcRenderer.invoke('templates:purge', { id }),
+  /** 监听调度器触发的模板状态变化；返回取消监听函数。 */
+  onTemplatesChanged: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('templates:changed', handler)
+    return () => ipcRenderer.removeListener('templates:changed', handler)
+  },
 
   // ---- 图片附件 ----
   /** 批量保存图片 */

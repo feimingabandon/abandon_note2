@@ -3,21 +3,22 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import SearchFilterPanel from './SearchFilterPanel.vue'
 import SearchResultCard from './SearchResultCard.vue'
+import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
 
 const props = defineProps({
   active: { type: Boolean, default: false },
-  motionPhase: { type: String, default: 'collapsed' }
+  queryReady: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['edit', 'request-close'])
 
-const rootRef = ref(null)
 const inputRef = ref(null)
 const resultsRef = ref(null)
 const query = ref('')
 const searchedQuery = ref('')
 const results = ref([])
 const total = ref(0)
+const nextOffset = ref(0)
 const lastRefreshedAt = ref(null)
 const loading = ref(false)
 const loadingMore = ref(false)
@@ -38,92 +39,23 @@ const PAGE_MORE = 5
 
 let requestSeq = 0
 let focusTimer = null
+let mounted = false
+let stopNotesChanged = null
 
-// ============================================================
-// 入场动效：按当前可见的一级区域顺序自动编排。
-// ============================================================
-const ENTER_DURATION = 220
-const ENTER_TOTAL_WINDOW = 320
-let enterRaf = null
-let entranceSeq = 0
-let entranceAnimations = []
-let entranceStyledItems = []
+const {
+  captureVisibleCardLayout,
+  animateRetainedCards,
+  cancelCurrentPresenceExits,
+  animateCurrentCardsOut,
+  disposePresenceMotion
+} = useNotePresenceMotion(() => resultsRef.value, {
+  cardSelector: '.src-card[data-search-note-id]',
+  idAttribute: 'data-search-note-id',
+  rootSelector: '.sb-root',
+  auxiliarySelector: '.sb-results-head'
+})
 
-function entranceItems() {
-  if (!rootRef.value) return []
-  return Array.from(rootRef.value.children).filter((element) => {
-    const rect = element.getBoundingClientRect()
-    return rect.width > 0 && rect.height > 0
-  })
-}
-
-function clearEntranceStyles(items) {
-  for (const element of items) {
-    element.style.removeProperty('opacity')
-    element.style.removeProperty('translate')
-  }
-}
-
-function cancelEntranceAnimations() {
-  entranceSeq++
-  if (enterRaf) cancelAnimationFrame(enterRaf)
-  enterRaf = null
-  for (const animation of entranceAnimations) animation.cancel()
-  entranceAnimations = []
-  clearEntranceStyles(entranceStyledItems)
-  entranceStyledItems = []
-}
-
-async function replayEntrance() {
-  cancelEntranceAnimations()
-  const seq = entranceSeq
-  await nextTick()
-  if (!props.active || seq !== entranceSeq) return
-
-  const items = entranceItems()
-  if (!items.length) return
-  entranceStyledItems = items
-  const step = items.length > 1 ? (ENTER_TOTAL_WINDOW - ENTER_DURATION) / (items.length - 1) : 0
-
-  for (const element of items) {
-    element.style.opacity = '0'
-    element.style.translate = '0 5px'
-  }
-
-  enterRaf = requestAnimationFrame(() => {
-    enterRaf = null
-    if (!props.active || seq !== entranceSeq) {
-      clearEntranceStyles(items)
-      entranceStyledItems = []
-      return
-    }
-
-    entranceAnimations = items.map((element, index) =>
-      element.animate(
-        [
-          { opacity: 0, translate: '0 5px' },
-          { opacity: 1, translate: '0 0' }
-        ],
-        {
-          duration: ENTER_DURATION,
-          delay: index * step,
-          easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
-          fill: 'both'
-        }
-      )
-    )
-
-    Promise.allSettled(entranceAnimations.map((animation) => animation.finished)).then(() => {
-      if (seq !== entranceSeq) return
-      clearEntranceStyles(items)
-      for (const animation of entranceAnimations) animation.cancel()
-      entranceAnimations = []
-      entranceStyledItems = []
-    })
-  })
-}
-
-const hasMore = computed(() => results.value.length < total.value)
+const hasMore = computed(() => nextOffset.value < total.value)
 const lastRefreshLabel = computed(() => formatRefreshTime(lastRefreshedAt.value))
 const hasActiveFilters = computed(
   () =>
@@ -152,11 +84,21 @@ watch(
     if (focusTimer) clearTimeout(focusTimer)
     focusTimer = null
     if (active) {
-      replayEntrance()
       focusTimer = setTimeout(focusSearch, 110)
     } else {
-      cancelEntranceAnimations()
+      requestSeq++
+      loading.value = false
+      loadingMore.value = false
+      cancelCurrentPresenceExits()
     }
+  },
+  { immediate: true }
+)
+
+watch(
+  () => props.queryReady,
+  (ready) => {
+    if (ready && mounted) runSearch()
   },
   { immediate: true }
 )
@@ -263,28 +205,41 @@ function searchOptions(limit, offset) {
 async function runSearch({ append = false } = {}) {
   if (append && (loading.value || loadingMore.value || !hasMore.value)) return
   const seq = ++requestSeq
+  const before = append ? captureVisibleCardLayout() : null
   loadError.value = ''
   if (append) loadingMore.value = true
   else loading.value = true
 
   try {
+    if (!append) {
+      cancelCurrentPresenceExits()
+      await animateCurrentCardsOut()
+      if (seq !== requestSeq) return
+    }
+
     const response = await window.api.searchNotes(
-      searchOptions(append ? PAGE_MORE : PAGE_FIRST, append ? results.value.length : 0)
+      searchOptions(append ? PAGE_MORE : PAGE_FIRST, append ? nextOffset.value : 0)
     )
     if (seq !== requestSeq) return
     const incoming = Array.isArray(response?.notes) ? response.notes : []
     if (append) {
       const knownIds = new Set(results.value.map((note) => note.id))
       results.value = [...results.value, ...incoming.filter((note) => !knownIds.has(note.id))]
+      nextOffset.value += incoming.length
+      await nextTick()
+      if (seq === requestSeq) animateRetainedCards(before)
     } else {
       results.value = incoming
+      nextOffset.value = incoming.length
       await nextTick()
       if (resultsRef.value) resultsRef.value.scrollTop = 0
+      if (seq === requestSeq) animateRetainedCards(new Map())
     }
     total.value = Number(response?.total) || 0
     if (!append) lastRefreshedAt.value = Date.now()
   } catch (error) {
     if (seq !== requestSeq) return
+    if (!append) cancelCurrentPresenceExits()
     loadError.value = '搜索失败，请重试'
     console.error('[SearchBox] 搜索失败:', error)
   } finally {
@@ -330,35 +285,37 @@ function onResultsWheel(event) {
   if (element.scrollHeight <= element.clientHeight + 1) runSearch({ append: true })
 }
 
-function onResultDeleted() {
-  runSearch()
-}
-
 function openAdvanced() {
   advancedOpen.value = !advancedOpen.value
 }
 
 onMounted(() => {
-  runSearch()
+  mounted = true
+  stopNotesChanged = window.api.onNotesChanged?.(() => {
+    if (props.queryReady) runSearch()
+  })
+  if (props.queryReady) runSearch()
   if (props.active) focusSearch()
 })
 
 onBeforeUnmount(() => {
+  mounted = false
   if (focusTimer) clearTimeout(focusTimer)
-  cancelEntranceAnimations()
+  stopNotesChanged?.()
+  disposePresenceMotion()
   requestSeq++
 })
 
-defineExpose({ focus: focusSearch, refresh: () => runSearch() })
+defineExpose({
+  focus: focusSearch,
+  refresh: () => {
+    if (props.queryReady) runSearch()
+  }
+})
 </script>
 
 <template>
-  <section
-    ref="rootRef"
-    class="sb-root"
-    :class="{ 'sb-root--settled': motionPhase === 'open' }"
-    aria-label="搜索便签"
-  >
+  <section class="sb-root" aria-label="搜索便签">
     <div class="sb-top-row">
       <div class="sb-search-field">
         <input
@@ -456,7 +413,6 @@ defineExpose({ focus: focusSearch, refresh: () => runSearch() })
     <div
       ref="resultsRef"
       class="sb-results scroll-y"
-      :class="{ 'sb-results--updating': loading && results.length }"
       @scroll="onResultsScroll"
       @wheel.passive="onResultsWheel"
     >
@@ -474,16 +430,15 @@ defineExpose({ focus: focusSearch, refresh: () => runSearch() })
           重置筛选
         </button>
       </div>
-      <TransitionGroup v-else name="sb-result" tag="div" class="sb-result-list">
+      <div v-else class="sb-result-list">
         <SearchResultCard
           v-for="note in results"
           :key="note.id"
           :note="note"
           :query="searchedQuery"
           @edit="emit('edit', $event)"
-          @deleted="onResultDeleted"
         />
-      </TransitionGroup>
+      </div>
       <div v-if="loadingMore" class="sb-more-state">正在加载更多……</div>
       <div v-else-if="results.length && !hasMore" class="sb-more-state">已显示全部结果</div>
     </div>
@@ -705,30 +660,11 @@ defineExpose({ focus: focusSearch, refresh: () => runSearch() })
     transparent 100%
   );
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 22rem), transparent 100%);
-  transition: opacity 140ms ease;
-}
-.sb-results--updating {
-  opacity: 0.72;
 }
 .sb-result-list {
   display: flex;
   flex-direction: column;
   gap: 7rem;
-}
-.sb-root--settled .sb-result-enter-active {
-  transition: opacity 160ms ease;
-}
-.sb-root--settled .sb-result-leave-active {
-  position: absolute;
-  width: calc(100% - 4rem);
-  transition: opacity 120ms ease;
-}
-.sb-root--settled .sb-result-move {
-  transition: transform 220ms var(--ease-standard);
-}
-.sb-result-enter-from,
-.sb-result-leave-to {
-  opacity: 0;
 }
 .sb-state {
   display: flex;

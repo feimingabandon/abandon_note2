@@ -16,6 +16,8 @@ import { join } from 'path' // Node.js 路径拼接工具
 import { app } from 'electron' // Electron app 模块，用于获取用户数据目录
 import { existsSync, renameSync } from 'fs' // 文件系统操作
 import { readdir, rm } from 'fs/promises'
+import { clearDb, setDb } from './db-connection.js'
+import { createNotesSchema } from './db-schema.js'
 
 /** 数据库实例引用，整个应用生命周期内复用 */
 let db = null
@@ -31,6 +33,7 @@ let db = null
 export function initDatabase() {
   const dbPath = join(app.getPath('userData'), 'app.db')
   db = new Database(dbPath)
+  setDb(db)
 
   db.pragma('journal_mode = WAL')
   db.pragma('synchronous = NORMAL')
@@ -66,7 +69,7 @@ export function initDatabase() {
   }
 
   // 便签模块建表（在 app_settings 之后，可安全重复调用）
-  initNotesTables()
+  createNotesSchema(db)
 
   // 早期版本未启用外键，可能遗留已不存在便签或标签的关联记录。
   // 先清理存量脏数据，之后由 foreign_keys 保证新增写入和删除级联的一致性。
@@ -75,12 +78,18 @@ export function initDatabase() {
      WHERE note_id NOT IN (SELECT id FROM notes)
         OR tag_name NOT IN (SELECT name FROM tags)`
   ).run()
+  db.prepare(
+    `DELETE FROM template_tags
+     WHERE template_id NOT IN (SELECT id FROM note_templates)
+        OR tag_name NOT IN (SELECT name FROM tags)`
+  ).run()
 }
 
 export function closeDatabase() {
   if (db) {
     db.close()
     db = null
+    clearDb()
   }
 }
 
@@ -161,10 +170,11 @@ export async function clearNoteData() {
   try {
     // 显式清理关联表，保持操作顺序清晰，也避免把大量级联工作留到最后一步。
     db.transaction(() => {
+      db.prepare('DELETE FROM template_tags').run()
       db.prepare('DELETE FROM note_tags').run()
       db.prepare('DELETE FROM note_attachments').run()
-      db.prepare('DELETE FROM notes').run()
       db.prepare('DELETE FROM note_templates').run()
+      db.prepare('DELETE FROM notes').run()
       db.prepare('DELETE FROM tags').run()
     })()
   } catch (error) {
@@ -188,98 +198,6 @@ export async function clearNoteData() {
       // 数据库已经成功提交，不能再向 UI 报告“清空失败”。遗留目录会在下次启动重试。
     }
   }
-}
-
-// ============================================================
-// 便签模块 — 建表迁移
-// ============================================================
-
-/**
- * 初始化便签模块所需的所有表
- * 由 initDatabase() 自动调用，使用 IF NOT EXISTS 保证幂等
- */
-export function initNotesTables() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS note_templates (
-      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-      content             TEXT    NOT NULL DEFAULT '',
-      recurrence_rule     TEXT    NOT NULL,
-      is_paused           INTEGER NOT NULL DEFAULT 0,
-      is_deleted          INTEGER NOT NULL DEFAULT 0,
-      notify_enabled      INTEGER NOT NULL DEFAULT 1,
-      last_generated_at   INTEGER,
-      created_at          INTEGER NOT NULL,
-      updated_at          INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS notes (
-      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-      template_id         INTEGER REFERENCES note_templates(id) ON DELETE SET NULL,
-      note_type           TEXT    NOT NULL DEFAULT 'one_time'
-                          CHECK(note_type IN ('one_time')),
-      content             TEXT    NOT NULL DEFAULT '',
-      status              TEXT    NOT NULL DEFAULT 'initialized'
-                          CHECK(status IN ('initialized','in_progress','completed')),
-      is_deleted          INTEGER NOT NULL DEFAULT 0
-                          CHECK(is_deleted IN (0, 1)),
-      is_pinned           INTEGER NOT NULL DEFAULT 0,
-      notify_enabled      INTEGER NOT NULL DEFAULT 0
-                          CHECK(notify_enabled IN (0, 1)),
-      effective_at        INTEGER NOT NULL,
-      finished_at         INTEGER,
-      remind_again_at     INTEGER,
-      sort_order          INTEGER NOT NULL DEFAULT 0,
-      created_at          INTEGER NOT NULL,
-      updated_at          INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_notes_status ON notes(status);
-    CREATE INDEX IF NOT EXISTS idx_notes_effective_at ON notes(effective_at);
-    CREATE INDEX IF NOT EXISTS idx_notes_template_id ON notes(template_id);
-    CREATE INDEX IF NOT EXISTS idx_notes_is_pinned ON notes(is_pinned);
-    CREATE INDEX IF NOT EXISTS idx_notes_status_pinned_sort ON notes(status, is_pinned, sort_order);
-
-    CREATE TABLE IF NOT EXISTS note_attachments (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      note_id     INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-      file_path   TEXT    NOT NULL,
-      file_size   INTEGER,
-      sort_order  INTEGER NOT NULL DEFAULT 0,
-      created_at  INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_attachments_note_id ON note_attachments(note_id);
-
-    CREATE TABLE IF NOT EXISTS tags (
-      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-      name                TEXT    NOT NULL UNIQUE,
-      color               TEXT,
-      created_at          INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS note_tags (
-      note_id             INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-      tag_name            TEXT    NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
-      PRIMARY KEY (note_id, tag_name)
-    );
-    CREATE INDEX IF NOT EXISTS idx_note_tags_tag_name ON note_tags(tag_name);
-  `)
-
-  // 开发期增量同步：延后提醒独立于便签状态与原始提醒参数。
-  const noteColumns = db.prepare("PRAGMA table_info('notes')").all()
-  if (!noteColumns.some((col) => col.name === 'remind_again_at')) {
-    db.exec('ALTER TABLE notes ADD COLUMN remind_again_at INTEGER')
-  }
-  if (!noteColumns.some((col) => col.name === 'is_deleted')) {
-    db.exec('ALTER TABLE notes ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0')
-  }
-  db.exec('CREATE INDEX IF NOT EXISTS idx_notes_remind_again_at ON notes(remind_again_at)')
-  db.exec('CREATE INDEX IF NOT EXISTS idx_notes_is_deleted ON notes(is_deleted)')
-
-  // “弃用”状态已从产品移除；旧记录统一转为逻辑删除，正文和附件仍保留。
-  db.prepare(
-    `UPDATE notes
-     SET is_deleted = 1, notify_enabled = 0, remind_again_at = NULL, updated_at = ?
-     WHERE status = 'cancelled' AND is_deleted = 0`
-  ).run(Date.now())
 }
 
 /**

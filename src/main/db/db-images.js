@@ -12,7 +12,7 @@ import { randomUUID } from 'crypto'
 import { app, nativeImage } from 'electron'
 import { existsSync, mkdirSync, renameSync } from 'fs'
 import { mkdir, writeFile, unlink, stat, readFile, rm } from 'fs/promises'
-import { getDb } from './db.js'
+import { getDb } from './db-connection.js'
 
 const ATTACHMENTS_ROOT = 'attachments'
 
@@ -205,9 +205,10 @@ export function getImageThumbnail(relativePath, maxSize = 240) {
     if (image.isEmpty()) return null
     const { width, height } = image.getSize()
     const limit = Math.max(32, Math.min(512, Number(maxSize) || 240))
-    const resized = width >= height
-      ? image.resize({ width: Math.min(width, limit), quality: 'good' })
-      : image.resize({ height: Math.min(height, limit), quality: 'good' })
+    const resized =
+      width >= height
+        ? image.resize({ width: Math.min(width, limit), quality: 'good' })
+        : image.resize({ height: Math.min(height, limit), quality: 'good' })
     return resized.toDataURL()
   } catch {
     return null

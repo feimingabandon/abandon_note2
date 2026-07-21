@@ -10,6 +10,7 @@ const phase = ref('collapsed') // collapsed | opening | open | closing-content |
 const expandHeight = ref(58)
 const resizing = ref(false)
 const searchBoxRef = ref(null)
+const searchContentReady = ref(false)
 let pendingMode = null
 let pendingOpen = false
 
@@ -30,11 +31,13 @@ const searchBoxClass = computed(() => {
 
 function openExpanded() {
   if (phase.value !== 'collapsed') return
+  searchContentReady.value = false
   phase.value = 'opening'
 }
 
 function closeExpanded(nextMode = null, reopen = false) {
   if (phase.value !== 'open') return
+  searchContentReady.value = false
   pendingMode = nextMode
   pendingOpen = reopen
   // 新建面板的内容淡出与外壳收缩并行；搜索结果较密集，仍先淡出内容再收壳。
@@ -43,6 +46,10 @@ function closeExpanded(nextMode = null, reopen = false) {
 
 function onContentTransitionEnd(event, kind) {
   if (event.target !== event.currentTarget || event.propertyName !== 'opacity') return
+  if (phase.value === 'open' && mode.value === kind) {
+    if (kind === 'search') searchContentReady.value = true
+    return
+  }
   if (phase.value === 'closing-content' && mode.value === kind) phase.value = 'closing'
 }
 
@@ -354,7 +361,7 @@ defineExpose({
         <SearchBox
           ref="searchBoxRef"
           :active="contentVisible && mode === 'search'"
-          :motion-phase="phase"
+          :query-ready="searchContentReady && contentVisible && mode === 'search'"
           @edit="onSearchEdit"
           @request-close="closeExpanded()"
         />

@@ -8,6 +8,11 @@
   "scripts": {
     "format": "prettier --write src",
     "lint": "eslint --cache src",
+    "test": "vitest run && npm run test:db",
+    "test:unit": "vitest run",
+    "test:db": "node scripts/run-electron-node-tests.cjs",
+    "test:watch": "vitest",
+    "db:reset-business-schema": "node scripts/run-electron-schema-reset.cjs",
     "start": "electron-vite preview",
     "dev": "chcp 65001 && electron-vite dev",
     "build": "electron-vite build",
@@ -38,6 +43,8 @@
     "eslint-plugin-vue": "^10.6.2",
     "prettier": "^3.7.4",
     "vite": "^7.2.6",
+    "vite-node": "^3.2.4",
+    "vitest": "^4.1.10",
     "vue": "^3.5.25",
     "vue-eslint-parser": "^10.2.0"
   },

@@ -19,6 +19,7 @@
  * @property {number} [failures] - 连续失败计数（调度器维护）
  * @property {string|null} [lastError] - 最后一次错误信息
  * @property {boolean} [_disabled] - 是否已被自动禁用
+ * @property {number} [maxFailures=10] - 自动禁用阈值；Infinity 表示永不自动禁用
  */
 
 export class Scheduler {
@@ -89,8 +90,8 @@ export class Scheduler {
   start() {
     this.lastTickAt = Date.now() // 初始化，防止首次 tick 失败导致看门狗永不触发
 
-    // 启动补偿：立即执行一轮 tick，弥补关闭期间的遗漏
-    this.tick()
+    // 启动时仍执行一轮任务，但把来源交给各任务决定是否补偿；循环模板会跳过旧节点。
+    this.tick({ reason: 'startup' })
 
     // === 主线：递归 setTimeout 精确到整分 ===
     const myGen = ++this._mainGeneration
@@ -101,7 +102,7 @@ export class Scheduler {
       const msToNextMinute = 60000 - (Date.now() % 60000)
       this._mainTimerId = setTimeout(() => {
         if (this._mainGeneration !== myGen) return // 二次校验（系统恢复时防竞态）
-        this.tick()
+        this.tick({ reason: 'scheduled' })
         scheduleTick()
       }, msToNextMinute)
     }
@@ -125,7 +126,7 @@ export class Scheduler {
 
           // 递增代数 → 所有旧主线回调自检失败
           const newGen = ++this._mainGeneration
-          this.tick() // 补偿执行
+          this.tick({ reason: 'recovery' })
 
           // 清除旧主线 timer（已入队的回调通过代数校验过滤）
           clearTimeout(this._mainTimerId)
@@ -136,7 +137,7 @@ export class Scheduler {
             const ms = 60000 - (Date.now() % 60000)
             this._mainTimerId = setTimeout(() => {
               if (this._mainGeneration !== newGen) return
-              this.tick()
+              this.tick({ reason: 'scheduled' })
               rebuild()
             }, ms)
           }
@@ -165,9 +166,17 @@ export class Scheduler {
   // tick：每一分钟执行一次
   // ============================================================
 
-  tick() {
+  tick({ reason = 'scheduled' } = {}) {
     if (this._ticking) return // 上一轮未结束，跳过本轮
     this._ticking = true
+
+    const tickStartedAt = Date.now()
+    const previousTickAt = this.lastTickAt
+    const effectiveReason =
+      reason === 'scheduled' && previousTickAt && tickStartedAt - previousTickAt > 90_000
+        ? 'recovery'
+        : reason
+    const context = { now: tickStartedAt, reason: effectiveReason, previousTickAt }
 
     const stats = { total: 0, skipped: 0, ran: 0, ok: [], fail: [] }
 
@@ -177,8 +186,8 @@ export class Scheduler {
         stats.total++
 
         try {
-          if (task.shouldRun()) {
-            task.execute()
+          if (task.shouldRun(context)) {
+            task.execute(context)
             task.failures = 0 // 执行成功，重置失败计数
             stats.ran++
             stats.ok.push(task.name)
@@ -192,9 +201,10 @@ export class Scheduler {
           stats.fail.push(`${task.name}(${err.message})`)
           console.error(`[scheduler] "${task.name}" 失败 (${task.failures}次):`, err)
 
-          // 连续失败 10 次以上 → 自动禁用
-          if (task.failures >= 10) {
-            console.error(`[scheduler] "${task.name}" 已自动禁用（连续失败10次）`)
+          // 达到任务自己的失败阈值后自动禁用；需持续重试的任务可使用 Infinity。
+          const maxFailures = task.maxFailures ?? 10
+          if (Number.isFinite(maxFailures) && task.failures >= maxFailures) {
+            console.error(`[scheduler] "${task.name}" 已自动禁用（连续失败${maxFailures}次）`)
             task._disabled = true
           }
         }

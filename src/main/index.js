@@ -9,7 +9,8 @@
  */
 
 import * as Electron from 'electron'
-const { app, shell, BrowserWindow, ipcMain, screen, Tray, Menu, Notification, desktopCapturer } = Electron
+const { app, shell, BrowserWindow, ipcMain, screen, Tray, Menu, Notification, desktopCapturer } =
+  Electron
 
 import { join, resolve } from 'path'
 import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
@@ -64,7 +65,8 @@ import {
   bindTag,
   unbindTag,
   setNoteTags,
-  getNoteTags
+  getNoteTags,
+  getTagUsage
 } from './db/db-tags.js'
 import {
   createTemplate,
@@ -73,7 +75,9 @@ import {
   listTemplates,
   getTemplateById,
   pauseTemplate,
-  resumeTemplate
+  resumeTemplate,
+  restoreTemplate,
+  purgeTemplate
 } from './db/db-templates.js'
 import {
   stageImage,
@@ -92,7 +96,8 @@ import {
   getImageCount
 } from './db/db-images.js'
 import { Scheduler } from './services/scheduler.js'
-import { generateRecurringNotes } from './services/recurrence.js'
+import { runRecurringTemplates } from './services/recurrence.js'
+import { TemplateSchedulerGuard } from './services/template-scheduler-guard.js'
 import {
   DEFAULT_SETTINGS,
   createDefaultSettings,
@@ -227,9 +232,9 @@ function openSafeExternal(rawUrl) {
   try {
     const url = new URL(rawUrl)
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return false
-    shell.openExternal(url.toString()).catch((error) =>
-      console.warn('[navigation] 打开外部链接失败:', error.message)
-    )
+    shell
+      .openExternal(url.toString())
+      .catch((error) => console.warn('[navigation] 打开外部链接失败:', error.message))
     return true
   } catch {
     return false
@@ -271,7 +276,11 @@ function migrateAppearanceDefaults() {
   if (Number(fontSizeRow?.value) === 18) {
     entries.push(serializeSetting('css.fontSizeBase', DEFAULT_SETTINGS.css.fontSizeBase))
   }
-  if (String(textColorRow?.value || '').trim().toLowerCase() === '#000000') {
+  if (
+    String(textColorRow?.value || '')
+      .trim()
+      .toLowerCase() === '#000000'
+  ) {
     entries.push(serializeSetting('css.textColor', DEFAULT_SETTINGS.css.textColor))
   }
 
@@ -1005,7 +1014,8 @@ app.whenReady().then(async () => {
   // ---- 设置 IPC ----
   // renderer 只提交 schema ID，数据库 type/key、校验、序列化均由共享 schema 决定。
   ipcMain.handle('set-setting-value', (_event, id, value) => {
-    if (!RENDERER_WRITABLE_SETTING_IDS.has(id)) throw new Error(`renderer 无权直接写入设置项: ${id}`)
+    if (!RENDERER_WRITABLE_SETTING_IDS.has(id))
+      throw new Error(`renderer 无权直接写入设置项: ${id}`)
     persistSettingValue(id, value)
     return true
   })
@@ -1109,9 +1119,7 @@ app.whenReady().then(async () => {
     // 启用时若启动阶段初始化失败，则现场重试一次，以便把详细错误反馈给用户。
     const enableRequested = blurConfig.enabled
     const initializationResult =
-      enableRequested && blurCaps.supported && !blurInitialized
-        ? initializeBlurRuntime()
-        : null
+      enableRequested && blurCaps.supported && !blurInitialized ? initializeBlurRuntime() : null
 
     // 初始化失败时不能让持久化值继续显示为“已启用”，否则设置值会与实际效果不一致。
     if (enableRequested && initializationResult && !initializationResult.success) {
@@ -1164,7 +1172,7 @@ app.whenReady().then(async () => {
   }
 
   function sendNotify(body, { title = '便签提醒', silent = false, noteId = null } = {}) {
-    const summary = (body || '').slice(0, 50) || '（空内容）'
+    const summary = String(body || '') || '（空内容）'
     const parsedNoteId = Number(noteId)
 
     if (process.platform === 'win32' && Number.isInteger(parsedNoteId) && parsedNoteId > 0) {
@@ -1225,15 +1233,37 @@ app.whenReady().then(async () => {
   })
 
   // 3.5 循环模板生成任务（含通知）
+  const templateSchedulerGuard = new TemplateSchedulerGuard({
+    failureThreshold: 3,
+    retryDelayMs: 5 * 60 * 1000,
+    onAlert: (error) => {
+      sendNotify(error?.message || '无法读取或调度循环模板', {
+        title: '模板调度服务异常'
+      })
+    }
+  })
   scheduler.register({
     name: 'noteGenerationTask',
-    shouldRun: () => true,
-    execute: () => {
-      const result = generateRecurringNotes()
+    maxFailures: Infinity,
+    shouldRun: (context) => templateSchedulerGuard.shouldRun(context.now),
+    execute: (context) => {
+      const result = templateSchedulerGuard.run(() => runRecurringTemplates(context), context.now)
       for (const note of result.generated) {
-        sendNotify(note.content)
+        sendNotify(note.content, { title: '模板生成通知' })
         const preview = (note.content || '').trim().slice(0, 10) || '空内容'
-        console.log(`[generation-notify]「${preview}」已由循环模板生成便签，直接生效`)
+        console.log(`[generation-notify]「${preview}」已由循环模板生成便签，模板已发送通知`)
+      }
+      for (const template of result.autoPaused) {
+        const preview = (template.content || '').trim().slice(0, 20) || '空内容模板'
+        sendNotify(`模板“${preview}”连续生成失败 3 次：${template.error}`, {
+          title: '循环模板已自动暂停'
+        })
+      }
+      if (result.autoPaused.length > 0 && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('templates:changed', {
+          reason: 'auto-pause',
+          ids: result.autoPaused.map((template) => template.id)
+        })
       }
       if (result.count > 0 && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('notes:changed', { reason: 'recurrence' })
@@ -1351,11 +1381,13 @@ app.whenReady().then(async () => {
       ? [...new Set(payload.tagNames.map((name) => String(name).trim()).filter(Boolean))]
       : []
     const addedImages = Array.isArray(payload.addedImages) ? payload.addedImages : []
-    const deletedImageIds = [...new Set(
-      (Array.isArray(payload.deletedImageIds) ? payload.deletedImageIds : [])
-        .map(Number)
-        .filter((imageId) => Number.isInteger(imageId) && imageId > 0)
-    )]
+    const deletedImageIds = [
+      ...new Set(
+        (Array.isArray(payload.deletedImageIds) ? payload.deletedImageIds : [])
+          .map(Number)
+          .filter((imageId) => Number.isInteger(imageId) && imageId > 0)
+      )
+    ]
 
     if (!Number.isInteger(id) || id <= 0) throw new Error('无效的便签 ID')
     const original = getNoteById(id)
@@ -1370,12 +1402,15 @@ app.whenReady().then(async () => {
     }
 
     const ownedDeletedRows = deletedImageIds.length
-      ? db.prepare(
-        `SELECT id, file_path FROM note_attachments
+      ? db
+          .prepare(
+            `SELECT id, file_path FROM note_attachments
          WHERE note_id = ? AND id IN (${deletedImageIds.map(() => '?').join(',')})`
-      ).all(id, ...deletedImageIds)
+          )
+          .all(id, ...deletedImageIds)
       : []
-    if (ownedDeletedRows.length !== deletedImageIds.length) throw new Error('附件不存在或不属于当前便签')
+    if (ownedDeletedRows.length !== deletedImageIds.length)
+      throw new Error('附件不存在或不属于当前便签')
 
     const resultingCount = original.attachments.length - deletedImageIds.length + addedImages.length
     if (resultingCount > 50) throw new Error('单条便签最多只能保存 50 张图片')
@@ -1401,7 +1436,8 @@ app.whenReady().then(async () => {
     const txn = db.transaction(() => {
       const current = db.prepare('SELECT * FROM notes WHERE id = ? AND is_deleted = 0').get(id)
       if (!current) throw new Error('便签不存在或已删除')
-      if (current.status !== original.status) throw new Error('便签状态已发生变化，请重新打开后再修改')
+      if (current.status !== original.status)
+        throw new Error('便签状态已发生变化，请重新打开后再修改')
 
       const timestamp = Date.now()
       let status = current.status
@@ -1592,6 +1628,11 @@ app.whenReady().then(async () => {
     return getTagByName(name)
   })
 
+  // 【标签 - 删除影响统计】包含逻辑删除但尚未彻底删除的便签和模板关联。
+  ipcMain.handle('tags:usage', (_event, { name }) => {
+    return getTagUsage(name)
+  })
+
   // 【便签标签 - 绑定】
   ipcMain.handle('note-tags:bind', (_event, { noteId, tagName }) => {
     return bindTag(noteId, tagName)
@@ -1630,14 +1671,14 @@ app.whenReady().then(async () => {
     return deleteTemplateFn(id)
   })
 
-  // 【模板 - 列表（仅活跃模板）】
-  ipcMain.handle('templates:list', () => {
-    return listTemplates()
+  // 【模板 - 列表】state: active | running | paused | deleted | all
+  ipcMain.handle('templates:list', (_event, options) => {
+    return listTemplates(options || {})
   })
 
   // 【模板 - 获取单条】
-  ipcMain.handle('templates:get', (_event, { id }) => {
-    return getTemplateById(id)
+  ipcMain.handle('templates:get', (_event, { id, includeDeleted }) => {
+    return getTemplateById(id, { includeDeleted: !!includeDeleted })
   })
 
   // 【模板 - 暂停】
@@ -1648,6 +1689,16 @@ app.whenReady().then(async () => {
   // 【模板 - 恢复】
   ipcMain.handle('templates:resume', (_event, { id }) => {
     return resumeTemplate(id)
+  })
+
+  // 【模板 - 从已删除恢复并默认运行】
+  ipcMain.handle('templates:restore', (_event, { id }) => {
+    return restoreTemplate(id)
+  })
+
+  // 【模板 - 彻底删除】仅允许删除已进入回收区的模板。
+  ipcMain.handle('templates:purge', (_event, { id }) => {
+    return purgeTemplate(id)
   })
 
   // ---- 图片附件 IPC ----
@@ -1745,7 +1796,10 @@ app.whenReady().then(async () => {
     }
 
     async function captureTargetDisplay() {
-      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: pixelSize })
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: pixelSize
+      })
       if (sources.length === 0) return null
       return (
         sources.find((item) => String(item.display_id) === String(targetDisplay.id)) || sources[0]
@@ -1763,8 +1817,14 @@ app.whenReady().then(async () => {
       const scaleY = imageSize.height / viewportHeight
       const x = Math.max(0, Math.round(Number(selection.x) * scaleX))
       const y = Math.max(0, Math.round(Number(selection.y) * scaleY))
-      const width = Math.min(imageSize.width - x, Math.max(1, Math.round(Number(selection.w) * scaleX)))
-      const height = Math.min(imageSize.height - y, Math.max(1, Math.round(Number(selection.h) * scaleY)))
+      const width = Math.min(
+        imageSize.width - x,
+        Math.max(1, Math.round(Number(selection.w) * scaleX))
+      )
+      const height = Math.min(
+        imageSize.height - y,
+        Math.max(1, Math.round(Number(selection.h) * scaleY))
+      )
       if (!Number.isFinite(x + y + width + height) || width <= 0 || height <= 0) return null
       return sourceImage.crop({ x, y, width, height }).toDataURL()
     }
@@ -1925,13 +1985,16 @@ document.addEventListener('mouseup',(ev)=>{
 setTimeout(()=>{resize()},0)
 </script></body></html>`
 
-      win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).then(() => {
-        win.show()
-        win.focus()
-        if (!requestEvent.sender.isDestroyed()) {
-          requestEvent.sender.send('screenshot:ready')
-        }
-      }).catch(() => done(null))
+      win
+        .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+        .then(() => {
+          win.show()
+          win.focus()
+          if (!requestEvent.sender.isDestroyed()) {
+            requestEvent.sender.send('screenshot:ready')
+          }
+        })
+        .catch(() => done(null))
     })
   })
 
