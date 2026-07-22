@@ -170,6 +170,7 @@ onBeforeUnmount(() => {
   color: var(--text-color-secondary);
   line-height: 1.45;
   margin-bottom: 22rem;
+  white-space: pre-line;
 }
 
 /* ---- 按钮区 ---- */

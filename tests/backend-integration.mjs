@@ -7,10 +7,12 @@ import {
   createTemplate,
   deleteTemplate,
   getTemplateById,
+  listTemplates,
   pauseTemplate,
   purgeTemplate,
   restoreTemplate,
-  resumeTemplate
+  resumeTemplate,
+  updateTemplate
 } from '../src/main/db/db-templates.js'
 import { purgeNote } from '../src/main/db/db-notes.js'
 import { runRecurringTemplates } from '../src/main/services/recurrence.js'
@@ -80,8 +82,44 @@ try {
     [{ tag_name: '日常' }, { tag_name: '重要' }]
   )
 
-  assert.deepEqual(getTagUsage('日常'), { noteCount: 1, templateCount: 2 })
-  assert.deepEqual(getTagUsage('重要'), { noteCount: 1, templateCount: 1 })
+  assert.deepEqual(getTagUsage('日常'), {
+    noteCount: 1,
+    activeNoteCount: 1,
+    deletedNoteCount: 0,
+    templateCount: 2,
+    runningTemplateCount: 2,
+    pausedTemplateCount: 0,
+    deletedTemplateCount: 0
+  })
+  assert.deepEqual(getTagUsage('重要'), {
+    noteCount: 1,
+    activeNoteCount: 1,
+    deletedNoteCount: 0,
+    templateCount: 1,
+    runningTemplateCount: 1,
+    pausedTemplateCount: 0,
+    deletedTemplateCount: 0
+  })
+
+  db.prepare('UPDATE notes SET is_deleted = 1 WHERE id = ?').run(firstNote.id)
+  db.prepare('UPDATE note_templates SET is_paused = 1 WHERE id = ?').run(missedTemplate.id)
+  db.prepare('UPDATE note_templates SET is_deleted = 1, is_paused = 1 WHERE id = ?').run(
+    activeTemplate.id
+  )
+  assert.deepEqual(getTagUsage('日常'), {
+    noteCount: 1,
+    activeNoteCount: 0,
+    deletedNoteCount: 1,
+    templateCount: 2,
+    runningTemplateCount: 0,
+    pausedTemplateCount: 1,
+    deletedTemplateCount: 1
+  })
+  db.prepare('UPDATE notes SET is_deleted = 0 WHERE id = ?').run(firstNote.id)
+  db.prepare('UPDATE note_templates SET is_paused = 0 WHERE id = ?').run(missedTemplate.id)
+  db.prepare('UPDATE note_templates SET is_deleted = 0, is_paused = 0 WHERE id = ?').run(
+    activeTemplate.id
+  )
 
   const secondDue = getTemplateById(activeTemplate.id).next_run_at
   const secondRun = runRecurringTemplates({ now: secondDue + 20_000, reason: 'scheduled' })
@@ -132,6 +170,17 @@ try {
   assert.equal(intervalRestored.schedule_anchor_at, localTs(2025, 7, 20, 8))
   assert.equal(intervalRestored.next_run_at, localTs(2025, 7, 26, 9))
 
+  const unchangedSchedule = updateTemplate(
+    missedTemplate.id,
+    {
+      content: '只修改正文不重排时间',
+      recurrenceRule: { frequency: 'daily', interval: 1, time_of_day: '09:00' }
+    },
+    localTs(2025, 7, 22, 12)
+  )
+  assert.equal(unchangedSchedule.schedule_anchor_at, missedAnchor)
+  assert.equal(unchangedSchedule.next_run_at, localTs(2025, 7, 23, 9))
+
   const failingTemplate = createTemplate(
     {
       content: '连续失败后暂停',
@@ -165,6 +214,21 @@ try {
       assert.equal(failureResult.autoPaused[0].id, failingTemplate.id)
     }
   }
+
+  const failedBeforeEdit = getTemplateById(failingTemplate.id, { includeDeleted: true })
+  updateTemplate(failingTemplate.id, {
+    content: '修改正文但保留错误状态',
+    recurrenceRule: { frequency: 'daily', interval: 1, time_of_day: '09:00' }
+  })
+  const failedAfterEdit = getTemplateById(failingTemplate.id, { includeDeleted: true })
+  assert.equal(failedAfterEdit.is_paused, 1)
+  assert.equal(failedAfterEdit.pause_reason, 'error')
+  assert.equal(failedAfterEdit.consecutive_failures, failedBeforeEdit.consecutive_failures)
+  assert.equal(failedAfterEdit.last_error, failedBeforeEdit.last_error)
+
+  const listedTemplates = listTemplates({ state: 'all' })
+  const listedActive = listedTemplates.find((template) => template.id === activeTemplate.id)
+  assert.deepEqual(listedActive.tags.map((tag) => tag.name).sort(), ['日常', '重要'])
 
   const commitFailureTemplate = createTemplate(
     {
@@ -211,7 +275,15 @@ try {
   const usageBeforeDelete = getTagUsage('日常')
   assert.equal(usageBeforeDelete.templateCount, 1)
   assert.equal(deleteTag('日常'), true)
-  assert.deepEqual(getTagUsage('日常'), { noteCount: 0, templateCount: 0 })
+  assert.deepEqual(getTagUsage('日常'), {
+    noteCount: 0,
+    activeNoteCount: 0,
+    deletedNoteCount: 0,
+    templateCount: 0,
+    runningTemplateCount: 0,
+    pausedTemplateCount: 0,
+    deletedTemplateCount: 0
+  })
 
   console.log('backend integration tests passed')
 } finally {

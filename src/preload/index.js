@@ -161,6 +161,9 @@ const api = {
   restoreTemplate: (id) => ipcRenderer.invoke('templates:restore', { id }),
   /** 彻底删除已删除模板 */
   purgeTemplate: (id) => ipcRenderer.invoke('templates:purge', { id }),
+  /** 使用主进程调度算法预览下一次生成时间 */
+  previewTemplateNextRun: (recurrenceRule, afterTimestamp = Date.now()) =>
+    ipcRenderer.invoke('templates:preview-next-run', { recurrenceRule, afterTimestamp }),
   /** 监听调度器触发的模板状态变化；返回取消监听函数。 */
   onTemplatesChanged: (callback) => {
     const handler = (_event, payload) => callback(payload)

@@ -14,7 +14,7 @@
  *     └── main.content（主内容区域，可滚动）
  */
 
-import { ref, onMounted, onUnmounted } from 'vue'
+import { nextTick, ref, onMounted, onUnmounted } from 'vue'
 import MacTitlebar from './components/system/MacTitlebar.vue' // 自定义 Mac 风格标题栏
 import ResizeHandles from './components/system/ResizeHandles.vue' // 自定义窗口缩放手柄
 import SettingsPanel from './components/system/SettingsPanel.vue' // 底部弹出式设置面板
@@ -22,6 +22,7 @@ import MessageToast from './components/system/MessageToast.vue'
 import NoteList from './components/list/NoteList.vue'
 import NoteEditor from './components/note/NoteEditor.vue'
 import ActionBar from './components/list/ActionBar.vue'
+import TemplatePage from './components/template/TemplatePage.vue'
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { DEFAULT_SETTINGS } from '../../shared/settings-schema.js'
@@ -31,6 +32,11 @@ createMessageProvider()
 
 /** 设置面板显隐状态 */
 const showSettings = ref(false)
+const templatesRendered = ref(false)
+const templatePanelActive = ref(false)
+const templateBlurActive = ref(false)
+const templatePhase = ref('closed') // closed | opening | open | closing
+const templatePanelRef = ref(null)
 /** 与面板卸载动画解耦，使关闭动作开始时即可恢复底层清晰度。 */
 const settingsBlurActive = ref(false)
 /** 编辑弹窗沿用设置页策略：模糊底层场景，弹窗本身保持清晰。 */
@@ -40,6 +46,42 @@ let editorBlurReleaseTimer = null
 function openSettings() {
   settingsBlurActive.value = true
   showSettings.value = true
+}
+
+async function openTemplates() {
+  if (templatePhase.value === 'opening' || templatePhase.value === 'open') return
+  templatePhase.value = 'opening'
+  templateBlurActive.value = true
+  if (!templatesRendered.value) {
+    templatesRendered.value = true
+    await nextTick()
+    // 明确提交面板的初始位置，避免浏览器把挂载和进入态合并为同一帧。
+    void templatePanelRef.value?.offsetWidth
+  }
+  if (templatePhase.value !== 'opening') return
+  templatePanelActive.value = true
+}
+
+function closeTemplates() {
+  if (templatePhase.value === 'closed' || templatePhase.value === 'closing') return
+  templatePhase.value = 'closing'
+  templatePanelActive.value = false
+  templateBlurActive.value = false
+}
+
+function onTemplateTransitionEnd(event) {
+  if (event.target !== templatePanelRef.value || event.propertyName !== 'transform') return
+  if (templatePhase.value === 'opening' && templatePanelActive.value) {
+    templatePhase.value = 'open'
+  } else if (templatePhase.value === 'closing' && !templatePanelActive.value) {
+    templatesRendered.value = false
+    templatePhase.value = 'closed'
+  }
+}
+
+function toggleTemplates() {
+  if (templatePhase.value === 'closed' || templatePhase.value === 'closing') openTemplates()
+  else closeTemplates()
 }
 
 /** 当前选中的便签 */
@@ -166,31 +208,18 @@ onUnmounted(() => {
       <MacTitlebar v-model:locked="locked" v-model:always-on-top="alwaysOnTop">
         <!-- 设置和帮助按钮组 -->
         <div class="titlebar-actions-group">
-          <!-- 新增循环便签模板按钮（占位） -->
-          <button class="titlebar-btn" title="新增循环便签模板">
-            <svg class="btn-icon" viewBox="0 0 1024 1024">
-              <path
-                d="M 512 200 V 824"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="100"
-                stroke-linecap="round"
-              />
-              <path
-                d="M 200 512 H 824"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="100"
-                stroke-linecap="round"
-              />
-            </svg>
+          <button
+            class="titlebar-btn titlebar-btn-template"
+            :class="{ 'is-active': templatePanelActive }"
+            :title="templatePanelActive ? '关闭循环模板' : '打开循环模板'"
+            aria-controls="template-workspace"
+            :aria-expanded="templatePanelActive"
+            @click="toggleTemplates"
+          >
+            <img class="btn-icon" src="@/resources/icons/recurrence.svg" alt="循环模板" />
           </button>
           <!-- 设置按钮 -->
-          <button
-            class="titlebar-btn titlebar-btn-settings"
-            title="设置"
-            @click="openSettings"
-          >
+          <button class="titlebar-btn titlebar-btn-settings" title="设置" @click="openSettings">
             <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
           </button>
           <!-- 帮助按钮（预留，暂未绑定功能） -->
@@ -199,42 +228,52 @@ onUnmounted(() => {
           </button>
         </div>
       </MacTitlebar>
-      <!-- 主内容区域，flex:1 占据剩余空间，支持垂直滚动 -->
-      <main class="content">
-        <!-- 操作栏（新建 + 搜索，双模切换） -->
-        <ActionBar
-          ref="actionBarRef"
-          class="app-search"
-          @create="onCreateNote"
-          @edit="onEditNote"
-        />
+      <div class="app-content-stage">
+        <!-- 主内容区域，flex:1 占据导航栏下方空间。 -->
+        <main
+          class="content"
+          :class="{ 'is-template-open': templateBlurActive }"
+          :inert="templatesRendered"
+        >
+          <ActionBar
+            ref="actionBarRef"
+            class="app-search"
+            @create="onCreateNote"
+            @edit="onEditNote"
+          />
+          <NoteList ref="noteListRef" class="app-list" @edit="onEditNote" @create="onCreateNote" />
+        </main>
 
-        <!-- 列表视图 -->
-        <NoteList
-          ref="noteListRef"
-          class="app-list"
-          @edit="onEditNote"
-          @create="onCreateNote"
-        />
-      </main>
+        <div v-if="templatesRendered" class="app-template-wrapper">
+          <div
+            id="template-workspace"
+            ref="templatePanelRef"
+            class="app-template-panel"
+            :class="{ active: templatePanelActive }"
+            role="region"
+            aria-label="循环便签模版设置"
+            @transitionend="onTemplateTransitionEnd"
+          >
+            <TemplatePage />
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 便签编辑弹窗：复用 NoteEditor，底层列表保持可见但不可交互。 -->
     <Transition name="app-editor-modal">
-      <div
-        v-if="selectedNote"
-        class="app-editor-overlay"
-        role="presentation"
-      >
-        <section
-          class="app-editor-dialog"
-          role="dialog"
-          aria-modal="true"
-          aria-label="修改便签"
-        >
+      <div v-if="selectedNote" class="app-editor-overlay" role="presentation">
+        <section class="app-editor-dialog" role="dialog" aria-modal="true" aria-label="修改便签">
           <header class="app-editor-header">
             <span>修改便签</span>
-            <button class="app-editor-close" aria-label="关闭编辑" title="关闭" @click="requestCloseEditor">×</button>
+            <button
+              class="app-editor-close"
+              aria-label="关闭编辑"
+              title="关闭"
+              @click="requestCloseEditor"
+            >
+              ×
+            </button>
           </header>
           <NoteEditor
             ref="noteEditorRef"
@@ -302,7 +341,6 @@ onUnmounted(() => {
   transition-duration: 180ms;
   will-change: filter;
 }
-
 /* 标题栏按钮通用样式 */
 .titlebar-btn {
   width: 18rem; /* 与红绿灯按钮大小一致 */
@@ -328,7 +366,6 @@ onUnmounted(() => {
   transition: opacity 120ms ease;
   display: block; /* 确保正确居中 */
 }
-
 /* 悬停时显示图标 */
 .titlebar-actions-group:hover .btn-icon {
   opacity: 1;
@@ -339,6 +376,10 @@ onUnmounted(() => {
   transition-duration: 70ms;
 }
 
+.titlebar-btn-template.is-active {
+  background-color: #34c759;
+}
+
 /* 按钮组容器 */
 .titlebar-actions-group {
   display: flex;
@@ -346,14 +387,50 @@ onUnmounted(() => {
 }
 
 /* 主内容区域 */
+.app-content-stage {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
 .content {
   flex: 1; /* 占据标题栏之外的所有剩余空间 */
   display: flex;
   flex-direction: column;
   overflow: hidden; /* 自身不滚动，滚动权交给内部的便签列表 */
   padding: 16rem; /* 内边距，统一使用 rem 跟随窗口缩放 */
+  transition: filter 180ms ease-out;
+}
+.content.is-template-open {
+  filter: blur(var(--glass-blur-base));
+  will-change: filter;
 }
 
+.app-template-wrapper {
+  position: absolute;
+  z-index: 15000;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: auto;
+}
+.app-template-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-color: rgb(var(--bg-color) / var(--glass-opacity-base));
+  box-shadow: -12px 0 36px rgba(0, 0, 0, 0.16);
+  transform: translateX(100%);
+  transition: transform 360ms var(--ease-standard);
+  will-change: transform;
+}
+.app-template-panel.active {
+  transform: translateX(0);
+}
 /* 搜索框间距 */
 .app-search {
   flex-shrink: 0;
@@ -413,19 +490,35 @@ onUnmounted(() => {
   font-size: 22rem;
   line-height: 1;
   cursor: pointer;
-  transition: background-color 140ms ease, color 140ms ease, transform 140ms var(--ease-standard);
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    transform 140ms var(--ease-standard);
 }
 .app-editor-close:hover {
   background: color-mix(in srgb, var(--text-color) 9%, transparent);
   color: var(--text-color);
 }
-.app-editor-close:active { transform: scale(0.9); }
+.app-editor-close:active {
+  transform: scale(0.9);
+}
 .app-editor-modal-enter-active,
-.app-editor-modal-leave-active { transition: opacity 180ms ease; }
+.app-editor-modal-leave-active {
+  transition: opacity 180ms ease;
+}
 .app-editor-modal-enter-active .app-editor-dialog,
-.app-editor-modal-leave-active .app-editor-dialog { transition: opacity 180ms ease, transform 240ms cubic-bezier(0.32, 0.72, 0, 1); }
+.app-editor-modal-leave-active .app-editor-dialog {
+  transition:
+    opacity 180ms ease,
+    transform 240ms cubic-bezier(0.32, 0.72, 0, 1);
+}
 .app-editor-modal-enter-from,
-.app-editor-modal-leave-to { opacity: 0; }
+.app-editor-modal-leave-to {
+  opacity: 0;
+}
 .app-editor-modal-enter-from .app-editor-dialog,
-.app-editor-modal-leave-to .app-editor-dialog { opacity: 0; transform: translateY(10rem) scale(0.985); }
+.app-editor-modal-leave-to .app-editor-dialog {
+  opacity: 0;
+  transform: translateY(10rem) scale(0.985);
+}
 </style>

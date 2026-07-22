@@ -97,7 +97,9 @@ import {
 } from './db/db-images.js'
 import { Scheduler } from './services/scheduler.js'
 import { runRecurringTemplates } from './services/recurrence.js'
+import { calculateNextRun, normalizeRecurrenceRule } from './services/recurrence-rules.js'
 import { TemplateSchedulerGuard } from './services/template-scheduler-guard.js'
+import { sendNotificationSafely } from './services/notification-guard.js'
 import {
   DEFAULT_SETTINGS,
   createDefaultSettings,
@@ -109,6 +111,9 @@ import {
 const WINDOW_NAME = 'main'
 const APP_ID = 'com.abandon.note'
 const APP_NAME = '便签'
+// 安装版由 NSIS 快捷方式把 APP_ID 映射为 productName；开发环境没有这层注册，
+// Windows 会直接展示原始 ID，因此开发时使用中文名称作为通知来源标识。
+const WINDOWS_APP_USER_MODEL_ID = app.isPackaged ? APP_ID : APP_NAME
 const APP_PROTOCOL = 'abandon-note'
 const SNOOZE_DELAY_MS = 10 * 60 * 1000
 const RENDERER_WRITABLE_SETTING_IDS = new Set([
@@ -126,7 +131,7 @@ const userDataPath = app.getPath('userData')
 app.setName(APP_NAME)
 app.setPath('userData', userDataPath)
 if (process.platform === 'win32') {
-  app.setAppUserModelId(APP_ID)
+  app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID)
   const protocolArgs = process.defaultApp && process.argv[1] ? [resolve(process.argv[1])] : []
   app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, protocolArgs)
 }
@@ -1202,6 +1207,10 @@ app.whenReady().then(async () => {
     new Notification({ title, body: summary, silent, icon }).show()
   }
 
+  function trySendNotify(body, options) {
+    return sendNotificationSafely(sendNotify, body, options)
+  }
+
   // 3.3 生效便签激活任务（含通知）
   scheduler.register({
     name: 'activationTask',
@@ -1237,7 +1246,7 @@ app.whenReady().then(async () => {
     failureThreshold: 3,
     retryDelayMs: 5 * 60 * 1000,
     onAlert: (error) => {
-      sendNotify(error?.message || '无法读取或调度循环模板', {
+      trySendNotify(error?.message || '无法读取或调度循环模板', {
         title: '模板调度服务异常'
       })
     }
@@ -1249,19 +1258,25 @@ app.whenReady().then(async () => {
     execute: (context) => {
       const result = templateSchedulerGuard.run(() => runRecurringTemplates(context), context.now)
       for (const note of result.generated) {
-        sendNotify(note.content, { title: '模板生成通知' })
-        const preview = (note.content || '').trim().slice(0, 10) || '空内容'
-        console.log(`[generation-notify]「${preview}」已由循环模板生成便签，模板已发送通知`)
+        if (trySendNotify(note.content, { title: '模板生成通知' })) {
+          const preview = (note.content || '').trim().slice(0, 10) || '空内容'
+          console.log(`[generation-notify]「${preview}」已由循环模板生成便签，模板已发送通知`)
+        }
       }
       for (const template of result.autoPaused) {
         const preview = (template.content || '').trim().slice(0, 20) || '空内容模板'
-        sendNotify(`模板“${preview}”连续生成失败 3 次：${template.error}`, {
+        trySendNotify(`模板“${preview}”连续生成失败 3 次：${template.error}`, {
           title: '循环模板已自动暂停'
         })
       }
-      if (result.autoPaused.length > 0 && mainWindow && !mainWindow.isDestroyed()) {
+      const templatesChanged =
+        result.count > 0 ||
+        result.skipped > 0 ||
+        result.errors.length > 0 ||
+        result.autoPaused.length > 0
+      if (templatesChanged && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('templates:changed', {
-          reason: 'auto-pause',
+          reason: result.autoPaused.length > 0 ? 'auto-pause' : 'scheduler',
           ids: result.autoPaused.map((template) => template.id)
         })
       }
@@ -1700,6 +1715,16 @@ app.whenReady().then(async () => {
   ipcMain.handle('templates:purge', (_event, { id }) => {
     return purgeTemplate(id)
   })
+
+  // 【模板 - 下一次生成时间预览】与调度器共用同一套日历算法。
+  ipcMain.handle(
+    'templates:preview-next-run',
+    (_event, { recurrenceRule, afterTimestamp } = {}) => {
+      const after = Number.isFinite(Number(afterTimestamp)) ? Number(afterTimestamp) : Date.now()
+      const rule = normalizeRecurrenceRule(recurrenceRule)
+      return calculateNextRun(rule, after, after)
+    }
+  )
 
   // ---- 图片附件 IPC ----
 

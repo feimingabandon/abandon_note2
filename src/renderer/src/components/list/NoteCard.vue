@@ -10,35 +10,7 @@ import ImagePicker from '../note/ImagePicker.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import StatusRing from './StatusRing.vue'
 import { useMessage } from '../../composables/useMessage.js'
-
-// 所有卡片共享一个分钟时钟，避免每张卡片各自创建定时器。
-const sharedNow = ref(Date.now())
-let sharedClockTimer = null
-let sharedClockUsers = 0
-
-function syncSharedClock() {
-  sharedNow.value = Date.now()
-}
-
-function startSharedClock() {
-  sharedClockUsers++
-  syncSharedClock()
-  if (sharedClockTimer) return
-  const delay = 60_000 - (Date.now() % 60_000) + 20
-  sharedClockTimer = setTimeout(function tick() {
-    syncSharedClock()
-    sharedClockTimer = setTimeout(tick, 60_000)
-  }, delay)
-  document.addEventListener('visibilitychange', syncSharedClock)
-}
-
-function stopSharedClock() {
-  sharedClockUsers = Math.max(0, sharedClockUsers - 1)
-  if (sharedClockUsers || !sharedClockTimer) return
-  clearTimeout(sharedClockTimer)
-  sharedClockTimer = null
-  document.removeEventListener('visibilitychange', syncSharedClock)
-}
+import { useSharedMinuteClock } from '../../composables/useSharedMinuteClock.js'
 
 const props = defineProps({
   note: { type: Object, required: true },
@@ -49,6 +21,7 @@ const props = defineProps({
 
 const emit = defineEmits(['status-action', 'edit'])
 const { showMessage } = useMessage()
+const sharedNow = useSharedMinuteClock()
 
 const STATUS_META = {
   initialized: { label: '初始化', color: '#0A84FF', action: '提前开始' },
@@ -90,7 +63,6 @@ let contentResizeObserver = null
 let contentAnimation = null
 
 onMounted(async () => {
-  startSharedClock()
   await nextTick()
   measureContentOverflow()
   contentResizeObserver = new ResizeObserver(measureContentOverflow)
@@ -99,7 +71,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  stopSharedClock()
   contentResizeObserver?.disconnect()
   contentAnimation?.cancel()
   document.removeEventListener('pointerdown', onTagPopoverOutside)

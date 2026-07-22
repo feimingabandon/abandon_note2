@@ -306,10 +306,11 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   cursor: pointer;
   transition:
-    border-color 150ms ease,
-    background-color 150ms ease,
-    color 150ms ease,
-    transform 120ms ease;
+    border-color var(--motion-fast) ease,
+    background-color var(--motion-control) var(--ease-standard),
+    color var(--motion-fast) ease,
+    box-shadow var(--motion-control) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
 }
 .sfp-chip:hover,
 .sfp-toggle:hover {
@@ -322,28 +323,39 @@ onBeforeUnmount(() => {
 }
 .sfp-chip.is-selected,
 .sfp-toggle.is-selected {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: color-mix(in srgb, #0a84ff 16%, transparent);
-  color: color-mix(in srgb, #0a84ff 80%, var(--text-color));
+  border-color: #0071e3;
+  background: #0071e3;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 2rem 7rem rgba(0, 113, 227, 0.2);
 }
 .sfp-chip.is-selected:hover,
 .sfp-toggle.is-selected:hover {
-  background: color-mix(in srgb, #0a84ff 21%, transparent);
+  border-color: #0077ed;
+  background: #0077ed;
+  color: #fff;
+  box-shadow: 0 3rem 9rem rgba(0, 113, 227, 0.26);
 }
 .sfp-status.is-selected {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: color-mix(in srgb, var(--option-color) 16%, transparent);
-  color: var(--text-color);
+  border-color: #0071e3;
+  background: #0071e3;
+  color: #fff;
 }
 .sfp-status.is-selected:hover {
-  background: color-mix(in srgb, var(--option-color) 21%, transparent);
+  background: #0077ed;
 }
 .sfp-status-dot {
   width: 7rem;
   height: 7rem;
   border-radius: 50%;
   background: var(--option-color);
-  transition: transform 150ms var(--ease-standard);
+  transition:
+    background-color var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
+}
+.sfp-status.is-selected .sfp-status-dot {
+  background: #fff;
+  transform: scale(0.86);
 }
 .sfp-row--tags {
   padding: 5rem 0;
@@ -354,6 +366,23 @@ onBeforeUnmount(() => {
 .sfp-row--tags :deep(.ts-chip) {
   border-radius: 8rem;
   font-size: calc(var(--fs-secondary) * 0.85);
+}
+.sfp-row--tags :deep(.ts-chip--selected) {
+  border-color: #0071e3;
+  background: #0071e3;
+  color: #fff;
+  box-shadow: 0 2rem 7rem rgba(0, 113, 227, 0.2);
+}
+.sfp-row--tags :deep(.ts-chip--selected:hover) {
+  border-color: #0077ed;
+  background: #0077ed;
+  box-shadow: 0 3rem 9rem rgba(0, 113, 227, 0.26);
+}
+.sfp-row--tags :deep(.ts-chip--selected .ts-chip-dot) {
+  background: #fff;
+}
+.sfp-row--tags :deep(.ts-chip--selected .ts-chip-del) {
+  color: rgba(255, 255, 255, 0.78);
 }
 .sfp-time-options {
   overflow: hidden;
@@ -371,12 +400,23 @@ onBeforeUnmount(() => {
   background: rgba(128, 128, 128, 0.05);
   background-clip: padding-box;
   transition:
-    border-color 150ms ease,
-    background-color 150ms ease;
+    border-color var(--motion-fast) ease,
+    background-color var(--motion-control) var(--ease-standard),
+    box-shadow var(--motion-control) var(--ease-standard);
 }
 .sfp-date.is-selected {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: color-mix(in srgb, #0a84ff 16%, transparent);
+  border-color: #0071e3;
+  background: #0071e3;
+  box-shadow: 0 2rem 7rem rgba(0, 113, 227, 0.2);
+}
+.sfp-date.is-selected:hover {
+  border-color: #0077ed;
+  background: #0077ed;
+  box-shadow: 0 3rem 9rem rgba(0, 113, 227, 0.26);
+}
+.sfp-date.is-selected :deep(.drp-trigger),
+.sfp-date.is-selected :deep(.drp-clear-action) {
+  color: #fff;
 }
 .sfp-date :deep(.drp-trigger) {
   justify-content: center;

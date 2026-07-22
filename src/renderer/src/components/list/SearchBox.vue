@@ -386,7 +386,7 @@ defineExpose({
       <span v-if="loadError">搜索遇到问题</span>
       <span v-else class="sb-result-summary">
         <span>当前有 {{ results.length }} 条</span>
-        <span>共有 {{ total }} 条</span>
+        <span>此条件下共有 {{ total }} 条</span>
         <span v-if="lastRefreshLabel" class="sb-refresh-time">
           刷新时间 {{ lastRefreshLabel }}
         </span>

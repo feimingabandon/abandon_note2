@@ -173,13 +173,40 @@ export function getTagNoteCount(tagName) {
  */
 export function getTagUsage(tagName) {
   const db = getDb()
-  const noteCount =
-    db
-      .prepare('SELECT COUNT(DISTINCT note_id) AS count FROM note_tags WHERE tag_name = ?')
-      .get(tagName)?.count ?? 0
-  const templateCount =
-    db
-      .prepare('SELECT COUNT(DISTINCT template_id) AS count FROM template_tags WHERE tag_name = ?')
-      .get(tagName)?.count ?? 0
-  return { noteCount, templateCount }
+  const noteUsage = db
+    .prepare(
+      `SELECT
+         COUNT(DISTINCT n.id) AS noteCount,
+         COUNT(DISTINCT CASE WHEN n.is_deleted = 0 THEN n.id END) AS activeNoteCount,
+         COUNT(DISTINCT CASE WHEN n.is_deleted = 1 THEN n.id END) AS deletedNoteCount
+       FROM note_tags nt
+       INNER JOIN notes n ON n.id = nt.note_id
+       WHERE nt.tag_name = ?`
+    )
+    .get(tagName)
+  const templateUsage = db
+    .prepare(
+      `SELECT
+         COUNT(DISTINCT t.id) AS templateCount,
+         COUNT(DISTINCT CASE
+           WHEN t.is_deleted = 0 AND t.is_paused = 0 THEN t.id
+         END) AS runningTemplateCount,
+         COUNT(DISTINCT CASE
+           WHEN t.is_deleted = 0 AND t.is_paused = 1 THEN t.id
+         END) AS pausedTemplateCount,
+         COUNT(DISTINCT CASE WHEN t.is_deleted = 1 THEN t.id END) AS deletedTemplateCount
+       FROM template_tags tt
+       INNER JOIN note_templates t ON t.id = tt.template_id
+       WHERE tt.tag_name = ?`
+    )
+    .get(tagName)
+  return {
+    noteCount: noteUsage?.noteCount ?? 0,
+    activeNoteCount: noteUsage?.activeNoteCount ?? 0,
+    deletedNoteCount: noteUsage?.deletedNoteCount ?? 0,
+    templateCount: templateUsage?.templateCount ?? 0,
+    runningTemplateCount: templateUsage?.runningTemplateCount ?? 0,
+    pausedTemplateCount: templateUsage?.pausedTemplateCount ?? 0,
+    deletedTemplateCount: templateUsage?.deletedTemplateCount ?? 0
+  }
 }

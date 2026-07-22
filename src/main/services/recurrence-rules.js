@@ -2,6 +2,7 @@
 
 const FREQUENCIES = new Set(['daily', 'weekly', 'monthly', 'yearly'])
 const DAY_MS = 86_400_000
+export const MAX_DAILY_INTERVAL = 3650
 
 function assertObject(value, message) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(message)
@@ -55,7 +56,9 @@ export function normalizeRecurrenceRule(input) {
 
   if (rule.frequency === 'daily') {
     const interval = Number(rule.interval ?? 1)
-    if (!Number.isInteger(interval) || interval < 1) throw new Error('interval 必须是正整数')
+    if (!Number.isInteger(interval) || interval < 1 || interval > MAX_DAILY_INTERVAL) {
+      throw new Error(`interval 必须是 1 到 ${MAX_DAILY_INTERVAL} 之间的整数`)
+    }
     normalized.interval = interval
   } else if (rule.frequency === 'weekly') {
     normalized.days_of_week = normalizeIntegerArray(rule.days_of_week, 1, 7, 'days_of_week')
@@ -76,7 +79,7 @@ export function normalizeRecurrenceRule(input) {
         month > 12 ||
         !Number.isInteger(day) ||
         day < 1 ||
-        day > 31
+        day > daysInMonth(2024, month)
       ) {
         throw new Error('dates_of_year 包含无效日期')
       }
@@ -127,6 +130,7 @@ function dailyNext(rule, after, anchor, hour, minute) {
       hour,
       minute
     )
+    if (!Number.isFinite(candidate)) throw new Error('无法计算下一次每日生成时间')
     if (candidate > after.getTime()) return candidate
     offset += rule.interval
   }

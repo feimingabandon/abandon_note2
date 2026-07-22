@@ -20,6 +20,7 @@ const emit = defineEmits(['update:modelValue'])
 
 <template>
   <button
+    type="button"
     class="switch"
     :class="{ on: modelValue }"
     :disabled="disabled"

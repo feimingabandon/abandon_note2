@@ -3,6 +3,7 @@ import {
   calculateNextRun,
   daysInMonth,
   isLeapYear,
+  MAX_DAILY_INTERVAL,
   normalizeRecurrenceRule
 } from '../src/main/services/recurrence-rules.js'
 
@@ -55,13 +56,31 @@ describe('rule validation', () => {
   it.each([
     [{ frequency: 'every_other_day', interval: 2, time_of_day: '08:00' }],
     [{ frequency: 'daily', interval: 0, time_of_day: '08:00' }],
+    [{ frequency: 'daily', interval: MAX_DAILY_INTERVAL + 1, time_of_day: '08:00' }],
     [{ frequency: 'weekly', days_of_week: [], time_of_day: '08:00' }],
     [{ frequency: 'monthly', days_of_month: [32], time_of_day: '08:00' }],
     [{ frequency: 'yearly', dates_of_year: [{ month: 13, day: 1 }], time_of_day: '08:00' }],
+    [{ frequency: 'yearly', dates_of_year: [{ month: 4, day: 31 }], time_of_day: '08:00' }],
     [{ frequency: 'daily', interval: 1, time_of_day: '8:00' }],
     [{ frequency: 'daily', interval: 1, time_of_day: '08:00:30' }]
   ])('rejects invalid rule %#', (rule) => {
     expect(() => normalizeRecurrenceRule(rule)).toThrow()
+  })
+
+  it('accepts the maximum supported daily interval without overflowing', () => {
+    const anchor = localTs(2025, 7, 20, 8)
+    const first = calculateNextRun(
+      { frequency: 'daily', interval: MAX_DAILY_INTERVAL, time_of_day: '09:00' },
+      anchor,
+      anchor
+    )
+    const second = calculateNextRun(
+      { frequency: 'daily', interval: MAX_DAILY_INTERVAL, time_of_day: '09:00' },
+      first,
+      anchor
+    )
+    expect(Number.isFinite(second)).toBe(true)
+    expect(second).toBeGreaterThan(first)
   })
 })
 

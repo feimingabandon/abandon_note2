@@ -55,7 +55,10 @@ const wrapperStyle = computed(() => {
 // ============ Methods ============
 function toggle() {
   if (props.disabled) return
-  if (open.value) { open.value = false; return }
+  if (open.value) {
+    open.value = false
+    return
+  }
   updatePanelPosition()
   open.value = true
 }
@@ -66,10 +69,11 @@ function updatePanelPosition() {
   const rect = wrapperRef.value.getBoundingClientRect()
   panelStyle.value = {
     position: 'fixed',
-    top: (rect.bottom + 4) + 'px',
+    top: rect.bottom + 4 + 'px',
     left: rect.left + 'px',
     minWidth: rect.width + 'px',
-    zIndex: 100
+    // Teleport 到 body 后必须高于循环模板层（15000）和编辑模态层（20000）。
+    zIndex: 30000
   }
 }
 
@@ -139,11 +143,7 @@ onBeforeUnmount(() => {
     </button>
 
     <Teleport to="body">
-      <Transition
-        :css="false"
-        @enter="onEnter"
-        @leave="onLeave"
-      >
+      <Transition :css="false" @enter="onEnter" @leave="onLeave">
         <div v-if="open" ref="panelRef" class="sel-panel-wrap" :style="panelStyle" @click.stop>
           <div class="sel-panel-glass">
             <div class="sel-panel scroll-y">
@@ -183,17 +183,17 @@ onBeforeUnmount(() => {
   font-family: inherit;
   color: var(--text-color);
   background: rgba(255, 255, 255, 0.05);
-  border: 1rem solid rgba(255, 255, 255, 0.1);
+  border: 1rem solid rgb(var(--bg-color) / 0.1);
   border-radius: 6rem;
   cursor: pointer;
   outline: none;
   transition: border-color 150ms ease;
 }
 .sel-trigger:hover:not(.is-disabled) {
-  border-color: rgba(255, 255, 255, 0.18);
+  border-color: rgb(var(--bg-color) / 0.18);
 }
 .sel-trigger.is-open {
-  border-color: rgba(255, 255, 255, 0.25);
+  border-color: rgb(var(--bg-color) / 0.25);
 }
 .sel-trigger.is-disabled {
   opacity: 0.4;

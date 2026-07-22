@@ -60,6 +60,29 @@ const saving = ref(false)
 const showDeleteDialog = ref(false)
 /** 待删除的标签 */
 const tagToDelete = ref(null)
+/** 删除标签会解除的便签与循环模板关联统计 */
+const tagUsage = ref(null)
+const tagUsageUnavailable = ref(false)
+let deleteUsageSeq = 0
+
+const deleteMessage = computed(() => {
+  const tagName = tagToDelete.value?.name || ''
+  if (tagUsageUnavailable.value) {
+    return `确定要删除标签「${tagName}」吗？\n暂时无法读取关联详情，删除后仍会解除该标签的全部关联。`
+  }
+  if (!tagUsage.value) return `正在读取标签「${tagName}」的使用情况…`
+
+  const usage = tagUsage.value
+  if (usage.noteCount === 0 && usage.templateCount === 0) {
+    return `当前没有便签或循环模板使用标签「${tagName}」。\n删除标签后无法恢复。`
+  }
+  return [
+    `该标签正在被 ${usage.noteCount} 条便签和 ${usage.templateCount} 个循环模板使用。`,
+    `便签：未删除 ${usage.activeNoteCount} 条，已删除 ${usage.deletedNoteCount} 条`,
+    `循环模板：运行中 ${usage.runningTemplateCount} 个，已暂停 ${usage.pausedTemplateCount} 个，已删除 ${usage.deletedTemplateCount} 个`,
+    '删除后会解除以上全部关联，且无法恢复。'
+  ].join('\n')
+})
 
 const inputRef = ref(null)
 
@@ -118,10 +141,10 @@ function restartRefreshSpin() {
 
 // ---- 刷新：重放逐个入场动画（与状态筛选面板 chip 一致：淡入+上浮，总窗口恒定） ----
 const chipAnimating = ref(false)
-const CHIP_ANIM_DURATION = 250   // 单 chip 动画时长(ms)，与 ts-chip-in 关键帧对齐
-const CHIP_TOTAL_WINDOW = 565    // 从首到尾的总动画窗口(ms)，与状态面板 10 chip × 35ms + 250ms 对齐
-const CHIP_STAGGER_MIN = 35      // 最小步进保护
-const CHIP_INITIAL_DELAY = 80    // 首个标签延迟(ms)，避免立刻蹦出显得突兀
+const CHIP_ANIM_DURATION = 250 // 单 chip 动画时长(ms)，与 ts-chip-in 关键帧对齐
+const CHIP_TOTAL_WINDOW = 565 // 从首到尾的总动画窗口(ms)，与状态面板 10 chip × 35ms + 250ms 对齐
+const CHIP_STAGGER_MIN = 35 // 最小步进保护
+const CHIP_INITIAL_DELAY = 80 // 首个标签延迟(ms)，避免立刻蹦出显得突兀
 
 /** 动态错峰步长：数量少慢，数量多快，总窗口恒定 */
 const staggerStep = computed(() => {
@@ -194,15 +217,39 @@ async function saveTag() {
 }
 
 function onFormKeydown(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    saveTag()
+    return
+  }
   if (e.key === 'Escape') {
     closeForm()
   }
 }
 
 // ---- 删除标签 ----
-function confirmDelete(tag) {
+async function confirmDelete(tag) {
+  const requestSeq = ++deleteUsageSeq
   tagToDelete.value = tag
-  showDeleteDialog.value = true
+  tagUsage.value = null
+  tagUsageUnavailable.value = false
+  try {
+    const usage = await window.api.getTagUsage(tag.name)
+    if (requestSeq !== deleteUsageSeq || tagToDelete.value?.name !== tag.name) return
+    tagUsage.value = usage
+  } catch (e) {
+    if (requestSeq !== deleteUsageSeq) return
+    tagUsageUnavailable.value = true
+    console.error('[TagSelector] 读取标签使用情况失败:', e)
+  }
+  if (requestSeq === deleteUsageSeq) showDeleteDialog.value = true
+}
+
+function cancelDelete() {
+  deleteUsageSeq++
+  tagToDelete.value = null
+  tagUsage.value = null
+  tagUsageUnavailable.value = false
 }
 
 async function handleDelete() {
@@ -221,7 +268,7 @@ async function handleDelete() {
   } catch (e) {
     console.error('[TagSelector] 删除标签失败:', e)
   } finally {
-    tagToDelete.value = null
+    cancelDelete()
   }
 }
 
@@ -261,6 +308,7 @@ function onTagMouseUp() {
 }
 
 onBeforeUnmount(() => {
+  deleteUsageSeq++
   document.removeEventListener('mousemove', onTagMouseMove)
   document.removeEventListener('mouseup', onTagMouseUp)
 })
@@ -282,16 +330,34 @@ onMounted(async () => {
           v-for="(tag, i) in tags"
           :key="tag.id"
           class="ts-chip"
-          :class="{ 'ts-chip--selected': selectedNames.has(tag.name), 'ts-chip-anim': chipAnimating }"
-          :style="{ '--chip-color': tag.color || '#888', animationDelay: chipAnimating ? (CHIP_INITIAL_DELAY + i * staggerStep) + 'ms' : '' }"
+          :class="{
+            'ts-chip--selected': selectedNames.has(tag.name),
+            'ts-chip-anim': chipAnimating
+          }"
+          :style="{
+            '--chip-color': tag.color || '#888',
+            animationDelay: chipAnimating ? CHIP_INITIAL_DELAY + i * staggerStep + 'ms' : ''
+          }"
         >
           <span class="ts-chip-body" @click="toggleTag(tag.name)">
             <span class="ts-chip-dot" />
             <span class="ts-chip-name">{{ tag.name }}</span>
           </span>
-          <button class="ts-chip-del" @click.stop="confirmDelete(tag)" title="删除标签">
+          <button
+            type="button"
+            class="ts-chip-del"
+            title="删除标签"
+            :aria-label="`删除标签 ${tag.name}`"
+            @click.stop="confirmDelete(tag)"
+          >
             <svg viewBox="0 0 16 16" class="ts-chip-del-icon">
-              <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <path
+                d="M4 4l8 8M12 4l-8 8"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+              />
             </svg>
           </button>
         </div>
@@ -303,8 +369,12 @@ onMounted(async () => {
       <!-- 操作按钮组 -->
       <span class="ts-actions">
         <!-- 刷新按钮 -->
-        <button class="ts-refresh-btn" title="刷新标签" @click="onRefresh">
-          <svg class="ts-refresh-icon" :class="{ 'ts-refresh-icon--spin': refreshSpinning }" viewBox="0 0 24 24">
+        <button type="button" class="ts-refresh-btn" title="刷新标签" @click="onRefresh">
+          <svg
+            class="ts-refresh-icon"
+            :class="{ 'ts-refresh-icon--spin': refreshSpinning }"
+            viewBox="0 0 24 24"
+          >
             <path
               d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"
               fill="none"
@@ -326,6 +396,7 @@ onMounted(async () => {
 
         <!-- 新建按钮 -->
         <button
+          type="button"
           class="ts-add-btn"
           :class="{ 'ts-add-btn--open': showForm }"
           @click="showForm ? closeForm() : openForm()"
@@ -354,7 +425,6 @@ onMounted(async () => {
             class="ts-form-input"
             placeholder="标签名称"
             maxlength="10"
-            @keyup.enter="saveTag"
           />
 
           <!-- 颜色选择器 + 文本值 + 保存 -->
@@ -363,7 +433,7 @@ onMounted(async () => {
               type="color"
               :value="newColor"
               class="ts-form-color-picker"
-              @input="newColor = ($event.target).value"
+              @input="newColor = $event.target.value"
             />
             <input
               v-model="newColorText"
@@ -373,6 +443,7 @@ onMounted(async () => {
               @input="onColorTextInput"
             />
             <button
+              type="button"
               class="ts-form-save"
               :disabled="!newName.trim() || saving"
               @click="saveTag"
@@ -386,6 +457,7 @@ onMounted(async () => {
             <button
               v-for="c in colorPresets"
               :key="c"
+              type="button"
               class="ts-form-color"
               :class="{ 'ts-form-color--active': isPresetMatch(c) }"
               :style="{ backgroundColor: c }"
@@ -400,10 +472,11 @@ onMounted(async () => {
     <ConfirmDialog
       v-model:visible="showDeleteDialog"
       title="删除标签"
-      :message="`确定要删除标签「${tagToDelete?.name}」吗？`"
+      :message="deleteMessage"
       confirm-text="删除"
       variant="danger"
       @confirm="handleDelete"
+      @cancel="cancelDelete"
     />
   </div>
 </template>
@@ -597,8 +670,12 @@ onMounted(async () => {
   animation: ts-refresh-spin 320ms var(--ease-standard);
 }
 @keyframes ts-refresh-spin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ---- 新建按钮 ---- */
@@ -614,8 +691,7 @@ onMounted(async () => {
   background: transparent;
   color: var(--text-color);
   cursor: pointer;
-  transition:
-    background-color 150ms ease;
+  transition: background-color 150ms ease;
 }
 .ts-add-btn:hover {
   background: rgba(255, 255, 255, 0.08);
@@ -789,5 +865,4 @@ onMounted(async () => {
 .ts-form-color:hover {
   transform: scale(1.15);
 }
-
 </style>

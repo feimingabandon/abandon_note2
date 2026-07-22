@@ -52,6 +52,29 @@ function attachTags(db, template) {
   return template
 }
 
+function attachTagsToTemplates(db, templates) {
+  if (templates.length === 0) return templates
+  const tagsByTemplate = new Map(templates.map((template) => [template.id, []]))
+  const ids = templates.map((template) => template.id)
+  for (let offset = 0; offset < ids.length; offset += 900) {
+    const batch = ids.slice(offset, offset + 900)
+    const placeholders = batch.map(() => '?').join(',')
+    const rows = db
+      .prepare(
+        `SELECT tt.template_id, t.* FROM template_tags tt
+         INNER JOIN tags t ON t.name = tt.tag_name
+         WHERE tt.template_id IN (${placeholders})
+         ORDER BY t.created_at ASC`
+      )
+      .all(...batch)
+    for (const row of rows) {
+      const { template_id: templateId, ...tag } = row
+      tagsByTemplate.get(templateId)?.push(tag)
+    }
+  }
+  return templates.map((template) => ({ ...template, tags: tagsByTemplate.get(template.id) || [] }))
+}
+
 export function createTemplate(
   { recurrenceRule, content = '', notifyEnabled = true, isPinned = false, tagNames = [] } = {},
   timestamp = now()
@@ -98,11 +121,17 @@ export function updateTemplate(id, fields = {}, timestamp = now()) {
     if (!old || old.is_deleted) throw new Error('模板不存在或已删除')
 
     const content = fields.content === undefined ? old.content : normalizeContent(fields.content)
+    let oldRule = null
+    try {
+      oldRule = normalizeRecurrenceRule(old.recurrence_rule)
+    } catch (error) {
+      if (fields.recurrenceRule === undefined) throw error
+    }
     const rule =
-      fields.recurrenceRule === undefined
-        ? normalizeRecurrenceRule(old.recurrence_rule)
-        : normalizeRecurrenceRule(fields.recurrenceRule)
-    const scheduleChanged = fields.recurrenceRule !== undefined
+      fields.recurrenceRule === undefined ? oldRule : normalizeRecurrenceRule(fields.recurrenceRule)
+    const scheduleChanged =
+      fields.recurrenceRule !== undefined &&
+      (!oldRule || JSON.stringify(rule) !== JSON.stringify(oldRule))
     const scheduleAnchorAt = scheduleChanged ? timestamp : old.schedule_anchor_at
     const nextRunAt = old.is_paused
       ? null
@@ -113,9 +142,7 @@ export function updateTemplate(id, fields = {}, timestamp = now()) {
     db.prepare(
       `UPDATE note_templates SET
          content = ?, recurrence_rule = ?, is_pinned = ?, notify_enabled = ?,
-         schedule_anchor_at = ?, next_run_at = ?, consecutive_failures = 0,
-         last_error = NULL, last_failed_at = NULL,
-         pause_reason = CASE WHEN is_paused = 1 THEN 'manual' ELSE NULL END,
+         schedule_anchor_at = ?, next_run_at = ?,
          updated_at = ?
        WHERE id = ? AND is_deleted = 0`
     ).run(
@@ -225,10 +252,10 @@ export function listTemplates({ state = 'active' } = {}) {
   }[state]
   if (where === undefined) throw new Error('无效的模板列表状态')
   const db = getDb()
-  return db
+  const templates = db
     .prepare(`SELECT * FROM note_templates ${where} ORDER BY created_at DESC`)
     .all()
-    .map((template) => attachTags(db, template))
+  return attachTagsToTemplates(db, templates)
 }
 
 /** 只读取已经到达生成节点的运行中模板，避免每分钟扫描未来模板。 */
