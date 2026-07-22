@@ -72,6 +72,12 @@ const api = {
   // ---- 系统模糊 ----
   /** 设置模糊配置（立即生效 + 持久化） */
   setBlurConfig: (config) => ipcRenderer.invoke('set-blur-config', config),
+  /** 监听统一调度器产出的毛玻璃诊断结果 */
+  onBlurDiagnosticChanged: (callback) => {
+    const handler = (_event, diagnostic) => callback(diagnostic)
+    ipcRenderer.on('blur:diagnostic-changed', handler)
+    return () => ipcRenderer.removeListener('blur:diagnostic-changed', handler)
+  },
   // ---- 便签 CRUD ----
   /** 创建便签 */
   createNote: (options) => ipcRenderer.invoke('notes:create', options),

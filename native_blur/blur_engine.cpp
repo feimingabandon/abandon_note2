@@ -88,6 +88,7 @@ bool Engine::Initialize(HWND parentHwnd) {
 void Engine::Destroy() {
     StopStaThread();
     m_initialized.store(false);
+    m_runtimeHealthy.store(false);
     m_running.store(false);
 }
 
@@ -107,8 +108,13 @@ void Engine::SetConfig(const BlurConfig& config) {
         if (!m_configUpdatePending.exchange(true)) {
             if (!PostMessage(hwnd, WM_BLUR_APPLY_CONFIG, 0, 0)) {
                 m_configUpdatePending.store(false);
+                m_lastError.store(BlurErrorCode::UnknownFailure);
+                m_runtimeHealthy.store(false);
             }
         }
+    } else if (m_initialized.load()) {
+        m_lastError.store(BlurErrorCode::OverlayWindowFailed);
+        m_runtimeHealthy.store(false);
     }
 }
 
@@ -146,13 +152,26 @@ void Engine::UpdateGeometry() {
         if (!m_geometryUpdatePending.exchange(true)) {
             if (!PostMessage(hwnd, WM_BLUR_UPDATE_GEOMETRY, 0, 0)) {
                 m_geometryUpdatePending.store(false);
+                m_lastError.store(BlurErrorCode::UnknownFailure);
+                m_runtimeHealthy.store(false);
             }
         }
+    } else if (m_initialized.load()) {
+        m_lastError.store(BlurErrorCode::OverlayWindowFailed);
+        m_runtimeHealthy.store(false);
     }
 }
 
 void Engine::ReSyncZOrder() {
-    if (HWND hwnd = m_messageHwnd.load()) PostMessage(hwnd, WM_BLUR_SYNC_ZORDER, 0, 0);
+    if (HWND hwnd = m_messageHwnd.load()) {
+        if (!PostMessage(hwnd, WM_BLUR_SYNC_ZORDER, 0, 0)) {
+            m_lastError.store(BlurErrorCode::UnknownFailure);
+            m_runtimeHealthy.store(false);
+        }
+    } else if (m_initialized.load()) {
+        m_lastError.store(BlurErrorCode::OverlayWindowFailed);
+        m_runtimeHealthy.store(false);
+    }
 }
 
 void Engine::Show() { if (HWND hwnd = m_messageHwnd.load()) PostMessage(hwnd, WM_BLUR_SHOW, 0, 0); }
@@ -230,6 +249,7 @@ void Engine::StaThreadProc(HWND parentHwnd) {
     InstallForegroundHook();
     m_lastError.store(BlurErrorCode::None);
     m_initialized.store(true);
+    m_runtimeHealthy.store(true);
     SignalInitialization(true);
 
     MSG msg{};
@@ -239,8 +259,14 @@ void Engine::StaThreadProc(HWND parentHwnd) {
         DispatchMessage(&msg);
     }
 
+    if (messageResult == -1) {
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        m_runtimeHealthy.store(false);
+    }
+
     Cleanup();
     m_initialized.store(false);
+    m_runtimeHealthy.store(false);
     m_running.store(false);
 }
 
@@ -398,8 +424,12 @@ bool Engine::BuildEffectGraph() {
 // 参数更新：直接写 Composition 属性，不重建 Effect Graph
 // ============================================================
 
-void Engine::UpdateEffectParameters() {
-    if (!m_compositor || !m_blurVisual || !m_effectBrush) return;
+bool Engine::UpdateEffectParameters() {
+    if (!m_compositor || !m_blurVisual || !m_effectBrush) {
+        m_lastError.store(BlurErrorCode::EffectGraphFailed);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
 
     BlurConfig cfg;
     { std::lock_guard<std::mutex> lock(m_configMutex); cfg = m_config; }
@@ -409,8 +439,15 @@ void Engine::UpdateEffectParameters() {
         m_effectBrush.Properties().InsertScalar(L"Saturation.Saturation", cfg.saturation);
         m_blurVisual.Opacity(1.0f);
         ApplyClip();
+        m_lastError.store(BlurErrorCode::None);
+        m_runtimeHealthy.store(true);
+        return true;
     }
-    catch (...) { }
+    catch (...) {
+        m_lastError.store(BlurErrorCode::EffectGraphFailed);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
 }
 
 // ============================================================
@@ -457,19 +494,47 @@ void Engine::HandleDpiChanged(WPARAM wParam, LPARAM lParam) {
     SyncGeometryFromParent();
 }
 
-void Engine::SyncGeometryFromParent() {
-    if (!m_overlayHwnd || !m_parentHwnd || !IsWindow(m_parentHwnd)) return;
+bool Engine::SyncGeometryFromParent() {
+    if (!m_overlayHwnd || !IsWindow(m_overlayHwnd)) {
+        m_lastError.store(BlurErrorCode::OverlayWindowFailed);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
+    if (!m_parentHwnd || !IsWindow(m_parentHwnd)) {
+        m_lastError.store(BlurErrorCode::InvalidParentWindow);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
     RECT rect{};
-    if (!GetWindowRect(m_parentHwnd, &rect)) return;
+    if (!GetWindowRect(m_parentHwnd, &rect)) {
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
 
-    SetWindowPos(m_overlayHwnd, m_parentHwnd,
+    if (!SetWindowPos(m_overlayHwnd, m_parentHwnd,
         rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
-        SWP_NOACTIVATE);
+        SWP_NOACTIVATE)) {
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
     UpdateVisualSize();
+    if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
+    return true;
 }
 
-void Engine::SyncZOrder() {
-    if (!m_overlayHwnd || !m_parentHwnd || !IsWindow(m_parentHwnd)) return;
+bool Engine::SyncZOrder() {
+    if (!m_overlayHwnd || !IsWindow(m_overlayHwnd)) {
+        m_lastError.store(BlurErrorCode::OverlayWindowFailed);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
+    if (!m_parentHwnd || !IsWindow(m_parentHwnd)) {
+        m_lastError.store(BlurErrorCode::InvalidParentWindow);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
 
     const bool parentTopmost =
         (GetWindowLongPtrW(m_parentHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
@@ -479,12 +544,22 @@ void Engine::SyncZOrder() {
     // 只在置顶分组真正变化时切换 band。否则 DWM 可能在两次
     // SetWindowPos 之间提交一帧，造成 Overlay 瞬间盖住 Electron。
     if (parentTopmost != overlayTopmost) {
-        SetWindowPos(m_overlayHwnd, parentTopmost ? HWND_TOPMOST : HWND_NOTOPMOST,
-            0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        if (!SetWindowPos(m_overlayHwnd, parentTopmost ? HWND_TOPMOST : HWND_NOTOPMOST,
+            0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) {
+            m_lastError.store(BlurErrorCode::UnknownFailure);
+            m_runtimeHealthy.store(false);
+            return false;
+        }
     }
     // 焦点切换的常规路径只提交一次：紧贴在 Electron 正后方。
-    SetWindowPos(m_overlayHwnd, m_parentHwnd,
-        0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (!SetWindowPos(m_overlayHwnd, m_parentHwnd,
+        0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) {
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
+    if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
+    return true;
 }
 
 void Engine::InstallForegroundHook() {
@@ -540,13 +615,18 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
     case WM_BLUR_APPLY_CONFIG:
         self->m_configUpdatePending.store(false);
-        self->UpdateEffectParameters();
+        if (!self->UpdateEffectParameters()) {
+            ShowWindow(hwnd, SW_HIDE);
+            return 0;
+        }
         {
             auto cfg = self->GetConfig();
             if (cfg.enabled) {
-                self->SyncGeometryFromParent();
-                self->SyncZOrder();
-                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                if (self->SyncGeometryFromParent() && self->SyncZOrder()) {
+                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                } else {
+                    ShowWindow(hwnd, SW_HIDE);
+                }
             } else {
                 ShowWindow(hwnd, SW_HIDE);
             }
@@ -555,9 +635,11 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
     case WM_BLUR_SHOW:
         if (self->GetConfig().enabled) {
-            self->SyncGeometryFromParent();
-            self->SyncZOrder();
-            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            if (self->SyncGeometryFromParent() && self->SyncZOrder()) {
+                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            } else {
+                ShowWindow(hwnd, SW_HIDE);
+            }
         }
         return 0;
 

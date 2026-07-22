@@ -49,4 +49,28 @@ describe('scheduler context', () => {
     expect(scheduler.tasks[0]._disabled).not.toBe(true)
     errorSpy.mockRestore()
   })
+
+  it('runs registered diagnostic tasks on startup and scheduled ticks', () => {
+    const scheduler = new Scheduler()
+    const diagnostic = vi.fn()
+    scheduler.register({
+      name: 'blurRuntimeDiagnosticTask',
+      maxFailures: Infinity,
+      shouldRun: () => true,
+      execute: diagnostic
+    })
+
+    scheduler.tick({ reason: 'startup' })
+    scheduler.tick({ reason: 'scheduled' })
+
+    expect(diagnostic).toHaveBeenCalledTimes(2)
+    expect(diagnostic.mock.calls[0][0].reason).toBe('startup')
+    expect(diagnostic.mock.calls[1][0].reason).toBe('scheduled')
+    expect(scheduler.getHealth().tasks).toContainEqual({
+      name: 'blurRuntimeDiagnosticTask',
+      failures: 0,
+      disabled: false,
+      lastError: null
+    })
+  })
 })

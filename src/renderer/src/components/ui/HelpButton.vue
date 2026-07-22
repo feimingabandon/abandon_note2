@@ -177,10 +177,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
   font-weight: 500;
   color: var(--text-color-secondary);
 
-  background-color: rgb(var(--bg-color) / var(--glass-tooltip-opacity));
-  -webkit-backdrop-filter: blur(var(--glass-tooltip-blur));
-  backdrop-filter: blur(var(--glass-tooltip-blur));
-  border: 0;
+  background-color: var(--surface-float);
+  border: 1px solid var(--surface-float-border);
   border-radius: 8rem;
   box-shadow: 0 6rem 18rem rgba(0, 0, 0, 0.16);
 }

@@ -55,8 +55,8 @@ function getDllPath() {
   }
 
   const devs = [
-    join(__dirname, '..', '..', 'native_blur', 'build', 'bin', 'Release', 'blur_engine.dll'),
     join(__dirname, '..', '..', 'native_blur', 'build', 'bin', 'blur_engine.dll'),
+    join(__dirname, '..', '..', 'native_blur', 'build', 'bin', 'Release', 'blur_engine.dll'),
     join(__dirname, '..', '..', 'native_blur', 'build', 'bin', 'Debug', 'blur_engine.dll')
   ]
   for (const p of devs) {
@@ -87,6 +87,7 @@ function initNative() {
     lib.Blur_UpdateGeometry = lib.func('Blur_UpdateGeometry', 'void', [])
     lib.Blur_ReSyncOrder = lib.func('Blur_ReSyncOrder', 'void', [])
     lib.Blur_IsInitialized = lib.func('Blur_IsInitialized', 'int', [])
+    lib.Blur_IsHealthy = lib.func('Blur_IsHealthy', 'int', [])
     lib.Blur_IsSupported = lib.func('Blur_IsSupported', 'int', [])
     lib.Blur_GetLastErrorCode = lib.func('Blur_GetLastErrorCode', 'int', [])
     lib.Blur_GetLastErrorMessage = lib.func('Blur_GetLastErrorMessage', 'str', [])
@@ -142,6 +143,24 @@ export function updateGeometry() {
 export function reSyncZOrder() {
   if (!initialized || process.platform !== 'win32') return
   lib.Blur_ReSyncOrder()
+}
+
+/**
+ * 查询原生线程在初始化后的实际健康状态。Effect Graph、Overlay、窗口同步或
+ * 消息队列运行期失效时，DLL 会保留错误码，供主进程主动降级而不是静默失败。
+ */
+export function getRuntimeHealth() {
+  if (!initialized || process.platform !== 'win32' || !lib) {
+    return { healthy: false, initialized: false, nativeError: null }
+  }
+
+  const nativeInitialized = Boolean(lib.Blur_IsInitialized())
+  const healthy = nativeInitialized && Boolean(lib.Blur_IsHealthy())
+  return {
+    healthy,
+    initialized: nativeInitialized,
+    nativeError: healthy ? null : getNativeError('原生模糊运行期失效')
+  }
 }
 
 export function destroy() {

@@ -464,7 +464,7 @@ async function toggleTags() {
           aria-label="全部标签"
           @click.stop
         >
-          <div class="nl-tag-popover app-bg">
+          <div class="nl-tag-popover">
             <span
               v-for="tag in tags"
               :key="tag.id || tag.name"
@@ -929,9 +929,6 @@ async function toggleTags() {
   overflow: hidden;
 }
 .nl-tag-popover {
-  --glass-opacity: var(--glass-select-opacity);
-  --glass-blur: var(--glass-select-blur);
-
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -941,6 +938,8 @@ async function toggleTags() {
   max-height: min(220px, calc(100vh - 24px));
   padding: 10rem;
   overflow-y: auto;
+  background-color: var(--surface-float);
+  border: 1px solid var(--surface-float-border);
   border-radius: 10rem;
 }
 .nl-tag-popover__tag {

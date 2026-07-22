@@ -38,6 +38,7 @@ BLUR_API void Blur_ReSyncOrder(void);
 
 // ---- 查询 ----
 BLUR_API int Blur_IsInitialized(void);
+BLUR_API int Blur_IsHealthy(void);
 BLUR_API int Blur_IsSupported(void);
 BLUR_API int Blur_GetLastErrorCode(void);
 BLUR_API const char* Blur_GetLastErrorMessage(void);

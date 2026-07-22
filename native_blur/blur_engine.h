@@ -94,6 +94,9 @@ public:
     void Hide();
 
     bool IsInitialized() const { return m_initialized.load(); }
+    bool IsHealthy() const {
+        return m_initialized.load() && m_runtimeHealthy.load();
+    }
     BlurErrorCode GetLastError() const { return m_lastError.load(); }
     void SetLastError(BlurErrorCode error) { m_lastError.store(error); }
 
@@ -114,14 +117,14 @@ private:
 
     // ---- Effect Graph 构建 ----
     bool BuildEffectGraph();
-    void UpdateEffectParameters();
+    bool UpdateEffectParameters();
     void UpdateVisualSize();  // 根据当前窗口 DPI 更新 SpriteVisual 尺寸
     void ApplyClip();         // 应用/更新圆角裁剪
 
     // ---- DPI 动态切换 ----
     void HandleDpiChanged(WPARAM wParam, LPARAM lParam);
-    void SyncGeometryFromParent();
-    void SyncZOrder();
+    bool SyncGeometryFromParent();
+    bool SyncZOrder();
     void InstallForegroundHook();
     static void CALLBACK ForegroundWinEventProc(
         HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG objectId, LONG childId,
@@ -136,6 +139,7 @@ private:
     std::thread m_staThread;
     std::atomic<bool> m_running{ false };
     std::atomic<bool> m_initialized{ false };
+    std::atomic<bool> m_runtimeHealthy{ false };
     std::atomic<BlurErrorCode> m_lastError{ BlurErrorCode::None };
     std::atomic<HWND> m_messageHwnd{ nullptr };
     std::atomic<bool> m_configUpdatePending{ false };

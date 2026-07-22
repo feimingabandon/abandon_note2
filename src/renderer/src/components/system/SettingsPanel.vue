@@ -332,8 +332,26 @@ const blurError = ref(null) // 持久错误（如 DLL 未加载），恒显示�
 const blurRadius = ref(DEFAULT_SETTINGS.blur.radius)
 const blurSaturation = ref(DEFAULT_SETTINGS.blur.saturation)
 const blurCornerRadius = ref(DEFAULT_SETTINGS.blur.cornerRadius)
+const blurDiagnostic = ref({
+  status: 'pending',
+  lastCheckedAt: null,
+  message: '等待调度器执行首次诊断'
+})
 let _blurSynced = false
 let _blurEnableFeedbackPending = false
+let stopBlurRuntimeListener = null
+let stopBlurDiagnosticListener = null
+
+const blurDiagnosticMeta = computed(() => {
+  const states = {
+    healthy: { label: '● 正常', className: 'sched-badge--ok' },
+    error: { label: '⚠ 异常', className: 'sched-badge--danger' },
+    disabled: { label: '○ 未启用', className: 'sched-badge--warn' },
+    unsupported: { label: '— 不支持', className: 'sched-badge--warn' },
+    pending: { label: '… 待诊断', className: 'sched-badge--warn' }
+  }
+  return states[blurDiagnostic.value.status] || states.pending
+})
 
 // ---- 窗口透明度（仅系统模糊关闭时显示） ----
 const windowOpacity = ref(DEFAULT_SETTINGS.css.windowOpacity)
@@ -612,7 +630,11 @@ function assignSettingsSnapshot(snapshot) {
   fontSizeBase.value = css.fontSizeBase
   textColor.value = css.textColor
 
-  blurEnabled.value = blur.enabled
+  // “用户希望开启”与“当前确实生效”分开：支持平台初始化失败时，开关必须
+  // 显示为关闭，同时保留错误信息，让用户可以再次主动开启并触发重试。
+  blurEnabled.value = runtimeBlur?.supported
+    ? Boolean(blur.enabled && runtimeBlur.effectiveEnabled)
+    : false
   blurRadius.value = blur.radius
   blurSaturation.value = blur.saturation
   blurCornerRadius.value = blur.cornerRadius
@@ -624,6 +646,7 @@ function assignSettingsSnapshot(snapshot) {
       strategy: runtimeBlur.strategy
     }
     blurError.value = runtimeBlur.error ?? null
+    if (runtimeBlur.diagnostic) blurDiagnostic.value = runtimeBlur.diagnostic
   }
 
   if (runtimeAutoStart) {
@@ -673,6 +696,39 @@ onMounted(async () => {
   await loadSettingsSnapshot()
   if (componentUnmounted) return
 
+  stopBlurRuntimeListener = window.api.onSettingsChanged?.((snapshot) => {
+    const runtimeBlur = snapshot?.runtime?.blur
+    const configuredEnabled = Boolean(snapshot?.values?.blur?.enabled)
+    if (!runtimeBlur) return
+
+    blurCaps.value = {
+      supported: runtimeBlur.supported,
+      platform: runtimeBlur.platform,
+      strategy: runtimeBlur.strategy
+    }
+    blurError.value = runtimeBlur.error ?? null
+    if (runtimeBlur.diagnostic) blurDiagnostic.value = runtimeBlur.diagnostic
+
+    const effectiveEnabled = Boolean(
+      runtimeBlur.supported && configuredEnabled && runtimeBlur.effectiveEnabled
+    )
+    if (effectiveEnabled !== blurEnabled.value) {
+      const wasEnabled = blurEnabled.value
+      _blurSynced = false
+      blurEnabled.value = effectiveEnabled
+      nextTick(() => {
+        _blurSynced = true
+      })
+
+      if (wasEnabled && !effectiveEnabled && runtimeBlur.error && inFlightBlurSyncs.size === 0) {
+        showMessage('error', `毛玻璃已停止：${runtimeBlur.error}`, 5000)
+      }
+    }
+  })
+  stopBlurDiagnosticListener = window.api.onBlurDiagnosticChanged?.((diagnostic) => {
+    if (diagnostic) blurDiagnostic.value = diagnostic
+  })
+
   loadSchedulerHealth()
   _schedulerTimer = setInterval(loadSchedulerHealth, 10000)
 
@@ -688,6 +744,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   componentUnmounted = true
+  stopBlurRuntimeListener?.()
+  stopBlurRuntimeListener = null
+  stopBlurDiagnosticListener?.()
+  stopBlurDiagnosticListener = null
   onDragEnd()
   // 正常关闭时这里已完成 flush；强制卸载时也不能丢失最后一次修改。
   flushPendingSettingSaves().catch((e) =>
@@ -912,6 +972,26 @@ const onConfirmResetSettings = async () => {
               <div class="setting-left">
                 <span class="setting-label">系统毛玻璃不可用<HelpButton text="当前系统版本或运行环境无法创建原生模糊层，应用会自动回退到背景颜色、玻璃浓度和圆角效果。" /></span>
                 <span class="setting-error">当前系统将使用透明背景颜色和圆角回退</span>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >运行诊断<HelpButton
+                    text="毛玻璃诊断已注册到应用统一调度器：启动时执行一次，之后随每分钟调度检查原生效果链、Overlay 和窗口同步状态。"
+                /></span>
+                <span class="setting-hint-caption">
+                  {{ blurDiagnostic.message }}
+                  <template v-if="blurDiagnostic.lastCheckedAt">
+                    · {{ formatTickTime(blurDiagnostic.lastCheckedAt) }}
+                  </template>
+                </span>
+              </div>
+              <div class="setting-right">
+                <span class="sched-badge" :class="blurDiagnosticMeta.className">
+                  {{ blurDiagnosticMeta.label }}
+                </span>
               </div>
             </div>
 

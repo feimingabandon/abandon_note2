@@ -32,7 +32,8 @@ import {
   setConfig as blurSetConfig,
   updateGeometry as blurUpdateGeometry,
   destroy as blurDestroy,
-  reSyncZOrder as blurReSyncZOrder
+  reSyncZOrder as blurReSyncZOrder,
+  getRuntimeHealth as getBlurRuntimeHealth
 } from './bridge/blur_bridge.js'
 
 import {
@@ -211,6 +212,16 @@ const blurCaps = detectCapabilities()
 let blurInitialized = false
 let blurInitializationError = null
 let blurInitializationNativeError = null
+let blurRuntimeFailed = false
+let blurWindowSyncListenersAttached = false
+let blurRuntimeFailureHandling = false
+let blurDiagnostic = {
+  status: blurCaps.supported ? 'pending' : 'unsupported',
+  lastCheckedAt: null,
+  message: blurCaps.supported
+    ? '等待调度器执行首次诊断'
+    : blurCaps.reason || '当前平台不支持系统毛玻璃'
+}
 
 /** 当前模糊配置（由完整设置快照派生） */
 const blurConfig = {
@@ -303,7 +314,7 @@ function readAutoStartRuntime() {
 function getResolvedSettingsSnapshot() {
   const autoStart = readAutoStartRuntime()
   const blurRuntimeError =
-    blurConfig.enabled && blurCaps.supported && !blurInitialized
+    blurRuntimeFailed || (blurConfig.enabled && blurCaps.supported && !blurInitialized)
       ? blurInitializationError || '系统模糊引擎未加载（DLL 缺失或版本不兼容）'
       : null
 
@@ -322,7 +333,8 @@ function getResolvedSettingsSnapshot() {
         initialized: blurInitialized,
         effectiveEnabled: Boolean(blurCaps.supported && blurInitialized && blurConfig.enabled),
         error: blurRuntimeError,
-        nativeError: blurRuntimeError ? blurInitializationNativeError : null
+        nativeError: blurRuntimeError ? blurInitializationNativeError : null,
+        diagnostic: { ...blurDiagnostic }
       }
     }
   }
@@ -341,16 +353,31 @@ function initializeBlurRuntime() {
   try {
     const result = blurInit(mainWindow)
     if (!result.success) {
+      blurRuntimeFailed = true
       blurInitializationError = result.error
       blurInitializationNativeError = result.nativeError ?? null
+      updateBlurDiagnostic(
+        { status: 'error', lastCheckedAt: Date.now(), message: result.error },
+        { notify: false }
+      )
       return result
     }
 
     blurInitialized = true
+    blurRuntimeFailed = false
     blurInitializationError = null
     blurInitializationNativeError = null
     if (process.platform === 'win32') blurSetConfig(blurConfig)
     if (process.platform === 'darwin' && !blurConfig.enabled) mainWindow.setVibrancy(null)
+    updateBlurDiagnostic(
+      {
+        status: blurConfig.enabled ? 'pending' : 'disabled',
+        lastCheckedAt: null,
+        message: blurConfig.enabled ? '等待调度器执行诊断' : '系统毛玻璃未启用'
+      },
+      { notify: false }
+    )
+    attachBlurWindowSyncListeners()
     return result
   } catch (error) {
     // blurInit 成功而首次配置失败时也必须完整回滚，否则 JS、bridge 和
@@ -361,12 +388,17 @@ function initializeBlurRuntime() {
       console.error('[blur] 初始化回滚时销毁原生资源失败:', destroyError)
     }
     blurInitialized = false
+    blurRuntimeFailed = true
     blurInitializationError = error.message
     blurInitializationNativeError = {
       code: null,
       key: 'electron_initialization_exception',
       message: error.message
     }
+    updateBlurDiagnostic(
+      { status: 'error', lastCheckedAt: Date.now(), message: error.message },
+      { notify: false }
+    )
     return {
       success: false,
       error: error.message,
@@ -381,12 +413,185 @@ function broadcastSettingsChanged(snapshot = getResolvedSettingsSnapshot()) {
   }
 }
 
+function broadcastBlurDiagnosticChanged() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('blur:diagnostic-changed', { ...blurDiagnostic })
+  }
+}
+
+function updateBlurDiagnostic(next, { notify = true } = {}) {
+  blurDiagnostic = { ...blurDiagnostic, ...next }
+  if (notify) broadcastBlurDiagnosticChanged()
+}
+
+/**
+ * 原生层在初始化后失效时统一执行真实降级：销毁可能残留的 Overlay、关闭并
+ * 持久化开关，再把错误状态广播给 renderer。这样设置值不会继续声称已启用。
+ */
+function handleBlurRuntimeFailure(error, { broadcast = true } = {}) {
+  if (blurRuntimeFailureHandling) return
+  blurRuntimeFailureHandling = true
+
+  try {
+    const nativeError = error?.nativeError ?? null
+    const detail = nativeError?.message || error?.message || '原生模糊运行期失效'
+    blurInitializationError = `系统毛玻璃运行中断：${detail}`
+    blurInitializationNativeError = nativeError
+    blurRuntimeFailed = true
+    updateBlurDiagnostic(
+      {
+        status: 'error',
+        lastCheckedAt: Date.now(),
+        message: blurInitializationError
+      },
+      { notify: broadcast }
+    )
+
+    try {
+      blurDestroy()
+    } catch (destroyError) {
+      console.error('[blur] 运行期失效后销毁原生资源失败:', destroyError)
+    }
+    blurInitialized = false
+
+    if (blurConfig.enabled) {
+      setSettingsBatch(WINDOW_NAME, [serializeSetting('blur.enabled', false)])
+      refreshResolvedSettings({ incrementRevision: true })
+    } else {
+      blurConfig.enabled = false
+    }
+
+    console.error('[blur] 已检测到运行期失效并切换到透明背景回退:', detail, nativeError || '')
+    if (broadcast) broadcastSettingsChanged()
+  } finally {
+    blurRuntimeFailureHandling = false
+  }
+}
+
+/** 由统一调度器执行的毛玻璃诊断任务；不再创建独立计时器。 */
+function runBlurRuntimeDiagnostic(context = {}) {
+  const checkedAt = context.now || Date.now()
+
+  if (!blurCaps.supported) {
+    updateBlurDiagnostic({
+      status: 'unsupported',
+      lastCheckedAt: checkedAt,
+      message: blurCaps.reason || '当前平台不支持系统毛玻璃'
+    })
+    return
+  }
+
+  if (blurRuntimeFailed) {
+    updateBlurDiagnostic({
+      status: 'error',
+      lastCheckedAt: checkedAt,
+      message: blurInitializationError || '系统毛玻璃初始化或运行失败'
+    })
+    return
+  }
+
+  if (!blurConfig.enabled) {
+    updateBlurDiagnostic({
+      status: 'disabled',
+      lastCheckedAt: checkedAt,
+      message: '系统毛玻璃未启用'
+    })
+    return
+  }
+
+  if (!blurInitialized) {
+    updateBlurDiagnostic({
+      status: 'pending',
+      lastCheckedAt: checkedAt,
+      message: '系统毛玻璃尚未完成初始化'
+    })
+    return
+  }
+
+  if (process.platform === 'win32') {
+    try {
+      const health = getBlurRuntimeHealth()
+      if (!health.healthy) {
+        const error = new Error(health.nativeError?.message || '原生模糊运行期失效')
+        error.nativeError = health.nativeError
+        handleBlurRuntimeFailure(error, { broadcast: false })
+        updateBlurDiagnostic({
+          status: 'error',
+          lastCheckedAt: checkedAt,
+          message: blurInitializationError
+        })
+        broadcastSettingsChanged()
+        return
+      }
+    } catch (error) {
+      handleBlurRuntimeFailure(error, { broadcast: false })
+      updateBlurDiagnostic({
+        status: 'error',
+        lastCheckedAt: checkedAt,
+        message: blurInitializationError
+      })
+      broadcastSettingsChanged()
+      return
+    }
+  }
+
+  updateBlurDiagnostic({
+    status: 'healthy',
+    lastCheckedAt: checkedAt,
+    message: '系统毛玻璃运行正常'
+  })
+}
+
+function runBlurRuntimeOperation(operation, label) {
+  if (process.platform !== 'win32' || !blurInitialized) return false
+  try {
+    operation()
+    return true
+  } catch (error) {
+    const wrapped = new Error(`${label}失败：${error?.message || '原生接口调用异常'}`)
+    wrapped.nativeError = error?.nativeError ?? null
+    handleBlurRuntimeFailure(wrapped)
+    return false
+  }
+}
+
+/**
+ * 监听只绑定一次，但初始化成功时都调用本函数。这样启动失败后由用户重试成功，
+ * 也会补齐移动、缩放和置顶层同步，不再依赖创建窗口瞬间的初始化结果。
+ */
+function attachBlurWindowSyncListeners() {
+  if (
+    process.platform !== 'win32' ||
+    !blurInitialized ||
+    blurWindowSyncListenersAttached ||
+    !mainWindow ||
+    mainWindow.isDestroyed()
+  ) {
+    return
+  }
+
+  blurWindowSyncListenersAttached = true
+  mainWindow.on('resize', () => {
+    runBlurRuntimeOperation(blurUpdateGeometry, '同步毛玻璃窗口尺寸')
+  })
+  mainWindow.on('move', () => {
+    runBlurRuntimeOperation(blurUpdateGeometry, '同步毛玻璃窗口位置')
+  })
+  mainWindow.on('always-on-top-changed', () => {
+    runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口层级')
+  })
+}
+
 function applyResolvedBlurRuntime() {
   if (blurInitialized && process.platform === 'win32') {
-    blurSetConfig(blurConfig)
+    runBlurRuntimeOperation(() => blurSetConfig(blurConfig), '更新毛玻璃配置')
   }
   if (process.platform === 'darwin' && mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.setVibrancy(blurConfig.enabled ? 'under-window' : null)
+    try {
+      mainWindow.setVibrancy(blurConfig.enabled ? 'under-window' : null)
+    } catch (error) {
+      handleBlurRuntimeFailure(error, { broadcast: false })
+    }
   }
 }
 
@@ -453,6 +658,7 @@ let pendingSlideCallback = null // 动画中断时待执行的完成回调
  * - 窗口无边框 + 透明背景，用于实现自定义外观
  */
 function createWindow() {
+  blurWindowSyncListenersAttached = false
   // 获取主显示器信息，用于计算默认窗口位置
   const display = screen.getPrimaryDisplay()
   const screenW = display.workAreaSize.width // 可用工作区宽度（排除任务栏）
@@ -564,26 +770,6 @@ function createWindow() {
   mainWindow.on('resize', debouncedSaveGeometry)
   mainWindow.on('move', debouncedSaveGeometry)
 
-  // 窗口移动/缩放时同步模糊 overlay 位置
-  if (blurInitialized && process.platform === 'win32') {
-    mainWindow.on('resize', () => {
-      try {
-        blurUpdateGeometry()
-      } catch {
-        /* DComp 会话失效时静默 */
-      }
-    })
-    mainWindow.on('move', () => {
-      try {
-        blurUpdateGeometry()
-      } catch {
-        /* DComp 会话失效时静默 */
-      }
-    })
-    // 前台切换由 C++ WinEvent Hook 唯一处理，避免 focus 事件重复提交 Z-order。
-    mainWindow.on('always-on-top-changed', blurReSyncZOrder)
-  }
-
   // 【贴边隐藏 - 边缘检测】窗口移动时检测是否靠近屏幕左/右边缘
   mainWindow.on('move', () => {
     if (!mainWindow || mainWindow.isDestroyed() || isDockHidden || isSliding) return
@@ -613,16 +799,20 @@ function createWindow() {
     // 隐藏阶段若因原生异常销毁过 Overlay，恢复窗口时重新初始化。
     if (!blurInitialized) {
       const result = initializeBlurRuntime()
-      if (!result.success) return
+      if (!result.success) {
+        broadcastSettingsChanged()
+        return
+      }
     } else {
-      blurSetConfig(blurConfig)
+      if (!runBlurRuntimeOperation(() => blurSetConfig(blurConfig), '恢复毛玻璃配置')) return
     }
-    blurReSyncZOrder()
+    runBlurRuntimeOperation(blurReSyncZOrder, '恢复毛玻璃窗口层级')
   })
 
   // 窗口销毁时清除引用和贴边资源
   mainWindow.on('closed', () => {
     mainWindow = null
+    blurWindowSyncListenersAttached = false
     resetDockState()
   })
 
@@ -645,17 +835,10 @@ function hideToTray() {
   // Blur_ApplyConfig 要求完整的四项配置，不能只传 { enabled: false }。
   // 先隐藏 Overlay 再隐藏 Electron，避免异常中断后留下孤立模糊窗口。
   if (blurInitialized) {
-    try {
-      blurSetConfig({ ...blurConfig, enabled: false })
-    } catch (error) {
-      console.error('[blur] 隐藏窗口时禁用原生模糊失败，销毁 Overlay 兜底:', error)
-      try {
-        blurDestroy()
-      } catch (destroyError) {
-        console.error('[blur] 销毁残留 Overlay 失败:', destroyError)
-      }
-      blurInitialized = false
-    }
+    runBlurRuntimeOperation(
+      () => blurSetConfig({ ...blurConfig, enabled: false }),
+      '隐藏窗口前关闭毛玻璃层'
+    )
   }
 
   mainWindow.hide()
@@ -882,7 +1065,7 @@ function doShow() {
 function applyAlwaysOnTop() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.setAlwaysOnTop(alwaysOnTop, 'pop-up-menu')
-  blurReSyncZOrder()
+  runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口层级')
 
   // 同步触发窗口置顶状态（贴边隐藏时切换置顶按钮生效）
   if (triggerWin && !triggerWin.isDestroyed()) {
@@ -1123,6 +1306,15 @@ app.whenReady().then(async () => {
 
     // 启用时若启动阶段初始化失败，则现场重试一次，以便把详细错误反馈给用户。
     const enableRequested = blurConfig.enabled
+    if (!enableRequested) {
+      blurRuntimeFailed = false
+      blurInitializationError = null
+      blurInitializationNativeError = null
+      updateBlurDiagnostic(
+        { status: 'disabled', lastCheckedAt: Date.now(), message: '系统毛玻璃未启用' },
+        { notify: false }
+      )
+    }
     const initializationResult =
       enableRequested && blurCaps.supported && !blurInitialized ? initializeBlurRuntime() : null
 
@@ -1284,6 +1476,14 @@ app.whenReady().then(async () => {
         mainWindow.webContents.send('notes:changed', { reason: 'recurrence' })
       }
     }
+  })
+
+  // 3.6 原生毛玻璃运行诊断：随统一调度器启动即检查，之后每分钟检查一次。
+  scheduler.register({
+    name: 'blurRuntimeDiagnosticTask',
+    maxFailures: Infinity,
+    shouldRun: () => true,
+    execute: (context) => runBlurRuntimeDiagnostic(context)
   })
 
   // 启动调度器

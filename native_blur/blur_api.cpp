@@ -90,6 +90,10 @@ int Blur_IsInitialized(void) {
     return BlurEngine::Engine::Instance().IsInitialized() ? 1 : 0;
 }
 
+int Blur_IsHealthy(void) {
+    return BlurEngine::Engine::Instance().IsHealthy() ? 1 : 0;
+}
+
 int Blur_GetLastErrorCode(void) {
     return static_cast<int>(BlurEngine::Engine::Instance().GetLastError());
 }
