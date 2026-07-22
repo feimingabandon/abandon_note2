@@ -33,6 +33,29 @@ try {
     .all()
     .map((column) => column.name)
   assert.equal(noteColumns.includes('template_id'), false)
+  assert.deepEqual(
+    db
+      .prepare("PRAGMA table_info('wallpaper_sources')")
+      .all()
+      .map((column) => column.name),
+    [
+      'id',
+      'content_hash',
+      'original_path',
+      'mime_type',
+      'width',
+      'height',
+      'file_size',
+      'created_at'
+    ]
+  )
+  assert.equal(
+    db
+      .prepare("PRAGMA table_info('wallpapers')")
+      .all()
+      .some((column) => column.name === 'cropped_path'),
+    true
+  )
 
   createTag('日常', '#007aff')
   createTag('重要', '#ff3b30')

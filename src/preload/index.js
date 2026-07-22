@@ -78,6 +78,16 @@ const api = {
     ipcRenderer.on('blur:diagnostic-changed', handler)
     return () => ipcRenderer.removeListener('blur:diagnostic-changed', handler)
   },
+  // ---- 主页面壁纸 ----
+  listWallpapers: () => ipcRenderer.invoke('wallpapers:list'),
+  getWallpaperThumbnail: (id, maxSize = 240) =>
+    ipcRenderer.invoke('wallpapers:get-thumbnail', { id, maxSize }),
+  getWallpaperData: (id, original = false) =>
+    ipcRenderer.invoke('wallpapers:get-data', { id, original }),
+  saveWallpaper: (payload) => ipcRenderer.invoke('wallpapers:save', payload),
+  activateWallpaper: (id) => ipcRenderer.invoke('wallpapers:activate', { id }),
+  disableWallpaper: () => ipcRenderer.invoke('wallpapers:disable'),
+  deleteWallpaper: (id) => ipcRenderer.invoke('wallpapers:delete', { id }),
   // ---- 便签 CRUD ----
   /** 创建便签 */
   createNote: (options) => ipcRenderer.invoke('notes:create', options),

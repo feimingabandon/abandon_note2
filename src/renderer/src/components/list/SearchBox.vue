@@ -385,10 +385,10 @@ defineExpose({
     <div class="sb-results-head">
       <span v-if="loadError">搜索遇到问题</span>
       <span v-else class="sb-result-summary">
-        <span>当前有 {{ results.length }} 条</span>
-        <span>此条件下共有 {{ total }} 条</span>
+        <span>当前{{ results.length }}条</span>
+        <span>此条件共{{ total }}条</span>
         <span v-if="lastRefreshLabel" class="sb-refresh-time">
-          刷新时间 {{ lastRefreshLabel }}
+          刷新 {{ lastRefreshLabel }}
         </span>
       </span>
       <div class="sb-sort" aria-label="搜索结果排序">

@@ -99,6 +99,17 @@ const locked = ref(DEFAULT_SETTINGS.window.lockState)
 /** 窗口置顶状态 */
 const alwaysOnTop = ref(DEFAULT_SETTINGS.window.alwaysOnTop)
 
+/** 主页面壁纸只在原生毛玻璃未实际运行时进入渲染树。 */
+const wallpaperUrl = ref('')
+const wallpaperVisible = ref(false)
+const wallpaperBlurRadius = ref(DEFAULT_SETTINGS.wallpaper.blurRadius)
+const wallpaperRenderKey = ref(null)
+let wallpaperLoadSequence = 0
+let loadedWallpaperId = null
+let pendingWallpaperId = null
+let pendingWallpaperLoad = null
+let wallpaperReleaseTimer = null
+
 let stopSettingsListener = null
 let stopNotesChangedListener = null
 
@@ -108,6 +119,62 @@ function applyAppSettingsSnapshot(snapshot) {
   if (windowSettings) {
     locked.value = windowSettings.lockState
     alwaysOnTop.value = windowSettings.alwaysOnTop
+  }
+  syncWallpaperFromSnapshot(snapshot)
+}
+
+async function syncWallpaperFromSnapshot(snapshot) {
+  const wallpaper = snapshot?.values?.wallpaper || DEFAULT_SETTINGS.wallpaper
+  const glassActive = Boolean(snapshot?.runtime?.blur?.effectiveEnabled)
+  wallpaperBlurRadius.value = wallpaper.blurRadius
+  const shouldShow = Boolean(wallpaper.enabled && wallpaper.activeId && !glassActive)
+  const sequence = ++wallpaperLoadSequence
+  if (!shouldShow) {
+    wallpaperVisible.value = false
+    clearTimeout(wallpaperReleaseTimer)
+    wallpaperReleaseTimer = setTimeout(() => {
+      if (sequence !== wallpaperLoadSequence || wallpaperVisible.value) return
+      wallpaperUrl.value = ''
+      wallpaperRenderKey.value = null
+      loadedWallpaperId = null
+    }, 220)
+    return
+  }
+
+  clearTimeout(wallpaperReleaseTimer)
+  const requestedId = Number(wallpaper.activeId)
+  if (loadedWallpaperId === requestedId && wallpaperUrl.value) {
+    wallpaperVisible.value = true
+    return
+  }
+
+  try {
+    if (pendingWallpaperId !== requestedId || !pendingWallpaperLoad) {
+      pendingWallpaperId = requestedId
+      pendingWallpaperLoad = window.api.getWallpaperData(requestedId, false)
+    }
+    const currentLoad = pendingWallpaperLoad
+    const data = await currentLoad
+    if (currentLoad === pendingWallpaperLoad) {
+      pendingWallpaperId = null
+      pendingWallpaperLoad = null
+    }
+    if (sequence !== wallpaperLoadSequence) return
+    if (!data) {
+      wallpaperVisible.value = false
+      return
+    }
+    wallpaperUrl.value = data
+    wallpaperRenderKey.value = requestedId
+    loadedWallpaperId = requestedId
+    wallpaperVisible.value = true
+  } catch (error) {
+    if (pendingWallpaperId === requestedId) {
+      pendingWallpaperId = null
+      pendingWallpaperLoad = null
+    }
+    if (sequence === wallpaperLoadSequence) wallpaperVisible.value = false
+    console.warn('[App] 读取主页面壁纸失败:', error)
   }
 }
 
@@ -190,12 +257,29 @@ onUnmounted(() => {
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
   if (editorBlurReleaseTimer) clearTimeout(editorBlurReleaseTimer)
+  clearTimeout(wallpaperReleaseTimer)
 })
 </script>
 
 <template>
   <!-- 应用根容器：同时承载背景样式（.app-bg）和布局（.app-root） -->
   <div class="app-root app-bg">
+    <Transition name="app-wallpaper">
+      <div
+        v-if="wallpaperVisible"
+        :key="wallpaperRenderKey"
+        class="app-wallpaper"
+        aria-hidden="true"
+      >
+        <div
+          class="app-wallpaper-image"
+          :style="{
+            backgroundImage: `url(${wallpaperUrl})`,
+            '--wallpaper-blur': `${wallpaperBlurRadius}px`
+          }"
+        />
+      </div>
+    </Transition>
     <!-- 设置打开时，底层场景不可点击且不可获取键盘焦点。 -->
     <div
       class="app-scene"
@@ -320,9 +404,39 @@ onUnmounted(() => {
   background-color: rgb(var(--bg-color) / var(--window-opacity));
 }
 
+.app-wallpaper {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.app-wallpaper-image {
+  position: absolute;
+  inset: calc(var(--wallpaper-blur) * -2);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  filter: blur(var(--wallpaper-blur));
+  transition:
+    inset 180ms ease,
+    filter 180ms ease;
+  will-change: filter;
+}
+.app-wallpaper-enter-active,
+.app-wallpaper-leave-active {
+  transition: opacity 180ms ease;
+}
+.app-wallpaper-enter-from,
+.app-wallpaper-leave-to {
+  opacity: 0;
+}
+
 /* 主界面独立成场景，便于模态设置面板统一隔离交互。 */
 .app-scene {
   position: relative;
+  z-index: 1;
   display: flex;
   flex: 1;
   min-height: 0;

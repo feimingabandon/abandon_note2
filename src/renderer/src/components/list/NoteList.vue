@@ -1123,8 +1123,8 @@ defineExpose({
       </div>
       <!-- 底部计数 -->
       <div v-if="!timelineIsEmpty || allNoteTotal > 0" class="nl-footer-count">
-        <span>当前页有 {{ totalRendered }} 条便签</span>
-        <span>共有 {{ allNoteTotal }} 条</span>
+        <span>当前{{ totalRendered }}条</span>
+        <span>共{{ allNoteTotal }}条</span>
       </div>
     </template>
 
@@ -1200,8 +1200,8 @@ defineExpose({
     </div>
       <!-- 底部计数 -->
       <div v-if="customTotalRendered > 0 || allNoteTotal > 0" class="nl-footer-count">
-        <span>当前页有 {{ customTotalRendered }} 条便签</span>
-        <span>共有 {{ allNoteTotal }} 条</span>
+        <span>当前{{ customTotalRendered }}条</span>
+        <span>共{{ allNoteTotal }}条</span>
       </div>
     </template>
   </div>

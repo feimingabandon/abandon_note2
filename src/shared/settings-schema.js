@@ -199,6 +199,33 @@ const definitions = [
     remark: '窗口圆角半径（0~30 DIP）'
   },
   {
+    id: 'wallpaper.enabled',
+    path: ['wallpaper', 'enabled'],
+    db: { type: 'wallpaper', key: 'wallpaper_enabled' },
+    defaultValue: false,
+    parse: parseBoolean,
+    serialize: String,
+    remark: '主页面壁纸启用状态（与系统毛玻璃互斥）'
+  },
+  {
+    id: 'wallpaper.activeId',
+    path: ['wallpaper', 'activeId'],
+    db: { type: 'wallpaper', key: 'active_wallpaper_id' },
+    defaultValue: null,
+    parse: parseNullableInteger,
+    serialize: String,
+    remark: '当前选中的壁纸裁剪版本 ID'
+  },
+  {
+    id: 'wallpaper.blurRadius',
+    path: ['wallpaper', 'blurRadius'],
+    db: { type: 'wallpaper', key: 'wallpaper_blur_radius' },
+    defaultValue: 8,
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 30 }),
+    serialize: String,
+    remark: '主页面壁纸 CSS 模糊半径（0~30px）'
+  },
+  {
     id: 'window.lockState',
     path: ['window', 'lockState'],
     db: { type: 'system', key: 'lock_state' },

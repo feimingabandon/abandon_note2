@@ -22,11 +22,9 @@ import FontSizeInput from '../ui/FontSizeInput.vue'
 import AppSlider from '../ui/AppSlider.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import HelpButton from '../ui/HelpButton.vue'
+import WallpaperSettings from '../wallpaper/WallpaperSettings.vue'
 import { useMessage } from '../../composables/useMessage.js' // 消息弹窗
-import {
-  applyGlassBaseSettings,
-  applySettingsSnapshot
-} from '../../utils/applySettingsSnapshot.js'
+import { applyGlassBaseSettings, applySettingsSnapshot } from '../../utils/applySettingsSnapshot.js'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
 
 // ---- 调度器健康数据 ----
@@ -155,8 +153,8 @@ const onDocClick = (e) => {
   if (!rendered.value || !panelActive.value) return
   // 点击在设置面板内部 → 不关闭
   if (panelRef.value && panelRef.value.contains(e.target)) return
-  // 点击在 ConfirmDialog 弹窗内部 → 不关闭（弹窗通过 Teleport 渲染在 panelRef 之外）
-  if (e.target.closest('.confirm-overlay')) return
+  // 设置页拥有的 Teleport 弹层不在 panelRef 内，但仍属于设置交互的一部分。
+  if (e.target.closest('[data-keep-settings-open], .confirm-overlay')) return
   close()
 }
 
@@ -460,8 +458,9 @@ function debouncedSave(id, value) {
     const pending = pendingSaves[id]
     delete pendingSaves[id]
     if (!pending || isResetting.value) return
-    persistSetting(pending)
-      .catch((e) => console.warn(`[SettingsPanel] 保存设置 ${pending.id} 失败:`, e))
+    persistSetting(pending).catch((e) =>
+      console.warn(`[SettingsPanel] 保存设置 ${pending.id} 失败:`, e)
+    )
   }, 300)
 }
 
@@ -597,11 +596,7 @@ function cancelPendingBlurConfig() {
 }
 
 async function waitForInFlightWrites() {
-  const requests = [
-    ...inFlightSettingSaves,
-    ...inFlightBlurSyncs,
-    ...inFlightAutoStartWrites
-  ]
+  const requests = [...inFlightSettingSaves, ...inFlightBlurSyncs, ...inFlightAutoStartWrites]
   await Promise.allSettled(requests)
 }
 
@@ -712,7 +707,10 @@ onMounted(async () => {
     const effectiveEnabled = Boolean(
       runtimeBlur.supported && configuredEnabled && runtimeBlur.effectiveEnabled
     )
-    if (effectiveEnabled !== blurEnabled.value) {
+    // 毛玻璃启用请求执行期间，主进程会先广播“壁纸已关闭”的过渡快照。
+    // 这时不能用数据库中的旧 blur.enabled 把用户刚打开的开关拨回去；最终
+    // 成功或失败状态由本次 IPC 返回值统一收敛。
+    if (inFlightBlurSyncs.size === 0 && effectiveEnabled !== blurEnabled.value) {
       const wasEnabled = blurEnabled.value
       _blurSynced = false
       blurEnabled.value = effectiveEnabled
@@ -750,9 +748,7 @@ onBeforeUnmount(() => {
   stopBlurDiagnosticListener = null
   onDragEnd()
   // 正常关闭时这里已完成 flush；强制卸载时也不能丢失最后一次修改。
-  flushPendingSettingSaves().catch((e) =>
-    console.warn('[SettingsPanel] 卸载前保存设置失败:', e)
-  )
+  flushPendingSettingSaves().catch((e) => console.warn('[SettingsPanel] 卸载前保存设置失败:', e))
   flushPendingBlurConfig()
   // 清理关闭动画定时器
   if (closeTimer) {
@@ -890,23 +886,47 @@ const onConfirmResetSettings = async () => {
             <!-- 背景颜色 -->
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">背景颜色<HelpButton text="设置应用的基础背景色。它会参与主窗口玻璃着色、设置面板和浮动组件的背景计算；可选择预设色或输入十六进制颜色。" /></span>
+                <span class="setting-label"
+                  >背景颜色<HelpButton
+                    text="设置应用的基础背景色。它会参与主窗口玻璃着色、设置面板和浮动组件的背景计算；可选择预设色或输入十六进制颜色。"
+                /></span>
               </div>
               <div class="setting-right">
                 <button
-                  v-for="c in hexPresets" :key="c.value" class="color-dot"
+                  v-for="c in hexPresets"
+                  :key="c.value"
+                  class="color-dot"
                   :class="{ active: bgColorHex === c.value }"
-                  :style="{ backgroundColor: c.value }" :title="c.label"
+                  :style="{ backgroundColor: c.value }"
+                  :title="c.label"
                   @click="setBgColorPreset(c.value)"
                 />
-                <input type="color" class="color-input" :value="bgColorHex"
-                  @input="(e) => { const h = e.target.value; const r = parseInt(h.slice(1,3),16); const g = parseInt(h.slice(3,5),16); const b = parseInt(h.slice(5,7),16); bgColor = `${r} ${g} ${b}` }"
+                <input
+                  type="color"
+                  class="color-input"
+                  :value="bgColorHex"
+                  @input="
+                    (e) => {
+                      const h = e.target.value
+                      const r = parseInt(h.slice(1, 3), 16)
+                      const g = parseInt(h.slice(3, 5), 16)
+                      const b = parseInt(h.slice(5, 7), 16)
+                      bgColor = `${r} ${g} ${b}`
+                    }
+                  "
                 />
                 <div class="color-hex-input-wrap">
-                  <input type="text" class="color-hex-input" spellcheck="false"
-                    :class="{ 'has-error': bgColorInputError }" :value="bgColorInput"
-                    placeholder="#FFFFFF" maxlength="7"
-                    @input="onBgColorInput" @blur="commitBgColor" @keydown.enter="commitBgColor"
+                  <input
+                    type="text"
+                    class="color-hex-input"
+                    spellcheck="false"
+                    :class="{ 'has-error': bgColorInputError }"
+                    :value="bgColorInput"
+                    placeholder="#FFFFFF"
+                    maxlength="7"
+                    @input="onBgColorInput"
+                    @blur="commitBgColor"
+                    @keydown.enter="commitBgColor"
                   />
                 </div>
               </div>
@@ -915,31 +935,53 @@ const onConfirmResetSettings = async () => {
             <!-- 字体大小（输入 + 下拉预设） -->
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">字体大小<HelpButton text="调整应用的全局基础字号，列表、设置和编辑区域会按同一比例联动。" /></span>
+                <span class="setting-label"
+                  >字体大小<HelpButton
+                    text="调整应用的全局基础字号，列表、设置和编辑区域会按同一比例联动。"
+                /></span>
               </div>
               <div class="setting-right">
-                <FontSizeInput v-model="fontSizeBase" :presets="fontSizePresets" :min="14" :max="22" width="90rem" />
+                <FontSizeInput
+                  v-model="fontSizeBase"
+                  :presets="fontSizePresets"
+                  :min="14"
+                  :max="22"
+                  width="90rem"
+                />
               </div>
             </div>
 
             <!-- 文字颜色 -->
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">文字颜色<HelpButton text="设置应用的主要文字颜色，次要文字和边界颜色会基于它自动派生。" /></span>
+                <span class="setting-label"
+                  >文字颜色<HelpButton
+                    text="设置应用的主要文字颜色，次要文字和边界颜色会基于它自动派生。"
+                /></span>
               </div>
               <div class="setting-right">
                 <button
-                  v-for="c in hexPresets" :key="c.value" class="color-dot"
+                  v-for="c in hexPresets"
+                  :key="c.value"
+                  class="color-dot"
                   :class="{ active: textColor === c.value }"
-                  :style="{ backgroundColor: c.value }" :title="c.label"
+                  :style="{ backgroundColor: c.value }"
+                  :title="c.label"
                   @click="textColor = c.value"
                 />
                 <input v-model="textColor" type="color" class="color-input" />
                 <div class="color-hex-input-wrap">
-                  <input type="text" class="color-hex-input" spellcheck="false"
-                    :class="{ 'has-error': textColorInputError }" :value="textColorInput"
-                    placeholder="#000000" maxlength="7"
-                    @input="onTextColorInput" @blur="commitTextColor" @keydown.enter="commitTextColor"
+                  <input
+                    type="text"
+                    class="color-hex-input"
+                    spellcheck="false"
+                    :class="{ 'has-error': textColorInputError }"
+                    :value="textColorInput"
+                    placeholder="#000000"
+                    maxlength="7"
+                    @input="onTextColorInput"
+                    @blur="commitTextColor"
+                    @keydown.enter="commitTextColor"
                   />
                 </div>
               </div>
@@ -953,11 +995,26 @@ const onConfirmResetSettings = async () => {
             <!-- 启用开关（所有支持平台通用） -->
             <div v-if="blurCaps.supported" class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">启用毛玻璃<HelpButton text="平台限制：Windows 需要 Windows 10 1903（Build 18362）或更高版本，支持调节模糊半径和饱和度；macOS 使用系统原生 Vibrancy，只支持开启或关闭，模糊半径和饱和度由系统决定，不能单独设置。玻璃浓度、背景颜色和窗口圆角在两个平台上都可以调节。关闭后不再渲染原生模糊层。" /></span>
+                <span class="setting-label"
+                  >启用毛玻璃<HelpButton
+                    text="平台限制：Windows 需要 Windows 10 1903（Build 18362）或更高版本，支持调节模糊半径和饱和度；macOS 使用系统原生 Vibrancy，只支持开启或关闭，模糊半径和饱和度由系统决定，不能单独设置。玻璃浓度、背景颜色和窗口圆角在两个平台上都可以调节。关闭后不再渲染原生模糊层。"
+                /></span>
                 <span v-if="blurError" class="setting-error">
-                  <svg class="warn-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                  <svg
+                    class="warn-icon"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    aria-hidden="true"
+                  >
                     <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" />
-                    <path d="M6 3.5v3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                    <path
+                      d="M6 3.5v3"
+                      stroke="currentColor"
+                      stroke-width="1.2"
+                      stroke-linecap="round"
+                    />
                     <circle cx="6" cy="9" r="0.7" fill="currentColor" />
                   </svg>
                   {{ blurError }}
@@ -970,7 +1027,10 @@ const onConfirmResetSettings = async () => {
 
             <div v-else class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">系统毛玻璃不可用<HelpButton text="当前系统版本或运行环境无法创建原生模糊层，应用会自动回退到背景颜色、玻璃浓度和圆角效果。" /></span>
+                <span class="setting-label"
+                  >系统毛玻璃不可用<HelpButton
+                    text="当前系统版本或运行环境无法创建原生模糊层，应用会自动回退到背景颜色、玻璃浓度和圆角效果。"
+                /></span>
                 <span class="setting-error">当前系统将使用透明背景颜色和圆角回退</span>
               </div>
             </div>
@@ -979,7 +1039,7 @@ const onConfirmResetSettings = async () => {
               <div class="setting-left">
                 <span class="setting-label"
                   >运行诊断<HelpButton
-                    text="毛玻璃诊断已注册到应用统一调度器：启动时执行一次，之后随每分钟调度检查原生效果链、Overlay 和窗口同步状态。"
+                    text="毛玻璃诊断已注册到应用统一调度器：启动时执行一次，之后每分钟检查原生效果链、Overlay 和窗口同步状态。"
                 /></span>
                 <span class="setting-hint-caption">
                   {{ blurDiagnostic.message }}
@@ -997,7 +1057,10 @@ const onConfirmResetSettings = async () => {
 
             <!-- 玻璃浓度始终显示；原生模糊不可用时也是主要回退控制。 -->
             <div class="setting-item setting-item-slider">
-              <span class="setting-label">玻璃浓度<HelpButton text="控制主窗口背景颜色的覆盖强度。0=完全通透，1=不透明纯色底；不改变原生模糊强度。推荐60%" /></span>
+              <span class="setting-label"
+                >玻璃浓度<HelpButton
+                  text="控制主窗口背景颜色的覆盖强度。0=完全通透，1=不透明纯色底；不改变原生模糊强度。推荐60%"
+              /></span>
               <span class="range-label-start">通透</span>
               <AppSlider v-model="windowOpacity" :min="0" :max="1" :step="0.01" />
               <span class="range-label-end">浓厚</span>
@@ -1017,7 +1080,9 @@ const onConfirmResetSettings = async () => {
                 <div class="native-blur-options-inner">
                   <!-- 模糊半径 -->
                   <div class="setting-item setting-item-slider">
-                    <span class="setting-label">模糊半径<HelpButton text="控制背景被打散的程度。推荐值10–20" /></span>
+                    <span class="setting-label"
+                      >模糊半径<HelpButton text="控制背景被打散的程度。推荐值10–20"
+                    /></span>
                     <span class="range-label-start">清晰</span>
                     <AppSlider v-model="blurRadius" :min="0" :max="40" :step="1" />
                     <span class="range-label-end">模糊</span>
@@ -1026,7 +1091,10 @@ const onConfirmResetSettings = async () => {
 
                   <!-- 饱和度 -->
                   <div class="setting-item setting-item-slider">
-                    <span class="setting-label">饱和度<HelpButton text="模糊会让颜色变灰，提高饱和度能把鲜艳度补回来。推荐1.6–2.0（苹果用1.8）" /></span>
+                    <span class="setting-label"
+                      >饱和度<HelpButton
+                        text="模糊会让颜色变灰，提高饱和度能把鲜艳度补回来。推荐1.6–2.0（苹果用1.8）"
+                    /></span>
                     <span class="range-label-start">黑白</span>
                     <AppSlider v-model="blurSaturation" :min="0" :max="2" :step="0.1" />
                     <span class="range-label-end">鲜艳</span>
@@ -1038,12 +1106,19 @@ const onConfirmResetSettings = async () => {
 
             <!-- 窗口圆角（所有平台通用，纯 CSS 控制） -->
             <div class="setting-item setting-item-slider">
-              <span class="setting-label">窗口圆角<HelpButton text="四个角的圆润程度。0=直角，数值越大越圆。推荐8–16（苹果原生风格）" /></span>
+              <span class="setting-label"
+                >窗口圆角<HelpButton
+                  text="四个角的圆润程度。0=直角，数值越大越圆。推荐8–16（苹果原生风格）"
+              /></span>
               <span class="range-label-start">直角</span>
               <AppSlider v-model="blurCornerRadius" :min="0" :max="30" :step="1" />
               <span class="range-label-end">圆润</span>
               <span class="setting-value">{{ blurCornerRadius }}px</span>
             </div>
+
+            <Transition name="wallpaper-panel">
+              <WallpaperSettings v-if="!blurEnabled" />
+            </Transition>
           </section>
 
           <!-- ========== CSS 玻璃全局基准 ========== -->
@@ -1052,7 +1127,10 @@ const onConfirmResetSettings = async () => {
 
             <!-- 模糊半径 -->
             <div class="setting-item setting-item-slider">
-              <span class="setting-label">模糊基准<HelpButton text="设置页按此值直接失焦；使用玻璃材质的浮层会按各自比例同步增减。推荐10px" /></span>
+              <span class="setting-label"
+                >模糊基准<HelpButton
+                  text="设置页按此值直接失焦；使用玻璃材质的浮层会按各自比例同步增减。推荐10px"
+              /></span>
               <span class="range-label-start">清晰</span>
               <AppSlider v-model="cssBlur" :min="0" :max="30" :step="1" />
               <span class="range-label-end">模糊</span>
@@ -1061,13 +1139,15 @@ const onConfirmResetSettings = async () => {
 
             <!-- 组件透明度 -->
             <div class="setting-item setting-item-slider">
-              <span class="setting-label">霜层基准<HelpButton text="设置面板按此浓度显示；使用玻璃材质的浮层会按组件类型成比例调整并限制最大值。推荐20%" /></span>
+              <span class="setting-label"
+                >霜层基准<HelpButton
+                  text="设置面板按此浓度显示；使用玻璃材质的浮层会按组件类型成比例调整并限制最大值。推荐20%"
+              /></span>
               <span class="range-label-start">通透</span>
               <AppSlider v-model="cssOpacity" :min="0" :max="1" :step="0.01" />
               <span class="range-label-end">不透</span>
               <span class="setting-value">{{ Math.round(cssOpacity * 100) }}%</span>
             </div>
-
           </section>
 
           <!-- ========== 系统设置 ========== -->
@@ -1076,7 +1156,10 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">开机自启<HelpButton text="控制应用是否随系统登录自动启动。此状态直接读取并写入操作系统，不保存在应用数据库中。" /></span>
+                <span class="setting-label"
+                  >开机自启<HelpButton
+                    text="控制应用是否随系统登录自动启动。此状态直接读取并写入操作系统，不保存在应用数据库中。"
+                /></span>
                 <span v-if="autoStartError" class="setting-error">
                   <svg
                     class="warn-icon"
@@ -1110,7 +1193,10 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">应用版本<HelpButton text="当前安装或运行的应用版本，用于确认功能版本和排查兼容性问题。" /></span>
+                <span class="setting-label"
+                  >应用版本<HelpButton
+                    text="当前安装或运行的应用版本，用于确认功能版本和排查兼容性问题。"
+                /></span>
               </div>
               <div class="setting-right">
                 <span class="setting-value">v1.0.0</span>
@@ -1147,7 +1233,10 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">调度器状态<HelpButton text="显示后台定时任务调度器是否正在运行。调度器负责便签生效、提醒和循环模板等定时工作。" /></span>
+                <span class="setting-label"
+                  >调度器状态<HelpButton
+                    text="显示后台定时任务调度器是否正在运行。调度器负责便签生效、提醒和循环模板等定时工作。"
+                /></span>
               </div>
               <div class="setting-right">
                 <span
@@ -1163,7 +1252,10 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">最近执行<HelpButton text="后台调度器最近一次完成任务检查的时间；长时间不更新可能表示调度线程被阻塞。" /></span>
+                <span class="setting-label"
+                  >最近执行<HelpButton
+                    text="后台调度器最近一次完成任务检查的时间；长时间不更新可能表示调度线程被阻塞。"
+                /></span>
                 <span class="setting-hint-caption">上次检查任务的时间</span>
               </div>
               <div class="setting-right">
@@ -1178,7 +1270,10 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">故障监控<HelpButton text="独立看门狗会定期检查主调度器是否正常推进，并在检测到停滞时尝试恢复。" /></span>
+                <span class="setting-label"
+                  >故障监控<HelpButton
+                    text="独立看门狗会定期检查主调度器是否正常推进，并在检测到停滞时尝试恢复。"
+                /></span>
                 <span class="setting-hint-caption">独立计时器，检测调度器是否卡死</span>
               </div>
               <div class="setting-right">
@@ -1193,7 +1288,10 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">执行保护<HelpButton text="防止上一轮任务尚未结束时再次进入调度流程，避免同一便签被重复处理或重复提醒。" /></span>
+                <span class="setting-label"
+                  >执行保护<HelpButton
+                    text="防止上一轮任务尚未结束时再次进入调度流程，避免同一便签被重复处理或重复提醒。"
+                /></span>
                 <span class="setting-hint-caption">防止同一时刻重复执行</span>
               </div>
               <div class="setting-right">
@@ -1208,7 +1306,10 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">调度计数<HelpButton text="记录当前主调度器的运行代次；发生故障并重建调度循环后会进入下一轮。" /></span>
+                <span class="setting-label"
+                  >调度计数<HelpButton
+                    text="记录当前主调度器的运行代次；发生故障并重建调度循环后会进入下一轮。"
+                /></span>
                 <span class="setting-hint-caption">每发生一次故障恢复 +1</span>
               </div>
               <div class="setting-right">
@@ -1218,7 +1319,10 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item">
               <div class="setting-left">
-                <span class="setting-label">自动恢复<HelpButton text="显示看门狗连续恢复失败的次数。数值持续增加时通常需要重启应用并检查错误日志。" /></span>
+                <span class="setting-label"
+                  >自动恢复<HelpButton
+                    text="显示看门狗连续恢复失败的次数。数值持续增加时通常需要重启应用并检查错误日志。"
+                /></span>
                 <span class="setting-hint-caption">故障监控触发的恢复次数</span>
               </div>
               <div class="setting-right">
@@ -1355,7 +1459,9 @@ const onConfirmResetSettings = async () => {
   height: 4rem;
   border-radius: 2rem;
   background-color: rgba(255, 255, 255, 0.2);
-  transition: transform var(--motion-control) var(--ease-standard), background-color var(--motion-fast) ease;
+  transition:
+    transform var(--motion-control) var(--ease-standard),
+    background-color var(--motion-fast) ease;
 }
 .drag-indicator:hover .drag-bar {
   transform: scaleX(1.18);
@@ -1403,7 +1509,10 @@ const onConfirmResetSettings = async () => {
   background-color: rgba(255, 255, 255, 0.15);
   opacity: 1;
 }
-.panel-close-btn:active:not(:disabled) { transform: scale(0.9); transition-duration: 70ms; }
+.panel-close-btn:active:not(:disabled) {
+  transform: scale(0.9);
+  transition-duration: 70ms;
+}
 .panel-close-btn:disabled {
   cursor: wait;
   opacity: 0.35;
@@ -1426,18 +1535,15 @@ const onConfirmResetSettings = async () => {
     black calc(100% - 30rem),
     transparent 100%
   );
-  mask-image: linear-gradient(
-    to bottom,
-    black 0%,
-    black calc(100% - 30rem),
-    transparent 100%
-  );
+  mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
 }
 .panel-body.is-resetting {
   cursor: wait;
   opacity: 0.55;
 }
-.panel-body { transition: opacity var(--motion-control) ease; }
+.panel-body {
+  transition: opacity var(--motion-control) ease;
+}
 .settings-controls {
   min-inline-size: 0;
   border: 0;
@@ -1483,6 +1589,28 @@ const onConfirmResetSettings = async () => {
 }
 .native-blur-options-inner {
   min-height: 0;
+}
+.wallpaper-panel-enter-active,
+.wallpaper-panel-leave-active {
+  overflow: hidden;
+  transition:
+    max-height 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms ease,
+    transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-top 280ms ease;
+}
+.wallpaper-panel-enter-active {
+  max-height: 1200rem;
+}
+.wallpaper-panel-enter-from,
+.wallpaper-panel-leave-to {
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+  transform: translateY(-6rem);
+}
+.wallpaper-panel-leave-from {
+  max-height: 1200rem;
 }
 
 /* 有辅助文字时，左列顶部对齐 */
@@ -1733,15 +1861,15 @@ const onConfirmResetSettings = async () => {
   font-weight: 500;
 }
 .sched-badge--ok {
-  background: rgba(52, 199, 89, 0.10);
+  background: rgba(52, 199, 89, 0.1);
   color: rgb(52, 199, 89);
 }
 .sched-badge--warn {
-  background: rgba(255, 149, 0, 0.10);
+  background: rgba(255, 149, 0, 0.1);
   color: rgb(255, 149, 0);
 }
 .sched-badge--danger {
-  background: rgba(255, 59, 48, 0.10);
+  background: rgba(255, 59, 48, 0.1);
   color: rgb(255, 59, 48);
 }
 .sched-warn {

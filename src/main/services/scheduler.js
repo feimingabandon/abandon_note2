@@ -210,7 +210,6 @@ export class Scheduler {
         }
       }
 
-      // ---- 每轮 tick 汇总 ----
       const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false })
       const skippedInfo = stats.skipped > 0 ? `, 跳过 ${stats.skipped}` : ''
       const okInfo = stats.ok.length > 0 ? stats.ok.join(', ') : '无'
@@ -221,7 +220,7 @@ export class Scheduler {
     } finally {
       this._ticking = false
       this.lastTickAt = Date.now()
-      this._recoveryFailures = 0 // 成功 tick，重置看门狗恢复计数
+      this._recoveryFailures = 0 // 成功主线 tick，重置看门狗恢复计数
     }
   }
 

@@ -81,8 +81,8 @@ const refreshTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
 })
 const refreshSummary = computed(() =>
   lastRefreshedAt.value
-    ? `当前有 ${displayedTemplates.value.length} 条 · 此条件下共有 ${filteredTemplates.value.length} 条 · 刷新于 ${refreshTimeFormatter.format(lastRefreshedAt.value)}`
-    : `当前有 ${displayedTemplates.value.length} 条 · 此条件下共有 ${filteredTemplates.value.length} 条`
+    ? `当前${displayedTemplates.value.length}条 · 此条件共${filteredTemplates.value.length}条 · 刷新 ${refreshTimeFormatter.format(lastRefreshedAt.value)}`
+    : `当前${displayedTemplates.value.length}条 · 此条件共${filteredTemplates.value.length}条`
 )
 const filteredTemplates = computed(() =>
   filterAndSortTemplates(templates.value, {

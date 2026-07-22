@@ -8,9 +8,10 @@
   "scripts": {
     "format": "prettier --write src",
     "lint": "eslint --cache src",
-    "test": "vitest run && npm run test:db",
+    "test": "vitest run && npm run test:db && npm run test:wallpaper-storage",
     "test:unit": "vitest run",
     "test:db": "node scripts/run-electron-node-tests.cjs",
+    "test:wallpaper-storage": "node scripts/run-electron-wallpaper-tests.cjs",
     "test:watch": "vitest",
     "db:reset-business-schema": "node scripts/run-electron-schema-reset.cjs",
     "start": "electron-vite preview",

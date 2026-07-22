@@ -8,7 +8,7 @@
  *   - 放大/缩小/旋转按钮
  *   - ESC / 点击遮罩关闭
  */
-import { ref, watch, onUnmounted } from 'vue'
+import { nextTick, onUnmounted, ref, watch } from 'vue'
 import { releaseModalBlur, retainModalBlur } from '../../utils/modalBlur.js'
 
 const props = defineProps({
@@ -25,6 +25,7 @@ const rotate = ref(0)
 /** 平移偏移（屏幕像素） */
 const translateX = ref(0)
 const translateY = ref(0)
+const overlayRef = ref(null)
 let ownsModalBlur = false
 
 function acquireModalBlur() {
@@ -47,22 +48,46 @@ let dragStartTX = 0
 let dragStartTY = 0
 
 /** 打开时重置状态 */
-watch(() => props.visible, (v) => {
-  if (v) {
-    acquireModalBlur()
-    scale.value = 1
-    rotate.value = 0
-    translateX.value = 0
-    translateY.value = 0
-  } else freeModalBlur()
-})
+watch(
+  () => props.visible,
+  (v) => {
+    if (v) {
+      acquireModalBlur()
+      scale.value = 1
+      rotate.value = 0
+      translateX.value = 0
+      translateY.value = 0
+      nextTick(() => overlayRef.value?.focus({ preventScroll: true }))
+    } else freeModalBlur()
+  }
+)
 
 function onClose() {
   emit('close')
 }
 
 function onKeydown(e) {
-  if (e.key === 'Escape') onClose()
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    e.stopPropagation()
+    onClose()
+    return
+  }
+  if (e.key !== 'Tab') return
+  const focusable = [...overlayRef.value.querySelectorAll('button:not(:disabled)')]
+  if (focusable.length === 0) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (
+    e.shiftKey &&
+    (document.activeElement === first || document.activeElement === overlayRef.value)
+  ) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault()
+    first.focus()
+  }
 }
 
 /** 滚轮缩放 */
@@ -136,52 +161,97 @@ onUnmounted(() => {
         v-if="visible"
         ref="overlayRef"
         class="ipv-overlay"
-        tabindex="0"
+        data-keep-settings-open
+        tabindex="-1"
         @click.self="onClose"
         @keydown="onKeydown"
       >
-      <!-- 顶部工具栏 -->
-      <div class="ipv-toolbar">
-        <button class="ipv-btn" title="缩小" @click="zoomOut">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/>
-          </svg>
-        </button>
-        <button class="ipv-btn" title="放大" @click="zoomIn">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
-          </svg>
-        </button>
-        <button class="ipv-btn" title="旋转" @click="rotate90">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-          </svg>
-        </button>
-        <button class="ipv-btn" title="重置" @click="reset">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/>
-          </svg>
-        </button>
-        <div class="ipv-spacer" />
-        <span class="ipv-info">{{ Math.round(scale * 100) }}%</span>
-        <button class="ipv-btn ipv-btn--close" title="关闭 (ESC)" @click="onClose">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
-      </div>
+        <!-- 顶部工具栏 -->
+        <div class="ipv-toolbar">
+          <button class="ipv-btn" title="缩小" @click="zoomOut">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              <line x1="8" y1="11" x2="14" y2="11" />
+            </svg>
+          </button>
+          <button class="ipv-btn" title="放大" @click="zoomIn">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              <line x1="11" y1="8" x2="11" y2="14" />
+              <line x1="8" y1="11" x2="14" y2="11" />
+            </svg>
+          </button>
+          <button class="ipv-btn" title="旋转" @click="rotate90">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <polyline points="23 4 23 10 17 10" />
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+            </svg>
+          </button>
+          <button class="ipv-btn" title="重置" @click="reset">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+              <path d="M21 3v5h-5" />
+              <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+              <path d="M3 21v-5h5" />
+            </svg>
+          </button>
+          <div class="ipv-spacer" />
+          <span class="ipv-info">{{ Math.round(scale * 100) }}%</span>
+          <button class="ipv-btn ipv-btn--close" title="关闭 (ESC)" @click="onClose">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
 
-      <!-- 图片容器 -->
-      <div class="ipv-viewport" @wheel="onWheel">
-        <img
-          :src="src"
-          class="ipv-image"
-          :class="{ 'ipv-image--dragging': isDragging }"
-          :style="{ transform: `translate(${translateX}px, ${translateY}px) scale(${scale}) rotate(${rotate}deg)` }"
-          @mousedown="onMouseDown"
-          @click.stop
-        />
-      </div>
+        <!-- 图片容器 -->
+        <div class="ipv-viewport" @wheel="onWheel">
+          <img
+            :src="src"
+            class="ipv-image"
+            :class="{ 'ipv-image--dragging': isDragging }"
+            :style="{
+              transform: `translate(${translateX}px, ${translateY}px) scale(${scale}) rotate(${rotate}deg)`
+            }"
+            @mousedown="onMouseDown"
+            @click.stop
+          />
+        </div>
       </div>
     </Transition>
   </Teleport>
@@ -238,7 +308,7 @@ onUnmounted(() => {
   gap: 6rem;
   padding: 10rem 16rem;
   z-index: 10;
-  background: linear-gradient(to bottom, rgba(0,0,0,0.55), transparent);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent);
   user-select: none;
 }
 

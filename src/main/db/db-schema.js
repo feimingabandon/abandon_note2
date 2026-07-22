@@ -60,6 +60,34 @@ export function createNotesSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_attachments_note_id ON note_attachments(note_id);
 
+    CREATE TABLE IF NOT EXISTS wallpaper_sources (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      content_hash  TEXT    NOT NULL UNIQUE,
+      original_path TEXT    NOT NULL,
+      mime_type     TEXT    NOT NULL,
+      width         INTEGER NOT NULL CHECK(width > 0),
+      height        INTEGER NOT NULL CHECK(height > 0),
+      file_size     INTEGER NOT NULL CHECK(file_size > 0),
+      created_at    INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS wallpapers (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id      INTEGER NOT NULL REFERENCES wallpaper_sources(id) ON DELETE RESTRICT,
+      cropped_path   TEXT    NOT NULL,
+      crop_x         REAL    NOT NULL,
+      crop_y         REAL    NOT NULL,
+      crop_width     REAL    NOT NULL CHECK(crop_width > 0),
+      crop_height    REAL    NOT NULL CHECK(crop_height > 0),
+      scale          REAL    NOT NULL DEFAULT 1 CHECK(scale > 0),
+      target_width   INTEGER NOT NULL CHECK(target_width > 0),
+      target_height  INTEGER NOT NULL CHECK(target_height > 0),
+      created_at     INTEGER NOT NULL,
+      last_used_at   INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_wallpapers_source_id ON wallpapers(source_id);
+    CREATE INDEX IF NOT EXISTS idx_wallpapers_last_used ON wallpapers(last_used_at DESC, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS tags (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       name        TEXT NOT NULL UNIQUE,

@@ -89,6 +89,14 @@ The color story is starkly binary. Product sections alternate between pure black
 
 ## 4. Component Stylings
 
+### Motion & Transitions
+
+- 交互动画默认且始终开启；应用不跟随操作系统 `MinAnimate` 或 `prefers-reduced-motion` 自动关闭、缩短动画。
+- 不新增“减少动态效果”开关，也不使用媒体查询把动画时长压缩到近似瞬时完成。
+- 面板展开/收起、弹层出现/消失、列表项目增删和状态切换都应提供清晰、克制的过渡反馈。
+- 折叠面板使用内容真实像素高度驱动动画；不要依赖在当前 Electron 中插值不稳定的 `auto` 或 `0fr/1fr` 高度过渡。
+- 默认使用项目动效变量与标准缓动；仅在特定交互确有需要时使用局部时长。
+
 ### Buttons
 
 **Primary Blue (CTA)**

@@ -57,7 +57,7 @@ const contentShellHeight = ref('auto')
 const deleting = ref(false)
 const showDeleteDialog = ref(false)
 const CONTENT_PREVIEW_LINES = 3
-// 产品要求：正文展开/收起始终保留动效，不跟随系统 MinAnimate / reduced-motion 设置。
+// 产品规范：交互动画始终开启，不跟随系统 MinAnimate / reduced-motion 设置。
 const CONTENT_ANIMATION_DURATION = 280
 let contentResizeObserver = null
 let contentAnimation = null

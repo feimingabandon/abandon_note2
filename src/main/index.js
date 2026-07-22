@@ -96,6 +96,15 @@ import {
   listImageRecords,
   getImageCount
 } from './db/db-images.js'
+import {
+  cleanupPendingWallpaperFiles,
+  deleteWallpaperVersion,
+  getWallpaperDataUrl,
+  getWallpaperThumbnail,
+  listWallpaperRecords,
+  markWallpaperUsed,
+  saveWallpaperVersion
+} from './db/db-wallpapers.js'
 import { Scheduler } from './services/scheduler.js'
 import { runRecurringTemplates } from './services/recurrence.js'
 import { calculateNextRun, normalizeRecurrenceRule } from './services/recurrence-rules.js'
@@ -124,6 +133,7 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'css.windowOpacity',
   'css.fontSizeBase',
   'css.textColor',
+  'wallpaper.blurRadius',
   'listFilter'
 ])
 
@@ -215,6 +225,8 @@ let blurInitializationNativeError = null
 let blurRuntimeFailed = false
 let blurWindowSyncListenersAttached = false
 let blurRuntimeFailureHandling = false
+let blurConfigRequestRevision = 0
+let wallpaperActivationRevision = 0
 let blurDiagnostic = {
   status: blurCaps.supported ? 'pending' : 'unsupported',
   lastCheckedAt: null,
@@ -629,6 +641,31 @@ function persistSettingValue(id, value) {
   return persistSettingValues([{ id, value }])
 }
 
+/** 壁纸与原生毛玻璃共享同一个主窗口背景槽，任何时刻最多启用一个。 */
+function persistWallpaperState({ enabled, activeId = resolvedSettings.wallpaper.activeId }) {
+  return persistSettingValues([
+    { id: 'wallpaper.enabled', value: Boolean(enabled) },
+    { id: 'wallpaper.activeId', value: activeId }
+  ])
+}
+
+function deactivateWallpaperForGlass({ broadcast = true } = {}) {
+  if (!resolvedSettings.wallpaper.enabled) return null
+  setSettingsBatch(WINDOW_NAME, [serializeSetting('wallpaper.enabled', false)])
+  refreshResolvedSettings({ incrementRevision: true })
+  const snapshot = getResolvedSettingsSnapshot()
+  if (broadcast) broadcastSettingsChanged(snapshot)
+  return {
+    activeId: resolvedSettings.wallpaper.activeId,
+    wasEnabled: true
+  }
+}
+
+function restoreSuspendedWallpaper(suspended) {
+  if (!suspended?.wasEnabled || !suspended.activeId) return getResolvedSettingsSnapshot()
+  return persistWallpaperState({ enabled: true, activeId: suspended.activeId })
+}
+
 // ============================================================
 // 贴边隐藏模块
 // ============================================================
@@ -722,8 +759,18 @@ function createWindow() {
     const result = initializeBlurRuntime()
     if (result.success) {
       console.log('[blur] 系统模糊已初始化, 策略:', result.strategy)
+      // 历史版本可能同时留下两项启用状态；启动时以已实际生效的原生玻璃为准。
+      if (blurConfig.enabled && resolvedSettings.wallpaper.enabled) {
+        setSettingsBatch(WINDOW_NAME, [serializeSetting('wallpaper.enabled', false)])
+        refreshResolvedSettings({ incrementRevision: true })
+      }
     } else {
       console.warn('[blur] 初始化失败:', result.error, result.nativeError || '')
+      // 启动失败不能继续保存“已开启”，否则下次打开设置会造成状态误导。
+      if (blurConfig.enabled) {
+        setSettingsBatch(WINDOW_NAME, [serializeSetting('blur.enabled', false)])
+        refreshResolvedSettings({ incrementRevision: true })
+      }
     }
   } else {
     console.log('[blur] 当前平台不支持系统模糊:', blurCaps.reason)
@@ -1112,9 +1159,9 @@ app.whenReady().then(async () => {
   // 初始化数据库连接
   initDatabase()
   try {
-    await cleanupPendingAttachmentDirs()
+    await Promise.all([cleanupPendingAttachmentDirs(), cleanupPendingWallpaperFiles()])
   } catch (error) {
-    console.warn('[attachments] 清理历史待删除目录失败:', error.message)
+    console.warn('[storage] 清理历史暂存目录失败:', error.message)
   }
   // 开机自启以操作系统为唯一权威；移除旧版本遗留的数据库副本。
   deleteSettingsByKey('auto_start')
@@ -1125,7 +1172,9 @@ app.whenReady().then(async () => {
     'blur_tint_g',
     'blur_tint_b',
     'bg_saturation',
-    'bg_border'
+    'bg_border',
+    'wallpaper_overlay_opacity',
+    'wallpaper_overlay_tone'
   ]) {
     deleteSettingsByKey(key)
   }
@@ -1297,15 +1346,44 @@ app.whenReady().then(async () => {
   // ---- 系统模糊 IPC ----
 
   /** 设置模糊配置（立即生效 + 持久化到数据库） */
-  ipcMain.handle('set-blur-config', (_event, config) => {
-    // 合并到当前配置
-    if (config.enabled !== undefined) blurConfig.enabled = config.enabled
-    if (config.radius !== undefined) blurConfig.radius = config.radius
-    if (config.saturation !== undefined) blurConfig.saturation = config.saturation
-    if (config.cornerRadius !== undefined) blurConfig.cornerRadius = config.cornerRadius
+  ipcMain.handle('set-blur-config', async (_event, config) => {
+    const requestRevision = ++blurConfigRequestRevision
+    const activationRevision = wallpaperActivationRevision
+    // 本次请求必须持有独立快照。关闭壁纸会从 DB 刷新完整设置，而 DB 中的
+    // blur.enabled 此时还是旧值，不能让它覆盖用户刚刚提交的启用请求。
+    const requestedConfig = {
+      enabled: config.enabled !== undefined ? Boolean(config.enabled) : blurConfig.enabled,
+      radius: config.radius !== undefined ? config.radius : blurConfig.radius,
+      saturation: config.saturation !== undefined ? config.saturation : blurConfig.saturation,
+      cornerRadius:
+        config.cornerRadius !== undefined ? config.cornerRadius : blurConfig.cornerRadius
+    }
+    Object.assign(blurConfig, requestedConfig)
 
     // 启用时若启动阶段初始化失败，则现场重试一次，以便把详细错误反馈给用户。
     const enableRequested = blurConfig.enabled
+    // 先让壁纸退场，再创建/启用原生层；失败时恢复刚才挂起的壁纸。
+    const suspendedWallpaper = enableRequested ? deactivateWallpaperForGlass() : null
+    if (suspendedWallpaper) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 190))
+      if (requestRevision !== blurConfigRequestRevision) {
+        const supersededByWallpaper = activationRevision !== wallpaperActivationRevision
+        const snapshot =
+          !supersededByWallpaper && !blurConfig.enabled && suspendedWallpaper
+            ? restoreSuspendedWallpaper(suspendedWallpaper)
+            : getResolvedSettingsSnapshot()
+        return {
+          success: snapshot.runtime.blur.effectiveEnabled,
+          config: { ...blurConfig },
+          runtime: snapshot.runtime.blur,
+          error: snapshot.runtime.blur.error,
+          nativeError: snapshot.runtime.blur.nativeError
+        }
+      }
+      // deactivateWallpaperForGlass() 内部的完整设置刷新会恢复数据库旧值；
+      // 退场完成且请求仍为最新时，重新提交本次请求自己的快照。
+      Object.assign(blurConfig, requestedConfig)
+    }
     if (!enableRequested) {
       blurRuntimeFailed = false
       blurInitializationError = null
@@ -1323,7 +1401,7 @@ app.whenReady().then(async () => {
       blurConfig.enabled = false
     }
 
-    const snapshot = persistSettingValues(
+    let snapshot = persistSettingValues(
       [
         { id: 'blur.enabled', value: blurConfig.enabled },
         { id: 'blur.radius', value: blurConfig.radius },
@@ -1333,7 +1411,11 @@ app.whenReady().then(async () => {
       // 新初始化路径已经在 initializeBlurRuntime 中提交过完整配置。
       { applyBlurRuntime: !initializationResult?.success }
     )
-    const runtime = snapshot.runtime.blur
+    let runtime = snapshot.runtime.blur
+    if (enableRequested && !runtime.effectiveEnabled && suspendedWallpaper) {
+      snapshot = restoreSuspendedWallpaper(suspendedWallpaper)
+      runtime = snapshot.runtime.blur
+    }
     return {
       success: !enableRequested || runtime.effectiveEnabled,
       config: { ...blurConfig },
@@ -1341,6 +1423,71 @@ app.whenReady().then(async () => {
       error: initializationResult?.error ?? runtime.error,
       nativeError: initializationResult?.nativeError ?? runtime.nativeError
     }
+  })
+
+  // ---- 主页面壁纸 IPC ----
+  ipcMain.handle('wallpapers:list', () => listWallpaperRecords())
+  ipcMain.handle('wallpapers:get-thumbnail', (_event, { id, maxSize }) =>
+    getWallpaperThumbnail(id, maxSize)
+  )
+  ipcMain.handle('wallpapers:get-data', (_event, { id, original = false }) =>
+    getWallpaperDataUrl(id, { original })
+  )
+  ipcMain.handle('wallpapers:save', (_event, payload) => saveWallpaperVersion(payload || {}))
+  ipcMain.handle('wallpapers:activate', (_event, { id }) => {
+    const record = markWallpaperUsed(id)
+    const previousFailureState = {
+      failed: blurRuntimeFailed,
+      error: blurInitializationError,
+      nativeError: blurInitializationNativeError,
+      diagnostic: { ...blurDiagnostic }
+    }
+    const previousBlurRequestRevision = blurConfigRequestRevision
+    const previousWallpaperActivationRevision = wallpaperActivationRevision
+
+    // 三个互斥设置在同一个 SQLite 事务中提交，不能先关玻璃再单独开壁纸。
+    // 同时使任何尚在等待壁纸退场的旧毛玻璃请求失效。
+    wallpaperActivationRevision += 1
+    blurConfigRequestRevision += 1
+    blurRuntimeFailed = false
+    blurInitializationError = null
+    blurInitializationNativeError = null
+    updateBlurDiagnostic(
+      { status: 'disabled', lastCheckedAt: Date.now(), message: '系统毛玻璃未启用' },
+      { notify: false }
+    )
+    try {
+      const snapshot = persistSettingValues([
+        { id: 'blur.enabled', value: false },
+        { id: 'wallpaper.enabled', value: true },
+        { id: 'wallpaper.activeId', value: record.id }
+      ])
+      return { record, snapshot }
+    } catch (error) {
+      blurRuntimeFailed = previousFailureState.failed
+      blurInitializationError = previousFailureState.error
+      blurInitializationNativeError = previousFailureState.nativeError
+      blurDiagnostic = previousFailureState.diagnostic
+      blurConfigRequestRevision = previousBlurRequestRevision
+      wallpaperActivationRevision = previousWallpaperActivationRevision
+      throw error
+    }
+  })
+  ipcMain.handle('wallpapers:disable', () => persistWallpaperState({ enabled: false }))
+  ipcMain.handle('wallpapers:delete', async (_event, { id }) => {
+    const parsedId = Number(id)
+    if (resolvedSettings.wallpaper.enabled && resolvedSettings.wallpaper.activeId === parsedId) {
+      throw new Error('请先切换或关闭当前壁纸')
+    }
+    const clearsSelection = resolvedSettings.wallpaper.activeId === parsedId
+    const deleted = await deleteWallpaperVersion(parsedId, {
+      clearSelectionForWindow: clearsSelection ? WINDOW_NAME : null
+    })
+    if (deleted && clearsSelection) {
+      refreshResolvedSettings({ incrementRevision: true })
+      broadcastSettingsChanged()
+    }
+    return deleted
   })
 
   createWindow()
