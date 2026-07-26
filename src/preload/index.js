@@ -53,6 +53,14 @@ const api = {
   /** 通知主进程渲染已就绪，可以显示窗口了 */
   rendererReady: () => ipcRenderer.send('renderer-ready'),
 
+  // ---- 应用内消息条（主进程降级提醒：系统通知发送失败时改用应用内 Toast） ----
+  /** 监听主进程下发的应用内消息；返回取消监听函数。 */
+  onAppMessage: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('app:message', handler)
+    return () => ipcRenderer.removeListener('app:message', handler)
+  },
+
   // ---- 贴边隐藏 ----
   /** 通知主进程鼠标悬停状态（true=进入窗口, false=离开窗口） */
   windowHover: (isHovering) => ipcRenderer.send('window-hover', isHovering),

@@ -47,6 +47,13 @@ export class Scheduler {
   /** Electron Notification 引用（操作系统原生通知，延迟 require 避免测试环境无此模块） */
   _Notification = null
 
+  /**
+   * 终极告警系统通知发送失败时的应用内降级回调（由主进程注入，可选）。
+   * 签名：(title: string, body: string, error: *) => void
+   * @type {((title: string, body: string, error: *) => void) | null}
+   */
+  onAlertNotifyFailed = null
+
   // ============================================================
   // 注册
   // ============================================================
@@ -255,20 +262,25 @@ export class Scheduler {
   // ============================================================
 
   /**
-   * 发送终极告警：弹出操作系统通知告知用户重启
+   * 发送终极告警：弹出操作系统通知告知用户重启。
+   * 通知发送失败（如 macOS 未签名）时记录日志，并回调 onAlertNotifyFailed 降级为应用内提醒。
    */
   _sendAlert() {
     console.error('[scheduler] 终极告警：所有恢复手段已耗尽，通知用户重启')
+    const title = '便签调度器异常'
+    const body = '定时任务引擎连续恢复失败，请重启应用以恢复正常。'
     try {
       // 延迟 require，避免非 Electron 环境崩溃
       const { Notification } = (this._Notification = this._Notification || require('electron'))
-      new Notification({
-        title: '便签调度器异常',
-        body: '定时任务引擎连续恢复失败，请重启应用以恢复正常。',
-        urgency: 'critical'
-      }).show()
+      const notification = new Notification({ title, body, urgency: 'critical' })
+      notification.on('failed', (_event, error) => {
+        console.error('[scheduler] 告警通知发送失败:', error)
+        this.onAlertNotifyFailed?.(title, body, error)
+      })
+      notification.show()
     } catch (e) {
       console.error('[scheduler] 无法发送操作系统通知:', e.message)
+      this.onAlertNotifyFailed?.(title, body, e)
     }
   }
 }

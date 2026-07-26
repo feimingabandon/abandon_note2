@@ -42,7 +42,10 @@ export function createMessageProvider() {
     messages.value = messages.value.filter((m) => m.id !== id)
   }
 
-  provide(MESSAGE_KEY, { messages, showMessage, closeMessage })
+  const ctx = { messages, showMessage, closeMessage }
+  provide(MESSAGE_KEY, ctx)
+  // 返回上下文，便于根组件（provider 自身）直接使用 showMessage。
+  return ctx
 }
 
 /** 在任意子孙组件中调用，获取消息方法 */

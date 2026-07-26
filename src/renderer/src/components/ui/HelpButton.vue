@@ -34,7 +34,7 @@ function clampPos(left, top, tipW, tipH) {
   const vh = window.innerHeight
   return {
     left: clamp(left, PAD, vw - tipW - PAD),
-    top:  clamp(top,  PAD, vh - tipH - PAD)
+    top: clamp(top, PAD, vh - tipH - PAD)
   }
 }
 
@@ -43,10 +43,14 @@ function rawPos(triggerRect, tipW, tipH, dir) {
   const cx = triggerRect.left + triggerRect.width / 2
   const cy = triggerRect.top + triggerRect.height / 2
   switch (dir) {
-    case 'bottom': return { left: cx - tipW / 2, top: triggerRect.bottom + GAP }
-    case 'right':  return { left: triggerRect.right + GAP, top: cy - tipH / 2 }
-    case 'top':    return { left: cx - tipW / 2, top: triggerRect.top - tipH - GAP }
-    case 'left':   return { left: triggerRect.left - tipW - GAP, top: cy - tipH / 2 }
+    case 'bottom':
+      return { left: cx - tipW / 2, top: triggerRect.bottom + GAP }
+    case 'right':
+      return { left: triggerRect.right + GAP, top: cy - tipH / 2 }
+    case 'top':
+      return { left: cx - tipW / 2, top: triggerRect.top - tipH - GAP }
+    case 'left':
+      return { left: triggerRect.left - tipW - GAP, top: cy - tipH / 2 }
   }
 }
 
@@ -87,7 +91,7 @@ async function onClick(e) {
   // 先用预估尺寸选方向
   let result = pickPosition(rect, 280, 36)
   placement.value = result.dir
-  tipStyle.top  = '-9999px'
+  tipStyle.top = '-9999px'
   tipStyle.left = '-9999px'
   visible.value = true
 
@@ -97,7 +101,7 @@ async function onClick(e) {
   const th = tipRef.value.offsetHeight
   result = pickPosition(rect, tw, th)
   placement.value = result.dir
-  tipStyle.top  = result.top + 'px'
+  tipStyle.top = result.top + 'px'
   tipStyle.left = result.left + 'px'
 }
 
@@ -117,7 +121,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
 
 <template>
   <span ref="triggerRef" class="help-btn-wrap" @click="onClick">
-    <span class="setting-help-btn" aria-label="帮助">?</span>
+    <span class="setting-help-btn" :class="{ 'is-active': visible }" aria-label="帮助">?</span>
   </span>
   <Teleport to="body">
     <Transition name="tooltip-fade">
@@ -127,7 +131,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
         class="help-tooltip"
         :class="'help-tooltip--' + placement"
         :style="{ top: tipStyle.top, left: tipStyle.left }"
-      >{{ text }}</span>
+        >{{ text }}</span
+      >
     </Transition>
   </Teleport>
 </template>
@@ -156,9 +161,17 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
   flex-shrink: 0;
   line-height: 1;
   padding: 0;
-  transition: background 150ms ease, color 150ms ease;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
 }
 .setting-help-btn:hover {
+  background: rgba(128, 128, 128, 0.25);
+  color: var(--text-color);
+}
+/* 打开 tooltip 时固定激活背景色：与 hover 一致且不随悬停变化，关闭后自动恢复。 */
+.setting-help-btn.is-active,
+.setting-help-btn.is-active:hover {
   background: rgba(128, 128, 128, 0.25);
   color: var(--text-color);
 }
@@ -190,34 +203,60 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
   border: 5rem solid transparent;
 }
 .help-tooltip--bottom::after {
-  bottom: 100%; left: 50%; transform: translateX(-50%);
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
   border-bottom-color: rgb(var(--bg-color) / var(--glass-tooltip-opacity));
 }
 .help-tooltip--right::after {
-  right: 100%; top: 50%; transform: translateY(-50%);
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
   border-right-color: rgb(var(--bg-color) / var(--glass-tooltip-opacity));
 }
 .help-tooltip--top::after {
-  top: 100%; left: 50%; transform: translateX(-50%);
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
   border-top-color: rgb(var(--bg-color) / var(--glass-tooltip-opacity));
 }
 .help-tooltip--left::after {
-  left: 100%; top: 50%; transform: translateY(-50%);
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
   border-left-color: rgb(var(--bg-color) / var(--glass-tooltip-opacity));
 }
 
 /* ---- 过渡 ---- */
-.tooltip-fade-enter-active { transition: opacity 180ms ease, transform 180ms ease; }
-.tooltip-fade-leave-active { transition: opacity 120ms ease, transform 120ms ease; }
+.tooltip-fade-enter-active {
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+.tooltip-fade-leave-active {
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
 .tooltip-fade-enter-from,
-.tooltip-fade-leave-to { opacity: 0; }
+.tooltip-fade-leave-to {
+  opacity: 0;
+}
 
 .help-tooltip--bottom.tooltip-fade-enter-from,
-.help-tooltip--bottom.tooltip-fade-leave-to { transform: translateY(-4rem); }
+.help-tooltip--bottom.tooltip-fade-leave-to {
+  transform: translateY(-4rem);
+}
 .help-tooltip--right.tooltip-fade-enter-from,
-.help-tooltip--right.tooltip-fade-leave-to { transform: translateX(-4rem); }
+.help-tooltip--right.tooltip-fade-leave-to {
+  transform: translateX(-4rem);
+}
 .help-tooltip--top.tooltip-fade-enter-from,
-.help-tooltip--top.tooltip-fade-leave-to { transform: translateY(4rem); }
+.help-tooltip--top.tooltip-fade-leave-to {
+  transform: translateY(4rem);
+}
 .help-tooltip--left.tooltip-fade-enter-from,
-.help-tooltip--left.tooltip-fade-leave-to { transform: translateX(4rem); }
+.help-tooltip--left.tooltip-fade-leave-to {
+  transform: translateX(4rem);
+}
 </style>

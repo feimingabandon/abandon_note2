@@ -1515,6 +1515,25 @@ app.whenReady().then(async () => {
       .replaceAll("'", '&apos;')
   }
 
+  /**
+   * 系统通知发送失败时的降级处理：记录日志 + 下发应用内消息条。
+   * `.show()` 后系统层失败（如 macOS 未签名/权限关闭）会异步触发 `failed`。
+   * @param {string} scene - 场景标识（仅用于日志）
+   * @param {string} title - 原通知标题
+   * @param {string} body - 原通知正文
+   * @param {*} error - failed 事件回传的错误
+   */
+  function notifyNotificationFailure(scene, title, body, error) {
+    console.error(`[notification] ${scene}发送失败，降级为应用内消息条:`, error)
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    try {
+      const text = `${title}：${String(body || '')}`.trim().slice(0, 80) || title
+      mainWindow.webContents.send('app:message', { type: 'warning', text, duration: 6000 })
+    } catch (e) {
+      console.error('[notification] 应用内消息条下发失败:', e?.message || e)
+    }
+  }
+
   function sendNotify(body, { title = '便签提醒', silent = false, noteId = null } = {}) {
     const summary = String(body || '') || '（空内容）'
     const parsedNoteId = Number(noteId)
@@ -1537,13 +1556,44 @@ app.whenReady().then(async () => {
       </toast>`
       const notification = new Notification({ toastXml })
       notification.on('failed', (_event, error) => {
-        console.error('[notification] Windows 富通知发送失败:', error)
+        notifyNotificationFailure('Windows 富通知', title, summary, error)
       })
       notification.show()
       return
     }
 
-    new Notification({ title, body: summary, silent, icon }).show()
+    // 非 Windows（mac/Linux）或缺少 noteId：使用跨平台 Notification。
+    // 有有效便签 id 时附加动作按钮，形成与 Windows 富通知等效的交互：
+    //   点击正文 → 打开主窗口并聚焦；点击「稍后提醒」→ 延后 10 分钟。
+    // 注意：macOS 需应用签名后动作按钮才生效，未签名会触发 failed → 降级应用内消息条。
+    const hasNote = Number.isInteger(parsedNoteId) && parsedNoteId > 0
+    const options = { title, body: summary, silent, icon }
+    if (hasNote) {
+      options.actions = [{ type: 'button', text: '稍后提醒（10分钟）' }]
+      options.closeButtonText = '明白'
+    }
+    const notification = new Notification(options)
+    if (hasNote) {
+      notification.on('click', () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show()
+          mainWindow.focus()
+        }
+      })
+      notification.on('action', (_event, index) => {
+        if (index !== 0) return
+        const result = snoozeNote(parsedNoteId, SNOOZE_DELAY_MS)
+        if (result) {
+          console.log(`[notification] 便签 #${parsedNoteId} 已延后 10 分钟提醒`)
+        } else {
+          console.log(`[notification] 便签 #${parsedNoteId} 已非进行中，忽略延后提醒`)
+        }
+      })
+    }
+    notification.on('failed', (_event, error) => {
+      notifyNotificationFailure('系统通知', title, summary, error)
+    })
+    notification.show()
   }
 
   function trySendNotify(body, options) {
@@ -1557,9 +1607,10 @@ app.whenReady().then(async () => {
     execute: () => {
       const result = activateNotes()
       for (const note of result.notified) {
-        sendNotify(note.content, { noteId: note.id })
-        const preview = (note.content || '').trim().slice(0, 10) || '空内容'
-        console.log(`[activation-notify]「${preview}」便签已发送系统通知`)
+        if (trySendNotify(note.content, { noteId: note.id })) {
+          const preview = (note.content || '').trim().slice(0, 10) || '空内容'
+          console.log(`[activation-notify]「${preview}」便签已发送系统通知`)
+        }
       }
       if (result.count > 0 && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('notes:changed', { reason: 'activation' })
@@ -1574,8 +1625,9 @@ app.whenReady().then(async () => {
     execute: () => {
       const due = claimDueSnoozedNotes()
       for (const note of due) {
-        sendNotify(note.content, { noteId: note.id })
-        console.log(`[snoozed-notify] 便签 #${note.id} 已再次发送系统通知`)
+        if (trySendNotify(note.content, { noteId: note.id })) {
+          console.log(`[snoozed-notify] 便签 #${note.id} 已再次发送系统通知`)
+        }
       }
     }
   })
@@ -1634,6 +1686,10 @@ app.whenReady().then(async () => {
   })
 
   // 启动调度器
+  // 调度器终极告警通知若在 macOS 未签名等场景发送失败，同样降级为应用内消息条。
+  scheduler.onAlertNotifyFailed = (title, body, error) => {
+    notifyNotificationFailure('调度器告警通知', title, body, error)
+  }
   scheduler.start()
   console.log('[scheduler] 调度器已启动')
 

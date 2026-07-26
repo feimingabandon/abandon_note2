@@ -23,12 +23,13 @@ import NoteList from './components/list/NoteList.vue'
 import NoteEditor from './components/note/NoteEditor.vue'
 import ActionBar from './components/list/ActionBar.vue'
 import TemplatePage from './components/template/TemplatePage.vue'
+import HelpPage from './components/help/HelpPage.vue'
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { DEFAULT_SETTINGS } from '../../shared/settings-schema.js'
 
 // 注册全局应用内消息通知能力（子孙组件通过 useMessage() 获取）
-createMessageProvider()
+const { showMessage } = createMessageProvider()
 
 /** 设置面板显隐状态 */
 const showSettings = ref(false)
@@ -37,6 +38,12 @@ const templatePanelActive = ref(false)
 const templateBlurActive = ref(false)
 const templatePhase = ref('closed') // closed | opening | open | closing
 const templatePanelRef = ref(null)
+// 帮助页复用与模版页完全一致的滑入状态机，二者互斥（同一时刻只开一个）。
+const helpRendered = ref(false)
+const helpPanelActive = ref(false)
+const helpBlurActive = ref(false)
+const helpPhase = ref('closed') // closed | opening | open | closing
+const helpPanelRef = ref(null)
 /** 与面板卸载动画解耦，使关闭动作开始时即可恢复底层清晰度。 */
 const settingsBlurActive = ref(false)
 /** 编辑弹窗沿用设置页策略：模糊底层场景，弹窗本身保持清晰。 */
@@ -50,6 +57,7 @@ function openSettings() {
 
 async function openTemplates() {
   if (templatePhase.value === 'opening' || templatePhase.value === 'open') return
+  closeHelp()
   templatePhase.value = 'opening'
   templateBlurActive.value = true
   if (!templatesRendered.value) {
@@ -84,6 +92,43 @@ function toggleTemplates() {
   else closeTemplates()
 }
 
+async function openHelp() {
+  if (helpPhase.value === 'opening' || helpPhase.value === 'open') return
+  closeTemplates()
+  helpPhase.value = 'opening'
+  helpBlurActive.value = true
+  if (!helpRendered.value) {
+    helpRendered.value = true
+    await nextTick()
+    // 明确提交面板初始位置，避免挂载与进入态被合并到同一帧。
+    void helpPanelRef.value?.offsetWidth
+  }
+  if (helpPhase.value !== 'opening') return
+  helpPanelActive.value = true
+}
+
+function closeHelp() {
+  if (helpPhase.value === 'closed' || helpPhase.value === 'closing') return
+  helpPhase.value = 'closing'
+  helpPanelActive.value = false
+  helpBlurActive.value = false
+}
+
+function onHelpTransitionEnd(event) {
+  if (event.target !== helpPanelRef.value || event.propertyName !== 'transform') return
+  if (helpPhase.value === 'opening' && helpPanelActive.value) {
+    helpPhase.value = 'open'
+  } else if (helpPhase.value === 'closing' && !helpPanelActive.value) {
+    helpRendered.value = false
+    helpPhase.value = 'closed'
+  }
+}
+
+function toggleHelp() {
+  if (helpPhase.value === 'closed' || helpPhase.value === 'closing') openHelp()
+  else closeHelp()
+}
+
 /** 当前选中的便签 */
 const selectedNote = ref(null)
 const noteEditorRef = ref(null)
@@ -112,6 +157,7 @@ let wallpaperReleaseTimer = null
 
 let stopSettingsListener = null
 let stopNotesChangedListener = null
+let stopAppMessageListener = null
 
 function applyAppSettingsSnapshot(snapshot) {
   applySettingsSnapshot(snapshot)
@@ -197,6 +243,12 @@ onMounted(async () => {
     if (event?.reason === 'note-data-cleared') selectedNote.value = null
   })
 
+  // 主进程系统通知发送失败（如 macOS 未签名）时降级为应用内消息条。
+  stopAppMessageListener = window.api.onAppMessage?.((payload) => {
+    if (!payload?.text) return
+    showMessage(payload.type || 'warning', payload.text, payload.duration ?? 2500)
+  })
+
   // 通知主进程渲染已完成，可以安全地显示窗口了
   // 主进程收到后会调用 mainWindow.show()
   window.api.rendererReady()
@@ -254,6 +306,7 @@ async function onCreateNote() {
 onUnmounted(() => {
   stopSettingsListener?.()
   stopNotesChangedListener?.()
+  stopAppMessageListener?.()
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
   if (editorBlurReleaseTimer) clearTimeout(editorBlurReleaseTimer)
@@ -306,8 +359,15 @@ onUnmounted(() => {
           <button class="titlebar-btn titlebar-btn-settings" title="设置" @click="openSettings">
             <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
           </button>
-          <!-- 帮助按钮（预留，暂未绑定功能） -->
-          <button class="titlebar-btn titlebar-btn-help" title="帮助">
+          <!-- 帮助按钮：从右滑入帮助中心（与循环模版互斥） -->
+          <button
+            class="titlebar-btn titlebar-btn-help"
+            :class="{ 'is-active': helpPanelActive }"
+            :title="helpPanelActive ? '关闭帮助' : '帮助'"
+            aria-controls="help-workspace"
+            :aria-expanded="helpPanelActive"
+            @click="toggleHelp"
+          >
             <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
           </button>
         </div>
@@ -316,8 +376,8 @@ onUnmounted(() => {
         <!-- 主内容区域，flex:1 占据导航栏下方空间。 -->
         <main
           class="content"
-          :class="{ 'is-template-open': templateBlurActive }"
-          :inert="templatesRendered"
+          :class="{ 'is-template-open': templateBlurActive, 'is-help-open': helpBlurActive }"
+          :inert="templatesRendered || helpRendered"
         >
           <ActionBar
             ref="actionBarRef"
@@ -339,6 +399,20 @@ onUnmounted(() => {
             @transitionend="onTemplateTransitionEnd"
           >
             <TemplatePage />
+          </div>
+        </div>
+
+        <div v-if="helpRendered" class="app-help-wrapper">
+          <div
+            id="help-workspace"
+            ref="helpPanelRef"
+            class="app-help-panel"
+            :class="{ active: helpPanelActive }"
+            role="region"
+            aria-label="帮助中心"
+            @transitionend="onHelpTransitionEnd"
+          >
+            <HelpPage />
           </div>
         </div>
       </div>
@@ -520,6 +594,10 @@ onUnmounted(() => {
   filter: blur(var(--glass-blur-base));
   will-change: filter;
 }
+.content.is-help-open {
+  filter: blur(var(--glass-blur-base));
+  will-change: filter;
+}
 
 .app-template-wrapper {
   position: absolute;
@@ -543,6 +621,32 @@ onUnmounted(() => {
   will-change: transform;
 }
 .app-template-panel.active {
+  transform: translateX(0);
+}
+
+/* 帮助面板与模版面板共用滑入规则；z-index 略高以保证互斥切换时覆盖在上。 */
+.app-help-wrapper {
+  position: absolute;
+  z-index: 16000;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: auto;
+}
+.app-help-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-color: rgb(var(--bg-color) / var(--glass-opacity-base));
+  box-shadow: -12px 0 36px rgba(0, 0, 0, 0.16);
+  transform: translateX(100%);
+  transition: transform 360ms var(--ease-standard);
+  will-change: transform;
+}
+.app-help-panel.active {
   transform: translateX(0);
 }
 /* 搜索框间距 */
