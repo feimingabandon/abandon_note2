@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { createNotesSchema } from '../src/main/db/db-schema.js'
+import {
+  DATABASE_SCHEMA_VERSION,
+  createDatabaseSchema
+} from '../src/main/db/db-schema.js'
 import { clearDb, setDb } from '../src/main/db/db-connection.js'
 import { createTag, deleteTag, getTagUsage } from '../src/main/db/db-tags.js'
 import {
@@ -23,11 +26,19 @@ function localTs(year, month, day, hour = 0, minute = 0, second = 0) {
 
 const db = new Database(':memory:')
 db.pragma('foreign_keys = ON')
-createNotesSchema(db)
+createDatabaseSchema(db)
 setDb(db)
 const originalConsoleError = console.error
 
 try {
+  assert.equal(db.pragma('user_version', { simple: true }), DATABASE_SCHEMA_VERSION)
+  assert.deepEqual(
+    db
+      .prepare("PRAGMA table_info('app_settings')")
+      .all()
+      .map((column) => column.name),
+    ['window_name', 'type', 'key', 'value', 'remark', 'created_at', 'updated_at']
+  )
   const noteColumns = db
     .prepare("PRAGMA table_info('notes')")
     .all()

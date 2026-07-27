@@ -5,7 +5,7 @@
  *   1. 初始化 SQLite 数据库连接（使用 better-sqlite3）
  *   2. 提供 app_settings 表的 CRUD 操作
  *   3. 提供窗口几何信息（位置/尺寸）的持久化读写
- *   4. 自动迁移旧表结构（新增 remark 列等）
+ *   4. 创建首个正式版本的最终数据库结构
  *
  * 数据库文件存储在 Electron 的 userData 目录下，名为 app.db
  * 使用 WAL 模式提升并发读写性能
@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { readdir, rm } from 'fs/promises'
 import { randomUUID } from 'crypto'
 import { clearDb, getDb as getConnectionDb, setDb } from './db-connection.js'
-import { createNotesSchema } from './db-schema.js'
+import { createDatabaseSchema } from './db-schema.js'
 import { resolveImagePath } from './db-images.js'
 
 /** 数据库实例引用，整个应用生命周期内复用 */
@@ -28,9 +28,8 @@ let db = null
  * 初始化数据库
  * - 在 userData 目录下创建/打开 app.db
  * - 启用 WAL (Write-Ahead Logging) 模式，提升写入性能
- * - 自动检测旧表结构，若缺少 window_name 字段则删除旧表重建
- * - 创建 app_settings 表（如果不存在）
- * - 创建便签模块所需所有表（note_templates、notes 等）
+ * - 一次性创建首个正式版本的完整数据库结构
+ * - 写入 SQLite user_version，供正式发布后的显式迁移使用
  */
 export function initDatabase() {
   const dbPath = join(app.getPath('userData'), 'app.db')
@@ -42,49 +41,7 @@ export function initDatabase() {
   db.pragma('cache_size = -8000')
   db.pragma('foreign_keys = ON')
 
-  // 旧表兼容性处理
-  let tableInfo = db.prepare("PRAGMA table_info('app_settings')").all()
-  const hasWindowName = tableInfo.some((col) => col.name === 'window_name')
-  if (tableInfo.length > 0 && !hasWindowName) {
-    db.exec('DROP TABLE app_settings')
-    tableInfo = []
-  }
-
-  // 创建 app_settings 表
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS app_settings (
-      window_name TEXT NOT NULL,
-      type TEXT NOT NULL,
-      key TEXT NOT NULL,
-      value TEXT,
-      remark TEXT DEFAULT '',
-      created_at INTEGER,
-      updated_at INTEGER,
-      PRIMARY KEY (window_name, key)
-    );
-  `)
-
-  // 增量迁移：为已存在的表添加 remark 列
-  const hasRemark = tableInfo.some((col) => col.name === 'remark')
-  if (tableInfo.length > 0 && !hasRemark) {
-    db.exec("ALTER TABLE app_settings ADD COLUMN remark TEXT DEFAULT ''")
-  }
-
-  // 便签模块建表（在 app_settings 之后，可安全重复调用）
-  createNotesSchema(db)
-
-  // 早期版本未启用外键，可能遗留已不存在便签或标签的关联记录。
-  // 先清理存量脏数据，之后由 foreign_keys 保证新增写入和删除级联的一致性。
-  db.prepare(
-    `DELETE FROM note_tags
-     WHERE note_id NOT IN (SELECT id FROM notes)
-        OR tag_name NOT IN (SELECT name FROM tags)`
-  ).run()
-  db.prepare(
-    `DELETE FROM template_tags
-     WHERE template_id NOT IN (SELECT id FROM note_templates)
-        OR tag_name NOT IN (SELECT name FROM tags)`
-  ).run()
+  createDatabaseSchema(db)
 }
 
 export function closeDatabase() {
@@ -133,11 +90,6 @@ export function setSettingsBatch(windowName, settings) {
 /** 清空 app_settings；业务表和附件目录不受影响。 */
 export function clearAllSettings() {
   return db.prepare('DELETE FROM app_settings').run().changes
-}
-
-/** 删除所有窗口下的旧设置键，供不再持久化的设置做一次性兼容清理。 */
-export function deleteSettingsByKey(key) {
-  db.prepare('DELETE FROM app_settings WHERE key = ?').run(key)
 }
 
 const ATTACHMENT_OPERATION_MANIFEST = 'operation.json'
@@ -207,11 +159,6 @@ async function recoverAttachmentStagingDirectory(stagingDirectory) {
       continue
     }
 
-    // 旧版 delete-* 文件没有记录原路径，无法安全恢复；宁可保留也不能再次永久删除。
-    if (entry.name.startsWith('delete-')) {
-      console.warn('[images] 发现旧版待删除附件，因缺少原路径而保留:', path)
-      continue
-    }
     await rm(path, { force: true })
   }
 }
@@ -233,40 +180,6 @@ async function recoverResetOperation(operationDirectory) {
   await rm(operationDirectory, { recursive: true, force: true })
 }
 
-async function recoverLegacyAttachmentDeletion(entry) {
-  const userDataDir = app.getPath('userData')
-  const path = join(userDataDir, entry.name)
-  const noteMatch = /^\.attachments-deleting-note-(\d+)-/.exec(entry.name)
-  if (noteMatch) {
-    const noteId = Number(noteMatch[1])
-    const noteExists = getConnectionDb().prepare('SELECT 1 FROM notes WHERE id = ?').get(noteId)
-    if (!noteExists) {
-      await rm(path, { recursive: true, force: true })
-      return
-    }
-    const originalPath = join(userDataDir, 'attachments', 'images', String(noteId))
-    if (existsSync(originalPath)) {
-      console.warn('[images] 便签附件目录已存在，保留旧版待恢复目录:', path)
-      return
-    }
-    mkdirSync(dirname(originalPath), { recursive: true })
-    renameSync(path, originalPath)
-    return
-  }
-
-  // 旧版全量重置目录：仍有业务记录说明 SQLite 删除没有提交，应恢复原目录。
-  const attachmentsDir = join(userDataDir, 'attachments')
-  if (businessDataExists() && !existsSync(attachmentsDir)) {
-    renameSync(path, attachmentsDir)
-    return
-  }
-  if (!businessDataExists()) {
-    await rm(path, { recursive: true, force: true })
-    return
-  }
-  console.warn('[clearNoteData] 附件目录已存在，保留旧版待恢复目录:', path)
-}
-
 /** 启动时恢复未提交的附件操作，并清理已经提交的暂存数据。 */
 export async function cleanupPendingAttachmentDirs() {
   const userDataDir = app.getPath('userData')
@@ -279,10 +192,6 @@ export async function cleanupPendingAttachmentDirs() {
     }
     if (entry.name.startsWith('.attachments-deleting-reset-')) {
       await recoverResetOperation(join(userDataDir, entry.name))
-      continue
-    }
-    if (entry.name.startsWith('.attachments-deleting-')) {
-      await recoverLegacyAttachmentDeletion(entry)
     }
   }
 }

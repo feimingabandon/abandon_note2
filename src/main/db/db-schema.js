@@ -1,4 +1,26 @@
-/** 创建最终业务表结构；不包含 app_settings。 */
+/** 首个正式版本的数据库结构版本。后续公开版本只能通过显式迁移递增。 */
+export const DATABASE_SCHEMA_VERSION = 1
+
+/** 创建首个正式版本的完整数据库结构。 */
+export function createDatabaseSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      window_name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT,
+      remark TEXT DEFAULT '',
+      created_at INTEGER,
+      updated_at INTEGER,
+      PRIMARY KEY (window_name, key)
+    );
+  `)
+
+  createNotesSchema(db)
+  db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
+}
+
+/** 创建最终业务表结构；供完整初始化和隔离业务表测试复用。 */
 export function createNotesSchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS notes (

@@ -22,7 +22,6 @@ import {
   getAllSettings,
   setSettingsBatch,
   clearAllSettings,
-  deleteSettingsByKey,
   cleanupPendingAttachmentDirs,
   clearNoteData
 } from './db/db.js'
@@ -316,33 +315,6 @@ function refreshResolvedSettings({ incrementRevision = false } = {}) {
   const revisionChanged = incrementRevision || changed
   if (revisionChanged) settingsRevision += 1
   return revisionChanged
-}
-
-/**
- * 将旧版“出厂外观值”平滑升级为当前 Apple 风格默认值。
- *
- * app_settings 只保存用户实际改动，缺失值本来就会由 schema 回退；这里仅迁移
- * 明确仍等于旧默认值的记录，绝不覆盖用户已选定的字号或文字颜色。
- */
-function migrateAppearanceDefaults() {
-  const rows = getAllSettings(WINDOW_NAME)
-  const byKey = new Map(rows.map((row) => [row.key, row]))
-  const entries = []
-  const fontSizeRow = byKey.get('font_size_base')
-  const textColorRow = byKey.get('text_color')
-
-  if (Number(fontSizeRow?.value) === 18) {
-    entries.push(serializeSetting('css.fontSizeBase', DEFAULT_SETTINGS.css.fontSizeBase))
-  }
-  if (
-    String(textColorRow?.value || '')
-      .trim()
-      .toLowerCase() === '#000000'
-  ) {
-    entries.push(serializeSetting('css.textColor', DEFAULT_SETTINGS.css.textColor))
-  }
-
-  if (entries.length > 0) setSettingsBatch(WINDOW_NAME, entries)
 }
 
 function readAutoStartRuntime() {
@@ -1226,24 +1198,8 @@ app.whenReady().then(async () => {
   try {
     await Promise.all([cleanupPendingAttachmentDirs(), cleanupPendingWallpaperFiles()])
   } catch (error) {
-    console.warn('[storage] 清理历史暂存目录失败:', error.message)
+    console.warn('[storage] 恢复未完成的存储操作失败:', error.message)
   }
-  // 开机自启以操作系统为唯一权威；移除旧版本遗留的数据库副本。
-  deleteSettingsByKey('auto_start')
-  // 清理已退出产品设置模型的历史键，避免不可见状态继续影响画面。
-  for (const key of [
-    'blur_opacity',
-    'blur_tint_r',
-    'blur_tint_g',
-    'blur_tint_b',
-    'bg_saturation',
-    'bg_border',
-    'wallpaper_overlay_opacity',
-    'wallpaper_overlay_tone'
-  ]) {
-    deleteSettingsByKey(key)
-  }
-  migrateAppearanceDefaults()
   refreshResolvedSettings({ incrementRevision: true })
   handleProtocolArgs(process.argv)
 
