@@ -6,6 +6,8 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('screenshot', {
+  /** 上报截图 renderer 的结构化错误。 */
+  reportLog: (payload) => ipcRenderer.send('logs:write', payload),
   /** 确定截图，只回传逻辑像素选区；原始图片由主进程裁切。 */
   confirm: (selection) => ipcRenderer.send('screenshot:confirm', selection),
   /** 取消截图 */

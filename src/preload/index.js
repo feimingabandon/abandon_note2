@@ -23,6 +23,16 @@ const api = {
     systemNotifications: getSystemNotificationCapability(process.platform)
   },
 
+  // ---- 本地日志与诊断 ----
+  /** 上报 renderer 结构化日志；主进程负责落盘。 */
+  reportLog: (payload) => ipcRenderer.send('logs:write', payload),
+  /** 分页读取本机日志，只供设置页诊断查看器使用。 */
+  queryLogs: (query) => ipcRenderer.invoke('logs:query', query),
+  /** 使用系统文件管理器打开日志目录。 */
+  openLogsFolder: () => ipcRenderer.invoke('logs:open-folder'),
+  /** 导出完整诊断日志。 */
+  exportLogs: () => ipcRenderer.invoke('logs:export'),
+
   // ---- 窗口控制（单向通信，无需返回值） ----
   /** 关闭当前窗口 */
   closeWindow: () => ipcRenderer.send('window-close'),

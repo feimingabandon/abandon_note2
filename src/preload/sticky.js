@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('stickyAPI', {
+  reportLog: (payload) => ipcRenderer.send('logs:write', payload),
   getState: () => ipcRenderer.invoke('sticky:get-state'),
   ready: () => ipcRenderer.invoke('sticky:ready'),
   close: () => ipcRenderer.invoke('sticky:close'),

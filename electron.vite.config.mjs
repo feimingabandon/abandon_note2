@@ -3,7 +3,15 @@ import { defineConfig } from 'electron-vite'
 import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
-  main: {},
+  main: {
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve('src/main/bootstrap.js')
+        }
+      }
+    }
+  },
   preload: {
     build: {
       rollupOptions: {

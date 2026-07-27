@@ -3,6 +3,7 @@
  */
 
 import { join } from 'path'
+import { app } from 'electron'
 
 let koffi = null
 let lib = null
@@ -55,9 +56,9 @@ function getDllPath() {
   }
 
   const devs = [
-    join(__dirname, '..', '..', 'native_blur', 'build', 'bin', 'blur_engine.dll'),
-    join(__dirname, '..', '..', 'native_blur', 'build', 'bin', 'Release', 'blur_engine.dll'),
-    join(__dirname, '..', '..', 'native_blur', 'build', 'bin', 'Debug', 'blur_engine.dll')
+    join(app.getAppPath(), 'native_blur', 'build', 'bin', 'blur_engine.dll'),
+    join(app.getAppPath(), 'native_blur', 'build', 'bin', 'Release', 'blur_engine.dll'),
+    join(app.getAppPath(), 'native_blur', 'build', 'bin', 'Debug', 'blur_engine.dll')
   ]
   for (const p of devs) {
     try {

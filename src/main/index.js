@@ -9,7 +9,7 @@
  */
 
 import * as Electron from 'electron'
-const { app, shell, BrowserWindow, ipcMain, screen, Tray, Menu, Notification, desktopCapturer } =
+const { app, shell, BrowserWindow, screen, Tray, Menu, Notification, desktopCapturer, dialog } =
   Electron
 
 import { join, resolve } from 'path'
@@ -112,6 +112,18 @@ import { sendNotificationSafely } from './services/notification-guard.js'
 import { ElectronStickyService } from './sticky/ElectronStickyService.js'
 import { buildStickyTrayTemplate } from './sticky/StickyTrayMenu.js'
 import { constrainMainWindowBounds } from './window-bounds.js'
+import { ipcMain } from './logging/ipc-main.js'
+import {
+  exportLogs,
+  flushLogs,
+  getLogDirectory,
+  getLogFiles,
+  logger,
+  normalizeRendererLog,
+  queryLogs,
+  writeLog
+} from './logging/logger.js'
+import { attachWindowLogging, setWindowLogContext } from './logging/window-capture.js'
 import {
   DEFAULT_SETTINGS,
   createDefaultSettings,
@@ -133,6 +145,9 @@ const WINDOWS_APP_USER_MODEL_ID = app.isPackaged ? APP_ID : APP_NAME
 const APP_PROTOCOL = 'abandon-note'
 const SNOOZE_DELAY_MS = 10 * 60 * 1000
 const SYSTEM_NOTIFICATION_CAPABILITY = getSystemNotificationCapability(process.platform)
+const APP_ROOT = app.getAppPath()
+const PRELOAD_ROOT = join(APP_ROOT, 'out', 'preload')
+const RENDERER_ROOT = join(APP_ROOT, 'out', 'renderer')
 const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'appearance.titlebarStyle',
   'css.bgColor',
@@ -759,12 +774,13 @@ function createWindow() {
     ...(process.platform === 'darwin' ? { vibrancy: 'under-window' } : {}),
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: join(PRELOAD_ROOT, 'index.js'),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false
     }
   })
+  setWindowLogContext(mainWindow, { role: 'main' })
 
   // 固定缩放因子为 1.0，防止系统 DPI 缩放影响布局
   mainWindow.webContents.setZoomFactor(1.0)
@@ -889,7 +905,7 @@ function createWindow() {
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(join(RENDERER_ROOT, 'index.html'))
   }
 }
 
@@ -997,12 +1013,13 @@ function createTriggerWindow(side) {
     focusable: false,
     hasShadow: false,
     webPreferences: {
-      preload: join(__dirname, '../preload/trigger.js'),
+      preload: join(PRELOAD_ROOT, 'trigger.js'),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false
     }
   })
+  setWindowLogContext(triggerWin, { role: 'trigger' })
 
   const html = `<body style="margin:0;height:100%" onmouseenter="api.triggerEnter()">`
   triggerWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {})
@@ -1233,9 +1250,55 @@ app.whenReady().then(async () => {
   // 监听新窗口创建事件，自动注册快捷键优化器
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
+    attachWindowLogging(window)
   })
 
   // ---- IPC 通道注册 ----
+
+  ipcMain.on('logs:write', (event, payload) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const normalized = normalizeRendererLog(payload)
+    writeLog({
+      ...normalized,
+      windowRole: win === mainWindow ? 'main' : undefined,
+      webContentsId: event.sender.id
+    })
+  })
+
+  ipcMain.handle('logs:query', async (event, query) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('无权读取应用日志')
+    return {
+      ...(await queryLogs(query)),
+      files: getLogFiles().map((file) => ({
+        name: file.name,
+        size: file.size,
+        modifiedAt: file.modifiedAt
+      }))
+    }
+  })
+
+  ipcMain.handle('logs:open-folder', async (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('无权打开日志目录')
+    const errorMessage = await shell.openPath(getLogDirectory())
+    if (errorMessage) throw new Error(errorMessage)
+    return true
+  })
+
+  ipcMain.handle('logs:export', async (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('无权导出应用日志')
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: '导出诊断日志',
+      defaultPath: `abandon-note-diagnostics-${new Date().toISOString().slice(0, 10)}.jsonl`,
+      filters: [{ name: 'JSON Lines', extensions: ['jsonl'] }]
+    })
+    if (result.canceled || !result.filePath) return { canceled: true }
+    await exportLogs(result.filePath, {
+      logDirectory: getLogDirectory(),
+      crashDumpsPath: app.getPath('crashDumps')
+    })
+    logger.info('logs.export', '诊断日志已导出', { targetPath: result.filePath })
+    return { canceled: false, filePath: result.filePath }
+  })
 
   // 【渲染就绪】渲染进程初始化完成后发送此消息，主进程收到后显示窗口
   ipcMain.on('renderer-ready', (event) => {
@@ -1543,8 +1606,8 @@ app.whenReady().then(async () => {
     getMainWindow: () => mainWindow,
     getNoteById,
     getDefaultAppearance: () => resolvedSettings.sticky,
-    preloadPath: join(__dirname, '../preload/sticky.js'),
-    rendererFile: join(__dirname, '../renderer/sticky.html'),
+    preloadPath: join(PRELOAD_ROOT, 'sticky.js'),
+    rendererFile: join(RENDERER_ROOT, 'sticky.html'),
     rendererUrl:
       is.dev && process.env.ELECTRON_RENDERER_URL
         ? `${process.env.ELECTRON_RENDERER_URL}/sticky.html`
@@ -2303,12 +2366,13 @@ app.whenReady().then(async () => {
         fullscreenable: false,
         hasShadow: false,
         webPreferences: {
-          preload: join(__dirname, '../preload/screenshot.js'),
+          preload: join(PRELOAD_ROOT, 'screenshot.js'),
           sandbox: true,
           contextIsolation: true,
           nodeIntegration: false
         }
       })
+      setWindowLogContext(win, { role: 'screenshot' })
       screenshotWindow = win
 
       let settled = false
@@ -2521,6 +2585,7 @@ app.on('before-quit', () => {
     tray.destroy()
     tray = null
   }
+  flushLogs()
 })
 
 // 所有窗口关闭时不退出应用，保持在托盘中运行

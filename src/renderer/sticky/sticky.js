@@ -1,3 +1,7 @@
+import { installBrowserErrorCapture } from '../src/utils/installErrorCapture.js'
+
+installBrowserErrorCapture(window.stickyAPI, { scope: 'sticky-renderer' })
+
 const contentElement = document.querySelector('[data-content]')
 const errorElement = document.querySelector('[data-error]')
 const fontDownButton = document.querySelector('[data-action="font-down"]')

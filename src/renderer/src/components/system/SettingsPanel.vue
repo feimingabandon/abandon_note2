@@ -23,6 +23,7 @@ import AppSlider from '../ui/AppSlider.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import WallpaperSettings from '../wallpaper/WallpaperSettings.vue'
+import LogViewerDialog from './LogViewerDialog.vue'
 import { useMessage } from '../../composables/useMessage.js' // 消息弹窗
 import { applyGlassBaseSettings, applySettingsSnapshot } from '../../utils/applySettingsSnapshot.js'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
@@ -75,6 +76,7 @@ const panelRef = ref(null)
 const closeButtonRef = ref(null)
 const panelHeight = ref(70) // 面板高度百分比，默认 70%
 const isResetting = ref(false)
+const showLogViewer = ref(false)
 
 /** 关闭动画定时器 ID，用于取消竞态关闭 */
 let closeTimer = null
@@ -1387,6 +1389,12 @@ const onConfirmResetSettings = async () => {
             </div>
 
             <div class="setting-item setting-item-full">
+              <BaseButton variant="default" style="width: 100%" @click="showLogViewer = true">
+                查看日志
+              </BaseButton>
+            </div>
+
+            <div class="setting-item setting-item-full">
               <BaseButton
                 variant="danger"
                 style="width: 100%"
@@ -1568,6 +1576,7 @@ const onConfirmResetSettings = async () => {
       variant="default"
       @confirm="onConfirmResetSettings"
     />
+    <LogViewerDialog v-model:visible="showLogViewer" />
   </Teleport>
 </template>
 

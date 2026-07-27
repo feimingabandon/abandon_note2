@@ -1,5 +1,7 @@
-import { BrowserWindow, ipcMain, screen } from 'electron'
+import { BrowserWindow, screen } from 'electron'
 import { pathToFileURL } from 'url'
+import { ipcMain } from '../logging/ipc-main.js'
+import { setWindowLogContext } from '../logging/window-capture.js'
 import { StickyService } from './StickyService.js'
 import { StickyDisplayManager } from './StickyDisplayManager.js'
 import {
@@ -166,6 +168,7 @@ export class ElectronStickyService extends StickyService {
         backgroundThrottling: true
       }
     })
+    setWindowLogContext(win, { role: 'sticky', stickyId: id, noteId: normalizedNoteId })
 
     const entry = {
       id,
