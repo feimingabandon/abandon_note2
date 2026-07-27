@@ -19,6 +19,12 @@ const props = defineProps({
 
 const emit = defineEmits(['saved', 'cancel'])
 const { showMessage } = useMessage()
+const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
+  supported: true,
+  reason: ''
+}
+const systemNotificationsSupported = systemNotificationCapability.supported
+const systemNotificationUnavailableReason = systemNotificationCapability.reason
 
 const content = ref('')
 const status = ref('initialized')
@@ -54,7 +60,7 @@ function createSnapshot(note) {
     content: note.content || '',
     status: note.status,
     effectiveAt: formatDateTime(note.effective_at),
-    notifyEnabled: !!note.notify_enabled,
+    notifyEnabled: systemNotificationsSupported && !!note.notify_enabled,
     isPinned: !!note.is_pinned,
     tagNames: normalizedTags(note.tags?.map((tag) => tag.name) || [])
   }
@@ -104,6 +110,7 @@ const scheduleHelp = computed(() => {
 })
 
 const notifyHelp = computed(() => {
+  if (!systemNotificationsSupported) return systemNotificationUnavailableReason
   if (status.value === 'initialized') return '初始化状态可以修改系统提醒设置。'
   return '便签进入当前状态后，系统提醒设置不可修改。'
 })
@@ -170,7 +177,7 @@ async function handleSave() {
         content: text,
         status: status.value,
         effectiveAt: effectiveTimestamp,
-        notifyEnabled: notifyEnabled.value,
+        notifyEnabled: systemNotificationsSupported && notifyEnabled.value,
         isPinned: isPinned.value
       },
       tagNames: [...tagNames.value],
@@ -216,9 +223,17 @@ defineExpose({ requestClose })
         />
       </div>
 
-      <div class="ne-field-row ne-stagger" style="animation-delay: 100ms">
-        <label class="ne-field-label">系统提醒<HelpButton :text="notifyHelp" /></label>
-        <AppToggle v-model="notifyEnabled" :disabled="!canEditSchedule" />
+      <div class="ne-notification-field ne-stagger" style="animation-delay: 100ms">
+        <div class="ne-field-row">
+          <label class="ne-field-label">系统提醒<HelpButton :text="notifyHelp" /></label>
+          <AppToggle
+            v-model="notifyEnabled"
+            :disabled="!systemNotificationsSupported || !canEditSchedule"
+          />
+        </div>
+        <p v-if="!systemNotificationsSupported" class="ne-platform-note">
+          {{ systemNotificationUnavailableReason }}
+        </p>
       </div>
 
       <div class="ne-field-row ne-stagger" style="animation-delay: 130ms">
@@ -295,6 +310,18 @@ defineExpose({ requestClose })
 }
 .ne-field-row .ne-field-label {
   flex-shrink: 0;
+}
+.ne-notification-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5rem;
+}
+.ne-platform-note {
+  margin: 0;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  line-height: 1.5;
+  opacity: 0.72;
 }
 .ne-field {
   margin-top: 12rem;

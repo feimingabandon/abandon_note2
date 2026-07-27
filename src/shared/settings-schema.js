@@ -244,6 +244,42 @@ const definitions = [
     remark: '窗口置顶状态'
   },
   {
+    id: 'sticky.fontSize',
+    path: ['sticky', 'fontSize'],
+    db: { type: 'sticky', key: 'sticky_font_size' },
+    defaultValue: 16,
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 12, max: 32, integer: true }),
+    serialize: String,
+    remark: '新建便利贴默认字号（12~32px）'
+  },
+  {
+    id: 'sticky.backgroundColor',
+    path: ['sticky', 'backgroundColor'],
+    db: { type: 'sticky', key: 'sticky_background_color' },
+    defaultValue: '#fff2a8',
+    parse: parseHexColor,
+    serialize: String,
+    remark: '新建便利贴默认背景颜色'
+  },
+  {
+    id: 'sticky.cornerRadius',
+    path: ['sticky', 'cornerRadius'],
+    db: { type: 'sticky', key: 'sticky_corner_radius' },
+    defaultValue: 0,
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 32, integer: true }),
+    serialize: String,
+    remark: '新建便利贴默认圆角（0~32px）'
+  },
+  {
+    id: 'sticky.alwaysOnTop',
+    path: ['sticky', 'alwaysOnTop'],
+    db: { type: 'sticky', key: 'sticky_always_on_top' },
+    defaultValue: false,
+    parse: parseBoolean,
+    serialize: String,
+    remark: '新建便利贴默认置顶状态'
+  },
+  {
     id: 'listFilter',
     path: ['listFilter'],
     db: { type: 'filter', key: 'list_filter' },

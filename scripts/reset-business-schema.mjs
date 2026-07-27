@@ -1,8 +1,21 @@
 import Database from 'better-sqlite3'
-import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { resolve, sep } from 'node:path'
 import { createNotesSchema } from '../src/main/db/db-schema.js'
 
-const dbPath = process.env.ABANDON_DB_PATH || join(process.env.APPDATA, 'abandon_note2', 'app.db')
+const configuredDbPath = process.env.ABANDON_DB_PATH
+if (!configuredDbPath) {
+  throw new Error(
+    'ABANDON_DB_PATH is required; schema reset must use an isolated temporary database'
+  )
+}
+
+const dbPath = resolve(configuredDbPath)
+const tempRoot = resolve(tmpdir())
+if (dbPath !== tempRoot && !dbPath.startsWith(`${tempRoot}${sep}`)) {
+  throw new Error(`schema reset database must stay inside the system temp directory: ${tempRoot}`)
+}
+
 const db = new Database(dbPath)
 const businessTables = [
   'template_tags',

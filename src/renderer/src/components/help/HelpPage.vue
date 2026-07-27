@@ -697,8 +697,8 @@ onBeforeUnmount(() => {
             <div class="help-sub">
               <h4 class="help-subhead">通知展示</h4>
               <p class="help-sub-text">
-                到生效时间时通过操作系统通知提醒。Windows
-                使用富通知（带操作按钮），其他平台降级为标准通知；若通知发送失败，会自动降级为应用内的消息条提示，不会静默丢失。
+                Windows 到生效时间时使用系统富通知提醒。macOS 系统通知需要付费的 Apple Developer
+                证书签名，当前版本暂未开通，因此新建便签、修改便签和循环模板中的通知设置会被禁用。
               </p>
               <h4 class="help-subhead">稍后提醒（Snooze）</h4>
               <p class="help-sub-text">
@@ -714,7 +714,9 @@ onBeforeUnmount(() => {
           >
             <h3 class="help-anchor-title">通知点击跳转</h3>
             <p class="help-anchor-desc">
-              点击系统通知会通过自定义协议（<code>abandon-note://</code>）唤起应用并直接定位到对应便签，即使窗口当前被隐藏或最小化也能被唤出。
+              Windows
+              用户点击系统通知后，会通过自定义协议（<code>abandon-note://</code>）唤起应用并定位到对应便签，即使窗口当前被隐藏或最小化也能被唤出。macOS
+              当前不启用系统通知。
             </p>
           </div>
 

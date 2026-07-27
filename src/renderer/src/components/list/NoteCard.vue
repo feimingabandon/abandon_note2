@@ -22,6 +22,8 @@ const props = defineProps({
 const emit = defineEmits(['status-action', 'edit'])
 const { showMessage } = useMessage()
 const sharedNow = useSharedMinuteClock()
+const systemNotificationsSupported =
+  window.api.runtimeCapabilities?.systemNotifications?.supported ?? true
 
 const STATUS_META = {
   initialized: { label: '初始化', color: '#0A84FF', action: '提前开始' },
@@ -33,7 +35,10 @@ const status = computed(() => STATUS_META[props.note.status] || STATUS_META.init
 const isTerminal = computed(() => props.note.status === 'completed')
 const canChangeStatus = computed(() => ['initialized', 'in_progress', 'completed'].includes(props.note.status))
 const showReminder = computed(
-  () => props.note.status === 'initialized' && Number(props.note.notify_enabled) === 1
+  () =>
+    systemNotificationsSupported &&
+    props.note.status === 'initialized' &&
+    Number(props.note.notify_enabled) === 1
 )
 
 const tags = computed(() => (Array.isArray(props.note.tags) ? props.note.tags : []))
@@ -55,6 +60,7 @@ const contentOverflows = ref(false)
 const contentAnimating = ref(false)
 const contentShellHeight = ref('auto')
 const deleting = ref(false)
+const creatingSticky = ref(false)
 const showDeleteDialog = ref(false)
 const CONTENT_PREVIEW_LINES = 3
 // 产品规范：交互动画始终开启，不跟随系统 MinAnimate / reduced-motion 设置。
@@ -263,10 +269,29 @@ async function openContextMenu(event) {
   window.addEventListener('scroll', closeContextMenu, true)
 }
 
-/** 修改打开现有编辑器；删除复用主进程的逻辑删除能力。 */
+/** 修改打开现有编辑器；桌面展示和删除均通过受限主进程能力完成。 */
 async function onContextMenuAction(action) {
   closeContextMenu()
   if (action === 'edit') emit('edit', props.note)
+  if (action === 'sticky') {
+    if (creatingSticky.value) return
+    creatingSticky.value = true
+    try {
+      const result = await window.api.createSticky(props.note.id)
+      if (!result?.ok) {
+        const message = result?.message || '无法贴到桌面'
+        showMessage(message.includes('最多同时展示') ? 'warning' : 'error', message)
+        return
+      }
+      showMessage('success', '已贴到桌面')
+    } catch (error) {
+      console.error('[NoteCard] 创建便利贴失败:', props.note.id, error)
+      showMessage('error', error.message || '无法贴到桌面')
+    } finally {
+      creatingSticky.value = false
+    }
+    return
+  }
   if (action !== 'delete' || deleting.value) return
   showDeleteDialog.value = true
 }
@@ -490,6 +515,11 @@ async function toggleTags() {
         >
           <div class="nl-context-menu">
             <button role="menuitem" @click="onContextMenuAction('edit')">修改</button>
+            <button
+              role="menuitem"
+              :disabled="creatingSticky"
+              @click="onContextMenuAction('sticky')"
+            >{{ creatingSticky ? '正在创建…' : '贴到桌面' }}</button>
             <div class="nl-context-menu__divider" role="separator" />
             <button
               class="nl-context-menu__delete"

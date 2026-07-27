@@ -11,6 +11,8 @@ import {
 const props = defineProps({ template: { type: Object, required: true } })
 const emit = defineEmits(['edit', 'action'])
 const sharedNow = useSharedMinuteClock()
+const systemNotificationsSupported =
+  window.api.runtimeCapabilities?.systemNotifications?.supported ?? true
 const state = computed(() => templateState(props.template))
 const nextRunHint = computed(() =>
   formatTemplateNextRun(props.template.next_run_at, sharedNow.value)
@@ -166,7 +168,7 @@ onBeforeUnmount(() => {
       <div
         v-if="
           tags.length ||
-          Number(template.notify_enabled) === 1 ||
+          (systemNotificationsSupported && Number(template.notify_enabled) === 1) ||
           Number(template.is_pinned) === 1 ||
           contentOverflows
         "
@@ -191,7 +193,7 @@ onBeforeUnmount(() => {
           >+{{ hiddenTagCount }}</span
         >
         <span
-          v-if="Number(template.notify_enabled) === 1"
+          v-if="systemNotificationsSupported && Number(template.notify_enabled) === 1"
           class="tc-icon"
           title="模板生成便签时通知"
           aria-label="模板生成便签时通知"

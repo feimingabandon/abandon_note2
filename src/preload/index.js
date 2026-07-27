@@ -10,6 +10,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
+import { getSystemNotificationCapability } from '../shared/notification-policy.js'
 
 /**
  * 自定义 API 对象
@@ -17,6 +18,11 @@ import { contextBridge, ipcRenderer } from 'electron'
  * 每个方法通过 ipcRenderer.send（单向）或 ipcRenderer.invoke（双向）与主进程通信
  */
 const api = {
+  runtimeCapabilities: {
+    platform: process.platform,
+    systemNotifications: getSystemNotificationCapability(process.platform)
+  },
+
   // ---- 窗口控制（单向通信，无需返回值） ----
   /** 关闭当前窗口 */
   closeWindow: () => ipcRenderer.send('window-close'),
@@ -112,6 +118,8 @@ const api = {
   purgeNote: (id) => ipcRenderer.invoke('notes:purge', { id }),
   /** 获取单条便签（含附件和标签） */
   getNote: (id) => ipcRenderer.invoke('notes:get', { id }),
+  /** 基于有效便签正文创建一次性桌面便利贴；正文由主进程重新读取。 */
+  createSticky: (noteId) => ipcRenderer.invoke('sticky:create', { noteId }),
   /** 查询便签列表 */
   queryPinnedNotes: (options) => ipcRenderer.invoke('notes:query-pinned', options),
   /** 查询三天内非置顶便签（时间线模式） */

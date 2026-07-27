@@ -10,11 +10,13 @@ files:
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
 asarUnpack:
   - resources/**
+  - node_modules/better-sqlite3/**
+  - node_modules/koffi/**
 extraResources:
   - from: native_blur/build/bin/
     to: native_blur/
     filter:
-      - "*.dll"
+      - '*.dll'
 win:
   executableName: abandon_note2
 protocols:
@@ -36,16 +38,6 @@ mac:
   notarize: false
 dmg:
   artifactName: ${name}-${version}.${ext}
-linux:
-  target:
-    - AppImage
-    - snap
-    - deb
-  maintainer: electronjs.org
-  category: Utility
-appImage:
-  artifactName: ${name}-${version}.${ext}
-npmRebuild: false
 publish:
   provider: generic
   url: https://example.com/auto-updates

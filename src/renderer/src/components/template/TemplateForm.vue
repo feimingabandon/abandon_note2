@@ -23,6 +23,12 @@ const props = defineProps({
   active: { type: Boolean, default: true }
 })
 const emit = defineEmits(['submit', 'cancel'])
+const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
+  supported: true,
+  reason: ''
+}
+const systemNotificationsSupported = systemNotificationCapability.supported
+const systemNotificationUnavailableReason = systemNotificationCapability.reason
 
 function currentTimeOfDay() {
   const current = new Date()
@@ -36,7 +42,7 @@ const weekdays = ref([1])
 const monthDays = ref([1])
 const yearDates = ref([{ month: 1, day: 1 }])
 const timeOfDay = ref(currentTimeOfDay())
-const notifyEnabled = ref(true)
+const notifyEnabled = ref(systemNotificationsSupported)
 const isPinned = ref(false)
 const tagNames = ref([])
 const previewAt = ref(null)
@@ -130,7 +136,8 @@ function loadInitial(template) {
   const normalizedYearDates = normalizeYearDates(rule?.dates_of_year)
   yearDates.value = normalizedYearDates.length ? normalizedYearDates : [{ month: 1, day: 1 }]
   timeOfDay.value = rule?.time_of_day || currentTimeOfDay()
-  notifyEnabled.value = template ? Number(template.notify_enabled) === 1 : true
+  notifyEnabled.value =
+    systemNotificationsSupported && (template ? Number(template.notify_enabled) === 1 : true)
   isPinned.value = template ? Number(template.is_pinned) === 1 : false
   tagNames.value = (template?.tags || []).map((tag) => tag.name)
 }
@@ -150,7 +157,7 @@ const currentSnapshot = computed(() =>
   createTemplateFormSnapshot({
     content: content.value,
     recurrenceRule: recurrenceRule.value,
-    notifyEnabled: notifyEnabled.value,
+    notifyEnabled: systemNotificationsSupported && notifyEnabled.value,
     isPinned: isPinned.value,
     tagNames: tagNames.value
   })
@@ -222,7 +229,7 @@ function submit() {
   emit('submit', {
     content: content.value,
     recurrenceRule: recurrenceRule.value,
-    notifyEnabled: notifyEnabled.value,
+    notifyEnabled: systemNotificationsSupported && notifyEnabled.value,
     isPinned: isPinned.value,
     tagNames: [...tagNames.value]
   })
@@ -280,12 +287,22 @@ onBeforeUnmount(() => {
           </Transition>
         </span>
       </div>
-      <div class="tf-row">
-        <label
-          >模板生成便签时是否通知
-          <HelpButton text="到达生成节点时，由模板发送通知；生成的便签本身不带系统通知。"
-        /></label>
-        <AppToggle v-model="notifyEnabled" />
+      <div class="tf-notification-field">
+        <div class="tf-row">
+          <label
+            >模板生成便签时是否通知
+            <HelpButton
+              :text="
+                systemNotificationsSupported
+                  ? '到达生成节点时，由模板发送通知；生成的便签本身不带系统通知。'
+                  : systemNotificationUnavailableReason
+              "
+          /></label>
+          <AppToggle v-model="notifyEnabled" :disabled="!systemNotificationsSupported" />
+        </div>
+        <p v-if="!systemNotificationsSupported" class="tf-platform-note">
+          {{ systemNotificationUnavailableReason }}
+        </p>
       </div>
       <div class="tf-row">
         <label
@@ -370,6 +387,18 @@ label,
   align-items: center;
   justify-content: space-between;
   gap: 12rem;
+}
+.tf-notification-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5rem;
+}
+.tf-platform-note {
+  margin: 0;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  line-height: 1.5;
+  opacity: 0.72;
 }
 .tf-preview {
   min-height: 32rem;

@@ -208,9 +208,20 @@ watch(
 const bgColor = ref(DEFAULT_SETTINGS.css.bgColor)
 const fontSizeBase = ref(DEFAULT_SETTINGS.css.fontSizeBase)
 const textColor = ref(DEFAULT_SETTINGS.css.textColor)
+const stickyFontSize = ref(DEFAULT_SETTINGS.sticky.fontSize)
+const stickyBackgroundColor = ref(DEFAULT_SETTINGS.sticky.backgroundColor)
+const stickyCornerRadius = ref(DEFAULT_SETTINGS.sticky.cornerRadius)
+const stickyAlwaysOnTop = ref(DEFAULT_SETTINGS.sticky.alwaysOnTop)
 
 /** 字体大小预设（datalist 选项） */
 const fontSizePresets = [14, 15, 16, 17, 18, 19, 20, 21, 22]
+const stickyFontSizePresets = [12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
+const stickyColorPresets = [
+  { label: '便签黄', value: '#fff2a8' },
+  { label: '柔粉', value: '#ffd4e1' },
+  { label: '浅蓝', value: '#d4eaff' },
+  { label: '浅绿', value: '#ddf3d5' }
+]
 
 /** 十六进制颜色预设（文字颜色 / 背景颜色共用） */
 const hexPresets = [
@@ -232,6 +243,8 @@ const bgColorHex = computed(() => {
 })
 const bgColorInput = ref(bgColorHex.value)
 const bgColorInputError = ref(false)
+const stickyColorInput = ref(stickyBackgroundColor.value)
+const stickyColorInputError = ref(false)
 
 /** 验证十六进制颜色格式 */
 function isValidHex(val) {
@@ -311,6 +324,29 @@ function commitBgColor() {
 function setBgColorPreset(hex) {
   const { r, g, b } = hexToRgb(hex)
   bgColor.value = `${r} ${g} ${b}`
+}
+
+function onStickyColorInput(e) {
+  stickyColorInput.value = e.target.value
+  if (stickyColorInputError.value) stickyColorInputError.value = false
+}
+
+function commitStickyColor() {
+  const value = stickyColorInput.value.trim()
+  if (value === '') {
+    stickyColorInput.value = stickyBackgroundColor.value
+    return
+  }
+  if (!isValidHex(value)) {
+    stickyColorInput.value = stickyBackgroundColor.value
+    stickyColorInputError.value = true
+    showMessage('warning', '请输入有效的便利贴十六进制颜色，如 #FFF2A8')
+    return
+  }
+  const normalized = normalizeHex(value)
+  stickyBackgroundColor.value = normalized
+  stickyColorInput.value = normalized
+  stickyColorInputError.value = false
 }
 
 // ---- 窗口设置 ----
@@ -512,6 +548,22 @@ watch(textColor, (v) => {
   debouncedSave('css.textColor', v)
 })
 
+watch(stickyFontSize, (v) => {
+  debouncedSave('sticky.fontSize', v)
+})
+
+watch(stickyBackgroundColor, (v) => {
+  debouncedSave('sticky.backgroundColor', v)
+})
+
+watch(stickyCornerRadius, (v) => {
+  debouncedSave('sticky.cornerRadius', v)
+})
+
+watch(stickyAlwaysOnTop, (v) => {
+  debouncedSave('sticky.alwaysOnTop', v)
+})
+
 // 同步文字颜色输入显示值
 watch(textColor, (v) => {
   textColorInput.value = v
@@ -522,6 +574,11 @@ watch(textColor, (v) => {
 watch(bgColorHex, (v) => {
   bgColorInput.value = v
   bgColorInputError.value = false
+})
+
+watch(stickyBackgroundColor, (v) => {
+  stickyColorInput.value = v
+  stickyColorInputError.value = false
 })
 
 // ---- 系统模糊 watch（防抖发送到主进程） ----
@@ -615,6 +672,7 @@ watch(blurCornerRadius, (v) => {
 function assignSettingsSnapshot(snapshot) {
   const css = snapshot.values.css
   const blur = snapshot.values.blur
+  const sticky = snapshot.values.sticky
   const runtimeBlur = snapshot.runtime?.blur
   const runtimeAutoStart = snapshot.runtime?.autoStart
 
@@ -624,6 +682,10 @@ function assignSettingsSnapshot(snapshot) {
   windowOpacity.value = css.windowOpacity
   fontSizeBase.value = css.fontSizeBase
   textColor.value = css.textColor
+  stickyFontSize.value = sticky.fontSize
+  stickyBackgroundColor.value = sticky.backgroundColor
+  stickyCornerRadius.value = sticky.cornerRadius
+  stickyAlwaysOnTop.value = sticky.alwaysOnTop
 
   // “用户希望开启”与“当前确实生效”分开：支持平台初始化失败时，开关必须
   // 显示为关闭，同时保留错误信息，让用户可以再次主动开启并触发重试。
@@ -984,6 +1046,87 @@ const onConfirmResetSettings = async () => {
                     @keydown.enter="commitTextColor"
                   />
                 </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ========== 便利贴基础设置 ========== -->
+          <section class="settings-section">
+            <h3 class="section-title">便利贴</h3>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >默认字体大小<HelpButton
+                    text="只决定之后新建便利贴的初始字号，不会修改当前已经展示的便利贴。"
+                /></span>
+              </div>
+              <div class="setting-right">
+                <FontSizeInput
+                  v-model="stickyFontSize"
+                  :presets="stickyFontSizePresets"
+                  :min="12"
+                  :max="32"
+                  width="90rem"
+                />
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >默认背景颜色<HelpButton
+                    text="新建便利贴会使用该背景色，并自动选择具有足够对比度的文字颜色。"
+                /></span>
+              </div>
+              <div class="setting-right">
+                <button
+                  v-for="color in stickyColorPresets"
+                  :key="color.value"
+                  class="color-dot"
+                  :class="{ active: stickyBackgroundColor === color.value }"
+                  :style="{ backgroundColor: color.value }"
+                  :title="color.label"
+                  @click="stickyBackgroundColor = color.value"
+                />
+                <input v-model="stickyBackgroundColor" type="color" class="color-input" />
+                <div class="color-hex-input-wrap">
+                  <input
+                    type="text"
+                    class="color-hex-input"
+                    spellcheck="false"
+                    :class="{ 'has-error': stickyColorInputError }"
+                    :value="stickyColorInput"
+                    placeholder="#FFF2A8"
+                    maxlength="7"
+                    @input="onStickyColorInput"
+                    @blur="commitStickyColor"
+                    @keydown.enter="commitStickyColor"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-item setting-item-slider">
+              <span class="setting-label"
+                >默认圆角<HelpButton
+                  text="设置新建便利贴的窗口圆角。0 为直角；圆角便利贴会使用透明窗口裁切。"
+              /></span>
+              <span class="range-label-start">直角</span>
+              <AppSlider v-model="stickyCornerRadius" :min="0" :max="32" :step="1" />
+              <span class="range-label-end">圆润</span>
+              <span class="setting-value">{{ stickyCornerRadius }}px</span>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >默认置顶<HelpButton
+                    text="开启后，之后新建的便利贴默认保持在其他窗口上方；仍可在单张便利贴上临时取消。"
+                /></span>
+              </div>
+              <div class="setting-right">
+                <AppToggle v-model="stickyAlwaysOnTop" />
               </div>
             </div>
           </section>

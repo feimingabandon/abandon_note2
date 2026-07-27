@@ -73,4 +73,26 @@ describe('scheduler context', () => {
       lastError: null
     })
   })
+
+  it('uses the in-app fallback without creating a native notification when disabled', () => {
+    const scheduler = new Scheduler()
+    const fallback = vi.fn()
+    const warningSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    scheduler.systemNotificationsEnabled = false
+    scheduler.systemNotificationsDisabledReason = 'macOS 系统通知已关闭'
+    scheduler.onAlertNotifyFailed = fallback
+    scheduler._Notification = vi.fn()
+
+    scheduler._sendAlert()
+
+    expect(scheduler._Notification).not.toHaveBeenCalled()
+    expect(fallback).toHaveBeenCalledWith(
+      '便签调度器异常',
+      '定时任务引擎连续恢复失败，请重启应用以恢复正常。',
+      expect.objectContaining({ message: 'macOS 系统通知已关闭' })
+    )
+    warningSpy.mockRestore()
+    errorSpy.mockRestore()
+  })
 })

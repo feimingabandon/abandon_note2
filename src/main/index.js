@@ -110,12 +110,18 @@ import { runRecurringTemplates } from './services/recurrence.js'
 import { calculateNextRun, normalizeRecurrenceRule } from './services/recurrence-rules.js'
 import { TemplateSchedulerGuard } from './services/template-scheduler-guard.js'
 import { sendNotificationSafely } from './services/notification-guard.js'
+import { ElectronStickyService } from './sticky/ElectronStickyService.js'
+import { buildStickyTrayTemplate } from './sticky/StickyTrayMenu.js'
 import {
   DEFAULT_SETTINGS,
   createDefaultSettings,
   resolveSettingsRows,
   serializeSetting
 } from '../shared/settings-schema.js'
+import {
+  enforceSystemNotificationPolicy,
+  getSystemNotificationCapability
+} from '../shared/notification-policy.js'
 
 /** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
 const WINDOW_NAME = 'main'
@@ -126,6 +132,7 @@ const APP_NAME = '便签'
 const WINDOWS_APP_USER_MODEL_ID = app.isPackaged ? APP_ID : APP_NAME
 const APP_PROTOCOL = 'abandon-note'
 const SNOOZE_DELAY_MS = 10 * 60 * 1000
+const SYSTEM_NOTIFICATION_CAPABILITY = getSystemNotificationCapability(process.platform)
 const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'css.bgColor',
   'css.popupOpacity',
@@ -133,6 +140,10 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'css.windowOpacity',
   'css.fontSizeBase',
   'css.textColor',
+  'sticky.fontSize',
+  'sticky.backgroundColor',
+  'sticky.cornerRadius',
+  'sticky.alwaysOnTop',
   'wallpaper.blurRadius',
   'listFilter'
 ])
@@ -156,6 +167,7 @@ let screenshotWindow = null
 
 /** 系统托盘实例 */
 let tray = null
+let stickyService = null
 
 /** 是否正在执行退出流程（托盘菜单「退出」触发） */
 let isQuitting = false
@@ -255,6 +267,8 @@ let suppressGeometryPersistenceUntil = 0
 
 /** 统一调度器实例 */
 const scheduler = new Scheduler()
+scheduler.systemNotificationsEnabled = SYSTEM_NOTIFICATION_CAPABILITY.supported
+scheduler.systemNotificationsDisabledReason = SYSTEM_NOTIFICATION_CAPABILITY.reason
 
 function openSafeExternal(rawUrl) {
   try {
@@ -1150,6 +1164,32 @@ function toggleWindow() {
   }
 }
 
+function openMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (isDockHidden) {
+    doShow()
+  } else {
+    mainWindow.show()
+  }
+  mainWindow.focus()
+}
+
+function rebuildTrayMenu() {
+  if (!tray || tray.isDestroyed() || !stickyService) return
+  tray.setContextMenu(
+    Menu.buildFromTemplate(
+      buildStickyTrayTemplate({
+        stickyService,
+        openMainWindow,
+        quitApplication: () => {
+          isQuitting = true
+          app.quit()
+        }
+      })
+    )
+  )
+}
+
 // ============================================================
 // 应用就绪后的初始化逻辑
 // ============================================================
@@ -1491,6 +1531,24 @@ app.whenReady().then(async () => {
   })
 
   createWindow()
+  stickyService = new ElectronStickyService({
+    getMainWindow: () => mainWindow,
+    getNoteById,
+    getDefaultAppearance: () => resolvedSettings.sticky,
+    preloadPath: join(__dirname, '../preload/sticky.js'),
+    rendererFile: join(__dirname, '../renderer/sticky.html'),
+    rendererUrl:
+      is.dev && process.env.ELECTRON_RENDERER_URL
+        ? `${process.env.ELECTRON_RENDERER_URL}/sticky.html`
+        : null,
+    isDevelopment: is.dev,
+    onRegistryChanged: rebuildTrayMenu,
+    onError: (text) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      mainWindow.webContents.send('app:message', { type: 'error', text })
+    }
+  })
+  stickyService.initialize()
 
   // 初始化完整快照中的窗口运行状态（必须在 createWindow 之后）
   applyResolvedWindowRuntime()
@@ -1597,6 +1655,7 @@ app.whenReady().then(async () => {
   }
 
   function trySendNotify(body, options) {
+    if (!SYSTEM_NOTIFICATION_CAPABILITY.supported) return false
     return sendNotificationSafely(sendNotify, body, options)
   }
 
@@ -1734,7 +1793,7 @@ app.whenReady().then(async () => {
 
   // 【便签 - 创建】
   ipcMain.handle('notes:create', (_event, options) => {
-    return createNote(options || {})
+    return createNote(enforceSystemNotificationPolicy(options, process.platform))
   })
 
   // 【便签 - 原子创建（含图片 + 标签，事务保护，失败则自动回滚并清理文件）】
@@ -1751,7 +1810,7 @@ app.whenReady().then(async () => {
     }
 
     const txn = db.transaction(() => {
-      const note = createNote(options || {})
+      const note = createNote(enforceSystemNotificationPolicy(options, process.platform))
       if (!note || !note.id) throw new Error('创建便签失败')
 
       // 保存图片
@@ -1787,14 +1846,14 @@ app.whenReady().then(async () => {
 
   // 【便签 - 更新】
   ipcMain.handle('notes:update', (_event, { id, fields }) => {
-    return updateNote(id, fields || {})
+    return updateNote(id, enforceSystemNotificationPolicy(fields, process.platform))
   })
 
   // 【便签 - 原子保存编辑草稿（字段 + 标签 + 附件）】
   ipcMain.handle('notes:save-draft', async (_event, payload = {}) => {
     const db = getDb()
     const id = Number(payload.id)
-    const fields = payload.fields || {}
+    const fields = enforceSystemNotificationPolicy(payload.fields, process.platform)
     const tagNames = Array.isArray(payload.tagNames)
       ? [...new Set(payload.tagNames.map((name) => String(name).trim()).filter(Boolean))]
       : []
@@ -2076,12 +2135,12 @@ app.whenReady().then(async () => {
 
   // 【模板 - 创建】
   ipcMain.handle('templates:create', (_event, options) => {
-    return createTemplate(options || {})
+    return createTemplate(enforceSystemNotificationPolicy(options, process.platform))
   })
 
   // 【模板 - 更新】
   ipcMain.handle('templates:update', (_event, { id, fields }) => {
-    return updateTemplate(id, fields || {})
+    return updateTemplate(id, enforceSystemNotificationPolicy(fields, process.platform))
   })
 
   // 【模板 - 删除（软删）】
@@ -2442,23 +2501,11 @@ setTimeout(()=>{resize()},0)
     toggleWindow()
   })
 
-  // 右键菜单
-  const trayMenu = Menu.buildFromTemplate([
-    {
-      label: '退出',
-      click: () => {
-        isQuitting = true
-        app.quit()
-      }
-    }
-  ])
-  tray.setContextMenu(trayMenu)
+  rebuildTrayMenu()
 
   // macOS 特有：点击 Dock 图标时显示窗口
   app.on('activate', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show()
-    }
+    openMainWindow()
   })
 })
 
@@ -2485,6 +2532,8 @@ app.on('before-quit', () => {
     }
   }
   scheduler.stop()
+  stickyService?.dispose()
+  stickyService = null
   closeDatabase()
   // 销毁模糊引擎（释放 DLL 资源）
   blurDestroy()

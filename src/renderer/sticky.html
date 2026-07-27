@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>便利贴</title>
+    <link rel="stylesheet" href="./sticky/sticky.css" />
+  </head>
+  <body>
+    <div class="sticky-window">
+      <header class="sticky-toolbar">
+        <div class="sticky-actions">
+          <button type="button" data-action="font-down" aria-label="减小字号" title="减小字号">
+            A−
+          </button>
+          <button type="button" data-action="font-up" aria-label="增大字号" title="增大字号">
+            A+
+          </button>
+          <div class="sticky-color-control">
+            <button
+              type="button"
+              data-action="color"
+              aria-label="修改背景颜色"
+              aria-expanded="false"
+              title="修改背景颜色"
+            >
+              颜色
+            </button>
+            <div class="sticky-palette" data-palette hidden>
+              <div class="sticky-swatches" data-swatches aria-label="便利贴色板"></div>
+              <label class="sticky-custom-color">
+                自定义
+                <input type="color" data-color-input aria-label="选择自定义背景颜色" />
+              </label>
+            </div>
+          </div>
+          <button
+            type="button"
+            data-action="pin"
+            aria-label="置顶便利贴"
+            aria-pressed="false"
+            title="置顶便利贴"
+          >
+            置顶
+          </button>
+        </div>
+        <div class="sticky-drag-area" aria-hidden="true"></div>
+        <div class="sticky-actions sticky-actions-close">
+          <button type="button" data-action="close" aria-label="关闭本次展示" title="关闭">
+            ×
+          </button>
+        </div>
+      </header>
+      <main class="sticky-content">
+        <div class="sticky-content-scroll" data-content tabindex="0" aria-label="便利贴正文"></div>
+      </main>
+      <p class="sticky-error" data-error role="alert" hidden></p>
+    </div>
+    <script type="module" src="./sticky/sticky.js"></script>
+  </body>
+</html>

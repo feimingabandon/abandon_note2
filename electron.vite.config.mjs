@@ -10,7 +10,8 @@ export default defineConfig({
         input: {
           index: resolve('src/preload/index.js'),
           screenshot: resolve('src/preload/screenshot.js'),
-          trigger: resolve('src/preload/trigger.js')
+          trigger: resolve('src/preload/trigger.js'),
+          sticky: resolve('src/preload/sticky.js')
         }
       }
     }
@@ -26,7 +27,8 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          index: resolve('src/renderer/index.html')
+          index: resolve('src/renderer/index.html'),
+          sticky: resolve('src/renderer/sticky.html')
         }
       }
     }

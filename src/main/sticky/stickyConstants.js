@@ -1,0 +1,28 @@
+export const MAX_STICKY_WINDOWS = 10
+export const MAX_STICKY_TEXT_LENGTH = 100_000
+
+export const DEFAULT_STICKY_WIDTH = 280
+export const DEFAULT_STICKY_HEIGHT = 260
+export const MIN_STICKY_WIDTH = 180
+export const MIN_STICKY_HEIGHT = 140
+export const STICKY_TOOLBAR_HEIGHT = 30
+
+export const MIN_STICKY_FONT_SIZE = 12
+export const MAX_STICKY_FONT_SIZE = 32
+export const DEFAULT_STICKY_FONT_SIZE = 16
+export const STICKY_FONT_SIZE_STEP = 2
+
+export const DEFAULT_STICKY_BACKGROUND = '#FFF2A8'
+export const DISPLAY_CHANGE_DEBOUNCE_MS = 250
+export const STICKY_READY_TIMEOUT_MS = 5_000
+
+export const STICKY_PALETTE = [
+  '#FFF2A8',
+  '#FFD9A8',
+  '#FFD4E1',
+  '#D4EAFF',
+  '#DDF3D5',
+  '#E8DEFF',
+  '#F4F0E6',
+  '#FFFFFF'
+]

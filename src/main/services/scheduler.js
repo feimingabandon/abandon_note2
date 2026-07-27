@@ -47,6 +47,12 @@ export class Scheduler {
   /** Electron Notification 引用（操作系统原生通知，延迟 require 避免测试环境无此模块） */
   _Notification = null
 
+  /** 当前平台是否允许发送操作系统通知。 */
+  systemNotificationsEnabled = true
+
+  /** 操作系统通知被产品策略关闭时的原因。 */
+  systemNotificationsDisabledReason = ''
+
   /**
    * 终极告警系统通知发送失败时的应用内降级回调（由主进程注入，可选）。
    * 签名：(title: string, body: string, error: *) => void
@@ -269,6 +275,12 @@ export class Scheduler {
     console.error('[scheduler] 终极告警：所有恢复手段已耗尽，通知用户重启')
     const title = '便签调度器异常'
     const body = '定时任务引擎连续恢复失败，请重启应用以恢复正常。'
+    if (!this.systemNotificationsEnabled) {
+      const error = new Error(this.systemNotificationsDisabledReason || '当前平台已关闭系统通知')
+      console.warn('[scheduler] 系统通知已由平台策略关闭，改用应用内提醒')
+      this.onAlertNotifyFailed?.(title, body, error)
+      return
+    }
     try {
       // 延迟 require，避免非 Electron 环境崩溃
       const { Notification } = (this._Notification = this._Notification || require('electron'))

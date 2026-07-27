@@ -12,6 +12,12 @@ import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.j
 import { releaseModalBlur, retainModalBlur } from '../../utils/modalBlur.js'
 
 const { showMessage } = useMessage()
+const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
+  supported: true,
+  reason: ''
+}
+const systemNotificationsSupported = systemNotificationCapability.supported
+const systemNotificationUnavailableReason = systemNotificationCapability.reason
 const templates = ref([])
 const displayedTemplates = ref([])
 const tags = ref([])
@@ -525,8 +531,14 @@ onBeforeUnmount(() => {
               <span>选项</span>
               <div class="tp-filter-options">
                 <label>生成的便签是否置顶 <AppToggle v-model="pinnedOnly" /></label>
-                <label>模板通知 <AppToggle v-model="notifyOnly" /></label>
+                <label
+                  >模板通知
+                  <AppToggle v-model="notifyOnly" :disabled="!systemNotificationsSupported"
+                /></label>
               </div>
+              <p v-if="!systemNotificationsSupported" class="tp-notification-policy-note">
+                {{ systemNotificationUnavailableReason }}
+              </p>
             </div>
             <div class="tp-filter-row">
               <span>排序</span
@@ -965,6 +977,14 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 14rem;
   min-width: 0;
+}
+.tp-notification-policy-note {
+  grid-column: 2;
+  margin: -2rem 0 7rem;
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.92);
+  line-height: 1.45;
+  opacity: 0.72;
 }
 .tp-summary {
   display: flex;

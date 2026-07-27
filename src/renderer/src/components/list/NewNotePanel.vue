@@ -24,6 +24,12 @@ const props = defineProps({
 })
 
 const { showMessage } = useMessage()
+const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
+  supported: true,
+  reason: ''
+}
+const systemNotificationsSupported = systemNotificationCapability.supported
+const systemNotificationUnavailableReason = systemNotificationCapability.reason
 
 // ============================================================
 // 入场动效：按一级 DOM 顺序自动编排，组件常驻以保留草稿。
@@ -141,7 +147,7 @@ let successHoldResolve = null
 
 // ---- 联动逻辑 ----
 /** 只有设置了生效时间才能开启系统提醒 */
-const canEnableNotify = computed(() => !!effectiveAt.value)
+const canEnableNotify = computed(() => systemNotificationsSupported && !!effectiveAt.value)
 const submitLabel = computed(() => {
   if (submitState.value === 'creating') return '创建中…'
   if (submitState.value === 'success') return '✓ 已创建'
@@ -302,12 +308,21 @@ async function handleCreate() {
       </div>
 
       <!-- 启用系统提醒 -->
-      <div class="nnp-field-row">
-        <label class="nnp-field-label"
-          >启用系统提醒<HelpButton
-            text="仅在设置生效时间后才可开启。到达生效时间时通过操作系统发送通知提醒"
-        /></label>
-        <AppToggle v-model="notifyEnabled" :disabled="!canEnableNotify" />
+      <div class="nnp-notification-field">
+        <div class="nnp-field-row">
+          <label class="nnp-field-label"
+            >启用系统提醒<HelpButton
+              :text="
+                systemNotificationsSupported
+                  ? '仅在设置生效时间后才可开启。到达生效时间时通过操作系统发送通知提醒'
+                  : systemNotificationUnavailableReason
+              "
+          /></label>
+          <AppToggle v-model="notifyEnabled" :disabled="!canEnableNotify" />
+        </div>
+        <p v-if="!systemNotificationsSupported" class="nnp-platform-note">
+          {{ systemNotificationUnavailableReason }}
+        </p>
       </div>
 
       <!-- 置顶 -->
@@ -406,6 +421,18 @@ async function handleCreate() {
 }
 .nnp-field-row .nnp-field-label {
   flex-shrink: 0;
+}
+.nnp-notification-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5rem;
+}
+.nnp-platform-note {
+  margin: 0;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  line-height: 1.5;
+  opacity: 0.72;
 }
 
 /* === 行内字段：label + 组件，组件填满右侧（标签） === */
