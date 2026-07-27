@@ -55,6 +55,10 @@ function parseBoolean(value, fallback) {
   return fallback
 }
 
+function parseTitlebarStyle(value, fallback) {
+  return value === 'microsoft' || value === 'apple' ? value : fallback
+}
+
 function parseRgbChannels(value, fallback) {
   const channels = String(value ?? '')
     .trim()
@@ -108,6 +112,15 @@ function parseListFilter(value, fallback) {
 }
 
 const definitions = [
+  {
+    id: 'appearance.titlebarStyle',
+    path: ['appearance', 'titlebarStyle'],
+    db: { type: 'appearance', key: 'titlebar_style' },
+    defaultValue: 'apple',
+    parse: parseTitlebarStyle,
+    serialize: String,
+    remark: '主窗口导航栏视觉风格（apple / microsoft）'
+  },
   {
     id: 'css.bgColor',
     path: ['css', 'bgColor'],

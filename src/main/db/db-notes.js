@@ -12,6 +12,13 @@ const TRANSITIONS = {
   completed: new Set(['in_progress'])
 }
 
+/** 保留正文原样，仅拒绝全空白内容。 */
+export function normalizeRequiredNoteContent(value) {
+  const content = String(value ?? '')
+  if (!content.trim()) throw new Error('请输入便签内容')
+  return content
+}
+
 // ============================================================
 // CRUD
 // ============================================================
@@ -30,6 +37,7 @@ export function createNote({
   sortOrder = 0
 } = {}) {
   const ts = now()
+  const normalizedContent = normalizeRequiredNoteContent(content)
   const parsedEffectiveAt = Number(effectiveAt)
   const hasExplicitTime = Number.isFinite(parsedEffectiveAt) && parsedEffectiveAt > 0
   const effAt = hasExplicitTime ? parsedEffectiveAt : ts
@@ -46,7 +54,7 @@ export function createNote({
     )
     .run(
       noteType,
-      content,
+      normalizedContent,
       status,
       isPinned ? 1 : 0,
       pendingNotification,
@@ -101,19 +109,15 @@ export function updateNote(id, fields = {}) {
   if (!old) return null
 
   const ts = now()
+  const content =
+    fields.content === undefined ? old.content : normalizeRequiredNoteContent(fields.content)
   getDb()
     .prepare(
       `UPDATE notes SET
          content = ?, is_pinned = ?, sort_order = ?, updated_at = ?
        WHERE id = ?`
     )
-    .run(
-      fields.content ?? old.content,
-      fields.is_pinned ?? old.is_pinned,
-      fields.sort_order ?? old.sort_order,
-      ts,
-      id
-    )
+    .run(content, fields.is_pinned ?? old.is_pinned, fields.sort_order ?? old.sort_order, ts, id)
 
   return getNoteById(id)
 }
@@ -150,12 +154,6 @@ export function deleteNote(id) {
        WHERE id = ? AND is_deleted = 0`
     )
     .run(ts, id)
-  return result.changes === 1
-}
-
-/** 物理删除：供明确的“彻底删除”入口使用，关联记录由外键级联清理。 */
-export function purgeNote(id) {
-  const result = getDb().prepare('DELETE FROM notes WHERE id = ?').run(id)
   return result.changes === 1
 }
 

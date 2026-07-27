@@ -33,7 +33,9 @@ const STATUS_META = {
 
 const status = computed(() => STATUS_META[props.note.status] || STATUS_META.initialized)
 const isTerminal = computed(() => props.note.status === 'completed')
-const canChangeStatus = computed(() => ['initialized', 'in_progress', 'completed'].includes(props.note.status))
+const canChangeStatus = computed(() =>
+  ['initialized', 'in_progress', 'completed'].includes(props.note.status)
+)
 const showReminder = computed(
   () =>
     systemNotificationsSupported &&
@@ -167,7 +169,8 @@ function formatDateTime(timestamp) {
   if (dayDiff === 0) return `今天 ${clock}`
   if (dayDiff === 1) return `明天 ${clock}`
   if (dayDiff === -1) return `昨天 ${clock}`
-  if (date.getFullYear() === now.getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日 ${clock}`
+  if (date.getFullYear() === now.getFullYear())
+    return `${date.getMonth() + 1}月${date.getDate()}日 ${clock}`
   return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${clock}`
 }
 
@@ -198,9 +201,10 @@ const effectiveDisplay = computed(() => {
   if (dayDiff === 2) return `后天 ${clock} 生效`
   if (dayDiff === 3) return `3天后 ${clock} 生效`
 
-  const dateLabel = target.getFullYear() === now.getFullYear()
-    ? `${target.getMonth() + 1}月${target.getDate()}日`
-    : `${target.getFullYear()}年${target.getMonth() + 1}月${target.getDate()}日`
+  const dateLabel =
+    target.getFullYear() === now.getFullYear()
+      ? `${target.getMonth() + 1}月${target.getDate()}日`
+      : `${target.getFullYear()}年${target.getMonth() + 1}月${target.getDate()}日`
   return `${dateLabel} (${dayDiff}天后) 生效`
 })
 
@@ -227,7 +231,8 @@ function onTagPopoverKeydown(event) {
 }
 
 function onTagPopoverOutside(event) {
-  if (event.target.closest?.('.nl-tag-popover') || moreTagsButtonRef.value?.contains(event.target)) return
+  if (event.target.closest?.('.nl-tag-popover') || moreTagsButtonRef.value?.contains(event.target))
+    return
   closeTags()
 }
 
@@ -332,9 +337,10 @@ async function toggleTags() {
   const rect = moreTagsButtonRef.value?.getBoundingClientRect()
   if (!rect) return
   const horizontal = { right: `${Math.max(8, window.innerWidth - rect.right)}px` }
-  tagPopoverStyle.value = window.innerHeight - rect.bottom >= 150
-    ? { ...horizontal, top: `${rect.bottom + 6}px` }
-    : { ...horizontal, bottom: `${window.innerHeight - rect.top + 6}px` }
+  tagPopoverStyle.value =
+    window.innerHeight - rect.bottom >= 150
+      ? { ...horizontal, top: `${rect.bottom + 6}px` }
+      : { ...horizontal, bottom: `${window.innerHeight - rect.top + 6}px` }
   tagsExpanded.value = true
   await nextTick()
   document.addEventListener('pointerdown', onTagPopoverOutside)
@@ -362,17 +368,14 @@ async function toggleTags() {
     :aria-label="`${status.label}：${displayContent}`"
     @contextmenu="openContextMenu"
   >
-    <span
-      v-if="draggable"
-      class="nl-drag-handle"
-      title="拖动排序"
-      aria-hidden="true"
-      @click.stop
-    >
+    <span v-if="draggable" class="nl-drag-handle" title="拖动排序" aria-hidden="true" @click.stop>
       <svg viewBox="0 0 12 18">
-        <circle cx="3" cy="3" r="1.25" /><circle cx="9" cy="3" r="1.25" />
-        <circle cx="3" cy="9" r="1.25" /><circle cx="9" cy="9" r="1.25" />
-        <circle cx="3" cy="15" r="1.25" /><circle cx="9" cy="15" r="1.25" />
+        <circle cx="3" cy="3" r="1.25" />
+        <circle cx="9" cy="3" r="1.25" />
+        <circle cx="3" cy="9" r="1.25" />
+        <circle cx="9" cy="9" r="1.25" />
+        <circle cx="3" cy="15" r="1.25" />
+        <circle cx="9" cy="15" r="1.25" />
       </svg>
     </span>
 
@@ -387,7 +390,8 @@ async function toggleTags() {
         ref="contentShellRef"
         class="nl-card-text-shell"
         :class="{
-          'nl-card-text-shell--collapsed': contentOverflows && !contentExpanded && !contentAnimating,
+          'nl-card-text-shell--collapsed':
+            contentOverflows && !contentExpanded && !contentAnimating,
           'nl-card-text-shell--animating': contentAnimating
         }"
         :style="{ height: contentShellHeight }"
@@ -401,12 +405,21 @@ async function toggleTags() {
           <time class="nl-card-time" :datetime="effectiveIso">{{ effectiveDisplay }}</time>
           <template v-if="isTerminal && finishedTime">
             <span class="nl-card-separator" aria-hidden="true">·</span>
-            <time class="nl-card-time nl-card-time--finished">{{ finishedLabel }} {{ finishedTime }}</time>
+            <time class="nl-card-time nl-card-time--finished"
+              >{{ finishedLabel }} {{ finishedTime }}</time
+            >
           </template>
         </div>
 
         <div
-          v-if="visibleTags.length || hiddenTagCount || showReminder || attachmentCount || contentOverflows || String(note.content || '').trim()"
+          v-if="
+            visibleTags.length ||
+            hiddenTagCount ||
+            showReminder ||
+            attachmentCount ||
+            contentOverflows ||
+            String(note.content || '').trim()
+          "
           class="nl-card-utilities"
         >
           <span
@@ -414,7 +427,8 @@ async function toggleTags() {
             :key="tag.id || tag.name"
             class="nl-card-tag"
             :style="tag.color ? { '--tag-color': tag.color } : {}"
-          >{{ tag.name }}</span>
+            >{{ tag.name }}</span
+          >
           <button
             v-if="hiddenTagCount"
             ref="moreTagsButtonRef"
@@ -422,11 +436,27 @@ async function toggleTags() {
             :aria-expanded="tagsExpanded"
             aria-label="显示全部标签"
             @click.stop="toggleTags"
-          >+{{ hiddenTagCount }}</button>
+          >
+            +{{ hiddenTagCount }}
+          </button>
 
-          <span v-if="showReminder" class="nl-card-icon" title="等待系统提醒" aria-label="等待系统提醒">
-            <svg viewBox="0 0 20 20" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path d="M5.6 8.2a4.4 4.4 0 0 1 8.8 0c0 4.3 1.8 4.6 1.8 5.7H3.8c0-1.1 1.8-1.4 1.8-5.7Z" />
+          <span
+            v-if="showReminder"
+            class="nl-card-icon"
+            title="等待系统提醒"
+            aria-label="等待系统提醒"
+          >
+            <svg
+              viewBox="0 0 20 20"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path
+                d="M5.6 8.2a4.4 4.4 0 0 1 8.8 0c0 4.3 1.8 4.6 1.8 5.7H3.8c0-1.1 1.8-1.4 1.8-5.7Z"
+              />
               <path d="M8.2 16a2 2 0 0 0 3.6 0" />
             </svg>
           </span>
@@ -439,7 +469,14 @@ async function toggleTags() {
             aria-label="复制便签正文"
             @click.stop="copyContent"
           >
-            <svg viewBox="0 0 20 20" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5">
+            <svg
+              viewBox="0 0 20 20"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
               <rect x="7" y="6" width="9" height="10" rx="2" />
               <path d="M13 6V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2" />
             </svg>
@@ -452,7 +489,14 @@ async function toggleTags() {
             :aria-expanded="imagesExpanded"
             @click.stop="toggleImages"
           >
-            <svg viewBox="0 0 20 20" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5">
+            <svg
+              viewBox="0 0 20 20"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
               <rect x="3" y="4" width="14" height="12" rx="2" />
               <circle cx="7" cy="8" r="1.2" />
               <path d="m5 14 3.2-3 2.2 2 1.8-1.6L15 14" />
@@ -495,7 +539,8 @@ async function toggleTags() {
               :key="tag.id || tag.name"
               class="nl-tag-popover__tag"
               :style="tag.color ? { '--tag-color': tag.color } : {}"
-            >{{ tag.name }}</span>
+              >{{ tag.name }}</span
+            >
           </div>
         </div>
       </Transition>
@@ -519,14 +564,18 @@ async function toggleTags() {
               role="menuitem"
               :disabled="creatingSticky"
               @click="onContextMenuAction('sticky')"
-            >{{ creatingSticky ? '正在创建…' : '贴到桌面' }}</button>
+            >
+              {{ creatingSticky ? '正在创建…' : '贴到桌面' }}
+            </button>
             <div class="nl-context-menu__divider" role="separator" />
             <button
               class="nl-context-menu__delete"
               role="menuitem"
               :disabled="deleting"
               @click="onContextMenuAction('delete')"
-            >删除</button>
+            >
+              删除
+            </button>
           </div>
         </div>
       </Transition>
@@ -550,12 +599,7 @@ async function toggleTags() {
     >
       <div class="nl-image-panel-clip">
         <div class="nl-image-panel-content">
-          <ImagePicker
-            v-if="imagesMounted"
-            :note-id="note.id"
-            mode="persist"
-            readonly
-          />
+          <ImagePicker v-if="imagesMounted" :note-id="note.id" mode="persist" readonly />
         </div>
       </div>
     </div>
@@ -652,20 +696,39 @@ async function toggleTags() {
 }
 
 @keyframes nl-status-sweep-motion {
-  0% { transform: scaleX(0.02); }
-  90%, 100% { transform: scaleX(1); }
+  0% {
+    transform: scaleX(0.02);
+  }
+  90%,
+  100% {
+    transform: scaleX(1);
+  }
 }
 
 @keyframes nl-status-sweep-opacity-start {
-  0% { opacity: 0; }
-  14%, 92% { opacity: 1; }
-  100% { opacity: 0; }
+  0% {
+    opacity: 0;
+  }
+  14%,
+  92% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 @keyframes nl-status-sweep-opacity-complete {
-  0% { opacity: 0; }
-  12%, 92% { opacity: 1; }
-  100% { opacity: 0; }
+  0% {
+    opacity: 0;
+  }
+  12%,
+  92% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 .nl-card--completed::after {
@@ -678,7 +741,9 @@ async function toggleTags() {
   background: rgba(128, 128, 128, 0.1);
   transition: background-color 180ms ease;
 }
-.nl-card--completed:hover::after { background: rgba(128, 128, 128, 0.075); }
+.nl-card--completed:hover::after {
+  background: rgba(128, 128, 128, 0.075);
+}
 
 .nl-card--initialized {
   --card-surface-opacity: 0.08;
@@ -693,7 +758,9 @@ async function toggleTags() {
   --card-surface-hover-opacity: 0.095;
   --content-strength: 60%;
 }
-.nl-card--muted { opacity: 0.66; }
+.nl-card--muted {
+  opacity: 0.66;
+}
 
 .nl-drag-handle {
   position: absolute;
@@ -713,7 +780,10 @@ async function toggleTags() {
   touch-action: none;
   box-shadow: 0 2rem 8rem rgba(0, 0, 0, 0.06);
   backdrop-filter: blur(10px);
-  transition: opacity 140ms ease, color 140ms ease, background-color 140ms ease;
+  transition:
+    opacity 140ms ease,
+    color 140ms ease,
+    background-color 140ms ease;
 }
 .nl-drag-handle svg {
   width: 9rem;
@@ -801,7 +871,9 @@ async function toggleTags() {
   background: transparent;
   color: color-mix(in srgb, var(--text-color-secondary) 72%, transparent);
   cursor: pointer;
-  transition: color 160ms ease, background-color 160ms ease;
+  transition:
+    color 160ms ease,
+    background-color 160ms ease;
 }
 .nl-card-disclosure svg {
   display: block;
@@ -825,8 +897,13 @@ async function toggleTags() {
 .nl-card-disclosure:focus-visible {
   box-shadow: 0 0 0 2rem color-mix(in srgb, var(--accent-color) 22%, transparent);
 }
-.nl-card--completed .nl-card-text { font-weight: 400; }
-.nl-card--empty .nl-card-text { color: var(--text-color-secondary); font-weight: 400; }
+.nl-card--completed .nl-card-text {
+  font-weight: 400;
+}
+.nl-card--empty .nl-card-text {
+  color: var(--text-color-secondary);
+  font-weight: 400;
+}
 
 .nl-card-meta {
   display: flex;
@@ -855,9 +932,15 @@ async function toggleTags() {
   color: color-mix(in srgb, var(--text-color) 58%, transparent);
   font-weight: 500;
 }
-.nl-card-separator { opacity: 0.44; }
-.nl-card-time { white-space: nowrap; }
-.nl-card-time--finished { color: color-mix(in srgb, var(--text-color) 58%, transparent); }
+.nl-card-separator {
+  opacity: 0.44;
+}
+.nl-card-time {
+  white-space: nowrap;
+}
+.nl-card-time--finished {
+  color: color-mix(in srgb, var(--text-color) 58%, transparent);
+}
 .nl-card-utilities,
 .nl-card-copy,
 .nl-card-attachment {
@@ -884,13 +967,19 @@ async function toggleTags() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.nl-card-more-tags { flex-shrink: 0; background: transparent; color: var(--text-color-secondary); }
+.nl-card-more-tags {
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--text-color-secondary);
+}
 .nl-card-more-tags {
   appearance: none;
   border: 0;
   font: inherit;
   cursor: pointer;
-  transition: color 140ms ease, background-color 140ms ease;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease;
 }
 .nl-card-more-tags:hover,
 .nl-card-more-tags[aria-expanded='true'] {
@@ -910,7 +999,9 @@ async function toggleTags() {
   flex-shrink: 0;
   color: color-mix(in srgb, var(--text-color) 45%, transparent);
   cursor: pointer;
-  transition: color 140ms ease, background-color 140ms ease;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease;
 }
 .nl-card-copy:hover,
 .nl-card-attachment:hover,
@@ -920,7 +1011,9 @@ async function toggleTags() {
 }
 .nl-card-icon svg,
 .nl-card-copy svg,
-.nl-card-attachment svg { display: block; }
+.nl-card-attachment svg {
+  display: block;
+}
 
 .nl-image-panel-shell {
   position: relative;
@@ -984,9 +1077,16 @@ async function toggleTags() {
   overflow-wrap: anywhere;
 }
 .nl-tag-popover-enter-active,
-.nl-tag-popover-leave-active { transition: opacity 150ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1); }
+.nl-tag-popover-leave-active {
+  transition:
+    opacity 150ms ease,
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 .nl-tag-popover-enter-from,
-.nl-tag-popover-leave-to { opacity: 0; transform: translateY(-4px) scale(0.98); }
+.nl-tag-popover-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+}
 
 .nl-context-menu-shell {
   position: fixed;
@@ -1020,7 +1120,9 @@ async function toggleTags() {
   font-size: var(--fs-secondary);
   text-align: left;
   cursor: pointer;
-  transition: background-color 140ms ease, color 140ms ease;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
 }
 .nl-context-menu button:hover:not(:disabled),
 .nl-context-menu button:focus-visible:not(:disabled) {
@@ -1039,12 +1141,20 @@ async function toggleTags() {
   background: color-mix(in srgb, #ff453a 11%, transparent);
 }
 .nl-context-menu-enter-active,
-.nl-context-menu-leave-active { transition: opacity 130ms ease, transform 180ms cubic-bezier(0.32, 0.72, 0, 1); }
+.nl-context-menu-leave-active {
+  transition:
+    opacity 130ms ease,
+    transform 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
 .nl-context-menu-enter-from,
-.nl-context-menu-leave-to { opacity: 0; transform: translateY(-4px) scale(0.98); }
-
-@media (max-width: 390px) {
-  .nl-card-tag { max-width: 86rem; }
+.nl-context-menu-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
 }
 
+@media (max-width: 390px) {
+  .nl-card-tag {
+    max-width: 86rem;
+  }
+}
 </style>

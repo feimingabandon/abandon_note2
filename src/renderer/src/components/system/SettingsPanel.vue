@@ -205,6 +205,7 @@ watch(
 )
 
 // ---- 基础样式设置 ----
+const titlebarStyle = ref(DEFAULT_SETTINGS.appearance.titlebarStyle)
 const bgColor = ref(DEFAULT_SETTINGS.css.bgColor)
 const fontSizeBase = ref(DEFAULT_SETTINGS.css.fontSizeBase)
 const textColor = ref(DEFAULT_SETTINGS.css.textColor)
@@ -513,6 +514,14 @@ async function flushPendingSettingSaves() {
 }
 // ---- 实时生效 watchers ----
 
+// 导航栏是离散选项：点击后立即持久化并广播，不使用滑块/文本输入的防抖。
+watch(titlebarStyle, (v) => {
+  if (!_settingsSynced || isResetting.value) return
+  persistSetting({ id: 'appearance.titlebarStyle', value: v }).catch((e) =>
+    console.warn('[SettingsPanel] 保存导航栏风格失败:', e)
+  )
+})
+
 // 背景颜色 → CSS --bg-color (基础样式，主窗口+组件共用)
 watch(bgColor, (v) => {
   el.style.setProperty('--bg-color', v)
@@ -670,12 +679,14 @@ watch(blurCornerRadius, (v) => {
 })
 
 function assignSettingsSnapshot(snapshot) {
+  const appearance = snapshot.values.appearance || DEFAULT_SETTINGS.appearance
   const css = snapshot.values.css
   const blur = snapshot.values.blur
   const sticky = snapshot.values.sticky
   const runtimeBlur = snapshot.runtime?.blur
   const runtimeAutoStart = snapshot.runtime?.autoStart
 
+  titlebarStyle.value = appearance.titlebarStyle
   bgColor.value = css.bgColor
   cssOpacity.value = css.popupOpacity
   cssBlur.value = css.bgBlur
@@ -944,6 +955,35 @@ const onConfirmResetSettings = async () => {
           <!-- ========== 基础样式 ========== -->
           <section class="settings-section">
             <h3 class="section-title">基础样式</h3>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >导航栏风格<HelpButton
+                    text="只切换主窗口导航栏的布局和按钮外观，不改变关闭、置顶、锁定、循环模板、设置和帮助功能。"
+                /></span>
+              </div>
+              <div class="titlebar-style-selector" role="radiogroup" aria-label="导航栏风格">
+                <button
+                  type="button"
+                  role="radio"
+                  :aria-checked="titlebarStyle === 'apple'"
+                  :class="{ active: titlebarStyle === 'apple' }"
+                  @click="titlebarStyle = 'apple'"
+                >
+                  Apple
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  :aria-checked="titlebarStyle === 'microsoft'"
+                  :class="{ active: titlebarStyle === 'microsoft' }"
+                  @click="titlebarStyle = 'microsoft'"
+                >
+                  Microsoft
+                </button>
+              </div>
+            </div>
 
             <!-- 背景颜色 -->
             <div class="setting-item">
@@ -1781,6 +1821,48 @@ const onConfirmResetSettings = async () => {
   align-items: center;
   gap: 10rem;
   flex-shrink: 0;
+}
+
+.titlebar-style-selector {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(78rem, 1fr));
+  gap: 2rem;
+  padding: 2rem;
+  border: 1px solid color-mix(in srgb, var(--text-color) 10%, transparent);
+  border-radius: 8rem;
+  background-color: color-mix(in srgb, var(--text-color) 4%, transparent);
+}
+.titlebar-style-selector button {
+  min-height: 28rem;
+  padding: 0 10rem;
+  border: 0;
+  border-radius: 6rem;
+  color: var(--text-color-secondary);
+  background-color: transparent;
+  font: inherit;
+  font-size: var(--fs-secondary);
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) ease,
+    background-color var(--motion-control) var(--ease-standard),
+    box-shadow var(--motion-control) var(--ease-standard),
+    transform var(--motion-fast) ease;
+}
+.titlebar-style-selector button:hover:not(.active) {
+  color: var(--text-color);
+  background-color: color-mix(in srgb, var(--text-color) 6%, transparent);
+}
+.titlebar-style-selector button.active {
+  color: var(--text-color);
+  background-color: var(--surface-float);
+  box-shadow: 0 1rem 4rem rgba(0, 0, 0, 0.16);
+}
+.titlebar-style-selector button:active {
+  transform: scale(0.97);
+}
+.titlebar-style-selector button:focus-visible {
+  outline: 2rem solid #0078d4;
+  outline-offset: 1rem;
 }
 
 /* 滑块类设置项——单行水平布局：标签 ? 进度条 值 全在一行 */

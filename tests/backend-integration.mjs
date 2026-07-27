@@ -14,7 +14,7 @@ import {
   resumeTemplate,
   updateTemplate
 } from '../src/main/db/db-templates.js'
-import { purgeNote } from '../src/main/db/db-notes.js'
+import { normalizeRequiredNoteContent } from '../src/main/db/db-notes.js'
 import { runRecurringTemplates } from '../src/main/services/recurrence.js'
 
 function localTs(year, month, day, hour = 0, minute = 0, second = 0) {
@@ -56,6 +56,8 @@ try {
       .some((column) => column.name === 'cropped_path'),
     true
   )
+  assert.equal(normalizeRequiredNoteContent('  保留首尾空白\n'), '  保留首尾空白\n')
+  assert.throws(() => normalizeRequiredNoteContent(' \n\t '), /请输入便签内容/)
 
   createTag('日常', '#007aff')
   createTag('重要', '#ff3b30')
@@ -287,7 +289,7 @@ try {
   )
 
   const lastNoteId = restored.last_generated_note_id
-  assert.equal(purgeNote(lastNoteId), true)
+  assert.equal(db.prepare('DELETE FROM notes WHERE id = ?').run(lastNoteId).changes, 1)
   assert.equal(getTemplateById(activeTemplate.id).last_generated_note_id, null)
 
   deleteTemplate(activeTemplate.id, localTs(2025, 7, 27, 11))

@@ -387,9 +387,7 @@ defineExpose({
       <span v-else class="sb-result-summary">
         <span>当前{{ results.length }}条</span>
         <span>此条件共{{ total }}条</span>
-        <span v-if="lastRefreshLabel" class="sb-refresh-time">
-          刷新 {{ lastRefreshLabel }}
-        </span>
+        <span v-if="lastRefreshLabel" class="sb-refresh-time"> 刷新 {{ lastRefreshLabel }} </span>
       </span>
       <div class="sb-sort" aria-label="搜索结果排序">
         <button

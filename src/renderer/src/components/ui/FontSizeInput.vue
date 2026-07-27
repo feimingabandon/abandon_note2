@@ -223,11 +223,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 下拉预设面板 -->
-    <Transition
-      :css="false"
-      @enter="onEnter"
-      @leave="onLeave"
-    >
+    <Transition :css="false" @enter="onEnter" @leave="onLeave">
       <div v-if="open" class="fsi-panel-wrap" @click.stop>
         <div class="fsi-panel-glass">
           <div class="fsi-panel scroll-y">

@@ -1,9 +1,9 @@
 <script setup>
 /**
- * MacTitlebar.vue — Mac 风格自定义标题栏组件
+ * AppTitlebar.vue — 可切换 Apple / Microsoft 视觉的自定义标题栏组件
  *
  * 职责：
- *   1. 提供 macOS 风格的“红绿灯”窗口控制按钮（关闭、置顶、锁定）
+ *   1. 提供关闭、置顶、锁定窗口控制，视觉风格不改变功能语义
  *   2. 展示窗口标题文字
  *   3. 通过 slot 支持在标题栏右侧插入自定义操作按钮
  *   4. 整个标题栏区域可拖拽移动窗口（-webkit-app-region: drag）
@@ -12,6 +12,7 @@
  *   - title {String} 标题栏显示的文字，默认为空
  *   - locked {Boolean} 窗口锁定状态
  *   - alwaysOnTop {Boolean} 窗口置顶状态
+ *   - styleVariant {'apple'|'microsoft'} 标题栏视觉风格
  */
 
 // 定义组件接收的 props
@@ -27,6 +28,11 @@ defineProps({
   alwaysOnTop: {
     type: Boolean,
     required: true
+  },
+  styleVariant: {
+    type: String,
+    default: 'apple',
+    validator: (value) => value === 'apple' || value === 'microsoft'
   }
 })
 
@@ -41,7 +47,7 @@ const toggleAlwaysOnTop = async () => {
     const newState = await window.api.toggleAlwaysOnTop()
     emit('update:alwaysOnTop', newState)
   } catch (e) {
-    console.warn('[MacTitlebar] 切换置顶失败:', e)
+    console.warn('[AppTitlebar] 切换置顶失败:', e)
   }
 }
 /** 切换锁定/解锁状态 */
@@ -50,14 +56,18 @@ const toggleLock = async () => {
     const newState = await window.api.toggleLock()
     emit('update:locked', newState)
   } catch (e) {
-    console.warn('[MacTitlebar] 切换锁定失败:', e)
+    console.warn('[AppTitlebar] 切换锁定失败:', e)
   }
 }
 </script>
 
 <template>
   <!-- 标题栏容器：整体可拖拽（-webkit-app-region: drag），锁定后禁用拖拽 -->
-  <header class="mac-titlebar" :class="{ locked: locked }">
+  <header
+    class="app-titlebar"
+    :class="[`app-titlebar--${styleVariant}`, { locked: locked }]"
+    :data-style="styleVariant"
+  >
     <!-- 红绿灯按钮组：设置 no-drag 使按钮可点击 -->
     <div class="traffic-lights">
       <!-- 关闭按钮(红色) -->
@@ -84,9 +94,9 @@ const toggleLock = async () => {
       </button>
     </div>
     <!-- 标题文字，仅当 title prop 非空时显示 -->
-    <span v-if="title" class="mac-titlebar-title">{{ title }}</span>
+    <span v-if="title" class="app-titlebar-title">{{ title }}</span>
     <!-- 右侧操作区域插槽，父组件可插入自定义按钮 -->
-    <div class="mac-titlebar-actions">
+    <div class="app-titlebar-actions">
       <slot />
     </div>
   </header>
@@ -95,7 +105,7 @@ const toggleLock = async () => {
 <style scoped>
 /* 标题栏容器：flex 响应式三栏布局，支持拖拽移动窗口
  * 左（红绿灯）· 中（标题 flex:1）· 右（操作按钮），随窗口宽度自适应 */
-.mac-titlebar {
+.app-titlebar {
   display: flex;
   align-items: center; /* 垂直居中对齐 */
   padding: 14px 16px; /* 内边距，总高 14+18+14+1(border)=47rem ≈ 48px Apple 导航标准 */
@@ -151,8 +161,14 @@ const toggleLock = async () => {
   animation: light-state-in var(--motion-control) var(--ease-standard);
 }
 @keyframes light-state-in {
-  from { opacity: 0; transform: scale(0.75); }
-  to { opacity: 1; transform: scale(1); }
+  from {
+    opacity: 0;
+    transform: scale(0.75);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 /* 各按钮的默认背景色（模拟 macOS 红绿灯） */
@@ -192,12 +208,12 @@ const toggleLock = async () => {
 }
 
 /* 锁定状态下标题栏不可拖拽 */
-.mac-titlebar.locked {
+.app-titlebar.locked {
   -webkit-app-region: no-drag;
 }
 
 /* 标题文字：正文大小、居中、flex:1 占据中间剩余空间 */
-.mac-titlebar-title {
+.app-titlebar-title {
   font-size: var(--fs-body); /* 正文字号（跟随 --font-size-base 响应式缩放） */
   font-weight: 600; /* OPPOSans Bold，更圆润 */
   color: var(--text-color); /* 使用全局文字颜色变量 */
@@ -206,10 +222,65 @@ const toggleLock = async () => {
 }
 
 /* 右侧操作按钮区域 */
-.mac-titlebar-actions {
+.app-titlebar-actions {
   display: flex;
   gap: 8px;
   margin-left: auto; /* 标题移除后，仍保持靠右对齐 */
   -webkit-app-region: no-drag; /* 取消拖拽，使操作按钮可点击 */
+}
+
+/* Windows 11 / Fluent 取向：业务操作靠左，窗口操作靠右，关闭按钮位于最右端。 */
+.app-titlebar--microsoft {
+  min-height: 47px;
+  padding: 8px 8px 8px 16px;
+  gap: 2rem;
+}
+.app-titlebar--microsoft .traffic-lights {
+  order: 3;
+  gap: 2rem;
+  margin-left: auto;
+}
+.app-titlebar--microsoft .app-titlebar-title {
+  order: 2;
+  text-align: left;
+}
+.app-titlebar--microsoft .app-titlebar-actions {
+  order: 1;
+  margin-left: 0;
+}
+.app-titlebar--microsoft .light {
+  width: 32rem;
+  height: 30rem;
+  border-radius: 4rem;
+  color: var(--text-color);
+  background-color: transparent;
+}
+.app-titlebar--microsoft .light-icon {
+  width: 15rem;
+  height: 15rem;
+  opacity: 0.72;
+}
+.app-titlebar--microsoft .traffic-lights:hover .light-icon {
+  opacity: 0.72;
+}
+.app-titlebar--microsoft .light:hover {
+  background-color: color-mix(in srgb, var(--text-color) 9%, transparent);
+}
+.app-titlebar--microsoft .light:hover .light-icon {
+  opacity: 1;
+}
+.app-titlebar--microsoft .light-pin.pinned,
+.app-titlebar--microsoft .light-lock.locked {
+  background-color: color-mix(in srgb, #0078d4 18%, transparent);
+}
+.app-titlebar--microsoft .light-pin.pinned:hover,
+.app-titlebar--microsoft .light-lock.locked:hover {
+  background-color: color-mix(in srgb, #0078d4 26%, transparent);
+}
+.app-titlebar--microsoft .light-close {
+  order: 3;
+}
+.app-titlebar--microsoft .light-close:hover {
+  background-color: #c42b1c;
 }
 </style>

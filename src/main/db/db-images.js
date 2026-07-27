@@ -10,11 +10,13 @@
 import { dirname, join, resolve, sep } from 'path'
 import { randomUUID } from 'crypto'
 import { app, nativeImage } from 'electron'
-import { existsSync, mkdirSync, renameSync } from 'fs'
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { mkdir, writeFile, unlink, stat, readFile, rm } from 'fs/promises'
 import { getDb } from './db-connection.js'
 
 const ATTACHMENTS_ROOT = 'attachments'
+const STAGING_ROOT = '.attachments-staging'
+const OPERATION_MANIFEST = 'operation.json'
 
 const now = () => Date.now()
 
@@ -73,7 +75,7 @@ function decodeImage(base64Data, ext) {
 /** 先异步写入暂存区，避免大文件写入阻塞 Electron 主线程。 */
 export async function stageImage(base64Data, ext) {
   const { buffer, normalizedExt } = decodeImage(base64Data, ext)
-  const stagingDir = join(app.getPath('userData'), '.attachments-staging')
+  const stagingDir = join(app.getPath('userData'), STAGING_ROOT)
   await ensureDirAsync(stagingDir)
   const fileName = `${now()}-${randomUUID()}.${normalizedExt}`
   const pendingPath = join(stagingDir, fileName)
@@ -96,23 +98,46 @@ export function commitStagedImage(noteId, staged) {
 }
 
 export async function cleanupStagedImage(staged) {
-  if (!staged?.pendingPath) return
+  if (!staged?.pendingPath && !staged?.operationDirectory) return
   try {
-    await unlink(staged.pendingPath)
+    if (staged.operationDirectory) {
+      await rm(staged.operationDirectory, { recursive: true, force: true })
+    } else {
+      await unlink(staged.pendingPath)
+    }
   } catch (error) {
     if (error?.code !== 'ENOENT') console.warn('[images] 清理暂存图片失败:', error.message)
   }
+}
+
+function writeOperationManifest(operationDirectory, manifest) {
+  const temporaryPath = join(operationDirectory, `${OPERATION_MANIFEST}.tmp`)
+  const finalPath = join(operationDirectory, OPERATION_MANIFEST)
+  writeFileSync(temporaryPath, JSON.stringify(manifest), 'utf8')
+  renameSync(temporaryPath, finalPath)
 }
 
 /** 保存编辑草稿时先把待删除文件移入暂存区，数据库回滚时可以原位恢复。 */
 export function stageImageDeletion(relativePath) {
   const originalPath = resolveImagePath(relativePath)
   if (!existsSync(originalPath)) return { missing: true, originalPath }
-  const stagingDir = join(app.getPath('userData'), '.attachments-staging')
+  const stagingDir = join(app.getPath('userData'), STAGING_ROOT)
   ensureDir(stagingDir)
-  const pendingPath = join(stagingDir, `delete-${randomUUID()}`)
-  renameSync(originalPath, pendingPath)
-  return { pendingPath, originalPath }
+  const operationDirectory = join(stagingDir, `delete-${randomUUID()}`)
+  mkdirSync(operationDirectory)
+  try {
+    writeOperationManifest(operationDirectory, {
+      version: 1,
+      type: 'image-delete',
+      relativePath
+    })
+    const pendingPath = join(operationDirectory, 'payload')
+    renameSync(originalPath, pendingPath)
+    return { pendingPath, originalPath, operationDirectory }
+  } catch (error) {
+    rmSync(operationDirectory, { recursive: true, force: true })
+    throw error
+  }
 }
 
 /** 恢复一次尚未提交的附件删除。 */
@@ -121,31 +146,11 @@ export function restoreStagedImageDeletion(staged) {
   try {
     ensureDir(dirname(staged.originalPath))
     renameSync(staged.pendingPath, staged.originalPath)
+    if (staged.operationDirectory) {
+      rmSync(staged.operationDirectory, { recursive: true, force: true })
+    }
   } catch (error) {
     console.warn('[images] 恢复待删除附件失败:', error.message)
-  }
-}
-
-/** 彻底删除便签前，先把整个附件目录移出正式路径，数据库失败时可以原位恢复。 */
-export function stageNoteImagesDeletion(noteId) {
-  if (!Number.isInteger(Number(noteId)) || Number(noteId) <= 0) throw new Error('无效的便签 ID')
-  const originalPath = join(getAttachmentsRoot(), 'images', String(noteId))
-  if (!existsSync(originalPath)) return { missing: true, originalPath }
-  const pendingPath = join(
-    app.getPath('userData'),
-    `.attachments-deleting-note-${noteId}-${randomUUID()}`
-  )
-  renameSync(originalPath, pendingPath)
-  return { pendingPath, originalPath }
-}
-
-/** 数据库提交后清理已经移出的便签附件目录。失败时由启动清理流程再次处理。 */
-export async function cleanupStagedNoteImages(staged) {
-  if (!staged?.pendingPath) return
-  try {
-    await rm(staged.pendingPath, { recursive: true, force: true })
-  } catch (error) {
-    console.warn('[images] 清理待彻底删除附件目录失败:', error.message)
   }
 }
 
@@ -161,23 +166,6 @@ export async function deleteImageFile(relativePath) {
   } catch (error) {
     if (error?.code === 'ENOENT') return true
     return false
-  }
-}
-
-/**
- * 删除某个便签的全部图片（物理删除目录）
- * @param {number} noteId
- */
-export async function deleteNoteImages(noteId) {
-  if (!Number.isInteger(Number(noteId)) || Number(noteId) <= 0) throw new Error('无效的便签 ID')
-  const dir = join(getAttachmentsRoot(), 'images', String(noteId))
-  try {
-    if (existsSync(dir)) {
-      await rm(dir, { recursive: true, force: true })
-    }
-  } catch (error) {
-    console.warn('[images] 删除便签附件目录失败:', error.message)
-    throw error
   }
 }
 
@@ -256,11 +244,9 @@ export function addImageRecord({ noteId, filePath, fileSize }) {
 }
 
 /**
- * 删除图片附件记录
- * @param {number} id
- * @returns {boolean}
+ * 原子删除一张图片：先隔离文件，数据库提交后再清理；数据库失败时恢复原文件。
  */
-export function removeImageRecord(id) {
+export async function deleteImageRecordAndFile(id) {
   const db = getDb()
   const row = db
     .prepare(
@@ -270,10 +256,58 @@ export function removeImageRecord(id) {
     )
     .get(id)
   if (!row) return false
-  db.transaction(() => {
-    db.prepare('DELETE FROM note_attachments WHERE id = ?').run(id)
-    db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(now(), row.note_id)
-  })()
+
+  const staged = stageImageDeletion(row.file_path)
+  try {
+    db.transaction(() => {
+      const deleted = db.prepare('DELETE FROM note_attachments WHERE id = ?').run(row.id)
+      if (deleted.changes !== 1) throw new Error('附件记录已发生变化')
+      db.prepare('UPDATE notes SET updated_at = ? WHERE id = ? AND is_deleted = 0').run(
+        now(),
+        row.note_id
+      )
+    })()
+  } catch (error) {
+    restoreStagedImageDeletion(staged)
+    throw error
+  }
+
+  await cleanupStagedImage(staged)
+  return true
+}
+
+/**
+ * 彻底删除一张便签及其附件。
+ * 所有附件先移入可恢复暂存区；数据库提交后再清理，失败或异常退出时由恢复流程处理。
+ */
+export async function purgeNoteAndFiles(noteId) {
+  const parsedNoteId = Number(noteId)
+  if (!Number.isInteger(parsedNoteId) || parsedNoteId <= 0) throw new Error('无效的便签 ID')
+
+  const db = getDb()
+  const note = db.prepare('SELECT id FROM notes WHERE id = ?').get(parsedNoteId)
+  if (!note) return false
+
+  const attachments = db
+    .prepare('SELECT file_path FROM note_attachments WHERE note_id = ? ORDER BY id ASC')
+    .all(parsedNoteId)
+  const stagedDeletions = []
+
+  try {
+    for (const attachment of attachments) {
+      stagedDeletions.push(stageImageDeletion(attachment.file_path))
+    }
+
+    db.transaction(() => {
+      const deleted = db.prepare('DELETE FROM notes WHERE id = ?').run(parsedNoteId)
+      if (deleted.changes !== 1) throw new Error('便签记录已发生变化')
+    })()
+  } catch (error) {
+    for (const staged of stagedDeletions.reverse()) restoreStagedImageDeletion(staged)
+    throw error
+  }
+
+  await Promise.all(stagedDeletions.map(cleanupStagedImage))
   return true
 }
 

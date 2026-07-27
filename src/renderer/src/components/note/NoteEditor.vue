@@ -83,14 +83,19 @@ watch(() => props.note, resetFromNote, { immediate: true })
 
 onMounted(async () => {
   await nextTick()
-  requestAnimationFrame(() => { mounted.value = true })
+  requestAnimationFrame(() => {
+    mounted.value = true
+  })
 })
 
-const statusLabel = computed(() => ({
-  initialized: '初始化',
-  in_progress: '进行中',
-  completed: '已完成'
-})[status.value] || status.value)
+const statusLabel = computed(
+  () =>
+    ({
+      initialized: '初始化',
+      in_progress: '进行中',
+      completed: '已完成'
+    })[status.value] || status.value
+)
 
 const canEditSchedule = computed(() => status.value === 'initialized')
 const today = computed(() => {
@@ -99,12 +104,27 @@ const today = computed(() => {
 })
 const dateShortcuts = [
   { label: '今天', getValue: () => new Date(Date.now() + FIVE_MINUTES) },
-  { label: '明天', getValue: () => { const date = new Date(); date.setDate(date.getDate() + 1); return date } },
-  { label: '三天后', getValue: () => { const date = new Date(); date.setDate(date.getDate() + 3); return date } }
+  {
+    label: '明天',
+    getValue: () => {
+      const date = new Date()
+      date.setDate(date.getDate() + 1)
+      return date
+    }
+  },
+  {
+    label: '三天后',
+    getValue: () => {
+      const date = new Date()
+      date.setDate(date.getDate() + 3)
+      return date
+    }
+  }
 ]
 
 const scheduleHelp = computed(() => {
-  if (status.value === 'initialized') return '仅初始化状态允许修改，新的生效时间需在当前时间 5 分钟之后。'
+  if (status.value === 'initialized')
+    return '仅初始化状态允许修改，新的生效时间需在当前时间 5 分钟之后。'
   if (status.value === 'in_progress') return '便签生效后不能修改原始生效时间。'
   return '已完成便签的生效时间不可修改。'
 })
@@ -118,13 +138,15 @@ const notifyHelp = computed(() => {
 const hasChanges = computed(() => {
   const initial = initialSnapshot.value
   if (!initial) return false
-  return attachmentDirty.value ||
+  return (
+    attachmentDirty.value ||
     content.value !== initial.content ||
     status.value !== initial.status ||
     effectiveAt.value !== initial.effectiveAt ||
     notifyEnabled.value !== initial.notifyEnabled ||
     isPinned.value !== initial.isPinned ||
     JSON.stringify(normalizedTags(tagNames.value)) !== JSON.stringify(initial.tagNames)
+  )
 })
 
 function onAttachmentDraftChange(changes) {
@@ -242,12 +264,16 @@ defineExpose({ requestClose })
       </div>
 
       <div class="ne-field ne-group-gap ne-stagger" style="animation-delay: 160ms">
-        <label class="ne-field-label">标签<HelpButton text="为便签添加分类标签，便于筛选和管理。" /></label>
+        <label class="ne-field-label"
+          >标签<HelpButton text="为便签添加分类标签，便于筛选和管理。"
+        /></label>
         <TagSelector v-model="tagNames" />
       </div>
 
       <div class="ne-field ne-stagger" style="animation-delay: 190ms">
-        <label class="ne-field-label">附件<HelpButton text="附件修改会保存在草稿中，点击保存修改后才会写入数据库和附件目录。" /></label>
+        <label class="ne-field-label"
+          >附件<HelpButton text="附件修改会保存在草稿中，点击保存修改后才会写入数据库和附件目录。"
+        /></label>
         <ScreenshotPicker
           ref="imagePickerRef"
           :note-id="note.id"
@@ -261,7 +287,11 @@ defineExpose({ requestClose })
       <button class="ne-dismiss" :disabled="saving" @click="requestClose">
         {{ hasChanges ? '放弃修改' : '关闭' }}
       </button>
-      <button class="ne-submit" :disabled="!content.trim() || !hasChanges || saving" @click="handleSave">
+      <button
+        class="ne-submit"
+        :disabled="!content.trim() || !hasChanges || saving"
+        @click="handleSave"
+      >
         {{ saving ? '保存中…' : '保存修改' }}
       </button>
     </div>
@@ -292,14 +322,29 @@ defineExpose({ requestClose })
   min-height: 0;
   overflow-x: hidden;
   padding: 14rem 14rem 16rem;
-  -webkit-mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0%,
+    black calc(100% - 30rem),
+    transparent 100%
+  );
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
 }
-.ne-stagger { opacity: 0; }
-.ne-enter .ne-stagger { animation: ne-fade-up 250ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.ne-stagger {
+  opacity: 0;
+}
+.ne-enter .ne-stagger {
+  animation: ne-fade-up 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
 @keyframes ne-fade-up {
-  from { opacity: 0; transform: translateY(6rem); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(6rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .ne-field-row {
   margin-top: 12rem;
@@ -335,7 +380,9 @@ defineExpose({ requestClose })
   font-size: var(--fs-secondary);
   font-weight: 500;
 }
-.ne-group-gap { margin-top: 20rem; }
+.ne-group-gap {
+  margin-top: 20rem;
+}
 .ne-status-tag {
   display: inline-flex;
   align-items: center;
@@ -346,9 +393,15 @@ defineExpose({ requestClose })
   font-weight: 600;
   white-space: nowrap;
 }
-.ne-status--initialized { color: #007aff; }
-.ne-status--in_progress { color: #ff9500; }
-.ne-status--completed { color: #34c759; }
+.ne-status--initialized {
+  color: #007aff;
+}
+.ne-status--in_progress {
+  color: #ff9500;
+}
+.ne-status--completed {
+  color: #34c759;
+}
 .ne-footer {
   display: flex;
   justify-content: flex-end;
@@ -367,7 +420,10 @@ defineExpose({ requestClose })
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  transition: background-color 150ms ease, color 150ms ease, transform 70ms ease;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 70ms ease;
 }
 .ne-dismiss {
   background: color-mix(in srgb, var(--text-color) 8%, transparent);
@@ -377,10 +433,22 @@ defineExpose({ requestClose })
   background: color-mix(in srgb, var(--text-color) 13%, transparent);
   color: var(--text-color);
 }
-.ne-submit { flex: 1; min-width: 104rem; background: #0071e3; color: #fff; }
-.ne-submit:hover:not(:disabled) { background: #0077ed; }
+.ne-submit {
+  flex: 1;
+  min-width: 104rem;
+  background: #0071e3;
+  color: #fff;
+}
+.ne-submit:hover:not(:disabled) {
+  background: #0077ed;
+}
 .ne-dismiss:active:not(:disabled),
-.ne-submit:active:not(:disabled) { transform: scale(0.97); }
+.ne-submit:active:not(:disabled) {
+  transform: scale(0.97);
+}
 .ne-dismiss:disabled,
-.ne-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+.ne-submit:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 </style>

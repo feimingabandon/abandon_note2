@@ -12,12 +12,14 @@
  */
 
 import Database from 'better-sqlite3' // SQLite3 同步驱动，适合 Electron 主进程
-import { join } from 'path' // Node.js 路径拼接工具
+import { dirname, join } from 'path' // Node.js 路径拼接工具
 import { app } from 'electron' // Electron app 模块，用于获取用户数据目录
-import { existsSync, renameSync } from 'fs' // 文件系统操作
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs' // 文件系统操作
 import { readdir, rm } from 'fs/promises'
-import { clearDb, setDb } from './db-connection.js'
+import { randomUUID } from 'crypto'
+import { clearDb, getDb as getConnectionDb, setDb } from './db-connection.js'
 import { createNotesSchema } from './db-schema.js'
+import { resolveImagePath } from './db-images.js'
 
 /** 数据库实例引用，整个应用生命周期内复用 */
 let db = null
@@ -138,31 +140,170 @@ export function deleteSettingsByKey(key) {
   db.prepare('DELETE FROM app_settings WHERE key = ?').run(key)
 }
 
-/** 后台重试清理先前已与数据库解绑、但因文件占用等原因遗留的附件目录。 */
+const ATTACHMENT_OPERATION_MANIFEST = 'operation.json'
+const ATTACHMENT_OPERATION_COMMITTED = 'committed'
+
+function writeAttachmentOperationManifest(operationDirectory, manifest) {
+  const temporaryPath = join(operationDirectory, `${ATTACHMENT_OPERATION_MANIFEST}.tmp`)
+  const finalPath = join(operationDirectory, ATTACHMENT_OPERATION_MANIFEST)
+  writeFileSync(temporaryPath, JSON.stringify(manifest), 'utf8')
+  renameSync(temporaryPath, finalPath)
+}
+
+function businessDataExists() {
+  const row = getConnectionDb()
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM notes) +
+         (SELECT COUNT(*) FROM note_templates) +
+         (SELECT COUNT(*) FROM tags) AS total`
+    )
+    .get()
+  return Number(row?.total) > 0
+}
+
+async function recoverImageDeletionOperation(operationDirectory) {
+  const manifestPath = join(operationDirectory, ATTACHMENT_OPERATION_MANIFEST)
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  if (manifest?.version !== 1 || manifest?.type !== 'image-delete') return false
+
+  const pendingPath = join(operationDirectory, 'payload')
+  if (!existsSync(pendingPath)) {
+    await rm(operationDirectory, { recursive: true, force: true })
+    return true
+  }
+
+  const row = getConnectionDb()
+    .prepare('SELECT 1 FROM note_attachments WHERE file_path = ? LIMIT 1')
+    .get(manifest.relativePath)
+  if (!row) {
+    await rm(operationDirectory, { recursive: true, force: true })
+    return true
+  }
+
+  const originalPath = resolveImagePath(manifest.relativePath)
+  if (existsSync(originalPath)) {
+    console.warn('[images] 附件原路径已存在，保留待恢复文件:', operationDirectory)
+    return true
+  }
+  mkdirSync(dirname(originalPath), { recursive: true })
+  renameSync(pendingPath, originalPath)
+  await rm(operationDirectory, { recursive: true, force: true })
+  return true
+}
+
+async function recoverAttachmentStagingDirectory(stagingDirectory) {
+  const entries = await readdir(stagingDirectory, { withFileTypes: true })
+  for (const entry of entries) {
+    const path = join(stagingDirectory, entry.name)
+    if (entry.isDirectory()) {
+      try {
+        if (await recoverImageDeletionOperation(path)) continue
+      } catch (error) {
+        console.warn('[images] 恢复暂存附件失败，保留现场:', error.message)
+        continue
+      }
+      console.warn('[images] 发现未知附件暂存目录，保留现场:', path)
+      continue
+    }
+
+    // 旧版 delete-* 文件没有记录原路径，无法安全恢复；宁可保留也不能再次永久删除。
+    if (entry.name.startsWith('delete-')) {
+      console.warn('[images] 发现旧版待删除附件，因缺少原路径而保留:', path)
+      continue
+    }
+    await rm(path, { force: true })
+  }
+}
+
+async function recoverResetOperation(operationDirectory) {
+  const payloadPath = join(operationDirectory, 'attachments')
+  const attachmentsDir = join(app.getPath('userData'), 'attachments')
+  const committed = existsSync(join(operationDirectory, ATTACHMENT_OPERATION_COMMITTED))
+
+  if (committed || !businessDataExists() || !existsSync(payloadPath)) {
+    await rm(operationDirectory, { recursive: true, force: true })
+    return
+  }
+  if (existsSync(attachmentsDir)) {
+    console.warn('[clearNoteData] 附件目录已重新创建，保留待恢复目录:', operationDirectory)
+    return
+  }
+  renameSync(payloadPath, attachmentsDir)
+  await rm(operationDirectory, { recursive: true, force: true })
+}
+
+async function recoverLegacyAttachmentDeletion(entry) {
+  const userDataDir = app.getPath('userData')
+  const path = join(userDataDir, entry.name)
+  const noteMatch = /^\.attachments-deleting-note-(\d+)-/.exec(entry.name)
+  if (noteMatch) {
+    const noteId = Number(noteMatch[1])
+    const noteExists = getConnectionDb().prepare('SELECT 1 FROM notes WHERE id = ?').get(noteId)
+    if (!noteExists) {
+      await rm(path, { recursive: true, force: true })
+      return
+    }
+    const originalPath = join(userDataDir, 'attachments', 'images', String(noteId))
+    if (existsSync(originalPath)) {
+      console.warn('[images] 便签附件目录已存在，保留旧版待恢复目录:', path)
+      return
+    }
+    mkdirSync(dirname(originalPath), { recursive: true })
+    renameSync(path, originalPath)
+    return
+  }
+
+  // 旧版全量重置目录：仍有业务记录说明 SQLite 删除没有提交，应恢复原目录。
+  const attachmentsDir = join(userDataDir, 'attachments')
+  if (businessDataExists() && !existsSync(attachmentsDir)) {
+    renameSync(path, attachmentsDir)
+    return
+  }
+  if (!businessDataExists()) {
+    await rm(path, { recursive: true, force: true })
+    return
+  }
+  console.warn('[clearNoteData] 附件目录已存在，保留旧版待恢复目录:', path)
+}
+
+/** 启动时恢复未提交的附件操作，并清理已经提交的暂存数据。 */
 export async function cleanupPendingAttachmentDirs() {
   const userDataDir = app.getPath('userData')
   const entries = await readdir(userDataDir, { withFileTypes: true })
-  const pendingDirs = entries.filter(
-    (entry) =>
-      entry.isDirectory() &&
-      (entry.name.startsWith('.attachments-deleting-') || entry.name === '.attachments-staging')
-  )
-  await Promise.all(
-    pendingDirs.map((entry) => rm(join(userDataDir, entry.name), { recursive: true, force: true }))
-  )
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    if (entry.name === '.attachments-staging') {
+      await recoverAttachmentStagingDirectory(join(userDataDir, entry.name))
+      continue
+    }
+    if (entry.name.startsWith('.attachments-deleting-reset-')) {
+      await recoverResetOperation(join(userDataDir, entry.name))
+      continue
+    }
+    if (entry.name.startsWith('.attachments-deleting-')) {
+      await recoverLegacyAttachmentDeletion(entry)
+    }
+  }
 }
 
 /** 清空便签业务数据；保留 app_settings 和开机自启等系统状态。 */
 export async function clearNoteData() {
   const attachmentsDir = join(app.getPath('userData'), 'attachments')
-  const pendingDeleteDir = join(
+  const operationDirectory = join(
     app.getPath('userData'),
-    `.attachments-deleting-${Date.now()}-${process.pid}`
+    `.attachments-deleting-reset-${Date.now()}-${process.pid}-${randomUUID()}`
   )
+  const pendingDeleteDir = join(operationDirectory, 'attachments')
   let attachmentsMoved = false
 
   // 同卷目录重命名是常量时间操作，先将旧附件与后续可能创建的新目录隔离。
   if (existsSync(attachmentsDir)) {
+    mkdirSync(operationDirectory)
+    writeAttachmentOperationManifest(operationDirectory, {
+      version: 1,
+      type: 'reset'
+    })
     renameSync(attachmentsDir, pendingDeleteDir)
     attachmentsMoved = true
   }
@@ -182,6 +323,7 @@ export async function clearNoteData() {
     if (attachmentsMoved && !existsSync(attachmentsDir)) {
       try {
         renameSync(pendingDeleteDir, attachmentsDir)
+        rmSync(operationDirectory, { recursive: true, force: true })
       } catch (restoreError) {
         console.error('[clearNoteData] 恢复附件目录失败:', restoreError.message)
       }
@@ -192,7 +334,12 @@ export async function clearNoteData() {
   // 递归删除移出主路径后异步执行，不阻塞 Electron 主线程，也不占用 SQLite 事务。
   if (attachmentsMoved) {
     try {
-      await rm(pendingDeleteDir, { recursive: true, force: true })
+      writeFileSync(join(operationDirectory, ATTACHMENT_OPERATION_COMMITTED), '', 'utf8')
+    } catch (error) {
+      console.error('[clearNoteData] 写入附件清理提交标记失败:', error.message)
+    }
+    try {
+      await rm(operationDirectory, { recursive: true, force: true })
     } catch (error) {
       console.error('[clearNoteData] 清理待删除附件目录失败:', error.message)
       // 数据库已经成功提交，不能再向 UI 报告“清空失败”。遗留目录会在下次启动重试。

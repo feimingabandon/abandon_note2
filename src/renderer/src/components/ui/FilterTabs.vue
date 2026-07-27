@@ -9,7 +9,7 @@
  *
  * Props:
  *   modelValue  — 当前选中值
- *   options     — [{ value, label }] 选项数组（label 为 SVG 字符串）
+ *   options     — [{ value }] 选项数组
  *
  * Emits:
  *   update:modelValue — 选中值变更
@@ -47,8 +47,51 @@ async function onClick(value) {
       ]"
       @click="onClick(opt.value)"
       @animationend="animating = ''"
-      v-html="opt.label"
-    ></button>
+    >
+      <svg
+        v-if="opt.value === 'tags'"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        shape-rendering="geometricPrecision"
+        aria-hidden="true"
+      >
+        <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+      </svg>
+      <svg
+        v-else-if="opt.value === 'taiji'"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        shape-rendering="geometricPrecision"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 3a4.5 4.5 0 0 1 0 9 4.5 4.5 0 0 0 0 9" />
+        <circle cx="12" cy="7.5" r="1.5" fill="currentColor" stroke="none" />
+      </svg>
+      <svg
+        v-else-if="opt.value === 'status'"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        shape-rendering="geometricPrecision"
+        aria-hidden="true"
+      >
+        <path d="M12 12C8 9.5 8 3.5 12 3.5C16 3.5 16 9.5 12 12Z" />
+        <path d="M12 12C8 9.5 8 3.5 12 3.5C16 3.5 16 9.5 12 12Z" transform="rotate(120 12 12)" />
+        <path d="M12 12C8 9.5 8 3.5 12 3.5C16 3.5 16 9.5 12 12Z" transform="rotate(240 12 12)" />
+      </svg>
+    </button>
   </div>
 </template>
 

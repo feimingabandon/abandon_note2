@@ -10,12 +10,12 @@
  * 组件结构：
  *   .app-root（根容器，flex 纵向布局，充满视口）
  *     ├── ResizeHandles（八方向缩放手柄，覆盖在最上层）
- *     ├── MacTitlebar（自定义标题栏，含红绿灯按钮）
+ *     ├── AppTitlebar（可切换 Apple / Microsoft 视觉的自定义标题栏）
  *     └── main.content（主内容区域，可滚动）
  */
 
 import { nextTick, ref, onMounted, onUnmounted } from 'vue'
-import MacTitlebar from './components/system/MacTitlebar.vue' // 自定义 Mac 风格标题栏
+import AppTitlebar from './components/system/AppTitlebar.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue' // 自定义窗口缩放手柄
 import SettingsPanel from './components/system/SettingsPanel.vue' // 底部弹出式设置面板
 import MessageToast from './components/system/MessageToast.vue'
@@ -144,6 +144,9 @@ const locked = ref(DEFAULT_SETTINGS.window.lockState)
 /** 窗口置顶状态 */
 const alwaysOnTop = ref(DEFAULT_SETTINGS.window.alwaysOnTop)
 
+/** 自定义导航栏视觉风格；窗口操作逻辑不随风格变化。 */
+const titlebarStyle = ref(DEFAULT_SETTINGS.appearance.titlebarStyle)
+
 /** 主页面壁纸只在原生毛玻璃未实际运行时进入渲染树。 */
 const wallpaperUrl = ref('')
 const wallpaperVisible = ref(false)
@@ -161,6 +164,8 @@ let stopAppMessageListener = null
 
 function applyAppSettingsSnapshot(snapshot) {
   applySettingsSnapshot(snapshot)
+  titlebarStyle.value =
+    snapshot?.values?.appearance?.titlebarStyle ?? DEFAULT_SETTINGS.appearance.titlebarStyle
   const windowSettings = snapshot?.values?.window
   if (windowSettings) {
     locked.value = windowSettings.lockState
@@ -341,10 +346,14 @@ onUnmounted(() => {
     >
       <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
       <ResizeHandles :locked="locked" />
-      <!-- Mac 风格标题栏，包含红绿灯按钮和标题文字 -->
-      <MacTitlebar v-model:locked="locked" v-model:always-on-top="alwaysOnTop">
+      <!-- 同一套窗口功能通过 style 属性切换 Apple / Microsoft 视觉。 -->
+      <AppTitlebar
+        v-model:locked="locked"
+        v-model:always-on-top="alwaysOnTop"
+        :style-variant="titlebarStyle"
+      >
         <!-- 设置和帮助按钮组 -->
-        <div class="titlebar-actions-group">
+        <div class="titlebar-actions-group" :class="`titlebar-actions-group--${titlebarStyle}`">
           <button
             class="titlebar-btn titlebar-btn-template"
             :class="{ 'is-active': templatePanelActive }"
@@ -371,7 +380,7 @@ onUnmounted(() => {
             <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
           </button>
         </div>
-      </MacTitlebar>
+      </AppTitlebar>
       <div class="app-content-stage">
         <!-- 主内容区域，flex:1 占据导航栏下方空间。 -->
         <main
@@ -564,7 +573,8 @@ onUnmounted(() => {
   transition-duration: 70ms;
 }
 
-.titlebar-btn-template.is-active {
+.titlebar-btn-template.is-active,
+.titlebar-btn-help.is-active {
   background-color: #34c759;
 }
 
@@ -572,6 +582,36 @@ onUnmounted(() => {
 .titlebar-actions-group {
   display: flex;
   gap: 8px;
+}
+
+/* Microsoft 风格由标题栏把业务按钮重排到左侧；这里负责插槽内三个按钮的皮肤。 */
+.titlebar-actions-group--microsoft {
+  gap: 2rem;
+  padding-right: 7rem;
+  margin-right: 4rem;
+  border-right: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+}
+.titlebar-actions-group--microsoft .titlebar-btn {
+  width: 32rem;
+  height: 30rem;
+  border-radius: 4rem;
+  color: var(--text-color);
+  background-color: transparent;
+}
+.titlebar-actions-group--microsoft .btn-icon {
+  width: 15rem;
+  height: 15rem;
+  opacity: 0.72;
+}
+.titlebar-actions-group--microsoft .titlebar-btn:hover {
+  background-color: color-mix(in srgb, var(--text-color) 9%, transparent);
+}
+.titlebar-actions-group--microsoft .titlebar-btn:hover .btn-icon {
+  opacity: 1;
+}
+.titlebar-actions-group--microsoft .titlebar-btn-template.is-active,
+.titlebar-actions-group--microsoft .titlebar-btn-help.is-active {
+  background-color: color-mix(in srgb, #0078d4 18%, transparent);
 }
 
 /* 主内容区域 */

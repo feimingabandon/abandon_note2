@@ -79,9 +79,19 @@ defineExpose({ getImages, getDraftChanges, clearImages })
             <span class="sp-btn__text">启动中…</span>
           </div>
           <div v-else key="idle" class="sp-btn__content">
-            <svg class="sp-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M20 7h-3.2l-1.5-2.2H8.7L7.2 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2Z"/>
-              <circle cx="12" cy="13" r="4"/>
+            <svg
+              class="sp-btn__icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path
+                d="M20 7h-3.2l-1.5-2.2H8.7L7.2 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2Z"
+              />
+              <circle cx="12" cy="13" r="4" />
             </svg>
             <span class="sp-btn__text">截图</span>
           </div>
@@ -104,7 +114,9 @@ defineExpose({ getImages, getDraftChanges, clearImages })
   border: 1px dashed rgba(128, 128, 128, 0.2);
   border-radius: 6rem;
   cursor: pointer;
-  transition: border-color 150ms ease, background-color 150ms ease;
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease;
   flex-shrink: 0;
   background: rgba(255, 255, 255, 0.02);
 }
@@ -124,7 +136,9 @@ defineExpose({ getImages, getDraftChanges, clearImages })
 }
 .sp-content-enter-active,
 .sp-content-leave-active {
-  transition: opacity var(--motion-fast) ease, transform var(--motion-control) var(--ease-standard);
+  transition:
+    opacity var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
 }
 .sp-content-enter-from,
 .sp-content-leave-to {
@@ -156,7 +170,8 @@ defineExpose({ getImages, getDraftChanges, clearImages })
   animation: sp-spin 0.7s linear infinite;
 }
 @keyframes sp-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
-
 </style>

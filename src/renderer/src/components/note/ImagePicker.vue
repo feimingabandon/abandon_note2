@@ -61,18 +61,20 @@ async function loadImages() {
     const records = await window.api.listImages(props.noteId)
 
     // 列表只加载缩略图；原图在用户点击预览时按需读取。
-    const items = await Promise.all(records.map(async (rec) => {
-      const thumbnail = await window.api.getImageThumbnail(rec.file_path, 240)
-      return {
-        id: rec.id,
-        name: rec.file_path.split(/[\\/]/).pop(),
-        size: rec.file_size,
-        filePath: rec.file_path,
-        dataUrl: thumbnail || '',
-        fullDataUrl: null,
-        saved: true
-      }
-    }))
+    const items = await Promise.all(
+      records.map(async (rec) => {
+        const thumbnail = await window.api.getImageThumbnail(rec.file_path, 240)
+        return {
+          id: rec.id,
+          name: rec.file_path.split(/[\\/]/).pop(),
+          size: rec.file_size,
+          filePath: rec.file_path,
+          dataUrl: thumbnail || '',
+          fullDataUrl: null,
+          saved: true
+        }
+      })
+    )
     if (seq !== imageLoadSeq) return
     images.value = items
     deletedImageIds.value = []
@@ -153,8 +155,14 @@ async function processFiles(files) {
       }
     } else {
       images.value[idx] = {
-        id: null, _key: tempId, name: file.name, size: file.size,
-        dataUrl, ext, base64: dataUrl.split(',')[1], saved: false
+        id: null,
+        _key: tempId,
+        name: file.name,
+        size: file.size,
+        dataUrl,
+        ext,
+        base64: dataUrl.split(',')[1],
+        saved: false
       }
     }
   }
@@ -289,21 +297,24 @@ function addImage(dataUrl, ext, name, size) {
   const base64 = dataUrl.split(',')[1]
   const resolvedSize = Number(size) > 0 ? Number(size) : getDataUrlSize(dataUrl)
   if (props.mode === 'persist' && props.noteId) {
-    window.api.saveImages(props.noteId, [{ base64, ext }]).then((results) => {
-      if (results && results.length > 0) {
-        const rec = results[0]
-        images.value.push({
-          id: rec.id,
-          name,
-          size: rec.file_size || resolvedSize,
-          dataUrl,
-          fullDataUrl: dataUrl,
-          filePath: rec.file_path,
-          saved: true
-        })
-        emitCount()
-      }
-    }).catch((e) => console.error('[ImagePicker] 截图保存失败:', e))
+    window.api
+      .saveImages(props.noteId, [{ base64, ext }])
+      .then((results) => {
+        if (results && results.length > 0) {
+          const rec = results[0]
+          images.value.push({
+            id: rec.id,
+            name,
+            size: rec.file_size || resolvedSize,
+            dataUrl,
+            fullDataUrl: dataUrl,
+            filePath: rec.file_path,
+            saved: true
+          })
+          emitCount()
+        }
+      })
+      .catch((e) => console.error('[ImagePicker] 截图保存失败:', e))
   } else {
     images.value.push({
       id: null,
@@ -377,7 +388,11 @@ function formatSize(bytes) {
 
     <!-- 缩略图列表：新增、删除与补位保持连续 -->
     <TransitionGroup name="ip-thumb" tag="div" class="ip-thumb-list">
-      <div v-for="(img, idx) in images" :key="img._key || img.id || `memory-${idx}`" class="ip-thumb">
+      <div
+        v-for="(img, idx) in images"
+        :key="img._key || img.id || `memory-${idx}`"
+        class="ip-thumb"
+      >
         <Transition name="ip-content" mode="out-in">
           <div v-if="img._loading" key="loading" class="ip-thumb__spinner">
             <div class="ip-spinner" />
@@ -391,7 +406,14 @@ function formatSize(bytes) {
             @click.stop="handlePreview(img)"
           />
         </Transition>
-        <button v-if="!readonly" class="ip-thumb__del" title="删除" @click.stop="handleDelete(img, idx)">×</button>
+        <button
+          v-if="!readonly"
+          class="ip-thumb__del"
+          title="删除"
+          @click.stop="handleDelete(img, idx)"
+        >
+          ×
+        </button>
         <span v-if="!img._loading" class="ip-thumb__size">{{ formatSize(img.size) }}</span>
       </div>
     </TransitionGroup>
@@ -433,7 +455,9 @@ function formatSize(bytes) {
   border: 1px dashed rgba(128, 128, 128, 0.2);
   border-radius: 6rem;
   cursor: pointer;
-  transition: border-color 150ms ease, background-color 150ms ease;
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease;
   flex-shrink: 0;
   background: rgba(255, 255, 255, 0.02);
 }
@@ -599,6 +623,8 @@ function formatSize(bytes) {
   animation: ip-spin 0.8s linear infinite;
 }
 @keyframes ip-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

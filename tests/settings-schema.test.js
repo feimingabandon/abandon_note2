@@ -5,6 +5,25 @@ import {
   serializeSetting
 } from '../src/shared/settings-schema.js'
 
+describe('titlebar appearance setting', () => {
+  it('defaults to Apple and persists either supported visual style', () => {
+    expect(DEFAULT_SETTINGS.appearance.titlebarStyle).toBe('apple')
+    expect(serializeSetting('appearance.titlebarStyle', 'microsoft')).toMatchObject({
+      type: 'appearance',
+      key: 'titlebar_style',
+      value: 'microsoft'
+    })
+  })
+
+  it('falls back to Apple for an unknown persisted style', () => {
+    expect(
+      resolveSettingsRows([
+        { type: 'appearance', key: 'titlebar_style', value: 'unsupported-style' }
+      ]).appearance.titlebarStyle
+    ).toBe('apple')
+  })
+})
+
 describe('sticky default settings schema', () => {
   it('provides stable defaults for newly created sticky windows', () => {
     expect(DEFAULT_SETTINGS.sticky).toEqual({

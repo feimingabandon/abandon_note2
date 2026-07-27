@@ -61,14 +61,20 @@ html {
 
 /* ---- 全局 CSS 自定义属性（Design Tokens） ---- */
 :root {
-  --font-family-text: 'OPPOSans', 'Segoe UI', 'Microsoft YaHei', sans-serif; /* OPPOSans 为主字体，Segoe UI / 微软雅黑为回退 */
-  --font-family-mono: 'SF Mono', 'Consolas', monospace; /* 跨平台等宽字体：macOS 取 SF Mono，Windows 取 Consolas */
-  --text-color-secondary: color-mix(in srgb, var(--text-color) 50%, transparent); /* 辅助文字颜色（主文字色 60% 混合透明） */
+  --font-family-text:
+    'OPPOSans', 'Segoe UI', 'Microsoft YaHei', sans-serif; /* OPPOSans 为主字体，Segoe UI / 微软雅黑为回退 */
+  --font-family-mono:
+    'SF Mono', 'Consolas', monospace; /* 跨平台等宽字体：macOS 取 SF Mono，Windows 取 Consolas */
+  --text-color-secondary: color-mix(
+    in srgb,
+    var(--text-color) 50%,
+    transparent
+  ); /* 辅助文字颜色（主文字色 60% 混合透明） */
 
   /* ---- 字号层级（以 --font-size-base 为基准按比例缩放） ---- */
-  --fs-title:      calc(var(--font-size-base) * 1.125);  /* 标题（base=18 → 20.25） */
-  --fs-body:       var(--font-size-base);                 /* 正文/标签/按钮 */
-  --fs-secondary:  calc(var(--font-size-base) * 0.8);  /* 所有辅助文字（base=18 → 15.75） */
+  --fs-title: calc(var(--font-size-base) * 1.125); /* 标题（base=18 → 20.25） */
+  --fs-body: var(--font-size-base); /* 正文/标签/按钮 */
+  --fs-secondary: calc(var(--font-size-base) * 0.8); /* 所有辅助文字（base=18 → 15.75） */
 
   /* 持久化 CSS 变量由 main.js 在挂载前从 shared/settings-schema.js 注入。 */
   --glass-blur-base: var(--bg-blur);

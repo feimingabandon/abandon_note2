@@ -40,8 +40,8 @@ import {
   createNote,
   updateNote,
   deleteNote,
-  purgeNote,
   getNoteById,
+  normalizeRequiredNoteContent,
   queryPinnedNotes,
   queryRecentNotes,
   queryEarlierNotes,
@@ -86,10 +86,9 @@ import {
   cleanupStagedImage,
   stageImageDeletion,
   restoreStagedImageDeletion,
-  stageNoteImagesDeletion,
-  cleanupStagedNoteImages,
   deleteImageFile,
-  deleteNoteImages,
+  deleteImageRecordAndFile,
+  purgeNoteAndFiles,
   getImageBase64,
   getImageThumbnail,
   addImageRecord,
@@ -112,6 +111,7 @@ import { TemplateSchedulerGuard } from './services/template-scheduler-guard.js'
 import { sendNotificationSafely } from './services/notification-guard.js'
 import { ElectronStickyService } from './sticky/ElectronStickyService.js'
 import { buildStickyTrayTemplate } from './sticky/StickyTrayMenu.js'
+import { constrainMainWindowBounds } from './window-bounds.js'
 import {
   DEFAULT_SETTINGS,
   createDefaultSettings,
@@ -134,6 +134,7 @@ const APP_PROTOCOL = 'abandon-note'
 const SNOOZE_DELAY_MS = 10 * 60 * 1000
 const SYSTEM_NOTIFICATION_CAPABILITY = getSystemNotificationCapability(process.platform)
 const RENDERER_WRITABLE_SETTING_IDS = new Set([
+  'appearance.titlebarStyle',
   'css.bgColor',
   'css.popupOpacity',
   'css.bgBlur',
@@ -737,7 +738,14 @@ function createWindow() {
         height: geometry.height
       }
     : null
-  const bounds = saved || { x: defaultX, y: defaultY, width: defaultW, height: defaultH }
+  const requestedBounds = saved || {
+    x: defaultX,
+    y: defaultY,
+    width: defaultW,
+    height: defaultH
+  }
+  const targetDisplay = saved ? screen.getDisplayMatching(saved) : display
+  const bounds = constrainMainWindowBounds(requestedBounds, targetDisplay.workArea)
 
   // 创建主窗口实例（透明背景 + CSS 圆角）
   mainWindow = new BrowserWindow({
@@ -1870,8 +1878,7 @@ app.whenReady().then(async () => {
     const original = getNoteById(id)
     if (!original) throw new Error('便签不存在或已删除')
 
-    const content = String(fields.content ?? '').trim()
-    if (!content) throw new Error('请输入便签内容')
+    const content = normalizeRequiredNoteContent(fields.content)
 
     const requestedStatus = String(fields.status || original.status)
     if (requestedStatus !== original.status) {
@@ -1994,27 +2001,12 @@ app.whenReady().then(async () => {
     return deleted
   })
 
-  // 【便签 - 彻底删除】先隔离附件目录，数据库失败时恢复；成功后异步清理文件。
+  // 【便签 - 彻底删除】仅供用户明确确认的永久删除入口使用。
   ipcMain.handle('notes:purge', async (_event, { id }) => {
     const noteId = Number(id)
-    if (!Number.isInteger(noteId) || noteId <= 0) throw new Error('无效的便签 ID')
-    if (!getDb().prepare('SELECT id FROM notes WHERE id = ?').get(noteId)) return false
-
-    const stagedImages = stageNoteImagesDeletion(noteId)
-    try {
-      const purged = purgeNote(noteId)
-      if (!purged) {
-        restoreStagedImageDeletion(stagedImages)
-        return false
-      }
-    } catch (error) {
-      restoreStagedImageDeletion(stagedImages)
-      throw error
-    }
-
-    await cleanupStagedNoteImages(stagedImages)
-    mainWindow?.webContents.send('notes:changed', { reason: 'purge', id: noteId })
-    return true
+    const purged = await purgeNoteAndFiles(noteId)
+    if (purged) mainWindow?.webContents.send('notes:changed', { reason: 'purge', id: noteId })
+    return purged
   })
 
   // 【便签 - 获取单条（含附件和标签）】
@@ -2226,19 +2218,7 @@ app.whenReady().then(async () => {
 
   /** 删除图片记录 + 文件 */
   ipcMain.handle('images:delete', async (_event, { id }) => {
-    const db = getDb()
-    const row = db
-      .prepare(
-        `SELECT a.* FROM note_attachments a
-         INNER JOIN notes n ON n.id = a.note_id
-         WHERE a.id = ? AND n.is_deleted = 0`
-      )
-      .get(id)
-    if (!row) return false
-    if (!(await deleteImageFile(row.file_path))) throw new Error('删除图片文件失败')
-    db.prepare('DELETE FROM note_attachments WHERE id = ?').run(id)
-    db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(Date.now(), row.note_id)
-    return true
+    return deleteImageRecordAndFile(id)
   })
 
   /** 获取便签的所有图片附件 */
@@ -2259,12 +2239,6 @@ app.whenReady().then(async () => {
   /** 获取图片数量 */
   ipcMain.handle('images:count', (_event, { noteId }) => {
     return getImageCount(noteId)
-  })
-
-  /** 物理删除便签的所有图片（逻辑删除时不调用） */
-  ipcMain.handle('images:delete-note-dir', async (_event, { noteId }) => {
-    await deleteNoteImages(noteId)
-    return true
   })
 
   // ---- 截图 IPC ----

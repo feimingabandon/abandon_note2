@@ -145,7 +145,7 @@ watch([displayContent, () => props.query], async () => {
   measureContentOverflow()
 })
 
-// 与首页便签卡片一致的右键菜单定位；搜索结果额外提供不可恢复的彻底删除入口。
+// 与首页便签卡片一致的右键菜单定位；搜索结果额外提供明确确认的彻底删除入口。
 const contextMenuVisible = ref(false)
 const contextMenuRef = ref(null)
 const contextMenuStyle = ref({})

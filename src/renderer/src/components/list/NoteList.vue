@@ -126,11 +126,7 @@ const panelState = ref('taiji')
 const statusFilter = ref([...DEFAULT_SETTINGS.listFilter.statusFilter])
 
 /** FilterTabs 选项 */
-const panelOptions = [
-  { value: 'tags', label: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision" xmlns="http://www.w3.org/2000/svg"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>' },
-  { value: 'taiji', label: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 3a4.5 4.5 0 0 1 0 9 4.5 4.5 0 0 0 0 9"/><circle cx="12" cy="7.5" r="1.5" fill="currentColor" stroke="none"/></svg>' },
-  { value: 'status', label: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision" xmlns="http://www.w3.org/2000/svg"><path d="M12 12C8 9.5 8 3.5 12 3.5C16 3.5 16 9.5 12 12Z"/><path d="M12 12C8 9.5 8 3.5 12 3.5C16 3.5 16 9.5 12 12Z" transform="rotate(120 12 12)"/><path d="M12 12C8 9.5 8 3.5 12 3.5C16 3.5 16 9.5 12 12Z" transform="rotate(240 12 12)"/></svg>' }
-]
+const panelOptions = [{ value: 'tags' }, { value: 'taiji' }, { value: 'status' }]
 
 /** 面板点击：单选 + 展开/收起逻辑 */
 function onPanelClick(value) {
@@ -159,7 +155,7 @@ function toggleStatus(value) {
   if (idx === -1) {
     statusFilter.value = [...statusFilter.value, value]
   } else {
-    statusFilter.value = statusFilter.value.filter(s => s !== value)
+    statusFilter.value = statusFilter.value.filter((s) => s !== value)
   }
 }
 
@@ -175,19 +171,27 @@ let customMoreRequestSeq = 0
 /** 三天截止时间戳（毫秒）：今天 23:59:59 倒推 3×24h 再减 1 秒 */
 function threeDayCutoff() {
   const now = new Date()
-  const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime()
+  const todayEnd = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    23,
+    59,
+    59,
+    999
+  ).getTime()
   return todayEnd - 3 * 24 * 60 * 60 * 1000 - 1000
 }
 
 // ---- 时间线模式：单一统一列表 ----
-const noteList = ref([])          // 唯一列表（置顶 + 三天 + 更早已加载）
-const earlierIds = ref(new Set())  // 方法三写入的便签 ID（折叠时用于定点清除）
+const noteList = ref([]) // 唯一列表（置顶 + 三天 + 更早已加载）
+const earlierIds = ref(new Set()) // 方法三写入的便签 ID（折叠时用于定点清除）
 const earlierOffset = ref(0)
 const earlierHasMore = ref(false)
 const earlierLoading = ref(false)
-const earlierHasData = ref(false)  // 更早是否有数据（loadAll 时通过 count 查询获知）
+const earlierHasData = ref(false) // 更早是否有数据（loadAll 时通过 count 查询获知）
 const earlierTotal = ref(0)
-const earlierLimit = ref(10)       // 每次查询条数（首 10，滚动后 20）
+const earlierLimit = ref(10) // 每次查询条数（首 10，滚动后 20）
 
 /** 时间线模式：并行加载置顶 + 三天 + 更早计数，合并到单一列表 */
 function captureScrollAnchor() {
@@ -210,8 +214,9 @@ async function restoreScrollAnchor(anchor) {
     container.scrollTop = anchor.scrollTop || 0
     return
   }
-  const card = [...container.querySelectorAll('[data-note-id]')]
-    .find((item) => item.dataset.noteId === anchor.id)
+  const card = [...container.querySelectorAll('[data-note-id]')].find(
+    (item) => item.dataset.noteId === anchor.id
+  )
   if (!card) return
   const containerTop = container.getBoundingClientRect().top
   container.scrollTop += card.getBoundingClientRect().top - containerTop - anchor.offset
@@ -228,9 +233,10 @@ async function loadAll({ showLoading = true, preserveAnchor = false } = {}) {
   const loadedEarlierCount = earlierIds.value.size
   if (showLoading) loading.value = true
   try {
-    const statuses = statusFilter.value.length > 0
-      ? [...statusFilter.value]
-      : ['initialized', 'in_progress', 'completed']
+    const statuses =
+      statusFilter.value.length > 0
+        ? [...statusFilter.value]
+        : ['initialized', 'in_progress', 'completed']
     const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
     const cutoff = threeDayCutoff()
 
@@ -281,9 +287,10 @@ async function loadEarlier() {
   const parentLoadSeq = loadSeq
   earlierLoading.value = true
   try {
-    const statuses = statusFilter.value.length > 0
-      ? [...statusFilter.value]
-      : ['initialized', 'in_progress', 'completed']
+    const statuses =
+      statusFilter.value.length > 0
+        ? [...statusFilter.value]
+        : ['initialized', 'in_progress', 'completed']
     const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
     const cutoff = threeDayCutoff()
 
@@ -329,7 +336,7 @@ function onEarlierExpand() {
 
 /** 收起更早：从统一列表中移除方法三写入的便签 */
 function collapseEarlier() {
-  noteList.value = noteList.value.filter(n => !earlierIds.value.has(n.id))
+  noteList.value = noteList.value.filter((n) => !earlierIds.value.has(n.id))
   earlierIds.value = new Set()
   earlierOffset.value = 0
   earlierHasMore.value = false
@@ -355,11 +362,11 @@ function onTimelineScroll(e) {
 const totalRendered = computed(() => noteList.value.length)
 
 // ---- 自定义模式：单列表 + 日常分页 ----
-const customList = ref([])          // 唯一列表（置顶 + 日常已加载）
+const customList = ref([]) // 唯一列表（置顶 + 日常已加载）
 const customNormalOffset = ref(0)
 const customNormalHasMore = ref(false)
 const customNormalTotal = ref(0)
-const customNormalLimit = ref(10)   // 首 10，滚动后 20
+const customNormalLimit = ref(10) // 首 10，滚动后 20
 const customNormalLoading = ref(false)
 
 /** 自定义模式：并行加载置顶 + 日常首 10 条 */
@@ -373,9 +380,10 @@ async function loadCustom({ showLoading = true, preserveAnchor = false } = {}) {
   const anchor = preserveAnchor ? captureScrollAnchor() : null
   if (showLoading) loading.value = true
   try {
-    const statuses = statusFilter.value.length > 0
-      ? [...statusFilter.value]
-      : ['initialized', 'in_progress', 'completed']
+    const statuses =
+      statusFilter.value.length > 0
+        ? [...statusFilter.value]
+        : ['initialized', 'in_progress', 'completed']
     const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
 
     const normalLimit = preserveAnchor
@@ -412,9 +420,10 @@ async function loadCustomMore() {
   const parentLoadSeq = loadSeq
   customNormalLoading.value = true
   try {
-    const statuses = statusFilter.value.length > 0
-      ? [...statusFilter.value]
-      : ['initialized', 'in_progress', 'completed']
+    const statuses =
+      statusFilter.value.length > 0
+        ? [...statusFilter.value]
+        : ['initialized', 'in_progress', 'completed']
     const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
 
     const result = await window.api.queryCustomNormal({
@@ -533,7 +542,7 @@ const timelineGroups = computed(() => {
     ...earlierDateGroups
   ]
 
-  const filtered = all.filter(g => {
+  const filtered = all.filter((g) => {
     if (g.group === 'earlier') return earlierHasData.value
     return g.items.length > 0
   })
@@ -572,16 +581,20 @@ const customNormalNotes = ref([])
 
 /** 从 customList 派生拖拽区数组 */
 function syncCustomZones() {
-  customPinnedNotes.value = customList.value.filter(n => n.is_pinned)
-  customNormalNotes.value = customList.value.filter(n => !n.is_pinned)
+  customPinnedNotes.value = customList.value.filter((n) => n.is_pinned)
+  customNormalNotes.value = customList.value.filter((n) => !n.is_pinned)
 }
 
 /** customList 变化时自动同步拖拽区 */
 let _customSyncTimer = null
-watch(customList, () => {
-  clearTimeout(_customSyncTimer)
-  _customSyncTimer = setTimeout(syncCustomZones, 0)
-}, { deep: false })
+watch(
+  customList,
+  () => {
+    clearTimeout(_customSyncTimer)
+    _customSyncTimer = setTimeout(syncCustomZones, 0)
+  },
+  { deep: false }
+)
 
 // ---- 拖拽排序回调 ----
 
@@ -659,11 +672,12 @@ function finishStatusTransition(noteId, delay, callback) {
 async function onCardStatusAction(note) {
   if (statusTransitions.has(note.id)) return
   const from = note.status
-  const to = from === 'initialized' || from === 'completed'
-    ? 'in_progress'
-    : from === 'in_progress'
-      ? 'completed'
-      : null
+  const to =
+    from === 'initialized' || from === 'completed'
+      ? 'in_progress'
+      : from === 'in_progress'
+        ? 'completed'
+        : null
   if (!to) return
 
   // 先给 0 延迟的点击确认；只有请求超过 120ms 才显示轨道等待光。
@@ -687,7 +701,8 @@ async function onCardStatusAction(note) {
 
     if (!updated) throw new Error('状态接口未返回更新后的便签')
     clearStatusTimer(note.id, 'waiting')
-    const remainsVisible = statusFilter.value.length === 0 || statusFilter.value.includes(updated.status)
+    const remainsVisible =
+      statusFilter.value.length === 0 || statusFilter.value.includes(updated.status)
     // 完成态的灰层必须等扫描真正抵达卡片右端后才出现。
     const commitDelay = to === 'completed' ? 920 : 125
     const totalDuration = 1000
@@ -697,7 +712,8 @@ async function onCardStatusAction(note) {
     scheduleStatusTransition(note.id, 'commit', commitDelay, () => {
       // 提前开始会改变时间线分组。动画期间保留旧生效时间，避免卡片在圆环
       // 过渡尚未完成时被 Vue 从“未来”卸载、又在“今天”重新挂载。
-      const resetsEffectiveTime = ['initialized', 'completed'].includes(from) && to === 'in_progress'
+      const resetsEffectiveTime =
+        ['initialized', 'completed'].includes(from) && to === 'in_progress'
       const displayUpdate = resetsEffectiveTime
         ? { ...updated, effective_at: note.effective_at }
         : updated
@@ -727,10 +743,14 @@ function patchVisibleNote(updated, force = false) {
   const allowed = statusFilter.value.length === 0 || statusFilter.value.includes(updated.status)
   if (!allowed && !force) return false
   if (sortMode.value === 'timeline') {
-    noteList.value = noteList.value.map((note) => note.id === updated.id ? mergeListItem(note, updated) : note)
+    noteList.value = noteList.value.map((note) =>
+      note.id === updated.id ? mergeListItem(note, updated) : note
+    )
     return true
   }
-  customList.value = customList.value.map((note) => note.id === updated.id ? mergeListItem(note, updated) : note)
+  customList.value = customList.value.map((note) =>
+    note.id === updated.id ? mergeListItem(note, updated) : note
+  )
   syncCustomZones()
   return true
 }
@@ -752,9 +772,10 @@ function mergeListItem(current, updated) {
 async function refreshOne(noteOrId) {
   const id = typeof noteOrId === 'object' ? noteOrId?.id : noteOrId
   if (!id) return
-  const updated = typeof noteOrId === 'object' && Array.isArray(noteOrId.tags)
-    ? noteOrId
-    : await window.api.getNote(id)
+  const updated =
+    typeof noteOrId === 'object' && Array.isArray(noteOrId.tags)
+      ? noteOrId
+      : await window.api.getNote(id)
   if (updated) {
     if (!patchVisibleNote(updated)) await refreshInBackground()
     else lastRefreshedAt.value = Date.now()
@@ -781,7 +802,8 @@ async function replayListRefresh() {
   replayRefreshRunning = true
   const refreshSeq = ++presenceMotionSeq
   try {
-    const container = sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
+    const container =
+      sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
     const scrollTop = container?.scrollTop || 0
     await animateCurrentCardsOut()
     if (refreshSeq !== presenceMotionSeq) {
@@ -805,7 +827,8 @@ async function replayListRefresh() {
       return
     }
     await nextTick()
-    const refreshedContainer = sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
+    const refreshedContainer =
+      sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
     if (refreshedContainer) refreshedContainer.scrollTop = scrollTop
     animateRetainedCards(new Map())
   } finally {
@@ -855,7 +878,6 @@ async function switchMode(mode, loadOptions, cancelPresence = true) {
 function retryLoad() {
   switchMode(sortMode.value, { showLoading: true, preserveAnchor: false })
 }
-
 
 /** 是否正在恢复持久化状态（恢复期间抑制自动重载/持久化，避免重复请求） */
 let restoring = false
@@ -956,8 +978,7 @@ watch(
     if (restoring) return
     if (nextMode !== previousMode) {
       if (!modePresenceSwitching) switchMode(nextMode)
-    }
-    else refreshInBackground()
+    } else refreshInBackground()
     saveFilterState() // 持久化筛选条件
   },
   { deep: true }
@@ -1024,7 +1045,11 @@ defineExpose({
 
       <!-- 中：功能板块（单选切换） -->
       <div class="nl-toolbar-center">
-        <FilterTabs :modelValue="panelState" :options="panelOptions" @update:modelValue="onPanelClick" />
+        <FilterTabs
+          :model-value="panelState"
+          :options="panelOptions"
+          @update:model-value="onPanelClick"
+        />
       </div>
 
       <!-- 右：展示板块（文字 + 切换图标） -->
@@ -1034,7 +1059,21 @@ defineExpose({
             <span :key="sortMode" class="nl-mode-label">{{ sortModeLabel }}</span>
           </Transition>
           <span class="nl-mode-icon" :class="{ 'nl-mode-icon--spin': modeSpinning }">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 5.5h9l-2.4-2.4M12.5 10.5h-9l2.4 2.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M3.5 5.5h9l-2.4-2.4M12.5 10.5h-9l2.4 2.4"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
           </span>
         </button>
       </div>
@@ -1059,7 +1098,9 @@ defineExpose({
                 :class="{ 'nl-status-chip--active': statusFilter.includes(s.value) }"
                 :style="{ animationDelay: staggerDelay(i) }"
                 @click="toggleStatus(s.value)"
-              >{{ s.label }}</button>
+              >
+                {{ s.label }}
+              </button>
             </div>
           </div>
         </div>
@@ -1075,50 +1116,68 @@ defineExpose({
 
     <!-- ======== 时间线模式（时间标记 + 统一便签流） ======== -->
     <template v-else-if="sortMode === 'timeline'">
-      <div ref="timelineScrollRef" class="nl-timeline nl-list-scroll scroll-y" @scroll="onTimelineScroll">
+      <div
+        ref="timelineScrollRef"
+        class="nl-timeline nl-list-scroll scroll-y"
+        @scroll="onTimelineScroll"
+      >
         <div v-if="timelineIsEmpty" class="nl-empty-state">暂无便签</div>
         <template v-else>
-        <div
-          v-for="g in timelineGroups"
-          :key="g.group"
-          class="nl-group nl-section"
-          :class="{ 'nl-group--earlier-toggle': g.group === 'earlier' }"
-        >
           <div
-            class="nl-group-label-row"
-            :class="{ 'nl-group-label-row--earlier': g.group === 'earlier' }"
-            @click="g.group === 'earlier' && toggleGroupCollapse('earlier')"
+            v-for="g in timelineGroups"
+            :key="g.group"
+            class="nl-group nl-section"
+            :class="{ 'nl-group--earlier-toggle': g.group === 'earlier' }"
           >
-            <span class="nl-group-label">{{ g.label }}</span>
-            <span class="nl-group-count">· {{ g.count ?? g.items.length }}条</span>
-            <span v-if="lastRefreshLabel" class="nl-group-refresh-time">
-              · 刷新 {{ lastRefreshLabel }}
-            </span>
-            <svg
-              v-if="g.group === 'earlier'"
-              width="12" height="12" viewBox="0 0 24 24"
-              fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round"
-              class="nl-group-chevron"
-              :class="{ 'nl-group-chevron--collapsed': collapsedGroups['earlier'] }"
+            <div
+              class="nl-group-label-row"
+              :class="{ 'nl-group-label-row--earlier': g.group === 'earlier' }"
+              @click="g.group === 'earlier' && toggleGroupCollapse('earlier')"
             >
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
+              <span class="nl-group-label">{{ g.label }}</span>
+              <span class="nl-group-count">· {{ g.count ?? g.items.length }}条</span>
+              <span v-if="lastRefreshLabel" class="nl-group-refresh-time">
+                · 刷新 {{ lastRefreshLabel }}
+              </span>
+              <svg
+                v-if="g.group === 'earlier'"
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                class="nl-group-chevron"
+                :class="{ 'nl-group-chevron--collapsed': collapsedGroups['earlier'] }"
+              >
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </div>
+            <template v-if="g.group !== 'earlier'">
+              <NoteCard
+                v-for="note in g.items"
+                :key="note.id"
+                :note="note"
+                :status-transition="statusTransitionFor(note.id)"
+                @edit="emit('edit', $event)"
+                @status-action="onCardStatusAction"
+              />
+            </template>
           </div>
-          <template v-if="g.group !== 'earlier'">
-            <NoteCard
-              v-for="note in g.items"
-              :key="note.id"
-              :note="note"
-              :status-transition="statusTransitionFor(note.id)"
-              @edit="emit('edit', $event)"
-              @status-action="onCardStatusAction"
-            />
-          </template>
-        </div>
-        <!-- 更早加载提示 -->
-        <div v-if="!collapsedGroups['earlier'] && earlierLoading" class="nl-earlier-hint">加载中…</div>
-        <div v-else-if="!collapsedGroups['earlier'] && earlierHasData && !earlierHasMore && earlierOffset > 0" class="nl-earlier-hint">没有更多便签</div>
+          <!-- 更早加载提示 -->
+          <div v-if="!collapsedGroups['earlier'] && earlierLoading" class="nl-earlier-hint">
+            加载中…
+          </div>
+          <div
+            v-else-if="
+              !collapsedGroups['earlier'] && earlierHasData && !earlierHasMore && earlierOffset > 0
+            "
+            class="nl-earlier-hint"
+          >
+            没有更多便签
+          </div>
         </template>
       </div>
       <!-- 底部计数 -->
@@ -1131,73 +1190,78 @@ defineExpose({
     <!-- ======== 自定义模式 ======== -->
     <template v-else>
       <div ref="customScrollRef" class="nl-custom nl-list-scroll scroll-y" @scroll="onCustomScroll">
-      <div v-if="customTotalRendered === 0" class="nl-empty-state">暂无便签</div>
-      <template v-else>
-      <!-- 置顶区 -->
-      <div v-if="customPinnedNotes.length > 0" class="nl-zone nl-section">
-        <div class="nl-zone-label">
-          <span>置顶</span>
-          <span class="nl-group-count">· {{ customPinnedNotes.length }}条</span>
-          <span v-if="lastRefreshLabel" class="nl-group-refresh-time">
-            · 刷新 {{ lastRefreshLabel }}
-          </span>
-        </div>
-        <draggable
-          v-model="customPinnedNotes"
-          :group="{ name: 'custom-pinned', pull: false, put: false }"
-          item-key="id"
-          class="nl-dropzone"
-          ghost-class="nl-ghost"
-          handle=".nl-drag-handle"
-          :animation="180"
-          @end="onCustomPinnedDragEnd"
-        >
-          <template #item="{ element: note }">
-            <NoteCard
-              :note="note"
-              draggable
-              :status-transition="statusTransitionFor(note.id)"
-              @edit="emit('edit', $event)"
-              @status-action="onCardStatusAction"
-            />
-          </template>
-        </draggable>
-      </div>
+        <div v-if="customTotalRendered === 0" class="nl-empty-state">暂无便签</div>
+        <template v-else>
+          <!-- 置顶区 -->
+          <div v-if="customPinnedNotes.length > 0" class="nl-zone nl-section">
+            <div class="nl-zone-label">
+              <span>置顶</span>
+              <span class="nl-group-count">· {{ customPinnedNotes.length }}条</span>
+              <span v-if="lastRefreshLabel" class="nl-group-refresh-time">
+                · 刷新 {{ lastRefreshLabel }}
+              </span>
+            </div>
+            <draggable
+              v-model="customPinnedNotes"
+              :group="{ name: 'custom-pinned', pull: false, put: false }"
+              item-key="id"
+              class="nl-dropzone"
+              ghost-class="nl-ghost"
+              handle=".nl-drag-handle"
+              :animation="180"
+              @end="onCustomPinnedDragEnd"
+            >
+              <template #item="{ element: note }">
+                <NoteCard
+                  :note="note"
+                  draggable
+                  :status-transition="statusTransitionFor(note.id)"
+                  @edit="emit('edit', $event)"
+                  @status-action="onCardStatusAction"
+                />
+              </template>
+            </draggable>
+          </div>
 
-      <!-- 日常区 -->
-      <div class="nl-zone nl-section">
-        <div class="nl-zone-label">
-          <span>日常</span>
-          <span class="nl-group-count">· {{ customNormalTotal }}条</span>
-          <span v-if="lastRefreshLabel" class="nl-group-refresh-time">
-            · 刷新 {{ lastRefreshLabel }}
-          </span>
-        </div>
-        <draggable
-          v-model="customNormalNotes"
-          :group="{ name: 'custom-normal', pull: false, put: false }"
-          item-key="id"
-          class="nl-dropzone"
-          ghost-class="nl-ghost"
-          handle=".nl-drag-handle"
-          :animation="180"
-          @end="onCustomNormalDragEnd"
-        >
-          <template #item="{ element: note }">
-            <NoteCard
-              :note="note"
-              draggable
-              :status-transition="statusTransitionFor(note.id)"
-              @edit="emit('edit', $event)"
-              @status-action="onCardStatusAction"
-            />
-          </template>
-        </draggable>
-        <div v-if="customNormalLoading" class="nl-earlier-hint">加载中…</div>
-        <div v-else-if="customNormalNotes.length > 0 && !customNormalHasMore" class="nl-earlier-hint">没有更多便签</div>
+          <!-- 日常区 -->
+          <div class="nl-zone nl-section">
+            <div class="nl-zone-label">
+              <span>日常</span>
+              <span class="nl-group-count">· {{ customNormalTotal }}条</span>
+              <span v-if="lastRefreshLabel" class="nl-group-refresh-time">
+                · 刷新 {{ lastRefreshLabel }}
+              </span>
+            </div>
+            <draggable
+              v-model="customNormalNotes"
+              :group="{ name: 'custom-normal', pull: false, put: false }"
+              item-key="id"
+              class="nl-dropzone"
+              ghost-class="nl-ghost"
+              handle=".nl-drag-handle"
+              :animation="180"
+              @end="onCustomNormalDragEnd"
+            >
+              <template #item="{ element: note }">
+                <NoteCard
+                  :note="note"
+                  draggable
+                  :status-transition="statusTransitionFor(note.id)"
+                  @edit="emit('edit', $event)"
+                  @status-action="onCardStatusAction"
+                />
+              </template>
+            </draggable>
+            <div v-if="customNormalLoading" class="nl-earlier-hint">加载中…</div>
+            <div
+              v-else-if="customNormalNotes.length > 0 && !customNormalHasMore"
+              class="nl-earlier-hint"
+            >
+              没有更多便签
+            </div>
+          </div>
+        </template>
       </div>
-      </template>
-    </div>
       <!-- 底部计数 -->
       <div v-if="customTotalRendered > 0 || allNoteTotal > 0" class="nl-footer-count">
         <span>当前{{ customTotalRendered }}条</span>
@@ -1342,7 +1406,9 @@ defineExpose({
   letter-spacing: 0.02em;
   animation: nl-state-in var(--motion-control) ease both;
 }
-.nl-load-error { gap: 10rem; }
+.nl-load-error {
+  gap: 10rem;
+}
 .nl-load-error button {
   border: 0;
   border-radius: 6rem;
@@ -1353,8 +1419,14 @@ defineExpose({
 }
 
 @keyframes nl-state-in {
-  from { opacity: 0; transform: translateY(4rem); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(4rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ===== 时间线 ===== */
@@ -1374,12 +1446,7 @@ defineExpose({
     black calc(100% - 30rem),
     transparent 100%
   );
-  mask-image: linear-gradient(
-    to bottom,
-    black 0%,
-    black calc(100% - 30rem),
-    transparent 100%
-  );
+  mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
 }
 
 /* 日期分组：用日期、数量和延伸线表达时间层级，不额外占用横向轨道。 */
@@ -1404,7 +1471,9 @@ defineExpose({
 .nl-group-label,
 .nl-group-count,
 .nl-group-refresh-time,
-.nl-group-chevron { flex-shrink: 0; }
+.nl-group-chevron {
+  flex-shrink: 0;
+}
 .nl-group-count {
   font-size: calc(var(--fs-secondary) * 0.82);
   font-weight: 400;
@@ -1416,7 +1485,9 @@ defineExpose({
   opacity: 0.52;
   white-space: nowrap;
 }
-.nl-group--earlier-toggle + .nl-section { margin-top: 8rem; }
+.nl-group--earlier-toggle + .nl-section {
+  margin-top: 8rem;
+}
 
 /* 折叠箭头：收起时旋转 -90° */
 .nl-group-chevron {
@@ -1457,12 +1528,7 @@ defineExpose({
     black calc(100% - 30rem),
     transparent 100%
   );
-  mask-image: linear-gradient(
-    to bottom,
-    black 0%,
-    black calc(100% - 30rem),
-    transparent 100%
-  );
+  mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
 }
 .nl-zone--archived {
   opacity: 0.6;
@@ -1499,10 +1565,15 @@ defineExpose({
 }
 
 @keyframes nl-chip-in {
-  from { opacity: 0; transform: translateY(4rem); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(4rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
-
 
 /* ===== 展开面板容器（标签 / 状态）===== */
 /* 动画元素本身不留内边距：全局 box-sizing:border-box 下，height:0 会被 padding 撑住无法归零，
@@ -1510,7 +1581,8 @@ defineExpose({
    把间距放到内层 .nl-panel-inner，其高度仍计入外层 scrollHeight，动画即可平滑收到 0。
    外层 overflow 由 onPanelEnter / onPanelLeave 钩子在动画期间接管，动画结束后还原，
    避免常驻裁剪掉选中标签的 box-shadow 光晕。 */
-.nl-panel-inner {}
+.nl-panel-inner {
+}
 
 /* ===== 标签筛选栏 ===== */
 .nl-tags {
