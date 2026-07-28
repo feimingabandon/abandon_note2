@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Verify tag matches package version
         if: github.event_name == 'push'
@@ -38,10 +38,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22.22.3
           cache: npm
@@ -66,7 +66,7 @@ jobs:
         run: npx electron-builder --win nsis --x64 --publish never
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: abandon-note-windows-x64
           path: |
@@ -90,10 +90,10 @@ jobs:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22.22.3
           cache: npm
@@ -108,7 +108,7 @@ jobs:
         run: npx electron-builder --mac dmg --${{ matrix.arch }} --publish never
 
       - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: abandon-note-macos-${{ matrix.arch }}
           path: dist/Abandon-Note-*-macos-${{ matrix.arch }}.dmg
@@ -127,7 +127,7 @@ jobs:
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: release-assets
           merge-multiple: true
