@@ -141,6 +141,34 @@ describe('app update metadata', () => {
     })
   })
 
+  it('distinguishes no published Release from a network failure', async () => {
+    const noRelease = new AppUpdateService({
+      currentVersion: '0.9.0',
+      platform: 'win32',
+      arch: 'x64',
+      downloadDirectory: 'unused',
+      fetchImpl: async () => jsonResponse({ message: 'Not Found' }, 404)
+    })
+    await expect(noRelease.check()).resolves.toMatchObject({
+      status: 'unpublished',
+      error: '当前还没有公开发布版本。首次 Release 发布后，这里会显示最新版本。'
+    })
+
+    const offline = new AppUpdateService({
+      currentVersion: '0.9.0',
+      platform: 'win32',
+      arch: 'x64',
+      downloadDirectory: 'unused',
+      fetchImpl: async () => {
+        throw new Error('network unavailable')
+      }
+    })
+    await expect(offline.check()).resolves.toMatchObject({
+      status: 'error',
+      error: '暂时无法连接更新服务。请稍后重试，或使用下方发布页手动查看。'
+    })
+  })
+
   it('downloads a complete installer and reuses the verified existing file', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'abandon-update-test-'))
     const progress = []

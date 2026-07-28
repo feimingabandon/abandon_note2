@@ -82,9 +82,9 @@ export function normalizeRelease(payload, source) {
   }
 }
 
-function manualResult({ currentVersion, platform, arch, error = null }) {
+function manualResult({ currentVersion, platform, arch, status = 'unsupported', error = null }) {
   return {
-    status: error ? 'error' : 'unsupported',
+    status,
     currentVersion,
     latestVersion: null,
     platform,
@@ -146,7 +146,11 @@ export class AppUpdateService {
           },
           signal: AbortSignal.timeout(12_000)
         })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        if (!response.ok) {
+          const error = new Error(`HTTP ${response.status}`)
+          error.code = response.status === 404 ? 'RELEASE_NOT_FOUND' : 'RELEASE_HTTP_ERROR'
+          throw error
+        }
         const payload = await response.json()
         if (endpoint.source === 'gitee' && payload?.id) {
           try {
@@ -169,10 +173,23 @@ export class AppUpdateService {
         if (!release) throw new Error('没有可用的稳定版本')
         return release
       } catch (error) {
-        failures.push(`${endpoint.source}: ${error.message}`)
+        failures.push({
+          source: endpoint.source,
+          code: error.code || 'RELEASE_REQUEST_FAILED',
+          message: error.message
+        })
       }
     }
-    throw new Error(failures.join('；'))
+    const error = new Error(
+      failures.map((failure) => `${failure.source}: ${failure.message}`).join('；')
+    )
+    if (
+      failures.length === RELEASE_ENDPOINTS.length &&
+      failures.every((failure) => failure.code === 'RELEASE_NOT_FOUND')
+    ) {
+      error.code = 'NO_PUBLISHED_RELEASE'
+    }
+    throw error
   }
 
   async check() {
@@ -207,11 +224,15 @@ export class AppUpdateService {
       this.lastCheck = { result, release, asset }
       return result
     } catch (error) {
+      const unpublished = error.code === 'NO_PUBLISHED_RELEASE'
       const result = manualResult({
         currentVersion: this.currentVersion,
         platform: this.platform,
         arch: this.arch,
-        error: `暂时无法获取最新版本：${error.message}`
+        status: unpublished ? 'unpublished' : 'error',
+        error: unpublished
+          ? '当前还没有公开发布版本。首次 Release 发布后，这里会显示最新版本。'
+          : '暂时无法连接更新服务。请稍后重试，或使用下方发布页手动查看。'
       })
       this.lastCheck = { result, release: null, asset: null }
       return result

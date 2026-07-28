@@ -1409,21 +1409,21 @@ const onConfirmResetSettings = async () => {
 
             <div class="setting-item setting-item-full">
               <BaseButton
-                variant="danger"
-                style="width: 100%"
-                @click="showClearNoteDataDialog = true"
-              >
-                清空便签数据
-              </BaseButton>
-            </div>
-
-            <div class="setting-item setting-item-full">
-              <BaseButton
                 variant="default"
                 style="width: 100%"
                 @click="showResetSettingsDialog = true"
               >
                 恢复默认设置
+              </BaseButton>
+            </div>
+
+            <div class="setting-item setting-item-full">
+              <BaseButton
+                variant="danger"
+                style="width: 100%"
+                @click="showClearNoteDataDialog = true"
+              >
+                清空便签数据
               </BaseButton>
             </div>
           </section>

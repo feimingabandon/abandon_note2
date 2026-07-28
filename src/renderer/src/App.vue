@@ -37,6 +37,7 @@ const showSettings = ref(false)
 const showUpdateDialog = ref(false)
 const updateChecking = ref(false)
 const updateResult = ref(null)
+const UPDATE_CHECKING_MIN_DURATION_MS = 500
 const templatesRendered = ref(false)
 const templatePanelActive = ref(false)
 const templateBlurActive = ref(false)
@@ -61,6 +62,7 @@ function openSettings() {
 
 async function checkForUpdates({ showResult = true } = {}) {
   if (updateChecking.value) return
+  const startedAt = performance.now()
   updateChecking.value = true
   if (showResult) showUpdateDialog.value = true
   try {
@@ -79,6 +81,12 @@ async function checkForUpdates({ showResult = true } = {}) {
     }
     if (showResult) showUpdateDialog.value = true
   } finally {
+    if (showResult) {
+      const remaining = UPDATE_CHECKING_MIN_DURATION_MS - (performance.now() - startedAt)
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining))
+      }
+    }
     updateChecking.value = false
   }
 }

@@ -17,11 +17,25 @@ const downloadError = ref('')
 const progress = ref(null)
 let ownsModalBlur = false
 
+const manualLinks = Object.freeze([
+  {
+    provider: 'gitee',
+    label: 'Gitee',
+    url: 'https://gitee.com/zou-feiming/abandon_note2/releases'
+  },
+  {
+    provider: 'github',
+    label: 'GitHub',
+    url: 'https://github.com/feimingabandon/abandon_note2/releases'
+  }
+])
+
 const title = computed(() => {
   if (props.checking) return '正在检查更新'
   if (props.result?.status === 'available') return `发现新版本 v${props.result.latestVersion}`
   if (props.result?.status === 'current') return '已经是最新版本'
-  if (props.result?.status === 'error') return '暂时无法检查更新'
+  if (props.result?.status === 'unpublished') return '尚未发布公开版本'
+  if (props.result?.status === 'error') return '暂时无法连接更新服务'
   return '应用更新'
 })
 
@@ -44,6 +58,11 @@ const downloadLabel = computed(() => {
   if (!downloading.value) return '在线下载更新'
   if (progress.value?.percent != null) return `正在下载 ${progress.value.percent}%`
   return '正在下载…'
+})
+
+const contentKey = computed(() => {
+  if (props.checking) return 'checking'
+  return `${props.result?.status || 'idle'}-${props.result?.latestVersion || 'none'}`
 })
 
 const stopProgress = window.api.onUpdateDownloadProgress?.((payload) => {
@@ -124,92 +143,120 @@ onBeforeUnmount(() => {
           <header class="update-header">
             <div>
               <p class="update-eyebrow">Abandon Note</p>
-              <h2 id="update-title">{{ title }}</h2>
+              <Transition name="update-title" mode="out-in">
+                <h2 id="update-title" :key="title">{{ title }}</h2>
+              </Transition>
             </div>
             <button class="update-close" :disabled="downloading" aria-label="关闭" @click="close">
               ×
             </button>
           </header>
 
-          <div v-if="checking" class="checking-row">
-            <span class="checking-spinner" aria-hidden="true" />
-            <span>正在从 Gitee 获取稳定版本信息…</span>
-          </div>
-
-          <template v-else-if="result">
-            <p v-if="result.status === 'available'" class="update-summary">
-              {{ availableSummary }}
-            </p>
-            <p v-else-if="result.status === 'current'" class="update-summary">
-              当前版本 v{{ result.currentVersion }}，无需更新。
-            </p>
-            <p v-else class="update-summary update-summary--warning">
-              {{ result.error || '当前系统暂不支持在线更新，请使用手动更新地址。' }}
-            </p>
-
-            <div class="artifact-card">
-              <template v-if="result.status === 'current'">
-                <span class="artifact-label">{{ platformLabel }}</span>
-                <strong>当前无需下载任何安装包</strong>
-              </template>
-              <template v-else>
-                <span class="artifact-label">{{ platformLabel }} 应下载</span>
-                <strong>{{ result.artifactName || '请在发布页选择当前系统安装包' }}</strong>
-              </template>
-            </div>
-
-            <div
-              v-if="result.status === 'available' && result.onlineDownloadSupported"
-              class="online-update"
-            >
-              <BaseButton
-                variant="primary"
-                size="lg"
-                :disabled="downloading"
-                style="width: 100%"
-                @click="handleOnlineUpdate"
-              >
-                {{ downloadLabel }}
-              </BaseButton>
-              <div
-                v-if="downloading && progress?.percent != null"
-                class="progress-track"
-                role="progressbar"
-                :aria-valuenow="progress.percent"
-                aria-valuemin="0"
-                aria-valuemax="100"
-              >
-                <span :style="{ width: `${progress.percent}%` }" />
+          <Transition name="update-content" mode="out-in">
+            <div :key="contentKey" class="update-state">
+              <div v-if="checking" class="checking-row">
+                <span class="checking-spinner" aria-hidden="true" />
+                <div class="checking-copy">
+                  <strong>正在查询公开 Release</strong>
+                  <span>优先检查 Gitee，必要时再检查 GitHub</span>
+                </div>
               </div>
-              <p v-if="downloaded" class="download-note">
-                安装包已准备好。点击上方按钮会启动安装程序并退出应用。
-              </p>
-            </div>
 
-            <p v-if="downloadError" class="download-error">{{ downloadError }}</p>
+              <template v-else-if="result">
+                <p v-if="result.status === 'available'" class="update-summary">
+                  {{ availableSummary }}
+                </p>
+                <p v-else-if="result.status === 'current'" class="update-summary">
+                  当前版本 v{{ result.currentVersion }}，无需更新。
+                </p>
+                <p
+                  v-else
+                  class="update-summary"
+                  :class="{ 'update-summary--warning': result.status === 'error' }"
+                >
+                  {{ result.error || '当前系统暂不支持在线更新，请使用手动更新地址。' }}
+                </p>
 
-            <div class="manual-section">
-              <div class="manual-heading">
-                <strong>手动更新</strong>
-                <span>在线更新是否可用，都可以从以下地址下载</span>
-              </div>
-              <div class="manual-actions">
-                <BaseButton variant="default" @click="openManual('gitee')">Gitee 下载</BaseButton>
-                <BaseButton variant="default" @click="openManual('github')">
-                  GitHub 下载
+                <div class="manual-section">
+                  <div class="manual-heading">
+                    <strong>手动更新</strong>
+                    <span>点击以下地址，前往对应平台的安装包发布页</span>
+                  </div>
+                  <div class="manual-actions">
+                    <button
+                      v-for="link in manualLinks"
+                      :key="link.provider"
+                      class="manual-link"
+                      :title="`在浏览器中打开 ${link.label} 安装包发布页`"
+                      @click="openManual(link.provider)"
+                    >
+                      <span class="manual-link-label">{{ link.label }}：</span>
+                      <span class="manual-link-url">{{ link.url }}</span>
+                      <span class="manual-link-arrow" aria-hidden="true">↗</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="artifact-card">
+                  <template v-if="result.status === 'current'">
+                    <span class="artifact-label">{{ platformLabel }}</span>
+                    <strong>当前无需下载任何安装包</strong>
+                  </template>
+                  <template v-else-if="result.status === 'unpublished'">
+                    <span class="artifact-label">{{ platformLabel }}</span>
+                    <strong>尚无可下载的公开安装包</strong>
+                  </template>
+                  <template v-else-if="result.status === 'error'">
+                    <span class="artifact-label">{{ platformLabel }}</span>
+                    <strong>暂时无法确认推荐版本，请在发布页选择对应系统安装包</strong>
+                  </template>
+                  <template v-else>
+                    <span class="artifact-label">{{ platformLabel }} 推荐下载</span>
+                    <strong>{{ result.artifactName || '请在发布页选择当前系统安装包' }}</strong>
+                  </template>
+                </div>
+
+                <div
+                  v-if="result.status === 'available' && result.onlineDownloadSupported"
+                  class="online-update"
+                >
+                  <BaseButton
+                    variant="primary"
+                    size="lg"
+                    :disabled="downloading"
+                    style="width: 100%"
+                    @click="handleOnlineUpdate"
+                  >
+                    {{ downloadLabel }}
+                  </BaseButton>
+                  <div
+                    v-if="downloading && progress?.percent != null"
+                    class="progress-track"
+                    role="progressbar"
+                    :aria-valuenow="progress.percent"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                  >
+                    <span :style="{ width: `${progress.percent}%` }" />
+                  </div>
+                  <p v-if="downloaded" class="download-note">
+                    安装包已准备好。点击上方按钮会启动安装程序并退出应用。
+                  </p>
+                </div>
+
+                <p v-if="downloadError" class="download-error">{{ downloadError }}</p>
+
+                <BaseButton
+                  v-if="result.status === 'error' || result.status === 'unpublished'"
+                  variant="default"
+                  style="width: 100%"
+                  @click="emit('retry')"
+                >
+                  重新检查
                 </BaseButton>
-              </div>
+              </template>
             </div>
-
-            <BaseButton
-              v-if="result.status === 'error'"
-              variant="default"
-              style="width: 100%"
-              @click="emit('retry')"
-            >
-              重新检查
-            </BaseButton>
-          </template>
+          </Transition>
         </section>
       </div>
     </Transition>
@@ -230,6 +277,7 @@ onBeforeUnmount(() => {
 
 .update-card {
   width: min(390rem, calc(100vw - 32rem));
+  min-height: 350rem;
   max-height: calc(100vh - 32rem);
   overflow-y: auto;
   padding: 22rem;
@@ -260,35 +308,74 @@ onBeforeUnmount(() => {
 }
 
 .update-close {
-  width: 28rem;
-  height: 28rem;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 36rem;
+  height: 36rem;
+  padding: 0 0 2rem;
   border: 0;
-  border-radius: 50%;
-  color: var(--text-color-secondary);
-  background: rgba(255, 255, 255, 0.08);
+  color: color-mix(in srgb, var(--text-color) 45%, transparent);
+  background: transparent;
+  font-family: inherit;
+  font-size: 22rem;
+  line-height: 1;
   cursor: pointer;
+  transition:
+    color var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
+}
+
+.update-close:hover:not(:disabled) {
+  color: var(--text-color);
+}
+
+.update-close:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.update-close:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.update-state {
+  padding-top: 16rem;
 }
 
 .checking-row {
   display: flex;
   align-items: center;
   gap: 10rem;
-  min-height: 96rem;
+  justify-content: center;
+  min-height: 220rem;
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
 }
 
+.checking-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3rem;
+}
+
+.checking-copy strong {
+  color: var(--text-color);
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
 .checking-spinner {
-  width: 16rem;
-  height: 16rem;
-  border: 2px solid rgba(255, 255, 255, 0.18);
+  width: 20rem;
+  height: 20rem;
+  border: 2px solid color-mix(in srgb, var(--text-color) 15%, transparent);
   border-top-color: #0071e3;
   border-radius: 50%;
   animation: update-spin 0.8s linear infinite;
 }
 
 .update-summary {
-  margin: 16rem 0;
+  margin: 0 0 15rem;
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
   line-height: 1.55;
@@ -296,7 +383,7 @@ onBeforeUnmount(() => {
 
 .update-summary--warning,
 .download-error {
-  color: #ff9f8f;
+  color: color-mix(in srgb, #ff453a 78%, var(--text-color));
 }
 
 .artifact-card {
@@ -306,6 +393,7 @@ onBeforeUnmount(() => {
   padding: 13rem 14rem;
   border-radius: 10rem;
   background: rgba(255, 255, 255, 0.06);
+  margin-top: 14rem;
 }
 
 .artifact-label {
@@ -318,8 +406,7 @@ onBeforeUnmount(() => {
   font-size: var(--fs-secondary);
 }
 
-.online-update,
-.manual-section {
+.online-update {
   margin-top: 14rem;
 }
 
@@ -347,8 +434,9 @@ onBeforeUnmount(() => {
 }
 
 .manual-section {
-  padding-top: 14rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 14rem 0;
+  border-top: 1px solid var(--surface-float-border);
+  border-bottom: 1px solid var(--surface-float-border);
 }
 
 .manual-heading {
@@ -368,13 +456,78 @@ onBeforeUnmount(() => {
 }
 
 .manual-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 7rem;
 }
 
-.manual-actions :deep(.base-btn) {
+.manual-link {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4rem;
   width: 100%;
+  min-height: 38rem;
+  padding: 8rem 10rem;
+  border: 1px solid color-mix(in srgb, #0071e3 18%, transparent);
+  border-radius: 9rem;
+  color: #0071e3;
+  background: color-mix(in srgb, #0071e3 6%, transparent);
+  font-family: inherit;
+  font-size: var(--fs-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
+}
+
+.manual-link:hover {
+  border-color: color-mix(in srgb, #0071e3 36%, transparent);
+  background: color-mix(in srgb, #0071e3 11%, transparent);
+}
+
+.manual-link:active {
+  transform: scale(0.99);
+}
+
+.manual-link-label {
+  font-weight: 650;
+}
+
+.manual-link-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manual-link-arrow {
+  font-size: var(--fs-body);
+}
+
+.update-title-enter-active,
+.update-title-leave-active,
+.update-content-enter-active,
+.update-content-leave-active {
+  transition:
+    opacity 180ms ease,
+    transform 220ms var(--ease-standard),
+    filter 180ms ease;
+}
+
+.update-title-enter-from,
+.update-content-enter-from {
+  opacity: 0;
+  transform: translateY(5rem);
+  filter: blur(2px);
+}
+
+.update-title-leave-to,
+.update-content-leave-to {
+  opacity: 0;
+  transform: translateY(-4rem);
+  filter: blur(2px);
 }
 
 .update-dialog-enter-active,
