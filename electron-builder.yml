@@ -1,5 +1,6 @@
-appId: com.abandon.note
-productName: 便签
+appId: io.gitee.zoufeiming.abandonnote
+productName: Abandon便签
+copyright: Copyright © 2026 feimingzou
 directories:
   buildResources: build
 files:
@@ -12,23 +13,47 @@ asarUnpack:
   - resources/**
   - node_modules/better-sqlite3/**
   - node_modules/koffi/**
-extraResources:
-  - from: native_blur/build/bin/
-    to: native_blur/
-    filter:
-      - '*.dll'
 win:
-  executableName: abandon_note2
+  executableName: AbandonNote
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+  extraResources:
+    - from: native_blur/build/bin/
+      to: native_blur/
+      filter:
+        - '*.dll'
 protocols:
-  - name: 便签通知操作
+  - name: Abandon便签通知操作
     schemes:
       - abandon-note
 nsis:
-  artifactName: ${name}-${version}-setup.${ext}
+  artifactName: Abandon-Note-${version}-windows-${arch}-setup.${ext}
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
-  createDesktopShortcut: always
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  license: LICENSE
+  installerLanguages:
+    - zh_CN
+    - en_US
 mac:
+  icon: build/icon.icns
+  identity: null
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
@@ -37,9 +62,4 @@ mac:
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
 dmg:
-  artifactName: ${name}-${version}.${ext}
-publish:
-  provider: generic
-  url: https://example.com/auto-updates
-electronDownload:
-  mirror: https://npmmirror.com/mirrors/electron/
+  artifactName: Abandon-Note-${version}-macos-${arch}.${ext}

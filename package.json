@@ -1,10 +1,18 @@
 {
   "name": "abandon_note2",
-  "version": "1.0.0",
-  "description": "An Electron application with Vue",
+  "version": "0.9.0",
+  "description": "Abandon便签（Abandon Note）是一款跨平台桌面便签应用。",
   "main": "./out/main/index.js",
-  "author": "example.com",
-  "homepage": "https://electron-vite.org",
+  "author": "feimingzou",
+  "license": "GPL-3.0-only",
+  "homepage": "https://github.com/feimingabandon/abandon_note2",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/feimingabandon/abandon_note2.git"
+  },
+  "bugs": {
+    "url": "https://github.com/feimingabandon/abandon_note2/issues"
+  },
   "scripts": {
     "format": "prettier --write src",
     "lint": "eslint --cache src",
@@ -20,8 +28,10 @@
     "build": "electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",
-    "build:win": "npm run build && electron-builder --win",
-    "build:mac": "npm run build && electron-builder --mac"
+    "build:native:win": "powershell -NoProfile -ExecutionPolicy Bypass -File native_blur/build.ps1",
+    "build:win": "npm run build:native:win && npm run build && electron-builder --win nsis --x64 --publish never",
+    "build:mac:x64": "npm run build && electron-builder --mac dmg --x64 --publish never",
+    "build:mac:arm64": "npm run build && electron-builder --mac dmg --arm64 --publish never"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",

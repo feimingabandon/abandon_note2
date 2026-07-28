@@ -1,26 +1,56 @@
-# build.ps1 — VS 2026 环境编译 blur_engine.dll
+# Build blur_engine.dll with the Visual Studio generator available on this machine.
+[CmdletBinding()]
+param(
+    [ValidateSet("x64")]
+    [string]$Architecture = "x64",
+    [ValidateSet("Debug", "Release")]
+    [string]$Configuration = "Release"
+)
+
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
-$vsDir = "C:\Program Files\Microsoft Visual Studio\18\Community"
-$vcvars = "$vsDir\VC\Auxiliary\Build\vcvarsall.bat"
-$srcDir = "C:\addFile\idea\项目\abandon\abandon_note2\native_blur"
-$buildDir = "$srcDir\build"
+$sourceDirectory = $PSScriptRoot
+$buildDirectory = Join-Path $sourceDirectory "build"
+$outputDll = Join-Path $buildDirectory "bin\blur_engine.dll"
 
-# 清理旧构建
-if (Test-Path $buildDir) { Remove-Item -Recurse -Force $buildDir }
-New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+$cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
+$cmakeExecutable = if ($cmakeCommand) { $cmakeCommand.Source } else { $null }
 
-# 用 cmd 链接: vcvars 设置环境 → cmake 配置 → msbuild 编译
-$cmd = "call `"$vcvars`" x64 && cd /d `"$buildDir`" && cmake .. -G `"Visual Studio 18 2026`" -A x64 && cmake --build . --config Release"
-
-Write-Host "=== 开始编译 ===" -ForegroundColor Green
-cmd /c $cmd
-
-# 检查结果
-$dll = Get-ChildItem -Path $buildDir -Recurse -Filter "blur_engine.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($dll) {
-    Write-Host "=== 编译成功! ===" -ForegroundColor Green
-    Write-Host $dll.FullName
-} else {
-    Write-Host "=== DLL 未生成，检查上方错误信息 ===" -ForegroundColor Red
+if (-not $cmakeExecutable) {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
+        $visualStudioDirectory = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+        if ($visualStudioDirectory) {
+            $bundledCmake = Join-Path $visualStudioDirectory `
+                "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+            if (Test-Path -LiteralPath $bundledCmake -PathType Leaf) {
+                $cmakeExecutable = $bundledCmake
+            }
+        }
+    }
 }
+
+if (-not $cmakeExecutable) {
+    throw "CMake 3.20 or newer is required."
+}
+
+Write-Host "=== Configure blur_engine ($Architecture / $Configuration) ===" -ForegroundColor Green
+& $cmakeExecutable -S $sourceDirectory -B $buildDirectory -A $Architecture
+if ($LASTEXITCODE -ne 0) {
+    throw "CMake configure failed with exit code $LASTEXITCODE."
+}
+
+Write-Host "=== Build blur_engine ===" -ForegroundColor Green
+& $cmakeExecutable --build $buildDirectory --config $Configuration
+if ($LASTEXITCODE -ne 0) {
+    throw "CMake build failed with exit code $LASTEXITCODE."
+}
+
+if (-not (Test-Path -LiteralPath $outputDll -PathType Leaf)) {
+    throw "Build completed but the DLL was not found: $outputDll"
+}
+
+Write-Host "=== Build succeeded: $outputDll ===" -ForegroundColor Green

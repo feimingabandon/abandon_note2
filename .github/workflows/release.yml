@@ -1,0 +1,148 @@
+name: Build release candidates
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches package version
+        if: github.event_name == 'push'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$RELEASE_TAG" != "v$PACKAGE_VERSION" ]; then
+            echo "Tag $RELEASE_TAG does not match package.json version v$PACKAGE_VERSION."
+            exit 1
+          fi
+
+  windows:
+    name: Windows x64
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile Windows blur engine
+        run: npm run build:native:win
+
+      - name: Verify blur engine
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath "native_blur/build/bin/blur_engine.dll")) {
+            throw "native_blur/build/bin/blur_engine.dll was not generated."
+          }
+
+      - name: Build renderer and main process
+        run: npm run build
+
+      - name: Package Windows installer
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: abandon-note-windows-x64
+          path: |
+            dist/Abandon-Note-*-windows-x64-setup.exe
+            dist/Abandon-Note-*-windows-x64-setup.exe.blockmap
+            dist/latest.yml
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    needs: validate
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - x64
+          - arm64
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build renderer and main process
+        run: npm run build
+
+      - name: Package macOS disk image
+        run: npx electron-builder --mac dmg --${{ matrix.arch }} --publish never
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: abandon-note-macos-${{ matrix.arch }}
+          path: dist/Abandon-Note-*-macos-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  draft-release:
+    name: Create GitHub Draft Release
+    if: github.event_name == 'push'
+    needs:
+      - windows
+      - macos
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        working-directory: release-assets
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Create or refresh Draft Release
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --draft \
+              --generate-notes \
+              --title "Abandon Note $RELEASE_TAG"
+          fi
