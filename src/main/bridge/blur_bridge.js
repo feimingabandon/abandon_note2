@@ -36,10 +36,9 @@ export function detectCapabilities() {
   }
 
   if (platform === 'win32') {
-    const [, , build] = require('os').release().split('.').map(Number)
-    if (build < 18362) {
-      return { supported: false, platform: 'Windows', reason: '需要 Win10 1903+' }
-    }
+    // 不在 JavaScript 中用 os.release() 拦截旧版本：Windows 兼容模式可能把
+    // 已支持的 Win10 1909 等系统报告成较早版本。原生 DLL 使用 RtlGetVersion()
+    // 获取真实 build，并在初始化时给出最终的“支持 / 不支持”结论。
     return { supported: true, platform: 'Windows', strategy: 'dcomp' }
   }
 
