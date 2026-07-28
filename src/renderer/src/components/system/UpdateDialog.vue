@@ -148,8 +148,14 @@ onBeforeUnmount(() => {
             </p>
 
             <div class="artifact-card">
-              <span class="artifact-label">{{ platformLabel }} 应下载</span>
-              <strong>{{ result.artifactName || '请在发布页选择当前系统安装包' }}</strong>
+              <template v-if="result.status === 'current'">
+                <span class="artifact-label">{{ platformLabel }}</span>
+                <strong>当前无需下载任何安装包</strong>
+              </template>
+              <template v-else>
+                <span class="artifact-label">{{ platformLabel }} 应下载</span>
+                <strong>{{ result.artifactName || '请在发布页选择当前系统安装包' }}</strong>
+              </template>
             </div>
 
             <div
