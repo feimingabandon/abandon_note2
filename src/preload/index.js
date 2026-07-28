@@ -77,6 +77,18 @@ const api = {
     return () => ipcRenderer.removeListener('app:message', handler)
   },
 
+  // ---- 应用更新（固定仓库、固定安装包，不接受 renderer 提供 URL 或路径） ----
+  getAppInfo: () => ipcRenderer.invoke('app:get-info'),
+  checkForUpdate: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  installDownloadedUpdate: () => ipcRenderer.invoke('update:install'),
+  openManualUpdate: (provider) => ipcRenderer.invoke('update:open-manual', provider),
+  onUpdateDownloadProgress: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('update:download-progress', handler)
+    return () => ipcRenderer.removeListener('update:download-progress', handler)
+  },
+
   // ---- 贴边隐藏 ----
   /** 通知主进程鼠标悬停状态（true=进入窗口, false=离开窗口） */
   windowHover: (isHovering) => ipcRenderer.send('window-hover', isHovering),

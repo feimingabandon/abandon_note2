@@ -19,6 +19,7 @@ import AppTitlebar from './components/system/AppTitlebar.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue' // 自定义窗口缩放手柄
 import SettingsPanel from './components/system/SettingsPanel.vue' // 底部弹出式设置面板
 import MessageToast from './components/system/MessageToast.vue'
+import UpdateDialog from './components/system/UpdateDialog.vue'
 import NoteList from './components/list/NoteList.vue'
 import NoteEditor from './components/note/NoteEditor.vue'
 import ActionBar from './components/list/ActionBar.vue'
@@ -33,6 +34,9 @@ const { showMessage } = createMessageProvider()
 
 /** 设置面板显隐状态 */
 const showSettings = ref(false)
+const showUpdateDialog = ref(false)
+const updateChecking = ref(false)
+const updateResult = ref(null)
 const templatesRendered = ref(false)
 const templatePanelActive = ref(false)
 const templateBlurActive = ref(false)
@@ -53,6 +57,34 @@ let editorBlurReleaseTimer = null
 function openSettings() {
   settingsBlurActive.value = true
   showSettings.value = true
+}
+
+async function checkForUpdates({ showResult = true } = {}) {
+  if (updateChecking.value) return
+  updateChecking.value = true
+  if (showResult) showUpdateDialog.value = true
+  try {
+    updateResult.value = await window.api.checkForUpdate()
+    if (!showResult && updateResult.value?.status === 'available') {
+      showUpdateDialog.value = true
+    }
+  } catch (error) {
+    updateResult.value = {
+      status: 'error',
+      currentVersion: '0.9.0',
+      platform: window.api.runtimeCapabilities?.platform,
+      artifactName: null,
+      onlineDownloadSupported: false,
+      error: `检查更新失败：${error.message}`
+    }
+    if (showResult) showUpdateDialog.value = true
+  } finally {
+    updateChecking.value = false
+  }
+}
+
+function openUpdateDialog() {
+  checkForUpdates({ showResult: true })
 }
 
 async function openTemplates() {
@@ -161,6 +193,7 @@ let wallpaperReleaseTimer = null
 let stopSettingsListener = null
 let stopNotesChangedListener = null
 let stopAppMessageListener = null
+let startupUpdateTimer = null
 
 function applyAppSettingsSnapshot(snapshot) {
   applySettingsSnapshot(snapshot)
@@ -257,6 +290,11 @@ onMounted(async () => {
   // 通知主进程渲染已完成，可以安全地显示窗口了
   // 主进程收到后会调用 mainWindow.show()
   window.api.rendererReady()
+  // 启动检查只在确有新版本时打扰用户；网络失败可在设置页手动查看和重试。
+  startupUpdateTimer = setTimeout(() => {
+    startupUpdateTimer = null
+    checkForUpdates({ showResult: false })
+  }, 1200)
 })
 
 // ---- 贴边隐藏：鼠标悬停检测 ----
@@ -315,6 +353,7 @@ onUnmounted(() => {
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
   if (editorBlurReleaseTimer) clearTimeout(editorBlurReleaseTimer)
+  if (startupUpdateTimer) clearTimeout(startupUpdateTimer)
   clearTimeout(wallpaperReleaseTimer)
 })
 </script>
@@ -342,7 +381,7 @@ onUnmounted(() => {
     <div
       class="app-scene"
       :class="{ 'is-settings-open': settingsBlurActive, 'is-editor-open': editorBlurActive }"
-      :inert="showSettings || !!selectedNote"
+      :inert="showSettings || !!selectedNote || showUpdateDialog"
     >
       <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
       <ResizeHandles :locked="locked" />
@@ -460,6 +499,14 @@ onUnmounted(() => {
       v-if="showSettings"
       v-model:visible="showSettings"
       @blur-release="settingsBlurActive = false"
+      @check-update="openUpdateDialog"
+    />
+
+    <UpdateDialog
+      v-model:visible="showUpdateDialog"
+      :checking="updateChecking"
+      :result="updateResult"
+      @retry="checkForUpdates({ showResult: true })"
     />
 
     <!-- 应用内消息弹窗（Apple 风格 Toast，固定顶部居中） -->

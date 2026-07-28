@@ -108,6 +108,7 @@ import { runRecurringTemplates } from './services/recurrence.js'
 import { calculateNextRun, normalizeRecurrenceRule } from './services/recurrence-rules.js'
 import { TemplateSchedulerGuard } from './services/template-scheduler-guard.js'
 import { sendNotificationSafely } from './services/notification-guard.js'
+import { AppUpdateService, UPDATE_LINKS } from './services/app-update.js'
 import { ElectronStickyService } from './sticky/ElectronStickyService.js'
 import { buildStickyTrayTemplate } from './sticky/StickyTrayMenu.js'
 import { constrainMainWindowBounds } from './window-bounds.js'
@@ -175,6 +176,9 @@ if (process.platform === 'win32') {
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) app.quit()
+
+let appUpdateService = null
+let downloadedUpdateInstaller = null
 
 /** 主窗口实例引用 */
 let mainWindow = null
@@ -1195,6 +1199,18 @@ app.whenReady().then(async () => {
 
   // 初始化数据库连接
   initDatabase()
+  appUpdateService = new AppUpdateService({
+    currentVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    downloadDirectory: join(app.getPath('temp'), 'abandon-note-updates'),
+    onProgress: (progress) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      const safeProgress = { ...progress }
+      delete safeProgress.path
+      mainWindow.webContents.send('update:download-progress', safeProgress)
+    }
+  })
   try {
     await Promise.all([cleanupPendingAttachmentDirs(), cleanupPendingWallpaperFiles()])
   } catch (error) {
@@ -1254,6 +1270,44 @@ app.whenReady().then(async () => {
     })
     logger.info('logs.export', '诊断日志已导出', { targetPath: result.filePath })
     return { canceled: false, filePath: result.filePath }
+  })
+
+  // ---- 应用更新 ----
+  // 所有 URL、目标文件名和下载目录均由主进程固定；renderer 不可传入任意地址或路径。
+  ipcMain.handle('update:check', async (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('无权检查应用更新')
+    return appUpdateService.check()
+  })
+
+  ipcMain.handle('app:get-info', (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('无权读取应用信息')
+    return { version: app.getVersion(), platform: process.platform, arch: process.arch }
+  })
+
+  ipcMain.handle('update:download', async (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('无权下载应用更新')
+    const result = await appUpdateService.download()
+    downloadedUpdateInstaller = result.path
+    return { ready: true, reused: result.reused }
+  })
+
+  ipcMain.handle('update:install', async (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('无权启动更新安装包')
+    if (process.platform !== 'win32' || !downloadedUpdateInstaller) {
+      throw new Error('尚未下载可安装的 Windows 更新')
+    }
+    const errorMessage = await shell.openPath(downloadedUpdateInstaller)
+    if (errorMessage) throw new Error(errorMessage)
+    setTimeout(() => app.quit(), 350)
+    return true
+  })
+
+  ipcMain.handle('update:open-manual', async (event, provider) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('无权打开更新页面')
+    const url = UPDATE_LINKS[provider]
+    if (!url) throw new Error('未知的更新来源')
+    await shell.openExternal(url)
+    return true
   })
 
   // 【渲染就绪】渲染进程初始化完成后发送此消息，主进程收到后显示窗口

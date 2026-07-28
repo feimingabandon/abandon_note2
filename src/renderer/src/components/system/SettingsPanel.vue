@@ -65,7 +65,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:visible', 'blur-release'])
+const emit = defineEmits(['update:visible', 'blur-release', 'check-update'])
 
 const el = document.documentElement
 
@@ -77,6 +77,7 @@ const closeButtonRef = ref(null)
 const panelHeight = ref(70) // 面板高度百分比，默认 70%
 const isResetting = ref(false)
 const showLogViewer = ref(false)
+const appVersion = ref('0.9.0')
 
 /** 关闭动画定时器 ID，用于取消竞态关闭 */
 let closeTimer = null
@@ -763,6 +764,12 @@ async function loadSettingsSnapshot() {
 
 // 每次父组件打开设置时都会重新挂载本组件，因此这里必定重新查询完整快照。
 onMounted(async () => {
+  window.api
+    .getAppInfo()
+    .then((info) => {
+      if (info?.version) appVersion.value = info.version
+    })
+    .catch((error) => console.warn('[SettingsPanel] 获取应用版本失败:', error))
   await loadSettingsSnapshot()
   if (componentUnmounted) return
 
@@ -1384,8 +1391,14 @@ const onConfirmResetSettings = async () => {
                 /></span>
               </div>
               <div class="setting-right">
-                <span class="setting-value">v1.0.0</span>
+                <span class="setting-value">v{{ appVersion }}</span>
               </div>
+            </div>
+
+            <div class="setting-item setting-item-full">
+              <BaseButton variant="primary" style="width: 100%" @click="emit('check-update')">
+                检查更新
+              </BaseButton>
             </div>
 
             <div class="setting-item setting-item-full">
