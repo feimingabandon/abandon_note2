@@ -1,0 +1,104 @@
+name: Sync to Gitee
+
+on:
+  push:
+    branches:
+      - main
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-gitee-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GITEE_API_BASE: https://gitee.com/api/v5
+  GITEE_OWNER: zou-feiming
+  GITEE_REPO: abandon_note2
+
+jobs:
+  verify-access:
+    name: Verify Gitee access
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Verify repository API access
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: bash .github/scripts/verify-gitee-access.sh
+
+  mirror-main:
+    name: Mirror main branch to Gitee
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify repository API access
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: bash .github/scripts/verify-gitee-access.sh
+
+      - name: Push main to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          basic_auth="$(printf '%s:%s' "$GITEE_OWNER" "$GITEE_TOKEN" | base64 --wrap=0)"
+          git remote add gitee "https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}.git"
+          git -c "http.extraHeader=Authorization: Basic ${basic_auth}" \
+            push gitee HEAD:refs/heads/main
+
+  sync-release:
+    name: Sync published Release to Gitee
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      TARGET_COMMITISH: main
+      RELEASE_ASSET_DIR: release-assets
+      RELEASE_BODY_FILE: release-body.md
+      PRERELEASE: ${{ github.event.release.prerelease }}
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify repository API access
+        run: bash .github/scripts/verify-gitee-access.sh
+
+      - name: Mirror release tag to Gitee
+        run: |
+          basic_auth="$(printf '%s:%s' "$GITEE_OWNER" "$GITEE_TOKEN" | base64 --wrap=0)"
+          git remote add gitee "https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}.git"
+          git -c "http.extraHeader=Authorization: Basic ${basic_auth}" \
+            push gitee "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+
+      - name: Download GitHub Release assets
+        run: gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RELEASE_ASSET_DIR"
+
+      - name: Prepare release metadata
+        run: |
+          jq -r '.release.body // ""' "$GITHUB_EVENT_PATH" > "$RELEASE_BODY_FILE"
+          release_name="$(jq -r '.release.name // .release.tag_name' "$GITHUB_EVENT_PATH")"
+          {
+            echo "RELEASE_NAME<<__RELEASE_NAME__"
+            echo "$release_name"
+            echo "__RELEASE_NAME__"
+          } >> "$GITHUB_ENV"
+
+      - name: Synchronize Gitee Release
+        run: bash .github/scripts/sync-gitee-release.sh
