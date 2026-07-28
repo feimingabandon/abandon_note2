@@ -8,6 +8,11 @@ on:
     types:
       - published
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '已公开的 GitHub Release 标签；留空时仅验证 Gitee API 访问'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -24,7 +29,7 @@ env:
 jobs:
   verify-access:
     name: Verify Gitee access
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag == ''
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -61,16 +66,15 @@ jobs:
 
   sync-release:
     name: Sync published Release to Gitee
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
       GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
       TARGET_COMMITISH: main
       RELEASE_ASSET_DIR: release-assets
       RELEASE_BODY_FILE: release-body.md
-      PRERELEASE: ${{ github.event.release.prerelease }}
     steps:
       - name: Check out complete history
         uses: actions/checkout@v6
@@ -91,13 +95,28 @@ jobs:
         run: gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RELEASE_ASSET_DIR"
 
       - name: Prepare release metadata
+        env:
+          MANUAL_RELEASE_SYNC: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
-          jq -r '.release.body // ""' "$GITHUB_EVENT_PATH" > "$RELEASE_BODY_FILE"
-          release_name="$(jq -r '.release.name // .release.tag_name' "$GITHUB_EVENT_PATH")"
+          if [[ "$MANUAL_RELEASE_SYNC" == "true" ]]; then
+            release_json="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,name,body,tagName)"
+            if [[ "$(jq -r '.isDraft' <<< "$release_json")" != "false" ]]; then
+              echo "Manual Gitee synchronization requires a published GitHub Release: ${RELEASE_TAG}." >&2
+              exit 1
+            fi
+            jq -r '.body // ""' <<< "$release_json" > "$RELEASE_BODY_FILE"
+            release_name="$(jq -r '.name // .tagName' <<< "$release_json")"
+            prerelease="$(jq -r '.isPrerelease' <<< "$release_json")"
+          else
+            jq -r '.release.body // ""' "$GITHUB_EVENT_PATH" > "$RELEASE_BODY_FILE"
+            release_name="$(jq -r '.release.name // .release.tag_name' "$GITHUB_EVENT_PATH")"
+            prerelease="$(jq -r '.release.prerelease // false' "$GITHUB_EVENT_PATH")"
+          fi
           {
             echo "RELEASE_NAME<<__RELEASE_NAME__"
             echo "$release_name"
             echo "__RELEASE_NAME__"
+            echo "PRERELEASE=${prerelease}"
           } >> "$GITHUB_ENV"
 
       - name: Synchronize Gitee Release

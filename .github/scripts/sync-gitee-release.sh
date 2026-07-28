@@ -47,34 +47,49 @@ lookup_status="$(
 
 release_body="$(cat "$RELEASE_BODY_FILE")"
 
+release_id=""
+
 if [[ "$lookup_status" == "200" ]]; then
   release_id="$(jq -r '.id // empty' "$release_response")"
   if [[ -z "$release_id" ]]; then
-    echo "Existing Gitee Release did not include an id." >&2
-    exit 1
+    if jq -e 'type == "null"' "$release_response" >/dev/null; then
+      # Gitee returns HTTP 200 with literal JSON null when the tag exists but
+      # no Release has been created for it yet.
+      echo "Gitee has no Release for ${RELEASE_TAG}; creating one."
+    else
+      echo "Gitee returned HTTP 200 but not a Release object for ${RELEASE_TAG}." >&2
+      jq -c . "$release_response" >&2 || true
+      exit 1
+    fi
+  else
+    update_status="$(
+      curl --silent --show-error \
+        --retry 3 \
+        --retry-all-errors \
+        --output "$release_response" \
+        --write-out "%{http_code}" \
+        --request PATCH \
+        --form-string "access_token=${GITEE_TOKEN}" \
+        --form-string "tag_name=${RELEASE_TAG}" \
+        --form-string "name=${RELEASE_NAME}" \
+        --form-string "body=${release_body}" \
+        --form-string "prerelease=${prerelease}" \
+        "${api_base}/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/${release_id}"
+    )"
+    if [[ "$update_status" != "200" ]]; then
+      echo "Updating Gitee Release failed with HTTP ${update_status}." >&2
+      jq -r '.message // .error // "Unknown Gitee API error"' "$release_response" >&2 || true
+      exit 1
+    fi
+    echo "Updated Gitee Release ${RELEASE_TAG}."
   fi
+elif [[ "$lookup_status" != "404" ]]; then
+  echo "Looking up Gitee Release failed with HTTP ${lookup_status}." >&2
+  jq -r '.message // .error // "Unknown Gitee API error"' "$release_response" >&2 || true
+  exit 1
+fi
 
-  update_status="$(
-    curl --silent --show-error \
-      --retry 3 \
-      --retry-all-errors \
-      --output "$release_response" \
-      --write-out "%{http_code}" \
-      --request PATCH \
-      --form-string "access_token=${GITEE_TOKEN}" \
-      --form-string "tag_name=${RELEASE_TAG}" \
-      --form-string "name=${RELEASE_NAME}" \
-      --form-string "body=${release_body}" \
-      --form-string "prerelease=${prerelease}" \
-      "${api_base}/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/${release_id}"
-  )"
-  if [[ "$update_status" != "200" ]]; then
-    echo "Updating Gitee Release failed with HTTP ${update_status}." >&2
-    jq -r '.message // .error // "Unknown Gitee API error"' "$release_response" >&2 || true
-    exit 1
-  fi
-  echo "Updated Gitee Release ${RELEASE_TAG}."
-elif [[ "$lookup_status" == "404" ]]; then
+if [[ -z "$release_id" ]]; then
   create_status="$(
     curl --silent --show-error \
       --retry 3 \
@@ -101,10 +116,6 @@ elif [[ "$lookup_status" == "404" ]]; then
     exit 1
   fi
   echo "Created Gitee Release ${RELEASE_TAG}."
-else
-  echo "Looking up Gitee Release failed with HTTP ${lookup_status}." >&2
-  jq -r '.message // .error // "Unknown Gitee API error"' "$release_response" >&2 || true
-  exit 1
 fi
 
 attachments_status="$(
