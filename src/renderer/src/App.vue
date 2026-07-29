@@ -73,7 +73,7 @@ async function checkForUpdates({ showResult = true } = {}) {
   } catch (error) {
     updateResult.value = {
       status: 'error',
-      currentVersion: '0.9.0',
+      currentVersion: '0.9.1',
       platform: window.api.runtimeCapabilities?.platform,
       artifactName: null,
       onlineDownloadSupported: false,

@@ -19,9 +19,9 @@ let ownsModalBlur = false
 
 const manualLinks = Object.freeze([
   {
-    provider: 'gitee',
-    label: 'Gitee',
-    url: 'https://gitee.com/zou-feiming/abandon_note2/releases'
+    provider: 'gitcode',
+    label: 'GitCode',
+    url: 'https://gitcode.com/zou-feiming/abandon_note2/releases'
   },
   {
     provider: 'github',
@@ -158,7 +158,7 @@ onBeforeUnmount(() => {
                 <span class="checking-spinner" aria-hidden="true" />
                 <div class="checking-copy">
                   <strong>正在查询公开 Release</strong>
-                  <span>优先检查 Gitee，必要时再检查 GitHub</span>
+                  <span>同时检查 GitCode 与 GitHub，选择较新且附件完整的版本</span>
                 </div>
               </div>
 

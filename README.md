@@ -10,6 +10,6 @@
 ## 仓库
 
 - GitHub：<https://github.com/feimingabandon/abandon_note2>
-- Gitee：<https://gitee.com/zou-feiming/abandon_note2>
+- GitCode：<https://gitcode.com/zou-feiming/abandon_note2>
 
 许可证：GNU GPL v3（`GPL-3.0-only`）

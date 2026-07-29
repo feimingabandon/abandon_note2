@@ -91,7 +91,7 @@ const anchors = sections.flatMap((s) =>
 const profile = reactive({
   greeting:
     '这是一个常驻桌面的便签工具，希望它能帮你把「要做的事」安静地放在看得见的地方。感谢试用 —— 有想法或问题都欢迎反馈。',
-  repo: 'https://gitee.com/zou-feiming/abandon_note2',
+  repo: 'https://gitcode.com/zou-feiming/abandon_note2',
   blog: '',
   donateReady: false
 })

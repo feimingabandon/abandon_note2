@@ -41,7 +41,7 @@ describe('app update metadata', () => {
     expect(getTargetArtifact('0.9.1', 'linux', 'x64')).toBeNull()
   })
 
-  it('normalizes GitHub and Gitee release asset fields', () => {
+  it('normalizes GitHub and GitCode release asset fields', () => {
     expect(
       normalizeRelease(
         {
@@ -67,11 +67,20 @@ describe('app update metadata', () => {
       normalizeRelease(
         {
           tag_name: 'v0.9.1',
-          attach_files: [{ name: 'file.exe', download_url: 'https://gitee.example/file.exe' }]
+          attach_files: [{ file_name: 'file.exe', file_size: 456 }]
         },
-        'gitee'
-      ).assets[0].url
-    ).toBe('https://gitee.example/file.exe')
+        'gitcode'
+      )
+    ).toMatchObject({
+      source: 'gitcode',
+      assets: [
+        {
+          name: 'file.exe',
+          size: 456,
+          url: 'https://api.gitcode.com/api/v5/repos/zou-feiming/abandon_note2/releases/v0.9.1/attach_files/file.exe/download'
+        }
+      ]
+    })
   })
 
   it('ignores draft, prerelease, and non-stable releases', () => {
@@ -80,7 +89,7 @@ describe('app update metadata', () => {
     expect(normalizeRelease({ tag_name: 'v0.9.1-beta.1' }, 'github')).toBeNull()
   })
 
-  it('loads Gitee attachments separately and enables the Windows download', async () => {
+  it('queries both sources and prefers a complete GitCode release at the same version', async () => {
     const requestedUrls = []
     const service = new AppUpdateService({
       currentVersion: '0.9.0',
@@ -89,44 +98,57 @@ describe('app update metadata', () => {
       downloadDirectory: 'unused',
       fetchImpl: async (url) => {
         requestedUrls.push(url)
-        if (url.endsWith('/releases/latest')) {
-          return jsonResponse({ id: 7, tag_name: 'v0.9.1', name: 'Abandon Note v0.9.1' })
+        if (url.includes('gitcode.com')) {
+          return jsonResponse({
+            tag_name: 'v0.9.1',
+            name: 'Abandon Note v0.9.1',
+            attach_files: [
+              {
+                file_name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
+                file_size: 2048
+              },
+              { file_name: 'SHA256SUMS.txt', file_size: 128 }
+            ]
+          })
         }
-        return jsonResponse([
-          {
-            name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
-            size: 2048,
-            browser_download_url: 'https://gitee.example/setup.exe'
-          },
-          {
-            name: 'SHA256SUMS.txt',
-            size: 128,
-            browser_download_url: 'https://gitee.example/SHA256SUMS.txt'
-          }
-        ])
+        return jsonResponse({
+          tag_name: 'v0.9.1',
+          assets: [
+            {
+              name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
+              size: 2048,
+              browser_download_url: 'https://github.example/setup.exe'
+            },
+            {
+              name: 'SHA256SUMS.txt',
+              size: 128,
+              browser_download_url: 'https://github.example/SHA256SUMS.txt'
+            }
+          ]
+        })
       }
     })
 
     await expect(service.check()).resolves.toMatchObject({
       status: 'available',
       latestVersion: '0.9.1',
-      source: 'gitee',
+      source: 'gitcode',
       onlineDownloadSupported: true,
       artifactName: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
       asset: { size: 2048 }
     })
-    expect(requestedUrls[1]).toContain('/releases/7/attach_files')
+    expect(requestedUrls).toHaveLength(2)
   })
 
-  it('falls back to GitHub when Gitee has no published release', async () => {
+  it('uses GitHub when GitCode has no published release', async () => {
     const service = new AppUpdateService({
       currentVersion: '0.9.0',
       platform: 'darwin',
       arch: 'arm64',
       downloadDirectory: 'unused',
       fetchImpl: async (url) =>
-        url.includes('gitee.com')
-          ? jsonResponse({ message: 'Not Found' }, 404)
+        url.includes('gitcode.com')
+          ? jsonResponse({ message: '未找到 release' }, 400)
           : jsonResponse({
               tag_name: 'v0.9.0',
               assets: [
@@ -144,6 +166,68 @@ describe('app update metadata', () => {
       source: 'github',
       onlineDownloadSupported: false,
       artifactName: 'Abandon-Note-0.9.0-macos-arm64.dmg'
+    })
+  })
+
+  it('chooses the higher version even when it is available only from GitHub', async () => {
+    const service = new AppUpdateService({
+      currentVersion: '0.9.0',
+      platform: 'darwin',
+      arch: 'arm64',
+      downloadDirectory: 'unused',
+      fetchImpl: async (url) =>
+        url.includes('gitcode.com')
+          ? jsonResponse({ tag_name: 'v0.9.1', attach_files: [] })
+          : jsonResponse({
+              tag_name: 'v0.9.2',
+              assets: [
+                {
+                  name: 'Abandon-Note-0.9.2-macos-arm64.dmg',
+                  browser_download_url: 'https://github.example/app.dmg'
+                }
+              ]
+            })
+    })
+
+    await expect(service.check()).resolves.toMatchObject({
+      status: 'available',
+      latestVersion: '0.9.2',
+      source: 'github'
+    })
+  })
+
+  it('uses complete GitHub assets when the same GitCode version is incomplete', async () => {
+    const service = new AppUpdateService({
+      currentVersion: '0.9.0',
+      platform: 'win32',
+      arch: 'x64',
+      downloadDirectory: 'unused',
+      fetchImpl: async (url) =>
+        url.includes('gitcode.com')
+          ? jsonResponse({
+              tag_name: 'v0.9.1',
+              attach_files: [{ file_name: 'Abandon-Note-0.9.1-windows-x64-setup.exe' }]
+            })
+          : jsonResponse({
+              tag_name: 'v0.9.1',
+              assets: [
+                {
+                  name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
+                  browser_download_url: 'https://github.example/setup.exe'
+                },
+                {
+                  name: 'SHA256SUMS.txt',
+                  browser_download_url: 'https://github.example/SHA256SUMS.txt'
+                }
+              ]
+            })
+    })
+
+    await expect(service.check()).resolves.toMatchObject({
+      status: 'available',
+      latestVersion: '0.9.1',
+      source: 'github',
+      onlineDownloadSupported: true
     })
   })
 
@@ -204,14 +288,14 @@ describe('app update metadata', () => {
         assets: [
           {
             name: 'SHA256SUMS.txt',
-            url: 'https://gitee.example/SHA256SUMS.txt'
+            url: 'https://gitcode.example/SHA256SUMS.txt'
           }
         ]
       },
       asset: {
         name: assetName,
         size: payload.byteLength,
-        url: 'https://gitee.example/setup.exe'
+        url: 'https://gitcode.example/setup.exe'
       }
     }
 
@@ -244,7 +328,7 @@ describe('app update metadata', () => {
       asset: {
         name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
         size: 128,
-        url: 'https://gitee.example/setup.exe'
+        url: 'https://gitcode.example/setup.exe'
       }
     }
 

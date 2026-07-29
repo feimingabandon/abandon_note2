@@ -1,16 +1,13 @@
-name: Sync to Gitee
+name: Sync Release to GitCode
 
 on:
-  push:
-    branches:
-      - main
   release:
     types:
       - published
   workflow_dispatch:
     inputs:
       release_tag:
-        description: '已公开的 GitHub Release 标签；留空时仅验证 Gitee API 访问'
+        description: '已公开的 GitHub Release 标签；留空时仅验证 GitCode API 访问'
         required: false
         type: string
 
@@ -18,17 +15,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: sync-gitee-${{ github.event_name }}-${{ github.ref }}
+  group: sync-gitcode-${{ github.event_name }}-${{ github.event.release.tag_name || inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 env:
-  GITEE_API_BASE: https://gitee.com/api/v5
-  GITEE_OWNER: zou-feiming
-  GITEE_REPO: abandon_note2
+  GITCODE_API_BASE: https://api.gitcode.com/api/v5
+  GITCODE_OWNER: zou-feiming
+  GITCODE_REPO: abandon_note2
 
 jobs:
   verify-access:
-    name: Verify Gitee access
+    name: Verify GitCode access
     if: github.event_name == 'workflow_dispatch' && inputs.release_tag == ''
     runs-on: ubuntu-latest
     steps:
@@ -39,62 +36,29 @@ jobs:
 
       - name: Verify repository API access
         env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-        run: bash .github/scripts/verify-gitee-access.sh
-
-  mirror-main:
-    name: Mirror main branch to Gitee
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out complete history
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify repository API access
-        env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-        run: bash .github/scripts/verify-gitee-access.sh
-
-      - name: Push main to Gitee
-        env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-        run: |
-          basic_auth="$(printf '%s:%s' "$GITEE_OWNER" "$GITEE_TOKEN" | base64 --wrap=0)"
-          git remote add gitee "https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}.git"
-          git -c "http.extraHeader=Authorization: Basic ${basic_auth}" \
-            push gitee HEAD:refs/heads/main
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+        run: bash .github/scripts/verify-gitcode-access.sh
 
   sync-release:
-    name: Sync published Release to Gitee
+    name: Sync published Release to GitCode
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
       GH_TOKEN: ${{ github.token }}
-      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
       TARGET_COMMITISH: main
       RELEASE_ASSET_DIR: release-assets
       RELEASE_BODY_FILE: release-body.md
     steps:
-      - name: Check out complete history
+      - name: Check out repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
           persist-credentials: false
 
       - name: Verify repository API access
-        run: bash .github/scripts/verify-gitee-access.sh
-
-      - name: Mirror release tag to Gitee
-        run: |
-          basic_auth="$(printf '%s:%s' "$GITEE_OWNER" "$GITEE_TOKEN" | base64 --wrap=0)"
-          git remote add gitee "https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}.git"
-          git -c "http.extraHeader=Authorization: Basic ${basic_auth}" \
-            push gitee "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+        run: bash .github/scripts/verify-gitcode-access.sh
 
       - name: Download GitHub Release assets
         run: gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RELEASE_ASSET_DIR"
@@ -106,7 +70,7 @@ jobs:
           if [[ "$MANUAL_RELEASE_SYNC" == "true" ]]; then
             release_json="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,name,body,tagName)"
             if [[ "$(jq -r '.isDraft' <<< "$release_json")" != "false" ]]; then
-              echo "Manual Gitee synchronization requires a published GitHub Release: ${RELEASE_TAG}." >&2
+              echo "Manual GitCode synchronization requires a published GitHub Release: ${RELEASE_TAG}." >&2
               exit 1
             fi
             jq -r '.body // ""' <<< "$release_json" > "$RELEASE_BODY_FILE"
@@ -124,5 +88,5 @@ jobs:
             echo "PRERELEASE=${prerelease}"
           } >> "$GITHUB_ENV"
 
-      - name: Synchronize Gitee Release
-        run: bash .github/scripts/sync-gitee-release.sh
+      - name: Synchronize GitCode Release
+        run: bash .github/scripts/sync-gitcode-release.sh

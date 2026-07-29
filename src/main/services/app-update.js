@@ -6,14 +6,14 @@ import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
 
 export const UPDATE_LINKS = Object.freeze({
-  gitee: 'https://gitee.com/zou-feiming/abandon_note2/releases',
+  gitcode: 'https://gitcode.com/zou-feiming/abandon_note2/releases',
   github: 'https://github.com/feimingabandon/abandon_note2/releases'
 })
 
 const RELEASE_ENDPOINTS = Object.freeze([
   {
-    source: 'gitee',
-    url: 'https://gitee.com/api/v5/repos/zou-feiming/abandon_note2/releases/latest'
+    source: 'gitcode',
+    url: 'https://api.gitcode.com/api/v5/repos/zou-feiming/abandon_note2/releases/latest'
   },
   {
     source: 'github',
@@ -54,15 +54,25 @@ export function getTargetArtifact(version, platform, arch) {
   return null
 }
 
-function normalizeAsset(asset) {
+function getGitCodeAssetUrl(tagName, assetName) {
+  if (!tagName || !assetName) return ''
+  return (
+    'https://api.gitcode.com/api/v5/repos/zou-feiming/abandon_note2/releases/' +
+    `${encodeURIComponent(tagName)}/attach_files/${encodeURIComponent(assetName)}/download`
+  )
+}
+
+function normalizeAsset(asset, { source, tagName }) {
+  const name = String(asset?.name || asset?.file_name || '')
   return {
-    name: String(asset?.name || ''),
-    size: Number(asset?.size || 0),
+    name,
+    size: Number(asset?.size || asset?.file_size || 0),
     url: String(
       asset?.browser_download_url ||
         asset?.download_url ||
         asset?.url_for_download ||
         asset?.url ||
+        (source === 'gitcode' ? getGitCodeAssetUrl(tagName, name) : '') ||
         ''
     )
   }
@@ -78,8 +88,42 @@ export function normalizeRelease(payload, source) {
     title: String(payload?.name || payload?.tag_name || `v${version}`),
     notes: String(payload?.body || ''),
     publishedAt: String(payload?.published_at || payload?.created_at || ''),
-    assets: Array.isArray(rawAssets) ? rawAssets.map(normalizeAsset) : []
+    assets: Array.isArray(rawAssets)
+      ? rawAssets.map((asset) =>
+          normalizeAsset(asset, { source, tagName: String(payload?.tag_name || '') })
+        )
+      : []
   }
+}
+
+function hasRequiredAssets(release, platform, arch) {
+  const artifactName = getTargetArtifact(release.version, platform, arch)
+  if (!artifactName) return true
+  const hasArtifact = release.assets.some((asset) => asset.name === artifactName && asset.url)
+  if (!hasArtifact) return false
+  if (platform !== 'win32') return true
+  return release.assets.some((asset) => asset.name === 'SHA256SUMS.txt' && asset.url)
+}
+
+function selectPreferredRelease(releases, platform, arch) {
+  const highestVersion = releases.reduce(
+    (highest, release) =>
+      compareVersions(release.version, highest) > 0 ? release.version : highest,
+    releases[0].version
+  )
+  const candidates = releases.filter(
+    (release) => compareVersions(release.version, highestVersion) === 0
+  )
+  return (
+    candidates.find(
+      (release) => release.source === 'gitcode' && hasRequiredAssets(release, platform, arch)
+    ) ||
+    candidates.find(
+      (release) => release.source === 'github' && hasRequiredAssets(release, platform, arch)
+    ) ||
+    candidates.find((release) => release.source === 'gitcode') ||
+    candidates[0]
+  )
 }
 
 function manualResult({ currentVersion, platform, arch, status = 'unsupported', error = null }) {
@@ -136,50 +180,45 @@ export class AppUpdateService {
   }
 
   async fetchLatestRelease() {
-    const failures = []
-    for (const endpoint of RELEASE_ENDPOINTS) {
-      try {
-        const response = await this.fetch(endpoint.url, {
-          headers: {
-            Accept: 'application/json',
-            'User-Agent': `Abandon-Note/${this.currentVersion}`
-          },
-          signal: AbortSignal.timeout(12_000)
-        })
-        if (!response.ok) {
-          const error = new Error(`HTTP ${response.status}`)
-          error.code = response.status === 404 ? 'RELEASE_NOT_FOUND' : 'RELEASE_HTTP_ERROR'
-          throw error
-        }
-        const payload = await response.json()
-        if (endpoint.source === 'gitee' && payload?.id) {
-          try {
-            const attachmentsResponse = await this.fetch(
-              `https://gitee.com/api/v5/repos/zou-feiming/abandon_note2/releases/${payload.id}/attach_files?page=1&per_page=100`,
-              {
-                headers: {
-                  Accept: 'application/json',
-                  'User-Agent': `Abandon-Note/${this.currentVersion}`
-                },
-                signal: AbortSignal.timeout(12_000)
-              }
-            )
-            if (attachmentsResponse.ok) payload.attach_files = await attachmentsResponse.json()
-          } catch {
-            // 附件接口暂时失败时仍保留版本检测结果；界面会降级到双手动下载链接。
+    const attempts = await Promise.all(
+      RELEASE_ENDPOINTS.map(async (endpoint) => {
+        try {
+          const response = await this.fetch(endpoint.url, {
+            headers: {
+              Accept: 'application/json',
+              'User-Agent': `Abandon-Note/${this.currentVersion}`
+            },
+            signal: AbortSignal.timeout(12_000)
+          })
+          if (!response.ok) {
+            const error = new Error(`HTTP ${response.status}`)
+            error.code =
+              response.status === 404 || (endpoint.source === 'gitcode' && response.status === 400)
+                ? 'RELEASE_NOT_FOUND'
+                : 'RELEASE_HTTP_ERROR'
+            throw error
+          }
+          const payload = await response.json()
+          const release = normalizeRelease(payload, endpoint.source)
+          if (!release) throw new Error('没有可用的稳定版本')
+          return { release, failure: null }
+        } catch (error) {
+          return {
+            release: null,
+            failure: {
+              source: endpoint.source,
+              code: error.code || 'RELEASE_REQUEST_FAILED',
+              message: error.message
+            }
           }
         }
-        const release = normalizeRelease(payload, endpoint.source)
-        if (!release) throw new Error('没有可用的稳定版本')
-        return release
-      } catch (error) {
-        failures.push({
-          source: endpoint.source,
-          code: error.code || 'RELEASE_REQUEST_FAILED',
-          message: error.message
-        })
-      }
+      })
+    )
+    const releases = attempts.map((attempt) => attempt.release).filter(Boolean)
+    if (releases.length > 0) {
+      return selectPreferredRelease(releases, this.platform, this.arch)
     }
+    const failures = attempts.map((attempt) => attempt.failure).filter(Boolean)
     const error = new Error(
       failures.map((failure) => `${failure.source}: ${failure.message}`).join('；')
     )

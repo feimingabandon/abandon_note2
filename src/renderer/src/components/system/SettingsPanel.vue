@@ -77,7 +77,7 @@ const closeButtonRef = ref(null)
 const panelHeight = ref(70) // 面板高度百分比，默认 70%
 const isResetting = ref(false)
 const showLogViewer = ref(false)
-const appVersion = ref('0.9.0')
+const appVersion = ref('0.9.1')
 
 /** 关闭动画定时器 ID，用于取消竞态关闭 */
 let closeTimer = null
