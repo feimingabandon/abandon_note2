@@ -1,6 +1,6 @@
 {
   "name": "abandon_note2",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Abandon便签（Abandon Note）是一款跨平台桌面便签应用。",
   "main": "./out/main/index.js",
   "author": "feimingzou",
@@ -21,6 +21,7 @@
     "test:db": "node scripts/run-electron-node-tests.cjs",
     "test:wallpaper-storage": "node scripts/run-electron-wallpaper-tests.cjs",
     "test:attachment-storage": "node scripts/run-electron-attachment-tests.cjs",
+    "test:window-frame:win": "electron tests/window-frame-electron.mjs",
     "test:watch": "vitest",
     "db:reset-business-schema": "node scripts/run-electron-schema-reset.cjs",
     "start": "electron-vite preview",

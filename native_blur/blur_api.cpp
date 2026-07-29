@@ -4,6 +4,8 @@
 
 #include "blur_api.h"
 #include "blur_engine.h"
+#include <algorithm>
+#include <cstdio>
 #include <winternl.h>
 
 int Blur_IsSupported(void) {
@@ -112,4 +114,125 @@ const char* Blur_GetLastErrorMessage(void) {
     case BlurErrorCode::InitializationTimeout: return "initialization_timeout";
     default: return "unknown_failure";
     }
+}
+
+const char* WindowMotion_GetSnapshotJson(void* hwndValue) {
+    thread_local char json[768]{};
+    const HWND hwnd = static_cast<HWND>(hwndValue);
+    RECT windowRect{}, clientRect{};
+    MONITORINFO monitorInfo{};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+
+    const bool windowValid = hwnd && IsWindow(hwnd) &&
+        GetWindowRect(hwnd, &windowRect) && GetClientRect(hwnd, &clientRect);
+    const HMONITOR monitor = windowValid
+        ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        : nullptr;
+    const bool monitorValid = monitor && GetMonitorInfoW(monitor, &monitorInfo);
+
+    sprintf_s(
+        json,
+        "{\"window\":{\"valid\":%s,\"left\":%ld,\"top\":%ld,\"right\":%ld,\"bottom\":%ld,"
+        "\"width\":%ld,\"height\":%ld,\"clientWidth\":%ld,\"clientHeight\":%ld,\"dpi\":%u},"
+        "\"monitor\":{\"valid\":%s,\"left\":%ld,\"top\":%ld,\"right\":%ld,\"bottom\":%ld,"
+        "\"workLeft\":%ld,\"workTop\":%ld,\"workRight\":%ld,\"workBottom\":%ld}}",
+        windowValid ? "true" : "false",
+        windowRect.left, windowRect.top, windowRect.right, windowRect.bottom,
+        windowRect.right - windowRect.left, windowRect.bottom - windowRect.top,
+        clientRect.right - clientRect.left, clientRect.bottom - clientRect.top,
+        windowValid ? GetDpiForWindow(hwnd) : 0,
+        monitorValid ? "true" : "false",
+        monitorInfo.rcMonitor.left, monitorInfo.rcMonitor.top,
+        monitorInfo.rcMonitor.right, monitorInfo.rcMonitor.bottom,
+        monitorInfo.rcWork.left, monitorInfo.rcWork.top,
+        monitorInfo.rcWork.right, monitorInfo.rcWork.bottom);
+    return json;
+}
+
+namespace {
+struct EdgeExposureContext {
+    HMONITOR currentMonitor = nullptr;
+    RECT currentBounds{};
+    RECT windowBounds{};
+    int side = 0;
+    bool blocked = false;
+};
+
+BOOL CALLBACK DetectAdjacentMonitor(
+    HMONITOR monitor,
+    HDC,
+    LPRECT,
+    LPARAM contextValue) {
+    auto* context = reinterpret_cast<EdgeExposureContext*>(contextValue);
+    if (!context || context->blocked || monitor == context->currentMonitor) return TRUE;
+
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info)) return TRUE;
+
+    const bool touchesEdge = context->side < 0
+        ? info.rcMonitor.right == context->currentBounds.left
+        : info.rcMonitor.left == context->currentBounds.right;
+    if (!touchesEdge) return TRUE;
+
+    const LONG overlapTop = std::max(context->windowBounds.top, info.rcMonitor.top);
+    const LONG overlapBottom = std::min(context->windowBounds.bottom, info.rcMonitor.bottom);
+    if (overlapBottom > overlapTop) context->blocked = true;
+    return context->blocked ? FALSE : TRUE;
+}
+}
+
+int WindowMotion_IsEdgeExposed(void* hwndValue, int side) {
+    const HWND hwnd = static_cast<HWND>(hwndValue);
+    if (!hwnd || !IsWindow(hwnd) || (side != -1 && side != 1)) return 0;
+
+    RECT windowBounds{};
+    if (!GetWindowRect(hwnd, &windowBounds)) return 0;
+
+    const HMONITOR currentMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO currentInfo{};
+    currentInfo.cbSize = sizeof(currentInfo);
+    if (!currentMonitor || !GetMonitorInfoW(currentMonitor, &currentInfo)) return 0;
+
+    // 任务栏占据左/右边时，工作区边缘并不是桌面的真实外边缘。
+    if (side < 0 && currentInfo.rcWork.left != currentInfo.rcMonitor.left) return 0;
+    if (side > 0 && currentInfo.rcWork.right != currentInfo.rcMonitor.right) return 0;
+
+    EdgeExposureContext context{
+        currentMonitor,
+        currentInfo.rcMonitor,
+        windowBounds,
+        side,
+        false
+    };
+    if (!EnumDisplayMonitors(
+            nullptr,
+            nullptr,
+            DetectAdjacentMonitor,
+            reinterpret_cast<LPARAM>(&context)) &&
+        !context.blocked) {
+        return 0;
+    }
+    return context.blocked ? 0 : 1;
+}
+
+int WindowMotion_MoveWindow(void* hwndValue, int physicalX, int physicalY) {
+    const HWND hwnd = static_cast<HWND>(hwndValue);
+    if (!hwnd || !IsWindow(hwnd)) return 0;
+
+    const BOOL moved = SetWindowPos(
+        hwnd,
+        nullptr,
+        physicalX,
+        physicalY,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    if (!moved) return 0;
+
+    auto& engine = BlurEngine::Engine::Instance();
+    if (engine.GetParentWindow() == hwnd) {
+        engine.UpdateGeometry();
+    }
+    return 1;
 }

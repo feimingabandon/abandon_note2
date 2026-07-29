@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import {
-  DATABASE_SCHEMA_VERSION,
-  createDatabaseSchema
-} from '../src/main/db/db-schema.js'
+import { DATABASE_SCHEMA_VERSION, createDatabaseSchema } from '../src/main/db/db-schema.js'
 import { clearDb, setDb } from '../src/main/db/db-connection.js'
 import { createTag, deleteTag, getTagUsage } from '../src/main/db/db-tags.js'
 import {
@@ -23,6 +20,18 @@ import { runRecurringTemplates } from '../src/main/services/recurrence.js'
 function localTs(year, month, day, hour = 0, minute = 0, second = 0) {
   return new Date(year, month - 1, day, hour, minute, second, 0).getTime()
 }
+
+const futureDb = new Database(':memory:')
+futureDb.pragma(`user_version = ${DATABASE_SCHEMA_VERSION + 1}`)
+assert.throws(() => createDatabaseSchema(futureDb), /高于当前程序支持的版本/)
+assert.equal(futureDb.pragma('user_version', { simple: true }), DATABASE_SCHEMA_VERSION + 1)
+assert.equal(
+  futureDb
+    .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'notes'")
+    .get().count,
+  0
+)
+futureDb.close()
 
 const db = new Database(':memory:')
 db.pragma('foreign_keys = ON')

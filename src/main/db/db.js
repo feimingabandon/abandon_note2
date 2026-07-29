@@ -33,15 +33,21 @@ let db = null
  */
 export function initDatabase() {
   const dbPath = join(app.getPath('userData'), 'app.db')
-  db = new Database(dbPath)
-  setDb(db)
-
-  db.pragma('journal_mode = WAL')
-  db.pragma('synchronous = NORMAL')
-  db.pragma('cache_size = -8000')
-  db.pragma('foreign_keys = ON')
-
-  createDatabaseSchema(db)
+  const connection = new Database(dbPath)
+  try {
+    connection.pragma('journal_mode = WAL')
+    connection.pragma('synchronous = NORMAL')
+    connection.pragma('cache_size = -8000')
+    connection.pragma('foreign_keys = ON')
+    createDatabaseSchema(connection)
+    db = connection
+    setDb(connection)
+  } catch (error) {
+    connection.close()
+    db = null
+    clearDb()
+    throw error
+  }
 }
 
 export function closeDatabase() {

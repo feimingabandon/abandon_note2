@@ -15,7 +15,13 @@ target_commitish="${TARGET_COMMITISH:-main}"
 prerelease="${PRERELEASE:-false}"
 release_response="$(mktemp)"
 attachments_response="$(mktemp)"
-trap 'rm -f "$release_response" "$attachments_response"' EXIT
+upload_response="$(mktemp)"
+trap 'rm -f "$release_response" "$attachments_response" "$upload_response"' EXIT
+
+upload_connect_timeout="${GITEE_UPLOAD_CONNECT_TIMEOUT_SECONDS:-30}"
+upload_max_time="${GITEE_UPLOAD_MAX_TIME_SECONDS:-3600}"
+upload_speed_time="${GITEE_UPLOAD_LOW_SPEED_TIME_SECONDS:-300}"
+upload_speed_limit="${GITEE_UPLOAD_LOW_SPEED_LIMIT_BYTES:-16384}"
 
 if [[ ! -f "$RELEASE_BODY_FILE" ]]; then
   echo "Release body file does not exist: $RELEASE_BODY_FILE" >&2
@@ -27,7 +33,12 @@ if [[ ! -d "$RELEASE_ASSET_DIR" ]]; then
   exit 1
 fi
 
-mapfile -d '' assets < <(find "$RELEASE_ASSET_DIR" -maxdepth 1 -type f -print0 | sort -z)
+# 小文件优先：先验证附件 API 确实可写，再进入 200MB 以上安装包上传。
+mapfile -d '' assets < <(
+  find "$RELEASE_ASSET_DIR" -maxdepth 1 -type f -printf '%s\t%p\0' |
+    sort -z -n |
+    cut -z -f2-
+)
 if [[ "${#assets[@]}" -eq 0 ]]; then
   echo "No GitHub Release assets were downloaded." >&2
   exit 1
@@ -139,15 +150,55 @@ fi
 
 for asset in "${assets[@]}"; do
   asset_name="$(basename "$asset")"
+  asset_size="$(stat --format='%s' "$asset")"
 
   mapfile -t existing_ids < <(
     jq -r --arg name "$asset_name" '.[] | select(.name == $name) | .id' "$attachments_response"
   )
 
+  echo "Uploading ${asset_name} (${asset_size} bytes) to Gitee."
+  echo "A transfer below ${upload_speed_limit} bytes/s for ${upload_speed_time}s will fail instead of hanging indefinitely."
+
+  upload_status="$(
+    curl --show-error \
+      --progress-bar \
+      --http1.1 \
+      --connect-timeout "$upload_connect_timeout" \
+      --max-time "$upload_max_time" \
+      --speed-time "$upload_speed_time" \
+      --speed-limit "$upload_speed_limit" \
+      --retry 1 \
+      --retry-delay 15 \
+      --retry-connrefused \
+      --output "$upload_response" \
+      --write-out "%{http_code}" \
+      --request POST \
+      --form-string "access_token=${GITEE_TOKEN}" \
+      --form "file=@${asset}" \
+      "${api_base}/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/${release_id}/attach_files"
+  )"
+  if [[ "$upload_status" != "201" && "$upload_status" != "200" ]]; then
+    echo "Uploading ${asset_name} to Gitee failed with HTTP ${upload_status}." >&2
+    jq -r '.message // .error // "Unknown Gitee API error"' "$upload_response" >&2 || true
+    exit 1
+  fi
+
+  uploaded_id="$(jq -r '.id // empty' "$upload_response")"
+  if [[ -z "$uploaded_id" ]]; then
+    echo "Gitee accepted ${asset_name} but did not return an attachment id." >&2
+    exit 1
+  fi
+
+  # 新文件完整上传后才删除旧同名附件；网络中断不会先破坏已发布的下载入口。
   for attachment_id in "${existing_ids[@]}"; do
+    if [[ "$attachment_id" == "$uploaded_id" ]]; then
+      continue
+    fi
     delete_status="$(
       curl --silent --show-error \
-        --retry 3 \
+        --connect-timeout 30 \
+        --max-time 120 \
+        --retry 2 \
         --retry-all-errors \
         --output /dev/null \
         --write-out "%{http_code}" \
@@ -157,27 +208,10 @@ for asset in "${assets[@]}"; do
         "${api_base}/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/${release_id}/attach_files/${attachment_id}"
     )"
     if [[ "$delete_status" != "204" && "$delete_status" != "200" ]]; then
-      echo "Deleting existing Gitee attachment ${asset_name} failed with HTTP ${delete_status}." >&2
+      echo "Deleting superseded Gitee attachment ${asset_name} failed with HTTP ${delete_status}." >&2
       exit 1
     fi
   done
-
-  upload_status="$(
-    curl --silent --show-error \
-      --retry 3 \
-      --retry-all-errors \
-      --output "$attachments_response" \
-      --write-out "%{http_code}" \
-      --request POST \
-      --form-string "access_token=${GITEE_TOKEN}" \
-      --form "file=@${asset}" \
-      "${api_base}/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/${release_id}/attach_files"
-  )"
-  if [[ "$upload_status" != "201" && "$upload_status" != "200" ]]; then
-    echo "Uploading ${asset_name} to Gitee failed with HTTP ${upload_status}." >&2
-    jq -r '.message // .error // "Unknown Gitee API error"' "$attachments_response" >&2 || true
-    exit 1
-  fi
 
   echo "Uploaded ${asset_name} to Gitee."
 done

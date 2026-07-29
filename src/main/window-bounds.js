@@ -39,3 +39,34 @@ export function constrainMainWindowBounds(
     height
   }
 }
+
+/**
+ * 比较当前边界与约束后的目标边界，避免显示器指标事件无条件重提交窗口尺寸。
+ * 只有工作区确实容不下当前窗口时，才允许调用 setBounds 改变宽高。
+ */
+export function getWindowBoundsUpdate(currentBounds, nextBounds) {
+  if (
+    currentBounds.x === nextBounds.x &&
+    currentBounds.y === nextBounds.y &&
+    currentBounds.width === nextBounds.width &&
+    currentBounds.height === nextBounds.height
+  ) {
+    return { mode: 'none' }
+  }
+
+  if (currentBounds.width === nextBounds.width && currentBounds.height === nextBounds.height) {
+    return { mode: 'position', x: nextBounds.x, y: nextBounds.y }
+  }
+
+  return { mode: 'bounds', bounds: { ...nextBounds } }
+}
+
+/** 退出保存时永远优先使用最后一个已知可见边界，不能把贴边动画帧写入设置。 */
+export function getPersistableWindowBounds({
+  dockStableBounds = null,
+  lastVisibleBounds = null,
+  currentBounds = null
+} = {}) {
+  const selected = dockStableBounds || lastVisibleBounds || currentBounds
+  return selected ? { ...selected } : null
+}

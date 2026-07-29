@@ -137,6 +137,26 @@ app.once('ready', async () => {
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM wallpaper_sources').get().count, 0)
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM app_settings').get().count, 0)
 
+    // 同一原图的并发保存只能创建一个 source；随后并发删除最后两个版本时，
+    // 也必须只在最后一个引用消失后清理原图。
+    const [concurrentFirst, concurrentSecond] = await Promise.all([
+      saveWallpaperVersion(payload),
+      saveWallpaperVersion(payload)
+    ])
+    const concurrentOriginalPath = resolveWallpaperPath(concurrentFirst.original_path)
+    assert.equal(concurrentFirst.original_path, concurrentSecond.original_path)
+    assert.equal(existsSync(concurrentOriginalPath), true)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM wallpaper_sources').get().count, 1)
+    assert.equal(listWallpaperRecords().length, 2)
+
+    await Promise.all([
+      deleteWallpaperVersion(concurrentFirst.id),
+      deleteWallpaperVersion(concurrentSecond.id)
+    ])
+    assert.equal(listWallpaperRecords().length, 0)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM wallpaper_sources').get().count, 0)
+    assert.equal(existsSync(concurrentOriginalPath), false)
+
     await cleanupPendingWallpaperFiles()
     console.log('wallpaper storage integration tests passed')
   } catch (error) {

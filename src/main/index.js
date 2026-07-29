@@ -34,6 +34,8 @@ import {
   reSyncZOrder as blurReSyncZOrder,
   getRuntimeHealth as getBlurRuntimeHealth
 } from './bridge/blur_bridge.js'
+import { createWindowMotionBackend } from './window-motion/index.js'
+import { DockTransitionState } from './window-motion/dock-transition-state.js'
 
 import {
   createNote,
@@ -111,7 +113,11 @@ import { sendNotificationSafely } from './services/notification-guard.js'
 import { AppUpdateService, UPDATE_LINKS } from './services/app-update.js'
 import { ElectronStickyService } from './sticky/ElectronStickyService.js'
 import { buildStickyTrayTemplate } from './sticky/StickyTrayMenu.js'
-import { constrainMainWindowBounds } from './window-bounds.js'
+import {
+  constrainMainWindowBounds,
+  getPersistableWindowBounds,
+  getWindowBoundsUpdate
+} from './window-bounds.js'
 import { ipcMain } from './logging/ipc-main.js'
 import {
   exportLogs,
@@ -213,10 +219,7 @@ function handleNotificationProtocol(rawUrl) {
     }
 
     if (url.pathname === '/open') {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show()
-        mainWindow.focus()
-      }
+      openMainWindow()
       return true
     }
   } catch (error) {
@@ -233,10 +236,7 @@ function handleProtocolArgs(argv) {
 if (gotSingleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
     if (handleProtocolArgs(argv)) return
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show()
-      mainWindow.focus()
-    }
+    openMainWindow()
   })
 }
 
@@ -277,12 +277,21 @@ let settingsRevision = 0
 
 /** 防抖定时器，用于延迟保存窗口位置/尺寸 */
 let geometryTimer = null
+let dockGeometryReconcileTimer = null
+let dockDisplayChangeTimer = null
+const dockDisplayListeners = []
 
 /** 窗口几何是否在最近一次成功持久化（或恢复默认）后发生过变化 */
 let geometryDirty = false
 
 /** 恢复默认时忽略程序化缩放触发的 resize，避免把默认边界重新写回设置表。 */
 let suppressGeometryPersistenceUntil = 0
+
+/** 贴边程序化移动结束后继续短暂抑制异步 move/resize 事件写库。 */
+let suppressDockGeometryPersistenceUntil = 0
+
+/** 最近一次处于屏幕内且可持久化的主窗口边界。 */
+let lastVisibleMainWindowBounds = null
 
 /** 统一调度器实例 */
 const scheduler = new Scheduler()
@@ -590,9 +599,11 @@ function attachBlurWindowSyncListeners() {
 
   blurWindowSyncListenersAttached = true
   mainWindow.on('resize', () => {
+    if (windowMotionBackend?.isMoving()) return
     runBlurRuntimeOperation(blurUpdateGeometry, '同步毛玻璃窗口尺寸')
   })
   mainWindow.on('move', () => {
+    if (windowMotionBackend?.isMoving()) return
     runBlurRuntimeOperation(blurUpdateGeometry, '同步毛玻璃窗口位置')
   })
   mainWindow.on('always-on-top-changed', () => {
@@ -618,7 +629,9 @@ function applyResolvedWindowRuntime() {
   alwaysOnTop = resolvedSettings.window.alwaysOnTop
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.setMovable(!isLocked)
-  mainWindow.setResizable(!isLocked)
+  // Windows 使用 thickFrame:false + renderer 自定义缩放手柄。调用
+  // setResizable(true) 会重新引入系统 WS_THICKFRAME，破坏高 DPI 几何不变量。
+  if (process.platform !== 'win32') mainWindow.setResizable(!isLocked)
   applyAlwaysOnTop()
 }
 
@@ -680,6 +693,8 @@ const TRIGGER_WIDTH = 2 // 边缘触发窗口宽度（px）
 const SLIDE_DURATION = 200 // 滑动动画总时长（ms）
 const SLIDE_INTERVAL = 16 // 滑动动画帧间隔（ms）≈60fps
 const HIDE_DELAY = 200 // 鼠标离开后延迟隐藏（ms）
+const HIDE_OVERSHOOT = 4 // 两侧统一多移出 4 DIP，吸收高 DPI 整数换算误差
+const DOCK_GEOMETRY_SUPPRESSION_MS = 1000
 
 /** 默认窗口尺寸比例（相对屏幕工作区），改一个地方即可全局生效 */
 const DEFAULT_WIDTH_RATIO = DEFAULT_SETTINGS.geometry.widthRatio
@@ -693,6 +708,89 @@ let slideAnimTimer = null // 滑动动画定时器
 let hideTimer = null // 隐藏延迟定时器
 let isSliding = false // 滑动动画进行中标志
 let pendingSlideCallback = null // 动画中断时待执行的完成回调
+let dockMotionSession = null // 一轮隐藏/显示共享的可见边界与工作区快照
+const dockTransitionState = new DockTransitionState()
+let windowMotionBackend = null
+
+function suppressDockGeometryPersistence() {
+  suppressDockGeometryPersistenceUntil = Math.max(
+    suppressDockGeometryPersistenceUntil,
+    Date.now() + DOCK_GEOMETRY_SUPPRESSION_MS
+  )
+  scheduleDockGeometryReconciliation()
+}
+
+function isDockGeometryPersistenceSuppressed() {
+  return (
+    isSliding ||
+    isDockHidden ||
+    Boolean(dockMotionSession) ||
+    Date.now() < suppressDockGeometryPersistenceUntil
+  )
+}
+
+function isDockTransitionActive() {
+  return isSliding || isDockHidden || Boolean(dockMotionSession)
+}
+
+function boundsEqual(first, second) {
+  return (
+    first &&
+    second &&
+    first.x === second.x &&
+    first.y === second.y &&
+    first.width === second.width &&
+    first.height === second.height
+  )
+}
+
+/**
+ * 动画事件全部安静下来后重新读取一次真实边界。这样既不会把动画中间帧写库，
+ * 也不会丢失用户在保护期内立即进行的真实移动或缩放。
+ */
+function scheduleDockGeometryReconciliation() {
+  if (dockGeometryReconcileTimer) clearTimeout(dockGeometryReconcileTimer)
+  const delay = Math.max(0, suppressDockGeometryPersistenceUntil - Date.now()) + 50
+  dockGeometryReconcileTimer = setTimeout(() => {
+    dockGeometryReconcileTimer = null
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) return
+    if (isSliding || isDockHidden || dockMotionSession) return
+    if (
+      Date.now() < suppressDockGeometryPersistenceUntil ||
+      Date.now() < suppressGeometryPersistenceUntil
+    ) {
+      scheduleDockGeometryReconciliation()
+      return
+    }
+
+    const bounds = mainWindow.getBounds()
+    if (boundsEqual(bounds, lastVisibleMainWindowBounds)) return
+    lastVisibleMainWindowBounds = { ...bounds }
+    geometryDirty = true
+    try {
+      persistSettingValues([
+        { id: 'geometry.posX', value: bounds.x },
+        { id: 'geometry.posY', value: bounds.y },
+        { id: 'geometry.width', value: bounds.width },
+        { id: 'geometry.height', value: bounds.height }
+      ])
+      geometryDirty = false
+    } catch (error) {
+      console.warn('[settings] 补偿保存窗口位置失败:', error.message)
+    }
+  }, delay)
+  dockGeometryReconcileTimer.unref?.()
+}
+
+function createStableDockBounds(bounds, side, workArea) {
+  const width = Math.round(bounds.width)
+  const height = Math.round(bounds.height)
+  const y = Math.round(bounds.y)
+  const visibleX = side === 'left' ? workArea.x : workArea.x + workArea.width - width
+  const x = Math.round(visibleX)
+
+  return { x, y, width, height }
+}
 
 /**
  * 创建主窗口
@@ -744,6 +842,9 @@ function createWindow() {
     show: false,
     frame: false,
     transparent: true,
+    // Windows 的默认 thickFrame 会给无边框窗口保留不可见 resize inset。
+    // 项目已有自定义缩放手柄，不需要让该 inset 参与高 DPI 边界换算。
+    ...(process.platform === 'win32' ? { thickFrame: false } : {}),
     backgroundColor: '#00000000',
     autoHideMenuBar: true,
     skipTaskbar: true,
@@ -757,6 +858,8 @@ function createWindow() {
     }
   })
   setWindowLogContext(mainWindow, { role: 'main' })
+  lastVisibleMainWindowBounds = { ...mainWindow.getBounds() }
+  windowMotionBackend = createWindowMotionBackend(mainWindow, screen)
 
   // 固定缩放因子为 1.0，防止系统 DPI 缩放影响布局
   mainWindow.webContents.setZoomFactor(1.0)
@@ -806,12 +909,18 @@ function createWindow() {
    */
   const debouncedSaveGeometry = () => {
     if (Date.now() < suppressGeometryPersistenceUntil) return
+    if (isDockGeometryPersistenceSuppressed()) return
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    lastVisibleMainWindowBounds = { ...mainWindow.getBounds() }
     geometryDirty = true
     if (geometryTimer) clearTimeout(geometryTimer)
     geometryTimer = setTimeout(() => {
       geometryTimer = null
+      if (Date.now() < suppressGeometryPersistenceUntil) return
+      if (isDockGeometryPersistenceSuppressed()) return
       if (mainWindow && !mainWindow.isDestroyed()) {
-        const b = mainWindow.getBounds()
+        const b =
+          dockMotionSession?.stableBounds || lastVisibleMainWindowBounds || mainWindow.getBounds()
         try {
           persistSettingValues([
             { id: 'geometry.posX', value: b.x },
@@ -828,12 +937,26 @@ function createWindow() {
   }
 
   // 监听窗口大小变化和移动事件，触发防抖保存
-  mainWindow.on('resize', debouncedSaveGeometry)
-  mainWindow.on('move', debouncedSaveGeometry)
+  mainWindow.on('resize', () => {
+    if (windowMotionBackend?.isMoving()) return
+    debouncedSaveGeometry()
+  })
+  mainWindow.on('move', () => {
+    if (windowMotionBackend?.isMoving()) return
+    debouncedSaveGeometry()
+  })
 
   // 【贴边隐藏 - 边缘检测】窗口移动时检测是否靠近屏幕左/右边缘
   mainWindow.on('move', () => {
-    if (!mainWindow || mainWindow.isDestroyed() || isDockHidden || isSliding) return
+    if (
+      !mainWindow ||
+      mainWindow.isDestroyed() ||
+      windowMotionBackend?.isMoving() ||
+      isDockHidden ||
+      isSliding
+    ) {
+      return
+    }
     const side = detectSide()
     if (side) {
       if (dockSide !== side) {
@@ -873,6 +996,8 @@ function createWindow() {
   // 窗口销毁时清除引用和贴边资源
   mainWindow.on('closed', () => {
     mainWindow = null
+    windowMotionBackend = null
+    lastVisibleMainWindowBounds = null
     blurWindowSyncListenersAttached = false
     resetDockState()
   })
@@ -903,6 +1028,7 @@ function hideToTray() {
   }
 
   mainWindow.hide()
+  restoreDockWindowToVisiblePosition()
   resetDockState()
 }
 
@@ -918,21 +1044,207 @@ function updateWorkArea() {
   }
 }
 
-/** 仅修改窗口 X 坐标，保持 Y / 宽 / 高不变 */
-function setX(x) {
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  const b = mainWindow.getBounds()
-  mainWindow.setBounds({ x: Math.round(x), y: b.y, width: b.width, height: b.height })
+/**
+ * 贴边动画只移动窗口，绝不重新提交宽高。Windows 非 100% DPI 下反复
+ * setBounds({ width, height }) 会触发 DIP/物理像素换算并造成尺寸漂移。
+ */
+function setDockPosition(x, motionPlan) {
+  if (!mainWindow || mainWindow.isDestroyed() || !windowMotionBackend) return null
+  const requestedX = Math.round(x)
+  suppressDockGeometryPersistence()
+  const after = windowMotionBackend.moveTo(requestedX, motionPlan.y, motionPlan.expectedSize)
+  const contentAfter = mainWindow.getContentBounds()
+  if (
+    motionPlan.expectedElectronContentSize &&
+    (contentAfter.width !== motionPlan.expectedElectronContentSize.width ||
+      contentAfter.height !== motionPlan.expectedElectronContentSize.height)
+  ) {
+    throw new Error(
+      `Electron 内容区破坏尺寸不变量：` +
+        `${motionPlan.expectedElectronContentSize.width}x${motionPlan.expectedElectronContentSize.height} -> ` +
+        `${contentAfter.width}x${contentAfter.height}`
+    )
+  }
+  return after
 }
 
 /** 重置贴边状态（隐藏/关闭/最大化时统一调用） */
 function resetDockState() {
+  if (slideAnimTimer) {
+    clearInterval(slideAnimTimer)
+    slideAnimTimer = null
+  }
+  if (hideTimer) {
+    clearTimeout(hideTimer)
+    hideTimer = null
+  }
+  pendingSlideCallback = null
+  isSliding = false
   dockSide = null
   isDockHidden = false
+  dockMotionSession = null
   if (triggerWin && !triggerWin.isDestroyed()) {
     triggerWin.destroy()
     triggerWin = null
   }
+  // 显示动画会临时提升层级；动画被托盘隐藏等操作中断时也必须恢复用户设置。
+  const { restoreAlwaysOnTop } = dockTransitionState.reset()
+  if (restoreAlwaysOnTop) applyAlwaysOnTop()
+}
+
+/**
+ * 托盘隐藏会清除贴边会话；清除前先把隐藏中的窗口放回冻结的可见位置。
+ * 主窗口已经 hide，因此该保底移动不会向用户闪现。
+ */
+function restoreDockWindowToVisiblePosition() {
+  if (!mainWindow || mainWindow.isDestroyed() || !dockMotionSession) return
+  const { stableBounds, motionPlan } = dockMotionSession
+
+  try {
+    if (windowMotionBackend && motionPlan) {
+      windowMotionBackend.moveTo(motionPlan.visibleX, motionPlan.y, motionPlan.expectedSize)
+    } else {
+      mainWindow.setPosition(stableBounds.x, stableBounds.y)
+    }
+  } catch (error) {
+    console.warn('[dock] 原生恢复可见位置失败，改用 Electron 位置保底:', error.message)
+    try {
+      mainWindow.setPosition(stableBounds.x, stableBounds.y)
+    } catch (fallbackError) {
+      console.error('[dock] 恢复可见位置失败:', fallbackError)
+    }
+  }
+
+  const current = mainWindow.getBounds()
+  lastVisibleMainWindowBounds = {
+    ...stableBounds,
+    x: current.x,
+    y: current.y
+  }
+}
+
+function runPendingSlideCallback() {
+  const callback = pendingSlideCallback
+  pendingSlideCallback = null
+  if (!callback) return true
+
+  try {
+    callback()
+    return true
+  } catch (error) {
+    console.error('[dock] 动画完成处理失败，已保留贴边恢复入口:', error)
+    preserveDockSessionAfterSlideFailure()
+    return false
+  }
+}
+
+/**
+ * 原生移动或终点处理失败时不能直接 reset：窗口可能已经在屏外，reset 会同时
+ * 销毁触发条并丢失返回坐标。保留冻结会话和触发条，下一次显示请求可从当前位置重试。
+ */
+function preserveDockSessionAfterSlideFailure() {
+  if (slideAnimTimer) {
+    clearInterval(slideAnimTimer)
+    slideAnimTimer = null
+  }
+  if (hideTimer) {
+    clearTimeout(hideTimer)
+    hideTimer = null
+  }
+  pendingSlideCallback = null
+  isSliding = false
+
+  if (!mainWindow || mainWindow.isDestroyed() || !dockMotionSession) {
+    resetDockState()
+    return
+  }
+
+  dockSide = dockMotionSession.side
+  isDockHidden = true
+  if (!triggerWin || triggerWin.isDestroyed()) {
+    try {
+      createTriggerWindow(dockSide)
+    } catch (error) {
+      console.error('[dock] 恢复边缘触发窗口失败:', error)
+    }
+  }
+  const { restoreAlwaysOnTop } = dockTransitionState.reset()
+  if (restoreAlwaysOnTop) {
+    try {
+      applyAlwaysOnTop()
+    } catch (error) {
+      console.error('[dock] 恢复用户置顶设置失败:', error)
+    }
+  }
+}
+
+/**
+ * 隐藏期间显示器被拔除、分辨率或 DPI 改变时，旧的工作区快照已经失效。
+ * 立即取消隐藏并把主窗口约束到当前仍存在的最近显示器，避免窗口与触发条滞留屏外。
+ */
+function handleDockDisplayTopologyChange() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const sourceBounds =
+    dockMotionSession?.stableBounds || lastVisibleMainWindowBounds || mainWindow.getBounds()
+  const center = {
+    x: sourceBounds.x + Math.round(sourceBounds.width / 2),
+    y: sourceBounds.y + Math.round(sourceBounds.height / 2)
+  }
+  const display = screen.getDisplayNearestPoint(center) || screen.getPrimaryDisplay()
+  const safeBounds = constrainMainWindowBounds(sourceBounds, display.workArea)
+  const currentBounds = mainWindow.getBounds()
+  const update = getWindowBoundsUpdate(currentBounds, safeBounds)
+
+  suppressDockGeometryPersistence()
+  resetDockState()
+  cachedWorkArea = { ...display.workArea }
+  if (update.mode === 'position') {
+    mainWindow.setPosition(update.x, update.y)
+  } else if (update.mode === 'bounds') {
+    mainWindow.setBounds(update.bounds)
+  }
+  if (!boundsEqual(safeBounds, lastVisibleMainWindowBounds)) {
+    lastVisibleMainWindowBounds = { ...safeBounds }
+    geometryDirty = true
+    try {
+      persistSettingValues([
+        { id: 'geometry.posX', value: safeBounds.x },
+        { id: 'geometry.posY', value: safeBounds.y },
+        { id: 'geometry.width', value: safeBounds.width },
+        { id: 'geometry.height', value: safeBounds.height }
+      ])
+      geometryDirty = false
+    } catch (error) {
+      console.warn('[settings] 保存显示器变化后的窗口位置失败:', error.message)
+    }
+  }
+}
+
+function attachDockDisplayListeners() {
+  if (dockDisplayListeners.length > 0) return
+  for (const eventName of ['display-added', 'display-removed', 'display-metrics-changed']) {
+    const listener = () => {
+      if (dockDisplayChangeTimer) clearTimeout(dockDisplayChangeTimer)
+      dockDisplayChangeTimer = setTimeout(() => {
+        dockDisplayChangeTimer = null
+        handleDockDisplayTopologyChange()
+      }, 250)
+      dockDisplayChangeTimer.unref?.()
+    }
+    screen.on(eventName, listener)
+    dockDisplayListeners.push([eventName, listener])
+  }
+}
+
+function detachDockDisplayListeners() {
+  if (dockDisplayChangeTimer) {
+    clearTimeout(dockDisplayChangeTimer)
+    dockDisplayChangeTimer = null
+  }
+  for (const [eventName, listener] of dockDisplayListeners) {
+    screen.removeListener(eventName, listener)
+  }
+  dockDisplayListeners.length = 0
 }
 
 /**
@@ -949,18 +1261,34 @@ function detectSide() {
   const b = mainWindow.getBounds()
   const wa = cachedWorkArea
 
-  if (b.x <= wa.x + SNAP_THRESHOLD) return 'left'
-  if (b.x + b.width >= wa.x + wa.width - SNAP_THRESHOLD) return 'right'
+  if (b.x <= wa.x + SNAP_THRESHOLD && windowMotionBackend?.isDockEdgeExposed('left')) {
+    return 'left'
+  }
+  if (
+    b.x + b.width >= wa.x + wa.width - SNAP_THRESHOLD &&
+    windowMotionBackend?.isDockEdgeExposed('right')
+  ) {
+    return 'right'
+  }
   return null
 }
 
 /** 将窗口吸附到指定边缘 */
 function snapToEdge(side) {
   updateWorkArea()
-  if (!cachedWorkArea) return
-  const wa = cachedWorkArea
-  const b = mainWindow.getBounds()
-  setX(side === 'left' ? wa.x : wa.x + wa.width - b.width)
+  if (!cachedWorkArea || !windowMotionBackend) return
+  try {
+    const motionPlan = windowMotionBackend.createDockPlan(side, HIDE_OVERSHOOT)
+    const electronContentBounds = mainWindow.getContentBounds()
+    motionPlan.expectedElectronContentSize = {
+      width: electronContentBounds.width,
+      height: electronContentBounds.height
+    }
+    setDockPosition(motionPlan.visibleX, motionPlan)
+  } catch (error) {
+    console.error('[dock] 吸附窗口失败:', error)
+    resetDockState()
+  }
 }
 
 /**
@@ -969,11 +1297,10 @@ function snapToEdge(side) {
  */
 function createTriggerWindow(side) {
   if (triggerWin && !triggerWin.isDestroyed()) triggerWin.destroy()
-  updateWorkArea()
-  if (!cachedWorkArea) return
+  if (!dockMotionSession) return
 
-  const wa = cachedWorkArea
-  const b = mainWindow.getBounds()
+  const wa = dockMotionSession.workArea
+  const b = dockMotionSession.stableBounds
   const bounds =
     side === 'left'
       ? { x: wa.x, y: b.y, width: TRIGGER_WIDTH, height: b.height }
@@ -1012,25 +1339,31 @@ function createTriggerWindow(side) {
 /**
  * 滑动动画 —— easeInOutQuad 缓动曲线，慢起 → 快 → 慢停
  * @param {number} targetX - 目标 X 坐标
+ * @param {object} motionPlan - 本轮冻结的坐标空间、目标位置与尺寸不变量
  * @param {Function} [onFinish] - 动画完成回调
  */
-function slideTo(targetX, onFinish) {
+function slideTo(targetX, motionPlan, onFinish) {
   // 中断前一个动画时，先执行其回调以恢复状态（如置顶级别）
   if (slideAnimTimer) {
     clearInterval(slideAnimTimer)
     slideAnimTimer = null
   }
   if (pendingSlideCallback) {
-    const cb = pendingSlideCallback
-    pendingSlideCallback = null
-    cb()
+    if (!runPendingSlideCallback()) return
   }
 
   isSliding = true
   pendingSlideCallback = onFinish || null
 
   // 记录动画起始位置和总帧数
-  const fromX = mainWindow.getBounds().x
+  let fromX
+  try {
+    fromX = windowMotionBackend.capture().x
+  } catch (error) {
+    console.error('[dock] 读取动画起点失败:', error)
+    preserveDockSessionAfterSlideFailure()
+    return
+  }
   const totalFrames = Math.ceil(SLIDE_DURATION / SLIDE_INTERVAL)
   let frame = 0
 
@@ -1038,12 +1371,7 @@ function slideTo(targetX, onFinish) {
     if (!mainWindow || mainWindow.isDestroyed()) {
       clearInterval(slideAnimTimer)
       slideAnimTimer = null
-      isSliding = false
-      if (pendingSlideCallback) {
-        const cb = pendingSlideCallback
-        pendingSlideCallback = null
-        cb()
-      }
+      resetDockState()
       return
     }
 
@@ -1052,17 +1380,19 @@ function slideTo(targetX, onFinish) {
     // easeInOutQuad：前半段加速，后半段减速
     const ease = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2
 
-    setX(fromX + (targetX - fromX) * ease)
+    try {
+      setDockPosition(fromX + (targetX - fromX) * ease, motionPlan)
+    } catch (error) {
+      console.error('[dock] 物理移动失败，已中止贴边动画:', error)
+      preserveDockSessionAfterSlideFailure()
+      return
+    }
 
     if (progress >= 1) {
       clearInterval(slideAnimTimer)
       slideAnimTimer = null
       isSliding = false
-      if (pendingSlideCallback) {
-        const cb = pendingSlideCallback
-        pendingSlideCallback = null
-        cb()
-      }
+      runPendingSlideCallback()
     }
   }, SLIDE_INTERVAL)
 }
@@ -1078,14 +1408,60 @@ function doHide() {
   updateWorkArea()
   if (!cachedWorkArea) return
 
+  let motionPlan
+  try {
+    motionPlan = windowMotionBackend.createDockPlan(dockSide, HIDE_OVERSHOOT)
+    const electronContentBefore = mainWindow.getContentBounds()
+    motionPlan.expectedElectronContentSize = {
+      width: electronContentBefore.width,
+      height: electronContentBefore.height
+    }
+    suppressDockGeometryPersistence()
+    setDockPosition(motionPlan.visibleX, motionPlan)
+    const snapped = windowMotionBackend.capture()
+    motionPlan = {
+      ...motionPlan,
+      initial: snapped,
+      expectedSize: { width: snapped.width, height: snapped.height },
+      y: snapped.y
+    }
+  } catch (error) {
+    console.error('[dock] 创建隐藏动画计划失败:', error)
+    resetDockState()
+    return
+  }
+  const stableBounds = createStableDockBounds(mainWindow.getBounds(), dockSide, cachedWorkArea)
+  dockMotionSession = {
+    side: dockSide,
+    stableBounds,
+    motionPlan,
+    workArea: { ...cachedWorkArea }
+  }
+  lastVisibleMainWindowBounds = { ...stableBounds }
   isDockHidden = true
 
-  const wa = cachedWorkArea
-  const b = mainWindow.getBounds()
-  const targetX = dockSide === 'left' ? wa.x - b.width : wa.x + wa.width
+  const targetX = motionPlan.hiddenX
 
   createTriggerWindow(dockSide)
-  slideTo(targetX)
+  slideTo(targetX, motionPlan, () => {
+    try {
+      const terminal = windowMotionBackend.capture()
+      const crossedBoundary =
+        dockSide === 'left'
+          ? terminal.x + terminal.width <= motionPlan.workArea.left
+          : terminal.x >= motionPlan.workArea.right
+      if (!crossedBoundary) {
+        console.error('[dock] 隐藏终点未越过工作区边界:', {
+          side: dockSide,
+          terminal,
+          motionPlan
+        })
+      }
+    } catch (error) {
+      console.error('[dock] 读取隐藏终点失败:', error)
+    }
+    if (dockTransitionState.consumeQueuedShow()) doShow()
+  })
 }
 
 /**
@@ -1093,12 +1469,14 @@ function doHide() {
  * 前置条件：isDockHidden === true
  */
 function doShow() {
-  if (!mainWindow || mainWindow.isDestroyed() || !isDockHidden) return
-  if (isSliding) return
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const showAction = dockTransitionState.requestShow({ hidden: isDockHidden, sliding: isSliding })
+  if (showAction !== 'start') return
 
-  updateWorkArea()
-  if (!cachedWorkArea) return
+  const session = dockMotionSession
+  if (!session) return
 
+  suppressDockGeometryPersistence()
   isDockHidden = false
 
   // 立即销毁触发窗口，防止阻挡主窗口
@@ -1107,15 +1485,40 @@ function doShow() {
     triggerWin = null
   }
 
-  const wa = cachedWorkArea
-  const b = mainWindow.getBounds()
-  const targetX = dockSide === 'left' ? wa.x : wa.x + wa.width - b.width
+  const { stableBounds, motionPlan } = session
+  const targetX = motionPlan.visibleX
 
   // 滑出时短暂提升置顶层，确保动画可见
+  dockTransitionState.beginTemporaryAlwaysOnTop()
   mainWindow.setAlwaysOnTop(true, 'pop-up-menu')
-  slideTo(targetX, () => {
-    // 动画完成后恢复用户设置的置顶状态
-    applyAlwaysOnTop()
+  slideTo(targetX, motionPlan, () => {
+    try {
+      suppressDockGeometryPersistence()
+      const visibleElectronBounds = mainWindow.getBounds()
+      lastVisibleMainWindowBounds = {
+        ...stableBounds,
+        x: visibleElectronBounds.x,
+        y: visibleElectronBounds.y
+      }
+      dockMotionSession = null
+      try {
+        const terminal = windowMotionBackend.capture()
+        const expectedVisibleX = motionPlan.visibleX
+        if (terminal.x !== expectedVisibleX) {
+          console.error('[dock] 显示终点未回到冻结位置:', {
+            expectedVisibleX,
+            terminal,
+            motionPlan
+          })
+        }
+      } catch (error) {
+        console.error('[dock] 读取显示终点失败:', error)
+      }
+    } finally {
+      // 动画完成或终点校验失败后都必须恢复用户设置的置顶状态。
+      dockTransitionState.finishTemporaryAlwaysOnTop()
+      applyAlwaysOnTop()
+    }
   })
 }
 
@@ -1353,6 +1756,8 @@ app.whenReady().then(async () => {
     if (
       win &&
       win === mainWindow &&
+      !isLocked &&
+      !isDockTransitionActive() &&
       values?.every(Number.isFinite) &&
       values[2] >= 240 &&
       values[3] >= 240 &&
@@ -1397,6 +1802,9 @@ app.whenReady().then(async () => {
    * 当前窗口立即恢复默认宽高并保留当前位置，同时清除下次启动时的几何记录。
    */
   ipcMain.handle('reset-settings', () => {
+    if (isDockTransitionActive()) {
+      throw new Error('请先显示贴边窗口，再恢复默认设置')
+    }
     if (geometryTimer) {
       clearTimeout(geometryTimer)
       geometryTimer = null
@@ -1612,6 +2020,7 @@ app.whenReady().then(async () => {
   })
 
   createWindow()
+  attachDockDisplayListeners()
   stickyService = new ElectronStickyService({
     getMainWindow: () => mainWindow,
     getNoteById,
@@ -2087,8 +2496,6 @@ app.whenReady().then(async () => {
     return getNoteById(id)
   })
 
-  // 【便签 - 列表查询（已废弃，由专用查询替代）】
-
   // 【便签 - 置顶查询（时间线模式）】
   ipcMain.handle('notes:query-pinned', (_event, options) => {
     return queryPinnedNotes(options || {})
@@ -2535,7 +2942,7 @@ setTimeout(()=>{resize()},0)
 
   // ---- 调度器健康检查 IPC ----
 
-  // 【调度器 - 健康检查】（占位，调度器未实现前返回离线状态）
+  // 【调度器 - 健康检查】
   ipcMain.handle('scheduler:health', () => {
     return scheduler.getHealth()
   })
@@ -2565,9 +2972,18 @@ app.on('before-quit', () => {
     clearTimeout(geometryTimer)
     geometryTimer = null
   }
+  if (dockGeometryReconcileTimer) {
+    clearTimeout(dockGeometryReconcileTimer)
+    dockGeometryReconcileTimer = null
+  }
+  detachDockDisplayListeners()
   if (geometryDirty && getDb() && mainWindow && !mainWindow.isDestroyed()) {
     try {
-      const bounds = mainWindow.getBounds()
+      const bounds = getPersistableWindowBounds({
+        dockStableBounds: dockMotionSession?.stableBounds,
+        lastVisibleBounds: lastVisibleMainWindowBounds,
+        currentBounds: mainWindow.getBounds()
+      })
       setSettingsBatch(WINDOW_NAME, [
         serializeSetting('geometry.posX', bounds.x),
         serializeSetting('geometry.posY', bounds.y),

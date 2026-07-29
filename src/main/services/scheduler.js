@@ -101,6 +101,7 @@ export class Scheduler {
    * 启动调度器（主线 + 看门狗）
    */
   start() {
+    if (this._mainTimerId || this._watchdogId) return
     this.lastTickAt = Date.now() // 初始化，防止首次 tick 失败导致看门狗永不触发
 
     // 启动时仍执行一轮任务，但把来源交给各任务决定是否补偿；循环模板会跳过旧节点。
@@ -165,6 +166,8 @@ export class Scheduler {
    * 停止调度器（清理所有定时器）
    */
   stop() {
+    // 让已经进入事件队列的旧回调也因代数不匹配而退出，不能只清除当前句柄。
+    this._mainGeneration += 1
     if (this._mainTimerId) {
       clearTimeout(this._mainTimerId)
       this._mainTimerId = null

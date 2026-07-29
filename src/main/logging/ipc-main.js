@@ -1,9 +1,9 @@
 import { ipcMain as electronIpcMain } from 'electron'
 import { logger } from './logger.js'
+import { captureIpcArguments } from './ipc-arguments.js'
 
 const listenerWrappers = new Map()
 const SLOW_IPC_MS = 2000
-const MAX_IPC_ARGUMENT_TEXT = 100_000
 
 function senderMetadata(event, channel, startedAt) {
   return {
@@ -11,24 +11,6 @@ function senderMetadata(event, channel, startedAt) {
     durationMs: Date.now() - startedAt,
     webContentsId: event?.sender?.id,
     url: event?.sender?.getURL?.()
-  }
-}
-
-function captureArguments(args) {
-  try {
-    const serialized = JSON.stringify(args)
-    if (serialized.length <= MAX_IPC_ARGUMENT_TEXT) return args
-    return {
-      truncated: true,
-      originalLength: serialized.length,
-      preview: serialized.slice(0, MAX_IPC_ARGUMENT_TEXT)
-    }
-  } catch (error) {
-    return {
-      serializationFailed: true,
-      error: error?.message || String(error),
-      values: args.map((value) => String(value))
-    }
   }
 }
 
@@ -48,7 +30,7 @@ function wrapHandle(channel, handler) {
     const reportError = (error) => {
       logger.error(`ipc.${channel}`, error, {
         ...senderMetadata(event, channel, startedAt),
-        arguments: captureArguments(args)
+        arguments: captureIpcArguments(args)
       })
     }
     try {
@@ -83,7 +65,7 @@ function wrapListener(channel, listener) {
         result.catch((error) => {
           logger.error(`ipc.${channel}`, error, {
             ...senderMetadata(event, channel, startedAt),
-            arguments: captureArguments(args)
+            arguments: captureIpcArguments(args)
           })
           queueMicrotask(() => {
             throw error
@@ -94,7 +76,7 @@ function wrapListener(channel, listener) {
     } catch (error) {
       logger.error(`ipc.${channel}`, error, {
         ...senderMetadata(event, channel, startedAt),
-        arguments: captureArguments(args)
+        arguments: captureIpcArguments(args)
       })
       throw error
     }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { createHash } from 'crypto'
 import { mkdtemp, readFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -96,6 +97,11 @@ describe('app update metadata', () => {
             name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
             size: 2048,
             browser_download_url: 'https://gitee.example/setup.exe'
+          },
+          {
+            name: 'SHA256SUMS.txt',
+            size: 128,
+            browser_download_url: 'https://gitee.example/SHA256SUMS.txt'
           }
         ])
       }
@@ -175,14 +181,18 @@ describe('app update metadata', () => {
     let downloadRequests = 0
     const assetName = 'Abandon-Note-0.9.1-windows-x64-setup.exe'
     const payload = new TextEncoder().encode('installer payload')
+    const checksum = createHash('sha256').update(payload).digest('hex')
     const service = new AppUpdateService({
       currentVersion: '0.9.0',
       platform: 'win32',
       arch: 'x64',
       downloadDirectory: directory,
       onProgress: (event) => progress.push(event),
-      fetchImpl: async () => {
+      fetchImpl: async (url) => {
         downloadRequests += 1
+        if (url.endsWith('SHA256SUMS.txt')) {
+          return new Response(`${checksum}  ${assetName}\n`)
+        }
         return new Response(payload, {
           headers: { 'content-length': String(payload.byteLength) }
         })
@@ -190,7 +200,14 @@ describe('app update metadata', () => {
     })
     service.lastCheck = {
       result: { status: 'available' },
-      release: { assets: [] },
+      release: {
+        assets: [
+          {
+            name: 'SHA256SUMS.txt',
+            url: 'https://gitee.example/SHA256SUMS.txt'
+          }
+        ]
+      },
       asset: {
         name: assetName,
         size: payload.byteLength,
@@ -204,10 +221,33 @@ describe('app update metadata', () => {
       expect(await readFile(first.path, 'utf8')).toBe('installer payload')
       const second = await service.download()
       expect(second).toEqual({ path: first.path, reused: true })
-      expect(downloadRequests).toBe(1)
+      expect(downloadRequests).toBe(3)
       expect(progress.at(-1)).toMatchObject({ state: 'downloaded', percent: 100 })
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
+  })
+
+  it('refuses automatic download when the release has no checksum', async () => {
+    const service = new AppUpdateService({
+      currentVersion: '0.9.0',
+      platform: 'win32',
+      arch: 'x64',
+      downloadDirectory: 'unused',
+      fetchImpl: async () => {
+        throw new Error('installer must not be downloaded')
+      }
+    })
+    service.lastCheck = {
+      result: { status: 'available' },
+      release: { assets: [] },
+      asset: {
+        name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
+        size: 128,
+        url: 'https://gitee.example/setup.exe'
+      }
+    }
+
+    await expect(service.download()).rejects.toThrow('无法取得安装包 SHA-256 校验值')
   })
 })

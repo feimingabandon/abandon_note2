@@ -202,6 +202,9 @@ export class AppUpdateService {
       const release = await this.fetchLatestRelease()
       const artifactName = getTargetArtifact(release.version, this.platform, this.arch)
       const asset = release.assets.find((item) => item.name === artifactName && item.url)
+      const checksumAsset = release.assets.find(
+        (item) => item.name === 'SHA256SUMS.txt' && item.url
+      )
       const comparison = compareVersions(release.version, this.currentVersion)
       const result = {
         ...base,
@@ -213,12 +216,20 @@ export class AppUpdateService {
         releaseNotes: release.notes,
         publishedAt: release.publishedAt,
         onlineDownloadSupported: Boolean(
-          comparison > 0 && this.platform === 'win32' && this.arch === 'x64' && asset
+          comparison > 0 &&
+          this.platform === 'win32' &&
+          this.arch === 'x64' &&
+          asset &&
+          checksumAsset
         ),
         asset: asset ? { name: asset.name, size: asset.size } : null,
         error:
-          comparison > 0 && this.platform === 'win32' && !asset
-            ? '当前发布中没有找到适用于本机的 Windows 安装包'
+          comparison > 0 && this.platform === 'win32'
+            ? !asset
+              ? '当前发布中没有找到适用于本机的 Windows 安装包'
+              : !checksumAsset
+                ? '当前发布缺少 SHA-256 校验清单，请使用手动下载'
+                : null
             : null
       }
       this.lastCheck = { result, release, asset }
@@ -273,11 +284,14 @@ export class AppUpdateService {
     const destination = join(this.downloadDirectory, basename(asset.name))
     const partial = `${destination}.part`
     const expectedChecksum = await this.getExpectedChecksum(release, asset.name).catch(() => null)
+    if (!expectedChecksum) {
+      throw new Error('无法取得安装包 SHA-256 校验值，请使用手动下载')
+    }
 
     if (await fileExists(destination)) {
       const existing = await stat(destination)
       const sizeMatches = !asset.size || existing.size === asset.size
-      const hashMatches = !expectedChecksum || (await sha256File(destination)) === expectedChecksum
+      const hashMatches = (await sha256File(destination)) === expectedChecksum
       if (sizeMatches && hashMatches) {
         this.onProgress({ state: 'downloaded', percent: 100, path: destination })
         return { path: destination, reused: true }
@@ -310,7 +324,7 @@ export class AppUpdateService {
       await pipeline(source, createWriteStream(partial, { flags: 'wx' }))
       const downloaded = await stat(partial)
       if (asset.size && downloaded.size !== asset.size) throw new Error('安装包大小校验失败')
-      if (expectedChecksum && (await sha256File(partial)) !== expectedChecksum) {
+      if ((await sha256File(partial)) !== expectedChecksum) {
         throw new Error('安装包 SHA-256 校验失败')
       }
       await rename(partial, destination)

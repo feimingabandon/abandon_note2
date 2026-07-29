@@ -9,6 +9,11 @@ let koffi = null
 let lib = null
 let initialized = false
 
+function getWindowHandleValue(window) {
+  const hwndBuffer = window.getNativeWindowHandle()
+  return hwndBuffer.length >= 8 ? Number(hwndBuffer.readBigUInt64LE()) : hwndBuffer.readUInt32LE()
+}
+
 const NATIVE_ERROR_MESSAGES = {
   1: '当前 Windows 版本不支持原生模糊',
   2: 'Electron 父窗口句柄无效',
@@ -91,6 +96,16 @@ function initNative() {
     lib.Blur_IsSupported = lib.func('Blur_IsSupported', 'int', [])
     lib.Blur_GetLastErrorCode = lib.func('Blur_GetLastErrorCode', 'int', [])
     lib.Blur_GetLastErrorMessage = lib.func('Blur_GetLastErrorMessage', 'str', [])
+    lib.WindowMotion_MoveWindow = lib.func('WindowMotion_MoveWindow', 'int', [
+      'intptr_t',
+      'int',
+      'int'
+    ])
+    lib.WindowMotion_GetSnapshotJson = lib.func('WindowMotion_GetSnapshotJson', 'str', ['intptr_t'])
+    lib.WindowMotion_IsEdgeExposed = lib.func('WindowMotion_IsEdgeExposed', 'int', [
+      'intptr_t',
+      'int'
+    ])
     return true
   } catch (e) {
     console.warn('[blur] DLL 加载失败:', e.message)
@@ -110,9 +125,7 @@ export function initialize(mainWindow) {
     return { success: false, error: nativeError.message, nativeError }
   }
 
-  const hwndBuf = mainWindow.getNativeWindowHandle()
-  // HWND 在 x64 上是 8 字节，读取为整数传给 DLL
-  const hwndVal = hwndBuf.length >= 8 ? Number(hwndBuf.readBigUInt64LE()) : hwndBuf.readUInt32LE()
+  const hwndVal = getWindowHandleValue(mainWindow)
 
   if (!lib.Blur_Init(hwndVal)) {
     const nativeError = getNativeError('原生模糊引擎初始化失败')
@@ -161,6 +174,39 @@ export function getRuntimeHealth() {
     initialized: nativeInitialized,
     nativeError: healthy ? null : getNativeError('原生模糊运行期失效')
   }
+}
+
+export function getWindowMotionSnapshot(window) {
+  if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
+    return null
+  }
+  try {
+    return JSON.parse(lib.WindowMotion_GetSnapshotJson(getWindowHandleValue(window)))
+  } catch (error) {
+    throw new Error(`读取 Windows 物理窗口边界失败：${error?.message || String(error)}`)
+  }
+}
+
+export function moveWindowPhysical(window, physicalX, physicalY) {
+  if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
+    return false
+  }
+  return Boolean(
+    lib.WindowMotion_MoveWindow(
+      getWindowHandleValue(window),
+      Math.round(physicalX),
+      Math.round(physicalY)
+    )
+  )
+}
+
+export function isWindowDockEdgeExposed(window, side) {
+  if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
+    return false
+  }
+  const nativeSide = side === 'left' ? -1 : side === 'right' ? 1 : 0
+  if (!nativeSide) return false
+  return Boolean(lib.WindowMotion_IsEdgeExposed(getWindowHandleValue(window), nativeSide))
 }
 
 export function destroy() {

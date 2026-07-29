@@ -74,6 +74,28 @@ describe('scheduler context', () => {
     })
   })
 
+  it('starts idempotently and invalidates queued callbacks when stopped', () => {
+    vi.useFakeTimers()
+    const scheduler = new Scheduler()
+    const task = vi.fn()
+    scheduler.register({
+      name: 'probe',
+      shouldRun: () => true,
+      execute: task
+    })
+
+    scheduler.start()
+    const runningGeneration = scheduler._mainGeneration
+    scheduler.start()
+    expect(task).toHaveBeenCalledTimes(1)
+    expect(scheduler._mainGeneration).toBe(runningGeneration)
+
+    scheduler.stop()
+    expect(scheduler._mainGeneration).toBe(runningGeneration + 1)
+    expect(scheduler.getHealth().status).toBe('stopped')
+    expect(scheduler.getHealth().watchdogRunning).toBe(false)
+  })
+
   it('uses the in-app fallback without creating a native notification when disabled', () => {
     const scheduler = new Scheduler()
     const fallback = vi.fn()

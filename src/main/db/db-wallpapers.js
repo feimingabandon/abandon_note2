@@ -18,6 +18,7 @@ const CROP_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp'])
 const OPERATION_MANIFEST = 'operation.json'
 
 let storageFaultInjector = null
+let wallpaperMutationQueue = Promise.resolve()
 
 /** 仅供 Electron 存储集成测试注入可预测故障。 */
 export function setWallpaperStorageFaultInjectorForTests(injector) {
@@ -252,7 +253,7 @@ export function listWallpaperRecords() {
 }
 
 /** 保存一个新裁剪版本；sourceId 存在时直接复用历史原图。 */
-export async function saveWallpaperVersion({ sourceId, original, cropped, crop }) {
+async function saveWallpaperVersionUnlocked({ sourceId, original, cropped, crop }) {
   const db = getDb()
   let source = null
   let originalPayload = null
@@ -439,7 +440,7 @@ export function getWallpaperThumbnail(id, maxSize = 240) {
 }
 
 /** 删除一个裁剪版本；最后一个引用消失时一并删除原图。 */
-export async function deleteWallpaperVersion(id, { clearSelectionForWindow = null } = {}) {
+async function deleteWallpaperVersionUnlocked(id, { clearSelectionForWindow = null } = {}) {
   const record = getWallpaperRecord(id)
   if (!record) return false
   const db = getDb()
@@ -500,6 +501,29 @@ export async function deleteWallpaperVersion(id, { clearSelectionForWindow = nul
     if (!committed) await recoverWallpaperOperation(operationDirectory, manifest)
     throw error
   }
+}
+
+/**
+ * 删除同一原图的多个裁剪版本时必须串行化。否则两个并发请求都可能在事务外读到
+ * sourceUseCount === 2，最终两个版本都删除却没有任何一方清理原图记录和文件。
+ */
+function enqueueWallpaperMutation(operation) {
+  const result = wallpaperMutationQueue.then(operation)
+  wallpaperMutationQueue = result.catch(() => {})
+  return result
+}
+
+/**
+ * 同一原图的去重判断、文件提交和数据库插入必须作为一段串行变更执行。
+ * 否则两个并发保存会同时判断 source 不存在，并竞争同一个哈希原图路径。
+ */
+export function saveWallpaperVersion(payload) {
+  return enqueueWallpaperMutation(() => saveWallpaperVersionUnlocked(payload))
+}
+
+export function deleteWallpaperVersion(id, options = {}) {
+  const operation = enqueueWallpaperMutation(() => deleteWallpaperVersionUnlocked(id, options))
+  return operation
 }
 
 export async function cleanupPendingWallpaperFiles() {

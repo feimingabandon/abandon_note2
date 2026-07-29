@@ -30,6 +30,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -45,6 +47,14 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Compile Windows blur engine
+        if: matrix.os == 'windows-latest'
+        run: npm run build:native:win
+
+      - name: Verify frameless window style
+        if: matrix.os == 'windows-latest'
+        run: npm run test:window-frame:win
 
       - name: Build application
         run: npm run build

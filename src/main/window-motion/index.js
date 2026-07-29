@@ -1,0 +1,202 @@
+import {
+  getWindowMotionSnapshot,
+  isWindowDockEdgeExposed,
+  moveWindowPhysical
+} from '../bridge/blur_bridge.js'
+import { isDisplayEdgeExposed } from './dock-edge.js'
+
+function assertFiniteGeometry(geometry, label) {
+  const values = [
+    geometry?.x,
+    geometry?.y,
+    geometry?.width,
+    geometry?.height,
+    geometry?.workArea?.left,
+    geometry?.workArea?.top,
+    geometry?.workArea?.right,
+    geometry?.workArea?.bottom
+  ]
+  if (!values.every(Number.isFinite) || geometry.width <= 0 || geometry.height <= 0) {
+    throw new Error(`${label}返回了无效窗口几何`)
+  }
+  return geometry
+}
+
+class WindowsPhysicalMotionBackend {
+  constructor(window) {
+    this.window = window
+    this.moving = false
+  }
+
+  isMoving() {
+    return this.moving
+  }
+
+  isDockEdgeExposed(side) {
+    return isWindowDockEdgeExposed(this.window, side)
+  }
+
+  capture() {
+    const snapshot = getWindowMotionSnapshot(this.window)
+    if (!snapshot?.window?.valid || !snapshot?.monitor?.valid) {
+      throw new Error('无法读取 Windows 窗口或显示器物理边界')
+    }
+    return assertFiniteGeometry(
+      {
+        coordinateSpace: 'physical',
+        x: snapshot.window.left,
+        y: snapshot.window.top,
+        width: snapshot.window.width,
+        height: snapshot.window.height,
+        clientWidth: snapshot.window.clientWidth,
+        clientHeight: snapshot.window.clientHeight,
+        dpi: snapshot.window.dpi,
+        workArea: {
+          left: snapshot.monitor.workLeft,
+          top: snapshot.monitor.workTop,
+          right: snapshot.monitor.workRight,
+          bottom: snapshot.monitor.workBottom
+        }
+      },
+      'Windows 原生移动后端'
+    )
+  }
+
+  moveTo(x, y, expectedSize) {
+    this.moving = true
+    try {
+      if (!moveWindowPhysical(this.window, x, y)) {
+        throw new Error('SetWindowPos(SWP_NOSIZE) 移动窗口失败')
+      }
+      const after = this.capture()
+      if (
+        expectedSize &&
+        (after.width !== expectedSize.width || after.height !== expectedSize.height)
+      ) {
+        throw new Error(
+          `Windows 原生移动破坏尺寸不变量：${expectedSize.width}x${expectedSize.height} -> ${after.width}x${after.height}`
+        )
+      }
+      return after
+    } finally {
+      this.moving = false
+    }
+  }
+
+  createDockPlan(side, overshootDip) {
+    const snapshot = this.capture()
+    const physicalOvershoot = Math.max(1, Math.ceil((overshootDip * snapshot.dpi) / 96))
+    const visibleX =
+      side === 'left' ? snapshot.workArea.left : snapshot.workArea.right - snapshot.width
+    const hiddenX =
+      side === 'left'
+        ? snapshot.workArea.left - snapshot.width - physicalOvershoot
+        : snapshot.workArea.right + physicalOvershoot
+
+    return {
+      side,
+      coordinateSpace: snapshot.coordinateSpace,
+      initial: snapshot,
+      expectedSize: {
+        width: snapshot.width,
+        height: snapshot.height
+      },
+      visibleX,
+      hiddenX,
+      y: snapshot.y,
+      workArea: snapshot.workArea,
+      overshoot: physicalOvershoot
+    }
+  }
+}
+
+class ElectronPointMotionBackend {
+  constructor(window, screen) {
+    this.window = window
+    this.screen = screen
+    this.moving = false
+  }
+
+  isMoving() {
+    return this.moving
+  }
+
+  isDockEdgeExposed(side) {
+    const bounds = this.window.getBounds()
+    const display = this.screen.getDisplayMatching(bounds)
+    return isDisplayEdgeExposed(display, this.screen.getAllDisplays(), side, bounds)
+  }
+
+  capture() {
+    const bounds = this.window.getBounds()
+    const display = this.screen.getDisplayMatching(bounds)
+    const workArea = display.workArea
+    return assertFiniteGeometry(
+      {
+        coordinateSpace: 'point',
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+        clientWidth: this.window.getContentBounds().width,
+        clientHeight: this.window.getContentBounds().height,
+        dpi: 96,
+        workArea: {
+          left: workArea.x,
+          top: workArea.y,
+          right: workArea.x + workArea.width,
+          bottom: workArea.y + workArea.height
+        }
+      },
+      'Electron 移动后端'
+    )
+  }
+
+  moveTo(x, y, expectedSize) {
+    this.moving = true
+    try {
+      this.window.setPosition(Math.round(x), Math.round(y))
+      const after = this.capture()
+      if (
+        expectedSize &&
+        (after.width !== expectedSize.width || after.height !== expectedSize.height)
+      ) {
+        throw new Error(
+          `Electron 移动破坏尺寸不变量：${expectedSize.width}x${expectedSize.height} -> ${after.width}x${after.height}`
+        )
+      }
+      return after
+    } finally {
+      this.moving = false
+    }
+  }
+
+  createDockPlan(side, overshootDip) {
+    const snapshot = this.capture()
+    const visibleX =
+      side === 'left' ? snapshot.workArea.left : snapshot.workArea.right - snapshot.width
+    const hiddenX =
+      side === 'left'
+        ? snapshot.workArea.left - snapshot.width - overshootDip
+        : snapshot.workArea.right + overshootDip
+    return {
+      side,
+      coordinateSpace: snapshot.coordinateSpace,
+      initial: snapshot,
+      expectedSize: {
+        width: snapshot.width,
+        height: snapshot.height
+      },
+      visibleX,
+      hiddenX,
+      y: snapshot.y,
+      workArea: snapshot.workArea,
+      overshoot: overshootDip
+    }
+  }
+}
+
+export function createWindowMotionBackend(window, screen) {
+  if (process.platform === 'win32') return new WindowsPhysicalMotionBackend(window)
+  return new ElectronPointMotionBackend(window, screen)
+}

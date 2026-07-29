@@ -3,6 +3,14 @@ export const DATABASE_SCHEMA_VERSION = 1
 
 /** 创建首个正式版本的完整数据库结构。 */
 export function createDatabaseSchema(db) {
+  const existingVersion = Number(db.pragma('user_version', { simple: true }) || 0)
+  if (existingVersion > DATABASE_SCHEMA_VERSION) {
+    throw new Error(
+      `数据库版本 ${existingVersion} 高于当前程序支持的版本 ${DATABASE_SCHEMA_VERSION}，` +
+        '请使用更新版本的 Abandon Note 打开此数据库'
+    )
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS app_settings (
       window_name TEXT NOT NULL,
@@ -17,7 +25,9 @@ export function createDatabaseSchema(db) {
   `)
 
   createNotesSchema(db)
-  db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
+  if (existingVersion < DATABASE_SCHEMA_VERSION) {
+    db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
+  }
 }
 
 /** 创建最终业务表结构；供完整初始化和隔离业务表测试复用。 */

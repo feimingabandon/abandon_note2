@@ -38,8 +38,10 @@ namespace BlurEngine {
 
 // ---- 单例 ----
 Engine& Engine::Instance() {
-    static Engine instance;
-    return instance;
+    // 进程级单例故意不析构：若第三方 WinRT 调用永久卡死，超时路径会分离
+    // STA 线程。保留 Engine 存储到进程结束可避免分离线程访问已析构的 mutex/atomic。
+    static Engine* instance = new Engine();
+    return *instance;
 }
 
 bool Engine::s_classRegistered = false;
@@ -50,6 +52,10 @@ bool Engine::s_classRegistered = false;
 
 bool Engine::Initialize(HWND parentHwnd) {
     if (m_initialized.load()) return true;
+    if (m_threadAbandoned.load()) {
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        return false;
+    }
     m_lastError.store(BlurErrorCode::None);
     if (!parentHwnd || !IsWindow(parentHwnd)) {
         m_lastError.store(BlurErrorCode::InvalidParentWindow);
@@ -57,7 +63,10 @@ bool Engine::Initialize(HWND parentHwnd) {
     }
 
     // 失败的旧线程必须先回收，避免对 joinable std::thread 再赋值导致 terminate。
-    if (m_staThread.joinable()) m_staThread.join();
+    if (m_staThread.joinable() && !StopStaThread(2'000)) {
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        return false;
+    }
 
     {
         std::lock_guard<std::mutex> lock(m_initMutex);
@@ -78,7 +87,7 @@ bool Engine::Initialize(HWND parentHwnd) {
     if (!success) {
         const bool timedOut = !completed;
         if (timedOut) m_lastError.store(BlurErrorCode::InitializationTimeout);
-        StopStaThread();
+        StopStaThread(2'000);
         if (timedOut) m_lastError.store(BlurErrorCode::InitializationTimeout);
         return false;
     }
@@ -86,7 +95,7 @@ bool Engine::Initialize(HWND parentHwnd) {
 }
 
 void Engine::Destroy() {
-    StopStaThread();
+    StopStaThread(5'000);
     m_initialized.store(false);
     m_runtimeHealthy.store(false);
     m_running.store(false);
@@ -163,15 +172,7 @@ void Engine::UpdateGeometry() {
 }
 
 void Engine::ReSyncZOrder() {
-    if (HWND hwnd = m_messageHwnd.load()) {
-        if (!PostMessage(hwnd, WM_BLUR_SYNC_ZORDER, 0, 0)) {
-            m_lastError.store(BlurErrorCode::UnknownFailure);
-            m_runtimeHealthy.store(false);
-        }
-    } else if (m_initialized.load()) {
-        m_lastError.store(BlurErrorCode::OverlayWindowFailed);
-        m_runtimeHealthy.store(false);
-    }
+    QueueZOrderSync();
 }
 
 void Engine::Show() { if (HWND hwnd = m_messageHwnd.load()) PostMessage(hwnd, WM_BLUR_SHOW, 0, 0); }
@@ -246,7 +247,13 @@ void Engine::StaThreadProc(HWND parentHwnd) {
         return;
     }
 
-    InstallForegroundHook();
+    if (!InstallWinEventHooks()) {
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        Cleanup();
+        m_running.store(false);
+        SignalInitialization(false);
+        return;
+    }
     m_lastError.store(BlurErrorCode::None);
     m_initialized.store(true);
     m_runtimeHealthy.store(true);
@@ -283,11 +290,21 @@ void Engine::Cleanup() {
     m_messageHwnd.store(nullptr);
     m_configUpdatePending.store(false);
     m_geometryUpdatePending.store(false);
+    m_zOrderSyncPending.store(false);
     if (m_foregroundHook) {
         UnhookWinEvent(m_foregroundHook);
         m_foregroundHook = nullptr;
     }
-    if (m_blurVisual && m_target) m_target.Root(nullptr);
+    if (m_reorderHook) {
+        UnhookWinEvent(m_reorderHook);
+        m_reorderHook = nullptr;
+    }
+    try {
+        if (m_blurVisual && m_target) m_target.Root(nullptr);
+    }
+    catch (...) {
+        // 清理路径绝不能让 WinRT 异常越过 STA 线程入口。
+    }
     m_blurVisual = nullptr;
     m_clipGeometry = nullptr;
     m_clip = nullptr;
@@ -301,10 +318,30 @@ void Engine::Cleanup() {
     CoUninitialize();
 }
 
-void Engine::StopStaThread() {
+bool Engine::StopStaThread(DWORD timeoutMs) {
     m_running.store(false);
     if (HWND hwnd = m_messageHwnd.load()) PostMessage(hwnd, WM_BLUR_DESTROY, 0, 0);
-    if (m_staThread.joinable()) m_staThread.join();
+    if (!m_staThread.joinable()) return true;
+
+    const DWORD waitResult = WaitForSingleObject(
+        static_cast<HANDLE>(m_staThread.native_handle()),
+        timeoutMs);
+    if (waitResult == WAIT_OBJECT_0) {
+        m_staThread.join();
+        return true;
+    }
+
+    // 不能让损坏或卡死的 WinRT/DComp 调用无限阻塞 Electron 主进程。
+    // TerminateThread 会破坏 COM/堆状态，因此保留 Engine 与 DLL 到进程结束并分离线程。
+    HMODULE pinnedModule = nullptr;
+    GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+        reinterpret_cast<LPCWSTR>(&Engine::Instance),
+        &pinnedModule);
+    m_threadAbandoned.store(true);
+    m_runtimeHealthy.store(false);
+    m_staThread.detach();
+    return false;
 }
 
 // ============================================================
@@ -460,9 +497,15 @@ void Engine::UpdateVisualSize() {
     GetClientRect(m_overlayHwnd, &r);
     int pw = r.right - r.left, ph = r.bottom - r.top;
     if (pw <= 0 || ph <= 0) return;
-    float scale = static_cast<float>(GetDpiForWindow(m_overlayHwnd)) / 96.0f;
-    m_blurVisual.Size({ static_cast<float>(pw) / scale, static_cast<float>(ph) / scale });
-    if (m_clipGeometry) m_clipGeometry.Size({ static_cast<float>(pw) / scale, static_cast<float>(ph) / scale });
+    // DesktopWindowTarget 的 Visual 与 Overlay 客户区使用同一像素空间。
+    // Overlay HWND 已与 Electron HWND 等大，Visual 必须覆盖完整客户区；
+    // 再除以 DPI 会在 125% 下只覆盖 80%。
+    const winrt::Windows::Foundation::Numerics::float2 visualSize{
+        static_cast<float>(pw),
+        static_cast<float>(ph)
+    };
+    m_blurVisual.Size(visualSize);
+    if (m_clipGeometry) m_clipGeometry.Size(visualSize);
 }
 
 void Engine::ApplyClip() {
@@ -491,7 +534,9 @@ void Engine::ApplyClip() {
 void Engine::HandleDpiChanged(WPARAM wParam, LPARAM lParam) {
     UNREFERENCED_PARAMETER(wParam);
     UNREFERENCED_PARAMETER(lParam);
-    SyncGeometryFromParent();
+    if (!SyncGeometryFromParent() && m_overlayHwnd) {
+        ShowWindow(m_overlayHwnd, SW_HIDE);
+    }
 }
 
 bool Engine::SyncGeometryFromParent() {
@@ -519,7 +564,14 @@ bool Engine::SyncGeometryFromParent() {
         m_runtimeHealthy.store(false);
         return false;
     }
-    UpdateVisualSize();
+    try {
+        UpdateVisualSize();
+    }
+    catch (...) {
+        m_lastError.store(BlurErrorCode::EffectGraphFailed);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
     if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
     return true;
 }
@@ -562,29 +614,72 @@ bool Engine::SyncZOrder() {
     return true;
 }
 
-void Engine::InstallForegroundHook() {
-    if (m_foregroundHook) return;
-    m_foregroundHook = SetWinEventHook(
-        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
-        nullptr, ForegroundWinEventProc, 0, 0,
-        WINEVENT_OUTOFCONTEXT);
+bool Engine::IsZOrderAdjacent() const {
+    if (!m_overlayHwnd || !IsWindow(m_overlayHwnd) ||
+        !m_parentHwnd || !IsWindow(m_parentHwnd)) {
+        return false;
+    }
+
+    const bool parentTopmost =
+        (GetWindowLongPtrW(m_parentHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    const bool overlayTopmost =
+        (GetWindowLongPtrW(m_overlayHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+
+    return parentTopmost == overlayTopmost &&
+        GetWindow(m_parentHwnd, GW_HWNDNEXT) == m_overlayHwnd;
 }
 
-void CALLBACK Engine::ForegroundWinEventProc(
+void Engine::QueueZOrderSync() {
+    if (HWND hwnd = m_messageHwnd.load()) {
+        if (m_zOrderSyncPending.exchange(true)) return;
+        if (!PostMessage(hwnd, WM_BLUR_SYNC_ZORDER, 0, 0)) {
+            m_zOrderSyncPending.store(false);
+            m_lastError.store(BlurErrorCode::UnknownFailure);
+            m_runtimeHealthy.store(false);
+        }
+    } else if (m_initialized.load()) {
+        m_lastError.store(BlurErrorCode::OverlayWindowFailed);
+        m_runtimeHealthy.store(false);
+    }
+}
+
+bool Engine::InstallWinEventHooks() {
+    if (!m_foregroundHook) {
+        m_foregroundHook = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+            nullptr, WinEventProc, 0, 0,
+            WINEVENT_OUTOFCONTEXT);
+    }
+    if (!m_reorderHook) {
+        m_reorderHook = SetWinEventHook(
+            EVENT_OBJECT_REORDER, EVENT_OBJECT_REORDER,
+            nullptr, WinEventProc, 0, 0,
+            WINEVENT_OUTOFCONTEXT);
+    }
+    return m_foregroundHook != nullptr && m_reorderHook != nullptr;
+}
+
+void CALLBACK Engine::WinEventProc(
     HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG objectId, LONG childId,
     DWORD eventThread, DWORD eventTime) {
     UNREFERENCED_PARAMETER(hook);
-    UNREFERENCED_PARAMETER(objectId);
-    UNREFERENCED_PARAMETER(childId);
+    UNREFERENCED_PARAMETER(hwnd);
     UNREFERENCED_PARAMETER(eventThread);
     UNREFERENCED_PARAMETER(eventTime);
 
     auto& engine = Engine::Instance();
-    if (event == EVENT_SYSTEM_FOREGROUND && hwnd == engine.m_parentHwnd) {
-        if (HWND overlay = engine.m_messageHwnd.load()) {
-            PostMessage(overlay, WM_BLUR_SYNC_ZORDER, 0, 0);
-        }
+    if (event != EVENT_SYSTEM_FOREGROUND && event != EVENT_OBJECT_REORDER) return;
+    if (event == EVENT_OBJECT_REORDER &&
+        (objectId != OBJID_WINDOW || childId != CHILDID_SELF)) {
+        return;
     }
+
+    HWND overlay = engine.m_messageHwnd.load();
+    if (!overlay || !IsWindowVisible(overlay)) return;
+
+    // Win10 可能在第三方窗口切换层级后把它插到 Electron 与 Overlay 之间。
+    // 只有两者不再相邻时才去重投递修复，避免自己的 SetWindowPos 形成反馈循环。
+    if (!engine.IsZOrderAdjacent()) engine.QueueZOrderSync();
 }
 
 // ============================================================
@@ -606,7 +701,9 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     case WM_BLUR_UPDATE_GEOMETRY:
         self->m_geometryUpdatePending.store(false);
         // 在 HWND 所属的 DPI-aware STA 线程直接读取物理坐标，避免 JS DIP 换算和跨线程数据竞争。
-        self->SyncGeometryFromParent();
+        if (!self->SyncGeometryFromParent()) {
+            ShowWindow(hwnd, SW_HIDE);
+        }
         return 0;
 
     case WM_DPICHANGED:
@@ -648,6 +745,7 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         return 0;
 
     case WM_BLUR_SYNC_ZORDER:
+        self->m_zOrderSyncPending.store(false);
         self->SyncZOrder();
         return 0;
 
