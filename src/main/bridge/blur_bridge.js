@@ -108,7 +108,7 @@ function initNative() {
     ])
     return true
   } catch (e) {
-    console.warn('[blur] DLL 加载失败:', e.message)
+    console.warn('[blur] DLL 加载失败:', e)
     lib = null
     return false
   }

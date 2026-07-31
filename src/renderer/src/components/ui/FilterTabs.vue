@@ -100,7 +100,9 @@ async function onClick(value) {
   display: flex;
   align-items: center;
   gap: 0;
-  background: transparent;
+  padding: 3rem 4rem;
+  border-radius: 8rem;
+  background: color-mix(in srgb, var(--text-color) 4%, transparent);
 }
 
 .sg-btn {
@@ -127,20 +129,22 @@ async function onClick(value) {
   height: 22rem;
 }
 
-/* 选中态：纯文本色、不透明；背景与未选中一致（均无背景） */
+/* 选中态：文本色 + 极淡圆角背景 */
 .sg-btn--active {
   color: var(--text-color);
   opacity: 1;
+  background: color-mix(in srgb, var(--text-color) 6%, transparent);
+  border-radius: 6rem;
 }
 
 /* ===== 点击动画 ===== */
-/* 太极：非匀速旋转（缓入缓出，速度全程变化） */
+/* 太极：缓入缓出旋转（起步慢→中段快→终点稳，飞轮手感） */
 .sg-btn--taiji.sg-btn--anim :deep(svg) {
-  animation: sg-spin 320ms var(--ease-standard);
+  animation: sg-spin 720ms cubic-bezier(0.76, 0, 0.24, 1);
 }
-/* 风扇：非匀速旋转（略带回弹缓动） */
+/* 三叶草：同为缓入缓出旋转，时长略长一点保留两者的细微差异 */
 .sg-btn--status.sg-btn--anim :deep(svg) {
-  animation: sg-spin 360ms var(--ease-standard);
+  animation: sg-spin 760ms cubic-bezier(0.76, 0, 0.24, 1);
 }
 /* 标签：弹跳缩放 + 轻微摆动 */
 .sg-btn--tags.sg-btn--anim :deep(svg) {
@@ -152,8 +156,8 @@ async function onClick(value) {
     transform: rotate(0deg);
   }
   to {
-    /* 360deg 与静止态 0deg 视觉等价，动画结束移除 transform 时不会跳帧。 */
-    transform: rotate(360deg);
+    /* 1080deg（转三圈）与静止态 0deg 视觉等价，动画结束移除 transform 时不会跳帧。 */
+    transform: rotate(1080deg);
   }
 }
 @keyframes sg-pop {

@@ -13,6 +13,7 @@ const { app, shell, BrowserWindow, screen, Tray, Menu, Notification, desktopCapt
   Electron
 
 import { join, resolve } from 'path'
+import { pathToFileURL } from 'url'
 import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
 import icon from '../../resources/icon.png?asset' // 应用图标（Vite asset 导入）
 import {
@@ -81,6 +82,16 @@ import {
   restoreTemplate,
   purgeTemplate
 } from './db/db-templates.js'
+import {
+  acknowledgeRemoteNotice,
+  getRemoteNoticeCursor,
+  getRemoteNoticeLink,
+  ingestRemoteNotices,
+  listPendingRemoteNotices,
+  listRemoteNotices
+} from './db/db-remote-notices.js'
+import { getOrCreateInstallationId } from './db/db-identity.js'
+import { RemoteCoordinator } from './services/remote/remote-coordinator.js'
 import {
   stageImage,
   commitStagedImage,
@@ -167,8 +178,12 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'sticky.cornerRadius',
   'sticky.alwaysOnTop',
   'wallpaper.blurRadius',
+  'remote.receiveNotices',
+  'remote.uploadDeviceInfo',
   'listFilter'
 ])
+const REMOTE_BASE_URL =
+  process.env.ABANDON_REMOTE_BASE_URL || 'https://note.zhenshiyin.top/api/v1/client'
 
 // 修改展示名称时保留 Electron 已确定的 userData 路径，避免品牌名影响数据库位置。
 const userDataPath = app.getPath('userData')
@@ -181,10 +196,13 @@ if (process.platform === 'win32') {
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
-if (!gotSingleInstanceLock) app.quit()
+if (!gotSingleInstanceLock) {
+  console.log('[startup] 检测到已有实例在运行，本实例退出')
+  app.quit()
+}
 
 let appUpdateService = null
-let downloadedUpdateInstaller = null
+let remoteCoordinator = null
 
 /** 主窗口实例引用 */
 let mainWindow = null
@@ -223,7 +241,7 @@ function handleNotificationProtocol(rawUrl) {
       return true
     }
   } catch (error) {
-    console.error('[notification] 无法解析通知操作:', error.message)
+    console.error('[notification] 无法解析通知操作:', error)
   }
   return false
 }
@@ -304,7 +322,7 @@ function openSafeExternal(rawUrl) {
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return false
     shell
       .openExternal(url.toString())
-      .catch((error) => console.warn('[navigation] 打开外部链接失败:', error.message))
+      .catch((error) => console.warn('[navigation] 打开外部链接失败:', error))
     return true
   } catch {
     return false
@@ -776,7 +794,7 @@ function scheduleDockGeometryReconciliation() {
       ])
       geometryDirty = false
     } catch (error) {
-      console.warn('[settings] 补偿保存窗口位置失败:', error.message)
+      console.warn('[settings] 补偿保存窗口位置失败:', error)
     }
   }, delay)
   dockGeometryReconcileTimer.unref?.()
@@ -860,6 +878,7 @@ function createWindow() {
   setWindowLogContext(mainWindow, { role: 'main' })
   lastVisibleMainWindowBounds = { ...mainWindow.getBounds() }
   windowMotionBackend = createWindowMotionBackend(mainWindow, screen)
+  logger.info('startup', '主窗口已创建', { bounds, savedGeometry: Boolean(saved) })
 
   // 固定缩放因子为 1.0，防止系统 DPI 缩放影响布局
   mainWindow.webContents.setZoomFactor(1.0)
@@ -930,7 +949,7 @@ function createWindow() {
           ])
           geometryDirty = false
         } catch (error) {
-          console.warn('[settings] 保存窗口位置失败:', error.message)
+          console.warn('[settings] 保存窗口位置失败:', error)
         }
       }
     }, 500)
@@ -1107,7 +1126,7 @@ function restoreDockWindowToVisiblePosition() {
       mainWindow.setPosition(stableBounds.x, stableBounds.y)
     }
   } catch (error) {
-    console.warn('[dock] 原生恢复可见位置失败，改用 Electron 位置保底:', error.message)
+    console.warn('[dock] 原生恢复可见位置失败，改用 Electron 位置保底:', error)
     try {
       mainWindow.setPosition(stableBounds.x, stableBounds.y)
     } catch (fallbackError) {
@@ -1215,7 +1234,7 @@ function handleDockDisplayTopologyChange() {
       ])
       geometryDirty = false
     } catch (error) {
-      console.warn('[settings] 保存显示器变化后的窗口位置失败:', error.message)
+      console.warn('[settings] 保存显示器变化后的窗口位置失败:', error)
     }
   }
 }
@@ -1555,7 +1574,8 @@ function toggleWindow() {
     doShow()
     return
   }
-  if (dockSide) {
+  // 锁定时禁用贴边滑入：托盘点击退回普通“隐藏到托盘”行为，不再滑向屏幕边缘。
+  if (dockSide && !isLocked) {
     doHide()
     return
   }
@@ -1601,23 +1621,23 @@ app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return
 
   // 初始化数据库连接
-  initDatabase()
+  const { isNewDatabase } = initDatabase()
+  logger.info('startup', '数据库初始化完成', { isNewDatabase })
+  if (isNewDatabase) {
+    createNote({
+      content:
+        '欢迎使用 Abandon Note！\n\n你可以点击上方输入框快速新建便签，也可以点击这条示例便签体验编辑、提醒、标签和桌面便利贴功能。'
+    })
+  }
   appUpdateService = new AppUpdateService({
     currentVersion: app.getVersion(),
     platform: process.platform,
-    arch: process.arch,
-    downloadDirectory: join(app.getPath('temp'), 'abandon-note-updates'),
-    onProgress: (progress) => {
-      if (!mainWindow || mainWindow.isDestroyed()) return
-      const safeProgress = { ...progress }
-      delete safeProgress.path
-      mainWindow.webContents.send('update:download-progress', safeProgress)
-    }
+    arch: process.arch
   })
   try {
     await Promise.all([cleanupPendingAttachmentDirs(), cleanupPendingWallpaperFiles()])
   } catch (error) {
-    console.warn('[storage] 恢复未完成的存储操作失败:', error.message)
+    console.warn('[storage] 恢复未完成的存储操作失败:', error)
   }
   refreshResolvedSettings({ incrementRevision: true })
   handleProtocolArgs(process.argv)
@@ -1675,8 +1695,8 @@ app.whenReady().then(async () => {
     return { canceled: false, filePath: result.filePath }
   })
 
-  // ---- 应用更新 ----
-  // 所有 URL、目标文件名和下载目录均由主进程固定；renderer 不可传入任意地址或路径。
+  // ---- 应用更新（全手动模式：只检查新版本，下载安装由用户前往发布页完成） ----
+  // 所有 URL 均由主进程固定；renderer 不可传入任意地址。
   ipcMain.handle('update:check', async (event) => {
     if (event.sender !== mainWindow?.webContents) throw new Error('无权检查应用更新')
     return appUpdateService.check()
@@ -1685,24 +1705,6 @@ app.whenReady().then(async () => {
   ipcMain.handle('app:get-info', (event) => {
     if (event.sender !== mainWindow?.webContents) throw new Error('无权读取应用信息')
     return { version: app.getVersion(), platform: process.platform, arch: process.arch }
-  })
-
-  ipcMain.handle('update:download', async (event) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('无权下载应用更新')
-    const result = await appUpdateService.download()
-    downloadedUpdateInstaller = result.path
-    return { ready: true, reused: result.reused }
-  })
-
-  ipcMain.handle('update:install', async (event) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('无权启动更新安装包')
-    if (process.platform !== 'win32' || !downloadedUpdateInstaller) {
-      throw new Error('尚未下载可安装的 Windows 更新')
-    }
-    const errorMessage = await shell.openPath(downloadedUpdateInstaller)
-    if (errorMessage) throw new Error(errorMessage)
-    setTimeout(() => app.quit(), 350)
-    return true
   })
 
   ipcMain.handle('update:open-manual', async (event, provider) => {
@@ -1716,6 +1718,7 @@ app.whenReady().then(async () => {
   // 【渲染就绪】渲染进程初始化完成后发送此消息，主进程收到后显示窗口
   ipcMain.on('renderer-ready', (event) => {
     if (event.sender !== mainWindow?.webContents) return
+    logger.info('startup', '渲染进程就绪', { suppressInitialWindowShow })
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (suppressInitialWindowShow) {
         suppressInitialWindowShow = false
@@ -1796,6 +1799,37 @@ app.whenReady().then(async () => {
     return snapshot
   })
 
+  // ---- 远程软件通知（全部阅读状态仅保存在本地） ----
+  ipcMain.handle('remote-notices:list-pending', () => listPendingRemoteNotices())
+  ipcMain.handle('remote-notices:list', (_event, query) => listRemoteNotices(query))
+  ipcMain.handle('remote-notices:acknowledge', (_event, { id }) => acknowledgeRemoteNotice(id))
+  ipcMain.handle('remote-notices:open-link', (_event, { id }) => {
+    const link = getRemoteNoticeLink(id)
+    if (!link) return false
+    try {
+      const url = new URL(link)
+      if (url.protocol !== 'https:') return false
+      shell
+        .openExternal(url.toString())
+        .catch((error) => console.warn('[remote] 打开通知链接失败:', error))
+      return true
+    } catch {
+      return false
+    }
+  })
+  ipcMain.handle(
+    'remote:check-health',
+    () =>
+      remoteCoordinator?.checkHealth().then((result) => result) ||
+      Promise.resolve({
+        available: false,
+        noticeService: false,
+        reportService: false,
+        checkedAt: Date.now(),
+        error: '远程服务尚未初始化'
+      })
+  )
+
   /**
    * 恢复全部持久化设置默认值。
    * 仅清空 app_settings，不触碰便签、标签、模板、附件或开机自启 OS 状态。
@@ -1842,8 +1876,8 @@ app.whenReady().then(async () => {
         hideTimer = null
       }
     } else {
-      // 鼠标离开窗口 —— 若已吸附边缘，延迟后执行隐藏
-      if (dockSide && !isDockHidden && !isSliding) {
+      // 鼠标离开窗口 —— 若已吸附边缘且未锁定，延迟后执行隐藏（锁定时窗口固定，不自动滑走）
+      if (dockSide && !isDockHidden && !isSliding && !isLocked) {
         if (hideTimer) clearTimeout(hideTimer)
         hideTimer = setTimeout(() => {
           hideTimer = null
@@ -2020,6 +2054,19 @@ app.whenReady().then(async () => {
   })
 
   createWindow()
+  remoteCoordinator = new RemoteCoordinator({
+    app,
+    baseUrl: REMOTE_BASE_URL,
+    getSettings: () => resolvedSettings,
+    getInstallationId: getOrCreateInstallationId,
+    getCursor: getRemoteNoticeCursor,
+    ingestNotices: ingestRemoteNotices,
+    onNoticesChanged: (payload) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      mainWindow.webContents.send('remote-notices:changed', payload)
+    }
+  })
+  void remoteCoordinator.start()
   attachDockDisplayListeners()
   stickyService = new ElectronStickyService({
     getMainWindow: () => mainWindow,
@@ -2078,7 +2125,7 @@ app.whenReady().then(async () => {
       const text = `${title}：${String(body || '')}`.trim().slice(0, 80) || title
       mainWindow.webContents.send('app:message', { type: 'warning', text, duration: 6000 })
     } catch (e) {
-      console.error('[notification] 应用内消息条下发失败:', e?.message || e)
+      console.error('[notification] 应用内消息条下发失败:', e)
     }
   }
 
@@ -2089,9 +2136,13 @@ app.whenReady().then(async () => {
     if (process.platform === 'win32' && Number.isInteger(parsedNoteId) && parsedNoteId > 0) {
       const openUrl = `${APP_PROTOCOL}://notification/open?id=${parsedNoteId}`
       const snoozeUrl = `${APP_PROTOCOL}://notification/snooze?id=${parsedNoteId}`
+      // Windows Toast 的 <image> 只接受本地 file:// URI；appLogoOverride 渲染为左侧大图标，
+      // 与跨平台分支中 icon 选项的展示效果保持一致。
+      const iconUri = escapeToastXml(pathToFileURL(icon).href)
       const toastXml = `<toast launch="${openUrl}" activationType="protocol">
         <visual>
           <binding template="ToastGeneric">
+            <image placement="appLogoOverride" src="${iconUri}"/>
             <text>${escapeToastXml(title)}</text>
             <text>${escapeToastXml(summary)}</text>
           </binding>
@@ -2198,8 +2249,8 @@ app.whenReady().then(async () => {
     execute: (context) => {
       const result = templateSchedulerGuard.run(() => runRecurringTemplates(context), context.now)
       for (const note of result.generated) {
-        if (trySendNotify(note.content, { title: '模板生成通知' })) {
-          const preview = (note.content || '').trim().slice(0, 10) || '空内容'
+        const preview = (note.content || '').trim().slice(0, 10) || '空内容'
+        if (trySendNotify(note.content, { title: `「${preview}」已通过模板生成新的便签` })) {
           console.log(`[generation-notify]「${preview}」已由循环模板生成便签，模板已发送通知`)
         }
       }
@@ -2329,7 +2380,7 @@ app.whenReady().then(async () => {
       // 事务回滚后，清理已写入磁盘的图片文件
       await Promise.all(writtenFiles.map(deleteImageFile))
       await Promise.all(stagedImages.map(cleanupStagedImage))
-      console.error('[notes:create-with-assets] 创建失败，已回滚并清理文件:', e.message)
+      console.error('[notes:create-with-assets] 创建失败，已回滚并清理文件:', e)
       throw e
     }
   })
@@ -2957,6 +3008,7 @@ setTimeout(()=>{resize()},0)
   })
 
   rebuildTrayMenu()
+  logger.info('startup', '系统托盘已创建，启动初始化完成')
 
   // macOS 特有：点击 Dock 图标时显示窗口
   app.on('activate', () => {
@@ -2968,6 +3020,7 @@ setTimeout(()=>{resize()},0)
 app.on('before-quit', () => {
   // 系统退出、Cmd+Q 与代码触发的 app.quit() 都必须绕过“关闭到托盘”。
   isQuitting = true
+  void remoteCoordinator?.stop()
   if (geometryTimer) {
     clearTimeout(geometryTimer)
     geometryTimer = null
@@ -2992,7 +3045,7 @@ app.on('before-quit', () => {
       ])
       geometryDirty = false
     } catch (error) {
-      console.warn('[settings] 退出前保存窗口位置失败:', error.message)
+      console.warn('[settings] 退出前保存窗口位置失败:', error)
     }
   }
   scheduler.stop()

@@ -197,6 +197,10 @@ class ElectronPointMotionBackend {
 }
 
 export function createWindowMotionBackend(window, screen) {
-  if (process.platform === 'win32') return new WindowsPhysicalMotionBackend(window)
+  if (process.platform === 'win32') {
+    console.log('[dock] 窗口移动后端: Windows 原生物理坐标')
+    return new WindowsPhysicalMotionBackend(window)
+  }
+  console.log('[dock] 窗口移动后端: Electron 逻辑坐标')
   return new ElectronPointMotionBackend(window, screen)
 }

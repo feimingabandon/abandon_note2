@@ -6,9 +6,26 @@ directories:
 files:
   - '!**/.vscode/*'
   - '!src/*'
+  # 显式排除所有打包输出目录，防止切换 output 目录时旧产物被打进 asar
+  - '!dist*/**'
+  - '!{tests,docs,unused,scripts,native_blur,.github,.idea,.vs}/**'
+  - '!{.codex-*,debug.log,identifier.sqlite}'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  # better-sqlite3：运行时仅加载 prebuilds/{platform}-{arch}.node（见 lib/binding.js），deps/src/build 为编译期产物；
+  # 仅保留 win32-x64 与 darwin x64/arm64（Win10/11 + mac Intel/Apple Silicon）
+  - '!node_modules/better-sqlite3/{deps,src,build,bin}/**'
+  - '!node_modules/better-sqlite3/prebuilds/{linux,win32-arm64,win32-ia32}*.node'
+  # koffi：运行时按 build/koffi/{平台}_{架构}/ 目录加载；同样仅保留 win32_x64 + darwin
+  - '!node_modules/koffi/{src,doc,vendor}/**'
+  - '!node_modules/koffi/build/koffi/{linux,musl,freebsd,openbsd,win32_arm64,win32_ia32}*/**'
+  # 注意：平台裁剪必须写在这里，不要用 win.files/mac.files ——
+  # electron-builder 26 中平台级 files 会把全局排除规则从主匹配器中挤掉，导致整个项目目录被打进 asar
+# Chromium 语言包仅保留界面实际支持的中英文（locales 从 46.6MB 降至约 2MB）
+electronLanguages:
+  - zh-CN
+  - en-US
 asarUnpack:
   - resources/**
   - node_modules/better-sqlite3/**

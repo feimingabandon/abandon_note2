@@ -15,6 +15,14 @@ import {
   updateTemplate
 } from '../src/main/db/db-templates.js'
 import { normalizeRequiredNoteContent } from '../src/main/db/db-notes.js'
+import { getOrCreateInstallationId } from '../src/main/db/db-identity.js'
+import {
+  acknowledgeRemoteNotice,
+  getRemoteNoticeCursor,
+  ingestRemoteNotices,
+  listPendingRemoteNotices,
+  listRemoteNotices
+} from '../src/main/db/db-remote-notices.js'
 import { runRecurringTemplates } from '../src/main/services/recurrence.js'
 
 function localTs(year, month, day, hour = 0, minute = 0, second = 0) {
@@ -74,6 +82,83 @@ try {
       .prepare("PRAGMA table_info('wallpapers')")
       .all()
       .some((column) => column.name === 'cropped_path'),
+    true
+  )
+  assert.deepEqual(
+    db
+      .prepare("PRAGMA table_info('remote_notices')")
+      .all()
+      .map((column) => column.name),
+    [
+      'id',
+      'server_notice_id',
+      'sequence',
+      'title',
+      'body',
+      'link',
+      'published_at',
+      'received_at',
+      'acknowledged_at'
+    ]
+  )
+  const installationId = getOrCreateInstallationId()
+  assert.match(
+    installationId,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  )
+  assert.equal(getOrCreateInstallationId(), installationId)
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM app_identity').get().count, 1)
+  assert.equal(getRemoteNoticeCursor(), 0)
+  assert.equal(
+    ingestRemoteNotices(
+      [
+        {
+          id: '101',
+          sequence: 101,
+          title: '第一条通知',
+          body: '第一行\n第二行',
+          link: 'https://example.com/notice/101',
+          publishedAt: localTs(2026, 7, 30, 10)
+        },
+        {
+          id: '102',
+          sequence: 102,
+          title: '第二条通知',
+          body: '正文',
+          link: null,
+          publishedAt: localTs(2026, 7, 30, 11)
+        }
+      ],
+      102
+    ),
+    2
+  )
+  assert.equal(getRemoteNoticeCursor(), 102)
+  assert.equal(
+    ingestRemoteNotices(
+      [
+        {
+          id: '101',
+          sequence: 101,
+          title: '重复通知',
+          body: '不会覆盖',
+          link: null,
+          publishedAt: localTs(2026, 7, 30, 10)
+        }
+      ],
+      102
+    ),
+    0
+  )
+  assert.equal(listPendingRemoteNotices().length, 2)
+  const firstRemoteNotice = listPendingRemoteNotices()[0]
+  assert.equal(firstRemoteNotice.body, '第一行\n第二行')
+  assert.equal(acknowledgeRemoteNotice(firstRemoteNotice.id), true)
+  const remoteHistory = listRemoteNotices()
+  assert.equal(remoteHistory.total, 2)
+  assert.equal(remoteHistory.pending, 1)
+  assert.equal(
+    remoteHistory.items.find((item) => item.id === firstRemoteNotice.id).acknowledgedAt > 0,
     true
   )
   assert.equal(normalizeRequiredNoteContent('  保留首尾空白\n'), '  保留首尾空白\n')

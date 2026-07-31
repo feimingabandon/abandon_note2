@@ -1,6 +1,8 @@
 node_modules
 dist
+dist_v4
 out
+.vs/
 .DS_Store
 .eslintcache
 *.log*
@@ -13,3 +15,6 @@ native_blur/build/
 *.vcxproj*
 CMakeCache.txt
 CMakeFiles/
+# 内部发布流程文档，不上传仓库
+docs/完整发布流程.md
+docs/发布构建与应用更新流程.md

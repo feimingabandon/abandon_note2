@@ -1,15 +1,109 @@
+<div align="center">
+
+<img src="resources/icon.png" width="128" alt="Abandon便签图标" />
+
 # Abandon便签（Abandon Note）
 
-跨平台 Electron + Vue 桌面便签应用，面向 Windows 10、Windows 11 和 macOS。
+**一款简洁、可靠的跨平台桌面便签应用**
 
-## 项目文档
+[![Release](https://img.shields.io/github/v/release/feimingabandon/abandon_note2?label=%E7%89%88%E6%9C%AC)](https://github.com/feimingabandon/abandon_note2/releases)
+[![CI](https://github.com/feimingabandon/abandon_note2/actions/workflows/ci.yml/badge.svg)](https://github.com/feimingabandon/abandon_note2/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey)
 
-- [完整正式发布流程](docs/完整发布流程.md)
-- [发布、构建与应用更新流程](docs/发布构建与应用更新流程.md)
+支持 Windows 10 / 11 与 macOS
 
-## 仓库
+</div>
 
-- GitHub：<https://github.com/feimingabandon/abandon_note2>
-- GitCode：<https://gitcode.com/zou-feiming/abandon_note2>
+---
 
-许可证：GNU GPL v3（`GPL-3.0-only`）
+## ✨ 功能特性
+
+- 📝 **便签管理** — 创建、编辑、标签分类、置顶，按时间线分组浏览
+- 🔁 **循环便签** — 基于模板的周期性便签，由统一调度器自动生成，到点提醒
+- 📌 **桌面便利贴** — 将便签钉在桌面，随时查看，支持多张同时展示
+- 🫥 **贴边隐藏** — 窗口拖到屏幕边缘自动收起，鼠标移入触发区即滑出
+- 🌫 **原生毛玻璃** — Windows 下通过 Windows.UI.Composition 实现系统级模糊背景
+- 🖼 **图片与截图** — 支持粘贴图片附件、配置便签壁纸
+- 🔔 **提醒通知** — 到期提醒走系统原生通知，附带应用内降级兜底
+- 🔄 **更新检查** — GitHub / GitCode 双源检查新版本，前往发布页手动下载安装
+- 💾 **本地存储** — 数据保存在本地 SQLite 数据库，不依赖网络
+
+## 🖥 应用界面
+
+<!-- TODO: 补充应用截图，建议放置于 docs/screenshots/ 目录 -->
+> 截图整理中，敬请期待。
+
+## 💽 下载安装
+
+从以下任一渠道下载最新版安装包：
+
+- [GitHub Releases](https://github.com/feimingabandon/abandon_note2/releases)
+- [GitCode Releases](https://gitcode.com/zou-feiming/abandon_note2/releases)
+
+### Windows
+
+下载 `Abandon-Note-x.y.z-windows-x64-setup.exe` 安装包，双击安装即可。
+
+### macOS
+
+按芯片架构选择对应的 `dmg` 安装包：
+
+- Apple Silicon（M 系列芯片）：`Abandon-Note-x.y.z-macos-arm64.dmg`
+- Intel 芯片：`Abandon-Note-x.y.z-macos-x64.dmg`
+
+> 应用支持自动检查更新，检测到新版本后前往发布页下载安装包，覆盖安装即可升级。
+
+## ⌨️ 本地开发
+
+### 环境要求
+
+- Node.js 22（项目使用 [Volta](https://volta.sh/) 锁定版本）
+- Windows 下编译原生毛玻璃模块需要 Visual Studio C++ 构建工具与 CMake
+
+### 克隆与安装依赖
+
+```bash
+git clone https://github.com/feimingabandon/abandon_note2.git
+cd abandon_note2
+npm install
+```
+
+### 开发模式
+
+```bash
+npm run dev
+```
+
+### 测试与检查
+
+```bash
+npm test        # vitest 单元测试 + Electron 集成测试
+npm run lint    # eslint 检查
+```
+
+### 构建打包
+
+```bash
+npm run build:win        # Windows：先编译原生毛玻璃模块，再打 NSIS x64 安装包
+npm run build:mac:x64    # macOS Intel
+npm run build:mac:arm64  # macOS Apple Silicon
+```
+
+## 🛠 技术栈
+
+| 层 | 技术 |
+| --- | --- |
+| 桌面框架 | [Electron](https://www.electronjs.org/) 43 |
+| 前端 | [Vue 3](https://vuejs.org/) + [electron-vite](https://electron-vite.org/) |
+| 数据存储 | [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)（本地 SQLite） |
+| 原生能力 | C++（Windows.UI.Composition 毛玻璃）+ [koffi](https://koffi.dev/) FFI 桥接 |
+| 打包 | [electron-builder](https://www.electron.build/) |
+
+## 🤝 参与贡献
+
+欢迎提交 [Issue](https://github.com/feimingabandon/abandon_note2/issues) 反馈问题或建议；提交 PR 前请确保 `npm run lint` 与 `npm test` 通过。
+
+## 📜 许可证
+
+本项目基于 [GNU GPL v3](LICENSE)（`GPL-3.0-only`）开源。

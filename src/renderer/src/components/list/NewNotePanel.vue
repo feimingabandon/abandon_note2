@@ -193,7 +193,7 @@ watch(effectiveAt, (val) => {
 // 创建便签
 // ============================================================
 const FIVE_MINUTES = 5 * 60 * 1000
-const SUCCESS_HOLD = 300
+const SUCCESS_HOLD = 550
 
 function resetForm() {
   content.value = ''
@@ -266,8 +266,10 @@ async function handleCreate() {
     })
 
     submitState.value = 'success'
-    emit('create')
+    showMessage('success', '便签创建成功')
+    // 先保留 SUCCESS_HOLD 展示「✓ 已创建」，再 emit（由父级刷新列表并收起面板），确保用户能看清成功反馈。
     await holdSuccessState()
+    emit('create')
     resetForm()
     submitState.value = 'idle'
     await nextTick()
@@ -494,7 +496,8 @@ async function handleCreate() {
   transform: scale(0.99);
 }
 .nnp-submit.is-success {
-  background: #30d158;
+  /* 苹果浅色模式 systemGreen（#34C759），比深色档 #30D158 更沉稳，与主蓝 #0071e3 同为压深调。 */
+  background: #34c759;
 }
 .nnp-submit-label {
   grid-area: 1 / 1;

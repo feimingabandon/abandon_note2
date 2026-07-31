@@ -18,6 +18,7 @@ import MockActionBar from './mock/MockActionBar.vue'
 import MockTemplatePage from './mock/MockTemplatePage.vue'
 import MockTemplateCard from './mock/MockTemplateCard.vue'
 import MockSettings from './mock/MockSettings.vue'
+import MockNewNotePanel from './mock/MockNewNotePanel.vue'
 
 /**
  * 多级目录：每个模块对应一个「页面 / 功能域」，items 为该模块内的功能子标题（锚点）。
@@ -96,8 +97,8 @@ const profile = reactive({
   donateReady: false
 })
 
-// 悬浮目录的折叠状态：true = 已收起（仅保留唤出按钮），不占用文档流。
-const navCollapsed = ref(false)
+// 悬浮目录的折叠状态：true = 已收起（仅保留唤出按钮），不占用文档流。打开帮助中心时默认收起。
+const navCollapsed = ref(true)
 const navRef = ref(null)
 const navFabRef = ref(null)
 
@@ -245,9 +246,16 @@ onBeforeUnmount(() => {
           <div class="help-home-grid">
             <div class="help-home-card">
               <h3>请作者喝杯咖啡</h3>
-              <div class="help-donate-slot">
-                <span v-if="!profile.donateReady">打赏二维码占位</span>
-                <img v-else :src="profile.donate" alt="打赏二维码" />
+              <p class="help-donate-lead">0.01 也是对作者最大的肯定。</p>
+              <div class="help-donate-row">
+                <div class="help-donate-slot">
+                  <span v-if="!profile.donateReady">打赏二维码占位</span>
+                  <img v-else :src="profile.donate" alt="打赏二维码" />
+                </div>
+                <div class="help-donate-slot">
+                  <span v-if="!profile.donateReady">打赏二维码占位</span>
+                  <img v-else :src="profile.donateAlt" alt="打赏二维码" />
+                </div>
               </div>
               <p class="help-home-note">支持是持续更新的动力 ☕</p>
             </div>
@@ -307,13 +315,34 @@ onBeforeUnmount(() => {
           <div class="help-figures">
             <div :ref="(el) => registerAnchor('notes-create', el)" data-anchor-id="notes-create">
               <HelpFigureBlock :n="1" title="新建便签">
-                <template #figure><MockActionBar grow="new" /></template>
+                <template #figure><MockNewNotePanel /></template>
                 <p>
-                  点击顶部操作栏的「新建」框展开录入面板，填正文即可创建。可选附加项：<strong>生效时间</strong>（默认立即，也可设为未来某刻，最早当前
-                  5
-                  分钟后，到点自动进入进行中）、<strong>系统提醒</strong>、<strong>置顶</strong>、<strong>标签</strong>，以及<strong>图片附件</strong>（单张
-                  ≤ 50MB、每条最多 50 张）。
+                  点击顶部操作栏的「＋」按钮展开面板。下面是各字段说明：
                 </p>
+                <ol class="help-anno-list">
+                  <li>
+                    <strong>正文输入框</strong> —— 唯一必填项，支持多行（Enter 换行），无字数上限。正文为空时创建按钮不可点。
+                  </li>
+                  <li>
+                    <strong>生效时间</strong> —— 默认「立即生效」，创建后直接进入「进行中」。也可选「指定时间」（最早当前 +5 分钟），到点前保持「初始化」，到点后自动切为「进行中」。
+                  </li>
+                  <li>
+                    <strong>系统提醒</strong> —— 生效时间到达时弹出系统通知。仅在选择了「指定时间」后可开启；「立即生效」时此项不可用。<br />
+                    <em class="help-anno-warn">⚠️ macOS 平台暂时无法开启系统通知（受限于 Electron 平台约束）。</em>
+                  </li>
+                  <li>
+                    <strong>置顶</strong> —— 开启后便签始终固定在列表最顶部，不受时间排序影响。多条置顶便签按创建时间倒序排列。
+                  </li>
+                  <li>
+                    <strong>标签</strong> —— 可添加一个或多个标签，用于分类管理和搜索筛选。点「＋」新建自定义标签（名称 + 颜色），点已有标签切换选中。标签全局共享，所有便签和模板复用同一套。
+                  </li>
+                  <li>
+                    <strong>图片附件</strong> —— 支持点击上传或粘贴。单张 ≤ 50MB，每条最多 50 张（JPG / PNG / WebP）。
+                  </li>
+                  <li>
+                    <strong>创建便签</strong> —— 正文非空后可点击。创建成功后显示绿色 ✔，面板自动收起并重置字段。
+                  </li>
+                </ol>
               </HelpFigureBlock>
             </div>
 
@@ -823,7 +852,8 @@ onBeforeUnmount(() => {
 .help-nav {
   position: absolute;
   z-index: 20;
-  top: 12rem;
+  /* 上移穿过 47rem 高的「帮助中心」子标题，使展开态目录与标题行平齐 */
+  top: -40rem;
   left: 12rem;
   display: flex;
   flex-direction: column;
@@ -973,7 +1003,8 @@ onBeforeUnmount(() => {
 .help-nav-fab {
   position: absolute;
   z-index: 20;
-  top: 12rem;
+  /* 与展开态目录同基线：上移 40rem 让唤出按钮与「帮助中心」标题行平齐 */
+  top: -40rem;
   left: 12rem;
   display: grid;
   place-items: center;
@@ -1025,6 +1056,8 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   padding: 20rem 22rem 40rem;
   color: var(--text-color);
+  /* 帮助中心为阅读页，正文可选中复制（覆盖全局 body 的 user-select:none）。 */
+  user-select: text;
 }
 .help-section {
   scroll-margin-top: 8rem;
@@ -1366,15 +1399,26 @@ onBeforeUnmount(() => {
   font-size: var(--fs-body);
   font-weight: 600;
 }
+.help-donate-lead {
+  margin: 0;
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.9);
+}
+.help-donate-row {
+  display: flex;
+  gap: 12rem;
+}
 .help-donate-slot {
   display: grid;
   place-items: center;
-  width: 148rem;
-  height: 148rem;
+  flex: 1;
+  min-width: 0;
+  aspect-ratio: 1 / 1;
   border: 1px dashed color-mix(in srgb, var(--text-color) 20%, transparent);
   border-radius: 12rem;
   color: var(--text-color-secondary);
   font-size: calc(var(--fs-secondary) * 0.9);
+  text-align: center;
 }
 .help-donate-slot img {
   width: 100%;
@@ -1407,5 +1451,83 @@ onBeforeUnmount(() => {
 .help-link-value {
   overflow-wrap: anywhere;
   font-size: var(--fs-secondary);
+}
+
+/* ---- 可折叠字段列表（备用） ---- */
+.help-field-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  margin-top: 16rem;
+}
+.help-field {
+  border: 1px solid color-mix(in srgb, var(--text-color) 8%, transparent);
+  border-radius: 10rem;
+  background: rgb(var(--bg-color) / 0.03);
+  overflow: hidden;
+}
+.help-field-title {
+  display: flex;
+  align-items: center;
+  padding: 10rem 14rem;
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+  color: var(--text-color);
+  cursor: pointer;
+  list-style: none;
+}
+.help-field-title::-webkit-details-marker { display: none; }
+.help-field-title::before {
+  content: '';
+  display: inline-block;
+  width: 6rem;
+  height: 6rem;
+  margin-right: 8rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+.help-field[open] > .help-field-title::before {
+  transform: rotate(45deg);
+}
+.help-field-body {
+  padding: 0 14rem 12rem;
+}
+.help-field-body p {
+  margin: 0 0 6rem;
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.92);
+  line-height: 1.7;
+}
+.help-field-body p:last-child {
+  margin-bottom: 0;
+}
+.help-field-warn {
+  color: #e6a700 !important;
+  font-size: calc(var(--fs-secondary) * 0.88) !important;
+}
+
+/* ---- 编号注解列表（新建便签等图文对照） ---- */
+.help-anno-list {
+  margin: 10rem 0 0;
+  padding-left: 22rem;
+  list-style: decimal;
+}
+.help-anno-list li {
+  margin-bottom: 8rem;
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.94);
+  line-height: 1.7;
+}
+.help-anno-list li strong {
+  color: var(--text-color);
+}
+.help-anno-warn {
+  display: inline-block;
+  margin-top: 4rem;
+  color: #e6a700;
+  font-style: normal;
+  font-size: calc(var(--fs-secondary) * 0.88);
 }
 </style>

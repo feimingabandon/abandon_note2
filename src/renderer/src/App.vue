@@ -20,6 +20,7 @@ import ResizeHandles from './components/system/ResizeHandles.vue' // 自定义�
 import SettingsPanel from './components/system/SettingsPanel.vue' // 底部弹出式设置面板
 import MessageToast from './components/system/MessageToast.vue'
 import UpdateDialog from './components/system/UpdateDialog.vue'
+import RemoteNoticeDialog from './components/system/RemoteNoticeDialog.vue'
 import NoteList from './components/list/NoteList.vue'
 import NoteEditor from './components/note/NoteEditor.vue'
 import ActionBar from './components/list/ActionBar.vue'
@@ -35,6 +36,8 @@ const { showMessage } = createMessageProvider()
 /** 设置面板显隐状态 */
 const showSettings = ref(false)
 const showUpdateDialog = ref(false)
+const showRemoteNoticeDialog = ref(false)
+const pendingRemoteNotices = ref([])
 const updateChecking = ref(false)
 const updateResult = ref(null)
 const UPDATE_CHECKING_MIN_DURATION_MS = 500
@@ -54,6 +57,20 @@ const settingsBlurActive = ref(false)
 /** 编辑弹窗沿用设置页策略：模糊底层场景，弹窗本身保持清晰。 */
 const editorBlurActive = ref(false)
 let editorBlurReleaseTimer = null
+
+async function loadPendingRemoteNotices({ show = false } = {}) {
+  try {
+    pendingRemoteNotices.value = await window.api.listPendingRemoteNotices()
+    if (show && pendingRemoteNotices.value.length) showRemoteNoticeDialog.value = true
+  } catch (error) {
+    console.warn('[App] 读取未确认通知失败:', error)
+  }
+}
+
+function onRemoteNoticeAcknowledged(id) {
+  pendingRemoteNotices.value = pendingRemoteNotices.value.filter((notice) => notice.id !== id)
+  if (!pendingRemoteNotices.value.length) showRemoteNoticeDialog.value = false
+}
 
 function openSettings() {
   settingsBlurActive.value = true
@@ -201,6 +218,7 @@ let wallpaperReleaseTimer = null
 let stopSettingsListener = null
 let stopNotesChangedListener = null
 let stopAppMessageListener = null
+let stopRemoteNoticesListener = null
 let startupUpdateTimer = null
 
 function applyAppSettingsSnapshot(snapshot) {
@@ -294,6 +312,10 @@ onMounted(async () => {
     if (!payload?.text) return
     showMessage(payload.type || 'warning', payload.text, payload.duration ?? 2500)
   })
+  stopRemoteNoticesListener = window.api.onRemoteNoticesChanged?.(() => {
+    void loadPendingRemoteNotices({ show: true })
+  })
+  await loadPendingRemoteNotices({ show: true })
 
   // 通知主进程渲染已完成，可以安全地显示窗口了
   // 主进程收到后会调用 mainWindow.show()
@@ -358,6 +380,7 @@ onUnmounted(() => {
   stopSettingsListener?.()
   stopNotesChangedListener?.()
   stopAppMessageListener?.()
+  stopRemoteNoticesListener?.()
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
   if (editorBlurReleaseTimer) clearTimeout(editorBlurReleaseTimer)
@@ -389,7 +412,7 @@ onUnmounted(() => {
     <div
       class="app-scene"
       :class="{ 'is-settings-open': settingsBlurActive, 'is-editor-open': editorBlurActive }"
-      :inert="showSettings || !!selectedNote || showUpdateDialog"
+      :inert="showSettings || !!selectedNote || showUpdateDialog || showRemoteNoticeDialog"
     >
       <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
       <ResizeHandles :locked="locked" />
@@ -517,6 +540,13 @@ onUnmounted(() => {
       @retry="checkForUpdates({ showResult: true })"
     />
 
+    <RemoteNoticeDialog
+      v-if="showRemoteNoticeDialog && pendingRemoteNotices.length"
+      :notices="pendingRemoteNotices"
+      @close="showRemoteNoticeDialog = false"
+      @acknowledged="onRemoteNoticeAcknowledged"
+    />
+
     <!-- 应用内消息弹窗（Apple 风格 Toast，固定顶部居中） -->
     <MessageToast />
   </div>
@@ -642,9 +672,6 @@ onUnmounted(() => {
 /* Microsoft 风格由标题栏把业务按钮重排到左侧；这里负责插槽内三个按钮的皮肤。 */
 .titlebar-actions-group--microsoft {
   gap: 2rem;
-  padding-right: 7rem;
-  margin-right: 4rem;
-  border-right: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
 }
 .titlebar-actions-group--microsoft .titlebar-btn {
   width: 32rem;

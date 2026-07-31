@@ -65,6 +65,18 @@ const api = {
     return () => ipcRenderer.removeListener('settings:changed', handler)
   },
 
+  // ---- 远程软件通知 ----
+  listPendingRemoteNotices: () => ipcRenderer.invoke('remote-notices:list-pending'),
+  listRemoteNotices: (query) => ipcRenderer.invoke('remote-notices:list', query),
+  acknowledgeRemoteNotice: (id) => ipcRenderer.invoke('remote-notices:acknowledge', { id }),
+  openRemoteNoticeLink: (id) => ipcRenderer.invoke('remote-notices:open-link', { id }),
+  onRemoteNoticesChanged: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('remote-notices:changed', handler)
+    return () => ipcRenderer.removeListener('remote-notices:changed', handler)
+  },
+  checkRemoteHealth: () => ipcRenderer.invoke('remote:check-health'),
+
   // ---- 生命周期通知 ----
   /** 通知主进程渲染已就绪，可以显示窗口了 */
   rendererReady: () => ipcRenderer.send('renderer-ready'),
@@ -77,17 +89,10 @@ const api = {
     return () => ipcRenderer.removeListener('app:message', handler)
   },
 
-  // ---- 应用更新（固定仓库、固定安装包，不接受 renderer 提供 URL 或路径） ----
+  // ---- 应用更新（全手动模式：仅检查新版本与打开发布页，固定仓库地址） ----
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
   checkForUpdate: () => ipcRenderer.invoke('update:check'),
-  downloadUpdate: () => ipcRenderer.invoke('update:download'),
-  installDownloadedUpdate: () => ipcRenderer.invoke('update:install'),
   openManualUpdate: (provider) => ipcRenderer.invoke('update:open-manual', provider),
-  onUpdateDownloadProgress: (callback) => {
-    const handler = (_event, payload) => callback(payload)
-    ipcRenderer.on('update:download-progress', handler)
-    return () => ipcRenderer.removeListener('update:download-progress', handler)
-  },
 
   // ---- 贴边隐藏 ----
   /** 通知主进程鼠标悬停状态（true=进入窗口, false=离开窗口） */

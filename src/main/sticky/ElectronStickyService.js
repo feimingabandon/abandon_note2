@@ -88,8 +88,10 @@ export class ElectronStickyService extends StickyService {
         const sticky = await this.create({ noteId: payload?.noteId })
         return { ok: true, sticky }
       } catch (error) {
-        if (!(error instanceof StickyCreationError)) {
-          console.error('[sticky] 创建便利贴失败:', error)
+        if (error instanceof StickyCreationError) {
+          console.warn(`[sticky] 创建便利贴被拒绝 (noteId=${payload?.noteId}):`, error.message)
+        } else {
+          console.error(`[sticky] 创建便利贴失败 (noteId=${payload?.noteId}):`, error)
         }
         return {
           ok: false,
@@ -217,7 +219,7 @@ export class ElectronStickyService extends StickyService {
       }
     } catch (error) {
       this.destroyEntry(entry)
-      console.error('[sticky] 页面加载失败:', error)
+      console.error(`[sticky] 页面加载失败 (${this.rendererUrl || this.rendererFile}):`, error)
       throw new StickyCreationError('便利贴页面加载失败')
     }
 

@@ -293,6 +293,24 @@ const definitions = [
     remark: '新建便利贴默认置顶状态'
   },
   {
+    id: 'remote.receiveNotices',
+    path: ['remote', 'receiveNotices'],
+    db: { type: 'remote', key: 'receive_notices' },
+    defaultValue: true,
+    parse: parseBoolean,
+    serialize: String,
+    remark: '接收远程软件通知'
+  },
+  {
+    id: 'remote.uploadDeviceInfo',
+    path: ['remote', 'uploadDeviceInfo'],
+    db: { type: 'remote', key: 'upload_device_info' },
+    defaultValue: true,
+    parse: parseBoolean,
+    serialize: String,
+    remark: '上传基础设备信息与启动退出时间'
+  },
+  {
     id: 'listFilter',
     path: ['listFilter'],
     db: { type: 'filter', key: 'list_filter' },

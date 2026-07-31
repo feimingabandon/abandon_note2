@@ -24,6 +24,7 @@ import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import WallpaperSettings from '../wallpaper/WallpaperSettings.vue'
 import LogViewerDialog from './LogViewerDialog.vue'
+import RemoteNoticeHistoryDialog from './RemoteNoticeHistoryDialog.vue'
 import { useMessage } from '../../composables/useMessage.js' // 消息弹窗
 import { applyGlassBaseSettings, applySettingsSnapshot } from '../../utils/applySettingsSnapshot.js'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
@@ -77,6 +78,7 @@ const closeButtonRef = ref(null)
 const panelHeight = ref(70) // 面板高度百分比，默认 70%
 const isResetting = ref(false)
 const showLogViewer = ref(false)
+const showNoticeHistory = ref(false)
 const appVersion = ref('0.9.1')
 
 /** 关闭动画定时器 ID，用于取消竞态关闭 */
@@ -216,6 +218,30 @@ const stickyFontSize = ref(DEFAULT_SETTINGS.sticky.fontSize)
 const stickyBackgroundColor = ref(DEFAULT_SETTINGS.sticky.backgroundColor)
 const stickyCornerRadius = ref(DEFAULT_SETTINGS.sticky.cornerRadius)
 const stickyAlwaysOnTop = ref(DEFAULT_SETTINGS.sticky.alwaysOnTop)
+const receiveRemoteNotices = ref(DEFAULT_SETTINGS.remote.receiveNotices)
+const uploadDeviceInfo = ref(DEFAULT_SETTINGS.remote.uploadDeviceInfo)
+const remoteHealthStatus = ref('checking')
+const remoteHealthError = ref('')
+
+const remoteServiceAvailable = computed(() => remoteHealthStatus.value === 'available')
+const remoteHealthLabel = computed(() => {
+  if (remoteHealthStatus.value === 'checking') return '检测中'
+  if (remoteHealthStatus.value === 'available') return '● 连接正常'
+  return '○ 连接异常'
+})
+
+async function checkRemoteHealth() {
+  remoteHealthStatus.value = 'checking'
+  remoteHealthError.value = ''
+  try {
+    const result = await window.api.checkRemoteHealth()
+    remoteHealthStatus.value = result?.available ? 'available' : 'unavailable'
+    remoteHealthError.value = result?.available ? '' : result?.error || '连接失败'
+  } catch (error) {
+    remoteHealthStatus.value = 'unavailable'
+    remoteHealthError.value = error?.message || '连接失败'
+  }
+}
 
 /** 字体大小预设（datalist 选项） */
 const fontSizePresets = [14, 15, 16, 17, 18, 19, 20, 21, 22]
@@ -525,6 +551,20 @@ watch(titlebarStyle, (v) => {
   )
 })
 
+watch(receiveRemoteNotices, (value) => {
+  if (!_settingsSynced || isResetting.value) return
+  persistSetting({ id: 'remote.receiveNotices', value }).catch((error) =>
+    console.warn('[SettingsPanel] 保存远程通知开关失败:', error)
+  )
+})
+
+watch(uploadDeviceInfo, (value) => {
+  if (!_settingsSynced || isResetting.value) return
+  persistSetting({ id: 'remote.uploadDeviceInfo', value }).catch((error) =>
+    console.warn('[SettingsPanel] 保存设备信息上传开关失败:', error)
+  )
+})
+
 // 背景颜色 → CSS --bg-color (基础样式，主窗口+组件共用)
 watch(bgColor, (v) => {
   el.style.setProperty('--bg-color', v)
@@ -686,6 +726,7 @@ function assignSettingsSnapshot(snapshot) {
   const css = snapshot.values.css
   const blur = snapshot.values.blur
   const sticky = snapshot.values.sticky
+  const remote = snapshot.values.remote || DEFAULT_SETTINGS.remote
   const runtimeBlur = snapshot.runtime?.blur
   const runtimeAutoStart = snapshot.runtime?.autoStart
 
@@ -700,6 +741,8 @@ function assignSettingsSnapshot(snapshot) {
   stickyBackgroundColor.value = sticky.backgroundColor
   stickyCornerRadius.value = sticky.cornerRadius
   stickyAlwaysOnTop.value = sticky.alwaysOnTop
+  receiveRemoteNotices.value = remote.receiveNotices
+  uploadDeviceInfo.value = remote.uploadDeviceInfo
 
   // “用户希望开启”与“当前确实生效”分开：支持平台初始化失败时，开关必须
   // 显示为关闭，同时保留错误信息，让用户可以再次主动开启并触发重试。
@@ -770,7 +813,7 @@ onMounted(async () => {
       if (info?.version) appVersion.value = info.version
     })
     .catch((error) => console.warn('[SettingsPanel] 获取应用版本失败:', error))
-  await loadSettingsSnapshot()
+  await Promise.all([loadSettingsSnapshot(), checkRemoteHealth()])
   if (componentUnmounted) return
 
   stopBlurRuntimeListener = window.api.onSettingsChanged?.((snapshot) => {
@@ -1379,6 +1422,62 @@ const onConfirmResetSettings = async () => {
             </div>
           </section>
 
+          <!-- ========== 远程服务与隐私 ========== -->
+          <section class="settings-section">
+            <h3 class="section-title">
+              <span>远程服务与隐私</span>
+              <button
+                type="button"
+                class="remote-health-badge sched-badge"
+                :class="
+                  remoteServiceAvailable
+                    ? 'sched-badge--ok'
+                    : remoteHealthStatus === 'checking'
+                      ? ''
+                      : 'sched-badge--warn'
+                "
+                :disabled="remoteHealthStatus === 'checking'"
+                :title="remoteHealthError || '点击重新检测远程服务'"
+                @click="checkRemoteHealth"
+              >
+                {{ remoteHealthLabel }}
+              </button>
+            </h3>
+            <p v-if="remoteHealthStatus === 'unavailable'" class="remote-health-message">
+              远程服务器暂时无法连接，通知与设备检测开关已暂时停用。
+            </p>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >接收软件通知<HelpButton
+                    text="启动时联系远程服务并获取适用于当前系统的软件通知。关闭后不会请求新通知，已经保存的历史通知仍可查看。"
+                /></span>
+              </div>
+              <div class="setting-right">
+                <AppToggle v-model="receiveRemoteNotices" :disabled="!remoteServiceAvailable" />
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >检测设备基础信息<HelpButton
+                    text="只记录基本的设备信息，不上传便签等敏感核心信息。用于判断用户数量与用户基本属性。"
+                /></span>
+              </div>
+              <div class="setting-right">
+                <AppToggle v-model="uploadDeviceInfo" :disabled="!remoteServiceAvailable" />
+              </div>
+            </div>
+
+            <div class="setting-item setting-item-full">
+              <BaseButton variant="default" style="width: 100%" @click="showNoticeHistory = true">
+                查看全部通知
+              </BaseButton>
+            </div>
+          </section>
+
           <!-- ========== 关于 ========== -->
           <section class="settings-section">
             <h3 class="section-title">关于</h3>
@@ -1395,34 +1494,16 @@ const onConfirmResetSettings = async () => {
               </div>
             </div>
 
-            <div class="setting-item setting-item-full">
-              <BaseButton variant="primary" style="width: 100%" @click="emit('check-update')">
-                检查更新
-              </BaseButton>
+            <div class="setting-item setting-item-full setting-button-row">
+              <BaseButton variant="default" @click="emit('check-update')">检查更新</BaseButton>
+              <BaseButton variant="default" @click="showLogViewer = true">查看日志</BaseButton>
             </div>
 
-            <div class="setting-item setting-item-full">
-              <BaseButton variant="default" style="width: 100%" @click="showLogViewer = true">
-                查看日志
-              </BaseButton>
-            </div>
-
-            <div class="setting-item setting-item-full">
-              <BaseButton
-                variant="default"
-                style="width: 100%"
-                @click="showResetSettingsDialog = true"
-              >
+            <div class="setting-item setting-item-full setting-button-row">
+              <BaseButton variant="default" @click="showResetSettingsDialog = true">
                 恢复默认设置
               </BaseButton>
-            </div>
-
-            <div class="setting-item setting-item-full">
-              <BaseButton
-                variant="danger"
-                style="width: 100%"
-                @click="showClearNoteDataDialog = true"
-              >
+              <BaseButton variant="default" @click="showClearNoteDataDialog = true">
                 清空便签数据
               </BaseButton>
             </div>
@@ -1590,6 +1671,7 @@ const onConfirmResetSettings = async () => {
       @confirm="onConfirmResetSettings"
     />
     <LogViewerDialog v-model:visible="showLogViewer" />
+    <RemoteNoticeHistoryDialog v-model:visible="showNoticeHistory" />
   </Teleport>
 </template>
 
@@ -1828,6 +1910,15 @@ const onConfirmResetSettings = async () => {
   display: flex;
 }
 
+/* 一行两个按钮：等宽平分 */
+.setting-button-row {
+  gap: 10rem;
+}
+.setting-button-row .base-btn {
+  min-width: 0;
+  flex: 1;
+}
+
 /* ---- 左侧区域（标签 + 提示）---- */
 .setting-left {
   display: flex;
@@ -1934,6 +2025,32 @@ const onConfirmResetSettings = async () => {
   font-weight: 500;
   color: var(--text-color-secondary);
   line-height: 1.5;
+}
+
+.remote-health-badge {
+  padding: 0;
+  margin-left: auto;
+  border: 0;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.remote-health-badge.sched-badge {
+  padding: 2rem 8rem;
+  font-size: calc(var(--fs-secondary) * 0.88);
+}
+
+.remote-health-badge:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.remote-health-message {
+  margin: -2rem 2rem 6rem;
+  color: rgb(255, 149, 0);
+  font-size: calc(var(--fs-secondary) * 0.88);
+  line-height: 1.4;
 }
 
 /* 持久错误提示（恒显示，不自动消失）—— Apple 风格：图标 + 文字 */

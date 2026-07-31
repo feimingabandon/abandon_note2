@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import AppModalShell from '../ui/AppModalShell.vue'
 import BaseButton from '../ui/BaseButton.vue'
-import { releaseModalBlur, retainModalBlur } from '../../utils/modalBlur.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -11,11 +11,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:visible', 'retry'])
 
-const downloading = ref(false)
-const downloaded = ref(false)
-const downloadError = ref('')
-const progress = ref(null)
-let ownsModalBlur = false
+const manualError = ref('')
 
 const manualLinks = Object.freeze([
   {
@@ -50,52 +46,22 @@ const platformLabel = computed(() => {
 const availableSummary = computed(
   () =>
     `当前版本 v${props.result?.currentVersion}，可更新到 v${props.result?.latestVersion}。` +
-    '更新会覆盖安装，不需要先卸载，也不会主动删除便签数据。'
+    '请前往下方发布页下载安装包；更新会覆盖安装，不需要先卸载，也不会主动删除便签数据。'
 )
-
-const downloadLabel = computed(() => {
-  if (downloaded.value) return '安装更新并退出'
-  if (!downloading.value) return '在线下载更新'
-  if (progress.value?.percent != null) return `正在下载 ${progress.value.percent}%`
-  return '正在下载…'
-})
 
 const contentKey = computed(() => {
   if (props.checking) return 'checking'
   return `${props.result?.status || 'idle'}-${props.result?.latestVersion || 'none'}`
 })
 
-const stopProgress = window.api.onUpdateDownloadProgress?.((payload) => {
-  progress.value = payload
-  if (payload?.state === 'error') downloadError.value = payload.error || '下载失败'
-})
-
-watch(
-  () => props.visible,
-  (visible) => {
-    if (visible && !ownsModalBlur) {
-      ownsModalBlur = true
-      retainModalBlur()
-    } else if (!visible && ownsModalBlur) {
-      ownsModalBlur = false
-      releaseModalBlur()
-    }
-  },
-  { immediate: true }
-)
-
 watch(
   () => props.result?.latestVersion,
   () => {
-    downloaded.value = false
-    downloading.value = false
-    downloadError.value = ''
-    progress.value = null
+    manualError.value = ''
   }
 )
 
 function close() {
-  if (downloading.value) return
   emit('update:visible', false)
 }
 
@@ -103,244 +69,102 @@ async function openManual(provider) {
   try {
     await window.api.openManualUpdate(provider)
   } catch (error) {
-    downloadError.value = `无法打开更新页面：${error.message}`
+    manualError.value = `无法打开更新页面：${error.message}`
   }
 }
-
-async function handleOnlineUpdate() {
-  if (downloaded.value) {
-    try {
-      await window.api.installDownloadedUpdate()
-    } catch (error) {
-      downloadError.value = `无法启动安装包：${error.message}`
-    }
-    return
-  }
-
-  downloading.value = true
-  downloadError.value = ''
-  try {
-    const result = await window.api.downloadUpdate()
-    downloaded.value = Boolean(result?.ready)
-  } catch (error) {
-    downloadError.value = error.message || '下载失败，请使用下方手动更新地址'
-  } finally {
-    downloading.value = false
-  }
-}
-
-onBeforeUnmount(() => {
-  stopProgress?.()
-  if (ownsModalBlur) releaseModalBlur()
-})
 </script>
 
 <template>
-  <Teleport to="body">
-    <Transition name="update-dialog">
-      <div v-if="visible" class="update-overlay" @click.self="close">
-        <section class="update-card" role="dialog" aria-modal="true" aria-labelledby="update-title">
-          <header class="update-header">
-            <div>
-              <p class="update-eyebrow">Abandon Note</p>
-              <Transition name="update-title" mode="out-in">
-                <h2 id="update-title" :key="title">{{ title }}</h2>
-              </Transition>
+  <AppModalShell
+    :visible="visible"
+    :title="title"
+    eyebrow="Abandon Note"
+    width="min(430rem, calc(100vw - 40rem))"
+    @update:visible="close"
+  >
+    <Transition name="update-content" mode="out-in">
+      <div :key="contentKey" class="update-state">
+        <div v-if="checking" class="checking-row">
+          <span class="checking-spinner" aria-hidden="true" />
+          <div class="checking-copy">
+            <strong>正在查询公开 Release</strong>
+            <span>同时检查 GitCode 与 GitHub，选择较新的版本</span>
+          </div>
+        </div>
+
+        <template v-else-if="result">
+          <p v-if="result.status === 'available'" class="update-summary">
+            {{ availableSummary }}
+          </p>
+          <p v-else-if="result.status === 'current'" class="update-summary">
+            当前版本 v{{ result.currentVersion }}，无需更新。
+          </p>
+          <p
+            v-else
+            class="update-summary"
+            :class="{ 'update-summary--warning': result.status === 'error' }"
+          >
+            {{ result.error || '请使用下方发布页下载对应系统的安装包。' }}
+          </p>
+
+          <div class="manual-section">
+            <div class="manual-heading">
+              <strong>手动更新</strong>
+              <span>点击以下地址，前往对应平台的安装包发布页</span>
             </div>
-            <button class="update-close" :disabled="downloading" aria-label="关闭" @click="close">
-              ×
-            </button>
-          </header>
-
-          <Transition name="update-content" mode="out-in">
-            <div :key="contentKey" class="update-state">
-              <div v-if="checking" class="checking-row">
-                <span class="checking-spinner" aria-hidden="true" />
-                <div class="checking-copy">
-                  <strong>正在查询公开 Release</strong>
-                  <span>同时检查 GitCode 与 GitHub，选择较新且附件完整的版本</span>
-                </div>
-              </div>
-
-              <template v-else-if="result">
-                <p v-if="result.status === 'available'" class="update-summary">
-                  {{ availableSummary }}
-                </p>
-                <p v-else-if="result.status === 'current'" class="update-summary">
-                  当前版本 v{{ result.currentVersion }}，无需更新。
-                </p>
-                <p
-                  v-else
-                  class="update-summary"
-                  :class="{ 'update-summary--warning': result.status === 'error' }"
-                >
-                  {{ result.error || '当前系统暂不支持在线更新，请使用手动更新地址。' }}
-                </p>
-
-                <div class="manual-section">
-                  <div class="manual-heading">
-                    <strong>手动更新</strong>
-                    <span>点击以下地址，前往对应平台的安装包发布页</span>
-                  </div>
-                  <div class="manual-actions">
-                    <button
-                      v-for="link in manualLinks"
-                      :key="link.provider"
-                      class="manual-link"
-                      :title="`在浏览器中打开 ${link.label} 安装包发布页`"
-                      @click="openManual(link.provider)"
-                    >
-                      <span class="manual-link-label">{{ link.label }}：</span>
-                      <span class="manual-link-url">{{ link.url }}</span>
-                      <span class="manual-link-arrow" aria-hidden="true">↗</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div class="artifact-card">
-                  <template v-if="result.status === 'current'">
-                    <span class="artifact-label">{{ platformLabel }}</span>
-                    <strong>当前无需下载任何安装包</strong>
-                  </template>
-                  <template v-else-if="result.status === 'unpublished'">
-                    <span class="artifact-label">{{ platformLabel }}</span>
-                    <strong>尚无可下载的公开安装包</strong>
-                  </template>
-                  <template v-else-if="result.status === 'error'">
-                    <span class="artifact-label">{{ platformLabel }}</span>
-                    <strong>暂时无法确认推荐版本，请在发布页选择对应系统安装包</strong>
-                  </template>
-                  <template v-else>
-                    <span class="artifact-label">{{ platformLabel }} 推荐下载</span>
-                    <strong>{{ result.artifactName || '请在发布页选择当前系统安装包' }}</strong>
-                  </template>
-                </div>
-
-                <div
-                  v-if="result.status === 'available' && result.onlineDownloadSupported"
-                  class="online-update"
-                >
-                  <BaseButton
-                    variant="primary"
-                    size="lg"
-                    :disabled="downloading"
-                    style="width: 100%"
-                    @click="handleOnlineUpdate"
-                  >
-                    {{ downloadLabel }}
-                  </BaseButton>
-                  <div
-                    v-if="downloading && progress?.percent != null"
-                    class="progress-track"
-                    role="progressbar"
-                    :aria-valuenow="progress.percent"
-                    aria-valuemin="0"
-                    aria-valuemax="100"
-                  >
-                    <span :style="{ width: `${progress.percent}%` }" />
-                  </div>
-                  <p v-if="downloaded" class="download-note">
-                    安装包已准备好。点击上方按钮会启动安装程序并退出应用。
-                  </p>
-                </div>
-
-                <p v-if="downloadError" class="download-error">{{ downloadError }}</p>
-
-                <BaseButton
-                  v-if="result.status === 'error' || result.status === 'unpublished'"
-                  variant="default"
-                  style="width: 100%"
-                  @click="emit('retry')"
-                >
-                  重新检查
-                </BaseButton>
-              </template>
+            <div class="manual-actions">
+              <button
+                v-for="link in manualLinks"
+                :key="link.provider"
+                class="manual-link"
+                :title="`在浏览器中打开 ${link.label} 安装包发布页`"
+                @click="openManual(link.provider)"
+              >
+                <span class="manual-link-label">{{ link.label }}：</span>
+                <span class="manual-link-url">{{ link.url }}</span>
+                <span class="manual-link-arrow" aria-hidden="true">↗</span>
+              </button>
             </div>
-          </Transition>
-        </section>
+          </div>
+
+          <div class="artifact-card">
+            <template v-if="result.status === 'current'">
+              <span class="artifact-label">{{ platformLabel }}</span>
+              <strong>当前无需下载任何安装包</strong>
+            </template>
+            <template v-else-if="result.status === 'unpublished'">
+              <span class="artifact-label">{{ platformLabel }}</span>
+              <strong>尚无可下载的公开安装包</strong>
+            </template>
+            <template v-else-if="result.status === 'error'">
+              <span class="artifact-label">{{ platformLabel }}</span>
+              <strong>暂时无法确认推荐版本，请在发布页选择对应系统安装包</strong>
+            </template>
+            <template v-else>
+              <span class="artifact-label">{{ platformLabel }} 推荐下载</span>
+              <strong>{{ result.artifactName || '请在发布页选择当前系统安装包' }}</strong>
+            </template>
+          </div>
+
+          <p v-if="manualError" class="manual-error">{{ manualError }}</p>
+
+          <BaseButton
+            v-if="result.status === 'error' || result.status === 'unpublished'"
+            variant="default"
+            style="width: 100%"
+            @click="emit('retry')"
+          >
+            重新检查
+          </BaseButton>
+        </template>
       </div>
     </Transition>
-  </Teleport>
+  </AppModalShell>
 </template>
 
 <style scoped>
-.update-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 41000;
-  display: grid;
-  place-items: center;
-  padding: 24rem;
-  border-radius: var(--window-radius);
-  background: rgba(12, 14, 18, 0.18);
-}
-
-.update-card {
-  width: min(390rem, calc(100vw - 32rem));
-  min-height: 350rem;
-  max-height: calc(100vh - 32rem);
-  overflow-y: auto;
-  padding: 22rem;
-  border: 1px solid var(--surface-float-border);
-  border-radius: 16rem;
-  color: var(--text-color);
-  background: var(--surface-float);
-  box-shadow: 0 18px 64px rgba(0, 0, 0, 0.38);
-}
-
-.update-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16rem;
-}
-
-.update-eyebrow {
-  margin: 0 0 4rem;
-  color: var(--text-color-secondary);
-  font-size: var(--fs-secondary);
-}
-
-.update-header h2 {
-  margin: 0;
-  font-size: var(--fs-title);
-  font-weight: 650;
-}
-
-.update-close {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 36rem;
-  height: 36rem;
-  padding: 0 0 2rem;
-  border: 0;
-  color: color-mix(in srgb, var(--text-color) 45%, transparent);
-  background: transparent;
-  font-family: inherit;
-  font-size: 22rem;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    color var(--motion-fast) ease,
-    transform var(--motion-control) var(--ease-standard);
-}
-
-.update-close:hover:not(:disabled) {
-  color: var(--text-color);
-}
-
-.update-close:active:not(:disabled) {
-  transform: scale(0.94);
-}
-
-.update-close:disabled {
-  opacity: 0.38;
-  cursor: not-allowed;
-}
-
 .update-state {
-  padding-top: 16rem;
+  min-height: 300rem;
 }
 
 .checking-row {
@@ -382,7 +206,7 @@ onBeforeUnmount(() => {
 }
 
 .update-summary--warning,
-.download-error {
+.manual-error {
   color: color-mix(in srgb, #ff453a 78%, var(--text-color));
 }
 
@@ -406,28 +230,7 @@ onBeforeUnmount(() => {
   font-size: var(--fs-secondary);
 }
 
-.online-update {
-  margin-top: 14rem;
-}
-
-.progress-track {
-  height: 3rem;
-  margin-top: 8rem;
-  overflow: hidden;
-  border-radius: 2rem;
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.progress-track span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #0071e3;
-  transition: width 160ms ease;
-}
-
-.download-note,
-.download-error {
+.manual-error {
   margin: 9rem 0 0;
   font-size: var(--fs-secondary);
   line-height: 1.45;
@@ -528,30 +331,6 @@ onBeforeUnmount(() => {
   opacity: 0;
   transform: translateY(-4rem);
   filter: blur(2px);
-}
-
-.update-dialog-enter-active,
-.update-dialog-leave-active {
-  transition: opacity var(--motion-control) ease;
-}
-
-.update-dialog-enter-active .update-card,
-.update-dialog-leave-active .update-card {
-  transition:
-    opacity var(--motion-control) ease,
-    transform var(--motion-control) var(--ease-standard);
-}
-
-.update-dialog-enter-from,
-.update-dialog-leave-to,
-.update-dialog-enter-from .update-card,
-.update-dialog-leave-to .update-card {
-  opacity: 0;
-}
-
-.update-dialog-enter-from .update-card,
-.update-dialog-leave-to .update-card {
-  transform: translateY(8rem);
 }
 
 @keyframes update-spin {

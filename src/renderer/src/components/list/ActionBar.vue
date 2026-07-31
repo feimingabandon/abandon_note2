@@ -167,6 +167,8 @@ onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
 // ============================================================
 function onNoteCreated() {
   emit('create')
+  // 创建成功后自动收起新建面板（仅当面板仍处于展开态时）。
+  if (phase.value === 'open' && mode.value === 'new') closeExpanded()
 }
 
 function onSearchEdit(note) {

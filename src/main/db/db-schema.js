@@ -5,6 +5,9 @@ export const DATABASE_SCHEMA_VERSION = 1
 export function createDatabaseSchema(db) {
   const existingVersion = Number(db.pragma('user_version', { simple: true }) || 0)
   if (existingVersion > DATABASE_SCHEMA_VERSION) {
+    console.error(
+      `[db-schema] 数据库版本 ${existingVersion} 高于程序支持的 ${DATABASE_SCHEMA_VERSION}，拒绝打开`
+    )
     throw new Error(
       `数据库版本 ${existingVersion} 高于当前程序支持的版本 ${DATABASE_SCHEMA_VERSION}，` +
         '请使用更新版本的 Abandon Note 打开此数据库'
@@ -25,9 +28,45 @@ export function createDatabaseSchema(db) {
   `)
 
   createNotesSchema(db)
+  createRemoteServiceSchema(db)
   if (existingVersion < DATABASE_SCHEMA_VERSION) {
+    console.log(
+      `[db-schema] 数据库结构版本 ${existingVersion} → ${DATABASE_SCHEMA_VERSION}` +
+        (existingVersion === 0 ? '（全新创建）' : '（升级迁移）')
+    )
     db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
   }
+}
+
+/** 创建远程通知的本地缓存和同步状态。开发阶段直接纳入完整初始化结构。 */
+export function createRemoteServiceSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_identity (
+      key         TEXT PRIMARY KEY,
+      value       TEXT NOT NULL,
+      created_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS remote_notices (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      server_notice_id    TEXT    NOT NULL UNIQUE,
+      sequence            INTEGER NOT NULL UNIQUE,
+      title               TEXT    NOT NULL,
+      body                TEXT    NOT NULL,
+      link                TEXT,
+      published_at        INTEGER NOT NULL,
+      received_at         INTEGER NOT NULL,
+      acknowledged_at     INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_remote_notices_pending
+      ON remote_notices(acknowledged_at, published_at DESC);
+
+    CREATE TABLE IF NOT EXISTS remote_sync_state (
+      scope       TEXT PRIMARY KEY,
+      cursor      INTEGER NOT NULL DEFAULT 0,
+      updated_at  INTEGER NOT NULL
+    );
+  `)
 }
 
 /** 创建最终业务表结构；供完整初始化和隔离业务表测试复用。 */

@@ -1,8 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { createHash } from 'crypto'
-import { mkdtemp, readFile, rm } from 'fs/promises'
-import { tmpdir } from 'os'
-import { join } from 'path'
 import {
   AppUpdateService,
   compareVersions,
@@ -60,7 +56,7 @@ describe('app update metadata', () => {
     ).toMatchObject({
       version: '0.9.1',
       source: 'github',
-      assets: [{ name: 'file.exe', size: 123, url: 'https://github.example/file.exe' }]
+      assets: [{ name: 'file.exe', size: 123 }]
     })
 
     expect(
@@ -73,13 +69,7 @@ describe('app update metadata', () => {
       )
     ).toMatchObject({
       source: 'gitcode',
-      assets: [
-        {
-          name: 'file.exe',
-          size: 456,
-          url: 'https://api.gitcode.com/api/v5/repos/zou-feiming/abandon_note2/releases/v0.9.1/attach_files/file.exe/download'
-        }
-      ]
+      assets: [{ name: 'file.exe', size: 456 }]
     })
   })
 
@@ -89,13 +79,12 @@ describe('app update metadata', () => {
     expect(normalizeRelease({ tag_name: 'v0.9.1-beta.1' }, 'github')).toBeNull()
   })
 
-  it('queries both sources and prefers a complete GitCode release at the same version', async () => {
+  it('queries both sources and prefers the GitCode release at the same version', async () => {
     const requestedUrls = []
     const service = new AppUpdateService({
       currentVersion: '0.9.0',
       platform: 'win32',
       arch: 'x64',
-      downloadDirectory: 'unused',
       fetchImpl: async (url) => {
         requestedUrls.push(url)
         if (url.includes('gitcode.com')) {
@@ -106,8 +95,7 @@ describe('app update metadata', () => {
               {
                 file_name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
                 file_size: 2048
-              },
-              { file_name: 'SHA256SUMS.txt', file_size: 128 }
+              }
             ]
           })
         }
@@ -118,11 +106,6 @@ describe('app update metadata', () => {
               name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
               size: 2048,
               browser_download_url: 'https://github.example/setup.exe'
-            },
-            {
-              name: 'SHA256SUMS.txt',
-              size: 128,
-              browser_download_url: 'https://github.example/SHA256SUMS.txt'
             }
           ]
         })
@@ -133,9 +116,7 @@ describe('app update metadata', () => {
       status: 'available',
       latestVersion: '0.9.1',
       source: 'gitcode',
-      onlineDownloadSupported: true,
-      artifactName: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
-      asset: { size: 2048 }
+      artifactName: 'Abandon-Note-0.9.1-windows-x64-setup.exe'
     })
     expect(requestedUrls).toHaveLength(2)
   })
@@ -145,7 +126,6 @@ describe('app update metadata', () => {
       currentVersion: '0.9.0',
       platform: 'darwin',
       arch: 'arm64',
-      downloadDirectory: 'unused',
       fetchImpl: async (url) =>
         url.includes('gitcode.com')
           ? jsonResponse({ message: '未找到 release' }, 400)
@@ -164,7 +144,6 @@ describe('app update metadata', () => {
       status: 'current',
       latestVersion: '0.9.0',
       source: 'github',
-      onlineDownloadSupported: false,
       artifactName: 'Abandon-Note-0.9.0-macos-arm64.dmg'
     })
   })
@@ -174,7 +153,6 @@ describe('app update metadata', () => {
       currentVersion: '0.9.0',
       platform: 'darwin',
       arch: 'arm64',
-      downloadDirectory: 'unused',
       fetchImpl: async (url) =>
         url.includes('gitcode.com')
           ? jsonResponse({ tag_name: 'v0.9.1', attach_files: [] })
@@ -196,28 +174,24 @@ describe('app update metadata', () => {
     })
   })
 
-  it('uses complete GitHub assets when the same GitCode version is incomplete', async () => {
+  it('prefers the GitHub release that has the artifact when GitCode lacks it', async () => {
     const service = new AppUpdateService({
       currentVersion: '0.9.0',
       platform: 'win32',
       arch: 'x64',
-      downloadDirectory: 'unused',
       fetchImpl: async (url) =>
         url.includes('gitcode.com')
           ? jsonResponse({
               tag_name: 'v0.9.1',
-              attach_files: [{ file_name: 'Abandon-Note-0.9.1-windows-x64-setup.exe' }]
+              attach_files: [{ file_name: 'SHA256SUMS.txt', file_size: 128 }]
             })
           : jsonResponse({
               tag_name: 'v0.9.1',
               assets: [
                 {
                   name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
+                  size: 2048,
                   browser_download_url: 'https://github.example/setup.exe'
-                },
-                {
-                  name: 'SHA256SUMS.txt',
-                  browser_download_url: 'https://github.example/SHA256SUMS.txt'
                 }
               ]
             })
@@ -227,7 +201,7 @@ describe('app update metadata', () => {
       status: 'available',
       latestVersion: '0.9.1',
       source: 'github',
-      onlineDownloadSupported: true
+      artifactName: 'Abandon-Note-0.9.1-windows-x64-setup.exe'
     })
   })
 
@@ -236,7 +210,6 @@ describe('app update metadata', () => {
       currentVersion: '0.9.0',
       platform: 'win32',
       arch: 'x64',
-      downloadDirectory: 'unused',
       fetchImpl: async () => jsonResponse({ message: 'Not Found' }, 404)
     })
     await expect(noRelease.check()).resolves.toMatchObject({
@@ -248,7 +221,6 @@ describe('app update metadata', () => {
       currentVersion: '0.9.0',
       platform: 'win32',
       arch: 'x64',
-      downloadDirectory: 'unused',
       fetchImpl: async () => {
         throw new Error('network unavailable')
       }
@@ -257,81 +229,5 @@ describe('app update metadata', () => {
       status: 'error',
       error: '暂时无法连接更新服务。请稍后重试，或使用下方发布页手动查看。'
     })
-  })
-
-  it('downloads a complete installer and reuses the verified existing file', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'abandon-update-test-'))
-    const progress = []
-    let downloadRequests = 0
-    const assetName = 'Abandon-Note-0.9.1-windows-x64-setup.exe'
-    const payload = new TextEncoder().encode('installer payload')
-    const checksum = createHash('sha256').update(payload).digest('hex')
-    const service = new AppUpdateService({
-      currentVersion: '0.9.0',
-      platform: 'win32',
-      arch: 'x64',
-      downloadDirectory: directory,
-      onProgress: (event) => progress.push(event),
-      fetchImpl: async (url) => {
-        downloadRequests += 1
-        if (url.endsWith('SHA256SUMS.txt')) {
-          return new Response(`${checksum}  ${assetName}\n`)
-        }
-        return new Response(payload, {
-          headers: { 'content-length': String(payload.byteLength) }
-        })
-      }
-    })
-    service.lastCheck = {
-      result: { status: 'available' },
-      release: {
-        assets: [
-          {
-            name: 'SHA256SUMS.txt',
-            url: 'https://gitcode.example/SHA256SUMS.txt'
-          }
-        ]
-      },
-      asset: {
-        name: assetName,
-        size: payload.byteLength,
-        url: 'https://gitcode.example/setup.exe'
-      }
-    }
-
-    try {
-      const first = await service.download()
-      expect(first.reused).toBe(false)
-      expect(await readFile(first.path, 'utf8')).toBe('installer payload')
-      const second = await service.download()
-      expect(second).toEqual({ path: first.path, reused: true })
-      expect(downloadRequests).toBe(3)
-      expect(progress.at(-1)).toMatchObject({ state: 'downloaded', percent: 100 })
-    } finally {
-      await rm(directory, { recursive: true, force: true })
-    }
-  })
-
-  it('refuses automatic download when the release has no checksum', async () => {
-    const service = new AppUpdateService({
-      currentVersion: '0.9.0',
-      platform: 'win32',
-      arch: 'x64',
-      downloadDirectory: 'unused',
-      fetchImpl: async () => {
-        throw new Error('installer must not be downloaded')
-      }
-    })
-    service.lastCheck = {
-      result: { status: 'available' },
-      release: { assets: [] },
-      asset: {
-        name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
-        size: 128,
-        url: 'https://gitcode.example/setup.exe'
-      }
-    }
-
-    await expect(service.download()).rejects.toThrow('无法取得安装包 SHA-256 校验值')
   })
 })

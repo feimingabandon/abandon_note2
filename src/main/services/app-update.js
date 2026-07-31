@@ -1,10 +1,3 @@
-import { createHash } from 'crypto'
-import { createReadStream, createWriteStream } from 'fs'
-import { access, mkdir, rename, rm, stat } from 'fs/promises'
-import { basename, join } from 'path'
-import { pipeline } from 'stream/promises'
-import { Readable } from 'stream'
-
 export const UPDATE_LINKS = Object.freeze({
   gitcode: 'https://gitcode.com/zou-feiming/abandon_note2/releases',
   github: 'https://github.com/feimingabandon/abandon_note2/releases'
@@ -54,30 +47,6 @@ export function getTargetArtifact(version, platform, arch) {
   return null
 }
 
-function getGitCodeAssetUrl(tagName, assetName) {
-  if (!tagName || !assetName) return ''
-  return (
-    'https://api.gitcode.com/api/v5/repos/zou-feiming/abandon_note2/releases/' +
-    `${encodeURIComponent(tagName)}/attach_files/${encodeURIComponent(assetName)}/download`
-  )
-}
-
-function normalizeAsset(asset, { source, tagName }) {
-  const name = String(asset?.name || asset?.file_name || '')
-  return {
-    name,
-    size: Number(asset?.size || asset?.file_size || 0),
-    url: String(
-      asset?.browser_download_url ||
-        asset?.download_url ||
-        asset?.url_for_download ||
-        asset?.url ||
-        (source === 'gitcode' ? getGitCodeAssetUrl(tagName, name) : '') ||
-        ''
-    )
-  }
-}
-
 export function normalizeRelease(payload, source) {
   const version = normalizeVersion(payload?.tag_name)
   if (!version || payload?.draft || payload?.prerelease) return null
@@ -89,20 +58,18 @@ export function normalizeRelease(payload, source) {
     notes: String(payload?.body || ''),
     publishedAt: String(payload?.published_at || payload?.created_at || ''),
     assets: Array.isArray(rawAssets)
-      ? rawAssets.map((asset) =>
-          normalizeAsset(asset, { source, tagName: String(payload?.tag_name || '') })
-        )
+      ? rawAssets.map((asset) => ({
+          name: String(asset?.name || asset?.file_name || ''),
+          size: Number(asset?.size || asset?.file_size || 0)
+        }))
       : []
   }
 }
 
-function hasRequiredAssets(release, platform, arch) {
+function hasTargetArtifact(release, platform, arch) {
   const artifactName = getTargetArtifact(release.version, platform, arch)
   if (!artifactName) return true
-  const hasArtifact = release.assets.some((asset) => asset.name === artifactName && asset.url)
-  if (!hasArtifact) return false
-  if (platform !== 'win32') return true
-  return release.assets.some((asset) => asset.name === 'SHA256SUMS.txt' && asset.url)
+  return release.assets.some((asset) => asset.name === artifactName)
 }
 
 function selectPreferredRelease(releases, platform, arch) {
@@ -116,10 +83,10 @@ function selectPreferredRelease(releases, platform, arch) {
   )
   return (
     candidates.find(
-      (release) => release.source === 'gitcode' && hasRequiredAssets(release, platform, arch)
+      (release) => release.source === 'gitcode' && hasTargetArtifact(release, platform, arch)
     ) ||
     candidates.find(
-      (release) => release.source === 'github' && hasRequiredAssets(release, platform, arch)
+      (release) => release.source === 'github' && hasTargetArtifact(release, platform, arch)
     ) ||
     candidates.find((release) => release.source === 'gitcode') ||
     candidates[0]
@@ -134,49 +101,17 @@ function manualResult({ currentVersion, platform, arch, status = 'unsupported', 
     platform,
     arch,
     artifactName: getTargetArtifact(currentVersion, platform, arch),
-    onlineDownloadSupported: platform === 'win32' && arch === 'x64',
     error
   }
 }
 
-async function fileExists(path) {
-  try {
-    await access(path)
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function sha256File(path) {
-  const hash = createHash('sha256')
-  for await (const chunk of createReadStream(path)) hash.update(chunk)
-  return hash.digest('hex')
-}
-
-function findChecksum(checksums, artifactName) {
-  const escapedName = artifactName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const match = checksums.match(new RegExp(`^([a-fA-F0-9]{64})\\s+\\*?${escapedName}$`, 'm'))
-  return match?.[1]?.toLowerCase() || null
-}
-
+// 更新采用全手动模式：应用只负责检查新版本，下载安装由用户前往发布页完成。
 export class AppUpdateService {
-  constructor({
-    currentVersion,
-    platform,
-    arch,
-    downloadDirectory,
-    fetchImpl = globalThis.fetch,
-    onProgress = () => {}
-  }) {
+  constructor({ currentVersion, platform, arch, fetchImpl = globalThis.fetch }) {
     this.currentVersion = currentVersion
     this.platform = platform
     this.arch = arch
-    this.downloadDirectory = downloadDirectory
     this.fetch = fetchImpl
-    this.onProgress = onProgress
-    this.lastCheck = null
-    this.downloadPromise = null
   }
 
   async fetchLatestRelease() {
@@ -203,6 +138,7 @@ export class AppUpdateService {
           if (!release) throw new Error('没有可用的稳定版本')
           return { release, failure: null }
         } catch (error) {
+          console.warn(`[update] 获取 ${endpoint.source} 发布信息失败 (${endpoint.url}):`, error)
           return {
             release: null,
             failure: {
@@ -239,43 +175,25 @@ export class AppUpdateService {
     })
     try {
       const release = await this.fetchLatestRelease()
-      const artifactName = getTargetArtifact(release.version, this.platform, this.arch)
-      const asset = release.assets.find((item) => item.name === artifactName && item.url)
-      const checksumAsset = release.assets.find(
-        (item) => item.name === 'SHA256SUMS.txt' && item.url
-      )
       const comparison = compareVersions(release.version, this.currentVersion)
       const result = {
         ...base,
         status: comparison > 0 ? 'available' : 'current',
         latestVersion: release.version,
-        artifactName,
+        artifactName: getTargetArtifact(release.version, this.platform, this.arch),
         source: release.source,
         releaseTitle: release.title,
         releaseNotes: release.notes,
-        publishedAt: release.publishedAt,
-        onlineDownloadSupported: Boolean(
-          comparison > 0 &&
-          this.platform === 'win32' &&
-          this.arch === 'x64' &&
-          asset &&
-          checksumAsset
-        ),
-        asset: asset ? { name: asset.name, size: asset.size } : null,
-        error:
-          comparison > 0 && this.platform === 'win32'
-            ? !asset
-              ? '当前发布中没有找到适用于本机的 Windows 安装包'
-              : !checksumAsset
-                ? '当前发布缺少 SHA-256 校验清单，请使用手动下载'
-                : null
-            : null
+        publishedAt: release.publishedAt
       }
-      this.lastCheck = { result, release, asset }
+      console.log(
+        `[update] 检查完成: 当前 ${this.currentVersion} / 最新 ${release.version} (${release.source}), 状态 ${result.status}`
+      )
       return result
     } catch (error) {
       const unpublished = error.code === 'NO_PUBLISHED_RELEASE'
-      const result = manualResult({
+      console.error('[update] 检查更新失败:', error)
+      return manualResult({
         currentVersion: this.currentVersion,
         platform: this.platform,
         arch: this.arch,
@@ -284,95 +202,6 @@ export class AppUpdateService {
           ? '当前还没有公开发布版本。首次 Release 发布后，这里会显示最新版本。'
           : '暂时无法连接更新服务。请稍后重试，或使用下方发布页手动查看。'
       })
-      this.lastCheck = { result, release: null, asset: null }
-      return result
-    }
-  }
-
-  async getExpectedChecksum(release, artifactName) {
-    const checksumAsset = release.assets.find(
-      (asset) => asset.name === 'SHA256SUMS.txt' && asset.url
-    )
-    if (!checksumAsset) return null
-    const response = await this.fetch(checksumAsset.url, {
-      headers: { 'User-Agent': `Abandon-Note/${this.currentVersion}` },
-      signal: AbortSignal.timeout(12_000)
-    })
-    if (!response.ok) return null
-    return findChecksum(await response.text(), artifactName)
-  }
-
-  async download() {
-    if (this.downloadPromise) return this.downloadPromise
-    this.downloadPromise = this.performDownload().finally(() => {
-      this.downloadPromise = null
-    })
-    return this.downloadPromise
-  }
-
-  async performDownload() {
-    if (this.platform !== 'win32' || this.arch !== 'x64') {
-      throw new Error('当前系统仅支持手动下载安装包')
-    }
-    if (!this.lastCheck || this.lastCheck.result.status !== 'available') await this.check()
-    const { result, release, asset } = this.lastCheck
-    if (result.status !== 'available') throw new Error('当前没有可下载的新版本')
-    if (!asset?.url) throw new Error('发布中没有找到适用于本机的 Windows 安装包')
-
-    await mkdir(this.downloadDirectory, { recursive: true })
-    const destination = join(this.downloadDirectory, basename(asset.name))
-    const partial = `${destination}.part`
-    const expectedChecksum = await this.getExpectedChecksum(release, asset.name).catch(() => null)
-    if (!expectedChecksum) {
-      throw new Error('无法取得安装包 SHA-256 校验值，请使用手动下载')
-    }
-
-    if (await fileExists(destination)) {
-      const existing = await stat(destination)
-      const sizeMatches = !asset.size || existing.size === asset.size
-      const hashMatches = (await sha256File(destination)) === expectedChecksum
-      if (sizeMatches && hashMatches) {
-        this.onProgress({ state: 'downloaded', percent: 100, path: destination })
-        return { path: destination, reused: true }
-      }
-      await rm(destination, { force: true })
-    }
-
-    await rm(partial, { force: true })
-    const response = await this.fetch(asset.url, {
-      headers: { 'User-Agent': `Abandon-Note/${this.currentVersion}` },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(30 * 60_000)
-    })
-    if (!response.ok || !response.body) throw new Error(`下载安装包失败：HTTP ${response.status}`)
-
-    const total = Number(response.headers.get('content-length')) || asset.size || 0
-    let received = 0
-    const source = Readable.fromWeb(response.body)
-    source.on('data', (chunk) => {
-      received += chunk.length
-      this.onProgress({
-        state: 'downloading',
-        received,
-        total,
-        percent: total ? Math.min(99, Math.round((received / total) * 100)) : null
-      })
-    })
-
-    try {
-      await pipeline(source, createWriteStream(partial, { flags: 'wx' }))
-      const downloaded = await stat(partial)
-      if (asset.size && downloaded.size !== asset.size) throw new Error('安装包大小校验失败')
-      if ((await sha256File(partial)) !== expectedChecksum) {
-        throw new Error('安装包 SHA-256 校验失败')
-      }
-      await rename(partial, destination)
-      this.onProgress({ state: 'downloaded', percent: 100, path: destination })
-      return { path: destination, reused: false }
-    } catch (error) {
-      await rm(partial, { force: true })
-      this.onProgress({ state: 'error', error: error.message })
-      throw error
     }
   }
 }

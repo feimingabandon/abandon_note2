@@ -106,7 +106,7 @@ export async function cleanupStagedImage(staged) {
       await unlink(staged.pendingPath)
     }
   } catch (error) {
-    if (error?.code !== 'ENOENT') console.warn('[images] 清理暂存图片失败:', error.message)
+    if (error?.code !== 'ENOENT') console.warn('[images] 清理暂存图片失败:', error)
   }
 }
 
@@ -150,7 +150,7 @@ export function restoreStagedImageDeletion(staged) {
       rmSync(staged.operationDirectory, { recursive: true, force: true })
     }
   } catch (error) {
-    console.warn('[images] 恢复待删除附件失败:', error.message)
+    console.warn('[images] 恢复待删除附件失败:', error)
   }
 }
 

@@ -1,15 +1,14 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import AppModalShell from '../ui/AppModalShell.vue'
 import BaseButton from '../ui/BaseButton.vue'
-import { releaseModalBlur, retainModalBlur } from '../../utils/modalBlur.js'
+import StyledSelect from '../ui/StyledSelect.vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false }
 })
 const emit = defineEmits(['update:visible'])
 
-const rendered = ref(props.visible)
-const active = ref(false)
 const loading = ref(false)
 const exporting = ref(false)
 const errorMessage = ref('')
@@ -22,9 +21,8 @@ const processType = ref('all')
 const searchInput = ref('')
 const appliedSearch = ref('')
 const searchRef = ref(null)
-let ownsModalBlur = false
-let closeTimer = null
 let requestSequence = 0
+let searchTimer = null
 
 const levelOptions = [
   { value: 'all', label: '全部级别' },
@@ -47,32 +45,8 @@ const fileSummary = computed(() => {
   return `${files.value.length} 个文件 · ${formatBytes(totalBytes)}`
 })
 
-function acquireBlur() {
-  if (ownsModalBlur) return
-  ownsModalBlur = true
-  retainModalBlur()
-}
-
-function freeBlur() {
-  if (!ownsModalBlur) return
-  ownsModalBlur = false
-  releaseModalBlur()
-}
-
 function close() {
-  if (closeTimer) return
-  active.value = false
-  window.removeEventListener('keydown', onKeydown)
-  freeBlur()
-  closeTimer = setTimeout(() => {
-    closeTimer = null
-    rendered.value = false
-    emit('update:visible', false)
-  }, 220)
-}
-
-function onKeydown(event) {
-  if (event.key === 'Escape') close()
+  emit('update:visible', false)
 }
 
 async function query({ append = false } = {}) {
@@ -101,8 +75,14 @@ async function query({ append = false } = {}) {
 }
 
 function applySearch() {
+  clearTimeout(searchTimer)
   appliedSearch.value = searchInput.value.trim()
   query()
+}
+
+function clearSearch() {
+  searchInput.value = ''
+  applySearch()
 }
 
 async function openFolder() {
@@ -180,170 +160,119 @@ function recordDetail(record) {
 
 watch(
   () => props.visible,
-  async (visible) => {
+  (visible) => {
     if (visible) {
-      if (closeTimer) {
-        clearTimeout(closeTimer)
-        closeTimer = null
-      }
-      acquireBlur()
-      rendered.value = true
-      window.addEventListener('keydown', onKeydown)
-      await nextTick()
-      requestAnimationFrame(() => {
-        active.value = true
-        searchRef.value?.focus()
-      })
-      await query()
-    } else if (rendered.value) {
-      close()
+      requestAnimationFrame(() => searchRef.value?.focus())
+      void query()
     }
   }
 )
 
 watch([level, processType], () => {
-  if (rendered.value) query()
+  if (props.visible) query()
+})
+
+// 与模板页搜索框一致：输入防抖自动搜索，回车立即搜索
+watch(searchInput, () => {
+  if (!props.visible) return
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    const next = searchInput.value.trim()
+    if (next === appliedSearch.value) return
+    appliedSearch.value = next
+    query()
+  }, 300)
 })
 
 onBeforeUnmount(() => {
-  if (closeTimer) clearTimeout(closeTimer)
-  window.removeEventListener('keydown', onKeydown)
-  freeBlur()
+  clearTimeout(searchTimer)
 })
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      v-if="rendered"
-      class="log-overlay"
-      :class="{ active }"
-      data-keep-settings-open
-      @click.self="close"
-    >
-      <section class="log-dialog" :class="{ active }" role="dialog" aria-modal="true">
-        <header class="log-header">
-          <div>
-            <h2>应用日志</h2>
-            <p>{{ fileSummary }}</p>
-          </div>
-          <button class="log-close" type="button" aria-label="关闭日志" @click="close">×</button>
-        </header>
-
-        <div class="log-toolbar">
-          <select v-model="level" aria-label="日志级别">
-            <option v-for="option in levelOptions" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </option>
-          </select>
-          <select v-model="processType" aria-label="日志来源">
-            <option v-for="option in processOptions" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </option>
-          </select>
-          <form class="log-search" @submit.prevent="applySearch">
-            <input
-              ref="searchRef"
-              v-model="searchInput"
-              type="search"
-              placeholder="搜索消息、范围或堆栈"
-            />
-            <BaseButton size="sm">搜索</BaseButton>
-          </form>
+  <AppModalShell
+    :visible="visible"
+    title="应用日志"
+    :subtitle="fileSummary"
+    width="min(780rem, calc(100vw - 40rem))"
+    height="min(680rem, calc(100vh - 40rem))"
+    flush
+    @update:visible="close"
+  >
+    <div class="log-content">
+      <div class="log-toolbar">
+        <StyledSelect v-model="level" :options="levelOptions" size="sm" width="108rem" />
+        <StyledSelect v-model="processType" :options="processOptions" size="sm" width="108rem" />
+        <div class="log-search">
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <circle cx="8.5" cy="8.5" r="5.5" />
+            <path d="m13 13 4 4" />
+          </svg>
+          <input
+            ref="searchRef"
+            v-model="searchInput"
+            placeholder="搜索消息、范围或堆栈"
+            aria-label="搜索日志"
+            @keydown.enter="applySearch"
+          />
+          <button v-if="searchInput" title="清空搜索" @click="clearSearch">×</button>
         </div>
+      </div>
 
-        <div class="log-list" aria-live="polite">
-          <p v-if="errorMessage" class="log-error">{{ errorMessage }}</p>
-          <div v-if="loading && !records.length" class="log-empty">正在读取日志…</div>
-          <div v-else-if="!records.length" class="log-empty">当前条件下没有日志</div>
-          <details
-            v-for="record in records"
-            :key="record.id"
-            class="log-record"
-            :class="`is-${record.level}`"
-          >
-            <summary>
-              <span class="log-level">{{ levelLabel(record.level) }}</span>
-              <time>{{ formatTime(record.time) }}</time>
-              <span class="log-source">
-                {{ record.windowRole || record.process }} · {{ record.scope }}
-              </span>
-              <span class="log-message">{{ record.message || '无消息' }}</span>
-            </summary>
-            <div class="log-detail">
-              <pre>{{ recordDetail(record) }}</pre>
-              <BaseButton size="sm" @click="copyRecord(record)">复制此条</BaseButton>
-            </div>
-          </details>
-          <BaseButton
-            v-if="hasMore"
-            class="load-more"
-            size="sm"
-            :disabled="loading"
-            @click="query({ append: true })"
-          >
-            {{ loading ? '正在加载…' : '加载更早日志' }}
-          </BaseButton>
-        </div>
-
-        <footer class="log-footer">
-          <div class="log-footer-left">
-            <BaseButton size="sm" :disabled="loading" @click="query()">刷新</BaseButton>
-            <BaseButton size="sm" @click="openFolder">打开文件夹</BaseButton>
+      <div class="log-list" aria-live="polite">
+        <p v-if="errorMessage" class="log-error">{{ errorMessage }}</p>
+        <div v-if="loading && !records.length" class="log-empty">正在读取日志…</div>
+        <div v-else-if="!records.length" class="log-empty">当前条件下没有日志</div>
+        <details
+          v-for="record in records"
+          :key="record.id"
+          class="log-record"
+          :class="`is-${record.level}`"
+        >
+          <summary>
+            <span class="log-level">{{ levelLabel(record.level) }}</span>
+            <time>{{ formatTime(record.time) }}</time>
+            <span class="log-source">
+              {{ record.windowRole || record.process }} · {{ record.scope }}
+            </span>
+            <span class="log-message">{{ record.message || '无消息' }}</span>
+          </summary>
+          <div class="log-detail">
+            <pre>{{ recordDetail(record) }}</pre>
+            <BaseButton size="sm" @click="copyRecord(record)">复制此条</BaseButton>
           </div>
-          <BaseButton size="sm" :disabled="exporting" @click="exportLogs">
-            {{ exporting ? '正在导出…' : '导出完整日志' }}
-          </BaseButton>
-        </footer>
-      </section>
+        </details>
+        <BaseButton
+          v-if="hasMore"
+          class="load-more"
+          size="sm"
+          :disabled="loading"
+          @click="query({ append: true })"
+        >
+          {{ loading ? '正在加载…' : '加载更早日志' }}
+        </BaseButton>
+      </div>
+
+      <footer class="log-footer">
+        <div class="log-footer-left">
+          <BaseButton size="sm" :disabled="loading" @click="query()">刷新</BaseButton>
+          <BaseButton size="sm" @click="openFolder">打开文件夹</BaseButton>
+        </div>
+        <BaseButton size="sm" :disabled="exporting" @click="exportLogs">
+          {{ exporting ? '正在导出…' : '导出完整日志' }}
+        </BaseButton>
+      </footer>
     </div>
-  </Teleport>
+  </AppModalShell>
 </template>
 
 <style scoped>
-.log-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 41000;
+.log-content {
   display: grid;
-  place-items: center;
-  padding: 24rem;
-  border-radius: var(--window-radius);
-  overflow: hidden;
-  background: rgba(12, 14, 18, 0);
-  pointer-events: none;
-  transition: background-color 200ms ease;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100%;
 }
 
-.log-overlay.active {
-  background: rgba(12, 14, 18, 0.2);
-  pointer-events: auto;
-}
-
-.log-dialog {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-  width: min(760rem, calc(100vw - 48rem));
-  height: min(680rem, calc(100vh - 48rem));
-  border: 1rem solid var(--surface-float-border);
-  border-radius: 16rem;
-  overflow: hidden;
-  color: var(--text-color);
-  background: var(--surface-float);
-  box-shadow: 0 18px 70px rgba(0, 0, 0, 0.44);
-  opacity: 0;
-  transform: translateY(8rem);
-  transition:
-    opacity var(--motion-control) ease,
-    transform 240ms var(--ease-standard);
-}
-
-.log-dialog.active {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.log-header,
 .log-footer,
 .log-toolbar {
   display: flex;
@@ -352,62 +281,89 @@ onBeforeUnmount(() => {
   padding: 14rem 16rem;
 }
 
-.log-header {
-  justify-content: space-between;
-  border-bottom: 1rem solid var(--surface-float-border);
-}
-
-.log-header h2 {
-  margin: 0;
-  font-size: var(--fs-title);
-}
-
-.log-header p {
-  margin: 3rem 0 0;
-  color: var(--text-color-secondary);
-  font-size: var(--fs-secondary);
-}
-
-.log-close {
-  width: 30rem;
-  height: 30rem;
-  border: 0;
-  border-radius: 50%;
-  color: var(--text-color);
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
-  font: inherit;
-  font-size: 22rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
 .log-toolbar {
   flex-wrap: wrap;
   border-bottom: 1rem solid var(--surface-float-border);
 }
 
-.log-toolbar select,
-.log-toolbar input {
-  min-height: 32rem;
-  border: 1rem solid var(--surface-float-border);
+/* 搜索框复用模板页 tp-search 的形态：图标 + 输入框 + 清空按钮 */
+.log-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 220rem;
+  min-width: 0;
+  height: 32rem;
+  overflow: hidden;
+  border: 1rem solid rgb(var(--bg-color) / 0.1);
   border-radius: 8rem;
-  padding: 6rem 9rem;
-  color: var(--text-color);
-  background: color-mix(in srgb, var(--surface-float) 92%, var(--text-color) 8%);
-  font: inherit;
-  font-size: var(--fs-secondary);
-  outline: none;
+  background: rgba(255, 255, 255, 0.05);
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease;
 }
 
-.log-search {
-  display: flex;
-  flex: 1 1 260rem;
-  gap: 8rem;
+.log-search:focus-within {
+  border-color: rgb(var(--bg-color) / 0.18);
+}
+
+.log-search svg {
+  width: 16rem;
+  height: 16rem;
+  margin-left: 10rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--text-color-secondary);
+  flex-shrink: 0;
 }
 
 .log-search input {
-  min-width: 0;
   flex: 1;
+  min-width: 0;
+  height: 30rem;
+  padding: 0 10rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-color);
+  font: inherit;
+  font-size: var(--fs-secondary);
+}
+
+.log-search input::placeholder {
+  color: var(--text-color-secondary);
+  opacity: 0.64;
+}
+
+.log-search button {
+  display: grid;
+  place-items: center;
+  width: 24rem;
+  height: 24rem;
+  margin-right: 4rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-color-secondary);
+  font-size: 17rem;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) ease,
+    color var(--motion-fast) ease,
+    transform var(--motion-fast) ease;
+}
+
+.log-search button:hover {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  color: var(--text-color);
+}
+
+.log-search button:active {
+  transform: scale(0.94);
 }
 
 .log-error {
@@ -435,13 +391,25 @@ onBeforeUnmount(() => {
   font-size: var(--fs-secondary);
 }
 
+/* 卡片背景对齐便签卡片（NoteCard）：半透明背景 + 浅描边，悬停时加深 */
 .log-record {
   min-width: 0;
   margin-bottom: 6rem;
-  border: 1rem solid var(--surface-float-border);
+  border: 1px solid color-mix(in srgb, var(--text-color) 7%, transparent);
   border-left: 3rem solid rgba(142, 142, 147, 0.7);
-  border-radius: 9rem;
-  background: color-mix(in srgb, var(--surface-float) 96%, var(--text-color) 4%);
+  border-radius: 11rem;
+  background: rgb(var(--bg-color) / 0.08);
+  transition:
+    background-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.log-record:hover {
+  border-color: color-mix(in srgb, var(--text-color) 12%, transparent);
+  /* border-color 简写会覆盖左侧级别色条，这里保住默认灰；
+     warn/error 色条由下方同优先级且靠后的 is-* 规则继续生效 */
+  border-left-color: rgba(142, 142, 147, 0.7);
+  background: rgb(var(--bg-color) / 0.14);
 }
 
 .log-record.is-warn {
@@ -453,15 +421,16 @@ onBeforeUnmount(() => {
   border-left-color: #ff453a;
 }
 
+/* 单行摘要：级别 · 时间 · 来源 · 消息，消息占满剩余宽度并省略号截断 */
 .log-record summary {
-  display: grid;
-  grid-template-columns: 48rem 108rem minmax(120rem, 0.8fr) minmax(160rem, 1.5fr);
+  display: flex;
   align-items: center;
   gap: 8rem;
-  padding: 9rem 10rem;
+  padding: 8rem 10rem;
   cursor: pointer;
   list-style: none;
   font-size: var(--fs-secondary);
+  white-space: nowrap;
 }
 
 .log-record summary::-webkit-details-marker {
@@ -469,12 +438,27 @@ onBeforeUnmount(() => {
 }
 
 .log-level {
+  flex-shrink: 0;
   font-weight: 600;
 }
 
 .log-record time,
 .log-source {
   color: var(--text-color-secondary);
+}
+
+.log-record time {
+  flex-shrink: 0;
+}
+
+.log-source {
+  max-width: 180rem;
+  flex-shrink: 0;
+}
+
+.log-message {
+  min-width: 0;
+  flex: 1;
 }
 
 .log-source,
@@ -525,13 +509,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 620px) {
-  .log-record summary {
-    grid-template-columns: 46rem 1fr;
-  }
-  .log-source,
-  .log-message {
-    grid-column: 1 / -1;
-  }
   .log-detail {
     align-items: stretch;
     flex-direction: column;

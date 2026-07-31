@@ -33,6 +33,7 @@ let db = null
  */
 export function initDatabase() {
   const dbPath = join(app.getPath('userData'), 'app.db')
+  const isNewDatabase = !existsSync(dbPath)
   const connection = new Database(dbPath)
   try {
     connection.pragma('journal_mode = WAL')
@@ -42,6 +43,7 @@ export function initDatabase() {
     createDatabaseSchema(connection)
     db = connection
     setDb(connection)
+    return { isNewDatabase }
   } catch (error) {
     connection.close()
     db = null
@@ -158,7 +160,7 @@ async function recoverAttachmentStagingDirectory(stagingDirectory) {
       try {
         if (await recoverImageDeletionOperation(path)) continue
       } catch (error) {
-        console.warn('[images] 恢复暂存附件失败，保留现场:', error.message)
+        console.warn('[images] 恢复暂存附件失败，保留现场:', error)
         continue
       }
       console.warn('[images] 发现未知附件暂存目录，保留现场:', path)
@@ -240,7 +242,7 @@ export async function clearNoteData() {
         renameSync(pendingDeleteDir, attachmentsDir)
         rmSync(operationDirectory, { recursive: true, force: true })
       } catch (restoreError) {
-        console.error('[clearNoteData] 恢复附件目录失败:', restoreError.message)
+        console.error('[clearNoteData] 恢复附件目录失败:', restoreError)
       }
     }
     throw error
@@ -251,12 +253,12 @@ export async function clearNoteData() {
     try {
       writeFileSync(join(operationDirectory, ATTACHMENT_OPERATION_COMMITTED), '', 'utf8')
     } catch (error) {
-      console.error('[clearNoteData] 写入附件清理提交标记失败:', error.message)
+      console.error('[clearNoteData] 写入附件清理提交标记失败:', error)
     }
     try {
       await rm(operationDirectory, { recursive: true, force: true })
     } catch (error) {
-      console.error('[clearNoteData] 清理待删除附件目录失败:', error.message)
+      console.error('[clearNoteData] 清理待删除附件目录失败:', error)
       // 数据库已经成功提交，不能再向 UI 报告“清空失败”。遗留目录会在下次启动重试。
     }
   }

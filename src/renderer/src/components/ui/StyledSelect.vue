@@ -72,8 +72,9 @@ function updatePanelPosition() {
     top: rect.bottom + 4 + 'px',
     left: rect.left + 'px',
     minWidth: rect.width + 'px',
-    // Teleport 到 body 后必须高于循环模板层（15000）和编辑模态层（20000）。
-    zIndex: 30000
+    // Teleport 到 body 后必须高于所有宿主容器：循环模板层（15000）、编辑模态层（20000）、
+    // AppModalShell 系模态（41000/43000，如应用日志、软件通知），否则面板会被压在模态下透色。
+    zIndex: 45000
   }
 }
 

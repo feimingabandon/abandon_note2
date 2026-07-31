@@ -294,7 +294,7 @@ export class Scheduler {
       })
       notification.show()
     } catch (e) {
-      console.error('[scheduler] 无法发送操作系统通知:', e.message)
+      console.error('[scheduler] 无法发送操作系统通知:', e)
       this.onAlertNotifyFailed?.(title, body, e)
     }
   }
