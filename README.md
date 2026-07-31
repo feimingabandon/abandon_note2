@@ -31,8 +31,29 @@
 
 ## 🖥 应用界面
 
-<!-- TODO: 补充应用截图，建议放置于 docs/screenshots/ 目录 -->
-> 截图整理中，敬请期待。
+**主界面** — 毛玻璃背景下的便签列表，支持置顶分组与时间线浏览
+
+![主界面](docs/screenshots/main-window.png)
+
+**桌面便利贴** — 便签钉在桌面随时查看，支持调整字号、颜色与置顶
+
+![桌面便利贴](docs/screenshots/sticky-note.png)
+
+**贴边隐藏** — 窗口拖到屏幕边缘自动收起，鼠标移入触发区即滑出
+
+![贴边隐藏演示](docs/screenshots/dock-hide.gif)
+
+| 新建便签 | 循环便签模板 |
+| :---: | :---: |
+| ![新建便签面板](docs/screenshots/new-note-panel.png) | ![循环便签模板设置](docs/screenshots/recurring-templates.png) |
+
+| 时间线模式 | 更新检查 |
+| :---: | :---: |
+| ![时间线模式](docs/screenshots/timeline-mode.png) | ![更新检查对话框](docs/screenshots/update-dialog.png) |
+
+| 基础样式设置 | 毛玻璃与壁纸设置 |
+| :---: | :---: |
+| ![基础样式设置](docs/screenshots/settings-basic.png) | ![毛玻璃与壁纸设置](docs/screenshots/settings-glass.png) |
 
 ## 💽 下载安装
 
