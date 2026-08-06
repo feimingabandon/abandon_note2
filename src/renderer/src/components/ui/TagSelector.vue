@@ -20,10 +20,15 @@ const props = defineProps({
   modelValue: {
     type: Array,
     default: () => []
+  },
+  /** 允许选中的最大数量；0 表示不限制。历史超限数据不会被自动截断。 */
+  maxSelected: {
+    type: Number,
+    default: 0
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'refresh'])
+const emit = defineEmits(['update:modelValue', 'refresh', 'selectionLimitExceeded'])
 
 // ---- 颜色预设（与 TagPanel 共享） ----
 const colorPresets = [
@@ -179,6 +184,10 @@ function toggleTag(tagName) {
   if (next.has(tagName)) {
     next.delete(tagName)
   } else {
+    if (props.maxSelected > 0 && next.size >= props.maxSelected) {
+      emit('selectionLimitExceeded', props.maxSelected)
+      return
+    }
     next.add(tagName)
   }
   selectedNames.value = next

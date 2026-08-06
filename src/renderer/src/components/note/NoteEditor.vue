@@ -12,6 +12,7 @@ import HelpButton from '../ui/HelpButton.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import { useMessage } from '../../composables/useMessage.js'
+import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 
 const props = defineProps({
   note: { type: Object, required: true }
@@ -174,6 +175,11 @@ async function handleSave() {
     return
   }
 
+  if (tagNames.value.length > MAX_ASSIGNED_TAGS) {
+    showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)
+    return
+  }
+
   let effectiveTimestamp = new Date(effectiveAt.value).getTime()
   if (status.value === 'initialized') {
     if (!Number.isFinite(effectiveTimestamp)) {
@@ -265,9 +271,13 @@ defineExpose({ requestClose })
 
       <div class="ne-field ne-group-gap ne-stagger" style="animation-delay: 160ms">
         <label class="ne-field-label"
-          >标签<HelpButton text="为便签添加分类标签，便于筛选和管理。"
+          >标签<HelpButton text="每条便签最多保留一个分类标签；历史多标签需删减后才能保存。"
         /></label>
-        <TagSelector v-model="tagNames" />
+        <TagSelector
+          v-model="tagNames"
+          :max-selected="MAX_ASSIGNED_TAGS"
+          @selection-limit-exceeded="showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)"
+        />
       </div>
 
       <div class="ne-field ne-stagger" style="animation-delay: 190ms">

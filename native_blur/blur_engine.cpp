@@ -593,6 +593,13 @@ bool Engine::SyncZOrder() {
     const bool overlayTopmost =
         (GetWindowLongPtrW(m_overlayHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
 
+    // Electron focus、WinEvent Hook 和健康检查都可能请求同步。有效层级已经
+    // 正确时直接返回，避免重复 SetWindowPos 让 DWM 在中间状态提交一帧。
+    if (IsZOrderAdjacent()) {
+        if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
+        return true;
+    }
+
     // 只在置顶分组真正变化时切换 band。否则 DWM 可能在两次
     // SetWindowPos 之间提交一帧，造成 Overlay 瞬间盖住 Electron。
     if (parentTopmost != overlayTopmost) {
@@ -615,7 +622,8 @@ bool Engine::SyncZOrder() {
 }
 
 bool Engine::IsZOrderAdjacent() const {
-    if (!m_overlayHwnd || !IsWindow(m_overlayHwnd) ||
+    const HWND overlayHwnd = m_messageHwnd.load();
+    if (!overlayHwnd || !IsWindow(overlayHwnd) ||
         !m_parentHwnd || !IsWindow(m_parentHwnd)) {
         return false;
     }
@@ -623,10 +631,31 @@ bool Engine::IsZOrderAdjacent() const {
     const bool parentTopmost =
         (GetWindowLongPtrW(m_parentHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
     const bool overlayTopmost =
-        (GetWindowLongPtrW(m_overlayHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+        (GetWindowLongPtrW(overlayHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
 
-    return parentTopmost == overlayTopmost &&
-        GetWindow(m_parentHwnd, GW_HWNDNEXT) == m_overlayHwnd;
+    if (parentTopmost != overlayTopmost) return false;
+
+    RECT parentRect{};
+    if (!GetWindowRect(m_parentHwnd, &parentRect)) return false;
+
+    // Electron 后方可能存在不可见的 IME/辅助 HWND，不能要求 GW_HWNDNEXT
+    // 立即等于 Overlay。只有可见且与主窗口相交的窗口夹在中间时，才会覆盖
+    // BlurOverlay 并造成“桌面模糊、其他程序清晰透出”。
+    HWND candidate = GetWindow(m_parentHwnd, GW_HWNDNEXT);
+    while (candidate) {
+        if (candidate == overlayHwnd) return true;
+
+        if (IsWindowVisible(candidate)) {
+            RECT candidateRect{};
+            RECT intersection{};
+            if (GetWindowRect(candidate, &candidateRect) &&
+                IntersectRect(&intersection, &parentRect, &candidateRect)) {
+                return false;
+            }
+        }
+        candidate = GetWindow(candidate, GW_HWNDNEXT);
+    }
+    return false;
 }
 
 void Engine::QueueZOrderSync() {

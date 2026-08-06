@@ -9,7 +9,7 @@
  *   - ESC / 点击遮罩关闭
  */
 import { nextTick, onUnmounted, ref, watch } from 'vue'
-import { releaseModalBlur, retainModalBlur } from '../../utils/modalBlur.js'
+import { retainModalBlur } from '../../utils/modalBlur.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -26,18 +26,16 @@ const rotate = ref(0)
 const translateX = ref(0)
 const translateY = ref(0)
 const overlayRef = ref(null)
-let ownsModalBlur = false
+let releaseBackgroundBlur = null
 
 function acquireModalBlur() {
-  if (ownsModalBlur) return
-  ownsModalBlur = true
-  retainModalBlur()
+  if (releaseBackgroundBlur) return
+  releaseBackgroundBlur = retainModalBlur()
 }
 
 function freeModalBlur() {
-  if (!ownsModalBlur) return
-  ownsModalBlur = false
-  releaseModalBlur()
+  releaseBackgroundBlur?.()
+  releaseBackgroundBlur = null
 }
 
 /** 拖拽状态 */
@@ -58,8 +56,9 @@ watch(
       translateX.value = 0
       translateY.value = 0
       nextTick(() => overlayRef.value?.focus({ preventScroll: true }))
-    } else freeModalBlur()
-  }
+    }
+  },
+  { immediate: true }
 )
 
 function onClose() {
@@ -156,11 +155,12 @@ onUnmounted(() => {
 
 <template>
   <Teleport to="body">
-    <Transition name="ipv">
+    <Transition name="ipv" @after-leave="freeModalBlur">
       <div
         v-if="visible"
         ref="overlayRef"
         class="ipv-overlay"
+        data-modal-layer="image-preview"
         data-keep-settings-open
         tabindex="-1"
         @click.self="onClose"

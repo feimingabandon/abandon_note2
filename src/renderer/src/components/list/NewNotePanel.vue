@@ -17,6 +17,7 @@ import AppToggle from '../ui/AppToggle.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import { useMessage } from '../../composables/useMessage.js'
+import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 
 const emit = defineEmits(['create'])
 const props = defineProps({
@@ -232,6 +233,11 @@ async function handleCreate() {
     return
   }
 
+  if (tagNames.value.length > MAX_ASSIGNED_TAGS) {
+    showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)
+    return
+  }
+
   // 校验：生效时间不能距离当下不足 5 分钟
   if (effectiveAt.value) {
     const ts = new Date(effectiveAt.value).getTime()
@@ -338,9 +344,13 @@ async function handleCreate() {
       <!-- 标签 -->
       <div class="nnp-field nnp-group-gap">
         <label class="nnp-field-label"
-          >标签<HelpButton text="添加自定义分类标签；正文和图片类型由系统自动识别。"
+          >标签<HelpButton text="每条便签最多设置一个分类标签；正文和图片类型由系统自动识别。"
         /></label>
-        <TagSelector v-model="tagNames" />
+        <TagSelector
+          v-model="tagNames"
+          :max-selected="MAX_ASSIGNED_TAGS"
+          @selection-limit-exceeded="showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)"
+        />
       </div>
 
       <!-- 图片 -->

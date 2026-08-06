@@ -97,6 +97,7 @@ public:
     bool IsHealthy() const {
         return m_initialized.load() && m_runtimeHealthy.load();
     }
+    bool IsZOrderSynchronized() const { return IsZOrderAdjacent(); }
     BlurErrorCode GetLastError() const { return m_lastError.load(); }
     void SetLastError(BlurErrorCode error) { m_lastError.store(error); }
     HWND GetParentWindow() const { return m_parentHwnd; }

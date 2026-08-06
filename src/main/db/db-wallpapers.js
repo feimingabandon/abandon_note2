@@ -116,8 +116,9 @@ function removeFileQuietly(path) {
   if (!path) return
   try {
     rmSync(path, { force: true })
-  } catch {
+  } catch (error) {
     // 下次启动会继续清理 .staging。
+    console.warn('[wallpaper] 删除暂存文件失败，将在下次启动重试:', error, { path })
   }
 }
 
@@ -416,7 +417,8 @@ export async function getWallpaperDataUrl(id, { original = false } = {}) {
   try {
     const buffer = await readFile(resolveWallpaperPath(relativePath))
     return `data:${mimeForPath(relativePath)};base64,${buffer.toString('base64')}`
-  } catch {
+  } catch (error) {
+    console.warn('[wallpaper] 读取壁纸文件失败:', error, { id: record.id, relativePath, original })
     return null
   }
 }
@@ -426,7 +428,13 @@ export function getWallpaperThumbnail(id, maxSize = 240) {
   if (!record) return null
   try {
     const image = nativeImage.createFromPath(resolveWallpaperPath(record.cropped_path))
-    if (image.isEmpty()) return null
+    if (image.isEmpty()) {
+      console.warn('[wallpaper] 无法解析壁纸缩略图:', {
+        id: record.id,
+        relativePath: record.cropped_path
+      })
+      return null
+    }
     const { width, height } = image.getSize()
     const limit = Math.max(80, Math.min(480, Number(maxSize) || 240))
     const resized =
@@ -434,7 +442,12 @@ export function getWallpaperThumbnail(id, maxSize = 240) {
         ? image.resize({ width: Math.min(width, limit), quality: 'good' })
         : image.resize({ height: Math.min(height, limit), quality: 'good' })
     return resized.toDataURL()
-  } catch {
+  } catch (error) {
+    console.warn('[wallpaper] 生成壁纸缩略图失败:', error, {
+      id: record.id,
+      relativePath: record.cropped_path,
+      maxSize
+    })
     return null
   }
 }
@@ -509,7 +522,10 @@ async function deleteWallpaperVersionUnlocked(id, { clearSelectionForWindow = nu
  */
 function enqueueWallpaperMutation(operation) {
   const result = wallpaperMutationQueue.then(operation)
-  wallpaperMutationQueue = result.catch(() => {})
+  wallpaperMutationQueue = result.catch((error) => {
+    // result 仍原样返回给调用者；这里只吸收内部队列尾部的拒绝，保证后续操作能够继续排队。
+    console.error('[wallpaper] 串行存储操作失败:', error)
+  })
   return result
 }
 
@@ -538,8 +554,11 @@ export async function cleanupPendingWallpaperFiles() {
     try {
       const manifest = JSON.parse(await readFile(join(path, OPERATION_MANIFEST), 'utf8'))
       await recoverWallpaperOperation(path, manifest)
-    } catch {
+    } catch (error) {
       // 只有完整清单写入后才会移动正式文件；无清单目录可直接视为未开始事务。
+      console.warn('[wallpaper] 暂存操作清单缺失或损坏，清理未开始的事务目录:', error, {
+        path
+      })
       await removeOperationDirectory(path)
     }
   }

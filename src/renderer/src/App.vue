@@ -28,6 +28,7 @@ import TemplatePage from './components/template/TemplatePage.vue'
 import HelpPage from './components/help/HelpPage.vue'
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
+import { retainModalBlur } from './utils/modalBlur.js'
 import { DEFAULT_SETTINGS } from '../../shared/settings-schema.js'
 
 // 注册全局应用内消息通知能力（子孙组件通过 useMessage() 获取）
@@ -52,11 +53,8 @@ const helpPanelActive = ref(false)
 const helpBlurActive = ref(false)
 const helpPhase = ref('closed') // closed | opening | open | closing
 const helpPanelRef = ref(null)
-/** 与面板卸载动画解耦，使关闭动作开始时即可恢复底层清晰度。 */
-const settingsBlurActive = ref(false)
-/** 编辑弹窗沿用设置页策略：模糊底层场景，弹窗本身保持清晰。 */
-const editorBlurActive = ref(false)
-let editorBlurReleaseTimer = null
+let releaseSettingsBackgroundBlur = null
+let releaseEditorBackgroundBlur = null
 
 async function loadPendingRemoteNotices({ show = false } = {}) {
   try {
@@ -73,8 +71,13 @@ function onRemoteNoticeAcknowledged(id) {
 }
 
 function openSettings() {
-  settingsBlurActive.value = true
+  if (!releaseSettingsBackgroundBlur) releaseSettingsBackgroundBlur = retainModalBlur()
   showSettings.value = true
+}
+
+function releaseSettingsBlur() {
+  releaseSettingsBackgroundBlur?.()
+  releaseSettingsBackgroundBlur = null
 }
 
 async function checkForUpdates({ showResult = true } = {}) {
@@ -88,9 +91,14 @@ async function checkForUpdates({ showResult = true } = {}) {
       showUpdateDialog.value = true
     }
   } catch (error) {
+    console.error('[App] 检查更新失败:', error)
+    const appInfo = await window.api.getAppInfo().catch((infoError) => {
+      console.warn('[App] 更新检查失败后读取应用版本也失败:', infoError)
+      return null
+    })
     updateResult.value = {
       status: 'error',
-      currentVersion: '0.9.1',
+      currentVersion: appInfo?.version || '未知',
       platform: window.api.runtimeCapabilities?.platform,
       artifactName: null,
       onlineDownloadSupported: false,
@@ -337,22 +345,17 @@ async function onEditNote(note) {
   if (!note?.id) return
   // 列表项是摘要数据；打开编辑器前重新读取完整记录，避免编辑旧标签或附件数据。
   const fullNote = await window.api.getNote(note.id)
-  if (editorBlurReleaseTimer) {
-    clearTimeout(editorBlurReleaseTimer)
-    editorBlurReleaseTimer = null
-  }
-  editorBlurActive.value = true
+  if (!releaseEditorBackgroundBlur) releaseEditorBackgroundBlur = retainModalBlur()
   selectedNote.value = fullNote || note
 }
 
 function onCloseEditor() {
   selectedNote.value = null
-  if (editorBlurReleaseTimer) clearTimeout(editorBlurReleaseTimer)
-  // 让弹窗先开始退场，再恢复底层清晰度，避免视觉跳变。
-  editorBlurReleaseTimer = setTimeout(() => {
-    editorBlurReleaseTimer = null
-    editorBlurActive.value = false
-  }, 160)
+}
+
+function releaseEditorBlur() {
+  releaseEditorBackgroundBlur?.()
+  releaseEditorBackgroundBlur = null
 }
 
 function requestCloseEditor() {
@@ -383,7 +386,8 @@ onUnmounted(() => {
   stopRemoteNoticesListener?.()
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
-  if (editorBlurReleaseTimer) clearTimeout(editorBlurReleaseTimer)
+  releaseSettingsBlur()
+  releaseEditorBlur()
   if (startupUpdateTimer) clearTimeout(startupUpdateTimer)
   clearTimeout(wallpaperReleaseTimer)
 })
@@ -411,7 +415,6 @@ onUnmounted(() => {
     <!-- 设置打开时，底层场景不可点击且不可获取键盘焦点。 -->
     <div
       class="app-scene"
-      :class="{ 'is-settings-open': settingsBlurActive, 'is-editor-open': editorBlurActive }"
       :inert="showSettings || !!selectedNote || showUpdateDialog || showRemoteNoticeDialog"
     >
       <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
@@ -455,7 +458,7 @@ onUnmounted(() => {
         <!-- 主内容区域，flex:1 占据导航栏下方空间。 -->
         <main
           class="content"
-          :class="{ 'is-template-open': templateBlurActive, 'is-help-open': helpBlurActive }"
+          :class="{ 'is-ui-background-blurred': templateBlurActive || helpBlurActive }"
           :inert="templatesRendered || helpRendered"
         >
           <ActionBar
@@ -498,8 +501,13 @@ onUnmounted(() => {
     </div>
 
     <!-- 便签编辑弹窗：复用 NoteEditor，底层列表保持可见但不可交互。 -->
-    <Transition name="app-editor-modal">
-      <div v-if="selectedNote" class="app-editor-overlay" role="presentation">
+    <Transition name="app-editor-modal" @after-leave="releaseEditorBlur">
+      <div
+        v-if="selectedNote"
+        class="app-editor-overlay"
+        data-modal-layer="note-editor"
+        role="presentation"
+      >
         <section class="app-editor-dialog" role="dialog" aria-modal="true" aria-label="修改便签">
           <header class="app-editor-header">
             <span>修改便签</span>
@@ -529,7 +537,7 @@ onUnmounted(() => {
     <SettingsPanel
       v-if="showSettings"
       v-model:visible="showSettings"
-      @blur-release="settingsBlurActive = false"
+      @blur-release="releaseSettingsBlur"
       @check-update="openUpdateDialog"
     />
 
@@ -612,17 +620,6 @@ onUnmounted(() => {
   transition: filter 100ms ease-out;
 }
 
-/* 设置是模态界面：直接模糊已渲染好的底层场景，不再从透明窗口反向采样。 */
-.app-scene.is-settings-open {
-  filter: blur(var(--glass-blur-base));
-  transition-duration: 180ms;
-  will-change: filter;
-}
-.app-scene.is-editor-open {
-  filter: blur(var(--glass-blur-base));
-  transition-duration: 180ms;
-  will-change: filter;
-}
 /* 标题栏按钮通用样式 */
 .titlebar-btn {
   width: 18rem; /* 与红绿灯按钮大小一致 */
@@ -712,15 +709,6 @@ onUnmounted(() => {
   padding: 16rem; /* 内边距，统一使用 rem 跟随窗口缩放 */
   transition: filter 180ms ease-out;
 }
-.content.is-template-open {
-  filter: blur(var(--glass-blur-base));
-  will-change: filter;
-}
-.content.is-help-open {
-  filter: blur(var(--glass-blur-base));
-  will-change: filter;
-}
-
 .app-template-wrapper {
   position: absolute;
   z-index: 15000;

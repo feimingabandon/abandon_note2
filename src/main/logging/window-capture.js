@@ -22,6 +22,11 @@ export function setWindowLogContext(win, context) {
   contexts.set(win, { ...contextFor(win), ...context })
 }
 
+export function getWindowLogContext(win) {
+  if (!win || win.isDestroyed()) return { role: 'unknown-window' }
+  return { ...contextFor(win) }
+}
+
 export function attachWindowLogging(win) {
   if (!win || win.isDestroyed() || attached.has(win)) return
   attached.add(win)

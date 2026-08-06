@@ -142,6 +142,17 @@ describe('main-process logging', () => {
     })
   })
 
+  it('returns the registered role for structured renderer logs', () => {
+    const webContents = new EventEmitter()
+    const win = new EventEmitter()
+    win.webContents = webContents
+    win.isDestroyed = () => false
+
+    windowCapture.setWindowLogContext(win, { role: 'sticky', noteId: 42 })
+
+    expect(windowCapture.getWindowLogContext(win)).toEqual({ role: 'sticky', noteId: 42 })
+  })
+
   it('does not install an unhandledRejection listener that changes Node fatal behavior', async () => {
     const beforeUnhandled = process.listeners('unhandledRejection')
     const beforeMonitor = new Set(process.listeners('uncaughtExceptionMonitor'))

@@ -92,4 +92,39 @@ describe('renderer error capture', () => {
       })
     )
   })
+
+  it('preserves structured Error details from renderer console calls', () => {
+    const listeners = new Map()
+    globalThis.window = {
+      addEventListener: vi.fn((name, listener) => listeners.set(name, listener))
+    }
+    const originalError = console.error
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const reportLog = vi.fn()
+    const report = installBrowserErrorCapture(
+      { reportLog },
+      { scope: 'test-renderer', captureStructuredConsole: true }
+    )
+    const cause = new Error('磁盘不可用')
+    const error = new Error('保存失败', { cause })
+    error.code = 'SAVE_FAILED'
+
+    console.error('[editor] 保存便签失败:', error)
+
+    expect(reportLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: 'error',
+        scope: 'test-renderer.console-error',
+        message: '[editor] 保存便签失败:',
+        error: expect.objectContaining({
+          message: '保存失败',
+          code: 'SAVE_FAILED',
+          cause: expect.objectContaining({ message: '磁盘不可用' })
+        })
+      })
+    )
+    expect(consoleSpy).toHaveBeenCalledWith('[editor] 保存便签失败:', error)
+    report.restoreConsole()
+    console.error = originalError
+  })
 })

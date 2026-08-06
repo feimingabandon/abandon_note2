@@ -2,18 +2,17 @@
  * index.js — Electron 主进程入口文件
  *
  * 职责：
- *   1. 创建和管理 BrowserWindow（无边框、透明背景）
- *   2. 注册所有 IPC 通道（窗口控制、缩放手柄、数据库桥接）
- *   3. 管理应用生命周期（启动、退出、macOS 激活）
- *   4. 窗口几何信息的防抖持久化
+ *   1. 组装主进程服务并管理应用生命周期
+ *   2. 创建主窗口，管理毛玻璃与贴边运动等窗口运行时
+ *   3. 注册仍与主窗口运行时紧密耦合的核心 IPC
+ *
+ * 业务数据、截图和通知的具体编排由各自模块负责，本文件只注入运行时依赖。
  */
 
 import * as Electron from 'electron'
-const { app, shell, BrowserWindow, screen, Tray, Menu, Notification, desktopCapturer, dialog } =
-  Electron
+const { app, shell, BrowserWindow, screen, Tray, Menu, dialog } = Electron
 
 import { join, resolve } from 'path'
-import { pathToFileURL } from 'url'
 import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
 import icon from '../../resources/icon.png?asset' // 应用图标（Vite asset 导入）
 import {
@@ -40,48 +39,11 @@ import { DockTransitionState } from './window-motion/dock-transition-state.js'
 
 import {
   createNote,
-  updateNote,
-  deleteNote,
   getNoteById,
-  normalizeRequiredNoteContent,
-  queryPinnedNotes,
-  queryRecentNotes,
-  queryEarlierNotes,
-  queryCustomPinned,
-  queryCustomNormal,
-  searchNotes,
-  countActiveNotes,
-  reorderCustomSortOrder,
-  updateCustomSortOrders,
-  startProgress,
-  completeNote,
-  reopenNote,
   activateNotes,
   snoozeNote,
   claimDueSnoozedNotes
 } from './db/db-notes.js'
-import {
-  createTag,
-  deleteTag as deleteTagFn,
-  listTags,
-  getTagByName,
-  bindTag,
-  unbindTag,
-  setNoteTags,
-  getNoteTags,
-  getTagUsage
-} from './db/db-tags.js'
-import {
-  createTemplate,
-  updateTemplate,
-  deleteTemplate as deleteTemplateFn,
-  listTemplates,
-  getTemplateById,
-  pauseTemplate,
-  resumeTemplate,
-  restoreTemplate,
-  purgeTemplate
-} from './db/db-templates.js'
 import {
   acknowledgeRemoteNotice,
   getRemoteNoticeCursor,
@@ -93,21 +55,6 @@ import {
 import { getOrCreateInstallationId } from './db/db-identity.js'
 import { RemoteCoordinator } from './services/remote/remote-coordinator.js'
 import {
-  stageImage,
-  commitStagedImage,
-  cleanupStagedImage,
-  stageImageDeletion,
-  restoreStagedImageDeletion,
-  deleteImageFile,
-  deleteImageRecordAndFile,
-  purgeNoteAndFiles,
-  getImageBase64,
-  getImageThumbnail,
-  addImageRecord,
-  listImageRecords,
-  getImageCount
-} from './db/db-images.js'
-import {
   cleanupPendingWallpaperFiles,
   deleteWallpaperVersion,
   getWallpaperDataUrl,
@@ -118,10 +65,11 @@ import {
 } from './db/db-wallpapers.js'
 import { Scheduler } from './services/scheduler.js'
 import { runRecurringTemplates } from './services/recurrence.js'
-import { calculateNextRun, normalizeRecurrenceRule } from './services/recurrence-rules.js'
 import { TemplateSchedulerGuard } from './services/template-scheduler-guard.js'
-import { sendNotificationSafely } from './services/notification-guard.js'
+import { alignTriggerBoundsToEdge, inspectDockHealth } from './window-motion/dock-health.js'
 import { AppUpdateService, UPDATE_LINKS } from './services/app-update.js'
+import { NotificationService } from './services/NotificationService.js'
+import { ScreenshotService } from './services/ScreenshotService.js'
 import { ElectronStickyService } from './sticky/ElectronStickyService.js'
 import { buildStickyTrayTemplate } from './sticky/StickyTrayMenu.js'
 import {
@@ -140,17 +88,19 @@ import {
   queryLogs,
   writeLog
 } from './logging/logger.js'
-import { attachWindowLogging, setWindowLogContext } from './logging/window-capture.js'
+import {
+  attachWindowLogging,
+  getWindowLogContext,
+  setWindowLogContext
+} from './logging/window-capture.js'
 import {
   DEFAULT_SETTINGS,
   createDefaultSettings,
   resolveSettingsRows,
   serializeSetting
 } from '../shared/settings-schema.js'
-import {
-  enforceSystemNotificationPolicy,
-  getSystemNotificationCapability
-} from '../shared/notification-policy.js'
+import { getSystemNotificationCapability } from '../shared/notification-policy.js'
+import { registerBusinessIpcHandlers } from './ipc/register-business-ipc.js'
 
 /** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
 const WINDOW_NAME = 'main'
@@ -203,10 +153,11 @@ if (!gotSingleInstanceLock) {
 
 let appUpdateService = null
 let remoteCoordinator = null
+let notificationService = null
+let screenshotService = null
 
 /** 主窗口实例引用 */
 let mainWindow = null
-let screenshotWindow = null
 
 /** 系统托盘实例 */
 let tray = null
@@ -352,6 +303,7 @@ function readAutoStartRuntime() {
   try {
     return { value: Boolean(app.getLoginItemSettings().openAtLogin), error: null }
   } catch (error) {
+    logger.error('settings.auto-start-read', error)
     return { value: false, error: error.message }
   }
 }
@@ -425,6 +377,7 @@ function initializeBlurRuntime() {
     attachBlurWindowSyncListeners()
     return result
   } catch (error) {
+    logger.error('blur.initialize', error, { stage: 'initialize-or-first-config' })
     // blurInit 成功而首次配置失败时也必须完整回滚，否则 JS、bridge 和
     // native 三层会处于互相矛盾的初始化状态，后续重试还会被短路。
     try {
@@ -480,6 +433,7 @@ function handleBlurRuntimeFailure(error, { broadcast = true } = {}) {
   try {
     const nativeError = error?.nativeError ?? null
     const detail = nativeError?.message || error?.message || '原生模糊运行期失效'
+    logger.error('blur.runtime-failure', error, { detail, nativeError })
     blurInitializationError = `系统毛玻璃运行中断：${detail}`
     blurInitializationNativeError = nativeError
     blurRuntimeFailed = true
@@ -568,6 +522,18 @@ function runBlurRuntimeDiagnostic(context = {}) {
         broadcastSettingsChanged()
         return
       }
+      // Overlay 与 Electron 是两个顶层 HWND。Win10 在焦点切换后可能把第三方
+      // 窗口插到两者之间；这不是 Effect Graph 失效，重新排层即可恢复。
+      if (mainWindow?.isVisible() && !health.zOrderSynchronized) {
+        logger.warn('blur.z-order', '检测到毛玻璃层与主窗口不再相邻，正在自动修复')
+        blurReSyncZOrder()
+        updateBlurDiagnostic({
+          status: 'pending',
+          lastCheckedAt: checkedAt,
+          message: '检测到窗口层级偏差，已请求自动修复'
+        })
+        return
+      }
     } catch (error) {
       handleBlurRuntimeFailure(error, { broadcast: false })
       updateBlurDiagnostic({
@@ -623,6 +589,11 @@ function attachBlurWindowSyncListeners() {
   mainWindow.on('move', () => {
     if (windowMotionBackend?.isMoving()) return
     runBlurRuntimeOperation(blurUpdateGeometry, '同步毛玻璃窗口位置')
+  })
+  // WinEvent Hook 是主路径；Electron focus 是 Win10 漏报/过早上报重排事件时的
+  // 低频兜底。两条路径最终都进入 C++ 去重队列，且同步前会检查是否已经相邻。
+  mainWindow.on('focus', () => {
+    runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口焦点层级')
   })
   mainWindow.on('always-on-top-changed', () => {
     runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口层级')
@@ -708,11 +679,13 @@ function restoreSuspendedWallpaper(suspended) {
 // ============================================================
 const SNAP_THRESHOLD = 20 // 贴边吸附阈值（px）
 const TRIGGER_WIDTH = 2 // 边缘触发窗口宽度（px）
+const TRIGGER_ALWAYS_ON_TOP_LEVEL = 'screen-saver'
 const SLIDE_DURATION = 200 // 滑动动画总时长（ms）
 const SLIDE_INTERVAL = 16 // 滑动动画帧间隔（ms）≈60fps
 const HIDE_DELAY = 200 // 鼠标离开后延迟隐藏（ms）
 const HIDE_OVERSHOOT = 4 // 两侧统一多移出 4 DIP，吸收高 DPI 整数换算误差
 const DOCK_GEOMETRY_SUPPRESSION_MS = 1000
+const MAX_DOCK_SLIDE_AGE_MS = 5000
 
 /** 默认窗口尺寸比例（相对屏幕工作区），改一个地方即可全局生效 */
 const DEFAULT_WIDTH_RATIO = DEFAULT_SETTINGS.geometry.widthRatio
@@ -721,12 +694,17 @@ const DEFAULT_HEIGHT_RATIO = DEFAULT_SETTINGS.geometry.heightRatio
 let dockSide = null // null | 'left' | 'right' 当前吸附方向
 let isDockHidden = false // 窗口是否处于贴边隐藏状态
 let triggerWin = null // 边缘触发窗口实例
+let triggerRequestedBounds = null // 业务请求的 2px 触发条范围
+let triggerExpectedBounds = null // 原生窗口尺寸钳制后应保持的真实边界
 let cachedWorkArea = null // 缓存显示器工作区，避免隐藏后 getDisplayMatching 返回过期对象
 let slideAnimTimer = null // 滑动动画定时器
 let hideTimer = null // 隐藏延迟定时器
 let isSliding = false // 滑动动画进行中标志
+let dockSlideStartedAt = null // 当前动画开始时间；健康任务用于识别卡死动画
 let pendingSlideCallback = null // 动画中断时待执行的完成回调
 let dockMotionSession = null // 一轮隐藏/显示共享的可见边界与工作区快照
+let triggerPageLoaded = false // 当前边缘触发页面是否完成主框架加载
+let triggerSequence = 0 // 触发窗口代次，便于串联一次隐藏过程的诊断日志
 const dockTransitionState = new DockTransitionState()
 let windowMotionBackend = null
 
@@ -1087,6 +1065,77 @@ function setDockPosition(x, motionPlan) {
   return after
 }
 
+function getExpectedTriggerBounds() {
+  return triggerExpectedBounds ? { ...triggerExpectedBounds } : null
+}
+
+/** 生成纯数据快照，供每分钟健康任务和托盘诊断日志复用。 */
+function getDockDiagnosticSnapshot() {
+  const triggerExists = Boolean(triggerWin && !triggerWin.isDestroyed())
+  let triggerBounds = null
+  let triggerVisible = false
+  let triggerAlwaysOnTop = false
+  let triggerWebContentsDestroyed = true
+  let mainMotionBounds = null
+  let mainAtHiddenTarget = null
+
+  if (triggerExists) {
+    try {
+      triggerBounds = triggerWin.getBounds()
+      triggerVisible = triggerWin.isVisible()
+      triggerAlwaysOnTop = triggerWin.isAlwaysOnTop()
+      triggerWebContentsDestroyed = triggerWin.webContents.isDestroyed()
+    } catch (error) {
+      logger.error('dock.health-snapshot', error)
+    }
+  }
+
+  if (isDockHidden && !isSliding && dockMotionSession?.motionPlan && windowMotionBackend) {
+    try {
+      mainMotionBounds = windowMotionBackend.capture()
+      mainAtHiddenTarget = Math.abs(mainMotionBounds.x - dockMotionSession.motionPlan.hiddenX) <= 1
+    } catch (error) {
+      logger.error('dock.health-snapshot', error, { stage: 'capture-main-window' })
+    }
+  }
+
+  return {
+    mainWindowExists: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    isDockHidden,
+    dockSide,
+    hasDockMotionSession: Boolean(dockMotionSession),
+    sessionSide: dockMotionSession?.side || null,
+    mainMotionBounds,
+    mainAtHiddenTarget,
+    isSliding,
+    slideAgeMs: isSliding && dockSlideStartedAt ? Date.now() - dockSlideStartedAt : 0,
+    maxSlideAgeMs: MAX_DOCK_SLIDE_AGE_MS,
+    expectedTriggerBounds: getExpectedTriggerBounds(),
+    requestedTriggerBounds: triggerRequestedBounds ? { ...triggerRequestedBounds } : null,
+    trigger: {
+      sequence: triggerSequence,
+      exists: triggerExists,
+      destroyed: Boolean(triggerWin?.isDestroyed()),
+      webContentsDestroyed: triggerWebContentsDestroyed,
+      pageLoaded: triggerPageLoaded,
+      visible: triggerVisible,
+      alwaysOnTop: triggerAlwaysOnTop,
+      expectedAlwaysOnTop: true,
+      bounds: triggerBounds
+    }
+  }
+}
+
+function runDockHealthCheck() {
+  const snapshot = getDockDiagnosticSnapshot()
+  const issues = inspectDockHealth(snapshot)
+  if (issues.length === 0) return
+
+  const error = new Error(`贴边隐藏状态异常：${issues.join('；')}`)
+  logger.error('dock.health', error, { issues, snapshot })
+  throw error
+}
+
 /** 重置贴边状态（隐藏/关闭/最大化时统一调用） */
 function resetDockState() {
   if (slideAnimTimer) {
@@ -1099,9 +1148,13 @@ function resetDockState() {
   }
   pendingSlideCallback = null
   isSliding = false
+  dockSlideStartedAt = null
   dockSide = null
   isDockHidden = false
   dockMotionSession = null
+  triggerPageLoaded = false
+  triggerRequestedBounds = null
+  triggerExpectedBounds = null
   if (triggerWin && !triggerWin.isDestroyed()) {
     triggerWin.destroy()
     triggerWin = null
@@ -1172,6 +1225,7 @@ function preserveDockSessionAfterSlideFailure() {
   }
   pendingSlideCallback = null
   isSliding = false
+  dockSlideStartedAt = null
 
   if (!mainWindow || mainWindow.isDestroyed() || !dockMotionSession) {
     resetDockState()
@@ -1312,24 +1366,33 @@ function snapToEdge(side) {
 
 /**
  * 创建边缘触发窗口
- * 2px 宽的透明窗口，高度与主窗口一致，仅覆盖窗口实际所在的屏幕边缘区域
+ * 屏幕内只露出 2px 的透明触发条；Windows 若扩大原生窗口，额外宽度移到屏幕外。
  */
 function createTriggerWindow(side) {
   if (triggerWin && !triggerWin.isDestroyed()) triggerWin.destroy()
-  if (!dockMotionSession) return
+  triggerWin = null
+  triggerPageLoaded = false
+  triggerRequestedBounds = null
+  triggerExpectedBounds = null
+  if (!dockMotionSession) {
+    logger.warn('dock.trigger', '缺少贴边运动会话，无法创建边缘触发窗口', { side })
+    return
+  }
 
   const wa = dockMotionSession.workArea
   const b = dockMotionSession.stableBounds
-  const bounds =
+  const requestedBounds =
     side === 'left'
       ? { x: wa.x, y: b.y, width: TRIGGER_WIDTH, height: b.height }
       : { x: wa.x + wa.width - TRIGGER_WIDTH, y: b.y, width: TRIGGER_WIDTH, height: b.height }
 
-  triggerWin = new BrowserWindow({
-    ...bounds,
+  const sequence = ++triggerSequence
+  const win = new BrowserWindow({
+    ...requestedBounds,
+    show: false,
     transparent: true,
     frame: false,
-    alwaysOnTop: alwaysOnTop,
+    alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
     focusable: false,
@@ -1341,18 +1404,75 @@ function createTriggerWindow(side) {
       nodeIntegration: false
     }
   })
-  setWindowLogContext(triggerWin, { role: 'trigger' })
+  triggerWin = win
+  triggerRequestedBounds = { ...requestedBounds }
+  const createdBounds = win.getBounds()
+  triggerExpectedBounds = alignTriggerBoundsToEdge({
+    side,
+    requestedBounds,
+    actualBounds: createdBounds,
+    visibleWidth: TRIGGER_WIDTH
+  })
+  win.setBounds(triggerExpectedBounds)
+  setWindowLogContext(win, { role: 'trigger' })
+  logger.info('dock.trigger', '边缘触发窗口已创建', {
+    sequence,
+    side,
+    requestedBounds,
+    createdBounds,
+    expectedBounds: triggerExpectedBounds,
+    actualBounds: win.getBounds(),
+    alwaysOnTopLevel: TRIGGER_ALWAYS_ON_TOP_LEVEL
+  })
 
-  const html = `<body style="margin:0;height:100%" onmouseenter="api.triggerEnter()">`
-  triggerWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {})
+  // 触发条必须独立于主窗口的“置顶”偏好保持在最上层，否则其它最大化窗口
+  // 或弹出菜单会覆盖它，鼠标移动消息便永远到不了 Chromium。Electron 的
+  // setVisibleOnAllWorkspaces 在 Windows 上无效，不能用它替代原生 Z 序。
+  win.setAlwaysOnTop(true, TRIGGER_ALWAYS_ON_TOP_LEVEL)
+  // 点击继续穿透给下层应用；forward 让 Windows 的鼠标移动消息仍进入 Chromium。
+  win.setIgnoreMouseEvents(true, { forward: true })
 
-  triggerWin.setVisibleOnAllWorkspaces(true)
-  // 跟随主窗口置顶状态（置顶时提升到 pop-up-menu 覆盖全屏应用）
-  triggerWin.setAlwaysOnTop(alwaysOnTop, alwaysOnTop ? 'pop-up-menu' : undefined)
+  const html =
+    '<!doctype html><html style="width:100%;height:100%"><body style="margin:0;width:100%;height:100%"></body></html>'
+  win
+    .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    .then(() => {
+      if (triggerWin !== win || win.isDestroyed()) return
+      triggerPageLoaded = true
+      win.showInactive()
+      logger.info('dock.trigger', '边缘触发页面加载完成', {
+        sequence,
+        url: win.webContents.getURL(),
+        bounds: win.getBounds(),
+        visible: win.isVisible(),
+        alwaysOnTop: win.isAlwaysOnTop()
+      })
+    })
+    .catch((error) => {
+      if (triggerWin === win) triggerPageLoaded = false
+      logger.error('dock.trigger-load', error, { sequence, side, requestedBounds })
+    })
 
-  // 允许鼠标事件穿透触发窗口，避免阻挡下层 UI 的点击操作
-  // forward: true 确保 mouseenter 仍能正常触发恢复动画
-  triggerWin.setIgnoreMouseEvents(true, { forward: true })
+  win.on('closed', () => {
+    const wasCurrent = triggerWin === win
+    const metadata = {
+      sequence,
+      wasCurrent,
+      isDockHidden,
+      isSliding
+    }
+    if (wasCurrent && isDockHidden) {
+      logger.warn('dock.trigger', '边缘触发窗口在主窗口隐藏期间关闭', metadata)
+    } else {
+      logger.info('dock.trigger', '边缘触发窗口已关闭', metadata)
+    }
+    if (wasCurrent) {
+      triggerWin = null
+      triggerPageLoaded = false
+      triggerRequestedBounds = null
+      triggerExpectedBounds = null
+    }
+  })
 }
 
 /**
@@ -1372,6 +1492,7 @@ function slideTo(targetX, motionPlan, onFinish) {
   }
 
   isSliding = true
+  dockSlideStartedAt = Date.now()
   pendingSlideCallback = onFinish || null
 
   // 记录动画起始位置和总帧数
@@ -1411,6 +1532,7 @@ function slideTo(targetX, motionPlan, onFinish) {
       clearInterval(slideAnimTimer)
       slideAnimTimer = null
       isSliding = false
+      dockSlideStartedAt = null
       runPendingSlideCallback()
     }
   }, SLIDE_INTERVAL)
@@ -1458,6 +1580,11 @@ function doHide() {
   }
   lastVisibleMainWindowBounds = { ...stableBounds }
   isDockHidden = true
+  logger.info('dock.lifecycle', '开始贴边隐藏', {
+    side: dockSide,
+    stableBounds,
+    triggerSequence: triggerSequence + 1
+  })
 
   const targetX = motionPlan.hiddenX
 
@@ -1479,7 +1606,11 @@ function doHide() {
     } catch (error) {
       console.error('[dock] 读取隐藏终点失败:', error)
     }
-    if (dockTransitionState.consumeQueuedShow()) doShow()
+    logger.info('dock.lifecycle', '贴边隐藏动画完成', {
+      side: dockSide,
+      triggerSequence
+    })
+    if (dockTransitionState.consumeQueuedShow()) doShow('queued-during-hide')
   })
 }
 
@@ -1487,13 +1618,30 @@ function doHide() {
  * 贴边显示 —— 销毁触发窗口，窗口滑回边缘
  * 前置条件：isDockHidden === true
  */
-function doShow() {
-  if (!mainWindow || mainWindow.isDestroyed()) return
+function doShow(source = 'unknown') {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    logger.warn('dock.show', '显示请求被拒绝：主窗口不存在', { source })
+    return
+  }
   const showAction = dockTransitionState.requestShow({ hidden: isDockHidden, sliding: isSliding })
+  logger.info('dock.show', '收到贴边显示请求', {
+    source,
+    action: showAction,
+    isDockHidden,
+    isSliding,
+    hasDockMotionSession: Boolean(dockMotionSession),
+    triggerSequence
+  })
   if (showAction !== 'start') return
 
   const session = dockMotionSession
-  if (!session) return
+  if (!session) {
+    logger.error('dock.show', new Error('显示请求已进入执行状态，但缺少贴边运动会话'), {
+      source,
+      snapshot: getDockDiagnosticSnapshot()
+    })
+    return
+  }
 
   suppressDockGeometryPersistence()
   isDockHidden = false
@@ -1501,8 +1649,11 @@ function doShow() {
   // 立即销毁触发窗口，防止阻挡主窗口
   if (triggerWin && !triggerWin.isDestroyed()) {
     triggerWin.destroy()
-    triggerWin = null
   }
+  triggerWin = null
+  triggerPageLoaded = false
+  triggerRequestedBounds = null
+  triggerExpectedBounds = null
 
   const { stableBounds, motionPlan } = session
   const targetX = motionPlan.visibleX
@@ -1537,6 +1688,11 @@ function doShow() {
       // 动画完成或终点校验失败后都必须恢复用户设置的置顶状态。
       dockTransitionState.finishTemporaryAlwaysOnTop()
       applyAlwaysOnTop()
+      logger.info('dock.lifecycle', '贴边显示动画完成', {
+        source,
+        side: session.side,
+        triggerSequence
+      })
     }
   })
 }
@@ -1553,7 +1709,7 @@ function applyAlwaysOnTop() {
 
   // 同步触发窗口置顶状态（贴边隐藏时切换置顶按钮生效）
   if (triggerWin && !triggerWin.isDestroyed()) {
-    triggerWin.setAlwaysOnTop(alwaysOnTop, alwaysOnTop ? 'pop-up-menu' : undefined)
+    triggerWin.setAlwaysOnTop(true, TRIGGER_ALWAYS_ON_TOP_LEVEL)
   }
 }
 
@@ -1569,9 +1725,10 @@ function applyAlwaysOnTop() {
  */
 function toggleWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return
+  logger.info('dock.tray', '用户点击托盘图标', { snapshot: getDockDiagnosticSnapshot() })
 
   if (isDockHidden) {
-    doShow()
+    doShow('tray-click')
     return
   }
   // 锁定时禁用贴边滑入：托盘点击退回普通“隐藏到托盘”行为，不再滑向屏幕边缘。
@@ -1591,7 +1748,7 @@ function toggleWindow() {
 function openMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   if (isDockHidden) {
-    doShow()
+    doShow('open-main-window')
   } else {
     mainWindow.show()
   }
@@ -1653,9 +1810,10 @@ app.whenReady().then(async () => {
   ipcMain.on('logs:write', (event, payload) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     const normalized = normalizeRendererLog(payload)
+    const windowContext = getWindowLogContext(win)
     writeLog({
       ...normalized,
-      windowRole: win === mainWindow ? 'main' : undefined,
+      windowRole: windowContext.role,
       webContentsId: event.sender.id
     })
   })
@@ -1817,17 +1975,19 @@ app.whenReady().then(async () => {
       return false
     }
   })
-  ipcMain.handle(
-    'remote:check-health',
-    () =>
-      remoteCoordinator?.checkHealth().then((result) => result) ||
-      Promise.resolve({
-        available: false,
-        noticeService: false,
-        reportService: false,
-        checkedAt: Date.now(),
-        error: '远程服务尚未初始化'
-      })
+  // 设置页面只读取启动阶段缓存，不允许因为打开设置而产生新的服务器请求。
+  ipcMain.handle('remote:get-health', () =>
+    remoteCoordinator
+      ? remoteCoordinator.getHealthSnapshot()
+      : {
+          available: false,
+          noticeService: false,
+          reportService: false,
+          checkedAt: null,
+          checking: false,
+          skipped: false,
+          error: '远程服务尚未初始化'
+        }
   )
 
   /**
@@ -1902,8 +2062,19 @@ app.whenReady().then(async () => {
 
   // 【贴边隐藏 - 触发窗口】边缘触发窗口检测到鼠标进入，恢复主窗口
   ipcMain.on('trigger-enter', (event) => {
-    if (event.sender !== triggerWin?.webContents) return
-    if (isDockHidden) doShow()
+    const currentWebContents =
+      triggerWin && !triggerWin.isDestroyed() ? triggerWin.webContents : null
+    const accepted = event.sender === currentWebContents
+    logger.info('dock.trigger-ipc', '主进程收到边缘触发 IPC', {
+      accepted,
+      senderWebContentsId: event.sender.id,
+      currentWebContentsId: currentWebContents?.id || null,
+      isDockHidden,
+      isSliding,
+      triggerSequence
+    })
+    if (!accepted) return
+    if (isDockHidden) doShow('edge-trigger')
   })
 
   // ---- 系统模糊 IPC ----
@@ -1975,6 +2146,16 @@ app.whenReady().then(async () => {
       { applyBlurRuntime: !initializationResult?.success }
     )
     let runtime = snapshot.runtime.blur
+
+    // 重新启用时原生引擎通常已经初始化，因此不会再次经过
+    // initializeBlurRuntime() 更新诊断状态。配置实际生效后立即执行完整健康
+    // 检查，让界面拿到经过原生效果链验证的最终状态，而不是等待下一分钟调度。
+    if (enableRequested && runtime.effectiveEnabled) {
+      runBlurRuntimeDiagnostic({ reason: 'settings-change', now: Date.now() })
+      snapshot = getResolvedSettingsSnapshot()
+      runtime = snapshot.runtime.blur
+    }
+
     if (enableRequested && !runtime.effectiveEnabled && suspendedWallpaper) {
       snapshot = restoreSuspendedWallpaper(suspendedWallpaper)
       runtime = snapshot.runtime.blur
@@ -2064,6 +2245,10 @@ app.whenReady().then(async () => {
     onNoticesChanged: (payload) => {
       if (!mainWindow || mainWindow.isDestroyed()) return
       mainWindow.webContents.send('remote-notices:changed', payload)
+    },
+    onHealthChanged: (health) => {
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
+      mainWindow.webContents.send('remote-health:changed', health)
     }
   })
   void remoteCoordinator.start()
@@ -2094,111 +2279,15 @@ app.whenReady().then(async () => {
   //   1. 激活任务：查询 initialized 便签，生效时间到达的 → 转为 in_progress（含通知）
   //   2. 模板生成：查询循环模板，判断是否应当生成新便签实例（含通知）
 
-  /**
-   * 发送操作系统原生通知
-   * @param {string} body - 通知正文（自动截断至 50 字）
-   * @param {Object} [opts]
-   * @param {string} [opts.title='便签提醒'] - 通知标题
-   * @param {boolean} [opts.silent=false] - 静默（不播放声音）
-   */
-  function escapeToastXml(value) {
-    return String(value)
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&apos;')
-  }
-
-  /**
-   * 系统通知发送失败时的降级处理：记录日志 + 下发应用内消息条。
-   * `.show()` 后系统层失败（如 macOS 未签名/权限关闭）会异步触发 `failed`。
-   * @param {string} scene - 场景标识（仅用于日志）
-   * @param {string} title - 原通知标题
-   * @param {string} body - 原通知正文
-   * @param {*} error - failed 事件回传的错误
-   */
-  function notifyNotificationFailure(scene, title, body, error) {
-    console.error(`[notification] ${scene}发送失败，降级为应用内消息条:`, error)
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    try {
-      const text = `${title}：${String(body || '')}`.trim().slice(0, 80) || title
-      mainWindow.webContents.send('app:message', { type: 'warning', text, duration: 6000 })
-    } catch (e) {
-      console.error('[notification] 应用内消息条下发失败:', e)
-    }
-  }
-
-  function sendNotify(body, { title = '便签提醒', silent = false, noteId = null } = {}) {
-    const summary = String(body || '') || '（空内容）'
-    const parsedNoteId = Number(noteId)
-
-    if (process.platform === 'win32' && Number.isInteger(parsedNoteId) && parsedNoteId > 0) {
-      const openUrl = `${APP_PROTOCOL}://notification/open?id=${parsedNoteId}`
-      const snoozeUrl = `${APP_PROTOCOL}://notification/snooze?id=${parsedNoteId}`
-      // Windows Toast 的 <image> 只接受本地 file:// URI；appLogoOverride 渲染为左侧大图标，
-      // 与跨平台分支中 icon 选项的展示效果保持一致。
-      const iconUri = escapeToastXml(pathToFileURL(icon).href)
-      const toastXml = `<toast launch="${openUrl}" activationType="protocol">
-        <visual>
-          <binding template="ToastGeneric">
-            <image placement="appLogoOverride" src="${iconUri}"/>
-            <text>${escapeToastXml(title)}</text>
-            <text>${escapeToastXml(summary)}</text>
-          </binding>
-        </visual>
-        <audio silent="${silent ? 'true' : 'false'}"/>
-        <actions>
-          <action content="明白" arguments="dismiss" activationType="system"/>
-          <action content="稍后提醒（10分钟）" arguments="${snoozeUrl}" activationType="protocol"/>
-        </actions>
-      </toast>`
-      const notification = new Notification({ toastXml })
-      notification.on('failed', (_event, error) => {
-        notifyNotificationFailure('Windows 富通知', title, summary, error)
-      })
-      notification.show()
-      return
-    }
-
-    // 非 Windows（mac/Linux）或缺少 noteId：使用跨平台 Notification。
-    // 有有效便签 id 时附加动作按钮，形成与 Windows 富通知等效的交互：
-    //   点击正文 → 打开主窗口并聚焦；点击「稍后提醒」→ 延后 10 分钟。
-    // 注意：macOS 需应用签名后动作按钮才生效，未签名会触发 failed → 降级应用内消息条。
-    const hasNote = Number.isInteger(parsedNoteId) && parsedNoteId > 0
-    const options = { title, body: summary, silent, icon }
-    if (hasNote) {
-      options.actions = [{ type: 'button', text: '稍后提醒（10分钟）' }]
-      options.closeButtonText = '明白'
-    }
-    const notification = new Notification(options)
-    if (hasNote) {
-      notification.on('click', () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.show()
-          mainWindow.focus()
-        }
-      })
-      notification.on('action', (_event, index) => {
-        if (index !== 0) return
-        const result = snoozeNote(parsedNoteId, SNOOZE_DELAY_MS)
-        if (result) {
-          console.log(`[notification] 便签 #${parsedNoteId} 已延后 10 分钟提醒`)
-        } else {
-          console.log(`[notification] 便签 #${parsedNoteId} 已非进行中，忽略延后提醒`)
-        }
-      })
-    }
-    notification.on('failed', (_event, error) => {
-      notifyNotificationFailure('系统通知', title, summary, error)
-    })
-    notification.show()
-  }
-
-  function trySendNotify(body, options) {
-    if (!SYSTEM_NOTIFICATION_CAPABILITY.supported) return false
-    return sendNotificationSafely(sendNotify, body, options)
-  }
+  notificationService = new NotificationService({
+    appProtocol: APP_PROTOCOL,
+    capability: SYSTEM_NOTIFICATION_CAPABILITY,
+    getMainWindow: () => mainWindow,
+    icon,
+    platform: process.platform,
+    snoozeDelayMs: SNOOZE_DELAY_MS,
+    snoozeNote
+  })
 
   // 3.3 生效便签激活任务（含通知）
   scheduler.register({
@@ -2207,7 +2296,7 @@ app.whenReady().then(async () => {
     execute: () => {
       const result = activateNotes()
       for (const note of result.notified) {
-        if (trySendNotify(note.content, { noteId: note.id })) {
+        if (notificationService.trySend(note.content, { noteId: note.id })) {
           const preview = (note.content || '').trim().slice(0, 10) || '空内容'
           console.log(`[activation-notify]「${preview}」便签已发送系统通知`)
         }
@@ -2225,7 +2314,7 @@ app.whenReady().then(async () => {
     execute: () => {
       const due = claimDueSnoozedNotes()
       for (const note of due) {
-        if (trySendNotify(note.content, { noteId: note.id })) {
+        if (notificationService.trySend(note.content, { noteId: note.id })) {
           console.log(`[snoozed-notify] 便签 #${note.id} 已再次发送系统通知`)
         }
       }
@@ -2237,7 +2326,7 @@ app.whenReady().then(async () => {
     failureThreshold: 3,
     retryDelayMs: 5 * 60 * 1000,
     onAlert: (error) => {
-      trySendNotify(error?.message || '无法读取或调度循环模板', {
+      notificationService.trySend(error?.message || '无法读取或调度循环模板', {
         title: '模板调度服务异常'
       })
     }
@@ -2250,13 +2339,17 @@ app.whenReady().then(async () => {
       const result = templateSchedulerGuard.run(() => runRecurringTemplates(context), context.now)
       for (const note of result.generated) {
         const preview = (note.content || '').trim().slice(0, 10) || '空内容'
-        if (trySendNotify(note.content, { title: `「${preview}」已通过模板生成新的便签` })) {
+        if (
+          notificationService.trySend(note.content, {
+            title: `「${preview}」已通过模板生成新的便签`
+          })
+        ) {
           console.log(`[generation-notify]「${preview}」已由循环模板生成便签，模板已发送通知`)
         }
       }
       for (const template of result.autoPaused) {
         const preview = (template.content || '').trim().slice(0, 20) || '空内容模板'
-        trySendNotify(`模板“${preview}”连续生成失败 3 次：${template.error}`, {
+        notificationService.trySend(`模板“${preview}”连续生成失败 3 次：${template.error}`, {
           title: '循环模板已自动暂停'
         })
       }
@@ -2285,10 +2378,18 @@ app.whenReady().then(async () => {
     execute: (context) => runBlurRuntimeDiagnostic(context)
   })
 
+  // 3.7 贴边隐藏状态健康检查：只验证状态不变量并记录异常，不轮询鼠标、不自动恢复窗口。
+  scheduler.register({
+    name: 'dockHealthTask',
+    maxFailures: Infinity,
+    shouldRun: () => true,
+    execute: () => runDockHealthCheck()
+  })
+
   // 启动调度器
   // 调度器终极告警通知若在 macOS 未签名等场景发送失败，同样降级为应用内消息条。
   scheduler.onAlertNotifyFailed = (title, body, error) => {
-    notifyNotificationFailure('调度器告警通知', title, body, error)
+    notificationService.notifyFailure('调度器告警通知', title, body, error)
   }
   scheduler.start()
   console.log('[scheduler] 调度器已启动')
@@ -2297,7 +2398,7 @@ app.whenReady().then(async () => {
 
   // show：贴边隐藏时滑出（安全网，正常路径下 show 不会在贴边隐藏时触发）
   mainWindow.on('show', () => {
-    if (isDockHidden) doShow()
+    if (isDockHidden) doShow('main-window-show-event')
   })
 
   // 【清空便签数据】仅清理便签、模板、标签和附件，保留 app_settings。
@@ -2330,666 +2431,17 @@ app.whenReady().then(async () => {
     return actual
   })
 
-  // ---- 便签便签 CRUD IPC ----
-
-  // 【便签 - 创建】
-  ipcMain.handle('notes:create', (_event, options) => {
-    return createNote(enforceSystemNotificationPolicy(options, process.platform))
+  registerBusinessIpcHandlers({
+    ipcMain,
+    getMainWindow: () => mainWindow,
+    platform: process.platform
   })
 
-  // 【便签 - 原子创建（含图片 + 标签，事务保护，失败则自动回滚并清理文件）】
-  ipcMain.handle('notes:create-with-assets', async (_event, { options, images, tagNames }) => {
-    const db = getDb()
-    const writtenFiles = []
-    const stagedImages = []
-
-    try {
-      for (const image of images || []) stagedImages.push(await stageImage(image.base64, image.ext))
-    } catch (error) {
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      throw error
-    }
-
-    const txn = db.transaction(() => {
-      const note = createNote(enforceSystemNotificationPolicy(options, process.platform))
-      if (!note || !note.id) throw new Error('创建便签失败')
-
-      // 保存图片
-      for (const staged of stagedImages) {
-        const { relativePath, fileSize } = commitStagedImage(note.id, staged)
-        writtenFiles.push(relativePath)
-        addImageRecord({ noteId: note.id, filePath: relativePath, fileSize })
-      }
-
-      // 绑定标签（内联 SQL，避免与 setNoteTags 内部事务嵌套冲突）
-      if (tagNames && tagNames.length > 0) {
-        const delTag = db.prepare('DELETE FROM note_tags WHERE note_id = ?')
-        const insTag = db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)')
-        delTag.run(note.id)
-        for (const tn of tagNames) {
-          insTag.run(note.id, tn)
-        }
-      }
-
-      return getNoteById(note.id)
-    })
-
-    try {
-      return txn()
-    } catch (e) {
-      // 事务回滚后，清理已写入磁盘的图片文件
-      await Promise.all(writtenFiles.map(deleteImageFile))
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      console.error('[notes:create-with-assets] 创建失败，已回滚并清理文件:', e)
-      throw e
-    }
+  screenshotService = new ScreenshotService({
+    ipcMain,
+    preloadPath: join(PRELOAD_ROOT, 'screenshot.js')
   })
-
-  // 【便签 - 更新】
-  ipcMain.handle('notes:update', (_event, { id, fields }) => {
-    return updateNote(id, enforceSystemNotificationPolicy(fields, process.platform))
-  })
-
-  // 【便签 - 原子保存编辑草稿（字段 + 标签 + 附件）】
-  ipcMain.handle('notes:save-draft', async (_event, payload = {}) => {
-    const db = getDb()
-    const id = Number(payload.id)
-    const fields = enforceSystemNotificationPolicy(payload.fields, process.platform)
-    const tagNames = Array.isArray(payload.tagNames)
-      ? [...new Set(payload.tagNames.map((name) => String(name).trim()).filter(Boolean))]
-      : []
-    const addedImages = Array.isArray(payload.addedImages) ? payload.addedImages : []
-    const deletedImageIds = [
-      ...new Set(
-        (Array.isArray(payload.deletedImageIds) ? payload.deletedImageIds : [])
-          .map(Number)
-          .filter((imageId) => Number.isInteger(imageId) && imageId > 0)
-      )
-    ]
-
-    if (!Number.isInteger(id) || id <= 0) throw new Error('无效的便签 ID')
-    const original = getNoteById(id)
-    if (!original) throw new Error('便签不存在或已删除')
-
-    const content = normalizeRequiredNoteContent(fields.content)
-
-    const requestedStatus = String(fields.status || original.status)
-    if (requestedStatus !== original.status) {
-      throw new Error(`不允许的状态修改：${original.status} → ${requestedStatus}`)
-    }
-
-    const ownedDeletedRows = deletedImageIds.length
-      ? db
-          .prepare(
-            `SELECT id, file_path FROM note_attachments
-         WHERE note_id = ? AND id IN (${deletedImageIds.map(() => '?').join(',')})`
-          )
-          .all(id, ...deletedImageIds)
-      : []
-    if (ownedDeletedRows.length !== deletedImageIds.length)
-      throw new Error('附件不存在或不属于当前便签')
-
-    const resultingCount = original.attachments.length - deletedImageIds.length + addedImages.length
-    if (resultingCount > 50) throw new Error('单条便签最多只能保存 50 张图片')
-
-    const stagedImages = []
-    const writtenFiles = []
-    try {
-      for (const image of addedImages) stagedImages.push(await stageImage(image.base64, image.ext))
-    } catch (error) {
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      throw error
-    }
-
-    const stagedDeletions = []
-    try {
-      for (const row of ownedDeletedRows) stagedDeletions.push(stageImageDeletion(row.file_path))
-    } catch (error) {
-      for (const staged of stagedDeletions.reverse()) restoreStagedImageDeletion(staged)
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      throw error
-    }
-
-    const txn = db.transaction(() => {
-      const current = db.prepare('SELECT * FROM notes WHERE id = ? AND is_deleted = 0').get(id)
-      if (!current) throw new Error('便签不存在或已删除')
-      if (current.status !== original.status)
-        throw new Error('便签状态已发生变化，请重新打开后再修改')
-
-      const timestamp = Date.now()
-      let status = current.status
-      let effectiveAt = current.effective_at
-      let notifyEnabled = current.notify_enabled
-      let finishedAt = current.finished_at
-      let remindAgainAt = current.remind_again_at
-
-      if (current.status === 'initialized') {
-        const requestedEffectiveAt = Number(fields.effectiveAt)
-        if (!Number.isFinite(requestedEffectiveAt) || requestedEffectiveAt <= 0) {
-          throw new Error('请选择有效的生效时间')
-        }
-        const effectiveAtChanged =
-          Math.floor(requestedEffectiveAt / 1000) !== Math.floor(current.effective_at / 1000)
-        if (effectiveAtChanged && requestedEffectiveAt - timestamp < 5 * 60 * 1000) {
-          throw new Error('生效时间需在当前时间 5 分钟之后')
-        }
-        // UI 只显示到秒；未修改时保留数据库原有的毫秒精度。
-        effectiveAt = effectiveAtChanged ? requestedEffectiveAt : current.effective_at
-        notifyEnabled = fields.notifyEnabled ? 1 : 0
-      }
-
-      db.prepare(
-        `UPDATE notes SET
-           content = ?, status = ?, is_pinned = ?, notify_enabled = ?, effective_at = ?,
-           finished_at = ?, remind_again_at = ?, updated_at = ?
-         WHERE id = ? AND is_deleted = 0`
-      ).run(
-        content,
-        status,
-        fields.isPinned ? 1 : 0,
-        notifyEnabled,
-        effectiveAt,
-        finishedAt,
-        remindAgainAt,
-        timestamp,
-        id
-      )
-
-      db.prepare('DELETE FROM note_tags WHERE note_id = ?').run(id)
-      const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)')
-      for (const tagName of tagNames) insertTag.run(id, tagName)
-
-      if (deletedImageIds.length) {
-        db.prepare(
-          `DELETE FROM note_attachments
-           WHERE note_id = ? AND id IN (${deletedImageIds.map(() => '?').join(',')})`
-        ).run(id, ...deletedImageIds)
-      }
-
-      for (const staged of stagedImages) {
-        const { relativePath, fileSize } = commitStagedImage(id, staged)
-        writtenFiles.push(relativePath)
-        addImageRecord({ noteId: id, filePath: relativePath, fileSize })
-      }
-
-      return getNoteById(id)
-    })
-
-    try {
-      const updated = txn()
-      await Promise.all(stagedDeletions.map(cleanupStagedImage))
-      return updated
-    } catch (error) {
-      await Promise.all(writtenFiles.map(deleteImageFile))
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      for (const staged of stagedDeletions.reverse()) restoreStagedImageDeletion(staged)
-      throw error
-    }
-  })
-
-  // 【便签 - 逻辑删除】
-  ipcMain.handle('notes:delete', (_event, { id }) => {
-    const deleted = deleteNote(id)
-    if (deleted) mainWindow?.webContents.send('notes:changed', { reason: 'deletion', id })
-    return deleted
-  })
-
-  // 【便签 - 彻底删除】仅供用户明确确认的永久删除入口使用。
-  ipcMain.handle('notes:purge', async (_event, { id }) => {
-    const noteId = Number(id)
-    const purged = await purgeNoteAndFiles(noteId)
-    if (purged) mainWindow?.webContents.send('notes:changed', { reason: 'purge', id: noteId })
-    return purged
-  })
-
-  // 【便签 - 获取单条（含附件和标签）】
-  ipcMain.handle('notes:get', (_event, { id }) => {
-    return getNoteById(id)
-  })
-
-  // 【便签 - 置顶查询（时间线模式）】
-  ipcMain.handle('notes:query-pinned', (_event, options) => {
-    return queryPinnedNotes(options || {})
-  })
-
-  // 【便签 - 三天内查询（时间线模式）】
-  ipcMain.handle('notes:query-recent', (_event, options) => {
-    return queryRecentNotes(options || {})
-  })
-
-  // 【便签 - 更早查询（时间线模式，分页）】
-  ipcMain.handle('notes:query-earlier', (_event, options) => {
-    return queryEarlierNotes(options || {})
-  })
-
-  // 【便签 - 自定义模式：置顶查询】
-  ipcMain.handle('notes:query-custom-pinned', (_event, options) => {
-    return queryCustomPinned(options || {})
-  })
-
-  // 【便签 - 自定义模式：日常查询（分页）】
-  ipcMain.handle('notes:query-custom-normal', (_event, options) => {
-    return queryCustomNormal(options || {})
-  })
-
-  // 【便签 - 独立搜索工作区】
-  ipcMain.handle('notes:search', (_event, options) => {
-    return searchNotes(options || {})
-  })
-
-  // 【便签 - 未删除总数（不受列表筛选影响）】
-  ipcMain.handle('notes:count-active', () => {
-    return countActiveNotes()
-  })
-
-  // 【便签 - 自定义模式：全局重排 sort_order】
-  ipcMain.handle('notes:reorder-custom', () => {
-    return reorderCustomSortOrder()
-  })
-
-  ipcMain.handle('notes:update-custom-order', (_event, { items }) => {
-    return updateCustomSortOrders(items)
-  })
-
-  // 【便签 - 开始处理】
-  ipcMain.handle('notes:start-progress', (_event, { id }) => {
-    return startProgress(id)
-  })
-
-  // 【便签 - 完成】
-  ipcMain.handle('notes:complete', (_event, { id }) => {
-    return completeNote(id)
-  })
-
-  // 【便签 - 重新进行】
-  ipcMain.handle('notes:reopen', (_event, { id }) => {
-    return reopenNote(id)
-  })
-
-  // ---- 标签 CRUD IPC ----
-
-  // 【标签 - 创建】
-  ipcMain.handle('tags:create', (_event, { name, color }) => {
-    return createTag(name, color)
-  })
-
-  // 【标签 - 删除】
-  ipcMain.handle('tags:delete', (_event, { name }) => {
-    return deleteTagFn(name)
-  })
-
-  // 【标签 - 列表】
-  ipcMain.handle('tags:list', () => {
-    return listTags()
-  })
-
-  // 【标签 - 获取单条】
-  ipcMain.handle('tags:get', (_event, { name }) => {
-    return getTagByName(name)
-  })
-
-  // 【标签 - 删除影响统计】包含逻辑删除但尚未彻底删除的便签和模板关联。
-  ipcMain.handle('tags:usage', (_event, { name }) => {
-    return getTagUsage(name)
-  })
-
-  // 【便签标签 - 绑定】
-  ipcMain.handle('note-tags:bind', (_event, { noteId, tagName }) => {
-    return bindTag(noteId, tagName)
-  })
-
-  // 【便签标签 - 解绑】
-  ipcMain.handle('note-tags:unbind', (_event, { noteId, tagName }) => {
-    return unbindTag(noteId, tagName)
-  })
-
-  // 【便签标签 - 整体设置（事务替换）】
-  ipcMain.handle('note-tags:set', (_event, { noteId, tagNames }) => {
-    setNoteTags(noteId, tagNames)
-    return getNoteTags(noteId)
-  })
-
-  // 【便签标签 - 获取便签的标签列表】
-  ipcMain.handle('note-tags:list', (_event, { noteId }) => {
-    return getNoteTags(noteId)
-  })
-
-  // ---- 循环模板 CRUD IPC ----
-
-  // 【模板 - 创建】
-  ipcMain.handle('templates:create', (_event, options) => {
-    return createTemplate(enforceSystemNotificationPolicy(options, process.platform))
-  })
-
-  // 【模板 - 更新】
-  ipcMain.handle('templates:update', (_event, { id, fields }) => {
-    return updateTemplate(id, enforceSystemNotificationPolicy(fields, process.platform))
-  })
-
-  // 【模板 - 删除（软删）】
-  ipcMain.handle('templates:delete', (_event, { id }) => {
-    return deleteTemplateFn(id)
-  })
-
-  // 【模板 - 列表】state: active | running | paused | deleted | all
-  ipcMain.handle('templates:list', (_event, options) => {
-    return listTemplates(options || {})
-  })
-
-  // 【模板 - 获取单条】
-  ipcMain.handle('templates:get', (_event, { id, includeDeleted }) => {
-    return getTemplateById(id, { includeDeleted: !!includeDeleted })
-  })
-
-  // 【模板 - 暂停】
-  ipcMain.handle('templates:pause', (_event, { id }) => {
-    return pauseTemplate(id)
-  })
-
-  // 【模板 - 恢复】
-  ipcMain.handle('templates:resume', (_event, { id }) => {
-    return resumeTemplate(id)
-  })
-
-  // 【模板 - 从已删除恢复并默认运行】
-  ipcMain.handle('templates:restore', (_event, { id }) => {
-    return restoreTemplate(id)
-  })
-
-  // 【模板 - 彻底删除】仅允许删除已进入回收区的模板。
-  ipcMain.handle('templates:purge', (_event, { id }) => {
-    return purgeTemplate(id)
-  })
-
-  // 【模板 - 下一次生成时间预览】与调度器共用同一套日历算法。
-  ipcMain.handle(
-    'templates:preview-next-run',
-    (_event, { recurrenceRule, afterTimestamp } = {}) => {
-      const after = Number.isFinite(Number(afterTimestamp)) ? Number(afterTimestamp) : Date.now()
-      const rule = normalizeRecurrenceRule(recurrenceRule)
-      return calculateNextRun(rule, after, after)
-    }
-  )
-
-  // ---- 图片附件 IPC ----
-
-  /** 批量保存图片（Base64 数组 → 磁盘 + DB） */
-  ipcMain.handle('images:save-batch', async (_event, { noteId, images }) => {
-    const batch = Array.isArray(images) ? images : []
-    const remaining = 50 - getImageCount(noteId)
-    if (batch.length > remaining) throw new Error(`最多还能添加 ${Math.max(0, remaining)} 张图片`)
-
-    const db = getDb()
-    const writtenFiles = []
-    const stagedImages = []
-    try {
-      for (const image of batch) stagedImages.push(await stageImage(image.base64, image.ext))
-    } catch (error) {
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      throw error
-    }
-    const txn = db.transaction(() => {
-      const results = []
-      for (const staged of stagedImages) {
-        const { relativePath, fileSize } = commitStagedImage(noteId, staged)
-        writtenFiles.push(relativePath)
-        results.push(addImageRecord({ noteId, filePath: relativePath, fileSize }))
-      }
-      return results
-    })
-
-    try {
-      return txn()
-    } catch (error) {
-      await Promise.all(writtenFiles.map(deleteImageFile))
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      throw error
-    }
-  })
-
-  /** 删除图片记录 + 文件 */
-  ipcMain.handle('images:delete', async (_event, { id }) => {
-    return deleteImageRecordAndFile(id)
-  })
-
-  /** 获取便签的所有图片附件 */
-  ipcMain.handle('images:list', (_event, { noteId }) => {
-    return listImageRecords(noteId)
-  })
-
-  /** 获取图片 Base64（用于预览） */
-  ipcMain.handle('images:get-base64', (_event, { relativePath }) => {
-    return getImageBase64(relativePath)
-  })
-
-  /** 获取列表展示用缩略图，避免一次性把全部原图传入渲染进程。 */
-  ipcMain.handle('images:get-thumbnail', (_event, { relativePath, maxSize }) => {
-    return getImageThumbnail(relativePath, maxSize)
-  })
-
-  /** 获取图片数量 */
-  ipcMain.handle('images:count', (_event, { noteId }) => {
-    return getImageCount(noteId)
-  })
-
-  // ---- 截图 IPC ----
-
-  /** 捕获全屏截图，打开独立窗口供用户选区，返回裁切后的 data URL */
-  ipcMain.handle('screenshot:capture', async (requestEvent) => {
-    if (screenshotWindow && !screenshotWindow.isDestroyed()) {
-      screenshotWindow.focus()
-      return null
-    }
-
-    const targetDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-    const pixelSize = {
-      width: Math.round(targetDisplay.size.width * targetDisplay.scaleFactor),
-      height: Math.round(targetDisplay.size.height * targetDisplay.scaleFactor)
-    }
-
-    async function captureTargetDisplay() {
-      const sources = await desktopCapturer.getSources({
-        types: ['screen'],
-        thumbnailSize: pixelSize
-      })
-      if (sources.length === 0) return null
-      return (
-        sources.find((item) => String(item.display_id) === String(targetDisplay.id)) || sources[0]
-      ).thumbnail
-    }
-
-    function cropScreenshot(selection, sourceImage) {
-      if (!sourceImage) return null
-      const viewportWidth = Number(selection?.viewportWidth)
-      const viewportHeight = Number(selection?.viewportHeight)
-      if (!viewportWidth || !viewportHeight) return null
-
-      const imageSize = sourceImage.getSize()
-      const scaleX = imageSize.width / viewportWidth
-      const scaleY = imageSize.height / viewportHeight
-      const x = Math.max(0, Math.round(Number(selection.x) * scaleX))
-      const y = Math.max(0, Math.round(Number(selection.y) * scaleY))
-      const width = Math.min(
-        imageSize.width - x,
-        Math.max(1, Math.round(Number(selection.w) * scaleX))
-      )
-      const height = Math.min(
-        imageSize.height - y,
-        Math.max(1, Math.round(Number(selection.h) * scaleY))
-      )
-      if (!Number.isFinite(x + y + width + height) || width <= 0 || height <= 0) return null
-      return sourceImage.crop({ x, y, width, height }).toDataURL()
-    }
-
-    return new Promise((resolve) => {
-      const win = new BrowserWindow({
-        ...targetDisplay.bounds,
-        show: false,
-        transparent: true,
-        backgroundColor: '#00000000',
-        frame: false,
-        alwaysOnTop: true,
-        skipTaskbar: true,
-        resizable: false,
-        fullscreenable: false,
-        hasShadow: false,
-        webPreferences: {
-          preload: join(PRELOAD_ROOT, 'screenshot.js'),
-          sandbox: true,
-          contextIsolation: true,
-          nodeIntegration: false
-        }
-      })
-      setWindowLogContext(win, { role: 'screenshot' })
-      screenshotWindow = win
-
-      let settled = false
-      let confirming = false
-      const done = (result) => {
-        if (settled) return
-        settled = true
-        ipcMain.removeListener('screenshot:confirm', onConfirm)
-        ipcMain.removeListener('screenshot:cancel', onCancel)
-        if (!win.isDestroyed()) win.close()
-        if (screenshotWindow === win) screenshotWindow = null
-        resolve(result)
-      }
-
-      const onConfirm = async (event, selection) => {
-        if (event.sender !== win.webContents || confirming || settled) return
-        confirming = true
-        win.hide()
-        try {
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, 60))
-          const sourceImage = await captureTargetDisplay()
-          done(cropScreenshot(selection, sourceImage))
-        } catch (error) {
-          console.error('[screenshot] 保存截图失败:', error)
-          done(null)
-        }
-      }
-      const onCancel = (event) => {
-        if (event.sender === win.webContents) done(null)
-      }
-
-      ipcMain.on('screenshot:confirm', onConfirm)
-      ipcMain.on('screenshot:cancel', onCancel)
-      win.on('closed', () => done(null))
-
-      const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
-*{margin:0;padding:0;box-sizing:border-box}
-html,body{background:transparent}
-body{overflow:hidden;cursor:crosshair;user-select:none;width:100vw;height:100vh;font-family:system-ui,sans-serif;animation:sc-overlay-in 150ms ease-out both}
-canvas.sc-canvas{position:absolute;inset:0;z-index:1}
-.sc-hint{position:fixed;bottom:20px;right:24px;font-size:14px;color:rgba(255,255,255,.45);z-index:3;pointer-events:none;font-family:inherit;opacity:1;transition:opacity 140ms ease,transform 180ms cubic-bezier(.32,.72,0,1)}
-.sc-hint.hidden{opacity:0;transform:translateY(4px)}
-.sc-actions{position:fixed;display:flex;align-items:center;gap:10px;z-index:3;font-family:inherit;opacity:0;transform:translateY(-4px) scale(.98);pointer-events:none;transition:opacity 150ms ease,transform 200ms cubic-bezier(.32,.72,0,1)}
-.sc-actions.visible{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
-.sc-btn{border:none;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;padding:6px 16px;font-weight:500;transition:background 120ms ease,transform 160ms cubic-bezier(.32,.72,0,1)}
-.sc-btn:active{transform:scale(.96);transition-duration:70ms}
-.sc-btn-exit{background:rgba(255,255,255,.12);color:#fff}
-.sc-btn-exit:hover{background:rgba(255,255,255,.22)}
-.sc-btn-save{background:#0071e3;color:#fff}
-.sc-btn-save:hover{background:#0077ed}
-@keyframes sc-overlay-in{from{opacity:0}to{opacity:1}}
-</style></head><body>
-<canvas class="sc-canvas"></canvas>
-<span class="sc-hint" id="hint">拖拽选择截图区域</span>
-<div class="sc-actions" id="actions"><button class="sc-btn sc-btn-exit" id="btnExit">退出截屏</button><button class="sc-btn sc-btn-save" id="btnSave">保存截屏</button></div>
-<script>
-const cv=document.querySelector('canvas'),ctx=cv.getContext('2d')
-const hint=document.getElementById('hint'),actions=document.getElementById('actions'),btnExit=document.getElementById('btnExit'),btnSave=document.getElementById('btnSave')
-let s={x:0,y:0},e={x:0,y:0},has=false,mode='idle',dragOX=0,dragOY=0,dsX=0,dsY=0,deX=0,deY=0
-
-function resize(){
-  const dpr=window.devicePixelRatio||1
-  cv.style.width=window.innerWidth+'px';cv.style.height=window.innerHeight+'px'
-  cv.width=Math.round(window.innerWidth*dpr);cv.height=Math.round(window.innerHeight*dpr)
-  ctx.setTransform(dpr,0,0,dpr,0,0);draw()
-}
-window.addEventListener('resize',resize)
-
-function draw(){
-  ctx.clearRect(0,0,window.innerWidth,window.innerHeight)
-  ctx.fillStyle='rgba(0,0,0,.3)';ctx.fillRect(0,0,window.innerWidth,window.innerHeight)
-  if(!has && mode!=='sel') return
-  const x=Math.min(s.x,e.x),y=Math.min(s.y,e.y),w=Math.abs(e.x-s.x),h=Math.abs(e.y-s.y)
-  ctx.clearRect(x,y,w,h)
-  ctx.strokeStyle='#0071e3';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,w-1,h-1)
-}
-
-function selRect(){
-  const x=Math.min(s.x,e.x),y=Math.min(s.y,e.y),w=Math.abs(e.x-s.x),h=Math.abs(e.y-s.y)
-  return{x,y,w,h}
-}
-
-function inside(px,py){const r=selRect();return px>=r.x&&px<=r.x+r.w&&py>=r.y&&py<=r.y+r.h}
-
-function updateActions(){
-  if(!has){actions.classList.remove('visible');return}
-  const r=selRect();let tx=r.x,ty=r.y+r.h+8
-  if(ty+36>window.innerHeight)ty=r.y-44
-  actions.style.left=tx+'px';actions.style.top=ty+'px';actions.classList.add('visible')
-}
-
-function doSave(){
-  const r=selRect();if(r.w<5||r.h<5)return
-  screenshot.confirm({...r,viewportWidth:window.innerWidth,viewportHeight:window.innerHeight})
-}
-
-function doClear(){has=false;hint.classList.remove('hidden');actions.classList.remove('visible');draw()}
-
-btnExit.onclick=()=>screenshot.cancel()
-btnSave.onclick=()=>doSave()
-
-document.addEventListener('keydown',(ev)=>{if(ev.key==='Escape')screenshot.cancel()})
-document.addEventListener('contextmenu',(ev)=>{ev.preventDefault();has?doClear():screenshot.cancel()})
-
-document.addEventListener('mousedown',(ev)=>{
-  if(ev.button!==0)return
-  if(ev.target.closest('#actions'))return
-  if(has&&inside(ev.clientX,ev.clientY)){
-    mode='move';dragOX=ev.clientX;dragOY=ev.clientY;dsX=s.x;dsY=s.y;deX=e.x;deY=e.y;document.body.style.cursor='grabbing'
-    return
-  }
-  if(has){doClear()}
-  mode='sel';s.x=e.x=ev.clientX;s.y=e.y=ev.clientY;has=false;hint.classList.remove('hidden');actions.classList.remove('visible');draw();document.body.style.cursor='crosshair'
-})
-
-document.addEventListener('mousemove',(ev)=>{
-  if(mode==='sel'){e.x=ev.clientX;e.y=ev.clientY;draw()}
-  else if(mode==='move'){
-    const dx=ev.clientX-dragOX,dy=ev.clientY-dragOY
-    s.x=dsX+dx;s.y=dsY+dy;e.x=deX+dx;e.y=deY+dy;draw();updateActions()
-  }
-  else if(has&&inside(ev.clientX,ev.clientY)){document.body.style.cursor='move'}
-  else{document.body.style.cursor='crosshair'}
-})
-
-document.addEventListener('mouseup',(ev)=>{
-  if(ev.button!==0)return
-  if(mode==='sel'){
-    mode='idle';const w=Math.abs(e.x-s.x),h=Math.abs(e.y-s.y);has=w>3&&h>3
-    if(has){hint.classList.add('hidden');updateActions()}else{draw()}
-  }else if(mode==='move'){mode='idle';document.body.style.cursor=has&&inside(ev.clientX,ev.clientY)?'move':'crosshair'}
-})
-
-setTimeout(()=>{resize()},0)
-</script></body></html>`
-
-      win
-        .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
-        .then(() => {
-          win.show()
-          win.focus()
-          if (!requestEvent.sender.isDestroyed()) {
-            requestEvent.sender.send('screenshot:ready')
-          }
-        })
-        .catch(() => done(null))
-    })
-  })
+  screenshotService.initialize()
 
   // ---- 调度器健康检查 IPC ----
 
@@ -3049,6 +2501,9 @@ app.on('before-quit', () => {
     }
   }
   scheduler.stop()
+  notificationService = null
+  screenshotService?.dispose()
+  screenshotService = null
   stickyService?.dispose()
   stickyService = null
   closeDatabase()
@@ -3056,8 +2511,11 @@ app.on('before-quit', () => {
   blurDestroy()
   if (triggerWin && !triggerWin.isDestroyed()) {
     triggerWin.destroy()
-    triggerWin = null
   }
+  triggerWin = null
+  triggerPageLoaded = false
+  triggerRequestedBounds = null
+  triggerExpectedBounds = null
   if (slideAnimTimer) clearInterval(slideAnimTimer)
   if (hideTimer) clearTimeout(hideTimer)
   if (tray) {

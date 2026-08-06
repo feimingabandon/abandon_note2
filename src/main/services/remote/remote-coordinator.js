@@ -33,7 +33,8 @@ export class RemoteCoordinator {
     getInstallationId,
     getCursor,
     ingestNotices,
-    onNoticesChanged = () => {}
+    onNoticesChanged = () => {},
+    onHealthChanged = () => {}
   }) {
     this.app = app
     this.client = new RemoteClient(baseUrl)
@@ -42,13 +43,35 @@ export class RemoteCoordinator {
     this.getCursor = getCursor
     this.ingestNotices = ingestNotices
     this.onNoticesChanged = onNoticesChanged
+    this.onHealthChanged = onHealthChanged
     this.sessionId = null
+    this.lastHealth = {
+      available: false,
+      noticeService: false,
+      reportService: false,
+      checkedAt: null,
+      checking: false,
+      skipped: false,
+      error: '本次启动尚未检测远程服务'
+    }
   }
 
   async start() {
     const remote = this.getSettings()?.remote
-    if (!this.client.configured || (!remote?.receiveNotices && !remote?.uploadDeviceInfo)) return
+    if (!this.client.configured || (!remote?.receiveNotices && !remote?.uploadDeviceInfo)) {
+      this.#setHealth({
+        available: false,
+        noticeService: false,
+        reportService: false,
+        checkedAt: Date.now(),
+        checking: false,
+        skipped: this.client.configured,
+        error: this.client.configured ? '本次启动未启用远程功能' : '未配置远程服务地址'
+      })
+      return
+    }
 
+    this.#setHealth({ ...this.lastHealth, checking: true, error: null })
     const health = await this.checkHealth()
     if (!health.available) {
       console.warn('[remote] 服务器不可用，本次启动停止远端流程:', health.error)
@@ -66,34 +89,58 @@ export class RemoteCoordinator {
   }
 
   async checkHealth() {
+    let health
     if (!this.client.configured) {
-      return {
+      health = {
         available: false,
         noticeService: false,
         reportService: false,
         checkedAt: Date.now(),
+        checking: false,
+        skipped: false,
         error: '未配置远程服务地址'
       }
+    } else {
+      try {
+        const result = await this.client.health()
+        const available = result?.status === 'ok' && Number(result?.api_version) === 1
+        health = {
+          available,
+          noticeService: available && result?.notice_service === true,
+          reportService: available && result?.report_service === true,
+          checkedAt: Date.now(),
+          checking: false,
+          skipped: false,
+          error: available ? null : '服务器响应版本不兼容'
+        }
+      } catch (error) {
+        health = {
+          available: false,
+          noticeService: false,
+          reportService: false,
+          checkedAt: Date.now(),
+          checking: false,
+          skipped: false,
+          error: error?.message || '连接失败'
+        }
+      }
     }
+    return this.#setHealth(health)
+  }
+
+  getHealthSnapshot() {
+    return { ...this.lastHealth }
+  }
+
+  #setHealth(health) {
+    this.lastHealth = { ...health }
+    const snapshot = this.getHealthSnapshot()
     try {
-      const result = await this.client.health()
-      const available = result?.status === 'ok' && Number(result?.api_version) === 1
-      return {
-        available,
-        noticeService: available && result?.notice_service === true,
-        reportService: available && result?.report_service === true,
-        checkedAt: Date.now(),
-        error: available ? null : '服务器响应版本不兼容'
-      }
+      this.onHealthChanged(snapshot)
     } catch (error) {
-      return {
-        available: false,
-        noticeService: false,
-        reportService: false,
-        checkedAt: Date.now(),
-        error: error?.message || '连接失败'
-      }
+      console.warn('[remote] 广播健康状态失败:', error)
     }
+    return snapshot
   }
 
   async #startSession() {

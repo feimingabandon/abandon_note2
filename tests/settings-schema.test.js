@@ -24,6 +24,15 @@ describe('titlebar appearance setting', () => {
   })
 })
 
+describe('CSS blur setting', () => {
+  it('keeps persisted UI blur at or above the 5px readability floor', () => {
+    const resolved = resolveSettingsRows([{ type: 'css', key: 'bg_blur', value: '0' }])
+
+    expect(resolved.css.bgBlur).toBe(5)
+    expect(DEFAULT_SETTINGS.css.bgBlur).toBe(10)
+  })
+})
+
 describe('sticky default settings schema', () => {
   it('provides stable defaults for newly created sticky windows', () => {
     expect(DEFAULT_SETTINGS.sticky).toEqual({

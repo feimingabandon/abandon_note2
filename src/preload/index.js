@@ -75,7 +75,12 @@ const api = {
     ipcRenderer.on('remote-notices:changed', handler)
     return () => ipcRenderer.removeListener('remote-notices:changed', handler)
   },
-  checkRemoteHealth: () => ipcRenderer.invoke('remote:check-health'),
+  getRemoteHealth: () => ipcRenderer.invoke('remote:get-health'),
+  onRemoteHealthChanged: (callback) => {
+    const handler = (_event, health) => callback(health)
+    ipcRenderer.on('remote-health:changed', handler)
+    return () => ipcRenderer.removeListener('remote-health:changed', handler)
+  },
 
   // ---- 生命周期通知 ----
   /** 通知主进程渲染已就绪，可以显示窗口了 */

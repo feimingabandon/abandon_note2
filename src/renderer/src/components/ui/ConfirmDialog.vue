@@ -7,7 +7,7 @@
 
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import BaseButton from './BaseButton.vue'
-import { releaseModalBlur, retainModalBlur } from '../../utils/modalBlur.js'
+import { retainModalBlur } from '../../utils/modalBlur.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -22,27 +22,25 @@ const emit = defineEmits(['update:visible', 'confirm', 'cancel'])
 const rendered = ref(props.visible)
 const active = ref(false)
 let animTimer = null
-let ownsModalBlur = false
+let releaseBackgroundBlur = null
 
 function acquireModalBlur() {
-  if (ownsModalBlur) return
-  ownsModalBlur = true
-  retainModalBlur()
+  if (releaseBackgroundBlur) return
+  releaseBackgroundBlur = retainModalBlur()
 }
 
 function freeModalBlur() {
-  if (!ownsModalBlur) return
-  ownsModalBlur = false
-  releaseModalBlur()
+  releaseBackgroundBlur?.()
+  releaseBackgroundBlur = null
 }
 
 function close(type) {
   if (animTimer) return
   active.value = false
-  freeModalBlur()
   animTimer = setTimeout(() => {
     animTimer = null
     rendered.value = false
+    freeModalBlur()
     emit('update:visible', false)
     if (type === 'confirm') emit('confirm')
     else emit('cancel')
@@ -66,7 +64,8 @@ watch(
     } else if (rendered.value) {
       close()
     }
-  }
+  },
+  { immediate: true }
 )
 
 onBeforeUnmount(() => {
@@ -80,6 +79,7 @@ onBeforeUnmount(() => {
     <div
       v-if="rendered"
       class="confirm-overlay"
+      data-modal-layer="confirm"
       :class="{ active }"
       data-keep-settings-open
       @click.self="close()"

@@ -123,8 +123,12 @@ async function processFiles(files) {
     let dataUrl
     try {
       dataUrl = await readFileAsDataURL(file)
-    } catch {
+    } catch (error) {
       // 读取失败，移除占位
+      console.error(
+        `[ImagePicker] 读取图片失败 (name=${file.name}, size=${file.size}, type=${file.type}):`,
+        error
+      )
       const idx = images.value.findIndex((img) => img.id === tempId)
       if (idx !== -1) images.value.splice(idx, 1)
       continue

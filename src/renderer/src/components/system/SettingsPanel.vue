@@ -79,7 +79,7 @@ const panelHeight = ref(70) // 面板高度百分比，默认 70%
 const isResetting = ref(false)
 const showLogViewer = ref(false)
 const showNoticeHistory = ref(false)
-const appVersion = ref('0.9.1')
+const appVersion = ref('未知')
 
 /** 关闭动画定时器 ID，用于取消竞态关闭 */
 let closeTimer = null
@@ -169,11 +169,11 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
 const close = () => {
   if (isResetting.value || closeTimer) return
   onDragEnd()
-  // 面板开始退场后再渐进恢复底层清晰度，避免抽屉仍在场时背景突然跳清。
+  // 保持背景模糊到退场动画结束，避免半透明面板在最后一段动画中直接透出清晰内容。
   blurReleaseTimer = setTimeout(() => {
     blurReleaseTimer = null
     emit('blur-release')
-  }, 160)
+  }, 350)
   panelActive.value = false
   Promise.all([flushPendingSettingSaves(), flushPendingBlurConfig()]).catch((e) =>
     console.warn('[SettingsPanel] 关闭前保存设置失败:', e)
@@ -223,21 +223,33 @@ const uploadDeviceInfo = ref(DEFAULT_SETTINGS.remote.uploadDeviceInfo)
 const remoteHealthStatus = ref('checking')
 const remoteHealthError = ref('')
 
-const remoteServiceAvailable = computed(() => remoteHealthStatus.value === 'available')
+function applyRemoteHealth(result) {
+  remoteHealthStatus.value = result?.checking
+    ? 'checking'
+    : result?.available
+      ? 'available'
+      : result?.skipped
+        ? 'skipped'
+        : 'unavailable'
+  remoteHealthError.value = result?.available ? '' : result?.error || '连接失败'
+}
+
 const remoteHealthLabel = computed(() => {
   if (remoteHealthStatus.value === 'checking') return '检测中'
   if (remoteHealthStatus.value === 'available') return '● 连接正常'
+  if (remoteHealthStatus.value === 'skipped') return '○ 本次未检测'
   return '○ 连接异常'
 })
 
-async function checkRemoteHealth() {
+async function loadRemoteHealth() {
   remoteHealthStatus.value = 'checking'
   remoteHealthError.value = ''
   try {
-    const result = await window.api.checkRemoteHealth()
-    remoteHealthStatus.value = result?.available ? 'available' : 'unavailable'
-    remoteHealthError.value = result?.available ? '' : result?.error || '连接失败'
+    // 只读取主进程在启动阶段保存的结果；这里绝不访问服务器。
+    const result = await window.api.getRemoteHealth()
+    applyRemoteHealth(result)
   } catch (error) {
+    console.error('[SettingsPanel] 检查远程服务健康状态失败:', error)
     remoteHealthStatus.value = 'unavailable'
     remoteHealthError.value = error?.message || '连接失败'
   }
@@ -405,6 +417,7 @@ let _blurSynced = false
 let _blurEnableFeedbackPending = false
 let stopBlurRuntimeListener = null
 let stopBlurDiagnosticListener = null
+let stopRemoteHealthListener = null
 
 const blurDiagnosticMeta = computed(() => {
   const states = {
@@ -491,8 +504,9 @@ watch(autoStart, async (v) => {
       const actual = await window.api.verifyAutoStart()
       if (requestRevision !== _autoStartRequestRevision) return
       await assignAutoStartWithoutWrite(actual.value)
-    } catch {
+    } catch (verifyError) {
       // OS 回读也失败时保留当前控件值，并在下次打开设置时重新查询。
+      console.error('[SettingsPanel] 开机自启写入失败后的系统状态回读也失败:', verifyError)
     }
     autoStartError.value = '设置失败，请重试'
   } finally {
@@ -807,13 +821,16 @@ async function loadSettingsSnapshot() {
 
 // 每次父组件打开设置时都会重新挂载本组件，因此这里必定重新查询完整快照。
 onMounted(async () => {
+  // 先订阅再读取快照，避免健康请求恰好在两步之间完成而丢失最终状态。
+  stopRemoteHealthListener = window.api.onRemoteHealthChanged?.(applyRemoteHealth)
   window.api
     .getAppInfo()
     .then((info) => {
       if (info?.version) appVersion.value = info.version
     })
     .catch((error) => console.warn('[SettingsPanel] 获取应用版本失败:', error))
-  await Promise.all([loadSettingsSnapshot(), checkRemoteHealth()])
+  // 两项都是本地 IPC；设置面板不再等待任何网络请求。
+  await Promise.all([loadSettingsSnapshot(), loadRemoteHealth()])
   if (componentUnmounted) return
 
   stopBlurRuntimeListener = window.api.onSettingsChanged?.((snapshot) => {
@@ -871,6 +888,8 @@ onBeforeUnmount(() => {
   stopBlurRuntimeListener = null
   stopBlurDiagnosticListener?.()
   stopBlurDiagnosticListener = null
+  stopRemoteHealthListener?.()
+  stopRemoteHealthListener = null
   onDragEnd()
   // 正常关闭时这里已完成 flush；强制卸载时也不能丢失最后一次修改。
   flushPendingSettingSaves().catch((e) => console.warn('[SettingsPanel] 卸载前保存设置失败:', e))
@@ -949,7 +968,12 @@ const onConfirmResetSettings = async () => {
 
 <template>
   <Teleport to="body">
-    <div v-if="rendered" class="settings-wrapper" :class="{ active: panelActive }">
+    <div
+      v-if="rendered"
+      class="settings-wrapper"
+      :class="{ active: panelActive }"
+      data-modal-layer="settings"
+    >
       <!-- 遮罩层（已移除） -->
 
       <!-- 面板主体：直接使用全局霜层基准，不参与底层场景失焦。 -->
@@ -1364,10 +1388,10 @@ const onConfirmResetSettings = async () => {
             <div class="setting-item setting-item-slider">
               <span class="setting-label"
                 >模糊基准<HelpButton
-                  text="设置页按此值直接失焦；使用玻璃材质的浮层会按各自比例同步增减。推荐10px"
+                  text="所有界面内毛玻璃和弹窗背景按此值失焦，最低5px；C++原生窗口毛玻璃不受影响。推荐10px"
               /></span>
               <span class="range-label-start">清晰</span>
-              <AppSlider v-model="cssBlur" :min="0" :max="30" :step="1" />
+              <AppSlider v-model="cssBlur" :min="5" :max="30" :step="1" />
               <span class="range-label-end">模糊</span>
               <span class="setting-value">{{ cssBlur }}px</span>
             </div>
@@ -1426,25 +1450,25 @@ const onConfirmResetSettings = async () => {
           <section class="settings-section">
             <h3 class="section-title">
               <span>远程服务与隐私</span>
-              <button
-                type="button"
+              <span
                 class="remote-health-badge sched-badge"
                 :class="
-                  remoteServiceAvailable
+                  remoteHealthStatus === 'available'
                     ? 'sched-badge--ok'
                     : remoteHealthStatus === 'checking'
                       ? ''
                       : 'sched-badge--warn'
                 "
-                :disabled="remoteHealthStatus === 'checking'"
-                :title="remoteHealthError || '点击重新检测远程服务'"
-                @click="checkRemoteHealth"
+                :title="remoteHealthError || '本次启动时检测到远程服务正常'"
               >
                 {{ remoteHealthLabel }}
-              </button>
+              </span>
             </h3>
-            <p v-if="remoteHealthStatus === 'unavailable'" class="remote-health-message">
-              远程服务器暂时无法连接，通知与设备检测开关已暂时停用。
+            <p v-if="remoteHealthStatus === 'skipped'" class="remote-health-message">
+              本次启动未连接远程服务器；这里的修改将在下次启动时按新设置执行。
+            </p>
+            <p v-else-if="remoteHealthStatus === 'unavailable'" class="remote-health-message">
+              本次启动连接远程服务器失败；这里的修改将在下次启动时按新设置执行。
             </p>
 
             <div class="setting-item">
@@ -1455,7 +1479,7 @@ const onConfirmResetSettings = async () => {
                 /></span>
               </div>
               <div class="setting-right">
-                <AppToggle v-model="receiveRemoteNotices" :disabled="!remoteServiceAvailable" />
+                <AppToggle v-model="receiveRemoteNotices" />
               </div>
             </div>
 
@@ -1467,7 +1491,7 @@ const onConfirmResetSettings = async () => {
                 /></span>
               </div>
               <div class="setting-right">
-                <AppToggle v-model="uploadDeviceInfo" :disabled="!remoteServiceAvailable" />
+                <AppToggle v-model="uploadDeviceInfo" />
               </div>
             </div>
 
@@ -1737,6 +1761,7 @@ const onConfirmResetSettings = async () => {
   user-select: none;
   touch-action: none;
 }
+
 .drag-indicator.is-disabled {
   cursor: wait;
   opacity: 0.45;
@@ -2033,17 +2058,11 @@ const onConfirmResetSettings = async () => {
   border: 0;
   font: inherit;
   white-space: nowrap;
-  cursor: pointer;
 }
 
 .remote-health-badge.sched-badge {
   padding: 2rem 8rem;
   font-size: calc(var(--fs-secondary) * 0.88);
-}
-
-.remote-health-badge:disabled {
-  opacity: 0.65;
-  cursor: wait;
 }
 
 .remote-health-message {

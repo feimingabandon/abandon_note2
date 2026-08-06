@@ -22,6 +22,9 @@ applySettingsSnapshot({ values: DEFAULT_SETTINGS })
 
 // 在挂载前安装浏览器与 Vue 两层异常捕获，保证组件初始化阶段同样能够落盘。
 const app = createApp(App)
-installBrowserErrorCapture(window.api, { scope: 'main-renderer' })
+installBrowserErrorCapture(window.api, {
+  scope: 'main-renderer',
+  captureStructuredConsole: true
+})
 installVueErrorCapture(app, window.api)
 app.mount('#app')

@@ -39,7 +39,13 @@ class WindowsPhysicalMotionBackend {
   capture() {
     const snapshot = getWindowMotionSnapshot(this.window)
     if (!snapshot?.window?.valid || !snapshot?.monitor?.valid) {
-      throw new Error('无法读取 Windows 窗口或显示器物理边界')
+      const error = new Error('无法读取 Windows 窗口或显示器物理边界')
+      error.code = 'WINDOW_MOTION_CAPTURE_FAILED'
+      error.snapshotState = {
+        windowValid: Boolean(snapshot?.window?.valid),
+        monitorValid: Boolean(snapshot?.monitor?.valid)
+      }
+      throw error
     }
     return assertFiniteGeometry(
       {
@@ -66,7 +72,13 @@ class WindowsPhysicalMotionBackend {
     this.moving = true
     try {
       if (!moveWindowPhysical(this.window, x, y)) {
-        throw new Error('SetWindowPos(SWP_NOSIZE) 移动窗口失败')
+        const error = new Error(
+          `SetWindowPos(SWP_NOSIZE) 移动窗口失败：target=(${Math.round(x)}, ${Math.round(y)})`
+        )
+        error.code = 'WINDOW_MOTION_MOVE_FAILED'
+        error.target = { x: Math.round(x), y: Math.round(y) }
+        error.expectedSize = expectedSize || null
+        throw error
       }
       const after = this.capture()
       if (

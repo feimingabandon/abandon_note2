@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { DATABASE_SCHEMA_VERSION, createDatabaseSchema } from '../src/main/db/db-schema.js'
 import { clearDb, setDb } from '../src/main/db/db-connection.js'
-import { createTag, deleteTag, getTagUsage } from '../src/main/db/db-tags.js'
+import {
+  createTag,
+  deleteTag,
+  getNoteTags,
+  getTagUsage,
+  setNoteTags
+} from '../src/main/db/db-tags.js'
 import {
   createTemplate,
   deleteTemplate,
@@ -14,7 +20,11 @@ import {
   resumeTemplate,
   updateTemplate
 } from '../src/main/db/db-templates.js'
-import { normalizeRequiredNoteContent } from '../src/main/db/db-notes.js'
+import {
+  getNoteById,
+  normalizeRequiredNoteContent,
+  queryPinnedNotes
+} from '../src/main/db/db-notes.js'
 import { getOrCreateInstallationId } from '../src/main/db/db-identity.js'
 import {
   acknowledgeRemoteNotice,
@@ -189,9 +199,21 @@ try {
       recurrenceRule: { frequency: 'daily', interval: 1, time_of_day: '09:00' },
       isPinned: true,
       notifyEnabled: true,
-      tagNames: ['日常', '重要']
+      tagNames: ['日常']
     },
     activeAnchor
+  )
+  assert.throws(
+    () =>
+      updateTemplate(activeTemplate.id, {
+        tagNames: ['日常', '重要']
+      }),
+    /一个便签最多只能设置一个标签/
+  )
+  // 模拟旧版本遗留的多标签模板；循环生成时只继承关联顺序中的第一项。
+  db.prepare('INSERT INTO template_tags (template_id, tag_name) VALUES (?, ?)').run(
+    activeTemplate.id,
+    '重要'
   )
   const firstRun = runRecurringTemplates({
     now: localTs(2025, 7, 20, 9, 0, 30),
@@ -209,8 +231,26 @@ try {
     db
       .prepare('SELECT tag_name FROM note_tags WHERE note_id = ? ORDER BY tag_name')
       .all(firstNote.id),
-    [{ tag_name: '日常' }, { tag_name: '重要' }]
+    [{ tag_name: '日常' }]
   )
+  assert.deepEqual(
+    queryPinnedNotes({ statuses: ['in_progress'], tagNames: ['日常', '重要'] }).map(
+      (note) => note.id
+    ),
+    [firstNote.id]
+  )
+
+  // 历史多标签便签仍完整读取，第一项保持关联插入顺序；新保存则拒绝多标签。
+  db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)').run(firstNote.id, '重要')
+  assert.deepEqual(
+    getNoteById(firstNote.id).tags.map((tag) => tag.name),
+    ['日常', '重要']
+  )
+  assert.deepEqual(
+    getNoteTags(firstNote.id).map((tag) => tag.name),
+    ['日常', '重要']
+  )
+  assert.throws(() => setNoteTags(firstNote.id, ['日常', '重要']), /一个便签最多只能设置一个标签/)
 
   assert.deepEqual(getTagUsage('日常'), {
     noteCount: 1,

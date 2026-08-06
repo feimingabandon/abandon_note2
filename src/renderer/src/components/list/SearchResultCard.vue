@@ -3,11 +3,14 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import StatusRing from './StatusRing.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import { useMessage } from '../../composables/useMessage.js'
+import { getNoteTextColor } from '../../utils/noteAppearance.js'
 
 const props = defineProps({
   note: { type: Object, required: true },
   query: { type: String, default: '' }
 })
+
+const noteTextColor = computed(() => getNoteTextColor(props.note))
 
 const emit = defineEmits(['edit', 'deleted'])
 const { showMessage } = useMessage()
@@ -235,7 +238,7 @@ onUnmounted(() => {
   <article
     class="src-card"
     :class="[`src-card--${displayStatus}`, { 'src-card--deleted': note.is_deleted }]"
-    :style="{ '--accent-color': status.color }"
+    :style="{ '--accent-color': status.color, '--note-text-color': noteTextColor }"
     :data-search-note-id="note.id"
     :aria-label="`${status.label}：${displayContent}`"
     @contextmenu="openContextMenu"
@@ -384,7 +387,7 @@ onUnmounted(() => {
 }
 .src-content {
   margin: 0;
-  color: color-mix(in srgb, var(--text-color) 92%, transparent);
+  color: color-mix(in srgb, var(--note-text-color) 92%, transparent);
   font-size: var(--fs-body);
   line-height: 1.46;
   white-space: pre-wrap;

@@ -15,15 +15,14 @@ const roundToken = (value) => Math.round(value * 1000) / 1000
 
 /**
  * 由用户设置的两个全局基准值生成各类浮层的最终材质参数。
- * 比例在这里集中维护，避免组件各自写死数值；基准为 0 时派生值也保持为 0。
+ * 比例在这里集中维护，避免组件各自写死数值；模糊基准最低为 5px，防止霜层裸透。
  */
 export function applyGlassBaseSettings({ blur, opacity }, root = document.documentElement) {
-  const baseBlur = clamp(Number(blur) || 0, 0, 30)
+  const baseBlur = clamp(Number(blur) || 0, 5, 30)
   const baseOpacity = clamp(Number(opacity) || 0, 0, 1)
 
   root.style.setProperty('--bg-blur', `${baseBlur}px`)
   root.style.setProperty('--popup-opacity', String(baseOpacity))
-  root.style.setProperty('--glass-blur-base', `${baseBlur}px`)
   root.style.setProperty('--glass-opacity-base', String(baseOpacity))
 
   Object.entries(GLASS_PRESETS).forEach(([name, preset]) => {

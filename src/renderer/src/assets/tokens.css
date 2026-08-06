@@ -77,7 +77,6 @@ html {
   --fs-secondary: calc(var(--font-size-base) * 0.8); /* 所有辅助文字（base=18 → 15.75） */
 
   /* 持久化 CSS 变量由 main.js 在挂载前从 shared/settings-schema.js 注入。 */
-  --glass-blur-base: var(--bg-blur);
   --glass-opacity-base: var(--popup-opacity);
 
   /* 高频交互浮层使用稳定的实体表面，而非局部毛玻璃。
@@ -108,20 +107,10 @@ body {
   text-rendering: optimizeLegibility; /* 优先保证字形清晰度（适合正文大小文字） */
 }
 
-/* ---- 玻璃态背景容器 ----
- * 原生层负责窗口背后的桌面模糊；这里只负责应用内部浮层材质。
- * 每个浮层只做一次 backdrop-filter 和一次色彩覆盖，避免透明度被重复叠加。
- * 仅用于需要玻璃材质的非关键浮层；菜单与日期选择器使用 --surface-float。
- */
+/* ---- 应用背景容器 ---- */
 .app-bg {
   position: relative;
   border: 0;
-}
-
-.app-bg:not(.app-root) {
-  background-color: rgb(var(--bg-color) / var(--glass-opacity, var(--glass-opacity-base)));
-  -webkit-backdrop-filter: blur(var(--glass-blur, var(--glass-blur-base)));
-  backdrop-filter: blur(var(--glass-blur, var(--glass-blur-base)));
 }
 
 /* 历史版本使用两个伪元素叠加霜层；现在真实元素只渲染一次材质。 */
@@ -136,10 +125,8 @@ body {
   display: none;
 }
 
-/* 模态弹窗直接模糊当前内容层；弹窗本身 Teleport 到 body，保持清晰。 */
-body.has-modal-blur .app-scene,
-body.has-modal-blur .settings-panel,
-body.has-modal-blur .app-editor-dialog {
-  filter: blur(var(--glass-blur-base));
+/* UI 背景失焦的唯一实现：模态层、设置页、模板页和帮助页全部复用。 */
+.is-ui-background-blurred {
+  filter: blur(var(--bg-blur));
   will-change: filter;
 }

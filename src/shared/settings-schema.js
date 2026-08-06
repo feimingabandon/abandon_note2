@@ -86,7 +86,8 @@ function parseListFilter(value, fallback) {
   if (typeof candidate === 'string') {
     try {
       candidate = JSON.parse(candidate)
-    } catch {
+    } catch (error) {
+      console.warn('[settings-schema] 列表筛选设置不是合法 JSON，已回退默认值:', error)
       return cloneValue(fallback)
     }
   }
@@ -144,7 +145,7 @@ const definitions = [
     path: ['css', 'bgBlur'],
     db: { type: 'css', key: 'bg_blur' },
     defaultValue: 10,
-    parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 30 }),
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 5, max: 30 }),
     serialize: String,
     remark: 'CSS 玻璃模糊全局基准（像素）'
   },

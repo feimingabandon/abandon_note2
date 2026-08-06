@@ -1,6 +1,7 @@
 /** 循环模板 CRUD、标签快照配置与可恢复删除。 */
 import { getDb } from './db-connection.js'
 import { calculateNextRun, normalizeRecurrenceRule } from '../services/recurrence-rules.js'
+import { requireSingleAssignedTag } from '../../shared/tag-rules.js'
 
 const now = () => Date.now()
 
@@ -17,8 +18,7 @@ function normalizeContent(content) {
 }
 
 function normalizeTagNames(tagNames = []) {
-  if (!Array.isArray(tagNames)) throw new Error('tagNames 必须是数组')
-  return [...new Set(tagNames.map((name) => String(name).trim()).filter(Boolean))]
+  return requireSingleAssignedTag(tagNames)
 }
 
 function ensureTagsExist(db, tagNames) {
@@ -46,7 +46,7 @@ function attachTags(db, template) {
       `SELECT t.* FROM tags t
        INNER JOIN template_tags tt ON tt.tag_name = t.name
        WHERE tt.template_id = ?
-       ORDER BY t.created_at ASC`
+       ORDER BY tt.rowid ASC`
     )
     .all(template.id)
   return template
@@ -64,7 +64,7 @@ function attachTagsToTemplates(db, templates) {
         `SELECT tt.template_id, t.* FROM template_tags tt
          INNER JOIN tags t ON t.name = tt.tag_name
          WHERE tt.template_id IN (${placeholders})
-         ORDER BY t.created_at ASC`
+         ORDER BY tt.rowid ASC`
       )
       .all(...batch)
     for (const row of rows) {

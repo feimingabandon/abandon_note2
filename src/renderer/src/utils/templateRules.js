@@ -25,7 +25,8 @@ export function parseTemplateRule(value) {
   try {
     const rule = typeof value === 'string' ? JSON.parse(value) : value
     return rule && typeof rule === 'object' ? rule : null
-  } catch {
+  } catch (error) {
+    console.warn('[template-rules] 循环规则不是合法 JSON:', error)
     return null
   }
 }
@@ -70,7 +71,7 @@ export function filterAndSortTemplates(templates, filters) {
       return false
     if (filters.frequency !== 'all' && rule?.frequency !== filters.frequency) return false
     const names = (template.tags || []).map((tag) => tag.name)
-    if (selectedTags.length && !selectedTags.every((name) => names.includes(name))) return false
+    if (selectedTags.length && !selectedTags.some((name) => names.includes(name))) return false
     if (filters.pinned && Number(template.is_pinned) !== 1) return false
     if (filters.notify && Number(template.notify_enabled) !== 1) return false
     return true

@@ -9,7 +9,7 @@ import StyledSelect from '../ui/StyledSelect.vue'
 import { filterAndSortTemplates, isTemplateEditTarget } from '../../utils/templateRules.js'
 import { useMessage } from '../../composables/useMessage.js'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
-import { releaseModalBlur, retainModalBlur } from '../../utils/modalBlur.js'
+import { retainModalBlur } from '../../utils/modalBlur.js'
 
 const { showMessage } = useMessage()
 const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
@@ -51,7 +51,7 @@ let resetTimer = null
 let resetRaf = null
 let refreshSpinTimer = null
 let stopChanged = null
-let ownsEditBlur = false
+let releaseEditBackgroundBlur = null
 let filterResizeObserver = null
 let presenceMotionSeq = 0
 let loadSeq = 0
@@ -133,14 +133,13 @@ watch(queryInput, (value) => {
   }, 120)
 })
 watch(editing, (value) => {
-  if (value && !ownsEditBlur) {
-    ownsEditBlur = true
-    retainModalBlur()
-  } else if (!value && ownsEditBlur) {
-    ownsEditBlur = false
-    releaseModalBlur()
-  }
+  if (value && !releaseEditBackgroundBlur) releaseEditBackgroundBlur = retainModalBlur()
 })
+
+function releaseEditBlur() {
+  releaseEditBackgroundBlur?.()
+  releaseEditBackgroundBlur = null
+}
 
 const {
   captureVisibleCardLayout,
@@ -179,6 +178,7 @@ async function loadTemplateData() {
     lastRefreshedAt.value = new Date()
     return true
   } catch (error) {
+    console.error(`[TemplatePage] 加载 ${requestedState} 模板失败:`, error)
     if (requestSeq === loadSeq) showMessage('error', error.message || '加载模板失败')
     return false
   } finally {
@@ -278,6 +278,7 @@ async function createTemplate(payload) {
     if (state.value !== 'running') state.value = 'running'
     else await refreshInBackground({ before })
   } catch (error) {
+    console.error('[TemplatePage] 创建模板失败:', error)
     showMessage('error', error.message || '创建失败')
   } finally {
     creating.value = false
@@ -337,6 +338,7 @@ async function performAction(name, template) {
     if (name === 'restore' && state.value !== 'running') state.value = 'running'
     else await refreshInBackground({ before })
   } catch (error) {
+    console.error(`[TemplatePage] 执行模板操作 ${name} 失败 (templateId=${template.id}):`, error)
     showMessage('error', error.message || '操作失败')
   }
 }
@@ -386,6 +388,7 @@ async function saveEdit(payload) {
     showMessage('success', '模板修改已保存')
     await refreshInBackground({ before, reenterIds: [editedId] })
   } catch (error) {
+    console.error(`[TemplatePage] 保存模板修改失败 (templateId=${editedId}):`, error)
     showMessage('error', error.message || '保存失败')
   } finally {
     savingEdit.value = false
@@ -424,7 +427,7 @@ onBeforeUnmount(() => {
   disposePresenceMotion()
   stopChanged?.()
   filterResizeObserver?.disconnect()
-  if (ownsEditBlur) releaseModalBlur()
+  releaseEditBlur()
 })
 </script>
 
@@ -580,8 +583,13 @@ onBeforeUnmount(() => {
   </section>
 
   <Teleport to="body">
-    <Transition name="tp-modal">
-      <div v-if="editing" class="tp-edit-overlay" @click.self="requestCloseEdit">
+    <Transition name="tp-modal" @after-leave="releaseEditBlur">
+      <div
+        v-if="editing"
+        class="tp-edit-overlay"
+        data-modal-layer="template-editor"
+        @click.self="requestCloseEdit"
+      >
         <section class="tp-edit-dialog" role="dialog" aria-modal="true" aria-label="修改循环模板">
           <header>
             <strong>修改循环模板</strong

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import AppModalShell from '../ui/AppModalShell.vue'
 import BaseButton from '../ui/BaseButton.vue'
 import StyledSelect from '../ui/StyledSelect.vue'
+import { formatLogRecordText } from '../../utils/logRecordText.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false }
@@ -67,6 +68,7 @@ async function query({ append = false } = {}) {
     hasMore.value = result.hasMore
     files.value = result.files || []
   } catch (error) {
+    console.error('[LogViewerDialog] 查询日志失败:', error)
     if (sequence !== requestSequence) return
     errorMessage.value = error?.message || '读取日志失败'
   } finally {
@@ -90,6 +92,7 @@ async function openFolder() {
   try {
     await window.api.openLogsFolder()
   } catch (error) {
+    console.error('[LogViewerDialog] 打开日志目录失败:', error)
     errorMessage.value = error?.message || '无法打开日志目录'
   }
 }
@@ -100,6 +103,7 @@ async function exportLogs() {
   try {
     await window.api.exportLogs()
   } catch (error) {
+    console.error('[LogViewerDialog] 导出日志失败:', error)
     errorMessage.value = error?.message || '导出日志失败'
   } finally {
     exporting.value = false
@@ -108,8 +112,9 @@ async function exportLogs() {
 
 async function copyRecord(record) {
   try {
-    await navigator.clipboard.writeText(JSON.stringify(record, null, 2))
+    await navigator.clipboard.writeText(formatLogRecordText(record))
   } catch (error) {
+    console.error('[LogViewerDialog] 复制日志记录失败:', error)
     errorMessage.value = error?.message || '复制日志失败'
   }
 }
@@ -143,19 +148,6 @@ function levelLabel(value) {
       fatal: '严重'
     }[value] || value
   )
-}
-
-function recordDetail(record) {
-  const detail = {}
-  if (record.error) detail.error = record.error
-  if (record.metadata) detail.metadata = record.metadata
-  detail.sessionId = record.sessionId
-  detail.pid = record.pid
-  detail.appVersion = record.appVersion
-  detail.platform = record.platform
-  detail.arch = record.arch
-  detail.versions = record.versions
-  return JSON.stringify(detail, null, 2)
 }
 
 watch(
@@ -238,7 +230,7 @@ onBeforeUnmount(() => {
             <span class="log-message">{{ record.message || '无消息' }}</span>
           </summary>
           <div class="log-detail">
-            <pre>{{ recordDetail(record) }}</pre>
+            <pre>{{ formatLogRecordText(record) }}</pre>
             <BaseButton size="sm" @click="copyRecord(record)">复制此条</BaseButton>
           </div>
         </details>

@@ -13,6 +13,8 @@ import {
   normalizeYearDates,
   parseTemplateRule
 } from '../../utils/templateRules.js'
+import { useMessage } from '../../composables/useMessage.js'
+import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 
 const props = defineProps({
   initial: { type: Object, default: null },
@@ -23,6 +25,7 @@ const props = defineProps({
   active: { type: Boolean, default: true }
 })
 const emit = defineEmits(['submit', 'cancel'])
+const { showMessage } = useMessage()
 const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
   supported: true,
   reason: ''
@@ -226,6 +229,10 @@ watch(
 
 function submit() {
   if (!canSubmit.value) return
+  if (tagNames.value.length > MAX_ASSIGNED_TAGS) {
+    showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)
+    return
+  }
   emit('submit', {
     content: content.value,
     recurrenceRule: recurrenceRule.value,
@@ -311,7 +318,14 @@ onBeforeUnmount(() => {
         /></label>
         <AppToggle v-model="isPinned" />
       </div>
-      <div class="tf-field"><label>标签</label><TagSelector v-model="tagNames" /></div>
+      <div class="tf-field">
+        <label>标签</label>
+        <TagSelector
+          v-model="tagNames"
+          :max-selected="MAX_ASSIGNED_TAGS"
+          @selection-limit-exceeded="showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)"
+        />
+      </div>
     </div>
 
     <div class="tf-actions">

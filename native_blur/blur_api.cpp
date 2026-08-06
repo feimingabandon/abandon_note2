@@ -96,6 +96,10 @@ int Blur_IsHealthy(void) {
     return BlurEngine::Engine::Instance().IsHealthy() ? 1 : 0;
 }
 
+int Blur_IsZOrderSynchronized(void) {
+    return BlurEngine::Engine::Instance().IsZOrderSynchronized() ? 1 : 0;
+}
+
 int Blur_GetLastErrorCode(void) {
     return static_cast<int>(BlurEngine::Engine::Instance().GetLastError());
 }

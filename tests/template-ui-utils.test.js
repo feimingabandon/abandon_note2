@@ -125,6 +125,15 @@ describe('template UI state and filtering', () => {
     const result = filterAndSortTemplates(rows, { frequency: 'all', tags: [], sort: 'next' })
     expect(result.map((row) => row.id)).toEqual([3, 1, 2])
   })
+
+  it('matches any selected tag when filters contain multiple tags', () => {
+    const result = filterAndSortTemplates(rows, {
+      frequency: 'all',
+      tags: ['生活', '工作'],
+      sort: 'next'
+    })
+    expect(result.map((row) => row.id)).toEqual([1, 2])
+  })
 })
 
 describe('template editor state guards', () => {

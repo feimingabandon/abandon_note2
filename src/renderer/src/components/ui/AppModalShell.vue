@@ -1,6 +1,6 @@
 <script setup>
 import { onBeforeUnmount, useSlots, watch } from 'vue'
-import { releaseModalBlur, retainModalBlur } from '../../utils/modalBlur.js'
+import { retainModalBlur } from '../../utils/modalBlur.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -19,18 +19,16 @@ const props = defineProps({
 
 const emit = defineEmits(['update:visible', 'close'])
 const slots = useSlots()
-let ownsModalBlur = false
+let releaseBackgroundBlur = null
 
 function acquireBlur() {
-  if (ownsModalBlur) return
-  ownsModalBlur = true
-  retainModalBlur()
+  if (releaseBackgroundBlur) return
+  releaseBackgroundBlur = retainModalBlur()
 }
 
 function freeBlur() {
-  if (!ownsModalBlur) return
-  ownsModalBlur = false
-  releaseModalBlur()
+  releaseBackgroundBlur?.()
+  releaseBackgroundBlur = null
 }
 
 function close() {
@@ -55,7 +53,6 @@ watch(
       window.addEventListener('keydown', onKeydown)
     } else {
       window.removeEventListener('keydown', onKeydown)
-      freeBlur()
     }
   },
   { immediate: true }
@@ -69,10 +66,11 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <Transition name="app-modal">
+    <Transition name="app-modal" @after-leave="freeBlur">
       <div
         v-if="visible"
         class="app-modal-overlay"
+        data-modal-layer="app-modal"
         data-keep-settings-open
         :style="{ zIndex }"
         role="presentation"

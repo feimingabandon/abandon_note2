@@ -4,6 +4,7 @@
  * 状态模型：initialized → in_progress ⇄ completed
  */
 import { getDb } from './db-connection.js'
+import { normalizeAssignedTagNames } from '../../shared/tag-rules.js'
 
 const now = () => Date.now()
 const TRANSITIONS = {
@@ -79,6 +80,8 @@ export function createRecurringNoteSnapshot({
   tagNames = []
 } = {}) {
   const db = getDb()
+  // 循环任务可能读取到旧版本留下的多标签模板；生成新便签时稳定继承第一项。
+  const normalizedTagNames = normalizeAssignedTagNames(tagNames).slice(0, 1)
   const ts = now()
   const scheduledAt = Number(effectiveAt)
   if (!Number.isFinite(scheduledAt) || scheduledAt <= 0) {
@@ -96,7 +99,7 @@ export function createRecurringNoteSnapshot({
 
   const noteId = Number(result.lastInsertRowid)
   const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)')
-  for (const tagName of [...new Set(tagNames)]) insertTag.run(noteId, tagName)
+  for (const tagName of normalizedTagNames) insertTag.run(noteId, tagName)
 
   return getNoteById(noteId)
 }
@@ -134,7 +137,7 @@ export function getNoteById(id) {
       `SELECT t.* FROM tags t
        INNER JOIN note_tags nt ON nt.tag_name = t.name
        WHERE nt.note_id = ?
-       ORDER BY t.created_at ASC`
+       ORDER BY nt.rowid ASC`
     )
     .all(id)
   note.attachment_count = note.attachments.length
@@ -358,10 +361,8 @@ function buildWhereClause({
     where.push(`n.id IN (
       SELECT note_id FROM note_tags
       WHERE tag_name IN (${tagNames.map(() => '?').join(',')})
-      GROUP BY note_id
-      HAVING COUNT(DISTINCT tag_name) = ?
     )`)
-    params.push(...tagNames, tagNames.length)
+    params.push(...tagNames)
   }
 
   if (search?.trim()) {
@@ -387,7 +388,7 @@ function toNoteListItems(notes) {
        FROM note_tags nt
        INNER JOIN tags t ON t.name = nt.tag_name
        WHERE nt.note_id IN (${placeholders})
-       ORDER BY t.created_at ASC`
+       ORDER BY nt.rowid ASC`
     )
     .all(...ids)
 
@@ -539,7 +540,7 @@ export function queryCustomNormal({ statuses, tagNames, search, limit = 10, offs
 
 /**
  * 搜索全部便签。搜索拥有独立筛选状态，不继承首页列表条件。
- * 标签沿用列表查询的 AND 语义；分页参数在主进程内收敛，避免异常大查询。
+ * 多标签筛选采用 OR 语义；分页参数在主进程内收敛，避免异常大查询。
  */
 export function searchNotes({
   search,

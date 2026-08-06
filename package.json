@@ -21,7 +21,7 @@
     "test:db": "node scripts/run-electron-node-tests.cjs",
     "test:wallpaper-storage": "node scripts/run-electron-wallpaper-tests.cjs",
     "test:attachment-storage": "node scripts/run-electron-attachment-tests.cjs",
-    "test:window-frame:win": "electron tests/window-frame-electron.mjs",
+    "test:window-frame:win": "npm run build && electron tests/window-frame-electron.mjs && electron tests/dock-trigger-electron.mjs && electron tests/blur-z-order-electron.mjs",
     "test:watch": "vitest",
     "db:reset-business-schema": "node scripts/run-electron-schema-reset.cjs",
     "start": "electron-vite preview",

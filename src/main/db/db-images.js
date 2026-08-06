@@ -120,7 +120,10 @@ function writeOperationManifest(operationDirectory, manifest) {
 /** 保存编辑草稿时先把待删除文件移入暂存区，数据库回滚时可以原位恢复。 */
 export function stageImageDeletion(relativePath) {
   const originalPath = resolveImagePath(relativePath)
-  if (!existsSync(originalPath)) return { missing: true, originalPath }
+  if (!existsSync(originalPath)) {
+    console.warn('[images] 待删除附件文件已丢失:', { relativePath })
+    return { missing: true, originalPath }
+  }
   const stagingDir = join(app.getPath('userData'), STAGING_ROOT)
   ensureDir(stagingDir)
   const operationDirectory = join(stagingDir, `delete-${randomUUID()}`)
@@ -165,6 +168,7 @@ export async function deleteImageFile(relativePath) {
     return true
   } catch (error) {
     if (error?.code === 'ENOENT') return true
+    console.warn('[images] 删除附件文件失败:', error, { relativePath })
     return false
   }
 }
@@ -181,7 +185,8 @@ export async function getImageBase64(relativePath) {
     const ext = relativePath.split('.').pop()?.toLowerCase() || 'png'
     const mime = ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext
     return `data:image/${mime};base64,${buffer.toString('base64')}`
-  } catch {
+  } catch (error) {
+    console.warn('[images] 读取附件原图失败:', error, { relativePath })
     return null
   }
 }
@@ -190,7 +195,10 @@ export async function getImageBase64(relativePath) {
 export function getImageThumbnail(relativePath, maxSize = 240) {
   try {
     const image = nativeImage.createFromPath(resolveImagePath(relativePath))
-    if (image.isEmpty()) return null
+    if (image.isEmpty()) {
+      console.warn('[images] 无法解析附件缩略图:', { relativePath })
+      return null
+    }
     const { width, height } = image.getSize()
     const limit = Math.max(32, Math.min(512, Number(maxSize) || 240))
     const resized =
@@ -198,7 +206,8 @@ export function getImageThumbnail(relativePath, maxSize = 240) {
         ? image.resize({ width: Math.min(width, limit), quality: 'good' })
         : image.resize({ height: Math.min(height, limit), quality: 'good' })
     return resized.toDataURL()
-  } catch {
+  } catch (error) {
+    console.warn('[images] 生成附件缩略图失败:', error, { relativePath, maxSize })
     return null
   }
 }

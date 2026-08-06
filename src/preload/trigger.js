@@ -1,7 +1,19 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { ipcRenderer } from 'electron'
 
-// 贴边触发窗口只需要一个动作，不能继承主窗口的完整数据库与设置 API。
-contextBridge.exposeInMainWorld('api', {
-  reportLog: (payload) => ipcRenderer.send('logs:write', payload),
-  triggerEnter: () => ipcRenderer.send('trigger-enter')
-})
+// setIgnoreMouseEvents({ forward: true }) 明确转发的是鼠标移动消息。直接监听
+// mousemove 比依赖 DOM 的 mouseenter 状态转换更可靠，也不受 body 实际布局尺寸影响。
+let reported = false
+window.addEventListener(
+  'mousemove',
+  () => {
+    if (reported) return
+    reported = true
+    ipcRenderer.send('logs:write', {
+      level: 'info',
+      scope: 'dock.trigger.mousemove',
+      message: '边缘触发窗口收到 mousemove'
+    })
+    ipcRenderer.send('trigger-enter')
+  },
+  { capture: true, passive: true }
+)

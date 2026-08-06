@@ -4,6 +4,44 @@ import { Scheduler } from '../src/main/services/scheduler.js'
 afterEach(() => vi.useRealTimers())
 
 describe('scheduler context', () => {
+  it('keeps successful ticks silent', () => {
+    const scheduler = new Scheduler()
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    scheduler.register({
+      name: 'healthyTask',
+      shouldRun: () => true,
+      execute: () => {}
+    })
+
+    scheduler.tick()
+
+    expect(logSpy).not.toHaveBeenCalled()
+    expect(errorSpy).not.toHaveBeenCalled()
+    logSpy.mockRestore()
+    errorSpy.mockRestore()
+  })
+
+  it('prints a summary only when a registered task fails', () => {
+    const scheduler = new Scheduler()
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    scheduler.register({
+      name: 'brokenTask',
+      shouldRun: () => true,
+      execute: () => {
+        throw new Error('boom')
+      }
+    })
+
+    scheduler.tick()
+
+    expect(logSpy).not.toHaveBeenCalled()
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('存在失败任务：brokenTask(boom)'))
+    logSpy.mockRestore()
+    errorSpy.mockRestore()
+  })
+
   it('passes startup without converting it to recovery', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2025-07-20T08:00:00'))

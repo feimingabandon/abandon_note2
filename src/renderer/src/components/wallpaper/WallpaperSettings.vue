@@ -93,6 +93,7 @@ async function loadLibrary() {
     loading.value = false
     void loadThumbnailsProgressively(records.value, sequence)
   } catch (error) {
+    console.error('[WallpaperSettings] 读取壁纸库失败:', error)
     showMessage('error', `读取壁纸记录失败：${error?.message || '未知错误'}`, 4000)
   } finally {
     if (!unmounted) loading.value = false
@@ -160,6 +161,7 @@ async function onFilePicked(event) {
   try {
     openCropEditor(await readFile(file))
   } catch (error) {
+    console.error('[WallpaperSettings] 读取待裁剪图片失败:', error)
     showMessage('error', error?.message || '图片读取失败')
   }
 }
@@ -171,6 +173,7 @@ async function captureScreen() {
     const data = await window.api.captureScreen()
     if (data) openCropEditor(data)
   } catch (error) {
+    console.error('[WallpaperSettings] 截图失败:', error)
     showMessage('error', `截图失败：${error?.message || '未知错误'}`)
   } finally {
     capturing.value = false
@@ -188,6 +191,7 @@ async function recrop(record) {
     }
     openCropEditor(data, record.source_id)
   } catch (error) {
+    console.error(`[WallpaperSettings] 读取壁纸 ${record.id} 原图失败:`, error)
     showMessage('error', `读取原图失败：${error?.message || '未知错误'}`)
   } finally {
     recroppingId.value = null
@@ -208,6 +212,7 @@ async function previewOriginal(record) {
     previewData.value = data
     previewVisible.value = true
   } catch (error) {
+    console.error(`[WallpaperSettings] 预览壁纸 ${record.id} 原图失败:`, error)
     if (!unmounted && sequence === previewRequestSequence) {
       showMessage('error', `原图预览失败：${error?.message || '未知错误'}`)
     }
@@ -230,6 +235,7 @@ async function onCropSaved(record) {
     await window.api.activateWallpaper(record.id)
     showMessage('success', '主页面壁纸已应用')
   } catch (error) {
+    console.error(`[WallpaperSettings] 应用已保存壁纸 ${record.id} 失败:`, error)
     showMessage('error', `壁纸已保存，但应用失败：${error?.message || '未知错误'}`, 4000)
   } finally {
     await loadLibrary()
@@ -246,6 +252,7 @@ async function activate(record) {
     showMessage('success', '已切换主页面壁纸')
     await loadLibrary()
   } catch (error) {
+    console.error(`[WallpaperSettings] 激活壁纸 ${record.id} 失败:`, error)
     showMessage('error', `切换壁纸失败：${error?.message || '未知错误'}`)
   } finally {
     activatingId.value = null
@@ -260,6 +267,7 @@ async function disable() {
     enabled.value = false
     showMessage('success', '主页面壁纸已关闭')
   } catch (error) {
+    console.error('[WallpaperSettings] 关闭壁纸失败:', error)
     showMessage('error', `关闭壁纸失败：${error?.message || '未知错误'}`)
   } finally {
     disabling.value = false
@@ -277,6 +285,7 @@ async function confirmDelete() {
     showMessage('success', '壁纸版本已删除')
     await loadLibrary()
   } catch (error) {
+    console.error(`[WallpaperSettings] 删除壁纸 ${record.id} 失败:`, error)
     showMessage('error', `删除失败：${error?.message || '未知错误'}`)
   } finally {
     deletingId.value = null

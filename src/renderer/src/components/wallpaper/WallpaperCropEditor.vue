@@ -5,6 +5,7 @@ import {
   fitAspectFrame,
   mapFrameToSource
 } from '../../utils/wallpaperCrop.js'
+import { retainModalBlur } from '../../utils/modalBlur.js'
 import AppSlider from '../ui/AppSlider.vue'
 
 const props = defineProps({
@@ -13,6 +14,7 @@ const props = defineProps({
   closing: { type: Boolean, default: false }
 })
 const emit = defineEmits(['cancel', 'saved'])
+const releaseBackgroundBlur = retainModalBlur()
 
 const stageRef = ref(null)
 const overlayRef = ref(null)
@@ -180,6 +182,7 @@ async function confirmCrop() {
     const record = await window.api.saveWallpaper(payload)
     emit('saved', record)
   } catch (cause) {
+    console.error('[WallpaperCropEditor] 保存裁剪结果失败:', cause)
     error.value = cause?.message || '壁纸裁剪保存失败'
   } finally {
     saving.value = false
@@ -218,11 +221,15 @@ onMounted(async () => {
     })
     resizeObserver.observe(stageRef.value)
   } catch (cause) {
+    console.error('[WallpaperCropEditor] 初始化裁剪界面失败:', cause)
     error.value = cause?.message || '初始化裁剪界面失败'
   }
 })
 
-onBeforeUnmount(() => resizeObserver?.disconnect())
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  releaseBackgroundBlur()
+})
 </script>
 
 <template>
@@ -230,6 +237,7 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
     <div
       ref="overlayRef"
       class="wc-overlay"
+      data-modal-layer="wallpaper-crop"
       :class="{ 'is-closing': closing }"
       role="presentation"
       data-keep-settings-open

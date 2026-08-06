@@ -11,6 +11,7 @@ import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import StatusRing from './StatusRing.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { useSharedMinuteClock } from '../../composables/useSharedMinuteClock.js'
+import { getNoteTextColor } from '../../utils/noteAppearance.js'
 
 const props = defineProps({
   note: { type: Object, required: true },
@@ -44,6 +45,7 @@ const showReminder = computed(
 )
 
 const tags = computed(() => (Array.isArray(props.note.tags) ? props.note.tags : []))
+const noteTextColor = computed(() => getNoteTextColor(props.note))
 const visibleTags = computed(() => tags.value.slice(0, 2))
 const hiddenTagCount = computed(() => Math.max(0, tags.value.length - 2))
 const attachmentCount = computed(() => Number(props.note.attachment_count) || 0)
@@ -363,7 +365,7 @@ async function toggleTags() {
       },
       statusTransition && `nl-card--${statusTransition.from}-to-${statusTransition.to}`
     ]"
-    :style="{ '--accent-color': status.color }"
+    :style="{ '--accent-color': status.color, '--note-text-color': noteTextColor }"
     :data-note-id="note.id"
     :aria-label="`${status.label}：${displayContent}`"
     @contextmenu="openContextMenu"
@@ -772,14 +774,13 @@ async function toggleTags() {
   width: 22rem;
   height: 24rem;
   border-radius: 7rem;
-  background: rgb(var(--bg-color) / 0.76);
+  background: var(--surface-float);
   color: var(--text-color-secondary);
   cursor: grab;
   opacity: 0;
   pointer-events: none;
   touch-action: none;
   box-shadow: 0 2rem 8rem rgba(0, 0, 0, 0.06);
-  backdrop-filter: blur(10px);
   transition:
     opacity 140ms ease,
     color 140ms ease,
@@ -836,7 +837,7 @@ async function toggleTags() {
 }
 .nl-card-text {
   margin: 0;
-  color: color-mix(in srgb, var(--text-color) var(--content-strength), transparent);
+  color: color-mix(in srgb, var(--note-text-color) var(--content-strength), transparent);
   font-size: var(--fs-body);
   font-weight: 500;
   line-height: 1.45;

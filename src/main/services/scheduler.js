@@ -226,13 +226,13 @@ export class Scheduler {
         }
       }
 
-      const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-      const skippedInfo = stats.skipped > 0 ? `, 跳过 ${stats.skipped}` : ''
-      const okInfo = stats.ok.length > 0 ? stats.ok.join(', ') : '无'
-      const failInfo = stats.fail.length > 0 ? stats.fail.join('; ') : '无'
-      console.log(
-        `[scheduler] tick ${ts} — 共 ${stats.total} 任务, 执行 ${stats.ran}${skippedInfo} | 成功: ${okInfo} | 失败: ${failInfo}`
-      )
+      // 正常的整分 tick 不再重复写入诊断日志；只有本轮存在失败任务时输出汇总。
+      if (stats.fail.length > 0) {
+        const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+        console.error(
+          `[scheduler] tick ${ts} 存在失败任务：${stats.fail.join('; ')}（共 ${stats.total} 个注册任务）`
+        )
+      }
     } finally {
       this._ticking = false
       this.lastTickAt = Date.now()

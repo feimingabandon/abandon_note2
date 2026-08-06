@@ -1,6 +1,9 @@
 import { installBrowserErrorCapture } from '../src/utils/installErrorCapture.js'
 
-installBrowserErrorCapture(window.stickyAPI, { scope: 'sticky-renderer' })
+installBrowserErrorCapture(window.stickyAPI, {
+  scope: 'sticky-renderer',
+  captureStructuredConsole: true
+})
 
 const contentElement = document.querySelector('[data-content]')
 const errorElement = document.querySelector('[data-error]')
@@ -45,6 +48,7 @@ async function updateAppearance(payload) {
   try {
     applyAppearance(await window.stickyAPI.updateAppearance(payload))
   } catch (error) {
+    console.error('[Sticky] 修改便利贴外观失败:', error)
     showError(error.message || '无法修改便利贴外观')
   }
 }
@@ -97,12 +101,16 @@ pinButton.addEventListener('click', async () => {
   try {
     applyAppearance(await window.stickyAPI.togglePin())
   } catch (error) {
+    console.error('[Sticky] 修改便利贴置顶状态失败:', error)
     showError(error.message || '无法修改置顶状态')
   }
 })
 
 closeButton.addEventListener('click', () => {
-  window.stickyAPI.close().catch(() => window.close())
+  window.stickyAPI.close().catch((error) => {
+    console.error('[Sticky] 请求主进程关闭失败，改用 renderer 关闭:', error)
+    window.close()
+  })
 })
 
 document.addEventListener('pointerdown', (event) => {
@@ -123,6 +131,7 @@ async function initialize() {
     applyAppearance(state)
     await window.stickyAPI.ready()
   } catch (error) {
+    console.error('[Sticky] 初始化失败:', error)
     showError(error.message || '便利贴初始化失败')
   }
 }

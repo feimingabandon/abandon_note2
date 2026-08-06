@@ -93,6 +93,7 @@ function initNative() {
     lib.Blur_ReSyncOrder = lib.func('Blur_ReSyncOrder', 'void', [])
     lib.Blur_IsInitialized = lib.func('Blur_IsInitialized', 'int', [])
     lib.Blur_IsHealthy = lib.func('Blur_IsHealthy', 'int', [])
+    lib.Blur_IsZOrderSynchronized = lib.func('Blur_IsZOrderSynchronized', 'int', [])
     lib.Blur_IsSupported = lib.func('Blur_IsSupported', 'int', [])
     lib.Blur_GetLastErrorCode = lib.func('Blur_GetLastErrorCode', 'int', [])
     lib.Blur_GetLastErrorMessage = lib.func('Blur_GetLastErrorMessage', 'str', [])
@@ -172,6 +173,7 @@ export function getRuntimeHealth() {
   return {
     healthy,
     initialized: nativeInitialized,
+    zOrderSynchronized: nativeInitialized && Boolean(lib.Blur_IsZOrderSynchronized()),
     nativeError: healthy ? null : getNativeError('原生模糊运行期失效')
   }
 }
@@ -183,7 +185,11 @@ export function getWindowMotionSnapshot(window) {
   try {
     return JSON.parse(lib.WindowMotion_GetSnapshotJson(getWindowHandleValue(window)))
   } catch (error) {
-    throw new Error(`读取 Windows 物理窗口边界失败：${error?.message || String(error)}`)
+    const wrapped = new Error(`读取 Windows 物理窗口边界失败：${error?.message || String(error)}`, {
+      cause: error
+    })
+    wrapped.code = 'WINDOW_MOTION_SNAPSHOT_FAILED'
+    throw wrapped
   }
 }
 

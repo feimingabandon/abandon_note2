@@ -4,10 +4,11 @@
  * 职责：
  *   1. 标签的创建、查询、更新、删除
  *   2. 便签-标签关联关系的绑定与解绑
- *   3. 多标签 AND 筛选
+ *   3. 便签标签关联的单标签写入约束
  */
 
 import { getDb } from './db-connection.js'
+import { requireSingleAssignedTag } from '../../shared/tag-rules.js'
 
 const now = () => Date.now()
 
@@ -86,18 +87,19 @@ function requireActiveNote(db, noteId) {
  * @returns {boolean} 是否成功（已绑定返回 true）
  */
 export function bindTag(noteId, tagName) {
-  try {
-    const db = getDb()
-    db.transaction(() => {
-      requireActiveNote(db, noteId)
-      db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)').run(noteId, tagName)
-      db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(Date.now(), noteId)
-    })()
-    return true
-  } catch (err) {
-    if (err.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') return true
-    throw err
-  }
+  const [normalizedTagName] = requireSingleAssignedTag([tagName])
+  if (!normalizedTagName) throw new Error('标签名称不能为空')
+  const db = getDb()
+  db.transaction(() => {
+    requireActiveNote(db, noteId)
+    db.prepare('DELETE FROM note_tags WHERE note_id = ?').run(noteId)
+    db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)').run(
+      noteId,
+      normalizedTagName
+    )
+    db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(Date.now(), noteId)
+  })()
+  return true
 }
 
 /**
@@ -124,13 +126,14 @@ export function unbindTag(noteId, tagName) {
  * @param {string[]} tagNames
  */
 export function setNoteTags(noteId, tagNames) {
+  const normalizedTagNames = requireSingleAssignedTag(tagNames)
   const db = getDb()
   const del = db.prepare('DELETE FROM note_tags WHERE note_id = ?')
   const ins = db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)')
   const txn = db.transaction(() => {
     requireActiveNote(db, noteId)
     del.run(noteId)
-    for (const tn of tagNames) {
+    for (const tn of normalizedTagNames) {
       ins.run(noteId, tn)
     }
     db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(Date.now(), noteId)
@@ -150,7 +153,7 @@ export function getNoteTags(noteId) {
        INNER JOIN note_tags nt ON nt.tag_name = t.name
        INNER JOIN notes n ON n.id = nt.note_id
        WHERE nt.note_id = ? AND n.is_deleted = 0
-       ORDER BY t.created_at ASC`
+       ORDER BY nt.rowid ASC`
     )
     .all(noteId)
 }

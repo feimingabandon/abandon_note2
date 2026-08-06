@@ -69,6 +69,7 @@ async function openManual(provider) {
   try {
     await window.api.openManualUpdate(provider)
   } catch (error) {
+    console.error(`[UpdateDialog] 打开 ${provider} 更新页面失败:`, error)
     manualError.value = `无法打开更新页面：${error.message}`
   }
 }
@@ -323,14 +324,12 @@ async function openManual(provider) {
 .update-content-enter-from {
   opacity: 0;
   transform: translateY(5rem);
-  filter: blur(2px);
 }
 
 .update-title-leave-to,
 .update-content-leave-to {
   opacity: 0;
   transform: translateY(-4rem);
-  filter: blur(2px);
 }
 
 @keyframes update-spin {

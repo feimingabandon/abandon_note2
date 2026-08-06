@@ -1,7 +1,9 @@
 node_modules
 dist
+dist-local/
 dist_v4
 out
+output/
 .vs/
 .DS_Store
 .eslintcache
