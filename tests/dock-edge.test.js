@@ -45,4 +45,19 @@ describe('isDisplayEdgeExposed', () => {
       false
     )
   })
+
+  it('supports exposed top edges for the month view', () => {
+    const windowBounds = { x: 200, y: 0, width: 1200, height: 800 }
+    expect(isDisplayEdgeExposed(primary, [primary], 'top', windowBounds)).toBe(true)
+  })
+
+  it('rejects an internal top edge when a display overlaps above it', () => {
+    const upperNeighbor = {
+      id: 2,
+      bounds: { x: 0, y: -1080, width: 1920, height: 1080 },
+      workArea: { x: 0, y: -1080, width: 1920, height: 1040 }
+    }
+    const windowBounds = { x: 200, y: 0, width: 1200, height: 800 }
+    expect(isDisplayEdgeExposed(primary, [primary, upperNeighbor], 'top', windowBounds)).toBe(false)
+  })
 })

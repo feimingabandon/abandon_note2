@@ -13,6 +13,17 @@ function sameBounds(actual, expected) {
  * 因此要按创建后的真实尺寸重新定位，让屏幕内始终只露出指定宽度。
  */
 export function alignTriggerBoundsToEdge({ side, requestedBounds, actualBounds, visibleWidth }) {
+  const vertical = side === 'top' || side === 'bottom'
+  if (vertical) {
+    const height = Math.max(visibleWidth, actualBounds.height)
+    const hiddenHeight = height - visibleWidth
+    return {
+      x: requestedBounds.x,
+      y: side === 'top' ? requestedBounds.y - hiddenHeight : requestedBounds.y,
+      width: actualBounds.width,
+      height
+    }
+  }
   const width = Math.max(visibleWidth, actualBounds.width)
   const hiddenWidth = width - visibleWidth
   return {
@@ -46,7 +57,7 @@ export function inspectDockHealth(snapshot) {
   if (snapshot.isSliding && snapshot.slideAgeMs < snapshot.maxSlideAgeMs) return issues
 
   if (snapshot.isDockHidden) {
-    if (snapshot.dockSide !== 'left' && snapshot.dockSide !== 'right') {
+    if (!['left', 'right', 'top', 'bottom'].includes(snapshot.dockSide)) {
       issues.push('隐藏状态缺少有效的贴边方向')
     }
     if (!snapshot.hasDockMotionSession) {

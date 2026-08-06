@@ -1,4 +1,10 @@
-export function buildStickyTrayTemplate({ stickyService, openMainWindow, quitApplication }) {
+export function buildStickyTrayTemplate({
+  stickyService,
+  openMainWindow,
+  activeViewMode = 'list',
+  switchMainView = () => {},
+  quitApplication
+}) {
   const stickies = stickyService?.list() || []
   const count = stickies.length
   const overview =
@@ -20,6 +26,23 @@ export function buildStickyTrayTemplate({ stickyService, openMainWindow, quitApp
 
   return [
     { label: '打开主窗口', click: openMainWindow },
+    {
+      label: `当前视图：${activeViewMode === 'month' ? '月视图' : '便签列表'}`,
+      submenu: [
+        {
+          label: '便签列表',
+          type: 'radio',
+          checked: activeViewMode !== 'month',
+          click: () => switchMainView('list')
+        },
+        {
+          label: '月视图',
+          type: 'radio',
+          checked: activeViewMode === 'month',
+          click: () => switchMainView('month')
+        }
+      ]
+    },
     { type: 'separator' },
     {
       label: `显示全部便利贴（${count}）`,

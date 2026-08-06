@@ -453,7 +453,10 @@ export function getWallpaperThumbnail(id, maxSize = 240) {
 }
 
 /** 删除一个裁剪版本；最后一个引用消失时一并删除原图。 */
-async function deleteWallpaperVersionUnlocked(id, { clearSelectionForWindow = null } = {}) {
+async function deleteWallpaperVersionUnlocked(
+  id,
+  { clearSelectionForWindows = [], clearSelectionForWindow = null } = {}
+) {
   const record = getWallpaperRecord(id)
   if (!record) return false
   const db = getDb()
@@ -500,11 +503,12 @@ async function deleteWallpaperVersionUnlocked(id, { clearSelectionForWindow = nu
         injectStorageFault('delete:before-source-delete')
         db.prepare('DELETE FROM wallpaper_sources WHERE id = ?').run(record.source_id)
       }
-      if (clearSelectionForWindow) {
+      const selectionScopes = [...clearSelectionForWindows, clearSelectionForWindow]
+      for (const windowName of [...new Set(selectionScopes.filter(Boolean))]) {
         db.prepare(
           `DELETE FROM app_settings
            WHERE window_name = ? AND key IN ('active_wallpaper_id', 'wallpaper_enabled')`
-        ).run(clearSelectionForWindow)
+        ).run(windowName)
       }
     })()
     committed = true

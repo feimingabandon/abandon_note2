@@ -5,6 +5,7 @@ import koffi from 'koffi'
 
 const REQUESTED_VISIBLE_WIDTH = 2
 const TEST_HEIGHT = 240
+const TEST_WIDTH = 480
 const EVENT_TIMEOUT_MS = 3000
 
 function wait(ms) {
@@ -33,7 +34,22 @@ function horizontalIntersectionWidth(bounds, workArea) {
   return Math.max(0, right - left)
 }
 
+function verticalIntersectionHeight(bounds, workArea) {
+  const top = Math.max(bounds.y, workArea.y)
+  const bottom = Math.min(bounds.y + bounds.height, workArea.y + workArea.height)
+  return Math.max(0, bottom - top)
+}
+
 function alignToEdge(side, requestedBounds, createdBounds) {
+  if (side === 'top') {
+    const height = Math.max(REQUESTED_VISIBLE_WIDTH, createdBounds.height)
+    return {
+      x: requestedBounds.x,
+      y: requestedBounds.y - (height - REQUESTED_VISIBLE_WIDTH),
+      width: createdBounds.width,
+      height
+    }
+  }
   const width = Math.max(REQUESTED_VISIBLE_WIDTH, createdBounds.width)
   const hiddenWidth = width - REQUESTED_VISIBLE_WIDTH
   return {
@@ -65,16 +81,24 @@ app.once('ready', async () => {
     assert.equal(setCursorPos(awayX, cursorY), 1)
     await wait(100)
 
-    for (const side of ['left', 'right']) {
-      const requestedBounds = {
-        x:
-          side === 'left'
-            ? workArea.x
-            : workArea.x + workArea.width - REQUESTED_VISIBLE_WIDTH,
-        y: testY,
-        width: REQUESTED_VISIBLE_WIDTH,
-        height: TEST_HEIGHT
-      }
+    for (const side of ['left', 'right', 'top']) {
+      const requestedBounds =
+        side === 'top'
+          ? {
+              x: workArea.x + Math.floor((workArea.width - TEST_WIDTH) / 2),
+              y: workArea.y,
+              width: TEST_WIDTH,
+              height: REQUESTED_VISIBLE_WIDTH
+            }
+          : {
+              x:
+                side === 'left'
+                  ? workArea.x
+                  : workArea.x + workArea.width - REQUESTED_VISIBLE_WIDTH,
+              y: testY,
+              width: REQUESTED_VISIBLE_WIDTH,
+              height: TEST_HEIGHT
+            }
 
       const triggerWindow = new BrowserWindow({
         ...requestedBounds,
@@ -117,28 +141,39 @@ app.once('ready', async () => {
         expectedBounds,
         `${side} trigger bounds must remain at the corrected Windows-clamped bounds`
       )
+      const exposedPixels =
+        side === 'top'
+          ? verticalIntersectionHeight(actualBounds, workArea)
+          : horizontalIntersectionWidth(actualBounds, workArea)
       assert.equal(
-        horizontalIntersectionWidth(actualBounds, workArea),
+        exposedPixels,
         REQUESTED_VISIBLE_WIDTH,
         `${side} trigger must expose exactly ${REQUESTED_VISIBLE_WIDTH}px inside the work area`
       )
       assert.equal(triggerWindow.isVisible(), true)
       assert.equal(triggerWindow.isAlwaysOnTop(), true)
 
-      const edgeX =
-        side === 'left' ? workArea.x + 1 : workArea.x + workArea.width - 1
-      assert.equal(setCursorPos(edgeX, cursorY - 12), 1)
-      for (let offset = -10; offset <= 12; offset += 2) {
-        mouseEvent(0x0001, 0, 2, 0, 0)
-        await wait(20)
+      if (side === 'top') {
+        const edgeX = requestedBounds.x + Math.floor(requestedBounds.width / 2)
+        assert.equal(setCursorPos(edgeX - 12, workArea.y + 1), 1)
+        for (let offset = -10; offset <= 12; offset += 2) {
+          mouseEvent(0x0001, 2, 0, 0, 0)
+          await wait(20)
+        }
+      } else {
+        const edgeX = side === 'left' ? workArea.x + 1 : workArea.x + workArea.width - 1
+        assert.equal(setCursorPos(edgeX, cursorY - 12), 1)
+        for (let offset = -10; offset <= 12; offset += 2) {
+          mouseEvent(0x0001, 0, 2, 0, 0)
+          await wait(20)
+        }
       }
       const senderId = await triggerEnter
       assert.equal(senderId, triggerWindow.webContents.id)
-
     }
 
     console.log(
-      'two-sided dock trigger integration test passed: corrected bounds, 2px exposure, and forwarded mousemove IPC'
+      'three-sided dock trigger integration test passed: left/right/top corrected bounds, 2px exposure, and forwarded mousemove IPC'
     )
   } catch (error) {
     console.error(error)

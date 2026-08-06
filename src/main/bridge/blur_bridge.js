@@ -59,12 +59,16 @@ function getDllPath() {
     // 生产路径不存在时继续尝试开发路径。
   }
 
+  const integrationDll =
+    process.env.ABANDON_INTEGRATION_TEST === '1' ? process.env.ABANDON_INTEGRATION_NATIVE_DLL : null
   const devs = [
+    integrationDll,
     join(app.getAppPath(), 'native_blur', 'build', 'bin', 'blur_engine.dll'),
     join(app.getAppPath(), 'native_blur', 'build', 'bin', 'Release', 'blur_engine.dll'),
     join(app.getAppPath(), 'native_blur', 'build', 'bin', 'Debug', 'blur_engine.dll')
   ]
   for (const p of devs) {
+    if (!p) continue
     try {
       require('fs').accessSync(p)
       return p
@@ -210,7 +214,8 @@ export function isWindowDockEdgeExposed(window, side) {
   if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
     return false
   }
-  const nativeSide = side === 'left' ? -1 : side === 'right' ? 1 : 0
+  const nativeSide =
+    side === 'left' ? -1 : side === 'right' ? 1 : side === 'top' ? -2 : side === 'bottom' ? 2 : 0
   if (!nativeSide) return false
   return Boolean(lib.WindowMotion_IsEdgeExposed(getWindowHandleValue(window), nativeSide))
 }

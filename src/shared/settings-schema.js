@@ -15,6 +15,15 @@ const DEFAULT_LIST_FILTER = {
   statusFilter: ['initialized', 'in_progress', 'completed']
 }
 
+export const VIEW_MODES = Object.freeze({
+  LIST: 'list',
+  MONTH: 'month'
+})
+
+function normalizeViewMode(value) {
+  return value === VIEW_MODES.MONTH ? VIEW_MODES.MONTH : VIEW_MODES.LIST
+}
+
 function cloneValue(value) {
   if (Array.isArray(value)) return value.map(cloneValue)
   if (value && typeof value === 'object') {
@@ -240,6 +249,15 @@ const definitions = [
     remark: '主页面壁纸 CSS 模糊半径（0~30px）'
   },
   {
+    id: 'ui.settingsPanelSize',
+    path: ['ui', 'settingsPanelSize'],
+    db: { type: 'ui', key: 'settings_panel_size' },
+    defaultValue: 70,
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 25, max: 95, integer: true }),
+    serialize: String,
+    remark: '当前视图设置面板尺寸百分比（25~95）'
+  },
+  {
     id: 'window.lockState',
     path: ['window', 'lockState'],
     db: { type: 'system', key: 'lock_state' },
@@ -394,34 +412,41 @@ function getAtPath(target, path) {
   return path.reduce((cursor, segment) => cursor?.[segment], target)
 }
 
-function buildDefaults() {
+function buildDefaults(viewMode = VIEW_MODES.LIST) {
   const defaults = {}
   SETTING_DEFINITIONS.forEach((definition) => {
     setAtPath(defaults, definition.path, cloneValue(definition.defaultValue))
   })
+  if (normalizeViewMode(viewMode) === VIEW_MODES.MONTH) {
+    defaults.geometry.widthRatio = 0.8
+    defaults.geometry.heightRatio = 0.8
+    defaults.ui.settingsPanelSize = 40
+  }
   return defaults
 }
 
 export const DEFAULT_SETTINGS = deepFreeze(buildDefaults())
 
 /** 返回一份可安全修改的默认设置。 */
-export function createDefaultSettings() {
-  return cloneValue(DEFAULT_SETTINGS)
+export function createDefaultSettings(viewMode = VIEW_MODES.LIST) {
+  return cloneValue(
+    normalizeViewMode(viewMode) === VIEW_MODES.LIST ? DEFAULT_SETTINGS : buildDefaults(viewMode)
+  )
 }
 
 /**
  * 将 app_settings 查询结果解析为完整设置。数据库值优先；缺失或非法时回退默认。
  * @param {Array<{type: string, key: string, value: unknown}>} rows
  */
-export function resolveSettingsRows(rows = []) {
-  const resolved = createDefaultSettings()
+export function resolveSettingsRows(rows = [], viewMode = VIEW_MODES.LIST) {
+  const resolved = createDefaultSettings(viewMode)
   const rowByDbKey = new Map(rows.map((row) => [`${row.type}:${row.key}`, row]))
 
   SETTING_DEFINITIONS.forEach((definition) => {
     if (!definition.db) return
     const row = rowByDbKey.get(`${definition.db.type}:${definition.db.key}`)
     if (!row) return
-    const fallback = cloneValue(definition.defaultValue)
+    const fallback = cloneValue(getAtPath(resolved, definition.path))
     setAtPath(resolved, definition.path, definition.parse(row.value, fallback))
   })
 

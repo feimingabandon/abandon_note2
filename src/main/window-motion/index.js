@@ -99,11 +99,29 @@ class WindowsPhysicalMotionBackend {
     const snapshot = this.capture()
     const physicalOvershoot = Math.max(1, Math.ceil((overshootDip * snapshot.dpi) / 96))
     const visibleX =
-      side === 'left' ? snapshot.workArea.left : snapshot.workArea.right - snapshot.width
+      side === 'left'
+        ? snapshot.workArea.left
+        : side === 'right'
+          ? snapshot.workArea.right - snapshot.width
+          : snapshot.x
+    const visibleY =
+      side === 'top'
+        ? snapshot.workArea.top
+        : side === 'bottom'
+          ? snapshot.workArea.bottom - snapshot.height
+          : snapshot.y
     const hiddenX =
       side === 'left'
         ? snapshot.workArea.left - snapshot.width - physicalOvershoot
-        : snapshot.workArea.right + physicalOvershoot
+        : side === 'right'
+          ? snapshot.workArea.right + physicalOvershoot
+          : visibleX
+    const hiddenY =
+      side === 'top'
+        ? snapshot.workArea.top - snapshot.height - physicalOvershoot
+        : side === 'bottom'
+          ? snapshot.workArea.bottom + physicalOvershoot
+          : visibleY
 
     return {
       side,
@@ -114,8 +132,9 @@ class WindowsPhysicalMotionBackend {
         height: snapshot.height
       },
       visibleX,
+      visibleY,
       hiddenX,
-      y: snapshot.y,
+      hiddenY,
       workArea: snapshot.workArea,
       overshoot: physicalOvershoot
     }
@@ -186,11 +205,29 @@ class ElectronPointMotionBackend {
   createDockPlan(side, overshootDip) {
     const snapshot = this.capture()
     const visibleX =
-      side === 'left' ? snapshot.workArea.left : snapshot.workArea.right - snapshot.width
+      side === 'left'
+        ? snapshot.workArea.left
+        : side === 'right'
+          ? snapshot.workArea.right - snapshot.width
+          : snapshot.x
+    const visibleY =
+      side === 'top'
+        ? snapshot.workArea.top
+        : side === 'bottom'
+          ? snapshot.workArea.bottom - snapshot.height
+          : snapshot.y
     const hiddenX =
       side === 'left'
         ? snapshot.workArea.left - snapshot.width - overshootDip
-        : snapshot.workArea.right + overshootDip
+        : side === 'right'
+          ? snapshot.workArea.right + overshootDip
+          : visibleX
+    const hiddenY =
+      side === 'top'
+        ? snapshot.workArea.top - snapshot.height - overshootDip
+        : side === 'bottom'
+          ? snapshot.workArea.bottom + overshootDip
+          : visibleY
     return {
       side,
       coordinateSpace: snapshot.coordinateSpace,
@@ -200,8 +237,9 @@ class ElectronPointMotionBackend {
         height: snapshot.height
       },
       visibleX,
+      visibleY,
       hiddenX,
-      y: snapshot.y,
+      hiddenY,
       workArea: snapshot.workArea,
       overshoot: overshootDip
     }

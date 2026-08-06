@@ -53,6 +53,17 @@ describe('dock health inspection', () => {
     ).toEqual({ x: 1918, y: 100, width: 32, height: 600 })
   })
 
+  it('moves Windows-clamped trigger height outside the top edge', () => {
+    expect(
+      alignTriggerBoundsToEdge({
+        side: 'top',
+        requestedBounds: { x: 100, y: 0, width: 1200, height: 2 },
+        actualBounds: { x: 100, y: 0, width: 1200, height: 32 },
+        visibleWidth: 2
+      })
+    ).toEqual({ x: 100, y: -30, width: 1200, height: 32 })
+  })
+
   it('accepts the effective native bounds after Windows clamps the width', () => {
     expect(
       inspectDockHealth(

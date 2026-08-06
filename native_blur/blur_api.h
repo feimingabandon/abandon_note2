@@ -47,6 +47,7 @@ BLUR_API const char* Blur_GetLastErrorMessage(void);
 // ---- Windows 窗口物理移动（无回调、绝不修改宽高）----
 BLUR_API int WindowMotion_MoveWindow(void* hwnd, int physicalX, int physicalY);
 BLUR_API const char* WindowMotion_GetSnapshotJson(void* hwnd);
+// side: -1=left, 1=right, -2=top, 2=bottom
 BLUR_API int WindowMotion_IsEdgeExposed(void* hwnd, int side);
 
 #ifdef __cplusplus

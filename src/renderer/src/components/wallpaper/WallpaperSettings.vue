@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import BaseButton from '../ui/BaseButton.vue'
 import AppSlider from '../ui/AppSlider.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
@@ -29,6 +29,17 @@ const previewData = ref('')
 const previewVisible = ref(false)
 const previewLoadingId = ref(null)
 const libraryOpen = ref(false)
+const deleteMessage = computed(() => {
+  const usedBy = deleteTarget.value?.usedBy || []
+  const labels = [
+    usedBy.includes('list') ? '便签列表' : null,
+    usedBy.includes('month') ? '月视图' : null
+  ].filter(Boolean)
+  const usage = labels.length
+    ? `该版本正在被${labels.join('和')}使用，删除后对应视图会自动关闭壁纸。`
+    : ''
+  return `${usage}该裁剪版本会从磁盘删除；如果它是原图的最后一个版本，原图也会一并删除。`
+})
 let overlayTimer = null
 let previewReleaseTimer = null
 let cropCloseTimer = null
@@ -293,10 +304,6 @@ async function confirmDelete() {
 }
 
 function requestDelete(record) {
-  if (enabled.value && activeId.value === record.id) {
-    showMessage('info', '请先切换或关闭当前壁纸')
-    return
-  }
   deleteTarget.value = record
   deleteDialogVisible.value = true
 }
@@ -421,6 +428,15 @@ onBeforeUnmount(() => {
                     >使用中</span
                   >
                 </Transition>
+                <div class="wp-card-meta">
+                  <span>{{ record.target_width }} × {{ record.target_height }}</span>
+                  <span>{{ record.aspectRatioLabel }}</span>
+                  <span :class="record.compatibleWithCurrentView ? 'is-fit' : 'needs-crop'">
+                    {{ record.compatibleWithCurrentView ? '适合当前窗口' : '建议重新裁剪' }}
+                  </span>
+                  <span v-if="record.usedBy?.includes('list')">列表使用中</span>
+                  <span v-if="record.usedBy?.includes('month')">月视图使用中</span>
+                </div>
                 <div class="wp-card-actions">
                   <button
                     :disabled="
@@ -449,10 +465,8 @@ onBeforeUnmount(() => {
                   </button>
                   <button
                     class="danger"
-                    :disabled="deletingId !== null || (enabled && activeId === record.id)"
-                    :title="
-                      enabled && activeId === record.id ? '请先切换或关闭当前壁纸' : '删除壁纸版本'
-                    "
+                    :disabled="deletingId !== null"
+                    title="删除壁纸版本"
                     @click="requestDelete(record)"
                   >
                     删除
@@ -477,7 +491,7 @@ onBeforeUnmount(() => {
     <ConfirmDialog
       v-model:visible="deleteDialogVisible"
       title="删除壁纸版本？"
-      message="该裁剪版本会从磁盘删除；如果它是原图的最后一个版本，原图也会一并删除。"
+      :message="deleteMessage"
       confirm-text="删除"
       variant="danger"
       @confirm="confirmDelete"
@@ -716,6 +730,27 @@ onBeforeUnmount(() => {
 .wp-badge-leave-to {
   opacity: 0;
   transform: translateY(-3rem) scale(0.9);
+}
+.wp-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4rem;
+  padding: 7rem 7rem 0;
+}
+.wp-card-meta span {
+  padding: 2rem 5rem;
+  border-radius: 999px;
+  color: var(--text-color-secondary);
+  background: color-mix(in srgb, var(--text-color) 6%, transparent);
+  font-size: 9rem;
+}
+.wp-card-meta .is-fit {
+  color: #188038;
+  background: color-mix(in srgb, #34c759 14%, transparent);
+}
+.wp-card-meta .needs-crop {
+  color: #b05b00;
+  background: color-mix(in srgb, #ff9f0a 16%, transparent);
 }
 .wp-card-actions {
   display: flex;

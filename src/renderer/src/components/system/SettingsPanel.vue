@@ -27,7 +27,11 @@ import LogViewerDialog from './LogViewerDialog.vue'
 import RemoteNoticeHistoryDialog from './RemoteNoticeHistoryDialog.vue'
 import { useMessage } from '../../composables/useMessage.js' // 消息弹窗
 import { applyGlassBaseSettings, applySettingsSnapshot } from '../../utils/applySettingsSnapshot.js'
-import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
+import {
+  DEFAULT_SETTINGS,
+  createDefaultSettings,
+  VIEW_MODES
+} from '../../../../shared/settings-schema.js'
 
 // ---- 调度器健康数据 ----
 const schedulerHealth = ref(null)
@@ -63,19 +67,29 @@ const props = defineProps({
   visible: {
     type: Boolean,
     default: false
+  },
+  viewMode: {
+    type: String,
+    default: VIEW_MODES.LIST,
+    validator: (value) => value === VIEW_MODES.LIST || value === VIEW_MODES.MONTH
   }
 })
 
 const emit = defineEmits(['update:visible', 'blur-release', 'check-update'])
 
 const el = document.documentElement
+const isMonthView = computed(() => props.viewMode === VIEW_MODES.MONTH)
+const viewDefaults = computed(() => createDefaultSettings(props.viewMode))
 
 // ---- 面板动画控制 ----
 const rendered = ref(props.visible)
 const panelActive = ref(false)
 const panelRef = ref(null)
 const closeButtonRef = ref(null)
-const panelHeight = ref(70) // 面板高度百分比，默认 70%
+const panelSize = ref(viewDefaults.value.ui.settingsPanelSize)
+const panelStyle = computed(() =>
+  isMonthView.value ? { width: panelSize.value + '%' } : { height: panelSize.value + '%' }
+)
 const isResetting = ref(false)
 const showLogViewer = ref(false)
 const showNoticeHistory = ref(false)
@@ -91,9 +105,9 @@ let componentUnmounted = false
 let isDragging = false
 let dragPointerId = null
 let dragHandle = null
-let dragStartY = 0
-let dragStartHeight = 0
-let dragLatestY = 0
+let dragStartPoint = 0
+let dragStartSize = 0
+let dragLatestPoint = 0
 let dragRaf = null
 
 function onDragStart(e) {
@@ -102,9 +116,9 @@ function onDragStart(e) {
   isDragging = true
   dragPointerId = e.pointerId
   dragHandle = e.currentTarget
-  dragStartY = e.clientY
-  dragLatestY = e.clientY
-  dragStartHeight = panelHeight.value
+  dragStartPoint = isMonthView.value ? e.clientX : e.clientY
+  dragLatestPoint = dragStartPoint
+  dragStartSize = panelSize.value
   dragHandle.setPointerCapture(e.pointerId)
   if (panelRef.value) {
     panelRef.value.style.transition = 'none'
@@ -114,7 +128,7 @@ function onDragStart(e) {
 
 function onDragMove(e) {
   if (!isDragging || e.pointerId !== dragPointerId || !panelRef.value) return
-  dragLatestY = e.clientY
+  dragLatestPoint = isMonthView.value ? e.clientX : e.clientY
   // RAF 节流：每帧只更新一次
   if (dragRaf) return
   dragRaf = requestAnimationFrame(() => {
@@ -122,15 +136,19 @@ function onDragMove(e) {
     const panel = panelRef.value
     if (!panel) return
     const wrapper = panel.parentElement
-    const wrapperHeight = wrapper ? wrapper.getBoundingClientRect().height : window.innerHeight
-    const deltaY = dragStartY - dragLatestY
-    const deltaPct = (deltaY / wrapperHeight) * 100
-    let newHeight = dragStartHeight + deltaPct
-    newHeight = Math.max(25, Math.min(95, newHeight))
-    newHeight = Math.round(newHeight)
+    const wrapperBounds = wrapper?.getBoundingClientRect()
+    const extent = isMonthView.value
+      ? wrapperBounds?.width || window.innerWidth
+      : wrapperBounds?.height || window.innerHeight
+    const delta = dragStartPoint - dragLatestPoint
+    const deltaPct = (delta / extent) * 100
+    let newSize = dragStartSize + deltaPct
+    newSize = Math.max(25, Math.min(95, newSize))
+    newSize = Math.round(newSize)
     // 直接操作 DOM 绕过 Vue 响应式
-    panel.style.height = newHeight + '%'
-    panelHeight.value = newHeight
+    if (isMonthView.value) panel.style.width = newSize + '%'
+    else panel.style.height = newSize + '%'
+    panelSize.value = newSize
   })
 }
 
@@ -148,9 +166,15 @@ function onDragEnd(e) {
   }
   if (panelRef.value) {
     panelRef.value.style.transition = ''
-    panelRef.value.style.height = panelHeight.value + '%'
+    if (isMonthView.value) panelRef.value.style.width = panelSize.value + '%'
+    else panelRef.value.style.height = panelSize.value + '%'
   }
   if (handle?.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId)
+  if (panelSize.value !== dragStartSize) {
+    window.api
+      .setSettingValue('ui.settingsPanelSize', panelSize.value)
+      .catch((error) => console.warn('[SettingsPanel] 保存设置面板尺寸失败:', error))
+  }
 }
 
 /** 点击面板外区域关闭（排除自身弹窗内的点击） */
@@ -743,6 +767,9 @@ function assignSettingsSnapshot(snapshot) {
   const remote = snapshot.values.remote || DEFAULT_SETTINGS.remote
   const runtimeBlur = snapshot.runtime?.blur
   const runtimeAutoStart = snapshot.runtime?.autoStart
+  panelSize.value = Number(
+    snapshot.values.ui?.settingsPanelSize ?? viewDefaults.value.ui.settingsPanelSize
+  )
 
   titlebarStyle.value = appearance.titlebarStyle
   bgColor.value = css.bgColor
@@ -799,7 +826,7 @@ async function loadSettingsSnapshot() {
   } catch (e) {
     const message = '读取设置失败，当前显示共享默认值'
     assignSettingsSnapshot({
-      values: DEFAULT_SETTINGS,
+      values: viewDefaults.value,
       runtime: {
         autoStart: { value: autoStart.value, error: message },
         blur: {
@@ -971,7 +998,7 @@ const onConfirmResetSettings = async () => {
     <div
       v-if="rendered"
       class="settings-wrapper"
-      :class="{ active: panelActive }"
+      :class="{ active: panelActive, 'settings-wrapper--month': isMonthView }"
       data-modal-layer="settings"
     >
       <!-- 遮罩层（已移除） -->
@@ -980,8 +1007,12 @@ const onConfirmResetSettings = async () => {
       <div
         ref="panelRef"
         class="settings-panel"
-        :class="{ active: panelActive, 'is-resetting': isResetting }"
-        :style="{ height: panelHeight + '%' }"
+        :class="{
+          active: panelActive,
+          'is-resetting': isResetting,
+          'settings-panel--month': isMonthView
+        }"
+        :style="panelStyle"
         :aria-busy="isResetting"
       >
         <!-- 顶部拖拽指示条（拖拽调整面板高度） -->
@@ -1036,7 +1067,11 @@ const onConfirmResetSettings = async () => {
               <div class="setting-left">
                 <span class="setting-label"
                   >导航栏风格<HelpButton
-                    text="只切换主窗口导航栏的布局和按钮外观，不改变关闭、置顶、锁定、循环模板、设置和帮助功能。"
+                    :text="
+                      isMonthView
+                        ? '只切换月视图导航栏的布局和按钮外观，不改变关闭、置顶、锁定、设置和帮助按钮。'
+                        : '只切换列表导航栏的布局和按钮外观，不改变关闭、置顶、锁定、循环模板、设置和帮助功能。'
+                    "
                 /></span>
               </div>
               <div class="titlebar-style-selector" role="radiogroup" aria-label="导航栏风格">
@@ -1167,7 +1202,7 @@ const onConfirmResetSettings = async () => {
           </section>
 
           <!-- ========== 便利贴基础设置 ========== -->
-          <section class="settings-section">
+          <section v-if="!isMonthView" class="settings-section">
             <h3 class="section-title">便利贴</h3>
 
             <div class="setting-item">
@@ -1688,7 +1723,7 @@ const onConfirmResetSettings = async () => {
     <ConfirmDialog
       v-model:visible="showResetSettingsDialog"
       title="恢复默认设置"
-      message="此操作将清空设置表，并立即应用全局默认设置。当前窗口宽高会立即恢复默认，已保存的位置和大小也会被清除，但窗口位置不会立即移动；开机自启状态不受影响。"
+      message="此操作只恢复当前视图的独立设置。另一个视图、远程与隐私开关、开机自启及便签数据均不受影响。"
       confirm-text="恢复"
       cancel-text="取消"
       variant="default"
@@ -1751,6 +1786,23 @@ const onConfirmResetSettings = async () => {
   transform: translateY(0);
 }
 
+/* 月视图从右侧滑入；左边缘是贯穿整页的横向尺寸拖动区。 */
+.settings-panel--month {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: auto;
+  width: 40%;
+  height: 100%;
+  border-radius: 16rem 0 0 16rem;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.3);
+  transform: translateX(100%);
+}
+
+.settings-panel--month.active {
+  transform: translateX(0);
+}
+
 /* ---- 拖拽指示条（可拖拽调整面板高度） ---- */
 .drag-indicator {
   display: flex;
@@ -1760,6 +1812,32 @@ const onConfirmResetSettings = async () => {
   cursor: ns-resize;
   user-select: none;
   touch-action: none;
+}
+
+.settings-panel--month .drag-indicator {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 16rem;
+  padding: 0;
+  align-items: center;
+  cursor: ew-resize;
+}
+
+.settings-panel--month .drag-bar {
+  width: 4rem;
+  height: 36rem;
+}
+
+.settings-panel--month .drag-indicator:hover .drag-bar {
+  transform: scaleY(1.18);
+}
+
+.settings-panel--month .panel-header,
+.settings-panel--month .panel-body {
+  padding-left: 28rem;
 }
 
 .drag-indicator.is-disabled {

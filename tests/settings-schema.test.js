@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_SETTINGS,
+  createDefaultSettings,
   resolveSettingsRows,
-  serializeSetting
+  serializeSetting,
+  VIEW_MODES
 } from '../src/shared/settings-schema.js'
 
 describe('titlebar appearance setting', () => {
@@ -21,6 +23,32 @@ describe('titlebar appearance setting', () => {
         { type: 'appearance', key: 'titlebar_style', value: 'unsupported-style' }
       ]).appearance.titlebarStyle
     ).toBe('apple')
+  })
+})
+
+describe('view-specific defaults', () => {
+  it('keeps list geometry and panel defaults separate from month view', () => {
+    const list = createDefaultSettings(VIEW_MODES.LIST)
+    const month = createDefaultSettings(VIEW_MODES.MONTH)
+
+    expect(list.geometry).toMatchObject({ widthRatio: 0.25, heightRatio: 0.9 })
+    expect(list.ui.settingsPanelSize).toBe(70)
+    expect(month.geometry).toMatchObject({ widthRatio: 0.8, heightRatio: 0.8 })
+    expect(month.ui.settingsPanelSize).toBe(40)
+  })
+
+  it('persists and clamps each view panel size', () => {
+    expect(serializeSetting('ui.settingsPanelSize', 120)).toMatchObject({
+      type: 'ui',
+      key: 'settings_panel_size',
+      value: '95'
+    })
+    expect(
+      resolveSettingsRows(
+        [{ type: 'ui', key: 'settings_panel_size', value: '31' }],
+        VIEW_MODES.MONTH
+      ).ui.settingsPanelSize
+    ).toBe(31)
   })
 })
 

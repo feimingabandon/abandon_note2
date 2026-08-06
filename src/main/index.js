@@ -21,7 +21,7 @@ import {
   getDb,
   getAllSettings,
   setSettingsBatch,
-  clearAllSettings,
+  clearSettings,
   cleanupPendingAttachmentDirs,
   clearNoteData
 } from './db/db.js'
@@ -97,13 +97,20 @@ import {
   DEFAULT_SETTINGS,
   createDefaultSettings,
   resolveSettingsRows,
-  serializeSetting
+  serializeSetting,
+  VIEW_MODES
 } from '../shared/settings-schema.js'
 import { getSystemNotificationCapability } from '../shared/notification-policy.js'
 import { registerBusinessIpcHandlers } from './ipc/register-business-ipc.js'
+import {
+  getViewSettingsScope,
+  readApplicationSettings,
+  writeActiveView,
+  writeApplicationSetting
+} from './settings/application-settings.js'
+import { getWindowProfile } from './windows/window-profiles.js'
 
 /** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
-const WINDOW_NAME = 'main'
 const APP_ID = 'com.abandon.note'
 const APP_NAME = '便签'
 // 安装版由 NSIS 快捷方式把 APP_ID 映射为 productName；开发环境没有这层注册，
@@ -112,7 +119,9 @@ const WINDOWS_APP_USER_MODEL_ID = app.isPackaged ? APP_ID : APP_NAME
 const APP_PROTOCOL = 'abandon-note'
 const SNOOZE_DELAY_MS = 10 * 60 * 1000
 const SYSTEM_NOTIFICATION_CAPABILITY = getSystemNotificationCapability(process.platform)
-const APP_ROOT = app.getAppPath()
+const integrationAppRoot =
+  process.env.ABANDON_INTEGRATION_TEST === '1' ? process.env.ABANDON_INTEGRATION_APP_ROOT : null
+const APP_ROOT = integrationAppRoot ? resolve(integrationAppRoot) : app.getAppPath()
 const PRELOAD_ROOT = join(APP_ROOT, 'out', 'preload')
 const RENDERER_ROOT = join(APP_ROOT, 'out', 'renderer')
 const RENDERER_WRITABLE_SETTING_IDS = new Set([
@@ -128,10 +137,12 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'sticky.cornerRadius',
   'sticky.alwaysOnTop',
   'wallpaper.blurRadius',
+  'ui.settingsPanelSize',
   'remote.receiveNotices',
   'remote.uploadDeviceInfo',
   'listFilter'
 ])
+const APPLICATION_SETTING_IDS = new Set(['remote.receiveNotices', 'remote.uploadDeviceInfo'])
 const REMOTE_BASE_URL =
   process.env.ABANDON_REMOTE_BASE_URL || 'https://note.zhenshiyin.top/api/v1/client'
 
@@ -142,7 +153,10 @@ app.setPath('userData', userDataPath)
 if (process.platform === 'win32') {
   app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID)
   const protocolArgs = process.defaultApp && process.argv[1] ? [resolve(process.argv[1])] : []
-  app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, protocolArgs)
+  // 完整应用集成测试会启动真实主进程，但不应修改开发机的协议关联。
+  if (process.env.ABANDON_INTEGRATION_TEST !== '1') {
+    app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, protocolArgs)
+  }
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
@@ -155,6 +169,18 @@ let appUpdateService = null
 let remoteCoordinator = null
 let notificationService = null
 let screenshotService = null
+
+/** 当前只允许存在一个主视图；值持久化在 application 设置作用域。 */
+let activeViewMode = VIEW_MODES.LIST
+let switchingMainView = false
+
+function getActiveWindowName() {
+  return getViewSettingsScope(activeViewMode)
+}
+
+function getActiveWindowProfile() {
+  return getWindowProfile(activeViewMode)
+}
 
 /** 主窗口实例引用 */
 let mainWindow = null
@@ -227,6 +253,8 @@ let blurWindowSyncListenersAttached = false
 let blurRuntimeFailureHandling = false
 let blurConfigRequestRevision = 0
 let wallpaperActivationRevision = 0
+let blurSettingsRequestsInFlight = 0
+let queuedViewSwitch = null
 let blurDiagnostic = {
   status: blurCaps.supported ? 'pending' : 'unsupported',
   lastCheckedAt: null,
@@ -241,7 +269,7 @@ const blurConfig = {
 }
 
 /** DB 值覆盖共享默认值后的完整运行时设置快照。 */
-let resolvedSettings = createDefaultSettings()
+let resolvedSettings = createDefaultSettings(activeViewMode)
 let settingsRevision = 0
 
 /** 防抖定时器，用于延迟保存窗口位置/尺寸 */
@@ -290,7 +318,9 @@ function syncBlurConfigFromResolved() {
 
 /** 从 DB 重新生成完整设置；读取本身不向 DB 回写默认值。 */
 function refreshResolvedSettings({ incrementRevision = false } = {}) {
-  const nextSettings = resolveSettingsRows(getAllSettings(WINDOW_NAME))
+  const applicationSettings = readApplicationSettings()
+  const nextSettings = resolveSettingsRows(getAllSettings(getActiveWindowName()), activeViewMode)
+  nextSettings.remote = { ...applicationSettings.remote }
   const changed = JSON.stringify(nextSettings) !== JSON.stringify(resolvedSettings)
   resolvedSettings = nextSettings
   syncBlurConfigFromResolved()
@@ -335,6 +365,41 @@ function getResolvedSettingsSnapshot() {
       }
     }
   }
+}
+
+function getViewSettings(viewMode) {
+  return resolveSettingsRows(getAllSettings(getViewSettingsScope(viewMode)), viewMode)
+}
+
+function getWallpaperUsage(id) {
+  return [VIEW_MODES.LIST, VIEW_MODES.MONTH].filter((viewMode) => {
+    const wallpaper = getViewSettings(viewMode).wallpaper
+    return wallpaper.activeId === Number(id)
+  })
+}
+
+function greatestCommonDivisor(first, second) {
+  let a = Math.abs(Math.round(first))
+  let b = Math.abs(Math.round(second))
+  while (b) [a, b] = [b, a % b]
+  return a || 1
+}
+
+function listWallpaperLibraryRecords() {
+  const bounds = mainWindow?.isDestroyed() ? null : mainWindow?.getBounds()
+  const currentAspect =
+    bounds?.width > 0 && bounds?.height > 0 ? bounds.width / bounds.height : null
+  return listWallpaperRecords().map((record) => {
+    const targetAspect = record.target_width / record.target_height
+    const divisor = greatestCommonDivisor(record.target_width, record.target_height)
+    return {
+      ...record,
+      aspectRatioLabel: `${record.target_width / divisor}:${record.target_height / divisor}`,
+      usedBy: getWallpaperUsage(record.id),
+      compatibleWithCurrentView:
+        currentAspect === null ? null : Math.abs(Math.log(targetAspect / currentAspect)) <= 0.08
+    }
+  })
 }
 
 /** 初始化或重试初始化系统模糊，并保留可传给 renderer 的结构化错误。 */
@@ -454,7 +519,7 @@ function handleBlurRuntimeFailure(error, { broadcast = true } = {}) {
     blurInitialized = false
 
     if (blurConfig.enabled) {
-      setSettingsBatch(WINDOW_NAME, [serializeSetting('blur.enabled', false)])
+      setSettingsBatch(getActiveWindowName(), [serializeSetting('blur.enabled', false)])
       refreshResolvedSettings({ incrementRevision: true })
     } else {
       blurConfig.enabled = false
@@ -630,7 +695,10 @@ function applyResolvedWindowRuntime() {
  */
 function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
   const normalizedEntries = entries.map(({ id, value }) => ({ id, ...serializeSetting(id, value) }))
-  setSettingsBatch(WINDOW_NAME, normalizedEntries)
+  const applicationEntries = normalizedEntries.filter(({ id }) => APPLICATION_SETTING_IDS.has(id))
+  const viewEntries = normalizedEntries.filter(({ id }) => !APPLICATION_SETTING_IDS.has(id))
+  if (viewEntries.length) setSettingsBatch(getActiveWindowName(), viewEntries)
+  applicationEntries.forEach(({ id, value }) => writeApplicationSetting(id, value))
   refreshResolvedSettings({ incrementRevision: true })
 
   if (normalizedEntries.some(({ id }) => id.startsWith('window.'))) {
@@ -659,7 +727,7 @@ function persistWallpaperState({ enabled, activeId = resolvedSettings.wallpaper.
 
 function deactivateWallpaperForGlass({ broadcast = true } = {}) {
   if (!resolvedSettings.wallpaper.enabled) return null
-  setSettingsBatch(WINDOW_NAME, [serializeSetting('wallpaper.enabled', false)])
+  setSettingsBatch(getActiveWindowName(), [serializeSetting('wallpaper.enabled', false)])
   refreshResolvedSettings({ incrementRevision: true })
   const snapshot = getResolvedSettingsSnapshot()
   if (broadcast) broadcastSettingsChanged(snapshot)
@@ -688,10 +756,7 @@ const DOCK_GEOMETRY_SUPPRESSION_MS = 1000
 const MAX_DOCK_SLIDE_AGE_MS = 5000
 
 /** 默认窗口尺寸比例（相对屏幕工作区），改一个地方即可全局生效 */
-const DEFAULT_WIDTH_RATIO = DEFAULT_SETTINGS.geometry.widthRatio
-const DEFAULT_HEIGHT_RATIO = DEFAULT_SETTINGS.geometry.heightRatio
-
-let dockSide = null // null | 'left' | 'right' 当前吸附方向
+let dockSide = null // null | 'left' | 'right' | 'top' | 'bottom' 当前吸附方向
 let isDockHidden = false // 窗口是否处于贴边隐藏状态
 let triggerWin = null // 边缘触发窗口实例
 let triggerRequestedBounds = null // 业务请求的 2px 触发条范围
@@ -781,9 +846,16 @@ function scheduleDockGeometryReconciliation() {
 function createStableDockBounds(bounds, side, workArea) {
   const width = Math.round(bounds.width)
   const height = Math.round(bounds.height)
-  const y = Math.round(bounds.y)
-  const visibleX = side === 'left' ? workArea.x : workArea.x + workArea.width - width
+  const visibleX =
+    side === 'left' ? workArea.x : side === 'right' ? workArea.x + workArea.width - width : bounds.x
+  const visibleY =
+    side === 'top'
+      ? workArea.y
+      : side === 'bottom'
+        ? workArea.y + workArea.height - height
+        : bounds.y
   const x = Math.round(visibleX)
+  const y = Math.round(visibleY)
 
   return { x, y, width, height }
 }
@@ -794,20 +866,22 @@ function createStableDockBounds(bounds, side, workArea) {
  * - 若无保存记录，则使用默认值（屏幕左侧 25% 宽度、90% 高度）
  * - 窗口无边框 + 透明背景，用于实现自定义外观
  */
-function createWindow() {
+function createWindow({ preferredDisplay = null } = {}) {
   blurWindowSyncListenersAttached = false
-  // 获取主显示器信息，用于计算默认窗口位置
-  const display = screen.getPrimaryDisplay()
+  // 月视图首次创建优先沿用列表所在显示器；已有几何信息时仍以持久化位置为准。
+  const display = preferredDisplay || screen.getPrimaryDisplay()
   const screenW = display.workAreaSize.width // 可用工作区宽度（排除任务栏）
   const screenH = display.workAreaSize.height // 可用工作区高度
 
   // 计算默认窗口尺寸（比例见顶部常量）
-  const defaultW = Math.round(screenW * DEFAULT_WIDTH_RATIO)
-  const defaultH = Math.round(screenH * DEFAULT_HEIGHT_RATIO)
+  const defaultW = Math.round(screenW * resolvedSettings.geometry.widthRatio)
+  const defaultH = Math.round(screenH * resolvedSettings.geometry.heightRatio)
   // 计算上下边距，使窗口垂直居中
   const margin = Math.round((screenH - defaultH) / 2)
-  const defaultX = margin // 默认 X 位置（距左边距等于上边距，视觉更协调）
-  const defaultY = margin // 默认 Y 位置（垂直居中）
+  const defaultX = getActiveWindowProfile().defaultCentered
+    ? display.workArea.x + Math.round((screenW - defaultW) / 2)
+    : display.workArea.x + margin
+  const defaultY = display.workArea.y + Math.round((screenH - defaultH) / 2)
 
   // 完整快照已经统一完成“数据库值优先、缺失/非法时回退默认”的解析。
   const geometry = resolvedSettings.geometry
@@ -853,10 +927,15 @@ function createWindow() {
       nodeIntegration: false
     }
   })
-  setWindowLogContext(mainWindow, { role: 'main' })
+  const createdWindow = mainWindow
+  setWindowLogContext(mainWindow, { role: getActiveWindowProfile().logRole })
   lastVisibleMainWindowBounds = { ...mainWindow.getBounds() }
   windowMotionBackend = createWindowMotionBackend(mainWindow, screen)
-  logger.info('startup', '主窗口已创建', { bounds, savedGeometry: Boolean(saved) })
+  logger.info('startup', '主窗口已创建', {
+    viewMode: activeViewMode,
+    bounds,
+    savedGeometry: Boolean(saved)
+  })
 
   // 固定缩放因子为 1.0，防止系统 DPI 缩放影响布局
   mainWindow.webContents.setZoomFactor(1.0)
@@ -875,14 +954,14 @@ function createWindow() {
       console.log('[blur] 系统模糊已初始化, 策略:', result.strategy)
       // 历史版本可能同时留下两项启用状态；启动时以已实际生效的原生玻璃为准。
       if (blurConfig.enabled && resolvedSettings.wallpaper.enabled) {
-        setSettingsBatch(WINDOW_NAME, [serializeSetting('wallpaper.enabled', false)])
+        setSettingsBatch(getActiveWindowName(), [serializeSetting('wallpaper.enabled', false)])
         refreshResolvedSettings({ incrementRevision: true })
       }
     } else {
       console.warn('[blur] 初始化失败:', result.error, result.nativeError || '')
       // 启动失败不能继续保存“已开启”，否则下次打开设置会造成状态误导。
       if (blurConfig.enabled) {
-        setSettingsBatch(WINDOW_NAME, [serializeSetting('blur.enabled', false)])
+        setSettingsBatch(getActiveWindowName(), [serializeSetting('blur.enabled', false)])
         refreshResolvedSettings({ incrementRevision: true })
       }
     }
@@ -954,7 +1033,7 @@ function createWindow() {
     ) {
       return
     }
-    const side = detectSide()
+    const side = detectDockSide()
     if (side) {
       if (dockSide !== side) {
         dockSide = side
@@ -967,7 +1046,7 @@ function createWindow() {
 
   // 拦截窗口关闭事件：最小化到托盘而非退出
   mainWindow.on('close', (e) => {
-    if (!isQuitting) {
+    if (!isQuitting && !switchingMainView) {
       e.preventDefault()
       hideToTray()
     }
@@ -992,6 +1071,8 @@ function createWindow() {
 
   // 窗口销毁时清除引用和贴边资源
   mainWindow.on('closed', () => {
+    // 视图切换会紧接着创建新窗口；旧窗口的延迟 closed 事件不能清空新引用。
+    if (mainWindow !== createdWindow) return
     mainWindow = null
     windowMotionBackend = null
     lastVisibleMainWindowBounds = null
@@ -1001,9 +1082,14 @@ function createWindow() {
 
   // 根据环境加载页面：开发模式用 HMR URL，生产模式加载本地 HTML 文件
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    const rendererFile = getActiveWindowProfile().rendererFile
+    mainWindow.loadURL(
+      rendererFile === 'index.html'
+        ? process.env['ELECTRON_RENDERER_URL']
+        : `${process.env['ELECTRON_RENDERER_URL']}/${rendererFile}`
+    )
   } else {
-    mainWindow.loadFile(join(RENDERER_ROOT, 'index.html'))
+    mainWindow.loadFile(join(RENDERER_ROOT, getActiveWindowProfile().rendererFile))
   }
 }
 
@@ -1045,11 +1131,12 @@ function updateWorkArea() {
  * 贴边动画只移动窗口，绝不重新提交宽高。Windows 非 100% DPI 下反复
  * setBounds({ width, height }) 会触发 DIP/物理像素换算并造成尺寸漂移。
  */
-function setDockPosition(x, motionPlan) {
+function setDockPosition(position, motionPlan) {
   if (!mainWindow || mainWindow.isDestroyed() || !windowMotionBackend) return null
-  const requestedX = Math.round(x)
+  const requestedX = Math.round(position.x)
+  const requestedY = Math.round(position.y)
   suppressDockGeometryPersistence()
-  const after = windowMotionBackend.moveTo(requestedX, motionPlan.y, motionPlan.expectedSize)
+  const after = windowMotionBackend.moveTo(requestedX, requestedY, motionPlan.expectedSize)
   const contentAfter = mainWindow.getContentBounds()
   if (
     motionPlan.expectedElectronContentSize &&
@@ -1093,7 +1180,9 @@ function getDockDiagnosticSnapshot() {
   if (isDockHidden && !isSliding && dockMotionSession?.motionPlan && windowMotionBackend) {
     try {
       mainMotionBounds = windowMotionBackend.capture()
-      mainAtHiddenTarget = Math.abs(mainMotionBounds.x - dockMotionSession.motionPlan.hiddenX) <= 1
+      mainAtHiddenTarget =
+        Math.abs(mainMotionBounds.x - dockMotionSession.motionPlan.hiddenX) <= 1 &&
+        Math.abs(mainMotionBounds.y - dockMotionSession.motionPlan.hiddenY) <= 1
     } catch (error) {
       logger.error('dock.health-snapshot', error, { stage: 'capture-main-window' })
     }
@@ -1174,7 +1263,7 @@ function restoreDockWindowToVisiblePosition() {
 
   try {
     if (windowMotionBackend && motionPlan) {
-      windowMotionBackend.moveTo(motionPlan.visibleX, motionPlan.y, motionPlan.expectedSize)
+      windowMotionBackend.moveTo(motionPlan.visibleX, motionPlan.visibleY, motionPlan.expectedSize)
     } else {
       mainWindow.setPosition(stableBounds.x, stableBounds.y)
     }
@@ -1321,10 +1410,10 @@ function detachDockDisplayListeners() {
 }
 
 /**
- * 检测窗口是否靠近屏幕左/右边缘
- * @returns {null|'left'|'right'} 边缘方向，null 表示未靠近
+ * 按当前窗口配置检测允许的贴边方向：列表仅左右，月视图仅顶部。
+ * @returns {null|'left'|'right'|'top'|'bottom'} 边缘方向，null 表示未靠近
  */
-function detectSide() {
+function detectDockSide() {
   if (!mainWindow || mainWindow.isDestroyed()) return null
   if (mainWindow.isMaximized() || mainWindow.isMinimized()) return null
 
@@ -1334,14 +1423,15 @@ function detectSide() {
   const b = mainWindow.getBounds()
   const wa = cachedWorkArea
 
-  if (b.x <= wa.x + SNAP_THRESHOLD && windowMotionBackend?.isDockEdgeExposed('left')) {
-    return 'left'
+  const nearBySide = {
+    left: b.x <= wa.x + SNAP_THRESHOLD,
+    right: b.x + b.width >= wa.x + wa.width - SNAP_THRESHOLD,
+    top: b.y <= wa.y + SNAP_THRESHOLD,
+    bottom: b.y + b.height >= wa.y + wa.height - SNAP_THRESHOLD
   }
-  if (
-    b.x + b.width >= wa.x + wa.width - SNAP_THRESHOLD &&
-    windowMotionBackend?.isDockEdgeExposed('right')
-  ) {
-    return 'right'
+  const candidates = getActiveWindowProfile().dockEdges.map((side) => [side, nearBySide[side]])
+  for (const [side, nearEdge] of candidates) {
+    if (nearEdge && windowMotionBackend?.isDockEdgeExposed(side)) return side
   }
   return null
 }
@@ -1357,7 +1447,7 @@ function snapToEdge(side) {
       width: electronContentBounds.width,
       height: electronContentBounds.height
     }
-    setDockPosition(motionPlan.visibleX, motionPlan)
+    setDockPosition({ x: motionPlan.visibleX, y: motionPlan.visibleY }, motionPlan)
   } catch (error) {
     console.error('[dock] 吸附窗口失败:', error)
     resetDockState()
@@ -1384,7 +1474,21 @@ function createTriggerWindow(side) {
   const requestedBounds =
     side === 'left'
       ? { x: wa.x, y: b.y, width: TRIGGER_WIDTH, height: b.height }
-      : { x: wa.x + wa.width - TRIGGER_WIDTH, y: b.y, width: TRIGGER_WIDTH, height: b.height }
+      : side === 'right'
+        ? {
+            x: wa.x + wa.width - TRIGGER_WIDTH,
+            y: b.y,
+            width: TRIGGER_WIDTH,
+            height: b.height
+          }
+        : side === 'top'
+          ? { x: b.x, y: wa.y, width: b.width, height: TRIGGER_WIDTH }
+          : {
+              x: b.x,
+              y: wa.y + wa.height - TRIGGER_WIDTH,
+              width: b.width,
+              height: TRIGGER_WIDTH
+            }
 
   const sequence = ++triggerSequence
   const win = new BrowserWindow({
@@ -1477,11 +1581,11 @@ function createTriggerWindow(side) {
 
 /**
  * 滑动动画 —— easeInOutQuad 缓动曲线，慢起 → 快 → 慢停
- * @param {number} targetX - 目标 X 坐标
+ * @param {{x:number,y:number}} target - 目标坐标
  * @param {object} motionPlan - 本轮冻结的坐标空间、目标位置与尺寸不变量
  * @param {Function} [onFinish] - 动画完成回调
  */
-function slideTo(targetX, motionPlan, onFinish) {
+function slideTo(target, motionPlan, onFinish) {
   // 中断前一个动画时，先执行其回调以恢复状态（如置顶级别）
   if (slideAnimTimer) {
     clearInterval(slideAnimTimer)
@@ -1496,9 +1600,9 @@ function slideTo(targetX, motionPlan, onFinish) {
   pendingSlideCallback = onFinish || null
 
   // 记录动画起始位置和总帧数
-  let fromX
+  let from
   try {
-    fromX = windowMotionBackend.capture().x
+    from = windowMotionBackend.capture()
   } catch (error) {
     console.error('[dock] 读取动画起点失败:', error)
     preserveDockSessionAfterSlideFailure()
@@ -1521,7 +1625,13 @@ function slideTo(targetX, motionPlan, onFinish) {
     const ease = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2
 
     try {
-      setDockPosition(fromX + (targetX - fromX) * ease, motionPlan)
+      setDockPosition(
+        {
+          x: from.x + (target.x - from.x) * ease,
+          y: from.y + (target.y - from.y) * ease
+        },
+        motionPlan
+      )
     } catch (error) {
       console.error('[dock] 物理移动失败，已中止贴边动画:', error)
       preserveDockSessionAfterSlideFailure()
@@ -1558,13 +1668,14 @@ function doHide() {
       height: electronContentBefore.height
     }
     suppressDockGeometryPersistence()
-    setDockPosition(motionPlan.visibleX, motionPlan)
+    setDockPosition({ x: motionPlan.visibleX, y: motionPlan.visibleY }, motionPlan)
     const snapped = windowMotionBackend.capture()
     motionPlan = {
       ...motionPlan,
       initial: snapped,
       expectedSize: { width: snapped.width, height: snapped.height },
-      y: snapped.y
+      visibleX: motionPlan.visibleX,
+      visibleY: motionPlan.visibleY
     }
   } catch (error) {
     console.error('[dock] 创建隐藏动画计划失败:', error)
@@ -1586,16 +1697,20 @@ function doHide() {
     triggerSequence: triggerSequence + 1
   })
 
-  const targetX = motionPlan.hiddenX
+  const target = { x: motionPlan.hiddenX, y: motionPlan.hiddenY }
 
   createTriggerWindow(dockSide)
-  slideTo(targetX, motionPlan, () => {
+  slideTo(target, motionPlan, () => {
     try {
       const terminal = windowMotionBackend.capture()
       const crossedBoundary =
         dockSide === 'left'
           ? terminal.x + terminal.width <= motionPlan.workArea.left
-          : terminal.x >= motionPlan.workArea.right
+          : dockSide === 'right'
+            ? terminal.x >= motionPlan.workArea.right
+            : dockSide === 'top'
+              ? terminal.y + terminal.height <= motionPlan.workArea.top
+              : terminal.y >= motionPlan.workArea.bottom
       if (!crossedBoundary) {
         console.error('[dock] 隐藏终点未越过工作区边界:', {
           side: dockSide,
@@ -1656,12 +1771,12 @@ function doShow(source = 'unknown') {
   triggerExpectedBounds = null
 
   const { stableBounds, motionPlan } = session
-  const targetX = motionPlan.visibleX
+  const target = { x: motionPlan.visibleX, y: motionPlan.visibleY }
 
   // 滑出时短暂提升置顶层，确保动画可见
   dockTransitionState.beginTemporaryAlwaysOnTop()
   mainWindow.setAlwaysOnTop(true, 'pop-up-menu')
-  slideTo(targetX, motionPlan, () => {
+  slideTo(target, motionPlan, () => {
     try {
       suppressDockGeometryPersistence()
       const visibleElectronBounds = mainWindow.getBounds()
@@ -1673,10 +1788,10 @@ function doShow(source = 'unknown') {
       dockMotionSession = null
       try {
         const terminal = windowMotionBackend.capture()
-        const expectedVisibleX = motionPlan.visibleX
-        if (terminal.x !== expectedVisibleX) {
+        const expectedVisible = { x: motionPlan.visibleX, y: motionPlan.visibleY }
+        if (terminal.x !== expectedVisible.x || terminal.y !== expectedVisible.y) {
           console.error('[dock] 显示终点未回到冻结位置:', {
-            expectedVisibleX,
+            expectedVisible,
             terminal,
             motionPlan
           })
@@ -1741,7 +1856,7 @@ function toggleWindow() {
   } else {
     mainWindow.show()
     // 从托盘恢复后重新检测贴边（hideToTray 中的 resetDockState 清除了 dockSide）
-    dockSide = detectSide()
+    dockSide = detectDockSide()
   }
 }
 
@@ -1755,6 +1870,101 @@ function openMainWindow() {
   mainWindow.focus()
 }
 
+/**
+ * 主窗口被替换前销毁与旧 HWND 绑定的毛玻璃资源，并同步清空 JS 运行态。
+ * 调用者可以据此安全地为新窗口重新初始化；即使原生销毁抛错，状态清理也会完成。
+ */
+function destroyBlurRuntimeForWindowReplacement() {
+  try {
+    blurDestroy()
+  } finally {
+    blurInitialized = false
+    blurRuntimeFailed = false
+    blurInitializationError = null
+    blurInitializationNativeError = null
+    blurWindowSyncListenersAttached = false
+  }
+}
+
+/** 销毁当前唯一主视图并使用另一套独立设置创建目标视图。 */
+function switchMainView(targetMode) {
+  const normalized = targetMode === VIEW_MODES.MONTH ? VIEW_MODES.MONTH : VIEW_MODES.LIST
+  if (switchingMainView) return false
+  // 启用毛玻璃时有一段壁纸退场等待。让这次设置事务先在原视图完整收敛，
+  // 再执行最后一次托盘切换请求，避免异步尾部写入另一个视图作用域。
+  if (blurSettingsRequestsInFlight > 0) {
+    queuedViewSwitch = normalized === activeViewMode ? null : normalized
+    return true
+  }
+  if (normalized === activeViewMode) return false
+
+  const previousMode = activeViewMode
+  switchingMainView = true
+  let sourceDisplay = null
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      sourceDisplay = screen.getDisplayMatching(
+        dockMotionSession?.stableBounds || lastVisibleMainWindowBounds || mainWindow.getBounds()
+      )
+      restoreDockWindowToVisiblePosition()
+      resetDockState()
+      mainWindow.hide()
+    }
+
+    if (geometryTimer) {
+      clearTimeout(geometryTimer)
+      geometryTimer = null
+    }
+    geometryDirty = false
+    destroyBlurRuntimeForWindowReplacement()
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const previousWindow = mainWindow
+      previousWindow.destroy()
+      if (mainWindow === previousWindow) mainWindow = null
+    }
+    activeViewMode = normalized
+    resolvedSettings = createDefaultSettings(activeViewMode)
+    refreshResolvedSettings({ incrementRevision: true })
+    createWindow({ preferredDisplay: sourceDisplay })
+    applyResolvedWindowRuntime()
+    writeActiveView(activeViewMode)
+    rebuildTrayMenu()
+    logger.info('view.switch', '主视图已切换', { activeViewMode })
+    return true
+  } catch (error) {
+    logger.error('view.switch', error, { previousMode, targetMode: normalized })
+    try {
+      // 目标窗口可能已经完成毛玻璃初始化后才在后续步骤失败。必须先清理其
+      // HWND/Overlay 绑定，再恢复原视图，否则 initializeBlurRuntime 会被旧状态短路。
+      try {
+        destroyBlurRuntimeForWindowReplacement()
+      } catch (destroyError) {
+        logger.error('view.switch-restore-blur-destroy', destroyError, { previousMode })
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
+      activeViewMode = previousMode
+      resolvedSettings = createDefaultSettings(activeViewMode)
+      refreshResolvedSettings({ incrementRevision: true })
+      createWindow({ preferredDisplay: sourceDisplay })
+      applyResolvedWindowRuntime()
+      // 目标视图持久化后若托盘重建等尾部步骤失败，也要把“下次启动视图”
+      // 一并回滚；持久化自身失败不应阻止已经重建的原窗口继续可用。
+      try {
+        writeActiveView(previousMode)
+      } catch (persistRestoreError) {
+        logger.error('view.switch-restore-persistence', persistRestoreError, { previousMode })
+      }
+      rebuildTrayMenu()
+    } catch (restoreError) {
+      logger.fatal('view.switch-restore', restoreError, { previousMode })
+    }
+    return false
+  } finally {
+    switchingMainView = false
+  }
+}
+
 function rebuildTrayMenu() {
   if (!tray || tray.isDestroyed() || !stickyService) return
   tray.setContextMenu(
@@ -1762,6 +1972,8 @@ function rebuildTrayMenu() {
       buildStickyTrayTemplate({
         stickyService,
         openMainWindow,
+        activeViewMode,
+        switchMainView,
         quitApplication: () => {
           isQuitting = true
           app.quit()
@@ -1796,6 +2008,8 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn('[storage] 恢复未完成的存储操作失败:', error)
   }
+  activeViewMode = readApplicationSettings().activeView
+  resolvedSettings = createDefaultSettings(activeViewMode)
   refreshResolvedSettings({ incrementRevision: true })
   handleProtocolArgs(process.argv)
 
@@ -1991,8 +2205,8 @@ app.whenReady().then(async () => {
   )
 
   /**
-   * 恢复全部持久化设置默认值。
-   * 仅清空 app_settings，不触碰便签、标签、模板、附件或开机自启 OS 状态。
+   * 恢复当前视图的持久化设置默认值。
+   * 不触碰应用级设置、另一视图、业务数据或开机自启 OS 状态。
    * 当前窗口立即恢复默认宽高并保留当前位置，同时清除下次启动时的几何记录。
    */
   ipcMain.handle('reset-settings', () => {
@@ -2005,7 +2219,11 @@ app.whenReady().then(async () => {
     }
     // 清表后若窗口没有再次移动/缩放，退出时不能把旧边界重新写回。
     geometryDirty = false
-    clearAllSettings()
+    // 旧版本把远程开关放在 main 作用域。清空列表设置前先固化到真正的应用级
+    // 作用域，保证“恢复当前视图”绝不会顺带重置公共隐私选择。
+    writeApplicationSetting('remote.receiveNotices', resolvedSettings.remote.receiveNotices)
+    writeApplicationSetting('remote.uploadDeviceInfo', resolvedSettings.remote.uploadDeviceInfo)
+    clearSettings(getActiveWindowName())
     refreshResolvedSettings({ incrementRevision: true })
     applyResolvedWindowRuntime()
     applyResolvedBlurRuntime()
@@ -2013,8 +2231,12 @@ app.whenReady().then(async () => {
     // 宽高立即恢复为当前显示器工作区的默认比例；位置仍保持当前值。
     if (mainWindow && !mainWindow.isDestroyed()) {
       const display = screen.getDisplayMatching(mainWindow.getBounds())
-      const defaultWidth = Math.round(display.workAreaSize.width * DEFAULT_WIDTH_RATIO)
-      const defaultHeight = Math.round(display.workAreaSize.height * DEFAULT_HEIGHT_RATIO)
+      const defaultWidth = Math.round(
+        display.workAreaSize.width * resolvedSettings.geometry.widthRatio
+      )
+      const defaultHeight = Math.round(
+        display.workAreaSize.height * resolvedSettings.geometry.heightRatio
+      )
       suppressGeometryPersistenceUntil = Date.now() + 750
       mainWindow.setSize(defaultWidth, defaultHeight)
     }
@@ -2081,96 +2303,106 @@ app.whenReady().then(async () => {
 
   /** 设置模糊配置（立即生效 + 持久化到数据库） */
   ipcMain.handle('set-blur-config', async (_event, config) => {
-    const requestRevision = ++blurConfigRequestRevision
-    const activationRevision = wallpaperActivationRevision
-    // 本次请求必须持有独立快照。关闭壁纸会从 DB 刷新完整设置，而 DB 中的
-    // blur.enabled 此时还是旧值，不能让它覆盖用户刚刚提交的启用请求。
-    const requestedConfig = {
-      enabled: config.enabled !== undefined ? Boolean(config.enabled) : blurConfig.enabled,
-      radius: config.radius !== undefined ? config.radius : blurConfig.radius,
-      saturation: config.saturation !== undefined ? config.saturation : blurConfig.saturation,
-      cornerRadius:
-        config.cornerRadius !== undefined ? config.cornerRadius : blurConfig.cornerRadius
-    }
-    Object.assign(blurConfig, requestedConfig)
-
-    // 启用时若启动阶段初始化失败，则现场重试一次，以便把详细错误反馈给用户。
-    const enableRequested = blurConfig.enabled
-    // 先让壁纸退场，再创建/启用原生层；失败时恢复刚才挂起的壁纸。
-    const suspendedWallpaper = enableRequested ? deactivateWallpaperForGlass() : null
-    if (suspendedWallpaper) {
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 190))
-      if (requestRevision !== blurConfigRequestRevision) {
-        const supersededByWallpaper = activationRevision !== wallpaperActivationRevision
-        const snapshot =
-          !supersededByWallpaper && !blurConfig.enabled && suspendedWallpaper
-            ? restoreSuspendedWallpaper(suspendedWallpaper)
-            : getResolvedSettingsSnapshot()
-        return {
-          success: snapshot.runtime.blur.effectiveEnabled,
-          config: { ...blurConfig },
-          runtime: snapshot.runtime.blur,
-          error: snapshot.runtime.blur.error,
-          nativeError: snapshot.runtime.blur.nativeError
-        }
+    blurSettingsRequestsInFlight += 1
+    try {
+      const requestRevision = ++blurConfigRequestRevision
+      const activationRevision = wallpaperActivationRevision
+      // 本次请求必须持有独立快照。关闭壁纸会从 DB 刷新完整设置，而 DB 中的
+      // blur.enabled 此时还是旧值，不能让它覆盖用户刚刚提交的启用请求。
+      const requestedConfig = {
+        enabled: config.enabled !== undefined ? Boolean(config.enabled) : blurConfig.enabled,
+        radius: config.radius !== undefined ? config.radius : blurConfig.radius,
+        saturation: config.saturation !== undefined ? config.saturation : blurConfig.saturation,
+        cornerRadius:
+          config.cornerRadius !== undefined ? config.cornerRadius : blurConfig.cornerRadius
       }
-      // deactivateWallpaperForGlass() 内部的完整设置刷新会恢复数据库旧值；
-      // 退场完成且请求仍为最新时，重新提交本次请求自己的快照。
       Object.assign(blurConfig, requestedConfig)
-    }
-    if (!enableRequested) {
-      blurRuntimeFailed = false
-      blurInitializationError = null
-      blurInitializationNativeError = null
-      updateBlurDiagnostic(
-        { status: 'disabled', lastCheckedAt: Date.now(), message: '系统毛玻璃未启用' },
-        { notify: false }
+
+      // 启用时若启动阶段初始化失败，则现场重试一次，以便把详细错误反馈给用户。
+      const enableRequested = blurConfig.enabled
+      // 先让壁纸退场，再创建/启用原生层；失败时恢复刚才挂起的壁纸。
+      const suspendedWallpaper = enableRequested ? deactivateWallpaperForGlass() : null
+      if (suspendedWallpaper) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 190))
+        if (requestRevision !== blurConfigRequestRevision) {
+          const supersededByWallpaper = activationRevision !== wallpaperActivationRevision
+          const snapshot =
+            !supersededByWallpaper && !blurConfig.enabled && suspendedWallpaper
+              ? restoreSuspendedWallpaper(suspendedWallpaper)
+              : getResolvedSettingsSnapshot()
+          return {
+            success: snapshot.runtime.blur.effectiveEnabled,
+            config: { ...blurConfig },
+            runtime: snapshot.runtime.blur,
+            error: snapshot.runtime.blur.error,
+            nativeError: snapshot.runtime.blur.nativeError
+          }
+        }
+        // deactivateWallpaperForGlass() 内部的完整设置刷新会恢复数据库旧值；
+        // 退场完成且请求仍为最新时，重新提交本次请求自己的快照。
+        Object.assign(blurConfig, requestedConfig)
+      }
+      if (!enableRequested) {
+        blurRuntimeFailed = false
+        blurInitializationError = null
+        blurInitializationNativeError = null
+        updateBlurDiagnostic(
+          { status: 'disabled', lastCheckedAt: Date.now(), message: '系统毛玻璃未启用' },
+          { notify: false }
+        )
+      }
+      const initializationResult =
+        enableRequested && blurCaps.supported && !blurInitialized ? initializeBlurRuntime() : null
+
+      // 初始化失败时不能让持久化值继续显示为“已启用”，否则设置值会与实际效果不一致。
+      if (enableRequested && initializationResult && !initializationResult.success) {
+        blurConfig.enabled = false
+      }
+
+      let snapshot = persistSettingValues(
+        [
+          { id: 'blur.enabled', value: blurConfig.enabled },
+          { id: 'blur.radius', value: blurConfig.radius },
+          { id: 'blur.saturation', value: blurConfig.saturation },
+          { id: 'blur.cornerRadius', value: blurConfig.cornerRadius }
+        ],
+        // 新初始化路径已经在 initializeBlurRuntime 中提交过完整配置。
+        { applyBlurRuntime: !initializationResult?.success }
       )
-    }
-    const initializationResult =
-      enableRequested && blurCaps.supported && !blurInitialized ? initializeBlurRuntime() : null
+      let runtime = snapshot.runtime.blur
 
-    // 初始化失败时不能让持久化值继续显示为“已启用”，否则设置值会与实际效果不一致。
-    if (enableRequested && initializationResult && !initializationResult.success) {
-      blurConfig.enabled = false
-    }
+      // 重新启用时原生引擎通常已经初始化，因此不会再次经过
+      // initializeBlurRuntime() 更新诊断状态。配置实际生效后立即执行完整健康
+      // 检查，让界面拿到经过原生效果链验证的最终状态，而不是等待下一分钟调度。
+      if (enableRequested && runtime.effectiveEnabled) {
+        runBlurRuntimeDiagnostic({ reason: 'settings-change', now: Date.now() })
+        snapshot = getResolvedSettingsSnapshot()
+        runtime = snapshot.runtime.blur
+      }
 
-    let snapshot = persistSettingValues(
-      [
-        { id: 'blur.enabled', value: blurConfig.enabled },
-        { id: 'blur.radius', value: blurConfig.radius },
-        { id: 'blur.saturation', value: blurConfig.saturation },
-        { id: 'blur.cornerRadius', value: blurConfig.cornerRadius }
-      ],
-      // 新初始化路径已经在 initializeBlurRuntime 中提交过完整配置。
-      { applyBlurRuntime: !initializationResult?.success }
-    )
-    let runtime = snapshot.runtime.blur
-
-    // 重新启用时原生引擎通常已经初始化，因此不会再次经过
-    // initializeBlurRuntime() 更新诊断状态。配置实际生效后立即执行完整健康
-    // 检查，让界面拿到经过原生效果链验证的最终状态，而不是等待下一分钟调度。
-    if (enableRequested && runtime.effectiveEnabled) {
-      runBlurRuntimeDiagnostic({ reason: 'settings-change', now: Date.now() })
-      snapshot = getResolvedSettingsSnapshot()
-      runtime = snapshot.runtime.blur
-    }
-
-    if (enableRequested && !runtime.effectiveEnabled && suspendedWallpaper) {
-      snapshot = restoreSuspendedWallpaper(suspendedWallpaper)
-      runtime = snapshot.runtime.blur
-    }
-    return {
-      success: !enableRequested || runtime.effectiveEnabled,
-      config: { ...blurConfig },
-      runtime,
-      error: initializationResult?.error ?? runtime.error,
-      nativeError: initializationResult?.nativeError ?? runtime.nativeError
+      if (enableRequested && !runtime.effectiveEnabled && suspendedWallpaper) {
+        snapshot = restoreSuspendedWallpaper(suspendedWallpaper)
+        runtime = snapshot.runtime.blur
+      }
+      return {
+        success: !enableRequested || runtime.effectiveEnabled,
+        config: { ...blurConfig },
+        runtime,
+        error: initializationResult?.error ?? runtime.error,
+        nativeError: initializationResult?.nativeError ?? runtime.nativeError
+      }
+    } finally {
+      blurSettingsRequestsInFlight = Math.max(0, blurSettingsRequestsInFlight - 1)
+      if (blurSettingsRequestsInFlight === 0 && queuedViewSwitch) {
+        const targetMode = queuedViewSwitch
+        queuedViewSwitch = null
+        setImmediate(() => switchMainView(targetMode))
+      }
     }
   })
 
   // ---- 主页面壁纸 IPC ----
-  ipcMain.handle('wallpapers:list', () => listWallpaperRecords())
+  ipcMain.handle('wallpapers:list', () => listWallpaperLibraryRecords())
   ipcMain.handle('wallpapers:get-thumbnail', (_event, { id, maxSize }) =>
     getWallpaperThumbnail(id, maxSize)
   )
@@ -2220,14 +2452,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('wallpapers:disable', () => persistWallpaperState({ enabled: false }))
   ipcMain.handle('wallpapers:delete', async (_event, { id }) => {
     const parsedId = Number(id)
-    if (resolvedSettings.wallpaper.enabled && resolvedSettings.wallpaper.activeId === parsedId) {
-      throw new Error('请先切换或关闭当前壁纸')
-    }
-    const clearsSelection = resolvedSettings.wallpaper.activeId === parsedId
+    const usedBy = getWallpaperUsage(parsedId)
     const deleted = await deleteWallpaperVersion(parsedId, {
-      clearSelectionForWindow: clearsSelection ? WINDOW_NAME : null
+      clearSelectionForWindows: usedBy.map(getViewSettingsScope)
     })
-    if (deleted && clearsSelection) {
+    if (deleted && usedBy.includes(activeViewMode)) {
       refreshResolvedSettings({ incrementRevision: true })
       broadcastSettingsChanged()
     }
@@ -2256,7 +2485,9 @@ app.whenReady().then(async () => {
   stickyService = new ElectronStickyService({
     getMainWindow: () => mainWindow,
     getNoteById,
-    getDefaultAppearance: () => resolvedSettings.sticky,
+    // 便利贴属于列表能力；月视图处于活动状态时也不能把它的默认占位值当成
+    // 用户在列表设置页保存的便利贴外观。
+    getDefaultAppearance: () => getViewSettings(VIEW_MODES.LIST).sticky,
     preloadPath: join(PRELOAD_ROOT, 'sticky.js'),
     rendererFile: join(RENDERER_ROOT, 'sticky.html'),
     rendererUrl:
@@ -2489,7 +2720,7 @@ app.on('before-quit', () => {
         lastVisibleBounds: lastVisibleMainWindowBounds,
         currentBounds: mainWindow.getBounds()
       })
-      setSettingsBatch(WINDOW_NAME, [
+      setSettingsBatch(getActiveWindowName(), [
         serializeSetting('geometry.posX', bounds.x),
         serializeSetting('geometry.posY', bounds.y),
         serializeSetting('geometry.width', bounds.width),

@@ -56,7 +56,7 @@ const api = {
   setSettingValue: (id, value) => ipcRenderer.invoke('set-setting-value', id, value),
   /** 获取 DB 值覆盖共享默认值后的完整设置快照 */
   getSettingsSnapshot: () => ipcRenderer.invoke('get-settings-snapshot'),
-  /** 清空 app_settings 并恢复共享默认设置（不影响业务数据和开机自启） */
+  /** 只恢复当前视图的独立默认设置（不影响公共设置、其他视图和业务数据） */
   resetSettings: () => ipcRenderer.invoke('reset-settings'),
   /** 监听设置快照变化；返回取消监听函数 */
   onSettingsChanged: (callback) => {

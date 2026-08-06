@@ -100,6 +100,11 @@ export function clearAllSettings() {
   return db.prepare('DELETE FROM app_settings').run().changes
 }
 
+/** 只清空一个窗口/视图作用域，应用级设置和其他视图不受影响。 */
+export function clearSettings(windowName) {
+  return db.prepare('DELETE FROM app_settings WHERE window_name = ?').run(windowName).changes
+}
+
 const ATTACHMENT_OPERATION_MANIFEST = 'operation.json'
 const ATTACHMENT_OPERATION_COMMITTED = 'committed'
 

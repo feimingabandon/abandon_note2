@@ -49,4 +49,20 @@ describe('sticky tray menu', () => {
     })
     expect(emptyTemplate.find((item) => item.label === '× 删除全部便利贴').enabled).toBe(false)
   })
+
+  it('marks the active main view and switches through the tray submenu', () => {
+    const switchMainView = vi.fn()
+    const template = buildStickyTrayTemplate({
+      stickyService: createStickyService(),
+      openMainWindow: vi.fn(),
+      activeViewMode: 'month',
+      switchMainView,
+      quitApplication: vi.fn()
+    })
+    const viewMenu = template.find((item) => item.label === '当前视图：月视图')
+
+    expect(viewMenu.submenu.find((item) => item.label === '月视图').checked).toBe(true)
+    viewMenu.submenu.find((item) => item.label === '便签列表').click()
+    expect(switchMainView).toHaveBeenCalledWith('list')
+  })
 })

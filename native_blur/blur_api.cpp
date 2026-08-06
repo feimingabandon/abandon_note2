@@ -5,6 +5,7 @@
 #include "blur_api.h"
 #include "blur_engine.h"
 #include <algorithm>
+#include <cstdlib>
 #include <cstdio>
 #include <winternl.h>
 
@@ -174,21 +175,33 @@ BOOL CALLBACK DetectAdjacentMonitor(
     info.cbSize = sizeof(info);
     if (!GetMonitorInfoW(monitor, &info)) return TRUE;
 
-    const bool touchesEdge = context->side < 0
-        ? info.rcMonitor.right == context->currentBounds.left
-        : info.rcMonitor.left == context->currentBounds.right;
+    const bool vertical = std::abs(context->side) == 2;
+    const bool touchesEdge = vertical
+        ? (context->side < 0
+            ? info.rcMonitor.bottom == context->currentBounds.top
+            : info.rcMonitor.top == context->currentBounds.bottom)
+        : (context->side < 0
+            ? info.rcMonitor.right == context->currentBounds.left
+            : info.rcMonitor.left == context->currentBounds.right);
     if (!touchesEdge) return TRUE;
 
-    const LONG overlapTop = std::max(context->windowBounds.top, info.rcMonitor.top);
-    const LONG overlapBottom = std::min(context->windowBounds.bottom, info.rcMonitor.bottom);
-    if (overlapBottom > overlapTop) context->blocked = true;
+    if (vertical) {
+        const LONG overlapLeft = std::max(context->windowBounds.left, info.rcMonitor.left);
+        const LONG overlapRight = std::min(context->windowBounds.right, info.rcMonitor.right);
+        if (overlapRight > overlapLeft) context->blocked = true;
+    } else {
+        const LONG overlapTop = std::max(context->windowBounds.top, info.rcMonitor.top);
+        const LONG overlapBottom = std::min(context->windowBounds.bottom, info.rcMonitor.bottom);
+        if (overlapBottom > overlapTop) context->blocked = true;
+    }
     return context->blocked ? FALSE : TRUE;
 }
 }
 
 int WindowMotion_IsEdgeExposed(void* hwndValue, int side) {
     const HWND hwnd = static_cast<HWND>(hwndValue);
-    if (!hwnd || !IsWindow(hwnd) || (side != -1 && side != 1)) return 0;
+    if (!hwnd || !IsWindow(hwnd) ||
+        (side != -2 && side != -1 && side != 1 && side != 2)) return 0;
 
     RECT windowBounds{};
     if (!GetWindowRect(hwnd, &windowBounds)) return 0;
@@ -198,9 +211,11 @@ int WindowMotion_IsEdgeExposed(void* hwndValue, int side) {
     currentInfo.cbSize = sizeof(currentInfo);
     if (!currentMonitor || !GetMonitorInfoW(currentMonitor, &currentInfo)) return 0;
 
-    // 任务栏占据左/右边时，工作区边缘并不是桌面的真实外边缘。
-    if (side < 0 && currentInfo.rcWork.left != currentInfo.rcMonitor.left) return 0;
-    if (side > 0 && currentInfo.rcWork.right != currentInfo.rcMonitor.right) return 0;
+    // 任务栏占据目标边缘时，工作区边缘并不是桌面的真实外边缘。
+    if (side == -1 && currentInfo.rcWork.left != currentInfo.rcMonitor.left) return 0;
+    if (side == 1 && currentInfo.rcWork.right != currentInfo.rcMonitor.right) return 0;
+    if (side == -2 && currentInfo.rcWork.top != currentInfo.rcMonitor.top) return 0;
+    if (side == 2 && currentInfo.rcWork.bottom != currentInfo.rcMonitor.bottom) return 0;
 
     EdgeExposureContext context{
         currentMonitor,

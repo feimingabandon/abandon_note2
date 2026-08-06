@@ -36,6 +36,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/renderer/index.html'),
+          month: resolve('src/renderer/month.html'),
           sticky: resolve('src/renderer/sticky.html')
         }
       }
