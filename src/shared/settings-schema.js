@@ -162,7 +162,7 @@ const definitions = [
     id: 'css.windowOpacity',
     path: ['css', 'windowOpacity'],
     db: { type: 'css', key: 'window_opacity' },
-    defaultValue: 0.6,
+    defaultValue: 0.3,
     parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 1 }),
     serialize: String,
     remark: '窗口透明度（0~1 浮点数）'
@@ -198,7 +198,7 @@ const definitions = [
     id: 'blur.radius',
     path: ['blur', 'radius'],
     db: { type: 'system', key: 'blur_radius' },
-    defaultValue: 20,
+    defaultValue: 12,
     parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 40 }),
     serialize: String,
     remark: '系统模糊半径（0~40 DIP）'
@@ -418,8 +418,8 @@ function buildDefaults(viewMode = VIEW_MODES.LIST) {
     setAtPath(defaults, definition.path, cloneValue(definition.defaultValue))
   })
   if (normalizeViewMode(viewMode) === VIEW_MODES.MONTH) {
-    defaults.geometry.widthRatio = 0.8
-    defaults.geometry.heightRatio = 0.8
+    defaults.geometry.widthRatio = 0.7
+    defaults.geometry.heightRatio = 0.7
     defaults.ui.settingsPanelSize = 40
   }
   return defaults

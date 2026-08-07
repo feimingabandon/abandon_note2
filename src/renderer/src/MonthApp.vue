@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
+import TitlebarActions from './components/system/TitlebarActions.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue'
 import SettingsPanel from './components/system/SettingsPanel.vue'
 import MessageToast from './components/system/MessageToast.vue'
@@ -167,14 +168,22 @@ onUnmounted(() => {
         title="月视图"
         :style-variant="titlebarStyle"
       >
-        <div class="month-titlebar-actions" :class="`month-titlebar-actions--${titlebarStyle}`">
-          <button class="month-titlebar-btn" title="设置" @click="openSettings">
-            <img src="@/resources/icons/settings.png" alt="设置" />
+        <TitlebarActions :style-variant="titlebarStyle">
+          <button
+            class="titlebar-btn titlebar-btn-settings month-titlebar-btn"
+            title="设置"
+            @click="openSettings"
+          >
+            <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
           </button>
-          <button class="month-titlebar-btn" title="帮助（暂未开放）" aria-disabled="true">
-            <img src="@/resources/icons/help.svg" alt="帮助" />
+          <button
+            class="titlebar-btn titlebar-btn-help month-titlebar-btn"
+            title="帮助（暂未开放）"
+            aria-disabled="true"
+          >
+            <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
           </button>
-        </div>
+        </TitlebarActions>
       </AppTitlebar>
       <main class="month-content" aria-label="月视图内容区域" />
     </div>
@@ -255,44 +264,5 @@ onUnmounted(() => {
 .month-wallpaper-enter-from,
 .month-wallpaper-leave-to {
   opacity: 0;
-}
-
-.month-titlebar-actions {
-  display: flex;
-  gap: 8rem;
-}
-
-.month-titlebar-btn {
-  width: 28rem;
-  height: 28rem;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: 8rem;
-  color: var(--text-color);
-  background: color-mix(in srgb, var(--text-color) 7%, transparent);
-  cursor: pointer;
-  transition:
-    background-color var(--motion-fast) ease,
-    transform var(--motion-fast) ease;
-}
-
-.month-titlebar-btn:hover {
-  background: color-mix(in srgb, var(--text-color) 14%, transparent);
-}
-
-.month-titlebar-btn:active {
-  transform: scale(0.92);
-}
-
-.month-titlebar-btn img {
-  width: 16rem;
-  height: 16rem;
-  opacity: 0.78;
-}
-
-.month-titlebar-actions--microsoft {
-  flex-direction: row-reverse;
 }
 </style>

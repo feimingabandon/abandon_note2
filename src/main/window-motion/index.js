@@ -4,6 +4,7 @@ import {
   moveWindowPhysical
 } from '../bridge/blur_bridge.js'
 import { isDisplayEdgeExposed } from './dock-edge.js'
+import { NativeEdgeMonitor } from './native-edge-monitor.js'
 
 function assertFiniteGeometry(geometry, label) {
   const values = [
@@ -26,6 +27,7 @@ class WindowsPhysicalMotionBackend {
   constructor(window) {
     this.window = window
     this.moving = false
+    this.edgeMonitor = new NativeEdgeMonitor(window)
   }
 
   isMoving() {
@@ -34,6 +36,26 @@ class WindowsPhysicalMotionBackend {
 
   isDockEdgeExposed(side) {
     return isWindowDockEdgeExposed(this.window, side)
+  }
+
+  getEdgeMonitorMessageId() {
+    return this.edgeMonitor.getMessageId()
+  }
+
+  armEdgeMonitor(side, generation, options) {
+    return this.edgeMonitor.arm(side, generation, options)
+  }
+
+  disarmEdgeMonitor(generation) {
+    return this.edgeMonitor.disarm(generation)
+  }
+
+  getEdgeMonitorStatus() {
+    return this.edgeMonitor.getStatus()
+  }
+
+  consumeEdgeMonitorEvent() {
+    return this.edgeMonitor.consumeEvent()
   }
 
   capture() {
@@ -156,6 +178,26 @@ class ElectronPointMotionBackend {
     const bounds = this.window.getBounds()
     const display = this.screen.getDisplayMatching(bounds)
     return isDisplayEdgeExposed(display, this.screen.getAllDisplays(), side, bounds)
+  }
+
+  getEdgeMonitorMessageId() {
+    return null
+  }
+
+  armEdgeMonitor() {
+    return { success: false, code: null, error: '当前平台没有原生边缘监视器' }
+  }
+
+  disarmEdgeMonitor() {
+    return true
+  }
+
+  getEdgeMonitorStatus() {
+    return { supported: false, state: 'unavailable', workerAlive: false, generation: 0, side: null }
+  }
+
+  consumeEdgeMonitorEvent() {
+    return null
   }
 
   capture() {

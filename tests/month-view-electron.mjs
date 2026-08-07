@@ -60,21 +60,6 @@ function getMonthWindow() {
   )
 }
 
-function getTriggerWindow(monthWindow) {
-  return BrowserWindow.getAllWindows().find(
-    (window) =>
-      window !== monthWindow &&
-      !window.isDestroyed() &&
-      window.webContents.getURL().startsWith('data:text/html')
-  )
-}
-
-function verticalIntersectionHeight(bounds, workArea) {
-  const top = Math.max(bounds.y, workArea.y)
-  const bottom = Math.min(bounds.y + bounds.height, workArea.y + workArea.height)
-  return Math.max(0, bottom - top)
-}
-
 const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-month-e2e-'))
 let exitCode = 0
 let originalCursor = null
@@ -127,15 +112,15 @@ async function runMonthViewTests() {
     const display = screen.getDisplayMatching(monthWindow.getBounds())
     const workArea = display.workArea
     const expectedBounds = {
-      x: workArea.x + Math.round((workArea.width - Math.round(workArea.width * 0.8)) / 2),
-      y: workArea.y + Math.round((workArea.height - Math.round(workArea.height * 0.8)) / 2),
-      width: Math.round(workArea.width * 0.8),
-      height: Math.round(workArea.height * 0.8)
+      x: workArea.x + Math.round((workArea.width - Math.round(workArea.width * 0.7)) / 2),
+      y: workArea.y + Math.round((workArea.height - Math.round(workArea.height * 0.7)) / 2),
+      width: Math.round(workArea.width * 0.7),
+      height: Math.round(workArea.height * 0.7)
     }
     assert.deepEqual(
       monthWindow.getBounds(),
       expectedBounds,
-      '月视图首次窗口必须为工作区 80% 并居中'
+      '月视图首次窗口必须为工作区 70% 并居中'
     )
 
     const initialUi = await monthWindow.webContents.executeJavaScript(`(() => ({
@@ -154,6 +139,94 @@ async function runMonthViewTests() {
     assert.match(initialUi.helpDisabled || '', /暂未开放/)
     assert.equal(initialUi.templateButton, false, '月视图导航栏不应包含模板按钮')
     assert.equal(initialUi.controlCount, 3, '月视图应复用关闭、置顶、锁定三个窗口控制')
+
+    const appleTitlebar = await monthWindow.webContents.executeJavaScript(`(() => {
+    const titlebar = document.querySelector('.app-titlebar')
+    const group = document.querySelector('.titlebar-actions-group')
+    const settings = document.querySelector('.month-titlebar-btn[title="设置"]')
+    const help = document.querySelector('.month-titlebar-btn[aria-disabled="true"]')
+    const settingsRect = settings.getBoundingClientRect()
+    const helpRect = help.getBoundingClientRect()
+    return {
+      titlebarClass: titlebar.className,
+      groupClass: group.className,
+      settingsLeft: settingsRect.left,
+      helpLeft: helpRect.left,
+      settingsWidth: settingsRect.width,
+      settingsHeight: settingsRect.height,
+      settingsRadius: getComputedStyle(settings).borderRadius,
+      settingsBackground: getComputedStyle(settings).backgroundColor
+    }
+  })()`)
+    assert.match(appleTitlebar.titlebarClass, /app-titlebar--apple/)
+    assert.match(appleTitlebar.groupClass, /titlebar-actions-group--apple/)
+    assert.ok(
+      Math.abs(appleTitlebar.settingsWidth - appleTitlebar.settingsHeight) < 0.1,
+      'Apple 风格的月视图业务按钮必须为圆形'
+    )
+    assert.equal(appleTitlebar.settingsRadius, '50%')
+    assert.equal(appleTitlebar.settingsBackground, 'rgb(0, 113, 227)')
+    assert.ok(
+      appleTitlebar.settingsLeft < appleTitlebar.helpLeft,
+      'Apple 风格应保持设置、帮助的 DOM 顺序'
+    )
+
+    await monthWindow.webContents.executeJavaScript(
+      `window.api.setSettingValue('appearance.titlebarStyle', 'microsoft')`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `document.querySelector('.app-titlebar')?.classList.contains('app-titlebar--microsoft')`
+        ),
+      '月视图没有切换到 Microsoft 导航栏风格'
+    )
+    await wait(250)
+    const microsoftTitlebar = await monthWindow.webContents.executeJavaScript(`(() => {
+    const title = document.querySelector('.app-titlebar-title').getBoundingClientRect()
+    const group = document.querySelector('.titlebar-actions-group')
+    const settings = document.querySelector('.month-titlebar-btn[title="设置"]')
+    const help = document.querySelector('.month-titlebar-btn[aria-disabled="true"]')
+    const icon = settings.querySelector('.btn-icon')
+    const settingsRect = settings.getBoundingClientRect()
+    return {
+      groupClass: group.className,
+      titleCenter: title.left + title.width / 2,
+      viewportCenter: window.innerWidth / 2,
+      settingsLeft: settingsRect.left,
+      helpLeft: help.getBoundingClientRect().left,
+      settingsWidth: settingsRect.width,
+      settingsHeight: settingsRect.height,
+      settingsBackground: getComputedStyle(settings).backgroundColor,
+      iconOpacity: getComputedStyle(icon).opacity
+    }
+  })()`)
+    assert.match(microsoftTitlebar.groupClass, /titlebar-actions-group--microsoft/)
+    assert.ok(
+      Math.abs(microsoftTitlebar.titleCenter - microsoftTitlebar.viewportCenter) < 0.5,
+      'Microsoft 风格的月视图标题必须相对窗口真正居中'
+    )
+    assert.ok(
+      microsoftTitlebar.settingsWidth > microsoftTitlebar.settingsHeight,
+      'Microsoft 风格的月视图业务按钮必须使用 Fluent 矩形尺寸'
+    )
+    assert.equal(microsoftTitlebar.settingsBackground, 'rgba(0, 0, 0, 0)')
+    assert.equal(microsoftTitlebar.iconOpacity, '0.72')
+    assert.ok(
+      microsoftTitlebar.settingsLeft < microsoftTitlebar.helpLeft,
+      'Microsoft 风格不得反转设置和帮助按钮的顺序'
+    )
+
+    await monthWindow.webContents.executeJavaScript(
+      `window.api.setSettingValue('appearance.titlebarStyle', 'apple')`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `document.querySelector('.app-titlebar')?.classList.contains('app-titlebar--apple')`
+        ),
+      '月视图没有恢复 Apple 导航栏风格'
+    )
 
     assert.equal(monthWindow.isAlwaysOnTop(), true, '月视图应恢复默认置顶状态')
     await monthWindow.webContents.executeJavaScript(`document.querySelector('.light-pin').click()`)
@@ -234,36 +307,41 @@ async function runMonthViewTests() {
 
     const user32 = koffi.load('user32.dll')
     const setCursorPos = user32.func('int SetCursorPos(int X, int Y)')
+    const nativeDll = koffi.load(resolve('native_blur', 'build', 'bin', 'blur_engine.dll'))
+    const getEdgeStatusJson = nativeDll.func('WindowMotion_GetEdgeMonitorStatusJson', 'str', [])
+    const getEdgeStatus = () => JSON.parse(getEdgeStatusJson())
     originalCursor = screen.getCursorScreenPoint()
     assert.equal(setCursorPos(workArea.x + workArea.width - 2, workArea.y + workArea.height - 2), 1)
 
-    monthWindow.setPosition(expectedBounds.x, workArea.y)
-    await wait(250)
-    await monthWindow.webContents.executeJavaScript(`window.api.windowHover(false)`)
-    const triggerWindow = await waitUntil(
-      () => getTriggerWindow(monthWindow),
-      '月视图顶部贴边后没有创建 2px 触发窗口'
+    monthWindow.setPosition(expectedBounds.x, workArea.y + 10)
+    await waitUntil(
+      () => monthWindow.getBounds().y === workArea.y,
+      '月视图移入顶端 20px 阈值后没有吸附到工作区顶端'
     )
+    await monthWindow.webContents.executeJavaScript(`window.api.windowHover(false)`)
     await waitUntil(
       () => monthWindow.getBounds().y + monthWindow.getBounds().height <= workArea.y,
       '月视图没有完整滑出工作区顶部'
     )
-    await waitUntil(() => triggerWindow.isVisible(), '月视图顶部触发条没有显示')
+    const armedStatus = await waitUntil(() => {
+      const status = getEdgeStatus()
+      return status.workerAlive && ['armed', 'waiting-outside'].includes(status.state) && status
+    }, '月视图顶部贴边后没有启动原生边缘监视器')
+    assert.equal(armedStatus.side, -2, '月视图必须使用 DLL 顶部监视器')
+    assert.equal(armedStatus.pollIntervalMs, 100, '月视图原生鼠标检测周期必须为 100ms')
     assert.equal(
-      verticalIntersectionHeight(triggerWindow.getBounds(), workArea),
-      2,
-      '月视图顶部触发条在工作区内必须只保留 2px'
+      BrowserWindow.getAllWindows().filter((window) => window !== monthWindow).length,
+      0,
+      'Windows 原生贴边隐藏不得创建 Electron 触发窗口'
     )
 
-    // trigger preload 只接受本触发窗口中的 mousemove；合成事件可验证正确 IPC 来源与恢复链路。
-    await triggerWindow.webContents.executeJavaScript(
-      `window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))`
-    )
+    const topTriggerX = expectedBounds.x + Math.floor(expectedBounds.width / 2)
+    assert.equal(setCursorPos(topTriggerX, workArea.y), 1)
     await waitUntil(
       () => monthWindow.getBounds().y === workArea.y,
-      '月视图顶部触发条没有将窗口滑回可见位置'
+      'DLL 没有在真实鼠标触顶后将月视图滑回可见位置'
     )
-    await waitUntil(() => !getTriggerWindow(monthWindow), '月视图恢复后没有销毁顶部触发条')
+    await waitUntil(() => getEdgeStatus().state === 'stopped', '月视图恢复后没有停止原生边缘监视器')
 
     // 月视图配置只允许 top。靠近底部并离开鼠标后，不得再次创建触发条或滑出屏幕。
     const bottomY = workArea.y + workArea.height - expectedBounds.height
@@ -271,11 +349,11 @@ async function runMonthViewTests() {
     await wait(300)
     await monthWindow.webContents.executeJavaScript(`window.api.windowHover(false)`)
     await wait(700)
-    assert.equal(getTriggerWindow(monthWindow), undefined, '月视图底部不得创建贴边触发条')
+    assert.equal(getEdgeStatus().state, 'stopped', '月视图底部不得启动原生边缘监视器')
     assert.equal(monthWindow.getBounds().y, bottomY, '月视图底部不得自动隐藏')
 
     report(
-      'month view application integration test passed: startup, geometry, navbar, settings, top dock and bottom exclusion'
+      'month view application integration test passed: startup, geometry, navbar, settings, native top dock and bottom exclusion'
     )
   } catch (error) {
     console.error(error)

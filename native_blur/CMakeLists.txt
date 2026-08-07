@@ -17,12 +17,14 @@ endif()
 set(SOURCES
     blur_engine.cpp
     blur_api.cpp
+    window_motion_edge_monitor.cpp
 )
 
 set(HEADERS
     blur_engine.h
     blur_api.h
     blur_effects.h
+    window_motion_edge_monitor.h
 )
 
 # 生成 DLL

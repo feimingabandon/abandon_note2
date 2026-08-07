@@ -4,6 +4,7 @@
 
 #include "blur_api.h"
 #include "blur_engine.h"
+#include "window_motion_edge_monitor.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
@@ -52,6 +53,7 @@ void Blur_ApplyConfig(int enabled, float radiusDip, float saturation, float corn
 }
 
 void Blur_Destroy(void) {
+    WindowMotionEdgeMonitor::Shutdown();
     BlurEngine::Engine::Instance().Destroy();
 }
 
@@ -254,4 +256,34 @@ int WindowMotion_MoveWindow(void* hwndValue, int physicalX, int physicalY) {
         engine.UpdateGeometry();
     }
     return 1;
+}
+
+int WindowMotion_ArmEdgeMonitor(
+    void* hwndValue,
+    int side,
+    int thicknessDip,
+    int pollIntervalMs,
+    unsigned long long generation) {
+    return WindowMotionEdgeMonitor::Arm(
+        static_cast<HWND>(hwndValue),
+        side,
+        thicknessDip,
+        pollIntervalMs,
+        generation);
+}
+
+int WindowMotion_DisarmEdgeMonitor(unsigned long long generation) {
+    return WindowMotionEdgeMonitor::Disarm(generation);
+}
+
+unsigned int WindowMotion_GetEdgeMessageId(void) {
+    return WindowMotionEdgeMonitor::GetMessageId();
+}
+
+const char* WindowMotion_GetEdgeMonitorStatusJson(void) {
+    return WindowMotionEdgeMonitor::GetStatusJson();
+}
+
+const char* WindowMotion_ConsumeEdgeEventJson(void) {
+    return WindowMotionEdgeMonitor::ConsumeEventJson();
 }

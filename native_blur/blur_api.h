@@ -49,6 +49,17 @@ BLUR_API int WindowMotion_MoveWindow(void* hwnd, int physicalX, int physicalY);
 BLUR_API const char* WindowMotion_GetSnapshotJson(void* hwnd);
 // side: -1=left, 1=right, -2=top, 2=bottom
 BLUR_API int WindowMotion_IsEdgeExposed(void* hwnd, int side);
+// Windows 原生边缘监视器：只在贴边隐藏期间每 pollIntervalMs 读取一次光标位置。
+BLUR_API int WindowMotion_ArmEdgeMonitor(
+    void* hwnd,
+    int side,
+    int thicknessDip,
+    int pollIntervalMs,
+    unsigned long long generation);
+BLUR_API int WindowMotion_DisarmEdgeMonitor(unsigned long long generation);
+BLUR_API unsigned int WindowMotion_GetEdgeMessageId(void);
+BLUR_API const char* WindowMotion_GetEdgeMonitorStatusJson(void);
+BLUR_API const char* WindowMotion_ConsumeEdgeEventJson(void);
 
 #ifdef __cplusplus
 }

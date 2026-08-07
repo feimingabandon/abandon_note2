@@ -1353,7 +1353,7 @@ const onConfirmResetSettings = async () => {
             <div class="setting-item setting-item-slider">
               <span class="setting-label"
                 >玻璃浓度<HelpButton
-                  text="控制主窗口背景颜色的覆盖强度。0=完全通透，1=不透明纯色底；不改变原生模糊强度。推荐60%"
+                  text="控制主窗口背景颜色的覆盖强度。0=完全通透，1=不透明纯色底；不改变原生模糊强度。默认30%"
               /></span>
               <span class="range-label-start">通透</span>
               <AppSlider v-model="windowOpacity" :min="0" :max="1" :step="0.01" />

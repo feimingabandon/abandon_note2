@@ -21,7 +21,9 @@ import {
   updateTemplate
 } from '../src/main/db/db-templates.js'
 import {
+  createNote,
   getNoteById,
+  normalizeNoteDurationDays,
   normalizeRequiredNoteContent,
   queryPinnedNotes
 } from '../src/main/db/db-notes.js'
@@ -51,6 +53,62 @@ assert.equal(
 )
 futureDb.close()
 
+const legacyDb = new Database(':memory:')
+legacyDb.exec(`
+  CREATE TABLE notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_type TEXT NOT NULL DEFAULT 'one_time' CHECK(note_type IN ('one_time')),
+    content TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'initialized'
+      CHECK(status IN ('initialized','in_progress','completed')),
+    is_deleted INTEGER NOT NULL DEFAULT 0 CHECK(is_deleted IN (0, 1)),
+    is_pinned INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0, 1)),
+    notify_enabled INTEGER NOT NULL DEFAULT 0 CHECK(notify_enabled IN (0, 1)),
+    effective_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    remind_again_at INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  INSERT INTO notes (
+    content, status, effective_at, finished_at, created_at, updated_at
+  ) VALUES ('legacy note', 'in_progress', 1000, 1000, 1000, 1000);
+  PRAGMA user_version = 1;
+`)
+createDatabaseSchema(legacyDb)
+assert.equal(legacyDb.pragma('user_version', { simple: true }), DATABASE_SCHEMA_VERSION)
+assert.equal(
+  legacyDb
+    .prepare("PRAGMA table_info('notes')")
+    .all()
+    .some((column) => column.name === 'duration_days'),
+  true
+)
+assert.deepEqual(legacyDb.prepare('SELECT content, duration_days FROM notes WHERE id = 1').get(), {
+  content: 'legacy note',
+  duration_days: 1
+})
+assert.throws(
+  () =>
+    legacyDb
+      .prepare(
+        `INSERT INTO notes (content, status, effective_at, duration_days, created_at, updated_at)
+         VALUES ('invalid duration', 'in_progress', 2000, 0, 2000, 2000)`
+      )
+      .run(),
+  /CHECK constraint failed/
+)
+createDatabaseSchema(legacyDb)
+assert.equal(
+  legacyDb
+    .prepare("PRAGMA table_info('notes')")
+    .all()
+    .filter((column) => column.name === 'duration_days').length,
+  1
+)
+legacyDb.close()
+
 const db = new Database(':memory:')
 db.pragma('foreign_keys = ON')
 createDatabaseSchema(db)
@@ -71,6 +129,7 @@ try {
     .all()
     .map((column) => column.name)
   assert.equal(noteColumns.includes('template_id'), false)
+  assert.equal(noteColumns.includes('duration_days'), true)
   assert.deepEqual(
     db
       .prepare("PRAGMA table_info('wallpaper_sources')")
@@ -173,6 +232,10 @@ try {
   )
   assert.equal(normalizeRequiredNoteContent('  保留首尾空白\n'), '  保留首尾空白\n')
   assert.throws(() => normalizeRequiredNoteContent(' \n\t '), /请输入便签内容/)
+  assert.equal(normalizeNoteDurationDays(1), 1)
+  assert.equal(normalizeNoteDurationDays('365'), 365)
+  assert.throws(() => normalizeNoteDurationDays(0), /持续天数/)
+  assert.throws(() => normalizeNoteDurationDays(1.5), /持续天数/)
 
   createTag('日常', '#007aff')
   createTag('重要', '#ff3b30')
@@ -454,6 +517,12 @@ try {
     pausedTemplateCount: 0,
     deletedTemplateCount: 0
   })
+
+  const defaultDurationNote = createNote({ content: '默认单日便签' })
+  const multiDayNote = createNote({ content: '跨日便签', durationDays: 7 })
+  assert.equal(defaultDurationNote.duration_days, 1)
+  assert.equal(multiDayNote.duration_days, 7)
+  assert.throws(() => createNote({ content: '无效持续时间', durationDays: 366 }), /持续天数/)
 
   console.log('backend integration tests passed')
 } finally {

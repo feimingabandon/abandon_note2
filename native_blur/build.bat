@@ -63,7 +63,7 @@ REM ==== 回退：MSBuild 方式 ====
 echo [INFO] CMake 未找到，使用 MSBuild...
 
 REM 生成 .cpp 文件列表（作为 cl.exe 输入）
-set "SOURCES=..\blur_engine.cpp ..\blur_api.cpp"
+set "SOURCES=..\blur_engine.cpp ..\blur_api.cpp ..\window_motion_edge_monitor.cpp"
 
 REM 编译为 DLL
 cl.exe /std:c++17 /EHsc /O2 /MT ^

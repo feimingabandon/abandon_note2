@@ -10,6 +10,7 @@ import draggable from 'vuedraggable'
 import TagSelector from '../ui/TagSelector.vue'
 import FilterTabs from '../ui/FilterTabs.vue'
 import NoteCard from './NoteCard.vue'
+import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
 
@@ -631,6 +632,15 @@ async function persistSortOrder(list) {
 
 const statusTransitions = reactive(new Map())
 const statusTransitionTimers = new Map()
+const earlyStartConfirmVisible = ref(false)
+const earlyStartNote = ref(null)
+const earlyStartMessage = computed(() => {
+  const durationDays = Math.max(1, Number(earlyStartNote.value?.duration_days) || 1)
+  if (durationDays > 1) {
+    return `该便签设置了持续 ${durationDays} 天。提前执行后，生效时间将改为当前时间，月视图中的连续显示日期也会从今天重新计算。是否确认提前执行？`
+  }
+  return '该便签尚未到达生效时间。提前执行后，生效时间将改为当前时间。是否确认提前执行？'
+})
 
 function statusTransitionFor(noteId) {
   return statusTransitions.get(noteId) || null
@@ -668,8 +678,28 @@ function finishStatusTransition(noteId, delay, callback) {
   })
 }
 
+/** 初始化便签先确认提前执行；其他状态保持原有单击流程。 */
+function onCardStatusAction(note) {
+  if (note.status === 'initialized') {
+    earlyStartNote.value = note
+    earlyStartConfirmVisible.value = true
+    return
+  }
+  void executeCardStatusAction(note)
+}
+
+function confirmEarlyStart() {
+  const note = earlyStartNote.value
+  earlyStartNote.value = null
+  if (note) void executeCardStatusAction(note)
+}
+
+function cancelEarlyStart() {
+  earlyStartNote.value = null
+}
+
 /** 状态圆环的主操作：初始化提前开始，进行中标记完成，已完成重新进行。 */
-async function onCardStatusAction(note) {
+async function executeCardStatusAction(note) {
   if (statusTransitions.has(note.id)) return
   const from = note.status
   const to =
@@ -1269,6 +1299,16 @@ defineExpose({
       </div>
     </template>
   </div>
+
+  <ConfirmDialog
+    v-model:visible="earlyStartConfirmVisible"
+    title="提前执行便签？"
+    :message="earlyStartMessage"
+    confirm-text="提前执行"
+    cancel-text="取消"
+    @confirm="confirmEarlyStart"
+    @cancel="cancelEarlyStart"
+  />
 </template>
 
 <style scoped>

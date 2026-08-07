@@ -102,8 +102,6 @@ const api = {
   // ---- 贴边隐藏 ----
   /** 通知主进程鼠标悬停状态（true=进入窗口, false=离开窗口） */
   windowHover: (isHovering) => ipcRenderer.send('window-hover', isHovering),
-  /** 边缘触发窗口：鼠标进入边缘时通知主进程恢复窗口 */
-  triggerEnter: () => ipcRenderer.send('trigger-enter'),
 
   // ---- 便签数据清理 ----
   /** 清空便签、模板、标签和附件，保留 app_settings */

@@ -7,6 +7,8 @@ import { getDb } from './db-connection.js'
 import { normalizeAssignedTagNames } from '../../shared/tag-rules.js'
 
 const now = () => Date.now()
+export const MIN_NOTE_DURATION_DAYS = 1
+export const MAX_NOTE_DURATION_DAYS = 365
 const TRANSITIONS = {
   initialized: new Set(['in_progress']),
   in_progress: new Set(['completed']),
@@ -18,6 +20,18 @@ export function normalizeRequiredNoteContent(value) {
   const content = String(value ?? '')
   if (!content.trim()) throw new Error('请输入便签内容')
   return content
+}
+
+export function normalizeNoteDurationDays(value = MIN_NOTE_DURATION_DAYS) {
+  const durationDays = Number(value)
+  if (
+    !Number.isInteger(durationDays) ||
+    durationDays < MIN_NOTE_DURATION_DAYS ||
+    durationDays > MAX_NOTE_DURATION_DAYS
+  ) {
+    throw new Error(`持续天数必须是 ${MIN_NOTE_DURATION_DAYS}~${MAX_NOTE_DURATION_DAYS} 之间的整数`)
+  }
+  return durationDays
 }
 
 // ============================================================
@@ -32,6 +46,7 @@ export function normalizeRequiredNoteContent(value) {
 export function createNote({
   content = '',
   effectiveAt = null,
+  durationDays = MIN_NOTE_DURATION_DAYS,
   noteType = 'one_time',
   notifyEnabled = 0,
   isPinned = 0,
@@ -39,6 +54,7 @@ export function createNote({
 } = {}) {
   const ts = now()
   const normalizedContent = normalizeRequiredNoteContent(content)
+  const normalizedDurationDays = normalizeNoteDurationDays(durationDays)
   const parsedEffectiveAt = Number(effectiveAt)
   const hasExplicitTime = Number.isFinite(parsedEffectiveAt) && parsedEffectiveAt > 0
   const effAt = hasExplicitTime ? parsedEffectiveAt : ts
@@ -50,8 +66,8 @@ export function createNote({
     .prepare(
       `INSERT INTO notes (
          note_type, content, status, is_pinned, notify_enabled,
-         effective_at, finished_at, sort_order, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         effective_at, duration_days, finished_at, sort_order, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       noteType,
@@ -60,6 +76,7 @@ export function createNote({
       isPinned ? 1 : 0,
       pendingNotification,
       effAt,
+      normalizedDurationDays,
       ts,
       sortOrder,
       ts,
@@ -114,13 +131,24 @@ export function updateNote(id, fields = {}) {
   const ts = now()
   const content =
     fields.content === undefined ? old.content : normalizeRequiredNoteContent(fields.content)
+  const durationDays =
+    fields.durationDays === undefined && fields.duration_days === undefined
+      ? old.duration_days
+      : normalizeNoteDurationDays(fields.durationDays ?? fields.duration_days)
   getDb()
     .prepare(
       `UPDATE notes SET
-         content = ?, is_pinned = ?, sort_order = ?, updated_at = ?
+         content = ?, is_pinned = ?, duration_days = ?, sort_order = ?, updated_at = ?
        WHERE id = ?`
     )
-    .run(content, fields.is_pinned ?? old.is_pinned, fields.sort_order ?? old.sort_order, ts, id)
+    .run(
+      content,
+      fields.is_pinned ?? old.is_pinned,
+      durationDays,
+      fields.sort_order ?? old.sort_order,
+      ts,
+      id
+    )
 
   return getNoteById(id)
 }
@@ -333,6 +361,7 @@ export function claimDueSnoozedNotes() {
  * @property {number} is_deleted
  * @property {number} notify_enabled
  * @property {number} effective_at
+ * @property {number} duration_days
  * @property {number|null} finished_at
  * @property {number} sort_order
  * @property {Array<{id:number,name:string,color:string|null}>} tags
@@ -419,6 +448,7 @@ function toNoteListItems(notes) {
       is_deleted: note.is_deleted,
       notify_enabled: note.notify_enabled,
       effective_at: note.effective_at,
+      duration_days: note.duration_days,
       finished_at: note.finished_at,
       sort_order: note.sort_order,
       created_at: note.created_at,

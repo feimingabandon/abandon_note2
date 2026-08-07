@@ -26,6 +26,45 @@ const NATIVE_ERROR_MESSAGES = {
   9: '原生模糊发生未知错误'
 }
 
+const EDGE_MONITOR_RESULT_MESSAGES = Object.freeze({
+  1: '原生边缘监视器已启动',
+  [-1]: '主窗口句柄无效',
+  [-2]: '贴边方向无效',
+  [-3]: '目标边缘不是可触达的真实屏幕外边缘',
+  [-4]: '无法生成有效的边缘触发区域',
+  [-5]: '当前输入桌面无法读取鼠标位置',
+  [-6]: '创建原生边缘监视停止事件失败',
+  [-7]: '创建原生边缘监视线程失败',
+  [-8]: '已经存在活动的原生边缘监视器',
+  [-9]: '停止原生边缘监视线程超时',
+  [-10]: '注册 Windows 边缘通知消息失败',
+  [-11]: '贴边会话代次无效'
+})
+
+function getNativeDockSide(side) {
+  return side === 'left'
+    ? -1
+    : side === 'right'
+      ? 1
+      : side === 'top'
+        ? -2
+        : side === 'bottom'
+          ? 2
+          : 0
+}
+
+function getDockSideName(side) {
+  return side === -1
+    ? 'left'
+    : side === 1
+      ? 'right'
+      : side === -2
+        ? 'top'
+        : side === 2
+          ? 'bottom'
+          : null
+}
+
 function getNativeError(fallback) {
   if (!lib) return { code: null, key: null, message: fallback }
   const code = lib.Blur_GetLastErrorCode()
@@ -111,6 +150,23 @@ function initNative() {
       'intptr_t',
       'int'
     ])
+    lib.WindowMotion_ArmEdgeMonitor = lib.func('WindowMotion_ArmEdgeMonitor', 'int', [
+      'intptr_t',
+      'int',
+      'int',
+      'int',
+      'uint64_t'
+    ])
+    lib.WindowMotion_DisarmEdgeMonitor = lib.func('WindowMotion_DisarmEdgeMonitor', 'int', [
+      'uint64_t'
+    ])
+    lib.WindowMotion_GetEdgeMessageId = lib.func('WindowMotion_GetEdgeMessageId', 'uint', [])
+    lib.WindowMotion_GetEdgeMonitorStatusJson = lib.func(
+      'WindowMotion_GetEdgeMonitorStatusJson',
+      'str',
+      []
+    )
+    lib.WindowMotion_ConsumeEdgeEventJson = lib.func('WindowMotion_ConsumeEdgeEventJson', 'str', [])
     return true
   } catch (e) {
     console.warn('[blur] DLL 加载失败:', e)
@@ -214,15 +270,75 @@ export function isWindowDockEdgeExposed(window, side) {
   if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
     return false
   }
-  const nativeSide =
-    side === 'left' ? -1 : side === 'right' ? 1 : side === 'top' ? -2 : side === 'bottom' ? 2 : 0
+  const nativeSide = getNativeDockSide(side)
   if (!nativeSide) return false
   return Boolean(lib.WindowMotion_IsEdgeExposed(getWindowHandleValue(window), nativeSide))
 }
 
+export function armWindowEdgeMonitor(
+  window,
+  side,
+  generation,
+  { thicknessDip = 2, pollIntervalMs = 100 } = {}
+) {
+  if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
+    return { success: false, code: null, error: 'Windows 原生边缘监视器不可用' }
+  }
+  const nativeSide = getNativeDockSide(side)
+  if (!nativeSide) return { success: false, code: -2, error: EDGE_MONITOR_RESULT_MESSAGES[-2] }
+  const code = lib.WindowMotion_ArmEdgeMonitor(
+    getWindowHandleValue(window),
+    nativeSide,
+    Math.max(1, Math.round(thicknessDip)),
+    Math.max(25, Math.round(pollIntervalMs)),
+    Number(generation)
+  )
+  return {
+    success: code === 1,
+    code,
+    error:
+      code === 1 ? null : EDGE_MONITOR_RESULT_MESSAGES[code] || `原生边缘监视器启动失败 (${code})`
+  }
+}
+
+export function disarmWindowEdgeMonitor(generation = 0) {
+  if (process.platform !== 'win32' || !initNative()) return true
+  return lib.WindowMotion_DisarmEdgeMonitor(Number(generation)) === 1
+}
+
+export function getWindowEdgeMonitorMessageId() {
+  if (process.platform !== 'win32' || !initNative()) return null
+  const messageId = lib.WindowMotion_GetEdgeMessageId()
+  return Number.isInteger(messageId) && messageId > 0 ? messageId : null
+}
+
+export function getWindowEdgeMonitorStatus() {
+  if (process.platform !== 'win32' || !initNative()) {
+    return {
+      supported: false,
+      state: 'unavailable',
+      workerAlive: false,
+      generation: 0,
+      side: null
+    }
+  }
+  const status = JSON.parse(lib.WindowMotion_GetEdgeMonitorStatusJson())
+  return { ...status, supported: true, side: getDockSideName(status.side) }
+}
+
+export function consumeWindowEdgeMonitorEvent() {
+  if (process.platform !== 'win32' || !initNative()) return null
+  const event = JSON.parse(lib.WindowMotion_ConsumeEdgeEventJson())
+  if (!event || event.kind === 'none') return null
+  return { ...event, side: getDockSideName(event.side) }
+}
+
 export function destroy() {
-  if (lib && initialized) {
-    lib.Blur_Destroy()
+  if (!lib) return
+  try {
+    lib.WindowMotion_DisarmEdgeMonitor(0)
+  } finally {
+    if (initialized) lib.Blur_Destroy()
     initialized = false
   }
 }

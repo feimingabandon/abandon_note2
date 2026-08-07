@@ -1,5 +1,38 @@
-/** 首个正式版本的数据库结构版本。后续公开版本只能通过显式迁移递增。 */
-export const DATABASE_SCHEMA_VERSION = 1
+/** 数据库结构版本。公开版本只能通过显式迁移递增。 */
+export const DATABASE_SCHEMA_VERSION = 2
+
+function hasColumn(db, tableName, columnName) {
+  return db
+    .prepare(`PRAGMA table_info('${tableName}')`)
+    .all()
+    .some((column) => column.name === columnName)
+}
+
+/**
+ * V2 为便签增加月视图跨日渲染天数。
+ * 列检查使迁移可重入：即使旧版数据库的 user_version 不准确，
+ * 或上次升级在写版本号前意外中断，也不会重复 ADD COLUMN。
+ */
+function migrateToVersion2(db) {
+  if (!hasColumn(db, 'notes', 'duration_days')) {
+    db.exec(`
+      ALTER TABLE notes
+      ADD COLUMN duration_days INTEGER NOT NULL DEFAULT 1
+                 CHECK(duration_days >= 1 AND duration_days <= 365);
+    `)
+  }
+}
+
+function migrateDatabaseSchema(db, existingVersion) {
+  const missingDurationDays = !hasColumn(db, 'notes', 'duration_days')
+  if (existingVersion >= DATABASE_SCHEMA_VERSION && !missingDurationDays) return
+  db.transaction(() => {
+    if (existingVersion < 2 || missingDurationDays) migrateToVersion2(db)
+    if (existingVersion < DATABASE_SCHEMA_VERSION) {
+      db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
+    }
+  })()
+}
 
 /** 创建首个正式版本的完整数据库结构。 */
 export function createDatabaseSchema(db) {
@@ -29,12 +62,12 @@ export function createDatabaseSchema(db) {
 
   createNotesSchema(db)
   createRemoteServiceSchema(db)
+  migrateDatabaseSchema(db, existingVersion)
   if (existingVersion < DATABASE_SCHEMA_VERSION) {
     console.log(
       `[db-schema] 数据库结构版本 ${existingVersion} → ${DATABASE_SCHEMA_VERSION}` +
         (existingVersion === 0 ? '（全新创建）' : '（升级迁移）')
     )
-    db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
   }
 }
 
@@ -83,6 +116,8 @@ export function createNotesSchema(db) {
       is_pinned           INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0, 1)),
       notify_enabled      INTEGER NOT NULL DEFAULT 0 CHECK(notify_enabled IN (0, 1)),
       effective_at        INTEGER NOT NULL,
+      duration_days       INTEGER NOT NULL DEFAULT 1
+                          CHECK(duration_days >= 1 AND duration_days <= 365),
       finished_at         INTEGER,
       remind_again_at     INTEGER,
       sort_order          INTEGER NOT NULL DEFAULT 0,

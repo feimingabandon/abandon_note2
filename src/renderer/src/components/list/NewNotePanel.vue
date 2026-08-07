@@ -13,6 +13,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import DateTimePicker from '../ui/DateTimePicker.vue'
 import TagSelector from '../ui/TagSelector.vue'
 import ScreenshotPicker from '../note/ScreenshotPicker.vue'
+import NoteDurationField from '../note/NoteDurationField.vue'
 import AppToggle from '../ui/AppToggle.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import ResizableTextarea from '../ui/ResizableTextarea.vue'
@@ -137,6 +138,7 @@ onBeforeUnmount(() => {
 // ============================================================
 const content = ref('')
 const effectiveAt = ref('') // "YYYY-MM-DD HH:mm:ss" 或空（空 = 立即生效）
+const durationDays = ref(1)
 const tagNames = ref([]) // 仅保存用户自定义标签；内容类型由正文和附件推导
 const notifyEnabled = ref(false) // 启用系统提醒开关
 const isPinned = ref(false) // 置顶开关
@@ -185,8 +187,9 @@ const dateShortcuts = [
 
 // 生效时间被清空时，强制关闭系统提醒
 watch(effectiveAt, (val) => {
-  if (!val && notifyEnabled.value) {
-    notifyEnabled.value = false
+  if (!val) {
+    durationDays.value = 1
+    if (notifyEnabled.value) notifyEnabled.value = false
   }
 })
 
@@ -199,6 +202,7 @@ const SUCCESS_HOLD = 550
 function resetForm() {
   content.value = ''
   effectiveAt.value = ''
+  durationDays.value = 1
   tagNames.value = []
   notifyEnabled.value = false
   isPinned.value = false
@@ -253,6 +257,7 @@ async function handleCreate() {
   try {
     const options = {
       content: text,
+      durationDays: durationDays.value,
       notifyEnabled: notifyEnabled.value ? 1 : 0,
       isPinned: isPinned.value ? 1 : 0
     }
@@ -314,6 +319,8 @@ async function handleCreate() {
           :shortcuts="dateShortcuts"
         />
       </div>
+
+      <NoteDurationField v-model="durationDays" :visible="!!effectiveAt" />
 
       <!-- 启用系统提醒 -->
       <div class="nnp-notification-field">

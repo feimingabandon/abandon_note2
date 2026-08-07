@@ -16,6 +16,7 @@
 
 import { nextTick, ref, onMounted, onUnmounted } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
+import TitlebarActions from './components/system/TitlebarActions.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue' // 自定义窗口缩放手柄
 import SettingsPanel from './components/system/SettingsPanel.vue' // 底部弹出式设置面板
 import MessageToast from './components/system/MessageToast.vue'
@@ -426,7 +427,7 @@ onUnmounted(() => {
         :style-variant="titlebarStyle"
       >
         <!-- 设置和帮助按钮组 -->
-        <div class="titlebar-actions-group" :class="`titlebar-actions-group--${titlebarStyle}`">
+        <TitlebarActions :style-variant="titlebarStyle">
           <button
             class="titlebar-btn titlebar-btn-template"
             :class="{ 'is-active': templatePanelActive }"
@@ -452,7 +453,7 @@ onUnmounted(() => {
           >
             <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
           </button>
-        </div>
+        </TitlebarActions>
       </AppTitlebar>
       <div class="app-content-stage">
         <!-- 主内容区域，flex:1 占据导航栏下方空间。 -->
@@ -618,79 +619,6 @@ onUnmounted(() => {
   min-height: 0;
   flex-direction: column;
   transition: filter 100ms ease-out;
-}
-
-/* 标题栏按钮通用样式 */
-.titlebar-btn {
-  width: 18rem; /* 与红绿灯按钮大小一致 */
-  height: 18rem;
-  border: none;
-  border-radius: 50%; /* 圆形，与红绿灯按钮一致 */
-  padding: 0;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition:
-    background-color var(--motion-fast) ease,
-    transform var(--motion-control) var(--ease-standard);
-  background-color: #0071e3; /* 正常状态就是蓝色 */
-}
-
-/* 按钮图标 - 默认隐藏 */
-.btn-icon {
-  width: 14rem; /* 图标大小 */
-  height: 14rem;
-  opacity: 0; /* 默认隐藏 */
-  transition: opacity 120ms ease;
-  display: block; /* 确保正确居中 */
-}
-/* 悬停时显示图标 */
-.titlebar-actions-group:hover .btn-icon {
-  opacity: 1;
-}
-
-.titlebar-btn:active {
-  transform: scale(0.9);
-  transition-duration: 70ms;
-}
-
-.titlebar-btn-template.is-active,
-.titlebar-btn-help.is-active {
-  background-color: #34c759;
-}
-
-/* 按钮组容器 */
-.titlebar-actions-group {
-  display: flex;
-  gap: 8px;
-}
-
-/* Microsoft 风格由标题栏把业务按钮重排到左侧；这里负责插槽内三个按钮的皮肤。 */
-.titlebar-actions-group--microsoft {
-  gap: 2rem;
-}
-.titlebar-actions-group--microsoft .titlebar-btn {
-  width: 32rem;
-  height: 30rem;
-  border-radius: 4rem;
-  color: var(--text-color);
-  background-color: transparent;
-}
-.titlebar-actions-group--microsoft .btn-icon {
-  width: 15rem;
-  height: 15rem;
-  opacity: 0.72;
-}
-.titlebar-actions-group--microsoft .titlebar-btn:hover {
-  background-color: color-mix(in srgb, var(--text-color) 9%, transparent);
-}
-.titlebar-actions-group--microsoft .titlebar-btn:hover .btn-icon {
-  opacity: 1;
-}
-.titlebar-actions-group--microsoft .titlebar-btn-template.is-active,
-.titlebar-actions-group--microsoft .titlebar-btn-help.is-active {
-  background-color: color-mix(in srgb, #0078d4 18%, transparent);
 }
 
 /* 主内容区域 */

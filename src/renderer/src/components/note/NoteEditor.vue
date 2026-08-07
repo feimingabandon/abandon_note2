@@ -11,6 +11,7 @@ import AppToggle from '../ui/AppToggle.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import ResizableTextarea from '../ui/ResizableTextarea.vue'
+import NoteDurationField from './NoteDurationField.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 
@@ -30,6 +31,7 @@ const systemNotificationUnavailableReason = systemNotificationCapability.reason
 const content = ref('')
 const status = ref('initialized')
 const effectiveAt = ref('')
+const durationDays = ref(1)
 const notifyEnabled = ref(false)
 const isPinned = ref(false)
 const tagNames = ref([])
@@ -61,6 +63,7 @@ function createSnapshot(note) {
     content: note.content || '',
     status: note.status,
     effectiveAt: formatDateTime(note.effective_at),
+    durationDays: Number(note.duration_days) || 1,
     notifyEnabled: systemNotificationsSupported && !!note.notify_enabled,
     isPinned: !!note.is_pinned,
     tagNames: normalizedTags(note.tags?.map((tag) => tag.name) || [])
@@ -74,6 +77,7 @@ function resetFromNote(note) {
   content.value = snapshot.content
   status.value = snapshot.status
   effectiveAt.value = snapshot.effectiveAt
+  durationDays.value = snapshot.durationDays
   notifyEnabled.value = snapshot.notifyEnabled
   isPinned.value = snapshot.isPinned
   tagNames.value = [...snapshot.tagNames]
@@ -144,6 +148,7 @@ const hasChanges = computed(() => {
     content.value !== initial.content ||
     status.value !== initial.status ||
     effectiveAt.value !== initial.effectiveAt ||
+    durationDays.value !== initial.durationDays ||
     notifyEnabled.value !== initial.notifyEnabled ||
     isPinned.value !== initial.isPinned ||
     JSON.stringify(normalizedTags(tagNames.value)) !== JSON.stringify(initial.tagNames)
@@ -205,6 +210,7 @@ async function handleSave() {
         content: text,
         status: status.value,
         effectiveAt: effectiveTimestamp,
+        durationDays: durationDays.value,
         notifyEnabled: systemNotificationsSupported && notifyEnabled.value,
         isPinned: isPinned.value
       },
@@ -250,6 +256,8 @@ defineExpose({ requestClose })
           :shortcuts="dateShortcuts"
         />
       </div>
+
+      <NoteDurationField v-model="durationDays" :visible="!!effectiveAt" />
 
       <div class="ne-notification-field ne-stagger" style="animation-delay: 100ms">
         <div class="ne-field-row">

@@ -18,7 +18,6 @@ export default defineConfig({
         input: {
           index: resolve('src/preload/index.js'),
           screenshot: resolve('src/preload/screenshot.js'),
-          trigger: resolve('src/preload/trigger.js'),
           sticky: resolve('src/preload/sticky.js')
         }
       }

@@ -106,6 +106,7 @@ const toggleLock = async () => {
 /* 标题栏容器：flex 响应式三栏布局，支持拖拽移动窗口
  * 左（红绿灯）· 中（标题 flex:1）· 右（操作按钮），随窗口宽度自适应 */
 .app-titlebar {
+  position: relative;
   display: flex;
   align-items: center; /* 垂直居中对齐 */
   padding: 14px 16px; /* 内边距，总高 14+18+14+1(border)=47rem ≈ 48px Apple 导航标准 */
@@ -242,7 +243,15 @@ const toggleLock = async () => {
 }
 .app-titlebar--microsoft .app-titlebar-title {
   order: 2;
-  text-align: left;
+  position: absolute;
+  left: 50%;
+  max-width: 40%;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
 }
 .app-titlebar--microsoft .app-titlebar-actions {
   order: 1;

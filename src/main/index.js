@@ -10,7 +10,7 @@
  */
 
 import * as Electron from 'electron'
-const { app, shell, BrowserWindow, screen, Tray, Menu, dialog } = Electron
+const { app, shell, BrowserWindow, screen, powerMonitor, Tray, Menu, dialog } = Electron
 
 import { join, resolve } from 'path'
 import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
@@ -66,7 +66,7 @@ import {
 import { Scheduler } from './services/scheduler.js'
 import { runRecurringTemplates } from './services/recurrence.js'
 import { TemplateSchedulerGuard } from './services/template-scheduler-guard.js'
-import { alignTriggerBoundsToEdge, inspectDockHealth } from './window-motion/dock-health.js'
+import { inspectDockHealth } from './window-motion/dock-health.js'
 import { AppUpdateService, UPDATE_LINKS } from './services/app-update.js'
 import { NotificationService } from './services/NotificationService.js'
 import { ScreenshotService } from './services/ScreenshotService.js'
@@ -277,6 +277,7 @@ let geometryTimer = null
 let dockGeometryReconcileTimer = null
 let dockDisplayChangeTimer = null
 const dockDisplayListeners = []
+const dockPowerListeners = []
 
 /** 窗口几何是否在最近一次成功持久化（或恢复默认）后发生过变化 */
 let geometryDirty = false
@@ -746,8 +747,9 @@ function restoreSuspendedWallpaper(suspended) {
 // 贴边隐藏模块
 // ============================================================
 const SNAP_THRESHOLD = 20 // 贴边吸附阈值（px）
-const TRIGGER_WIDTH = 2 // 边缘触发窗口宽度（px）
-const TRIGGER_ALWAYS_ON_TOP_LEVEL = 'screen-saver'
+const EDGE_TRIGGER_THICKNESS_DIP = 2
+const EDGE_MONITOR_POLL_INTERVAL_MS = 100
+const MAX_EDGE_MONITOR_POLL_AGE_MS = 1000
 const SLIDE_DURATION = 200 // 滑动动画总时长（ms）
 const SLIDE_INTERVAL = 16 // 滑动动画帧间隔（ms）≈60fps
 const HIDE_DELAY = 200 // 鼠标离开后延迟隐藏（ms）
@@ -758,9 +760,6 @@ const MAX_DOCK_SLIDE_AGE_MS = 5000
 /** 默认窗口尺寸比例（相对屏幕工作区），改一个地方即可全局生效 */
 let dockSide = null // null | 'left' | 'right' | 'top' | 'bottom' 当前吸附方向
 let isDockHidden = false // 窗口是否处于贴边隐藏状态
-let triggerWin = null // 边缘触发窗口实例
-let triggerRequestedBounds = null // 业务请求的 2px 触发条范围
-let triggerExpectedBounds = null // 原生窗口尺寸钳制后应保持的真实边界
 let cachedWorkArea = null // 缓存显示器工作区，避免隐藏后 getDisplayMatching 返回过期对象
 let slideAnimTimer = null // 滑动动画定时器
 let hideTimer = null // 隐藏延迟定时器
@@ -768,10 +767,76 @@ let isSliding = false // 滑动动画进行中标志
 let dockSlideStartedAt = null // 当前动画开始时间；健康任务用于识别卡死动画
 let pendingSlideCallback = null // 动画中断时待执行的完成回调
 let dockMotionSession = null // 一轮隐藏/显示共享的可见边界与工作区快照
-let triggerPageLoaded = false // 当前边缘触发页面是否完成主框架加载
-let triggerSequence = 0 // 触发窗口代次，便于串联一次隐藏过程的诊断日志
+let dockSessionSequence = 0 // 每轮隐藏的代次；原生事件必须与当前会话完全一致
+let edgeMonitorMessageId = null
 const dockTransitionState = new DockTransitionState()
 let windowMotionBackend = null
+
+function detachNativeEdgeMonitorMessageHook(window = mainWindow) {
+  if (!edgeMonitorMessageId) return
+  if (!window || window.isDestroyed()) {
+    edgeMonitorMessageId = null
+    return
+  }
+  try {
+    window.unhookWindowMessage(edgeMonitorMessageId)
+  } catch (error) {
+    logger.warn('dock.native-edge-unhook', '解除原生边缘消息监听失败', {
+      messageId: edgeMonitorMessageId,
+      error: error?.message || String(error)
+    })
+  }
+  edgeMonitorMessageId = null
+}
+
+function handleNativeEdgeMonitorMessage(window) {
+  if (window !== mainWindow || window.isDestroyed() || !windowMotionBackend) return
+  let event
+  try {
+    event = windowMotionBackend.consumeEdgeMonitorEvent()
+  } catch (error) {
+    emergencyRestoreDock('native-edge-consume-failed', error)
+    return
+  }
+  if (!event) return
+
+  const currentGeneration = dockMotionSession?.generation || 0
+  const accepted = event.generation === currentGeneration && event.side === dockMotionSession?.side
+  logger.info('dock.native-edge-event', '收到 Windows 原生边缘监视事件', {
+    event,
+    accepted,
+    currentGeneration,
+    isDockHidden,
+    isSliding
+  })
+  if (!accepted) {
+    try {
+      windowMotionBackend.disarmEdgeMonitor(event.generation)
+    } catch (error) {
+      logger.error('dock.native-edge-stale-stop', error, { event })
+    }
+    return
+  }
+  if (event.kind === 'trigger') {
+    if (isDockHidden) {
+      try {
+        doShow('native-edge')
+      } catch (error) {
+        emergencyRestoreDock('native-edge-show-failed', error)
+      }
+    }
+    return
+  }
+  emergencyRestoreDock('native-edge-fault', new Error(`原生边缘监视器故障：${event.error}`))
+}
+
+function attachNativeEdgeMonitorMessageHook(window) {
+  edgeMonitorMessageId = windowMotionBackend?.getEdgeMonitorMessageId() || null
+  if (!edgeMonitorMessageId) return
+  window.hookWindowMessage(edgeMonitorMessageId, () => {
+    setImmediate(() => handleNativeEdgeMonitorMessage(window))
+  })
+}
 
 function suppressDockGeometryPersistence() {
   suppressDockGeometryPersistenceUntil = Math.max(
@@ -931,6 +996,7 @@ function createWindow({ preferredDisplay = null } = {}) {
   setWindowLogContext(mainWindow, { role: getActiveWindowProfile().logRole })
   lastVisibleMainWindowBounds = { ...mainWindow.getBounds() }
   windowMotionBackend = createWindowMotionBackend(mainWindow, screen)
+  attachNativeEdgeMonitorMessageHook(mainWindow)
   logger.info('startup', '主窗口已创建', {
     viewMode: activeViewMode,
     bounds,
@@ -1073,11 +1139,12 @@ function createWindow({ preferredDisplay = null } = {}) {
   mainWindow.on('closed', () => {
     // 视图切换会紧接着创建新窗口；旧窗口的延迟 closed 事件不能清空新引用。
     if (mainWindow !== createdWindow) return
+    resetDockState()
+    detachNativeEdgeMonitorMessageHook(createdWindow)
     mainWindow = null
     windowMotionBackend = null
     lastVisibleMainWindowBounds = null
     blurWindowSyncListenersAttached = false
-    resetDockState()
   })
 
   // 根据环境加载页面：开发模式用 HMR URL，生产模式加载本地 HTML 文件
@@ -1152,29 +1219,23 @@ function setDockPosition(position, motionPlan) {
   return after
 }
 
-function getExpectedTriggerBounds() {
-  return triggerExpectedBounds ? { ...triggerExpectedBounds } : null
-}
-
 /** 生成纯数据快照，供每分钟健康任务和托盘诊断日志复用。 */
 function getDockDiagnosticSnapshot() {
-  const triggerExists = Boolean(triggerWin && !triggerWin.isDestroyed())
-  let triggerBounds = null
-  let triggerVisible = false
-  let triggerAlwaysOnTop = false
-  let triggerWebContentsDestroyed = true
   let mainMotionBounds = null
   let mainAtHiddenTarget = null
+  let edgeMonitor = {
+    supported: false,
+    state: 'unavailable',
+    workerAlive: false,
+    generation: 0,
+    side: null,
+    lastPollAgeMs: 0
+  }
 
-  if (triggerExists) {
-    try {
-      triggerBounds = triggerWin.getBounds()
-      triggerVisible = triggerWin.isVisible()
-      triggerAlwaysOnTop = triggerWin.isAlwaysOnTop()
-      triggerWebContentsDestroyed = triggerWin.webContents.isDestroyed()
-    } catch (error) {
-      logger.error('dock.health-snapshot', error)
-    }
+  try {
+    if (windowMotionBackend) edgeMonitor = windowMotionBackend.getEdgeMonitorStatus()
+  } catch (error) {
+    logger.error('dock.health-snapshot', error, { stage: 'capture-edge-monitor' })
   }
 
   if (isDockHidden && !isSliding && dockMotionSession?.motionPlan && windowMotionBackend) {
@@ -1194,24 +1255,14 @@ function getDockDiagnosticSnapshot() {
     dockSide,
     hasDockMotionSession: Boolean(dockMotionSession),
     sessionSide: dockMotionSession?.side || null,
+    sessionGeneration: dockMotionSession?.generation || 0,
     mainMotionBounds,
     mainAtHiddenTarget,
     isSliding,
     slideAgeMs: isSliding && dockSlideStartedAt ? Date.now() - dockSlideStartedAt : 0,
     maxSlideAgeMs: MAX_DOCK_SLIDE_AGE_MS,
-    expectedTriggerBounds: getExpectedTriggerBounds(),
-    requestedTriggerBounds: triggerRequestedBounds ? { ...triggerRequestedBounds } : null,
-    trigger: {
-      sequence: triggerSequence,
-      exists: triggerExists,
-      destroyed: Boolean(triggerWin?.isDestroyed()),
-      webContentsDestroyed: triggerWebContentsDestroyed,
-      pageLoaded: triggerPageLoaded,
-      visible: triggerVisible,
-      alwaysOnTop: triggerAlwaysOnTop,
-      expectedAlwaysOnTop: true,
-      bounds: triggerBounds
-    }
+    maxMonitorPollAgeMs: MAX_EDGE_MONITOR_POLL_AGE_MS,
+    edgeMonitor
   }
 }
 
@@ -1222,11 +1273,21 @@ function runDockHealthCheck() {
 
   const error = new Error(`贴边隐藏状态异常：${issues.join('；')}`)
   logger.error('dock.health', error, { issues, snapshot })
-  throw error
+  emergencyRestoreDock('dock-health', error)
 }
 
 /** 重置贴边状态（隐藏/关闭/最大化时统一调用） */
 function resetDockState() {
+  const generation = dockMotionSession?.generation || 0
+  if (windowMotionBackend) {
+    try {
+      if (!windowMotionBackend.disarmEdgeMonitor(generation)) {
+        logger.warn('dock.native-edge-stop', '停止原生边缘监视器超时', { generation })
+      }
+    } catch (error) {
+      logger.error('dock.native-edge-stop', error, { generation })
+    }
+  }
   if (slideAnimTimer) {
     clearInterval(slideAnimTimer)
     slideAnimTimer = null
@@ -1241,13 +1302,6 @@ function resetDockState() {
   dockSide = null
   isDockHidden = false
   dockMotionSession = null
-  triggerPageLoaded = false
-  triggerRequestedBounds = null
-  triggerExpectedBounds = null
-  if (triggerWin && !triggerWin.isDestroyed()) {
-    triggerWin.destroy()
-    triggerWin = null
-  }
   // 显示动画会临时提升层级；动画被托盘隐藏等操作中断时也必须恢复用户设置。
   const { restoreAlwaysOnTop } = dockTransitionState.reset()
   if (restoreAlwaysOnTop) applyAlwaysOnTop()
@@ -1293,50 +1347,46 @@ function runPendingSlideCallback() {
     callback()
     return true
   } catch (error) {
-    console.error('[dock] 动画完成处理失败，已保留贴边恢复入口:', error)
-    preserveDockSessionAfterSlideFailure()
+    emergencyRestoreDock('slide-callback-failed', error)
     return false
   }
 }
 
 /**
- * 原生移动或终点处理失败时不能直接 reset：窗口可能已经在屏外，reset 会同时
- * 销毁触发条并丢失返回坐标。保留冻结会话和触发条，下一次显示请求可从当前位置重试。
+ * 贴边子系统故障时统一恢复可见。窗口可见性优先于动画和毛玻璃；本函数可被
+ * DLL 故障、每分钟健康检查、动画失败和系统事件重复调用。
  */
-function preserveDockSessionAfterSlideFailure() {
-  if (slideAnimTimer) {
-    clearInterval(slideAnimTimer)
-    slideAnimTimer = null
-  }
-  if (hideTimer) {
-    clearTimeout(hideTimer)
-    hideTimer = null
-  }
-  pendingSlideCallback = null
-  isSliding = false
-  dockSlideStartedAt = null
+function emergencyRestoreDock(source, cause = null) {
+  const session = dockMotionSession
+  logger.error('dock.emergency-restore', cause || new Error('贴边隐藏进入故障开放恢复'), {
+    source,
+    session,
+    isDockHidden,
+    isSliding
+  })
 
-  if (!mainWindow || mainWindow.isDestroyed() || !dockMotionSession) {
-    resetDockState()
-    return
-  }
-
-  dockSide = dockMotionSession.side
-  isDockHidden = true
-  if (!triggerWin || triggerWin.isDestroyed()) {
+  if (mainWindow && !mainWindow.isDestroyed() && session) {
     try {
-      createTriggerWindow(dockSide)
+      restoreDockWindowToVisiblePosition()
     } catch (error) {
-      console.error('[dock] 恢复边缘触发窗口失败:', error)
+      logger.error('dock.emergency-position', error, { source })
+    }
+    try {
+      if (!mainWindow.isVisible()) mainWindow.showInactive()
+    } catch (error) {
+      logger.error('dock.emergency-show', error, { source })
     }
   }
-  const { restoreAlwaysOnTop } = dockTransitionState.reset()
-  if (restoreAlwaysOnTop) {
-    try {
-      applyAlwaysOnTop()
-    } catch (error) {
-      console.error('[dock] 恢复用户置顶设置失败:', error)
+
+  resetDockState()
+  try {
+    applyAlwaysOnTop()
+    if (blurInitialized) {
+      runBlurRuntimeOperation(blurUpdateGeometry, '贴边故障恢复毛玻璃位置')
+      runBlurRuntimeOperation(blurReSyncZOrder, '贴边故障恢复毛玻璃层级')
     }
+  } catch (error) {
+    logger.error('dock.emergency-runtime-sync', error, { source })
   }
 }
 
@@ -1409,6 +1459,31 @@ function detachDockDisplayListeners() {
   dockDisplayListeners.length = 0
 }
 
+function handleDockPowerBoundary(source) {
+  if (!isDockHidden && !isSliding && !dockMotionSession) return
+  emergencyRestoreDock(source, new Error(`系统电源/桌面状态发生变化：${source}`))
+}
+
+function attachDockPowerListeners() {
+  if (dockPowerListeners.length > 0) return
+  for (const [eventName, listener] of [
+    ['suspend', () => handleDockPowerBoundary('system-suspend')],
+    ['lock-screen', () => handleDockPowerBoundary('screen-lock')],
+    ['resume', () => handleDockDisplayTopologyChange()],
+    ['unlock-screen', () => handleDockDisplayTopologyChange()]
+  ]) {
+    powerMonitor.on(eventName, listener)
+    dockPowerListeners.push([eventName, listener])
+  }
+}
+
+function detachDockPowerListeners() {
+  for (const [eventName, listener] of dockPowerListeners) {
+    powerMonitor.removeListener(eventName, listener)
+  }
+  dockPowerListeners.length = 0
+}
+
 /**
  * 按当前窗口配置检测允许的贴边方向：列表仅左右，月视图仅顶部。
  * @returns {null|'left'|'right'|'top'|'bottom'} 边缘方向，null 表示未靠近
@@ -1455,131 +1530,6 @@ function snapToEdge(side) {
 }
 
 /**
- * 创建边缘触发窗口
- * 屏幕内只露出 2px 的透明触发条；Windows 若扩大原生窗口，额外宽度移到屏幕外。
- */
-function createTriggerWindow(side) {
-  if (triggerWin && !triggerWin.isDestroyed()) triggerWin.destroy()
-  triggerWin = null
-  triggerPageLoaded = false
-  triggerRequestedBounds = null
-  triggerExpectedBounds = null
-  if (!dockMotionSession) {
-    logger.warn('dock.trigger', '缺少贴边运动会话，无法创建边缘触发窗口', { side })
-    return
-  }
-
-  const wa = dockMotionSession.workArea
-  const b = dockMotionSession.stableBounds
-  const requestedBounds =
-    side === 'left'
-      ? { x: wa.x, y: b.y, width: TRIGGER_WIDTH, height: b.height }
-      : side === 'right'
-        ? {
-            x: wa.x + wa.width - TRIGGER_WIDTH,
-            y: b.y,
-            width: TRIGGER_WIDTH,
-            height: b.height
-          }
-        : side === 'top'
-          ? { x: b.x, y: wa.y, width: b.width, height: TRIGGER_WIDTH }
-          : {
-              x: b.x,
-              y: wa.y + wa.height - TRIGGER_WIDTH,
-              width: b.width,
-              height: TRIGGER_WIDTH
-            }
-
-  const sequence = ++triggerSequence
-  const win = new BrowserWindow({
-    ...requestedBounds,
-    show: false,
-    transparent: true,
-    frame: false,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    resizable: false,
-    focusable: false,
-    hasShadow: false,
-    webPreferences: {
-      preload: join(PRELOAD_ROOT, 'trigger.js'),
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  })
-  triggerWin = win
-  triggerRequestedBounds = { ...requestedBounds }
-  const createdBounds = win.getBounds()
-  triggerExpectedBounds = alignTriggerBoundsToEdge({
-    side,
-    requestedBounds,
-    actualBounds: createdBounds,
-    visibleWidth: TRIGGER_WIDTH
-  })
-  win.setBounds(triggerExpectedBounds)
-  setWindowLogContext(win, { role: 'trigger' })
-  logger.info('dock.trigger', '边缘触发窗口已创建', {
-    sequence,
-    side,
-    requestedBounds,
-    createdBounds,
-    expectedBounds: triggerExpectedBounds,
-    actualBounds: win.getBounds(),
-    alwaysOnTopLevel: TRIGGER_ALWAYS_ON_TOP_LEVEL
-  })
-
-  // 触发条必须独立于主窗口的“置顶”偏好保持在最上层，否则其它最大化窗口
-  // 或弹出菜单会覆盖它，鼠标移动消息便永远到不了 Chromium。Electron 的
-  // setVisibleOnAllWorkspaces 在 Windows 上无效，不能用它替代原生 Z 序。
-  win.setAlwaysOnTop(true, TRIGGER_ALWAYS_ON_TOP_LEVEL)
-  // 点击继续穿透给下层应用；forward 让 Windows 的鼠标移动消息仍进入 Chromium。
-  win.setIgnoreMouseEvents(true, { forward: true })
-
-  const html =
-    '<!doctype html><html style="width:100%;height:100%"><body style="margin:0;width:100%;height:100%"></body></html>'
-  win
-    .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
-    .then(() => {
-      if (triggerWin !== win || win.isDestroyed()) return
-      triggerPageLoaded = true
-      win.showInactive()
-      logger.info('dock.trigger', '边缘触发页面加载完成', {
-        sequence,
-        url: win.webContents.getURL(),
-        bounds: win.getBounds(),
-        visible: win.isVisible(),
-        alwaysOnTop: win.isAlwaysOnTop()
-      })
-    })
-    .catch((error) => {
-      if (triggerWin === win) triggerPageLoaded = false
-      logger.error('dock.trigger-load', error, { sequence, side, requestedBounds })
-    })
-
-  win.on('closed', () => {
-    const wasCurrent = triggerWin === win
-    const metadata = {
-      sequence,
-      wasCurrent,
-      isDockHidden,
-      isSliding
-    }
-    if (wasCurrent && isDockHidden) {
-      logger.warn('dock.trigger', '边缘触发窗口在主窗口隐藏期间关闭', metadata)
-    } else {
-      logger.info('dock.trigger', '边缘触发窗口已关闭', metadata)
-    }
-    if (wasCurrent) {
-      triggerWin = null
-      triggerPageLoaded = false
-      triggerRequestedBounds = null
-      triggerExpectedBounds = null
-    }
-  })
-}
-
-/**
  * 滑动动画 —— easeInOutQuad 缓动曲线，慢起 → 快 → 慢停
  * @param {{x:number,y:number}} target - 目标坐标
  * @param {object} motionPlan - 本轮冻结的坐标空间、目标位置与尺寸不变量
@@ -1604,8 +1554,7 @@ function slideTo(target, motionPlan, onFinish) {
   try {
     from = windowMotionBackend.capture()
   } catch (error) {
-    console.error('[dock] 读取动画起点失败:', error)
-    preserveDockSessionAfterSlideFailure()
+    emergencyRestoreDock('slide-capture-failed', error)
     return
   }
   const totalFrames = Math.ceil(SLIDE_DURATION / SLIDE_INTERVAL)
@@ -1633,8 +1582,7 @@ function slideTo(target, motionPlan, onFinish) {
         motionPlan
       )
     } catch (error) {
-      console.error('[dock] 物理移动失败，已中止贴边动画:', error)
-      preserveDockSessionAfterSlideFailure()
+      emergencyRestoreDock('slide-move-failed', error)
       return
     }
 
@@ -1649,7 +1597,7 @@ function slideTo(target, motionPlan, onFinish) {
 }
 
 /**
- * 贴边隐藏 —— 窗口滑出屏幕，创建边缘触发窗口
+ * 贴边隐藏 —— 原生边缘监视器先成功启动，窗口才允许滑出屏幕。
  * 前置条件：dockSide 非空且 isDockHidden === false
  */
 function doHide() {
@@ -1683,23 +1631,45 @@ function doHide() {
     return
   }
   const stableBounds = createStableDockBounds(mainWindow.getBounds(), dockSide, cachedWorkArea)
+  const generation = ++dockSessionSequence
   dockMotionSession = {
+    generation,
     side: dockSide,
     stableBounds,
     motionPlan,
     workArea: { ...cachedWorkArea }
   }
   lastVisibleMainWindowBounds = { ...stableBounds }
+  let armResult
+  try {
+    armResult = windowMotionBackend.armEdgeMonitor(dockSide, generation, {
+      thicknessDip: EDGE_TRIGGER_THICKNESS_DIP,
+      pollIntervalMs: EDGE_MONITOR_POLL_INTERVAL_MS
+    })
+  } catch (error) {
+    logger.error('dock.native-edge-arm', error, { generation, side: dockSide })
+    dockMotionSession = null
+    return
+  }
+  if (!armResult.success) {
+    logger.error('dock.native-edge-arm', new Error(armResult.error), {
+      code: armResult.code,
+      generation,
+      side: dockSide
+    })
+    dockMotionSession = null
+    return
+  }
+
   isDockHidden = true
   logger.info('dock.lifecycle', '开始贴边隐藏', {
+    generation,
     side: dockSide,
-    stableBounds,
-    triggerSequence: triggerSequence + 1
+    stableBounds
   })
 
   const target = { x: motionPlan.hiddenX, y: motionPlan.hiddenY }
 
-  createTriggerWindow(dockSide)
   slideTo(target, motionPlan, () => {
     try {
       const terminal = windowMotionBackend.capture()
@@ -1712,25 +1682,22 @@ function doHide() {
               ? terminal.y + terminal.height <= motionPlan.workArea.top
               : terminal.y >= motionPlan.workArea.bottom
       if (!crossedBoundary) {
-        console.error('[dock] 隐藏终点未越过工作区边界:', {
-          side: dockSide,
-          terminal,
-          motionPlan
-        })
+        throw new Error('隐藏终点未越过工作区边界')
       }
     } catch (error) {
-      console.error('[dock] 读取隐藏终点失败:', error)
+      emergencyRestoreDock('hidden-terminal-invalid', error)
+      return
     }
     logger.info('dock.lifecycle', '贴边隐藏动画完成', {
-      side: dockSide,
-      triggerSequence
+      generation,
+      side: dockSide
     })
     if (dockTransitionState.consumeQueuedShow()) doShow('queued-during-hide')
   })
 }
 
 /**
- * 贴边显示 —— 销毁触发窗口，窗口滑回边缘
+ * 贴边显示 —— 先停止原生边缘监视器，再把窗口滑回边缘。
  * 前置条件：isDockHidden === true
  */
 function doShow(source = 'unknown') {
@@ -1745,30 +1712,33 @@ function doShow(source = 'unknown') {
     isDockHidden,
     isSliding,
     hasDockMotionSession: Boolean(dockMotionSession),
-    triggerSequence
+    generation: dockMotionSession?.generation || 0
   })
   if (showAction !== 'start') return
 
   const session = dockMotionSession
   if (!session) {
-    logger.error('dock.show', new Error('显示请求已进入执行状态，但缺少贴边运动会话'), {
-      source,
-      snapshot: getDockDiagnosticSnapshot()
-    })
+    emergencyRestoreDock(
+      'show-without-session',
+      new Error('显示请求已进入执行状态，但缺少贴边运动会话')
+    )
     return
   }
 
   suppressDockGeometryPersistence()
   isDockHidden = false
 
-  // 立即销毁触发窗口，防止阻挡主窗口
-  if (triggerWin && !triggerWin.isDestroyed()) {
-    triggerWin.destroy()
+  let monitorStopped = false
+  try {
+    monitorStopped = windowMotionBackend.disarmEdgeMonitor(session.generation)
+  } catch (error) {
+    emergencyRestoreDock('native-edge-stop-failed', error)
+    return
   }
-  triggerWin = null
-  triggerPageLoaded = false
-  triggerRequestedBounds = null
-  triggerExpectedBounds = null
+  if (!monitorStopped) {
+    emergencyRestoreDock('native-edge-stop-timeout', new Error('停止原生边缘监视器超时'))
+    return
+  }
 
   const { stableBounds, motionPlan } = session
   const target = { x: motionPlan.visibleX, y: motionPlan.visibleY }
@@ -1806,7 +1776,7 @@ function doShow(source = 'unknown') {
       logger.info('dock.lifecycle', '贴边显示动画完成', {
         source,
         side: session.side,
-        triggerSequence
+        generation: session.generation
       })
     }
   })
@@ -1821,11 +1791,6 @@ function applyAlwaysOnTop() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.setAlwaysOnTop(alwaysOnTop, 'pop-up-menu')
   runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口层级')
-
-  // 同步触发窗口置顶状态（贴边隐藏时切换置顶按钮生效）
-  if (triggerWin && !triggerWin.isDestroyed()) {
-    triggerWin.setAlwaysOnTop(true, TRIGGER_ALWAYS_ON_TOP_LEVEL)
-  }
 }
 
 // ============================================================
@@ -1920,6 +1885,7 @@ function switchMainView(targetMode) {
 
     if (mainWindow && !mainWindow.isDestroyed()) {
       const previousWindow = mainWindow
+      detachNativeEdgeMonitorMessageHook(previousWindow)
       previousWindow.destroy()
       if (mainWindow === previousWindow) mainWindow = null
     }
@@ -2282,23 +2248,6 @@ app.whenReady().then(async () => {
     }
   })
 
-  // 【贴边隐藏 - 触发窗口】边缘触发窗口检测到鼠标进入，恢复主窗口
-  ipcMain.on('trigger-enter', (event) => {
-    const currentWebContents =
-      triggerWin && !triggerWin.isDestroyed() ? triggerWin.webContents : null
-    const accepted = event.sender === currentWebContents
-    logger.info('dock.trigger-ipc', '主进程收到边缘触发 IPC', {
-      accepted,
-      senderWebContentsId: event.sender.id,
-      currentWebContentsId: currentWebContents?.id || null,
-      isDockHidden,
-      isSliding,
-      triggerSequence
-    })
-    if (!accepted) return
-    if (isDockHidden) doShow('edge-trigger')
-  })
-
   // ---- 系统模糊 IPC ----
 
   /** 设置模糊配置（立即生效 + 持久化到数据库） */
@@ -2482,6 +2431,7 @@ app.whenReady().then(async () => {
   })
   void remoteCoordinator.start()
   attachDockDisplayListeners()
+  attachDockPowerListeners()
   stickyService = new ElectronStickyService({
     getMainWindow: () => mainWindow,
     getNoteById,
@@ -2609,11 +2559,11 @@ app.whenReady().then(async () => {
     execute: (context) => runBlurRuntimeDiagnostic(context)
   })
 
-  // 3.7 贴边隐藏状态健康检查：只验证状态不变量并记录异常，不轮询鼠标、不自动恢复窗口。
+  // 3.7 每分钟只检查隐藏态结构；鼠标由 DLL 每 100ms 检测，异常在这里故障开放恢复。
   scheduler.register({
     name: 'dockHealthTask',
     maxFailures: Infinity,
-    shouldRun: () => true,
+    shouldRun: () => isDockHidden || isSliding || Boolean(dockMotionSession),
     execute: () => runDockHealthCheck()
   })
 
@@ -2713,6 +2663,7 @@ app.on('before-quit', () => {
     dockGeometryReconcileTimer = null
   }
   detachDockDisplayListeners()
+  detachDockPowerListeners()
   if (geometryDirty && getDb() && mainWindow && !mainWindow.isDestroyed()) {
     try {
       const bounds = getPersistableWindowBounds({
@@ -2740,13 +2691,6 @@ app.on('before-quit', () => {
   closeDatabase()
   // 销毁模糊引擎（释放 DLL 资源）
   blurDestroy()
-  if (triggerWin && !triggerWin.isDestroyed()) {
-    triggerWin.destroy()
-  }
-  triggerWin = null
-  triggerPageLoaded = false
-  triggerRequestedBounds = null
-  triggerExpectedBounds = null
   if (slideAnimTimer) clearInterval(slideAnimTimer)
   if (hideTimer) clearTimeout(hideTimer)
   if (tray) {

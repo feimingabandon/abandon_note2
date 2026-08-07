@@ -5,6 +5,7 @@ import {
   createNote,
   deleteNote,
   getNoteById,
+  normalizeNoteDurationDays,
   normalizeRequiredNoteContent,
   queryCustomNormal,
   queryCustomPinned,
@@ -147,6 +148,7 @@ export function registerBusinessIpcHandlers({
     if (!original) throw new Error('便签不存在或已删除')
 
     const content = normalizeRequiredNoteContent(fields.content)
+    const durationDays = normalizeNoteDurationDays(fields.durationDays ?? original.duration_days)
     const requestedStatus = String(fields.status || original.status)
     if (requestedStatus !== original.status) {
       throw new Error(`不允许的状态修改：${original.status} → ${requestedStatus}`)
@@ -212,7 +214,7 @@ export function registerBusinessIpcHandlers({
 
       db.prepare(
         `UPDATE notes SET
-           content = ?, status = ?, is_pinned = ?, notify_enabled = ?, effective_at = ?,
+           content = ?, status = ?, is_pinned = ?, notify_enabled = ?, effective_at = ?, duration_days = ?,
            finished_at = ?, remind_again_at = ?, updated_at = ?
          WHERE id = ? AND is_deleted = 0`
       ).run(
@@ -221,6 +223,7 @@ export function registerBusinessIpcHandlers({
         fields.isPinned ? 1 : 0,
         notifyEnabled,
         effectiveAt,
+        durationDays,
         current.finished_at,
         current.remind_again_at,
         timestamp,
