@@ -299,7 +299,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .wc-overlay {
   position: fixed;
-  z-index: 60000;
+  z-index: var(--z-global-critical);
   inset: 0;
   display: grid;
   place-items: center;
@@ -320,7 +320,7 @@ onBeforeUnmount(() => {
   width: min(760rem, 94vw);
   height: min(660rem, 90vh);
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+  border: 1px solid var(--ui-border-hover);
   border-radius: 18rem;
   background: rgb(var(--bg-color));
   box-shadow: 0 28rem 80rem rgba(0, 0, 0, 0.38);
@@ -373,7 +373,7 @@ onBeforeUnmount(() => {
 }
 .wc-loading {
   position: absolute;
-  z-index: 2;
+  z-index: var(--z-local-raised);
   inset: 0;
   display: grid;
   place-items: center;

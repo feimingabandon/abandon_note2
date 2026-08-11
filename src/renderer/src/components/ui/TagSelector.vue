@@ -1,140 +1,143 @@
 <script setup>
-/**
- * TagSelector.vue — 统一标签选择器组件
- *
- * 职责：
- *   1. 横向展示全部已创建标签（可横向滚动）
- *   2. 点击标签芯片切换选中/取消选中
- *   3. 末尾 "+" 按钮 → 内联展开新建标签表单
- *   4. 通过 v-model 双向绑定选中标签 ID 数组
- *
- * UI 与数据驱动分离：
- *   - UI 层：统一展示标签芯片 + 新建按钮
- *   - 数据层：选中状态由外部 v-model 控制（新建便签、编辑便签、筛选查询等场景各不同）
- */
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import ConfirmDialog from '../ui/ConfirmDialog.vue'
+/** 轻量标签选择器：外层只展示当前选中、置顶和最新创建的快捷标签。 */
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
+import TagManagerDialog from './TagManagerDialog.vue'
+import TagSelectorRow from './TagSelectorRow.vue'
+import { useMessage } from '../../composables/useMessage.js'
 
 const props = defineProps({
-  /** 已选中的标签 ID 数组（v-model） */
-  modelValue: {
-    type: Array,
-    default: () => []
-  },
-  /** 允许选中的最大数量；0 表示不限制。历史超限数据不会被自动截断。 */
-  maxSelected: {
-    type: Number,
-    default: 0
-  }
+  modelValue: { type: Array, default: () => [] },
+  /** 0 表示不限；便签和模板场景传入 1，筛选场景允许多选。 */
+  maxSelected: { type: Number, default: 0 }
 })
-
 const emit = defineEmits(['update:modelValue', 'refresh', 'selectionLimitExceeded'])
+const { showMessage } = useMessage()
 
-// ---- 颜色预设（与 TagPanel 共享） ----
-const colorPresets = [
-  '#007aff',
-  '#ff3b30',
-  '#34c759',
-  '#ff9500',
-  '#af52de',
-  '#ff2d55',
-  '#5856d6',
-  '#00c7be',
-  '#7b7b7b',
-  '#ff9f0a',
-  '#30b0c7',
-  '#d35400'
-]
-
-// ---- 状态 ----
-/** 全部标签列表 */
 const tags = ref([])
-/** 内部选中集合（与 modelValue 同步，存储标签名称字符串） */
-const selectedNames = ref(new Set(props.modelValue))
-/** 新建表单是否展开 */
-const showForm = ref(false)
-/** 新建标签名称 */
-const newName = ref('')
-/** 新建标签颜色 */
-const newColor = ref('')
-/** 颜色文本值（与 newColor 双向同步） */
-const newColorText = ref('')
-/** 是否正在保存 */
-const saving = ref(false)
-/** 删除确认弹窗 */
-const showDeleteDialog = ref(false)
-/** 待删除的标签 */
-const tagToDelete = ref(null)
-/** 删除标签会解除的便签与循环模板关联统计 */
-const tagUsage = ref(null)
-const tagUsageUnavailable = ref(false)
-let deleteUsageSeq = 0
+const selectedIds = ref(new Set(props.modelValue.map(Number)))
+const quickAreaRef = ref(null)
+const measureRef = ref(null)
+const visibleCount = ref(0)
+const panelOpen = ref(false)
+const panelButtonRef = ref(null)
+const panelPosition = ref({ top: 0, left: 0, width: 320 })
+const panelQuery = ref('')
+const panelInputRef = ref(null)
+const managerVisible = ref(false)
+const refreshSpinning = ref(false)
+let unsubscribeTagsChanged = null
+let resizeObserver = null
+let loadSequence = 0
 
-const deleteMessage = computed(() => {
-  const tagName = tagToDelete.value?.name || ''
-  if (tagUsageUnavailable.value) {
-    return `确定要删除标签「${tagName}」吗？\n暂时无法读取关联详情，删除后仍会解除该标签的全部关联。`
-  }
-  if (!tagUsage.value) return `正在读取标签「${tagName}」的使用情况…`
-
-  const usage = tagUsage.value
-  if (usage.noteCount === 0 && usage.templateCount === 0) {
-    return `当前没有便签或循环模板使用标签「${tagName}」。\n删除标签后无法恢复。`
-  }
-  return [
-    `该标签正在被 ${usage.noteCount} 条便签和 ${usage.templateCount} 个循环模板使用。`,
-    `便签：未删除 ${usage.activeNoteCount} 条，已删除 ${usage.deletedNoteCount} 条`,
-    `循环模板：运行中 ${usage.runningTemplateCount} 个，已暂停 ${usage.pausedTemplateCount} 个，已删除 ${usage.deletedTemplateCount} 个`,
-    '删除后会解除以上全部关联，且无法恢复。'
-  ].join('\n')
+const tagById = computed(() => new Map(tags.value.map((tag) => [Number(tag.id), tag])))
+const selectedTags = computed(() =>
+  [...selectedIds.value].map((id) => tagById.value.get(Number(id))).filter(Boolean)
+)
+const pinnedTags = computed(() =>
+  tags.value
+    .filter((tag) => Number(tag.is_pinned) === 1 && !selectedIds.value.has(Number(tag.id)))
+    .sort(
+      (a, b) =>
+        Number(b.pinned_at || 0) - Number(a.pinned_at || 0) ||
+        Number(b.created_at || 0) - Number(a.created_at || 0)
+    )
+)
+const newestTags = computed(() =>
+  tags.value
+    .filter((tag) => Number(tag.is_pinned) !== 1 && !selectedIds.value.has(Number(tag.id)))
+    .sort(
+      (a, b) => Number(b.created_at || 0) - Number(a.created_at || 0) || Number(b.id) - Number(a.id)
+    )
+)
+const quickCandidates = computed(() => [
+  ...selectedTags.value,
+  ...pinnedTags.value,
+  ...newestTags.value
+])
+const visibleTags = computed(() => quickCandidates.value.slice(0, visibleCount.value))
+const normalizedQuery = computed(() => panelQuery.value.trim().toLocaleLowerCase())
+const matchesQuery = (tag) =>
+  !normalizedQuery.value || tag.name.toLocaleLowerCase().includes(normalizedQuery.value)
+const panelTags = computed(() =>
+  tags.value.filter(matchesQuery).sort((a, b) => {
+    if (Number(a.is_pinned) !== Number(b.is_pinned))
+      return Number(b.is_pinned) - Number(a.is_pinned)
+    if (Number(a.is_pinned))
+      return (
+        Number(b.pinned_at || 0) - Number(a.pinned_at || 0) ||
+        Number(b.created_at || 0) - Number(a.created_at || 0)
+      )
+    return Number(b.created_at || 0) - Number(a.created_at || 0) || Number(b.id) - Number(a.id)
+  })
+)
+const selectedSummary = computed(() => {
+  const names = selectedTags.value.map((tag) => tag.name)
+  if (names.length === 0) return '未选择'
+  return `已选：${names.join('、')}`
 })
 
-const inputRef = ref(null)
-
-// ---- 颜色同步：newColor ↔ newColorText ----
-watch(newColor, (val) => {
-  newColorText.value = val || ''
-})
-
-/** 颜色文本值是否匹配某个预设 */
-function isPresetMatch(preset) {
-  return newColor.value.toLowerCase() === preset.toLowerCase()
-}
-
-/** 从文本输入同步颜色值 */
-function onColorTextInput(e) {
-  let raw = e.target.value.trim()
-  // 自动补 # 前缀
-  if (raw && !raw.startsWith('#')) raw = '#' + raw
-  newColorText.value = raw
-  // 验证是否为合法 hex
-  if (/^#[0-9A-Fa-f]{6}$/.test(raw)) {
-    newColor.value = raw.toLowerCase()
-  }
-  // 不合法时保留文本但不同步到 newColor（颜色不变）
-}
-
-// ---- modelValue 外部同步 ----
 watch(
   () => props.modelValue,
-  (val) => {
-    selectedNames.value = new Set(val || [])
+  (value) => {
+    selectedIds.value = new Set((value || []).map(Number))
+    scheduleMeasure()
   }
 )
+watch(quickCandidates, scheduleMeasure, { flush: 'post' })
 
-// ---- 标签数据 ----
 async function loadTags() {
+  const sequence = ++loadSequence
   try {
-    tags.value = await window.api.listTags()
-  } catch (e) {
-    console.error('[TagSelector] 加载标签失败:', e)
+    const result = await window.api.listTags()
+    if (sequence !== loadSequence) return
+    tags.value = result
+    scheduleMeasure()
+  } catch (error) {
+    console.error('[TagSelector] 加载标签失败:', error)
   }
 }
 
-// ---- 刷新按钮旋转动画 ----
-const refreshSpinning = ref(false)
+function scheduleMeasure() {
+  nextTick(measureQuickTags)
+}
 
-/** 双 rAF 强制重排，确保每次点击都能重新触发旋转动画 */
+function measureQuickTags() {
+  const available = quickAreaRef.value?.clientWidth || 0
+  const chips = [...(measureRef.value?.children || [])]
+  if (!available || chips.length === 0) {
+    visibleCount.value = 0
+    return
+  }
+  const gap = 7
+  let used = 0
+  let count = 0
+  for (const chip of chips) {
+    const nextWidth = chip.getBoundingClientRect().width + (count > 0 ? gap : 0)
+    if (used + nextWidth > available) break
+    used += nextWidth
+    count += 1
+  }
+  // 极窄窗口仍保证当前选中标签能够出现；其名称会在芯片内部省略。
+  visibleCount.value = Math.max(selectedTags.value.length > 0 ? 1 : 0, count)
+}
+
+function toggleTag(tagId) {
+  const id = Number(tagId)
+  const next = new Set(selectedIds.value)
+  if (next.has(id)) next.delete(id)
+  else {
+    if (props.maxSelected > 0 && next.size >= props.maxSelected) {
+      emit('selectionLimitExceeded', props.maxSelected)
+      return
+    }
+    next.add(id)
+  }
+  selectedIds.value = next
+  emit('update:modelValue', [...next])
+  scheduleMeasure()
+}
+
 function restartRefreshSpin() {
   refreshSpinning.value = false
   requestAnimationFrame(() => {
@@ -144,734 +147,496 @@ function restartRefreshSpin() {
   })
 }
 
-// ---- 刷新：重放逐个入场动画（与状态筛选面板 chip 一致：淡入+上浮，总窗口恒定） ----
-const chipAnimating = ref(false)
-const CHIP_ANIM_DURATION = 250 // 单 chip 动画时长(ms)，与 ts-chip-in 关键帧对齐
-const CHIP_TOTAL_WINDOW = 565 // 从首到尾的总动画窗口(ms)，与状态面板 10 chip × 35ms + 250ms 对齐
-const CHIP_STAGGER_MIN = 35 // 最小步进保护
-const CHIP_INITIAL_DELAY = 80 // 首个标签延迟(ms)，避免立刻蹦出显得突兀
-
-/** 动态错峰步长：数量少慢，数量多快，总窗口恒定 */
-const staggerStep = computed(() => {
-  const n = tags.value.length
-  if (n <= 1) return 0
-  const step = (CHIP_TOTAL_WINDOW - CHIP_ANIM_DURATION) / (n - 1)
-  return Math.max(CHIP_STAGGER_MIN, step)
-})
-
-/** 双 rAF 强制重排，确保每次点击都能重新触发动画 */
-function replayChipAnim() {
-  chipAnimating.value = false
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      chipAnimating.value = true
-    })
-  })
-}
-
-/** 刷新按钮处理：旋转图标 + 重新加载 + 重放芯片动画 */
 async function onRefresh() {
   restartRefreshSpin()
   emit('refresh')
   await loadTags()
-  replayChipAnim()
 }
 
-// ---- 选中切换 ----
-function toggleTag(tagName) {
-  if (hasDragged) return
-  const next = new Set(selectedNames.value)
-  if (next.has(tagName)) {
-    next.delete(tagName)
-  } else {
-    if (props.maxSelected > 0 && next.size >= props.maxSelected) {
-      emit('selectionLimitExceeded', props.maxSelected)
-      return
+function updatePanelPosition() {
+  const rect = panelButtonRef.value?.getBoundingClientRect()
+  if (!rect) return
+  const width = Math.min(360, Math.max(286, window.innerWidth - 16))
+  panelPosition.value = {
+    top: rect.bottom + 6,
+    left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)),
+    width
+  }
+}
+
+async function openPanel() {
+  updatePanelPosition()
+  panelOpen.value = true
+  await nextTick()
+  panelInputRef.value?.focus()
+}
+
+function closePanel() {
+  panelOpen.value = false
+  panelQuery.value = ''
+}
+
+function togglePanel() {
+  if (panelOpen.value) closePanel()
+  else openPanel()
+}
+
+function onDocumentPointerDown(event) {
+  if (!panelOpen.value) return
+  if (event.target.closest('.ts-more, .ts-panel')) return
+  closePanel()
+}
+
+function onDocumentKeydown(event) {
+  if (event.key === 'Escape' && panelOpen.value) closePanel()
+}
+
+async function togglePinned(tag) {
+  const previousPinned = Number(tag.is_pinned) === 1
+  const previousPinnedAt = tag.pinned_at
+  tag.is_pinned = previousPinned ? 0 : 1
+  tag.pinned_at = previousPinned ? null : Date.now()
+  scheduleMeasure()
+  try {
+    if (typeof window.api.setTagPinned !== 'function') {
+      throw new Error('置顶接口未就绪，请完全重启应用')
     }
-    next.add(tagName)
+    const updated = await window.api.setTagPinned(tag.id, !previousPinned)
+    Object.assign(tag, updated)
+  } catch (error) {
+    tag.is_pinned = previousPinned ? 1 : 0
+    tag.pinned_at = previousPinnedAt
+    showMessage('error', error.message || '修改置顶状态失败')
+    console.error('[TagSelector] 修改标签置顶状态失败:', error)
   }
-  selectedNames.value = next
-  emit('update:modelValue', [...next])
+  await loadTags()
 }
 
-// ---- 新建表单 ----
-function openForm() {
-  showForm.value = true
-  const c = colorPresets[Math.floor(Math.random() * colorPresets.length)]
-  newColor.value = c
-  newColorText.value = c
-  nextTick(() => {
-    inputRef.value?.focus()
-  })
+async function openManager() {
+  closePanel()
+  await nextTick()
+  panelButtonRef.value?.focus()
+  managerVisible.value = true
 }
 
-function closeForm() {
-  showForm.value = false
-  newName.value = ''
-}
-
-async function saveTag() {
-  const name = newName.value.trim()
-  if (!name || saving.value) return
-  saving.value = true
-  try {
-    await window.api.createTag(name, newColor.value || null)
-    closeForm()
-    await loadTags()
-  } catch (e) {
-    console.error('[TagSelector] 创建标签失败:', e)
-  } finally {
-    saving.value = false
-  }
-}
-
-function onFormKeydown(e) {
-  if (e.key === 'Enter') {
-    e.preventDefault()
-    saveTag()
-    return
-  }
-  if (e.key === 'Escape') {
-    closeForm()
-  }
-}
-
-// ---- 删除标签 ----
-async function confirmDelete(tag) {
-  const requestSeq = ++deleteUsageSeq
-  tagToDelete.value = tag
-  tagUsage.value = null
-  tagUsageUnavailable.value = false
-  try {
-    const usage = await window.api.getTagUsage(tag.name)
-    if (requestSeq !== deleteUsageSeq || tagToDelete.value?.name !== tag.name) return
-    tagUsage.value = usage
-  } catch (e) {
-    if (requestSeq !== deleteUsageSeq) return
-    tagUsageUnavailable.value = true
-    console.error('[TagSelector] 读取标签使用情况失败:', e)
-  }
-  if (requestSeq === deleteUsageSeq) showDeleteDialog.value = true
-}
-
-function cancelDelete() {
-  deleteUsageSeq++
-  tagToDelete.value = null
-  tagUsage.value = null
-  tagUsageUnavailable.value = false
-}
-
-async function handleDelete() {
-  if (!tagToDelete.value) return
-  const tagName = tagToDelete.value.name
-  try {
-    await window.api.deleteTag(tagName)
-    // 如果删的是选中的标签，从选中集移除
-    if (selectedNames.value.has(tagName)) {
-      const next = new Set(selectedNames.value)
-      next.delete(tagName)
-      selectedNames.value = next
+onMounted(async () => {
+  resizeObserver = new ResizeObserver(scheduleMeasure)
+  if (quickAreaRef.value) resizeObserver.observe(quickAreaRef.value)
+  unsubscribeTagsChanged = window.api.onTagsChanged?.(async (change) => {
+    if (change?.reason === 'delete' && selectedIds.value.has(Number(change.id))) {
+      const next = new Set(selectedIds.value)
+      next.delete(Number(change.id))
+      selectedIds.value = next
       emit('update:modelValue', [...next])
     }
     await loadTags()
-  } catch (e) {
-    console.error('[TagSelector] 删除标签失败:', e)
-  } finally {
-    cancelDelete()
-  }
-}
-
-// ---- 滚轮横向滚动（阻止竖向传导） ----
-function onTagWheel(e) {
-  e.currentTarget.scrollLeft += e.deltaY * 2
-}
-
-// ---- 鼠标拖拽横向滚动 ----
-const DRAG_THRESHOLD = 3
-let dragScrollEl = null
-let dragStartX = 0
-let dragStartScroll = 0
-let hasDragged = false
-
-function onTagMouseDown(e) {
-  if (e.target.closest('.ts-chip-del')) return
-  dragScrollEl = e.currentTarget
-  dragStartX = e.clientX
-  dragStartScroll = dragScrollEl.scrollLeft
-  hasDragged = false
-  document.addEventListener('mousemove', onTagMouseMove)
-  document.addEventListener('mouseup', onTagMouseUp)
-}
-
-function onTagMouseMove(e) {
-  if (!dragScrollEl) return
-  const dx = e.clientX - dragStartX
-  if (Math.abs(dx) >= DRAG_THRESHOLD) hasDragged = true
-  dragScrollEl.scrollLeft = dragStartScroll - dx
-}
-
-function onTagMouseUp() {
-  document.removeEventListener('mousemove', onTagMouseMove)
-  document.removeEventListener('mouseup', onTagMouseUp)
-  dragScrollEl = null
-}
-
-onBeforeUnmount(() => {
-  deleteUsageSeq++
-  document.removeEventListener('mousemove', onTagMouseMove)
-  document.removeEventListener('mouseup', onTagMouseUp)
+  })
+  document.addEventListener('pointerdown', onDocumentPointerDown)
+  document.addEventListener('keydown', onDocumentKeydown)
+  window.addEventListener('resize', updatePanelPosition)
+  window.addEventListener('scroll', closePanel, true)
+  await loadTags()
 })
 
-onMounted(async () => {
-  await loadTags()
-  await nextTick()
-  replayChipAnim()
+onBeforeUnmount(() => {
+  loadSequence++
+  unsubscribeTagsChanged?.()
+  resizeObserver?.disconnect()
+  document.removeEventListener('pointerdown', onDocumentPointerDown)
+  document.removeEventListener('keydown', onDocumentKeydown)
+  window.removeEventListener('resize', updatePanelPosition)
+  window.removeEventListener('scroll', closePanel, true)
 })
 </script>
 
 <template>
   <div class="ts-root">
-    <!-- ===== 标签行 ===== -->
     <div class="ts-row">
-      <!-- 横向滚动标签区 -->
-      <div class="ts-scroll" @wheel.prevent="onTagWheel" @mousedown="onTagMouseDown">
-        <div
-          v-for="(tag, i) in tags"
-          :key="tag.id"
-          class="ts-chip"
-          :class="{
-            'ts-chip--selected': selectedNames.has(tag.name),
-            'ts-chip-anim': chipAnimating
-          }"
-          :style="{
-            '--chip-color': tag.color || '#888',
-            animationDelay: chipAnimating ? CHIP_INITIAL_DELAY + i * staggerStep + 'ms' : ''
-          }"
-        >
-          <span class="ts-chip-body" @click="toggleTag(tag.name)">
-            <span class="ts-chip-dot" />
-            <span class="ts-chip-name">{{ tag.name }}</span>
-          </span>
-          <button
-            type="button"
-            class="ts-chip-del"
-            title="删除标签"
-            :aria-label="`删除标签 ${tag.name}`"
-            @click.stop="confirmDelete(tag)"
-          >
-            <svg viewBox="0 0 16 16" class="ts-chip-del-icon">
-              <path
-                d="M4 4l8 8M12 4l-8 8"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-              />
-            </svg>
-          </button>
-        </div>
-
-        <!-- 空状态提示 -->
-        <span v-if="tags.length === 0" class="ts-empty">暂无标签</span>
-      </div>
-
-      <!-- 操作按钮组 -->
-      <span class="ts-actions">
-        <!-- 刷新按钮 -->
-        <button type="button" class="ts-refresh-btn" title="刷新标签" @click="onRefresh">
-          <svg
-            class="ts-refresh-icon"
-            :class="{ 'ts-refresh-icon--spin': refreshSpinning }"
-            viewBox="0 0 24 24"
-          >
-            <path
-              d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-            <path
-              d="M21 3v5h-5"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-        </button>
-
-        <!-- 新建按钮 -->
+      <div ref="quickAreaRef" class="ts-quick" aria-label="快捷标签">
         <button
+          v-for="tag in visibleTags"
+          :key="tag.id"
           type="button"
-          class="ts-add-btn"
-          :class="{ 'ts-add-btn--open': showForm }"
-          @click="showForm ? closeForm() : openForm()"
+          class="ts-chip"
+          :class="{ selected: selectedIds.has(Number(tag.id)) }"
+          :style="{
+            '--chip-color': tag.color || 'color-mix(in srgb, var(--text-color) 45%, transparent)'
+          }"
+          :title="tag.name"
+          @click="toggleTag(tag.id)"
         >
-          <svg class="ts-add-icon" viewBox="0 0 24 24">
-            <path
-              d="M12 5v14M5 12h14"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-            />
+          <span class="ts-dot" />
+          <span>{{ tag.name }}</span>
+        </button>
+        <span v-if="tags.length === 0" class="ts-empty">暂无标签</span>
+        <div ref="measureRef" class="ts-measure" aria-hidden="true">
+          <span
+            v-for="tag in quickCandidates"
+            :key="tag.id"
+            class="ts-chip"
+            :style="{
+              '--chip-color': tag.color || 'color-mix(in srgb, var(--text-color) 45%, transparent)'
+            }"
+          >
+            <span class="ts-dot" />
+            <span>{{ tag.name }}</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="ts-actions">
+        <button type="button" class="ts-refresh" title="刷新标签" @click="onRefresh">
+          <svg :class="{ spinning: refreshSpinning }" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36L21 8M21 3v5h-5" />
           </svg>
         </button>
-      </span>
-    </div>
-
-    <!-- ===== 新建表单（内联展开，有归属感） ===== -->
-    <div class="ts-form-wrapper" :class="{ 'ts-form-wrapper--open': showForm }">
-      <div class="ts-form-inner">
-        <div class="ts-form" @keydown="onFormKeydown">
-          <!-- 名称输入 -->
-          <input
-            ref="inputRef"
-            v-model="newName"
-            class="ts-form-input"
-            placeholder="标签名称"
-            maxlength="10"
-          />
-
-          <!-- 颜色选择器 + 文本值 + 保存 -->
-          <div class="ts-form-color-row">
-            <input
-              type="color"
-              :value="newColor"
-              class="ts-form-color-picker"
-              @input="newColor = $event.target.value"
-            />
-            <input
-              v-model="newColorText"
-              class="ts-form-color-text"
-              placeholder="#007aff"
-              maxlength="7"
-              @input="onColorTextInput"
-            />
-            <button
-              type="button"
-              class="ts-form-save"
-              :disabled="!newName.trim() || saving"
-              @click="saveTag"
-            >
-              {{ saving ? '创建中…' : '保存' }}
-            </button>
-          </div>
-
-          <!-- 颜色选择 -->
-          <div class="ts-form-colors">
-            <button
-              v-for="c in colorPresets"
-              :key="c"
-              type="button"
-              class="ts-form-color"
-              :class="{ 'ts-form-color--active': isPresetMatch(c) }"
-              :style="{ backgroundColor: c }"
-              @click="newColor = c"
-            />
-          </div>
-        </div>
+        <button
+          ref="panelButtonRef"
+          type="button"
+          class="ts-more"
+          :class="{ active: panelOpen }"
+          :aria-expanded="panelOpen"
+          @click="togglePanel"
+        >
+          更多 {{ tags.length }}
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" /></svg>
+        </button>
       </div>
     </div>
 
-    <!-- 删除确认弹窗 -->
-    <ConfirmDialog
-      v-model:visible="showDeleteDialog"
-      title="删除标签"
-      :message="deleteMessage"
-      confirm-text="删除"
-      variant="danger"
-      @confirm="handleDelete"
-      @cancel="cancelDelete"
-    />
+    <Teleport to="body">
+      <Transition
+        :css="false"
+        @enter="(element, done) => enterPopover(element, done, 'dropdown')"
+        @leave="(element, done) => leavePopover(element, done, 'dropdown')"
+      >
+        <section
+          v-if="panelOpen"
+          class="ts-panel"
+          :style="{
+            top: `${panelPosition.top}px`,
+            left: `${panelPosition.left}px`,
+            width: `${panelPosition.width}px`
+          }"
+          aria-label="全部标签"
+        >
+          <div class="ts-search">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m16.5 16.5 4 4" />
+            </svg>
+            <input ref="panelInputRef" v-model="panelQuery" type="search" placeholder="搜索标签…" />
+          </div>
+          <div class="ts-panel-list scroll-y">
+            <div class="ts-list-heading">
+              <strong>全部标签</strong>
+              <span :title="selectedSummary">{{ selectedSummary }}</span>
+            </div>
+            <TagSelectorRow
+              v-for="tag in panelTags"
+              :key="tag.id"
+              :tag="tag"
+              :selected="selectedIds.has(Number(tag.id))"
+              @toggle="toggleTag"
+              @pin="togglePinned"
+            />
+            <p v-if="panelTags.length === 0" class="ts-panel-empty">没有匹配的标签</p>
+          </div>
+          <button type="button" class="ts-manage" @click="openManager">管理标签</button>
+        </section>
+      </Transition>
+    </Teleport>
+
+    <TagManagerDialog v-model:visible="managerVisible" />
   </div>
 </template>
 
 <style scoped>
-/* ===== 根容器 ===== */
 .ts-root {
-  overflow: hidden;
+  min-width: 0;
 }
-
-/* ===== 标签行 ===== */
 .ts-row {
   display: flex;
-  align-items: center;
-  gap: 8rem;
-  overflow: hidden; /* 截断横向溢出，防止撑大外层容器 */
-}
-
-/* ---- 横向滚动区 ---- */
-.ts-scroll {
-  flex: 1;
   min-width: 0;
-  display: flex;
   align-items: center;
-  gap: 8rem;
-  overflow-x: auto;
-  overflow-y: hidden;
-  user-select: none;
-  margin-right: 8rem;
-
-  /* 隐藏滚动条（保持可滚动） */
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  gap: 6rem;
 }
-.ts-scroll::-webkit-scrollbar {
-  display: none;
+.ts-quick {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 7rem;
+  overflow: hidden;
 }
-
-/* ---- 标签芯片 ---- */
 .ts-chip {
   display: inline-flex;
-  align-items: center;
-  gap: 4rem;
-  flex-shrink: 0;
-  font-size: calc(var(--fs-secondary) * 0.85);
-  font-family: inherit;
-  font-weight: 500;
-  color: var(--text-color);
-  border: 1rem solid rgba(255, 255, 255, 0.1);
-  border-radius: 14rem;
-  background: rgba(128, 128, 128, 0.05);
-  background-clip: padding-box;
-  transition:
-    background-color 150ms ease,
-    border-color 150ms ease,
-    transform 120ms ease;
-  user-select: none;
-  white-space: nowrap;
-}
-.ts-chip:hover {
-  background: rgba(128, 128, 128, 0.1);
-}
-.ts-chip:active {
-  transform: scale(0.97);
-}
-
-/* 芯片主体（点击切换选中） */
-.ts-chip-body {
-  display: inline-flex;
+  min-width: 0;
+  max-width: 92rem;
+  flex: 0 0 auto;
   align-items: center;
   gap: 5rem;
-  padding: 5rem 2rem 5rem 14rem;
-  cursor: pointer;
-}
-
-/* 删除按钮 */
-.ts-chip-del {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20rem;
-  height: 20rem;
-  margin-right: 4rem;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--text-color-secondary);
-  cursor: pointer;
-  flex-shrink: 0;
-  opacity: 0;
-  transition:
-    opacity 120ms ease,
-    background-color 120ms ease,
-    color 120ms ease;
-}
-.ts-chip:hover .ts-chip-del {
-  opacity: 1;
-}
-.ts-chip-del:hover {
-  background: rgba(255, 59, 48, 0.12);
-  color: #ff3b30;
-}
-.ts-chip-del-icon {
-  width: 10rem;
-  height: 10rem;
-  display: block;
-}
-
-/* 选中态：仅用克制的主题色浅填充表达，不叠加描边和光圈。 */
-.ts-chip--selected {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: color-mix(in srgb, var(--chip-color) 16%, transparent);
-}
-.ts-chip--selected:hover {
-  background: color-mix(in srgb, var(--chip-color) 21%, transparent);
-}
-
-/* ---- 芯片圆点 ---- */
-.ts-chip-dot {
-  width: 8rem;
-  height: 8rem;
-  border-radius: 50%;
-  background-color: var(--chip-color);
-  flex-shrink: 0;
-}
-
-/* ---- 芯片名称 ---- */
-.ts-chip-name {
+  padding: 5rem 9rem;
+  overflow: hidden;
+  border: 0;
+  border-radius: 13rem;
+  background: var(--ui-fill-passive);
+  color: var(--text-color);
+  font: inherit;
+  font-size: calc(var(--fs-secondary) * 0.84);
   white-space: nowrap;
+  cursor: pointer;
 }
-
-/* ---- 刷新时逐个入场（与状态筛选面板 nl-card-in 一致：淡入+上浮，延迟由 :style 注入） ---- */
-.ts-chip-anim {
-  animation: ts-chip-in 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
+.ts-chip:hover {
+  background: var(--ui-fill-hover);
 }
-@keyframes ts-chip-in {
-  from {
-    opacity: 0;
-    transform: translateY(6rem);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.ts-chip:active {
+  transform: scale(0.98);
 }
-
-/* ---- 空状态 ---- */
+.ts-chip.selected {
+  background: color-mix(in srgb, var(--chip-color) 17%, transparent);
+}
+.ts-chip > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ts-dot {
+  width: 7rem;
+  height: 7rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--chip-color);
+}
+.ts-measure {
+  position: absolute;
+  top: -10000px;
+  left: 0;
+  display: flex;
+  gap: 7rem;
+  visibility: hidden;
+  pointer-events: none;
+}
 .ts-empty {
-  flex-shrink: 0;
-  font-size: calc(var(--fs-secondary) * 0.85);
   color: var(--text-color-secondary);
-  white-space: nowrap;
+  font-size: calc(var(--fs-secondary) * 0.85);
 }
-
-/* ---- 操作按钮组（无间距） ---- */
 .ts-actions {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 0;
-  flex-shrink: 0;
+  gap: 2rem;
 }
-
-/* ---- 刷新按钮 ---- */
-.ts-refresh-btn {
-  flex-shrink: 0;
-  width: 34rem;
-  height: 34rem;
+.ts-refresh,
+.ts-more {
   display: inline-flex;
+  height: 32rem;
   align-items: center;
   justify-content: center;
-  border: none;
+  border: 0;
   border-radius: 6rem;
   background: transparent;
   color: var(--text-color);
+  font: inherit;
+  font-size: calc(var(--fs-secondary) * 0.82);
   cursor: pointer;
-  transition: background-color 150ms ease;
 }
-.ts-refresh-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+.ts-refresh {
+  width: 30rem;
+  padding: 0;
 }
-
-.ts-refresh-icon {
-  width: 18rem;
-  height: 18rem;
-  display: block;
+.ts-refresh:hover,
+.ts-more:hover,
+.ts-more.active {
+  background: var(--ui-fill-hover);
 }
-
-/* 点击刷新时图标旋转 360°（苹果弹性缓出，与项目动效体系一致） */
-.ts-refresh-icon--spin {
+.ts-refresh:active,
+.ts-more:active {
+  transform: scale(0.98);
+}
+.ts-refresh svg {
+  width: 17rem;
+  height: 17rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+.ts-refresh svg.spinning {
   animation: ts-refresh-spin 320ms var(--ease-standard);
 }
+.ts-more {
+  gap: 3rem;
+  min-width: 62rem;
+  padding: 0 7rem;
+}
+.ts-more svg {
+  width: 10rem;
+  height: 10rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+  transition: transform var(--motion-control) var(--ease-standard);
+}
+.ts-more.active svg {
+  transform: rotate(180deg);
+}
 @keyframes ts-refresh-spin {
-  from {
-    transform: rotate(0deg);
-  }
   to {
     transform: rotate(360deg);
   }
 }
+</style>
 
-/* ---- 新建按钮 ---- */
-.ts-add-btn {
-  flex-shrink: 0;
-  width: 34rem;
-  height: 34rem;
-  display: inline-flex;
+<style>
+.ts-panel {
+  position: fixed;
+  z-index: var(--z-global-popover);
+  display: flex;
+  max-height: min(480rem, calc(100vh - 24rem));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--surface-float-border);
+  border-radius: 10rem;
+  background: var(--surface-float);
+  box-shadow: 0 10rem 30rem rgba(0, 0, 0, 0.24);
+  color: var(--text-color);
+  transform-origin: top right;
+}
+.ts-search {
+  display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 6rem;
+  gap: 7rem;
+  margin: 9rem;
+  padding: 6rem 9rem;
+  border: 1px solid var(--ui-border-control);
+  border-radius: 7rem;
+  background: var(--ui-surface-control);
+}
+.ts-search:focus-within {
+  border-color: #007aff;
+}
+.ts-search svg {
+  width: 15rem;
+  height: 15rem;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: var(--text-color-secondary);
+  stroke-linecap: round;
+  stroke-width: 1.7;
+}
+.ts-search input {
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  outline: 0;
   background: transparent;
   color: var(--text-color);
-  cursor: pointer;
-  transition: background-color 150ms ease;
-}
-.ts-add-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-/* 展开态：按钮变红 + 图标旋转 45° → × */
-.ts-add-btn--open {
-  background: rgba(255, 59, 48, 0.12);
-  color: #ff3b30;
-}
-.ts-add-btn--open:hover {
-  background: rgba(255, 59, 48, 0.2);
-}
-.ts-add-btn--open .ts-add-icon {
-  transform: rotate(45deg);
-}
-
-.ts-add-icon {
-  width: 20rem;
-  height: 20rem;
-  display: block;
-  transition: transform 250ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-/* ===== 新建表单（内联展开，归属感） ===== */
-.ts-form-wrapper {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 280ms cubic-bezier(0.22, 1, 0.36, 1);
-  overflow: hidden;
-}
-.ts-form-wrapper--open {
-  grid-template-rows: 1fr;
-}
-
-.ts-form-inner {
-  overflow: hidden;
-}
-
-.ts-form {
-  margin-top: 10rem;
-  padding: 10rem 12rem;
-  border: 1rem solid rgba(255, 255, 255, 0.1);
-  border-radius: 8rem;
-  background: rgba(128, 128, 128, 0.03);
-  opacity: 0;
-  transform: translateY(-4rem);
-  transition:
-    opacity var(--motion-control) ease,
-    transform 220ms var(--ease-standard);
-}
-.ts-form-wrapper--open .ts-form {
-  opacity: 1;
-  transform: translateY(0);
-  transition-delay: 50ms;
-}
-
-/* ---- 名称输入 ---- */
-.ts-form-input {
-  width: 100%;
-  padding: 6rem 10rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6rem;
-  outline: none;
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-color);
-  font-family: inherit;
+  font: inherit;
   font-size: var(--fs-secondary);
-  transition: border-color 150ms ease;
 }
-.ts-form-input:focus {
-  border-color: rgba(255, 255, 255, 0.18);
+.ts-panel-list {
+  min-height: 80rem;
+  flex: 1;
+  padding: 0 6rem 6rem;
 }
-.ts-form-input::placeholder {
-  color: var(--text-color-secondary);
-  opacity: 0.5;
-}
-
-/* ---- 颜色选择器 + 文本值 ---- */
-.ts-form-color-row {
+.ts-list-heading {
   display: flex;
   align-items: center;
-  gap: 8rem;
-  margin-top: 8rem;
-}
-
-.ts-form-color-picker {
-  width: 28rem;
-  height: 28rem;
-  padding: 0;
-  border: 1rem solid rgba(255, 255, 255, 0.1);
-  border-radius: 6rem;
-  cursor: pointer;
-  background: rgba(255, 255, 255, 0.05);
-  flex-shrink: 0;
-}
-.ts-form-color-picker::-webkit-color-swatch-wrapper {
-  padding: 2rem;
-}
-.ts-form-color-picker::-webkit-color-swatch {
-  border: none;
-  border-radius: 3rem;
-}
-
-.ts-form-color-text {
-  flex: 1;
-  min-width: 0;
-  padding: 6rem 10rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6rem;
-  outline: none;
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-color);
-  font-family: inherit;
-  font-size: var(--fs-secondary);
-  transition: border-color 150ms ease;
-}
-.ts-form-color-text:focus {
-  border-color: rgba(255, 255, 255, 0.18);
-}
-.ts-form-color-text::placeholder {
+  justify-content: space-between;
+  gap: 12rem;
+  margin: 5rem 8rem 6rem;
   color: var(--text-color-secondary);
-  opacity: 0.5;
+  font-size: calc(var(--fs-secondary) * 0.78);
 }
-
-/* ---- 保存按钮（行内，颜色行右侧） ---- */
-.ts-form-save {
-  padding: 6rem 14rem;
-  font-size: var(--fs-secondary);
-  font-family: inherit;
-  font-weight: 500;
-  border: none;
-  border-radius: 6rem;
-  cursor: pointer;
-  background: rgba(0, 122, 255, 0.15);
+.ts-list-heading strong {
+  flex: 0 0 auto;
+  color: var(--text-color-secondary);
+  font-weight: 600;
+}
+.ts-list-heading span {
+  min-width: 0;
+  overflow: hidden;
   color: #007aff;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  flex-shrink: 0;
-  transition: background-color 150ms ease;
 }
-.ts-form-save:hover:not(:disabled) {
-  background: rgba(0, 122, 255, 0.25);
-}
-.ts-form-save:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-/* ---- 颜色选择 ---- */
-.ts-form-colors {
+.ts-panel-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6rem;
-  margin-top: 8rem;
+  min-height: 34rem;
+  align-items: center;
+  border-radius: 6rem;
 }
-
-.ts-form-color {
-  width: 22rem;
-  height: 22rem;
-  border: none;
-  border-radius: 50%;
+.ts-panel-select {
+  display: flex;
+  min-width: 0;
+  height: 34rem;
+  flex: 1;
+  align-items: center;
+  gap: 8rem;
+  padding: 0 8rem;
+  border: 0;
+  background: transparent;
+  color: var(--text-color);
+  font: inherit;
+  text-align: left;
   cursor: pointer;
-  transition:
-    transform 120ms ease,
-    box-shadow 120ms ease;
 }
-.ts-form-color--active {
-  transform: scale(1.25);
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6);
+.ts-panel-select:hover {
+  background: var(--ui-fill-hover);
 }
-.ts-form-color:hover {
-  transform: scale(1.15);
+.ts-panel-select:active,
+.ts-manage:active {
+  transform: scale(0.98);
+}
+.ts-panel-dot {
+  width: 8rem;
+  height: 8rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+.ts-panel-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ts-check {
+  width: 15rem;
+  height: 15rem;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: #007aff;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+.ts-panel-empty {
+  margin: 34rem 0;
+  color: var(--text-color-secondary);
+  text-align: center;
+}
+.ts-manage {
+  flex: 0 0 auto;
+  width: 100%;
+  padding: 10rem 12rem;
+  border: 0;
+  border-top: 1px solid var(--ui-border-divider);
+  background: transparent;
+  color: #007aff;
+  font: inherit;
+  font-size: var(--fs-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+.ts-manage:hover {
+  background: var(--ui-fill-hover);
 }
 </style>

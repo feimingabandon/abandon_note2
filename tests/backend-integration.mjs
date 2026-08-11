@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { DATABASE_SCHEMA_VERSION, createDatabaseSchema } from '../src/main/db/db-schema.js'
+import { createTagIdMigrationBackup } from '../src/main/db/db-migration-backup.js'
 import { clearDb, setDb } from '../src/main/db/db-connection.js'
 import {
   createTag,
   deleteTag,
   getNoteTags,
   getTagUsage,
-  setNoteTags
+  setNoteTagIds,
+  setTagPinned,
+  updateTag
 } from '../src/main/db/db-tags.js'
 import {
   createTemplate,
@@ -25,8 +31,13 @@ import {
   getNoteById,
   normalizeNoteDurationDays,
   normalizeRequiredNoteContent,
-  queryPinnedNotes
+  queryPinnedNotes,
+  searchNotes,
+  queryTagGroupNotes,
+  queryTagGroups,
+  reopenNote
 } from '../src/main/db/db-notes.js'
+import { getMonthCalendarData } from '../src/main/calendar/calendar-service.js'
 import { getOrCreateInstallationId } from '../src/main/db/db-identity.js'
 import {
   acknowledgeRemoteNotice,
@@ -52,6 +63,32 @@ assert.equal(
   0
 )
 futureDb.close()
+
+const backupRoot = mkdtempSync(join(tmpdir(), 'abandon-v0-backup-test-'))
+const backupSourcePath = join(backupRoot, 'app.db')
+const versionZeroDb = new Database(backupSourcePath)
+try {
+  versionZeroDb.exec(`
+    CREATE TABLE note_tags (
+      note_id INTEGER NOT NULL,
+      tag_name TEXT NOT NULL,
+      PRIMARY KEY (note_id, tag_name)
+    );
+    INSERT INTO note_tags (note_id, tag_name) VALUES (1, 'V0 标签');
+    PRAGMA user_version = 0;
+  `)
+  const backupPath = createTagIdMigrationBackup(versionZeroDb, backupSourcePath)
+  assert.equal(backupPath, join(backupRoot, 'app-v0-before-v3.db'))
+  assert.equal(existsSync(backupPath), true)
+  const backupDb = new Database(backupPath, { readonly: true })
+  assert.deepEqual(backupDb.prepare('SELECT * FROM note_tags').all(), [
+    { note_id: 1, tag_name: 'V0 标签' }
+  ])
+  backupDb.close()
+} finally {
+  versionZeroDb.close()
+  rmSync(backupRoot, { recursive: true, force: true })
+}
 
 const legacyDb = new Database(':memory:')
 legacyDb.exec(`
@@ -85,6 +122,13 @@ assert.equal(
     .some((column) => column.name === 'duration_days'),
   true
 )
+assert.equal(
+  legacyDb
+    .prepare("PRAGMA table_info('notes')")
+    .all()
+    .some((column) => column.name === 'remind_again_at'),
+  false
+)
 assert.deepEqual(legacyDb.prepare('SELECT content, duration_days FROM notes WHERE id = 1').get(), {
   content: 'legacy note',
   duration_days: 1
@@ -109,6 +153,79 @@ assert.equal(
 )
 legacyDb.close()
 
+// V2 使用标签名称作为关联键；V3 必须原子迁移为稳定 ID，并同步转换持久化筛选。
+const tagIdMigrationDb = new Database(':memory:')
+tagIdMigrationDb.pragma('foreign_keys = ON')
+createDatabaseSchema(tagIdMigrationDb)
+tagIdMigrationDb.exec(`
+  DROP TABLE note_tags;
+  DROP TABLE template_tags;
+  DROP TABLE tags;
+  CREATE TABLE tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    color TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE note_tags (
+    note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    tag_name TEXT NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
+    PRIMARY KEY (note_id, tag_name)
+  );
+  CREATE TABLE template_tags (
+    template_id INTEGER NOT NULL REFERENCES note_templates(id) ON DELETE CASCADE,
+    tag_name TEXT NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
+    PRIMARY KEY (template_id, tag_name)
+  );
+  INSERT INTO tags (id, name, color, created_at) VALUES (41, '迁移标签', '#007aff', 1000);
+  INSERT INTO notes (id, content, effective_at, created_at, updated_at)
+    VALUES (51, '迁移便签', 1000, 1000, 1000);
+  INSERT INTO note_templates (
+    id, content, recurrence_rule, schedule_anchor_at, created_at, updated_at
+  ) VALUES (61, '迁移模板', '{"frequency":"daily","interval":1,"time_of_day":"09:00"}', 1000, 1000, 1000);
+  INSERT INTO note_tags (note_id, tag_name) VALUES (51, '迁移标签');
+  INSERT INTO template_tags (template_id, tag_name) VALUES (61, '迁移标签');
+  INSERT INTO app_settings (
+    window_name, type, key, value, remark, created_at, updated_at
+  ) VALUES (
+    'main', 'filter', 'list_filter',
+    '{"listMode":"tag-group","tagNames":["迁移标签"],"statusFilter":["initialized"]}',
+    '', 1000, 1000
+  );
+  PRAGMA user_version = 2;
+`)
+createDatabaseSchema(tagIdMigrationDb)
+assert.equal(tagIdMigrationDb.pragma('user_version', { simple: true }), DATABASE_SCHEMA_VERSION)
+assert.deepEqual(
+  tagIdMigrationDb
+    .prepare("PRAGMA table_info('note_tags')")
+    .all()
+    .map((column) => column.name),
+  ['note_id', 'tag_id']
+)
+assert.deepEqual(
+  tagIdMigrationDb
+    .prepare("PRAGMA table_info('tags')")
+    .all()
+    .filter((column) => ['is_pinned', 'pinned_at'].includes(column.name))
+    .map((column) => column.name),
+  ['is_pinned', 'pinned_at']
+)
+assert.deepEqual(tagIdMigrationDb.prepare('SELECT * FROM note_tags').all(), [
+  { note_id: 51, tag_id: 41 }
+])
+assert.deepEqual(tagIdMigrationDb.prepare('SELECT * FROM template_tags').all(), [
+  { template_id: 61, tag_id: 41 }
+])
+assert.deepEqual(
+  JSON.parse(
+    tagIdMigrationDb.prepare("SELECT value FROM app_settings WHERE key = 'list_filter'").get().value
+  ),
+  { listMode: 'tag-group', statusFilter: ['initialized'], tagIds: [41] }
+)
+assert.deepEqual(tagIdMigrationDb.pragma('foreign_key_check'), [])
+tagIdMigrationDb.close()
+
 const db = new Database(':memory:')
 db.pragma('foreign_keys = ON')
 createDatabaseSchema(db)
@@ -130,6 +247,7 @@ try {
     .map((column) => column.name)
   assert.equal(noteColumns.includes('template_id'), false)
   assert.equal(noteColumns.includes('duration_days'), true)
+  assert.equal(noteColumns.includes('remind_again_at'), false)
   assert.deepEqual(
     db
       .prepare("PRAGMA table_info('wallpaper_sources')")
@@ -237,15 +355,35 @@ try {
   assert.throws(() => normalizeNoteDurationDays(0), /持续天数/)
   assert.throws(() => normalizeNoteDurationDays(1.5), /持续天数/)
 
-  createTag('日常', '#007aff')
-  createTag('重要', '#ff3b30')
+  const dailyTag = createTag('日常', '#007aff')
+  const importantTag = createTag('重要', '#ff3b30')
+  const createdPinnedTag = createTag('置顶新建', '#34c759', true)
+  assert.equal(createdPinnedTag.is_pinned, 1)
+  assert.equal(Number.isFinite(Number(createdPinnedTag.pinned_at)), true)
+  assert.equal(deleteTag(createdPinnedTag.id), true)
+  const pinnedDailyTag = setTagPinned(dailyTag.id, true, 123456)
+  assert.equal(pinnedDailyTag.is_pinned, 1)
+  assert.equal(pinnedDailyTag.pinned_at, 123456)
+  const unpinnedDailyTag = setTagPinned(dailyTag.id, false)
+  assert.equal(unpinnedDailyTag.is_pinned, 0)
+  assert.equal(unpinnedDailyTag.pinned_at, null)
+  const editedPinnedTag = updateTag(importantTag.id, {
+    name: '重要',
+    color: '#ff3b30',
+    pinned: true
+  }).tag
+  assert.equal(editedPinnedTag.is_pinned, 1)
+  assert.throws(
+    () => updateTag(importantTag.id, { name: '日常', color: '#ff3b30' }),
+    /标签名称已存在/
+  )
 
   const missedAnchor = localTs(2025, 7, 20, 8)
   const missedTemplate = createTemplate(
     {
       content: '错过节点不补偿',
       recurrenceRule: { frequency: 'daily', interval: 1, time_of_day: '09:00' },
-      tagNames: ['日常']
+      tagIds: [dailyTag.id]
     },
     missedAnchor
   )
@@ -262,21 +400,21 @@ try {
       recurrenceRule: { frequency: 'daily', interval: 1, time_of_day: '09:00' },
       isPinned: true,
       notifyEnabled: true,
-      tagNames: ['日常']
+      tagIds: [dailyTag.id]
     },
     activeAnchor
   )
   assert.throws(
     () =>
       updateTemplate(activeTemplate.id, {
-        tagNames: ['日常', '重要']
+        tagIds: [dailyTag.id, importantTag.id]
       }),
     /一个便签最多只能设置一个标签/
   )
   // 模拟旧版本遗留的多标签模板；循环生成时只继承关联顺序中的第一项。
-  db.prepare('INSERT INTO template_tags (template_id, tag_name) VALUES (?, ?)').run(
+  db.prepare('INSERT INTO template_tags (template_id, tag_id) VALUES (?, ?)').run(
     activeTemplate.id,
-    '重要'
+    importantTag.id
   )
   const firstRun = runRecurringTemplates({
     now: localTs(2025, 7, 20, 9, 0, 30),
@@ -284,27 +422,39 @@ try {
   })
   assert.equal(firstRun.count, 1)
   assert.equal(firstRun.generated.length, 1)
-  assert.deepEqual(firstRun.generated[0], { content: '生成快照' })
+  assert.deepEqual(firstRun.generated[0], { id: firstRun.generated[0].id, content: '生成快照' })
+  assert.equal(Number.isInteger(firstRun.generated[0].id), true)
 
   const firstNote = db.prepare('SELECT * FROM notes WHERE is_deleted = 0').get()
   assert.equal(firstNote.status, 'in_progress')
   assert.equal(firstNote.is_pinned, 1)
   assert.equal(firstNote.notify_enabled, 0)
   assert.deepEqual(
-    db
-      .prepare('SELECT tag_name FROM note_tags WHERE note_id = ? ORDER BY tag_name')
-      .all(firstNote.id),
-    [{ tag_name: '日常' }]
+    db.prepare('SELECT tag_id FROM note_tags WHERE note_id = ? ORDER BY tag_id').all(firstNote.id),
+    [{ tag_id: dailyTag.id }]
   )
   assert.deepEqual(
-    queryPinnedNotes({ statuses: ['in_progress'], tagNames: ['日常', '重要'] }).map(
+    queryPinnedNotes({ statuses: ['in_progress'], tagIds: [dailyTag.id, importantTag.id] }).map(
       (note) => note.id
     ),
     [firstNote.id]
   )
+  const generatedCalendar = getMonthCalendarData(2025, 7)
+  assert.equal(
+    generatedCalendar.notes.some((note) => note.content === '生成快照'),
+    true
+  )
+  assert.equal(
+    generatedCalendar.notes.some((note) => note.content === '错过节点不补偿'),
+    false,
+    '月视图不得虚拟展开尚未生成的循环模板'
+  )
 
   // 历史多标签便签仍完整读取，第一项保持关联插入顺序；新保存则拒绝多标签。
-  db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)').run(firstNote.id, '重要')
+  db.prepare('INSERT INTO note_tags (note_id, tag_id) VALUES (?, ?)').run(
+    firstNote.id,
+    importantTag.id
+  )
   assert.deepEqual(
     getNoteById(firstNote.id).tags.map((tag) => tag.name),
     ['日常', '重要']
@@ -313,9 +463,12 @@ try {
     getNoteTags(firstNote.id).map((tag) => tag.name),
     ['日常', '重要']
   )
-  assert.throws(() => setNoteTags(firstNote.id, ['日常', '重要']), /一个便签最多只能设置一个标签/)
+  assert.throws(
+    () => setNoteTagIds(firstNote.id, [dailyTag.id, importantTag.id]),
+    /一个便签最多只能设置一个标签/
+  )
 
-  assert.deepEqual(getTagUsage('日常'), {
+  assert.deepEqual(getTagUsage(dailyTag.id), {
     noteCount: 1,
     activeNoteCount: 1,
     deletedNoteCount: 0,
@@ -324,7 +477,7 @@ try {
     pausedTemplateCount: 0,
     deletedTemplateCount: 0
   })
-  assert.deepEqual(getTagUsage('重要'), {
+  assert.deepEqual(getTagUsage(importantTag.id), {
     noteCount: 1,
     activeNoteCount: 1,
     deletedNoteCount: 0,
@@ -339,7 +492,7 @@ try {
   db.prepare('UPDATE note_templates SET is_deleted = 1, is_paused = 1 WHERE id = ?').run(
     activeTemplate.id
   )
-  assert.deepEqual(getTagUsage('日常'), {
+  assert.deepEqual(getTagUsage(dailyTag.id), {
     noteCount: 1,
     activeNoteCount: 0,
     deletedNoteCount: 1,
@@ -475,9 +628,9 @@ try {
   pauseTemplate(activeTemplate.id, localTs(2025, 8, 2, 8, 30))
   pauseTemplate(intervalTemplate.id, localTs(2025, 8, 2, 8, 30))
   db.pragma('foreign_keys = OFF')
-  db.prepare('INSERT INTO template_tags (template_id, tag_name) VALUES (?, ?)').run(
+  db.prepare('INSERT INTO template_tags (template_id, tag_id) VALUES (?, ?)').run(
     commitFailureTemplate.id,
-    '不存在的标签'
+    999999
   )
   db.pragma('foreign_keys = ON')
   db.pragma('defer_foreign_keys = ON')
@@ -491,9 +644,9 @@ try {
     commitFailure.errors.some((item) => item.templateId === commitFailureTemplate.id),
     true
   )
-  db.prepare('DELETE FROM template_tags WHERE template_id = ? AND tag_name = ?').run(
+  db.prepare('DELETE FROM template_tags WHERE template_id = ? AND tag_id = ?').run(
     commitFailureTemplate.id,
-    '不存在的标签'
+    999999
   )
 
   const lastNoteId = restored.last_generated_note_id
@@ -505,10 +658,13 @@ try {
   assert.equal(purgeTemplate(activeTemplate.id), true)
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM notes').get().count, noteCountBeforePurge)
 
-  const usageBeforeDelete = getTagUsage('日常')
+  const renamedDaily = updateTag(dailyTag.id, { name: '日常事务', color: '#00c7be' })
+  assert.equal(renamedDaily.oldName, '日常')
+  assert.equal(getNoteById(secondNoteId).tags[0].id, dailyTag.id)
+  const usageBeforeDelete = getTagUsage(dailyTag.id)
   assert.equal(usageBeforeDelete.templateCount, 1)
-  assert.equal(deleteTag('日常'), true)
-  assert.deepEqual(getTagUsage('日常'), {
+  assert.equal(deleteTag(dailyTag.id), true)
+  assert.deepEqual(getTagUsage(dailyTag.id), {
     noteCount: 0,
     activeNoteCount: 0,
     deletedNoteCount: 0,
@@ -523,6 +679,138 @@ try {
   assert.equal(defaultDurationNote.duration_days, 1)
   assert.equal(multiDayNote.duration_days, 7)
   assert.throws(() => createNote({ content: '无效持续时间', durationDays: 366 }), /持续天数/)
+
+  const literalPercentNote = createNote({ content: '进度 100% 已完成' })
+  const literalUnderscoreNote = createNote({ content: '项目_alpha' })
+  assert.deepEqual(
+    searchNotes({ search: '%', includeDeleted: false }).notes.map((note) => note.id),
+    [literalPercentNote.id]
+  )
+  assert.deepEqual(
+    searchNotes({ search: '_', includeDeleted: false }).notes.map((note) => note.id),
+    [literalUnderscoreNote.id]
+  )
+
+  const completedForReopen = createNote({ content: '重新进行保留原时间' })
+  const originalEffectiveAt = completedForReopen.effective_at
+  db.prepare("UPDATE notes SET status = 'completed' WHERE id = ?").run(completedForReopen.id)
+  const reopened = reopenNote(completedForReopen.id)
+  assert.equal(reopened.status, 'in_progress')
+  assert.equal(reopened.effective_at, originalEffectiveAt)
+
+  const firstGroupTag = createTag('标签分组甲', '#3366ff')
+  const secondGroupTag = createTag('标签分组乙', '#ff6633')
+  const laterGroupedNote = createNote({ content: '标签组未来便签' })
+  const earlierPinnedGroupedNote = createNote({ content: '标签组过去置顶便签' })
+  const otherStatusGroupedNote = createNote({ content: '标签组其他状态便签' })
+  const untaggedGroupedNote = createNote({ content: '未分类测试便签' })
+  setNoteTagIds(laterGroupedNote.id, [firstGroupTag.id])
+  setNoteTagIds(earlierPinnedGroupedNote.id, [firstGroupTag.id])
+  setNoteTagIds(otherStatusGroupedNote.id, [secondGroupTag.id])
+  db.prepare(
+    "UPDATE notes SET status = 'initialized', effective_at = ?, is_pinned = 0 WHERE id = ?"
+  ).run(localTs(2100, 1, 1), laterGroupedNote.id)
+  db.prepare(
+    "UPDATE notes SET status = 'initialized', effective_at = ?, is_pinned = 1 WHERE id = ?"
+  ).run(localTs(2000, 1, 1), earlierPinnedGroupedNote.id)
+  db.prepare("UPDATE notes SET status = 'completed' WHERE id = ?").run(otherStatusGroupedNote.id)
+  db.prepare("UPDATE notes SET status = 'initialized', effective_at = ? WHERE id = ?").run(
+    localTs(2099, 1, 1),
+    untaggedGroupedNote.id
+  )
+
+  assert.deepEqual(
+    queryTagGroups({
+      tagIds: [firstGroupTag.id, secondGroupTag.id],
+      statuses: ['initialized']
+    }).map(({ name, total, untagged }) => ({ name, total, untagged })),
+    [
+      { name: '标签分组甲', total: 2, untagged: false },
+      { name: '标签分组乙', total: 0, untagged: false }
+    ]
+  )
+  const allTagGroups = queryTagGroups({ statuses: ['initialized'] })
+  assert.equal(allTagGroups.at(-1).key, 'untagged')
+  assert.equal(allTagGroups.at(-1).total >= 1, true)
+
+  const firstTagPage = queryTagGroupNotes({
+    tagId: firstGroupTag.id,
+    statuses: ['initialized'],
+    limit: 1,
+    offset: 0
+  })
+  const secondTagPage = queryTagGroupNotes({
+    tagId: firstGroupTag.id,
+    statuses: ['initialized'],
+    limit: 1,
+    offset: 1
+  })
+  assert.equal(firstTagPage.total, 2)
+  assert.equal(firstTagPage.notes[0].content, '标签组未来便签')
+  assert.equal(secondTagPage.notes[0].content, '标签组过去置顶便签')
+  assert.equal(
+    queryTagGroupNotes({ tagId: null, statuses: ['initialized'], limit: 100 }).notes.some(
+      (note) => note.id === untaggedGroupedNote.id
+    ),
+    true
+  )
+
+  const calendarInsert = db.prepare(`
+    INSERT INTO notes (
+      content, status, is_deleted, is_pinned, notify_enabled, effective_at,
+      duration_days, finished_at, sort_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?)
+  `)
+  const calendarCreatedAt = localTs(2026, 7, 1)
+  calendarInsert.run(
+    '月历跨月便签',
+    'completed',
+    0,
+    1,
+    localTs(2026, 7, 30, 9),
+    5,
+    localTs(2026, 7, 31, 10),
+    calendarCreatedAt,
+    calendarCreatedAt
+  )
+  calendarInsert.run(
+    '月历已删除便签',
+    'in_progress',
+    1,
+    0,
+    localTs(2026, 8, 3, 9),
+    1,
+    calendarCreatedAt,
+    calendarCreatedAt,
+    calendarCreatedAt
+  )
+  calendarInsert.run(
+    '月历范围外便签',
+    'in_progress',
+    0,
+    0,
+    localTs(2026, 10, 1, 9),
+    1,
+    calendarCreatedAt,
+    calendarCreatedAt,
+    calendarCreatedAt
+  )
+  const calendar = getMonthCalendarData(2026, 8)
+  assert.equal(calendar.days.length, 42)
+  assert.equal(calendar.days[0].weekday, 0)
+  assert.equal(calendar.visibleStart, '2026-07-27')
+  assert.equal(
+    calendar.notes.some((note) => note.content === '月历跨月便签'),
+    true
+  )
+  assert.equal(
+    calendar.notes.some((note) => note.content === '月历已删除便签'),
+    false
+  )
+  assert.equal(
+    calendar.notes.some((note) => note.content === '月历范围外便签'),
+    false
+  )
 
   console.log('backend integration tests passed')
 } finally {

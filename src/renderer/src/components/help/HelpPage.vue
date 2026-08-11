@@ -71,7 +71,7 @@ const sections = [
     hint: '幕后能力',
     items: [
       { id: 'misc-snap', title: '贴边隐藏' },
-      { id: 'misc-notify', title: '系统通知与稍后提醒' },
+      { id: 'misc-notify', title: '系统通知' },
       { id: 'misc-protocol', title: '通知点击跳转' },
       { id: 'misc-screenshot', title: '截图选取' },
       { id: 'misc-storage', title: '数据存储与找回' },
@@ -316,34 +316,43 @@ onBeforeUnmount(() => {
             <div :ref="(el) => registerAnchor('notes-create', el)" data-anchor-id="notes-create">
               <HelpFigureBlock :n="1" title="新建便签">
                 <template #figure><MockNewNotePanel /></template>
-                <p>
-                  点击顶部操作栏的「＋」按钮展开面板。下面是各字段说明：
-                </p>
+                <p>点击顶部操作栏的「＋」按钮展开面板。下面是各字段说明：</p>
                 <ol class="help-anno-list">
                   <li>
-                    <strong>正文输入框</strong> —— 唯一必填项，支持多行（Enter 换行），无字数上限。正文为空时创建按钮不可点。
+                    <strong>正文输入框</strong> —— 唯一必填项，支持多行（Enter
+                    换行），无字数上限。正文为空时创建按钮不可点。
                   </li>
                   <li>
-                    <strong>生效时间</strong> —— 默认「立即生效」，创建后直接进入「进行中」。也可选「指定时间」（最早当前 +5 分钟），到点前保持「初始化」，到点后自动切为「进行中」。
+                    <strong>生效时间</strong> ——
+                    默认「立即生效」，创建后直接进入「进行中」。也可选「指定时间」（最早当前 +2
+                    分钟），到点前保持「初始化」，到点后自动切为「进行中」。
                   </li>
                   <li>
-                    <strong>持续天数</strong> —— 选择生效时间后显示，默认 1 天。只决定便签在月视图中连续占用的日期格数，不会自动完成便签，也不改变列表状态。
+                    <strong>持续天数</strong> —— 选择生效时间后显示，默认 1
+                    天。只决定便签在月视图中连续占用的日期格数，不会自动完成便签，也不改变列表状态。
                   </li>
                   <li>
-                    <strong>系统提醒</strong> —— 生效时间到达时弹出系统通知。仅在选择了「指定时间」后可开启；「立即生效」时此项不可用。<br />
-                    <em class="help-anno-warn">⚠️ macOS 平台暂时无法开启系统通知（受限于 Electron 平台约束）。</em>
+                    <strong>系统提醒</strong> ——
+                    生效时间到达时弹出系统通知。仅在选择了「指定时间」后可开启；「立即生效」时此项不可用。<br />
+                    <em class="help-anno-warn"
+                      >⚠️ macOS 平台暂时无法开启系统通知（受限于 Electron 平台约束）。</em
+                    >
                   </li>
                   <li>
-                    <strong>置顶</strong> —— 开启后便签始终固定在列表最顶部，不受时间排序影响。多条置顶便签按创建时间倒序排列。
+                    <strong>置顶</strong> ——
+                    开启后便签始终固定在列表最顶部，不受时间排序影响。多条置顶便签按创建时间倒序排列。
                   </li>
                   <li>
-                    <strong>标签</strong> —— 可添加一个或多个标签，用于分类管理和搜索筛选。点「＋」新建自定义标签（名称 + 颜色），点已有标签切换选中。标签全局共享，所有便签和模板复用同一套。
+                    <strong>标签</strong> ——
+                    每条便签最多添加一个分类标签，用于分类管理和搜索筛选。外层优先显示当前选中、置顶和最新创建的标签；「更多」后的数字是标签总数。打开更多面板可搜索、选择或置顶标签，进入「管理标签」后可新建、修改和删除。标签全局共享，所有便签和模板复用同一套。
                   </li>
                   <li>
-                    <strong>图片附件</strong> —— 支持点击上传或粘贴。单张 ≤ 50MB，每条最多 50 张（JPG / PNG / WebP）。
+                    <strong>图片附件</strong> —— 支持点击上传或粘贴。单张 ≤ 50MB，单批新增 ≤
+                    200MB，每条最多 50 张（JPG / PNG / WebP）。
                   </li>
                   <li>
-                    <strong>创建便签</strong> —— 正文非空后可点击。创建成功后显示绿色 ✔，面板自动收起并重置字段。
+                    <strong>创建便签</strong> —— 正文非空后可点击。创建成功后显示绿色
+                    ✔，面板自动收起并重置字段。
                   </li>
                 </ol>
               </HelpFigureBlock>
@@ -418,10 +427,11 @@ onBeforeUnmount(() => {
                   <div class="help-fig-seg">
                     <span class="is-active">时间线</span>
                     <span>自定义</span>
+                    <span>标签分组</span>
                   </div>
                 </template>
                 <p>
-                  列表提供两种组织方式：<strong>时间线模式</strong>按生效时间自动排列、置顶始终在前；<strong>自定义模式</strong>可拖拽卡片手动调整顺序，适合固定清单。右上角切换。
+                  列表提供三种组织方式：<strong>时间线模式</strong>按生效时间自动排列、置顶始终在前；<strong>自定义模式</strong>可拖拽卡片手动调整顺序，适合固定清单；<strong>标签分组模式</strong>按筛选出的标签及“未分类”组织可折叠分组，组内从未来到过去排列并按需加载。右上角可直接选择。
                 </p>
               </HelpFigureBlock>
             </div>
@@ -725,16 +735,12 @@ onBeforeUnmount(() => {
             data-anchor-id="misc-notify"
             class="help-anchor"
           >
-            <h3 class="help-anchor-title">系统通知与稍后提醒</h3>
+            <h3 class="help-anchor-title">系统通知</h3>
             <div class="help-sub">
               <h4 class="help-subhead">通知展示</h4>
               <p class="help-sub-text">
                 Windows 到生效时间时使用系统富通知提醒。macOS 系统通知需要付费的 Apple Developer
                 证书签名，当前版本暂未开通，因此新建便签、修改便签和循环模板中的通知设置会被禁用。
-              </p>
-              <h4 class="help-subhead">稍后提醒（Snooze）</h4>
-              <p class="help-sub-text">
-                在通知上选择「稍后提醒」可把这条便签延后再次提醒，默认延后 10 分钟。
               </p>
             </div>
           </div>
@@ -828,6 +834,8 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+  overflow: hidden;
+  border-radius: inherit;
   background: transparent;
 }
 .help-page-header {
@@ -838,7 +846,7 @@ onBeforeUnmount(() => {
   min-height: 47rem;
   flex-shrink: 0;
   padding: 0 16rem;
-  border-bottom: 1px solid rgb(var(--bg-color) / 0.1);
+  border-bottom: 1px solid var(--ui-border-divider);
   color: var(--text-color);
   font-size: var(--fs-body);
   font-weight: 600;
@@ -854,7 +862,7 @@ onBeforeUnmount(() => {
 /* ---- 悬浮多级目录（绝对定位，不占用文档流） ---- */
 .help-nav {
   position: absolute;
-  z-index: 20;
+  z-index: var(--z-local-top);
   /* 上移穿过 47rem 高的「帮助中心」子标题，使展开态目录与标题行平齐 */
   top: -40rem;
   left: 12rem;
@@ -906,11 +914,11 @@ onBeforeUnmount(() => {
     transform var(--motion-fast) ease;
 }
 .help-nav-collapse:hover {
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .help-nav-collapse:active {
-  transform: scale(0.92);
+  transform: scale(0.98);
 }
 .help-nav-collapse svg {
   width: 15rem;
@@ -951,7 +959,6 @@ onBeforeUnmount(() => {
     transform var(--motion-fast) ease;
 }
 .help-nav-item:hover {
-  background: color-mix(in srgb, var(--text-color) 6%, transparent);
   color: var(--text-color);
 }
 .help-nav-item:active {
@@ -976,7 +983,7 @@ onBeforeUnmount(() => {
   gap: 1rem;
   margin: 1rem 0 3rem 12rem;
   padding-left: 10rem;
-  border-left: 1px solid color-mix(in srgb, var(--text-color) 10%, transparent);
+  border-left: 1px solid var(--ui-border-divider);
 }
 .help-nav-subitem {
   padding: 4rem 9rem;
@@ -993,7 +1000,6 @@ onBeforeUnmount(() => {
     color var(--motion-fast) ease;
 }
 .help-nav-subitem:hover {
-  background: color-mix(in srgb, var(--text-color) 6%, transparent);
   color: var(--text-color);
 }
 .help-nav-subitem.is-active {
@@ -1005,7 +1011,7 @@ onBeforeUnmount(() => {
 /* ---- 收起后的悬浮唤出按钮 ---- */
 .help-nav-fab {
   position: absolute;
-  z-index: 20;
+  z-index: var(--z-local-top);
   /* 与展开态目录同基线：上移 40rem 让唤出按钮与「帮助中心」标题行平齐 */
   top: -40rem;
   left: 12rem;
@@ -1035,11 +1041,11 @@ onBeforeUnmount(() => {
   pointer-events: auto;
 }
 .help-nav-fab:hover {
-  background: color-mix(in srgb, var(--text-color) 8%, var(--surface-float));
+  background: var(--surface-float);
   color: var(--text-color);
 }
 .help-nav-fab:active {
-  transform: scale(0.92);
+  transform: scale(0.98);
 }
 .help-nav-fab svg {
   width: 17rem;
@@ -1066,7 +1072,7 @@ onBeforeUnmount(() => {
   scroll-margin-top: 8rem;
   padding-bottom: 26rem;
   margin-bottom: 26rem;
-  border-bottom: 1px solid rgb(var(--bg-color) / 0.08);
+  border-bottom: 1px solid var(--ui-border-divider);
 }
 .help-section--last {
   border-bottom: 0;
@@ -1155,7 +1161,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 4rem;
   padding-left: 12rem;
-  border-left: 2px solid color-mix(in srgb, var(--text-color) 8%, transparent);
+  border-left: 2px solid var(--ui-border-divider);
 }
 .help-subhead {
   margin: 8rem 0 2rem;
@@ -1245,7 +1251,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 36rem;
   padding: 0 10rem;
-  border: 1px dashed color-mix(in srgb, var(--text-color) 18%, transparent);
+  border: 1px dashed var(--ui-border-hover);
   border-radius: 10rem;
   background: rgba(128, 128, 128, 0.03);
 }
@@ -1281,7 +1287,7 @@ onBeforeUnmount(() => {
 }
 .help-fig-hex {
   padding: 3rem 8rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+  border: 1px solid var(--ui-border-hover);
   border-radius: 7rem;
   color: var(--text-color-secondary);
   font-family: var(--font-family-mono, monospace);
@@ -1360,7 +1366,7 @@ onBeforeUnmount(() => {
 }
 .help-fig-btn {
   padding: 5rem 10rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+  border: 1px solid var(--ui-border-hover);
   border-radius: 8rem;
   color: var(--text-color);
   font-size: var(--fs-secondary);
@@ -1393,7 +1399,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 10rem;
   padding: 16rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 8%, transparent);
+  border: 1px solid var(--ui-border-divider);
   border-radius: 14rem;
   background: rgb(var(--bg-color) / 0.04);
 }
@@ -1417,7 +1423,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   aspect-ratio: 1 / 1;
-  border: 1px dashed color-mix(in srgb, var(--text-color) 20%, transparent);
+  border: 1px dashed var(--ui-border-hover);
   border-radius: 12rem;
   color: var(--text-color-secondary);
   font-size: calc(var(--fs-secondary) * 0.9);
@@ -1464,7 +1470,7 @@ onBeforeUnmount(() => {
   margin-top: 16rem;
 }
 .help-field {
-  border: 1px solid color-mix(in srgb, var(--text-color) 8%, transparent);
+  border: 1px solid var(--ui-border-divider);
   border-radius: 10rem;
   background: rgb(var(--bg-color) / 0.03);
   overflow: hidden;
@@ -1479,7 +1485,9 @@ onBeforeUnmount(() => {
   cursor: pointer;
   list-style: none;
 }
-.help-field-title::-webkit-details-marker { display: none; }
+.help-field-title::-webkit-details-marker {
+  display: none;
+}
 .help-field-title::before {
   content: '';
   display: inline-block;

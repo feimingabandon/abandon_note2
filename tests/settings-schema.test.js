@@ -35,6 +35,7 @@ describe('view-specific defaults', () => {
     expect(list.ui.settingsPanelSize).toBe(70)
     expect(month.geometry).toMatchObject({ widthRatio: 0.7, heightRatio: 0.7 })
     expect(month.ui.settingsPanelSize).toBe(40)
+    expect(month.ui.dayPanelSize).toBe(34)
   })
 
   it('uses the same native glass defaults for list and month views', () => {
@@ -59,6 +60,15 @@ describe('view-specific defaults', () => {
         VIEW_MODES.MONTH
       ).ui.settingsPanelSize
     ).toBe(31)
+    expect(serializeSetting('ui.dayPanelSize', 99)).toMatchObject({
+      type: 'ui',
+      key: 'day_panel_size',
+      value: '50'
+    })
+    expect(
+      resolveSettingsRows([{ type: 'ui', key: 'day_panel_size', value: '19' }], VIEW_MODES.MONTH).ui
+        .dayPanelSize
+    ).toBe(25)
   })
 })
 
@@ -118,5 +128,37 @@ describe('sticky default settings schema', () => {
       cornerRadius: 32,
       alwaysOnTop: true
     })
+  })
+})
+
+describe('list filter setting', () => {
+  it('persists the tag-group list mode and falls back for unknown modes', () => {
+    expect(
+      resolveSettingsRows([
+        {
+          type: 'filter',
+          key: 'list_filter',
+          value: JSON.stringify({
+            listMode: 'tag-group',
+            tagIds: [12],
+            statusFilter: ['in_progress']
+          })
+        }
+      ]).listFilter
+    ).toEqual({
+      listMode: 'tag-group',
+      tagIds: [12],
+      statusFilter: ['in_progress']
+    })
+
+    expect(
+      resolveSettingsRows([
+        {
+          type: 'filter',
+          key: 'list_filter',
+          value: JSON.stringify({ listMode: 'unknown' })
+        }
+      ]).listFilter.listMode
+    ).toBe('timeline')
   })
 })

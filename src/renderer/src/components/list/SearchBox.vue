@@ -25,7 +25,7 @@ const loadingMore = ref(false)
 const loadError = ref('')
 const advancedOpen = ref(false)
 const statusFilter = ref([])
-const tagFilterNames = ref([])
+const tagFilterIds = ref([])
 const timePreset = ref('all')
 const customFrom = ref('')
 const customTo = ref('')
@@ -60,7 +60,7 @@ const lastRefreshLabel = computed(() => formatRefreshTime(lastRefreshedAt.value)
 const hasActiveFilters = computed(
   () =>
     statusFilter.value.length > 0 ||
-    tagFilterNames.value.length > 0 ||
+    tagFilterIds.value.length > 0 ||
     timePreset.value !== 'all' ||
     onlyPinned.value ||
     hasAttachments.value ||
@@ -113,13 +113,13 @@ function toggleStatus(value) {
 }
 
 function updateTags(values) {
-  tagFilterNames.value = [...values]
+  tagFilterIds.value = [...values]
   runSearch()
 }
 
 function resetFilters() {
   statusFilter.value = []
-  tagFilterNames.value = []
+  tagFilterIds.value = []
   timePreset.value = 'all'
   customFrom.value = ''
   customTo.value = ''
@@ -191,7 +191,7 @@ function searchOptions(limit, offset) {
   return {
     search: searchedQuery.value,
     statuses: statusFilter.value.length ? [...statusFilter.value] : null,
-    tagNames: tagFilterNames.value.length ? [...tagFilterNames.value] : null,
+    tagIds: tagFilterIds.value.length ? [...tagFilterIds.value] : null,
     ...selectedTimeRange(),
     onlyPinned: onlyPinned.value,
     hasAttachments: hasAttachments.value,
@@ -367,7 +367,7 @@ defineExpose({
     <SearchFilterPanel
       :open="advancedOpen"
       :statuses="statusFilter"
-      :tag-names="tagFilterNames"
+      :tag-ids="tagFilterIds"
       :time-preset="timePreset"
       :custom-from="customFrom"
       :custom-to="customTo"
@@ -469,15 +469,15 @@ defineExpose({
   min-width: 0;
   height: 34rem;
   overflow: hidden;
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--ui-surface-control);
   transition:
     border-color 160ms ease,
     background-color 160ms ease;
 }
 .sb-search-field:focus-within {
-  border-color: rgb(var(--bg-color) / 0.18);
+  border-color: var(--ui-border-hover);
 }
 .sb-input {
   flex: 1;
@@ -526,12 +526,12 @@ defineExpose({
 }
 .sb-clear:hover,
 .sb-submit:hover {
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .sb-clear:active,
 .sb-submit:active {
-  transform: scale(0.94);
+  transform: scale(0.98);
 }
 .sb-submit:disabled {
   opacity: 0.62;
@@ -561,10 +561,10 @@ defineExpose({
   flex-shrink: 0;
   min-height: 30rem;
   padding: 0 7rem;
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
-  background: rgba(255, 255, 255, 0.05);
-  color: #000;
+  background: var(--ui-surface-control);
+  color: var(--text-color);
   opacity: 0.45;
   font: inherit;
   font-size: var(--fs-secondary);
@@ -577,21 +577,21 @@ defineExpose({
     transform var(--motion-fast) ease;
 }
 .sb-filter-button:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #000;
+  border-color: var(--ui-border-hover);
+  color: var(--text-color);
   opacity: 0.7;
 }
 .sb-filter-button.is-open {
-  border-color: rgb(var(--bg-color) / 0.18);
-  background: rgba(255, 255, 255, 0.05);
-  color: #000;
+  border-color: var(--ui-border-hover);
+  background: var(--ui-surface-control);
+  color: var(--text-color);
 }
 .sb-filter-button.is-active {
-  color: #000;
+  color: var(--text-color);
   opacity: 1;
 }
 .sb-filter-button:active {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
 .sb-filter-button svg {
   width: 13rem;

@@ -349,16 +349,16 @@ onBeforeUnmount(() => {
   stroke-linecap: round;
 }
 .drp-clear-action:hover {
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .drp-clear-action:active {
-  transform: scale(0.9);
+  transform: scale(0.98);
 }
 
 .drp-panel {
   position: fixed;
-  z-index: 30000;
+  z-index: var(--z-global-popover);
   width: min(310rem, calc(100vw - 24px));
   max-height: calc(100vh - 24px);
   overflow-x: hidden;
@@ -397,11 +397,11 @@ onBeforeUnmount(() => {
     transform var(--motion-fast) ease;
 }
 .drp-header button:hover {
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .drp-header button:active {
-  transform: scale(0.9);
+  transform: scale(0.98);
 }
 .drp-weekdays,
 .drp-calendar {
@@ -439,7 +439,7 @@ onBeforeUnmount(() => {
 }
 .drp-day span {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-local-content);
   display: grid;
   place-items: center;
   width: 27rem;
@@ -451,10 +451,10 @@ onBeforeUnmount(() => {
     transform var(--motion-fast) ease;
 }
 .drp-day:hover span {
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
 }
 .drp-day:active span {
-  transform: scale(0.9);
+  transform: scale(0.98);
 }
 .drp-day.is-other {
   color: color-mix(in srgb, var(--text-color) 28%, transparent);
@@ -493,7 +493,7 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: space-between;
   padding-top: 7rem;
-  border-top: 1px solid color-mix(in srgb, var(--text-color) 7%, transparent);
+  border-top: 1px solid var(--ui-border-divider);
 }
 .drp-footer button {
   min-width: 60rem;

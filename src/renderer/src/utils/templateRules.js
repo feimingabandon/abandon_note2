@@ -70,8 +70,8 @@ export function filterAndSortTemplates(templates, filters) {
     )
       return false
     if (filters.frequency !== 'all' && rule?.frequency !== filters.frequency) return false
-    const names = (template.tags || []).map((tag) => tag.name)
-    if (selectedTags.length && !selectedTags.some((name) => names.includes(name))) return false
+    const tagIds = (template.tags || []).map((tag) => Number(tag.id))
+    if (selectedTags.length && !selectedTags.some((id) => tagIds.includes(Number(id)))) return false
     if (filters.pinned && Number(template.is_pinned) !== 1) return false
     if (filters.notify && Number(template.notify_enabled) !== 1) return false
     return true
@@ -132,7 +132,7 @@ export function createTemplateFormSnapshot(payload = {}) {
     recurrenceRule: payload.recurrenceRule || null,
     notifyEnabled: Boolean(payload.notifyEnabled),
     isPinned: Boolean(payload.isPinned),
-    tagNames: [...(payload.tagNames || [])].map(String).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+    tagIds: [...(payload.tagIds || [])].map(Number).sort((a, b) => a - b)
   })
 }
 

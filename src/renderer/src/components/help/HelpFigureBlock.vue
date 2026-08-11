@@ -47,13 +47,13 @@ defineProps({
 .help-figure-visual {
   position: relative;
   padding: 12rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 8%, transparent);
+  border: 1px solid var(--ui-border-divider);
   border-radius: 12rem;
   background: color-mix(in srgb, var(--text-color) 3%, transparent);
 }
 .help-figure-badge {
   position: absolute;
-  z-index: 2;
+  z-index: var(--z-local-raised);
   top: -8rem;
   left: -8rem;
   display: grid;

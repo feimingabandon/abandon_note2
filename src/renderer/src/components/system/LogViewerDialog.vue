@@ -275,7 +275,7 @@ onBeforeUnmount(() => {
 
 .log-toolbar {
   flex-wrap: wrap;
-  border-bottom: 1rem solid var(--surface-float-border);
+  border-bottom: 1px solid var(--ui-border-divider);
 }
 
 /* 搜索框复用模板页 tp-search 的形态：图标 + 输入框 + 清空按钮 */
@@ -287,16 +287,16 @@ onBeforeUnmount(() => {
   min-width: 0;
   height: 32rem;
   overflow: hidden;
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--ui-surface-control);
   transition:
     border-color 160ms ease,
     background-color 160ms ease;
 }
 
 .log-search:focus-within {
-  border-color: rgb(var(--bg-color) / 0.18);
+  border-color: var(--ui-border-hover);
 }
 
 .log-search svg {
@@ -350,12 +350,12 @@ onBeforeUnmount(() => {
 }
 
 .log-search button:hover {
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 
 .log-search button:active {
-  transform: scale(0.94);
+  transform: scale(0.98);
 }
 
 .log-error {
@@ -387,8 +387,8 @@ onBeforeUnmount(() => {
 .log-record {
   min-width: 0;
   margin-bottom: 6rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 7%, transparent);
-  border-left: 3rem solid rgba(142, 142, 147, 0.7);
+  border: 1px solid var(--ui-border-divider);
+  border-left: 3rem solid color-mix(in srgb, var(--text-color) 35%, transparent);
   border-radius: 11rem;
   background: rgb(var(--bg-color) / 0.08);
   transition:
@@ -397,11 +397,10 @@ onBeforeUnmount(() => {
 }
 
 .log-record:hover {
-  border-color: color-mix(in srgb, var(--text-color) 12%, transparent);
+  border-color: var(--ui-border-control);
   /* border-color 简写会覆盖左侧级别色条，这里保住默认灰；
      warn/error 色条由下方同优先级且靠后的 is-* 规则继续生效 */
-  border-left-color: rgba(142, 142, 147, 0.7);
-  background: rgb(var(--bg-color) / 0.14);
+  border-left-color: color-mix(in srgb, var(--text-color) 35%, transparent);
 }
 
 .log-record.is-warn {
@@ -492,7 +491,7 @@ onBeforeUnmount(() => {
 
 .log-footer {
   justify-content: space-between;
-  border-top: 1rem solid var(--surface-float-border);
+  border-top: 1px solid var(--ui-border-divider);
 }
 
 .log-footer-left {

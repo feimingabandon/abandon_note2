@@ -1,6 +1,6 @@
 <script setup>
 /**
- * NoteList.vue — 便签列表（时间线 + 自定义拖拽双模式）
+ * NoteList.vue — 便签列表（时间线、自定义拖拽、标签分组三种模式）
  *
  * 3.5 + 3.6: 新增自定义拖拽模式，集成 vuedraggable
  * - 三状态：initialized / in_progress / completed
@@ -13,29 +13,37 @@ import NoteCard from './NoteCard.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
+import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 
 const emit = defineEmits(['edit'])
 
-/** 排序模式：timeline | custom */
+/** 排序模式：timeline | custom | tag-group */
 const sortMode = ref(DEFAULT_SETTINGS.listFilter.listMode)
 
 /** 排序模式显示文本 */
-const sortModeLabel = computed(() => (sortMode.value === 'timeline' ? '时间线' : '自定义'))
+const modeOptions = [
+  { value: 'timeline', label: '时间线' },
+  { value: 'custom', label: '自定义' },
+  { value: 'tag-group', label: '标签分组' }
+]
+const sortModeLabel = computed(
+  () => modeOptions.find((option) => option.value === sortMode.value)?.label || '时间线'
+)
+const modeMenuOpen = ref(false)
+const modeMenuRootRef = ref(null)
+const modeToggleRef = ref(null)
 
-/** 切换图标旋转动画标记 */
-const modeSpinning = ref(false)
-
-/** 时间线与自定义模式使用完整的依次离场、切换、依次进场。 */
+/** 三种模式使用完整的依次离场、切换、依次进场。 */
 let modeSwitchRunning = false
 let modePresenceSwitching = false
-async function toggleSortMode() {
-  if (modeSwitchRunning || replayRefreshRunning) return
+async function selectSortMode(nextMode) {
+  modeMenuOpen.value = false
+  if (nextMode === sortMode.value || modeSwitchRunning || replayRefreshRunning) return
   modeSwitchRunning = true
-  restartModeSpin()
   const previousMode = sortMode.value
-  const nextMode = sortMode.value === 'timeline' ? 'custom' : 'timeline'
   const previousTimeline = noteList.value
   const previousCustom = customList.value
+  const previousTagGroups = tagGroups.value
   const switchSeq = ++presenceMotionSeq
   try {
     await animateCurrentCardsOut({ includeAuxiliary: true })
@@ -45,10 +53,13 @@ async function toggleSortMode() {
     }
 
     // 只清空即将进入的目标列表；源列表保留为失败回滚快照。
-    if (nextMode === 'timeline') noteList.value = []
-    else {
+    if (nextMode === 'timeline') {
+      noteList.value = []
+    } else if (nextMode === 'custom') {
       customList.value = []
       syncCustomZones()
+    } else {
+      tagGroups.value = []
     }
     await nextTick()
 
@@ -59,6 +70,7 @@ async function toggleSortMode() {
     if (result?.status !== 'success') {
       noteList.value = previousTimeline
       customList.value = previousCustom
+      tagGroups.value = previousTagGroups
       syncCustomZones()
       sortMode.value = previousMode
       await nextTick()
@@ -79,14 +91,21 @@ async function toggleSortMode() {
   }
 }
 
-/** 重启切换图标的旋转动画（双 rAF 强制重排，确保每次点击都能触发） */
-function restartModeSpin() {
-  modeSpinning.value = false
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      modeSpinning.value = true
-    })
-  })
+function toggleModeMenu() {
+  if (modeSwitchRunning || replayRefreshRunning) return
+  modeMenuOpen.value = !modeMenuOpen.value
+}
+
+function onModeMenuOutside(event) {
+  if (modeMenuOpen.value && !modeMenuRootRef.value?.contains(event.target)) {
+    modeMenuOpen.value = false
+  }
+}
+
+function onModeMenuKeydown(event) {
+  if (event.key !== 'Escape' || !modeMenuOpen.value) return
+  modeMenuOpen.value = false
+  modeToggleRef.value?.focus()
 }
 
 // 筛选面板 chip 的轻量错峰；便签本身的进出场由列表 ID 差分协调器统一处理。
@@ -108,6 +127,13 @@ const lastRefreshedAt = ref(null)
 const lastRefreshLabel = computed(() => formatRefreshTime(lastRefreshedAt.value))
 const timelineScrollRef = ref(null)
 const customScrollRef = ref(null)
+const tagGroupScrollRef = ref(null)
+
+function currentScrollContainer() {
+  if (sortMode.value === 'timeline') return timelineScrollRef.value
+  if (sortMode.value === 'custom') return customScrollRef.value
+  return tagGroupScrollRef.value
+}
 
 function formatRefreshTime(timestamp) {
   if (!timestamp) return ''
@@ -117,8 +143,8 @@ function formatRefreshTime(timestamp) {
     .join(':')
 }
 
-/** 标签筛选名称列表 */
-const tagFilterNames = ref([...DEFAULT_SETTINGS.listFilter.tagNames])
+/** 标签筛选 ID 列表 */
+const tagFilterIds = ref([...DEFAULT_SETTINGS.listFilter.tagIds])
 
 /** 筛选面板状态：tags | taiji | status（taiji=太极图默认折叠态） */
 const panelState = ref('taiji')
@@ -127,7 +153,11 @@ const panelState = ref('taiji')
 const statusFilter = ref([...DEFAULT_SETTINGS.listFilter.statusFilter])
 
 /** FilterTabs 选项 */
-const panelOptions = [{ value: 'tags' }, { value: 'taiji' }, { value: 'status' }]
+const panelOptions = [
+  { value: 'tags', label: '按标签筛选' },
+  { value: 'taiji', label: '刷新并收起筛选' },
+  { value: 'status', label: '按状态筛选' }
+]
 
 /** 面板点击：单选 + 展开/收起逻辑 */
 function onPanelClick(value) {
@@ -196,7 +226,7 @@ const earlierLimit = ref(10) // 每次查询条数（首 10，滚动后 20）
 
 /** 时间线模式：并行加载置顶 + 三天 + 更早计数，合并到单一列表 */
 function captureScrollAnchor() {
-  const container = sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
+  const container = currentScrollContainer()
   if (!container) return null
   const containerTop = container.getBoundingClientRect().top
   const cards = [...container.querySelectorAll('[data-note-id]')]
@@ -209,7 +239,7 @@ function captureScrollAnchor() {
 async function restoreScrollAnchor(anchor) {
   if (!anchor) return
   await nextTick()
-  const container = sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
+  const container = currentScrollContainer()
   if (!container) return
   if (!anchor.id) {
     container.scrollTop = anchor.scrollTop || 0
@@ -225,6 +255,7 @@ async function restoreScrollAnchor(anchor) {
 
 async function loadAll({ showLoading = true, preserveAnchor = false } = {}) {
   const seq = ++loadSeq
+  tagGroupGeneration++
   loadError.value = null
   earlierRequestSeq++
   customMoreRequestSeq++
@@ -238,13 +269,13 @@ async function loadAll({ showLoading = true, preserveAnchor = false } = {}) {
       statusFilter.value.length > 0
         ? [...statusFilter.value]
         : ['initialized', 'in_progress', 'completed']
-    const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
+    const tagIds = tagFilterIds.value.length > 0 ? [...tagFilterIds.value] : null
     const cutoff = threeDayCutoff()
 
     const [pinned, recent, earlierCount, activeTotal] = await Promise.all([
-      window.api.queryPinnedNotes({ statuses, tagNames }),
-      window.api.queryRecentNotes({ statuses, tagNames, cutoffTime: cutoff }),
-      window.api.queryEarlierNotes({ statuses, tagNames, cutoffTime: cutoff, limit: 0, offset: 0 }),
+      window.api.queryPinnedNotes({ statuses, tagIds }),
+      window.api.queryRecentNotes({ statuses, tagIds, cutoffTime: cutoff }),
+      window.api.queryEarlierNotes({ statuses, tagIds, cutoffTime: cutoff, limit: 0, offset: 0 }),
       window.api.countActiveNotes()
     ])
     if (seq !== loadSeq) return { status: 'cancelled' }
@@ -292,12 +323,12 @@ async function loadEarlier() {
       statusFilter.value.length > 0
         ? [...statusFilter.value]
         : ['initialized', 'in_progress', 'completed']
-    const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
+    const tagIds = tagFilterIds.value.length > 0 ? [...tagFilterIds.value] : null
     const cutoff = threeDayCutoff()
 
     const result = await window.api.queryEarlierNotes({
       statuses,
-      tagNames,
+      tagIds,
       cutoffTime: cutoff,
       limit: earlierLimit.value,
       offset: earlierOffset.value
@@ -373,6 +404,7 @@ const customNormalLoading = ref(false)
 /** 自定义模式：并行加载置顶 + 日常首 10 条 */
 async function loadCustom({ showLoading = true, preserveAnchor = false } = {}) {
   const seq = ++loadSeq
+  tagGroupGeneration++
   loadError.value = null
   earlierRequestSeq++
   customMoreRequestSeq++
@@ -385,14 +417,14 @@ async function loadCustom({ showLoading = true, preserveAnchor = false } = {}) {
       statusFilter.value.length > 0
         ? [...statusFilter.value]
         : ['initialized', 'in_progress', 'completed']
-    const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
+    const tagIds = tagFilterIds.value.length > 0 ? [...tagFilterIds.value] : null
 
     const normalLimit = preserveAnchor
       ? Math.max(customNormalOffset.value, customNormalLimit.value)
       : customNormalLimit.value
     const [pinned, normalCount, activeTotal] = await Promise.all([
-      window.api.queryCustomPinned({ statuses, tagNames }),
-      window.api.queryCustomNormal({ statuses, tagNames, limit: normalLimit, offset: 0 }),
+      window.api.queryCustomPinned({ statuses, tagIds }),
+      window.api.queryCustomNormal({ statuses, tagIds, limit: normalLimit, offset: 0 }),
       window.api.countActiveNotes()
     ])
     if (seq !== loadSeq) return { status: 'cancelled' }
@@ -425,11 +457,11 @@ async function loadCustomMore() {
       statusFilter.value.length > 0
         ? [...statusFilter.value]
         : ['initialized', 'in_progress', 'completed']
-    const tagNames = tagFilterNames.value.length > 0 ? [...tagFilterNames.value] : null
+    const tagIds = tagFilterIds.value.length > 0 ? [...tagFilterIds.value] : null
 
     const result = await window.api.queryCustomNormal({
       statuses,
-      tagNames,
+      tagIds,
       limit: customNormalLimit.value,
       offset: customNormalOffset.value
     })
@@ -464,6 +496,122 @@ function onCustomScroll(e) {
 
 /** 自定义模式当前渲染总数 */
 const customTotalRendered = computed(() => customList.value.length)
+
+// ---- 标签分组模式：分组概览 + 展开后手动分页 ----
+const TAG_GROUP_INITIAL_LIMIT = 10
+const TAG_GROUP_MORE_LIMIT = 20
+const tagGroups = ref([])
+const expandedTagGroupKeys = new Set()
+let tagGroupGeneration = 0
+
+const tagGroupMatchingTotal = computed(() =>
+  tagGroups.value.reduce((total, group) => total + group.total, 0)
+)
+
+function activeStatuses() {
+  return statusFilter.value.length > 0
+    ? [...statusFilter.value]
+    : ['initialized', 'in_progress', 'completed']
+}
+
+async function loadTagGroupPage(group, { reset = false, limit = null } = {}) {
+  if (!group || group.loading) return { status: 'cancelled' }
+  const generation = tagGroupGeneration
+  const offset = reset ? 0 : group.notes.length
+  group.loading = true
+  group.error = null
+  try {
+    const result = await window.api.queryTagGroupNotes({
+      tagId: group.untagged ? null : group.id,
+      statuses: activeStatuses(),
+      limit: limit || (reset ? TAG_GROUP_INITIAL_LIMIT : TAG_GROUP_MORE_LIMIT),
+      offset
+    })
+    if (generation !== tagGroupGeneration || !tagGroups.value.includes(group)) {
+      return { status: 'cancelled' }
+    }
+    const notes = result.notes || []
+    group.notes = reset ? notes : [...group.notes, ...notes]
+    group.total = Number(result.total) || 0
+    group.hasMore = group.notes.length < group.total
+    return { status: 'success' }
+  } catch (error) {
+    console.error('[NoteList] 加载标签组便签失败:', group.name, error)
+    if (generation === tagGroupGeneration) group.error = '加载失败'
+    return { status: 'error', error }
+  } finally {
+    if (generation === tagGroupGeneration) group.loading = false
+  }
+}
+
+async function loadTagGroups({ showLoading = true, preserveAnchor = false } = {}) {
+  const seq = ++loadSeq
+  const generation = ++tagGroupGeneration
+  loadError.value = null
+  earlierRequestSeq++
+  customMoreRequestSeq++
+  earlierLoading.value = false
+  customNormalLoading.value = false
+  const anchor = preserveAnchor ? captureScrollAnchor() : null
+  const previousGroups = new Map(tagGroups.value.map((group) => [group.key, group]))
+  if (showLoading) loading.value = true
+  try {
+    const tagIds = tagFilterIds.value.length > 0 ? [...tagFilterIds.value] : null
+    const [groups, activeTotal] = await Promise.all([
+      window.api.queryTagGroups({ statuses: activeStatuses(), tagIds }),
+      window.api.countActiveNotes()
+    ])
+    if (seq !== loadSeq || generation !== tagGroupGeneration) return { status: 'cancelled' }
+
+    tagGroups.value = (groups || []).map((group) => {
+      const previous = previousGroups.get(group.key)
+      return {
+        ...group,
+        expanded: Boolean(previous?.expanded || expandedTagGroupKeys.has(group.key)),
+        notes: [],
+        loading: false,
+        error: null,
+        hasMore: Number(group.total) > 0,
+        previousLoadedCount: previous?.notes?.length || 0
+      }
+    })
+    allNoteTotal.value = Number(activeTotal) || 0
+
+    await Promise.all(
+      tagGroups.value
+        .filter((group) => group.expanded)
+        .map((group) =>
+          loadTagGroupPage(group, {
+            reset: true,
+            limit: Math.max(TAG_GROUP_INITIAL_LIMIT, group.previousLoadedCount)
+          })
+        )
+    )
+    tagGroups.value.forEach((group) => delete group.previousLoadedCount)
+    await restoreScrollAnchor(anchor)
+    lastRefreshedAt.value = Date.now()
+    return { status: 'success' }
+  } catch (error) {
+    console.error('[NoteList] 加载标签分组失败:', error)
+    if (seq === loadSeq && showLoading) loadError.value = '标签分组加载失败'
+    return { status: 'error', error }
+  } finally {
+    if (seq === loadSeq) loading.value = false
+  }
+}
+
+async function toggleTagGroup(group) {
+  group.expanded = !group.expanded
+  if (group.expanded) expandedTagGroupKeys.add(group.key)
+  else expandedTagGroupKeys.delete(group.key)
+  if (group.expanded && group.notes.length === 0 && group.total > 0) {
+    await loadTagGroupPage(group, { reset: true })
+  }
+}
+
+function retryTagGroup(group) {
+  loadTagGroupPage(group, { reset: group.notes.length === 0 })
+}
 
 // ============================================================
 // 时间线分组（从单一 noteList 派生）
@@ -742,22 +890,20 @@ async function executeCardStatusAction(note) {
     scheduleStatusTransition(note.id, 'commit', commitDelay, () => {
       // 提前开始会改变时间线分组。动画期间保留旧生效时间，避免卡片在圆环
       // 过渡尚未完成时被 Vue 从“未来”卸载、又在“今天”重新挂载。
-      const resetsEffectiveTime =
-        ['initialized', 'completed'].includes(from) && to === 'in_progress'
+      const resetsEffectiveTime = from === 'initialized' && to === 'in_progress'
       const displayUpdate = resetsEffectiveTime
         ? { ...updated, effective_at: note.effective_at }
         : updated
       patchVisibleNote(displayUpdate, true)
     })
     finishStatusTransition(note.id, totalDuration, async () => {
-      const movedAcrossTimelineGroups =
-        sortMode.value === 'timeline' &&
-        !note.is_pinned &&
-        ['initialized', 'completed'].includes(from) &&
-        to === 'in_progress'
-      if (!remainsVisible || movedAcrossTimelineGroups) {
+      const resetsEffectiveTime = from === 'initialized' && to === 'in_progress'
+      const changedEffectiveTimeOrdering =
+        resetsEffectiveTime &&
+        ((sortMode.value === 'timeline' && !note.is_pinned) || sortMode.value === 'tag-group')
+      if (!remainsVisible || changedEffectiveTimeOrdering) {
         await refreshInBackground({
-          reenterIds: movedAcrossTimelineGroups && remainsVisible ? [note.id] : []
+          reenterIds: changedEffectiveTimeOrdering && remainsVisible ? [note.id] : []
         })
       }
     })
@@ -778,10 +924,22 @@ function patchVisibleNote(updated, force = false) {
     )
     return true
   }
-  customList.value = customList.value.map((note) =>
-    note.id === updated.id ? mergeListItem(note, updated) : note
+  if (sortMode.value === 'custom') {
+    customList.value = customList.value.map((note) =>
+      note.id === updated.id ? mergeListItem(note, updated) : note
+    )
+    syncCustomZones()
+    return true
+  }
+
+  const currentGroup = tagGroups.value.find((group) =>
+    group.notes.some((note) => note.id === updated.id)
   )
-  syncCustomZones()
+  const updatedGroupKey = updated.tags?.[0]?.id ? `tag:${updated.tags[0].id}` : 'untagged'
+  if (!currentGroup || currentGroup.key !== updatedGroupKey) return false
+  currentGroup.notes = currentGroup.notes
+    .map((note) => (note.id === updated.id ? mergeListItem(note, updated) : note))
+    .sort((first, second) => second.effective_at - first.effective_at || second.id - first.id)
   return true
 }
 
@@ -821,9 +979,7 @@ const {
   cancelCurrentPresenceExits,
   animateCurrentCardsOut,
   disposePresenceMotion
-} = useNotePresenceMotion(() =>
-  sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
-)
+} = useNotePresenceMotion(currentScrollContainer)
 
 /** 用户主动刷新：完整播放依次离场 → 清空 → 重新查询 → 依次进场。 */
 let replayRefreshRunning = false
@@ -832,8 +988,7 @@ async function replayListRefresh() {
   replayRefreshRunning = true
   const refreshSeq = ++presenceMotionSeq
   try {
-    const container =
-      sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
+    const container = currentScrollContainer()
     const scrollTop = container?.scrollTop || 0
     await animateCurrentCardsOut()
     if (refreshSeq !== presenceMotionSeq) {
@@ -843,10 +998,13 @@ async function replayListRefresh() {
 
     const options = { showLoading: false, preserveAnchor: false }
     let result
-    if (sortMode.value === 'timeline') result = await loadAll(options)
-    else {
+    if (sortMode.value === 'timeline') {
+      result = await loadAll(options)
+    } else if (sortMode.value === 'custom') {
       result = await loadCustom(options)
       syncCustomZones()
+    } else {
+      result = await loadTagGroups(options)
     }
     if (result?.status !== 'success') {
       cancelCurrentPresenceExits()
@@ -857,8 +1015,7 @@ async function replayListRefresh() {
       return
     }
     await nextTick()
-    const refreshedContainer =
-      sortMode.value === 'timeline' ? timelineScrollRef.value : customScrollRef.value
+    const refreshedContainer = currentScrollContainer()
     if (refreshedContainer) refreshedContainer.scrollTop = scrollTop
     animateRetainedCards(new Map())
   } finally {
@@ -873,9 +1030,11 @@ async function refreshInBackground({ reenterIds = [] } = {}) {
   let result
   if (sortMode.value === 'timeline') {
     result = await loadAll(options)
-  } else {
+  } else if (sortMode.value === 'custom') {
     result = await loadCustom(options)
     syncCustomZones()
+  } else {
+    result = await loadTagGroups(options)
   }
   if (result?.status !== 'success' || motionSeq !== presenceMotionSeq) return result
   await nextTick()
@@ -900,9 +1059,9 @@ async function switchMode(mode, loadOptions, cancelPresence = true) {
       syncCustomZones()
     }
     return result
-  } else {
-    return loadAll(loadOptions)
   }
+  if (mode === 'tag-group') return loadTagGroups(loadOptions)
+  return loadAll(loadOptions)
 }
 
 function retryLoad() {
@@ -916,7 +1075,7 @@ let restoring = false
 async function saveFilterState() {
   const state = {
     listMode: sortMode.value,
-    tagNames: [...tagFilterNames.value],
+    tagIds: [...tagFilterIds.value],
     statusFilter: [...statusFilter.value]
   }
   await window.api.setSettingValue('listFilter', state)
@@ -925,7 +1084,7 @@ async function saveFilterState() {
 function isCurrentFilterState(state) {
   return (
     state.listMode === sortMode.value &&
-    JSON.stringify(state.tagNames) === JSON.stringify(tagFilterNames.value) &&
+    JSON.stringify(state.tagIds) === JSON.stringify(tagFilterIds.value) &&
     JSON.stringify(state.statusFilter) === JSON.stringify(statusFilter.value)
   )
 }
@@ -934,7 +1093,7 @@ async function applyFilterState(state) {
   if (!state || isCurrentFilterState(state)) return false
   restoring = true
   sortMode.value = state.listMode
-  tagFilterNames.value = [...state.tagNames]
+  tagFilterIds.value = [...state.tagIds]
   statusFilter.value = [...state.statusFilter]
   await nextTick()
   restoring = false
@@ -948,11 +1107,11 @@ async function loadFilterState() {
     const snapshot = await window.api.getSettingsSnapshot()
     const state = snapshot.values.listFilter
     sortMode.value = state.listMode
-    tagFilterNames.value = [...state.tagNames]
+    tagFilterIds.value = [...state.tagIds]
     statusFilter.value = [...state.statusFilter]
   } catch (e) {
     sortMode.value = DEFAULT_SETTINGS.listFilter.listMode
-    tagFilterNames.value = [...DEFAULT_SETTINGS.listFilter.tagNames]
+    tagFilterIds.value = [...DEFAULT_SETTINGS.listFilter.tagIds]
     statusFilter.value = [...DEFAULT_SETTINGS.listFilter.statusFilter]
     console.warn('[NoteList] 恢复筛选状态失败，使用共享默认值:', e)
   } finally {
@@ -963,8 +1122,10 @@ async function loadFilterState() {
 }
 
 onMounted(async () => {
+  document.addEventListener('pointerdown', onModeMenuOutside)
+  document.addEventListener('keydown', onModeMenuKeydown)
   await loadFilterState()
-  // 统一入口：根据当前模式加载（时间线 / 自定义）
+  // 统一入口：根据当前模式加载（时间线 / 自定义 / 标签分组）
   await switchMode(sortMode.value)
 })
 
@@ -994,16 +1155,19 @@ onUnmounted(() => {
   clearTimeout(_customSyncTimer)
   for (const timer of statusTransitionTimers.values()) clearTimeout(timer)
   statusTransitionTimers.clear()
+  document.removeEventListener('pointerdown', onModeMenuOutside)
+  document.removeEventListener('keydown', onModeMenuKeydown)
   stopNotesChanged?.()
   stopSettingsChanged?.()
   earlierRequestSeq++
   customMoreRequestSeq++
+  tagGroupGeneration++
 })
 
 // 统一响应式入口：排序模式 / 标签 / 状态任一变化 → 重载 + 持久化
 // （切换按钮只翻转 sortMode，加载与持久化都由这里负责，二者与按钮解耦）
 watch(
-  [sortMode, tagFilterNames, statusFilter],
+  [sortMode, tagFilterIds, statusFilter],
   ([nextMode], [previousMode]) => {
     if (restoring) return
     if (nextMode !== previousMode) {
@@ -1082,30 +1246,76 @@ defineExpose({
         />
       </div>
 
-      <!-- 右：展示板块（文字 + 切换图标） -->
+      <!-- 右：展示模式选择 -->
       <div class="nl-toolbar-right">
-        <button class="nl-mode-toggle" @click="toggleSortMode">
-          <Transition name="nl-mode-text" mode="out-in">
-            <span :key="sortMode" class="nl-mode-label">{{ sortModeLabel }}</span>
-          </Transition>
-          <span class="nl-mode-icon" :class="{ 'nl-mode-icon--spin': modeSpinning }">
+        <div ref="modeMenuRootRef" class="nl-mode-menu-root">
+          <button
+            ref="modeToggleRef"
+            type="button"
+            class="nl-mode-toggle"
+            aria-haspopup="menu"
+            :aria-expanded="modeMenuOpen"
+            :aria-label="`当前是${sortModeLabel}，选择排列方式`"
+            @click="toggleModeMenu"
+          >
+            <Transition name="nl-mode-text" mode="out-in">
+              <span :key="sortMode" class="nl-mode-label">{{ sortModeLabel }}</span>
+            </Transition>
             <svg
+              class="nl-mode-chevron"
+              :class="{ 'nl-mode-chevron--open': modeMenuOpen }"
               width="14"
               height="14"
               viewBox="0 0 16 16"
               fill="none"
-              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
             >
               <path
-                d="M3.5 5.5h9l-2.4-2.4M12.5 10.5h-9l2.4 2.4"
+                d="m4 6 4 4 4-4"
                 stroke="currentColor"
-                stroke-width="1.2"
+                stroke-width="1.4"
                 stroke-linecap="round"
                 stroke-linejoin="round"
               />
             </svg>
-          </span>
-        </button>
+          </button>
+          <Transition
+            :css="false"
+            @enter="(element, done) => enterPopover(element, done, 'dropdown')"
+            @leave="(element, done) => leavePopover(element, done, 'dropdown')"
+          >
+            <div v-if="modeMenuOpen" class="nl-mode-menu" role="menu">
+              <button
+                v-for="option in modeOptions"
+                :key="option.value"
+                type="button"
+                role="menuitemradio"
+                class="nl-mode-option"
+                :class="{ 'nl-mode-option--active': option.value === sortMode }"
+                :aria-checked="option.value === sortMode"
+                @click="selectSortMode(option.value)"
+              >
+                <span>{{ option.label }}</span>
+                <svg
+                  v-if="option.value === sortMode"
+                  width="13"
+                  height="13"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="m3.5 8 2.8 2.8 6.2-6.2"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+            </div>
+          </Transition>
+        </div>
       </div>
     </div>
 
@@ -1115,7 +1325,7 @@ defineExpose({
         <div class="nl-panel-inner">
           <TagSelector
             v-if="panelState === 'tags'"
-            v-model="tagFilterNames"
+            v-model="tagFilterIds"
             class="nl-tags"
             @refresh="replayListRefresh"
           />
@@ -1214,6 +1424,92 @@ defineExpose({
       <div v-if="!timelineIsEmpty || allNoteTotal > 0" class="nl-footer-count">
         <span>当前{{ totalRendered }}条</span>
         <span>共{{ allNoteTotal }}条</span>
+      </div>
+    </template>
+
+    <!-- ======== 标签分组模式 ======== -->
+    <template v-else-if="sortMode === 'tag-group'">
+      <div ref="tagGroupScrollRef" class="nl-tag-groups nl-list-scroll scroll-y">
+        <div v-if="tagGroups.length === 0" class="nl-empty-state">暂无标签组</div>
+        <section v-for="group in tagGroups" :key="group.key" class="nl-tag-group">
+          <button
+            type="button"
+            class="nl-tag-group-header"
+            :class="{
+              'nl-tag-group-header--expanded': group.expanded,
+              'nl-tag-group-header--empty': group.total === 0
+            }"
+            :aria-expanded="group.expanded"
+            :aria-controls="`nl-tag-group-${group.id ?? 'untagged'}`"
+            @click="toggleTagGroup(group)"
+          >
+            <svg
+              class="nl-tag-group-chevron"
+              :class="{ 'nl-tag-group-chevron--open': group.expanded }"
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="m6 4 4 4-4 4"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span
+              class="nl-tag-group-dot"
+              :class="{ 'nl-tag-group-dot--untagged': group.untagged }"
+              :style="group.color ? { backgroundColor: group.color } : null"
+              aria-hidden="true"
+            ></span>
+            <span class="nl-tag-group-name">{{ group.name }}</span>
+            <span class="nl-tag-group-count">{{ group.total }}</span>
+          </button>
+          <Transition :css="false" @enter="onPanelEnter" @leave="onPanelLeave">
+            <div
+              v-if="group.expanded"
+              :id="`nl-tag-group-${group.id ?? 'untagged'}`"
+              class="nl-tag-group-content"
+            >
+              <div v-if="group.total === 0" class="nl-tag-group-empty">当前状态下暂无便签</div>
+              <template v-else>
+                <NoteCard
+                  v-for="note in group.notes"
+                  :key="note.id"
+                  :note="note"
+                  :color-by-tag="false"
+                  :status-transition="statusTransitionFor(note.id)"
+                  @edit="emit('edit', $event)"
+                  @status-action="onCardStatusAction"
+                />
+                <div v-if="group.loading" class="nl-tag-group-hint">加载中…</div>
+                <button
+                  v-else-if="group.error"
+                  type="button"
+                  class="nl-tag-group-more"
+                  @click="retryTagGroup(group)"
+                >
+                  加载失败，点击重试
+                </button>
+                <button
+                  v-else-if="group.hasMore"
+                  type="button"
+                  class="nl-tag-group-more"
+                  @click="loadTagGroupPage(group)"
+                >
+                  显示更多
+                </button>
+              </template>
+            </div>
+          </Transition>
+        </section>
+      </div>
+      <div v-if="tagGroups.length > 0 || allNoteTotal > 0" class="nl-footer-count">
+        <span>{{ tagGroups.length }} 个标签组，{{ tagGroupMatchingTotal }} 条便签</span>
       </div>
     </template>
 
@@ -1356,7 +1652,10 @@ defineExpose({
   font-weight: 700;
 }
 
-/* 展示模式切换（文字 + 图标） */
+/* 展示模式选择 */
+.nl-mode-menu-root {
+  position: relative;
+}
 .nl-mode-toggle {
   display: inline-flex;
   align-items: center;
@@ -1369,42 +1668,69 @@ defineExpose({
   font-family: inherit;
   font-weight: 500;
   cursor: pointer;
-  transition: color 150ms ease;
+  transition:
+    color 150ms ease,
+    transform var(--motion-control) var(--ease-standard);
 }
 .nl-mode-toggle:hover {
   color: var(--text-color);
 }
+.nl-mode-toggle:active {
+  transform: scale(0.98);
+}
 .nl-mode-label {
   display: inline-block;
 }
-.nl-mode-icon {
-  display: inline-flex;
-  align-items: center;
-}
-.nl-mode-icon svg {
+.nl-mode-chevron {
   display: block;
+  transition: transform var(--motion-control) var(--ease-standard);
 }
-/* 切换动效：图标向右移出深出，再从左侧滑回原位（与文字同向） */
-.nl-mode-icon--spin svg {
-  animation: nl-mode-swap 220ms var(--ease-standard);
+.nl-mode-chevron--open {
+  transform: rotate(180deg);
 }
-@keyframes nl-mode-swap {
-  0% {
-    transform: translateX(0);
-    opacity: 1;
-  }
-  45% {
-    transform: translateX(5rem);
-    opacity: 0;
-  }
-  46% {
-    transform: translateX(-5rem);
-    opacity: 0;
-  }
-  100% {
-    transform: translateX(0);
-    opacity: 1;
-  }
+.nl-mode-menu {
+  position: absolute;
+  z-index: var(--z-local-top);
+  top: calc(100% + 4rem);
+  right: 0;
+  min-width: 112rem;
+  padding: 4rem;
+  border: 1px solid var(--surface-float-border);
+  border-radius: 10rem;
+  background: var(--surface-float);
+  box-shadow: 0 8rem 24rem rgb(0 0 0 / 0.14);
+  transform-origin: top right;
+}
+.nl-mode-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rem;
+  padding: 7rem 9rem;
+  border: 0;
+  border-radius: 7rem;
+  background: transparent;
+  color: var(--text-color-secondary);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-control) ease,
+    color var(--motion-control) ease,
+    transform var(--motion-control) var(--ease-standard);
+}
+.nl-mode-option:hover {
+  background: var(--ui-fill-hover);
+  color: var(--text-color);
+}
+.nl-mode-option--active {
+  background: var(--ui-fill-pressed);
+  color: var(--text-color);
+}
+.nl-mode-option:active {
+  transform: scale(0.98);
 }
 
 /* 文字切换过渡：旧字往右滑出、新字从左滑入 */
@@ -1555,8 +1881,118 @@ defineExpose({
   padding: 10rem 0 4rem;
   font-size: calc(var(--fs-secondary) * 0.85);
   color: var(--text-color-secondary);
-  border-top: 1px solid rgb(var(--bg-color) / 0.08);
+  border-top: 1px solid var(--ui-border-divider);
   margin-top: 4rem;
+}
+
+/* ===== 标签分组模式 ===== */
+.nl-tag-groups {
+  flex: 1;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0%,
+    black calc(100% - 30rem),
+    transparent 100%
+  );
+  mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
+}
+.nl-tag-group + .nl-tag-group {
+  margin-top: 2rem;
+}
+.nl-tag-group-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7rem;
+  min-height: 34rem;
+  padding: 6rem 0;
+  border: 0;
+  border-radius: 7rem;
+  background: transparent;
+  color: var(--text-color-secondary);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    color var(--motion-control) ease,
+    transform var(--motion-control) var(--ease-standard);
+}
+.nl-tag-group-header:hover {
+  color: var(--text-color);
+}
+.nl-tag-group-header:active {
+  transform: scale(0.98);
+}
+.nl-tag-group-header--expanded {
+  color: var(--text-color);
+}
+.nl-tag-group-header--empty {
+  opacity: 0.58;
+}
+.nl-tag-group-dot {
+  width: 8rem;
+  height: 8rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-color-secondary);
+}
+.nl-tag-group-dot--untagged {
+  opacity: 0.48;
+}
+.nl-tag-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.nl-tag-group-count {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.82);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.72;
+}
+.nl-tag-group-chevron {
+  flex: 0 0 auto;
+  opacity: 0.64;
+  transition: transform var(--motion-control) var(--ease-standard);
+}
+.nl-tag-group-chevron--open {
+  transform: rotate(90deg);
+}
+.nl-tag-group-content {
+  padding: 7rem 0 2rem 18rem;
+}
+.nl-tag-group-empty,
+.nl-tag-group-hint {
+  padding: 14rem 0 10rem;
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.85);
+  text-align: center;
+}
+.nl-tag-group-more {
+  display: block;
+  margin: 6rem auto 2rem;
+  padding: 7rem 12rem;
+  border: 0;
+  border-radius: 7rem;
+  background: transparent;
+  color: var(--text-color-secondary);
+  font: inherit;
+  font-size: calc(var(--fs-secondary) * 0.85);
+  cursor: pointer;
+  transition:
+    color var(--motion-control) ease,
+    transform var(--motion-control) var(--ease-standard);
+}
+.nl-tag-group-more:hover {
+  color: var(--text-color);
+}
+.nl-tag-group-more:active {
+  transform: scale(0.98);
 }
 
 /* ===== 自定义模式 ===== */
@@ -1646,7 +2082,7 @@ defineExpose({
   font-size: calc(var(--fs-secondary) * 0.85);
   font-family: inherit;
   font-weight: 400;
-  border: 1px solid rgba(128, 128, 128, 0.18);
+  border: 1px solid var(--ui-border-control);
   border-radius: 16rem;
   background: transparent;
   color: var(--text-color-secondary);
@@ -1659,8 +2095,8 @@ defineExpose({
   white-space: nowrap;
 }
 .nl-status-chip:hover {
-  background: rgba(128, 128, 128, 0.06);
-  border-color: rgba(128, 128, 128, 0.28);
+  border-color: var(--ui-border-hover);
+  color: var(--text-color);
 }
 .nl-status-chip--active {
   background: #007aff;
@@ -1673,7 +2109,7 @@ defineExpose({
   border-color: #0066d6;
 }
 .nl-status-chip:active {
-  transform: scale(0.96);
+  transform: scale(0.98);
   transition-duration: 70ms;
 }
 </style>

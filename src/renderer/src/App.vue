@@ -30,6 +30,12 @@ import HelpPage from './components/help/HelpPage.vue'
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
+import {
+  captureFocusedElement,
+  focusModal,
+  restoreFocusedElement,
+  trapModalTab
+} from './utils/modalFocus.js'
 import { DEFAULT_SETTINGS } from '../../shared/settings-schema.js'
 
 // 注册全局应用内消息通知能力（子孙组件通过 useMessage() 获取）
@@ -198,6 +204,8 @@ function toggleHelp() {
 /** 当前选中的便签 */
 const selectedNote = ref(null)
 const noteEditorRef = ref(null)
+const noteEditorOverlayRef = ref(null)
+let noteEditorPreviousFocus = null
 
 /** NoteList 引用 */
 const noteListRef = ref(null)
@@ -227,6 +235,7 @@ let wallpaperReleaseTimer = null
 let stopSettingsListener = null
 let stopNotesChangedListener = null
 let stopAppMessageListener = null
+let stopNotificationOpenListener = null
 let stopRemoteNoticesListener = null
 let startupUpdateTimer = null
 
@@ -315,6 +324,9 @@ onMounted(async () => {
   stopNotesChangedListener = window.api.onNotesChanged?.((event) => {
     if (event?.reason === 'note-data-cleared') selectedNote.value = null
   })
+  stopNotificationOpenListener = window.api.onNotificationOpenNote?.((payload) => {
+    void openNoteFromNotification(payload)
+  })
 
   // 主进程系统通知发送失败（如 macOS 未签名）时降级为应用内消息条。
   stopAppMessageListener = window.api.onAppMessage?.((payload) => {
@@ -344,10 +356,38 @@ document.addEventListener('mouseleave', onMouseLeave)
 // ---- 便签交互 ----
 async function onEditNote(note) {
   if (!note?.id) return
+  const openingFresh = !selectedNote.value
+  if (openingFresh) noteEditorPreviousFocus = captureFocusedElement()
   // 列表项是摘要数据；打开编辑器前重新读取完整记录，避免编辑旧标签或附件数据。
-  const fullNote = await window.api.getNote(note.id)
-  if (!releaseEditorBackgroundBlur) releaseEditorBackgroundBlur = retainModalBlur()
-  selectedNote.value = fullNote || note
+  try {
+    const fullNote = await window.api.getNote(note.id)
+    if (!fullNote) throw new Error('便签不存在或已删除')
+    if (!releaseEditorBackgroundBlur) releaseEditorBackgroundBlur = retainModalBlur()
+    selectedNote.value = fullNote
+    await nextTick()
+    focusModal(noteEditorOverlayRef.value)
+  } catch (error) {
+    if (openingFresh) {
+      restoreFocusedElement(noteEditorPreviousFocus)
+      noteEditorPreviousFocus = null
+    }
+    showMessage('error', error.message || '无法打开便签')
+  }
+}
+
+async function openNoteFromNotification(payload) {
+  const noteId = Number(payload?.id)
+  if (!Number.isInteger(noteId) || noteId <= 0) return
+  const closingModal = showSettings.value || showUpdateDialog.value || showRemoteNoticeDialog.value
+  showSettings.value = false
+  releaseSettingsBlur()
+  showUpdateDialog.value = false
+  showRemoteNoticeDialog.value = false
+  closeTemplates()
+  closeHelp()
+  await nextTick()
+  if (closingModal) await new Promise((resolve) => setTimeout(resolve, 240))
+  await onEditNote({ id: noteId })
 }
 
 function onCloseEditor() {
@@ -357,6 +397,21 @@ function onCloseEditor() {
 function releaseEditorBlur() {
   releaseEditorBackgroundBlur?.()
   releaseEditorBackgroundBlur = null
+}
+
+function finishEditorClose() {
+  releaseEditorBlur()
+  restoreFocusedElement(noteEditorPreviousFocus)
+  noteEditorPreviousFocus = null
+}
+
+function onEditorKeydown(event) {
+  if (event.key === 'Escape') {
+    event.stopPropagation()
+    requestCloseEditor()
+    return
+  }
+  trapModalTab(event, noteEditorOverlayRef.value)
 }
 
 function requestCloseEditor() {
@@ -384,6 +439,7 @@ onUnmounted(() => {
   stopSettingsListener?.()
   stopNotesChangedListener?.()
   stopAppMessageListener?.()
+  stopNotificationOpenListener?.()
   stopRemoteNoticesListener?.()
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
@@ -502,12 +558,15 @@ onUnmounted(() => {
     </div>
 
     <!-- 便签编辑弹窗：复用 NoteEditor，底层列表保持可见但不可交互。 -->
-    <Transition name="app-editor-modal" @after-leave="releaseEditorBlur">
+    <Transition name="app-editor-modal" @after-leave="finishEditorClose">
       <div
         v-if="selectedNote"
+        ref="noteEditorOverlayRef"
         class="app-editor-overlay"
         data-modal-layer="note-editor"
         role="presentation"
+        tabindex="-1"
+        @keydown="onEditorKeydown"
       >
         <section class="app-editor-dialog" role="dialog" aria-modal="true" aria-label="修改便签">
           <header class="app-editor-header">
@@ -583,7 +642,7 @@ onUnmounted(() => {
 
 .app-wallpaper {
   position: absolute;
-  z-index: 0;
+  z-index: var(--z-local-base);
   inset: 0;
   overflow: hidden;
   border-radius: inherit;
@@ -613,7 +672,7 @@ onUnmounted(() => {
 /* 主界面独立成场景，便于模态设置面板统一隔离交互。 */
 .app-scene {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-local-content);
   display: flex;
   flex: 1;
   min-height: 0;
@@ -639,10 +698,10 @@ onUnmounted(() => {
 }
 .app-template-wrapper {
   position: absolute;
-  z-index: 15000;
+  z-index: var(--z-global-workspace);
   inset: 0;
   overflow: hidden;
-  border-radius: inherit;
+  border-radius: var(--window-radius);
   pointer-events: auto;
 }
 .app-template-panel {
@@ -652,7 +711,8 @@ onUnmounted(() => {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background-color: rgb(var(--bg-color) / var(--glass-opacity-base));
+  border-radius: inherit;
+  background-color: var(--surface-panel);
   box-shadow: -12px 0 36px rgba(0, 0, 0, 0.16);
   transform: translateX(100%);
   transition: transform 360ms var(--ease-standard);
@@ -662,13 +722,13 @@ onUnmounted(() => {
   transform: translateX(0);
 }
 
-/* 帮助面板与模版面板共用滑入规则；z-index 略高以保证互斥切换时覆盖在上。 */
+/* 帮助面板与模版面板互斥，共用同一工作区层级。 */
 .app-help-wrapper {
   position: absolute;
-  z-index: 16000;
+  z-index: var(--z-global-workspace);
   inset: 0;
   overflow: hidden;
-  border-radius: inherit;
+  border-radius: var(--window-radius);
   pointer-events: auto;
 }
 .app-help-panel {
@@ -678,7 +738,8 @@ onUnmounted(() => {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background-color: rgb(var(--bg-color) / var(--glass-opacity-base));
+  border-radius: inherit;
+  background-color: var(--surface-panel);
   box-shadow: -12px 0 36px rgba(0, 0, 0, 0.16);
   transform: translateX(100%);
   transition: transform 360ms var(--ease-standard);
@@ -701,12 +762,12 @@ onUnmounted(() => {
 
 .app-editor-overlay {
   position: absolute;
-  z-index: 20000;
+  z-index: var(--z-global-editor);
   inset: 0;
   display: grid;
   place-items: center;
   padding: 22rem;
-  background: rgba(18, 20, 24, 0.04);
+  background: var(--surface-modal-scrim);
 }
 .app-editor-dialog {
   display: flex;
@@ -715,8 +776,8 @@ onUnmounted(() => {
   height: min(639rem, 100%);
   min-height: 0;
   overflow: hidden;
-  background-color: rgb(var(--bg-color) / var(--glass-opacity-base));
-  border: 1px solid color-mix(in srgb, var(--text-color) 10%, transparent);
+  background-color: var(--surface-modal);
+  border: 1px solid var(--ui-border-control);
   border-radius: 16rem;
   box-shadow: 0 22rem 56rem rgba(0, 0, 0, 0.28);
 }
@@ -727,7 +788,7 @@ onUnmounted(() => {
   flex-shrink: 0;
   min-height: 42rem;
   padding: 0 12rem 0 16rem;
-  border-bottom: 1px solid color-mix(in srgb, var(--text-color) 8%, transparent);
+  border-bottom: 1px solid var(--ui-border-divider);
   color: var(--text-color);
   font-size: var(--fs-body);
   font-weight: 600;
@@ -752,11 +813,11 @@ onUnmounted(() => {
     transform 140ms var(--ease-standard);
 }
 .app-editor-close:hover {
-  background: color-mix(in srgb, var(--text-color) 9%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .app-editor-close:active {
-  transform: scale(0.9);
+  transform: scale(0.98);
 }
 .app-editor-modal-enter-active,
 .app-editor-modal-leave-active {

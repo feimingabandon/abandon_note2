@@ -8,9 +8,12 @@ import { app } from 'electron'
 import { clearDb, setDb } from '../src/main/db/db-connection.js'
 import { createNotesSchema } from '../src/main/db/db-schema.js'
 import {
+  cleanupStagedImage,
+  commitStagedImage,
   deleteImageRecordAndFile,
   purgeNoteAndFiles,
   resolveImagePath,
+  stageImage,
   stageImageDeletion
 } from '../src/main/db/db-images.js'
 import { cleanupPendingAttachmentDirs } from '../src/main/db/db.js'
@@ -130,6 +133,28 @@ app.once('ready', async () => {
       db.prepare('SELECT COUNT(*) AS count FROM notes WHERE id = ?').get(purgeFailureNoteId).count,
       0
     )
+
+    const additionNoteId = insertNote(db, '新增附件恢复测试')
+    const uncommittedAddition = await stageImage(Buffer.from('pending').toString('base64'), 'png')
+    await cleanupPendingAttachmentDirs()
+    assert.equal(existsSync(uncommittedAddition.operationDirectory), false)
+
+    const orphanAddition = await stageImage(Buffer.from('orphan').toString('base64'), 'png')
+    const orphanResult = commitStagedImage(additionNoteId, orphanAddition)
+    const orphanPath = resolveImagePath(orphanResult.relativePath)
+    assert.equal(existsSync(orphanPath), true)
+    await cleanupPendingAttachmentDirs()
+    assert.equal(existsSync(orphanPath), false)
+    assert.equal(existsSync(orphanAddition.operationDirectory), false)
+
+    const committedAddition = await stageImage(Buffer.from('committed').toString('base64'), 'png')
+    const committedResult = commitStagedImage(additionNoteId, committedAddition)
+    const committedPath = resolveImagePath(committedResult.relativePath)
+    insertAttachment(db, additionNoteId, committedResult.relativePath)
+    await cleanupPendingAttachmentDirs()
+    assert.equal(existsSync(committedPath), true)
+    assert.equal(existsSync(committedAddition.operationDirectory), false)
+    await cleanupStagedImage(committedAddition)
 
     const resetNoteId = insertNote(db, '全量清理恢复测试')
     const resetRelativePath = join('attachments', 'images', String(resetNoteId), 'reset.png')

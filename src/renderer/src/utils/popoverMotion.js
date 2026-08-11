@@ -1,6 +1,7 @@
 /**
  * 浮动弹层统一动效。
- * menu：macOS 式锚点淡入；reveal：大面板从触发器方向裁剪揭示，不拉伸文字。
+ * menu：macOS 式锚点淡入；dropdown：选择器像卷轴一样纵向展开；
+ * reveal：大面板从触发器方向裁剪揭示，不拉伸文字。
  */
 const runningAnimations = new WeakMap()
 
@@ -16,6 +17,18 @@ const MOTIONS = {
     ],
     enterDuration: 180,
     leaveDuration: 140
+  },
+  dropdown: {
+    enter: [
+      { clipPath: 'inset(0 0 100% 0 round 10px)' },
+      { clipPath: 'inset(0 0 0 0 round 10px)' }
+    ],
+    leave: [
+      { clipPath: 'inset(0 0 0 0 round 10px)' },
+      { clipPath: 'inset(0 0 100% 0 round 10px)' }
+    ],
+    enterDuration: 280,
+    leaveDuration: 240
   },
   reveal: {
     enter: [
@@ -59,7 +72,9 @@ function run(el, done, kind, direction) {
   runningAnimations.set(el, animation)
 
   const finish = () => {
-    if (runningAnimations.get(el) === animation) runningAnimations.delete(el)
+    // 快速反向开合时，已取消动画不能结束当前过渡。
+    if (runningAnimations.get(el) !== animation) return
+    runningAnimations.delete(el)
     done()
   }
   animation.finished.then(finish, finish)

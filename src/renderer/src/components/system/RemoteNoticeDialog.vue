@@ -61,7 +61,6 @@ async function acknowledge() {
     aria-label="软件通知"
     width="min(540rem, calc(100vw - 40rem))"
     max-height="min(620rem, calc(100vh - 40rem))"
-    :z-index="43000"
     @update:visible="emit('close')"
   >
     <div class="notice-body">{{ current?.body }}</div>
@@ -148,7 +147,7 @@ async function acknowledge() {
   width: 28rem;
   height: 28rem;
   padding: 0;
-  border: 1rem solid var(--surface-float-border);
+  border: 1px solid var(--surface-float-border);
   border-radius: 8rem;
   color: var(--text-color);
   background: color-mix(in srgb, var(--surface-float) 94%, var(--text-color) 6%);

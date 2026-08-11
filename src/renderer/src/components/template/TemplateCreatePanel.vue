@@ -157,14 +157,14 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   min-width: 0;
   height: 36rem;
-  border: 1px solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 10rem;
   overflow: hidden;
   background: transparent;
 }
 .tcp-button {
   position: absolute;
-  z-index: 2;
+  z-index: var(--z-local-raised);
   top: 0;
   left: 0;
   display: grid;
@@ -182,10 +182,10 @@ onBeforeUnmount(() => {
     transform 70ms ease;
 }
 .tcp-button:hover {
-  background: rgba(128, 128, 128, 0.06);
+  background: var(--ui-fill-hover);
 }
 .tcp-button:active {
-  transform: scale(0.92);
+  transform: scale(0.98);
 }
 .tcp-button svg {
   width: 16rem;
@@ -201,7 +201,7 @@ onBeforeUnmount(() => {
 }
 .tcp-hint {
   position: absolute;
-  z-index: 1;
+  z-index: var(--z-local-content);
   top: 0;
   left: 36rem;
   right: 0;
@@ -228,7 +228,7 @@ onBeforeUnmount(() => {
 }
 .tcp-collapse-hit {
   position: absolute;
-  z-index: 1;
+  z-index: var(--z-local-content);
   top: 0;
   left: 36rem;
   right: 0;
@@ -237,9 +237,6 @@ onBeforeUnmount(() => {
   border: 0;
   background: transparent;
   cursor: pointer;
-}
-.tcp-collapse-hit:hover {
-  background: rgba(128, 128, 128, 0.025);
 }
 .tcp-content {
   position: absolute;
@@ -288,13 +285,13 @@ onBeforeUnmount(() => {
   width: 36rem;
   height: 4rem;
   border-radius: 2rem;
-  background: rgba(255, 255, 255, 0.2);
+  background: color-mix(in srgb, var(--text-color) 20%, transparent);
   transition:
     transform var(--motion-control) var(--ease-standard),
     background-color var(--motion-fast) ease;
 }
 .tcp-drag-handle:hover .tcp-drag-bar {
   transform: scaleX(1.18);
-  background: rgba(255, 255, 255, 0.32);
+  background: color-mix(in srgb, var(--text-color) 32%, transparent);
 }
 </style>

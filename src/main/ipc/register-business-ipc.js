@@ -12,6 +12,8 @@ import {
   queryEarlierNotes,
   queryPinnedNotes,
   queryRecentNotes,
+  queryTagGroupNotes,
+  queryTagGroups,
   reopenNote,
   reorderCustomSortOrder,
   searchNotes,
@@ -24,10 +26,12 @@ import {
   createTag,
   deleteTag,
   getNoteTags,
-  getTagByName,
+  getTagById,
   getTagUsage,
   listTags,
-  setNoteTags,
+  setTagPinned,
+  setNoteTagIds,
+  updateTag,
   unbindTag
 } from '../db/db-tags.js'
 import {
@@ -58,7 +62,16 @@ import {
 } from '../db/db-images.js'
 import { calculateNextRun, normalizeRecurrenceRule } from '../services/recurrence-rules.js'
 import { enforceSystemNotificationPolicy } from '../../shared/notification-policy.js'
-import { requireSingleAssignedTag } from '../../shared/tag-rules.js'
+import { requireSingleAssignedTagId } from '../../shared/tag-rules.js'
+import {
+  MAX_ATTACHMENTS_PER_NOTE,
+  assertAttachmentBatchWithinLimit
+} from '../../shared/attachment-rules.js'
+import {
+  assertMinimumScheduleLeadTime,
+  MIN_SCHEDULE_LEAD_TIME_MINUTES,
+  MIN_SCHEDULE_LEAD_TIME_MS
+} from '../../shared/note-scheduling-rules.js'
 
 function sendToMainWindow(getMainWindow, channel, payload) {
   const window = getMainWindow()
@@ -78,26 +91,54 @@ export function registerBusinessIpcHandlers({
   platform = process.platform
 }) {
   const enforceNotificationPolicy = (payload) => enforceSystemNotificationPolicy(payload, platform)
+  const normalizeUserCreateOptions = (payload) => {
+    const options = enforceNotificationPolicy(payload)
+    const hasExplicitEffectiveAt =
+      options.effectiveAt !== undefined &&
+      options.effectiveAt !== null &&
+      options.effectiveAt !== ''
+    if (hasExplicitEffectiveAt) {
+      options.effectiveAt = assertMinimumScheduleLeadTime(options.effectiveAt)
+    }
+    return options
+  }
+  const broadcastNoteChange = (reason, result, payload = {}) => {
+    if (!result) return result
+    const id = Number(result?.id ?? payload.id)
+    sendToMainWindow(getMainWindow, 'notes:changed', {
+      reason,
+      ...(Number.isInteger(id) && id > 0 ? { id } : {}),
+      ...payload
+    })
+    return result
+  }
+  const broadcastTagChange = (reason, result, payload = {}) => {
+    if (!result) return result
+    sendToMainWindow(getMainWindow, 'tags:changed', { reason, ...payload })
+    return result
+  }
 
   ipcMain.handle('notes:create', (_event, options) => {
-    return createNote(enforceNotificationPolicy(options))
+    return broadcastNoteChange('create', createNote(normalizeUserCreateOptions(options)))
   })
 
-  ipcMain.handle('notes:create-with-assets', async (_event, { options, images, tagNames }) => {
+  ipcMain.handle('notes:create-with-assets', async (_event, { options, images, tagIds }) => {
     const db = getDb()
-    const normalizedTagNames = requireSingleAssignedTag(tagNames || [])
+    const normalizedTagIds = requireSingleAssignedTagId(tagIds || [])
+    const batch = Array.isArray(images) ? images : []
+    assertAttachmentBatchWithinLimit(batch)
     const writtenFiles = []
     const stagedImages = []
 
     try {
-      for (const image of images || []) stagedImages.push(await stageImage(image.base64, image.ext))
+      for (const image of batch) stagedImages.push(await stageImage(image.base64, image.ext))
     } catch (error) {
       await Promise.all(stagedImages.map(cleanupStagedImage))
       throw error
     }
 
     const transaction = db.transaction(() => {
-      const note = createNote(enforceNotificationPolicy(options))
+      const note = createNote(normalizeUserCreateOptions(options))
       if (!note?.id) throw new Error('创建便签失败')
 
       for (const staged of stagedImages) {
@@ -106,17 +147,20 @@ export function registerBusinessIpcHandlers({
         addImageRecord({ noteId: note.id, filePath: relativePath, fileSize })
       }
 
-      if (normalizedTagNames.length > 0) {
+      if (normalizedTagIds.length > 0) {
         db.prepare('DELETE FROM note_tags WHERE note_id = ?').run(note.id)
-        const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)')
-        for (const tagName of normalizedTagNames) insertTag.run(note.id, tagName)
+        const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_id) VALUES (?, ?)')
+        for (const tagId of normalizedTagIds) insertTag.run(note.id, tagId)
       }
 
       return getNoteById(note.id)
     })
 
     try {
-      return transaction()
+      const created = transaction()
+      await Promise.all(stagedImages.map(cleanupStagedImage))
+      broadcastNoteChange('create', created)
+      return created
     } catch (error) {
       await Promise.all(writtenFiles.map(deleteImageFile))
       await Promise.all(stagedImages.map(cleanupStagedImage))
@@ -126,14 +170,14 @@ export function registerBusinessIpcHandlers({
   })
 
   ipcMain.handle('notes:update', (_event, { id, fields }) => {
-    return updateNote(id, enforceNotificationPolicy(fields))
+    return broadcastNoteChange('update', updateNote(id, enforceNotificationPolicy(fields)), { id })
   })
 
   ipcMain.handle('notes:save-draft', async (_event, payload = {}) => {
     const db = getDb()
     const id = Number(payload.id)
     const fields = enforceNotificationPolicy(payload.fields)
-    const tagNames = requireSingleAssignedTag(payload.tagNames || [])
+    const tagIds = requireSingleAssignedTagId(payload.tagIds || [])
     const addedImages = Array.isArray(payload.addedImages) ? payload.addedImages : []
     const deletedImageIds = [
       ...new Set(
@@ -166,8 +210,9 @@ export function registerBusinessIpcHandlers({
       throw new Error('附件不存在或不属于当前便签')
     }
 
-    const resultingCount = original.attachments.length - deletedImageIds.length + addedImages.length
-    if (resultingCount > 50) throw new Error('单条便签最多只能保存 50 张图片')
+    const remaining =
+      MAX_ATTACHMENTS_PER_NOTE - original.attachments.length + deletedImageIds.length
+    assertAttachmentBatchWithinLimit(addedImages, { maxCount: remaining })
 
     const stagedImages = []
     const writtenFiles = []
@@ -205,8 +250,8 @@ export function registerBusinessIpcHandlers({
         }
         const effectiveAtChanged =
           Math.floor(requestedEffectiveAt / 1000) !== Math.floor(current.effective_at / 1000)
-        if (effectiveAtChanged && requestedEffectiveAt - timestamp < 5 * 60 * 1000) {
-          throw new Error('生效时间需在当前时间 5 分钟之后')
+        if (effectiveAtChanged && requestedEffectiveAt - timestamp < MIN_SCHEDULE_LEAD_TIME_MS) {
+          throw new Error(`生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后`)
         }
         effectiveAt = effectiveAtChanged ? requestedEffectiveAt : current.effective_at
         notifyEnabled = fields.notifyEnabled ? 1 : 0
@@ -215,7 +260,7 @@ export function registerBusinessIpcHandlers({
       db.prepare(
         `UPDATE notes SET
            content = ?, status = ?, is_pinned = ?, notify_enabled = ?, effective_at = ?, duration_days = ?,
-           finished_at = ?, remind_again_at = ?, updated_at = ?
+           finished_at = ?, updated_at = ?
          WHERE id = ? AND is_deleted = 0`
       ).run(
         content,
@@ -225,14 +270,13 @@ export function registerBusinessIpcHandlers({
         effectiveAt,
         durationDays,
         current.finished_at,
-        current.remind_again_at,
         timestamp,
         id
       )
 
       db.prepare('DELETE FROM note_tags WHERE note_id = ?').run(id)
-      const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)')
-      for (const tagName of tagNames) insertTag.run(id, tagName)
+      const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_id) VALUES (?, ?)')
+      for (const tagId of tagIds) insertTag.run(id, tagId)
 
       if (deletedImageIds.length) {
         db.prepare(
@@ -252,7 +296,11 @@ export function registerBusinessIpcHandlers({
 
     try {
       const updated = transaction()
-      await Promise.all(stagedDeletions.map(cleanupStagedImage))
+      await Promise.all([
+        ...stagedImages.map(cleanupStagedImage),
+        ...stagedDeletions.map(cleanupStagedImage)
+      ])
+      broadcastNoteChange('update', updated, { id })
       return updated
     } catch (error) {
       await Promise.all(writtenFiles.map(deleteImageFile))
@@ -283,24 +331,61 @@ export function registerBusinessIpcHandlers({
   ipcMain.handle('notes:query-earlier', (_event, options) => queryEarlierNotes(options || {}))
   ipcMain.handle('notes:query-custom-pinned', (_event, options) => queryCustomPinned(options || {}))
   ipcMain.handle('notes:query-custom-normal', (_event, options) => queryCustomNormal(options || {}))
+  ipcMain.handle('notes:query-tag-groups', (_event, options) => queryTagGroups(options || {}))
+  ipcMain.handle('notes:query-tag-group', (_event, options) => queryTagGroupNotes(options || {}))
   ipcMain.handle('notes:search', (_event, options) => searchNotes(options || {}))
   ipcMain.handle('notes:count-active', () => countActiveNotes())
   ipcMain.handle('notes:reorder-custom', () => reorderCustomSortOrder())
   ipcMain.handle('notes:update-custom-order', (_event, { items }) => updateCustomSortOrders(items))
-  ipcMain.handle('notes:start-progress', (_event, { id }) => startProgress(id))
-  ipcMain.handle('notes:complete', (_event, { id }) => completeNote(id))
-  ipcMain.handle('notes:reopen', (_event, { id }) => reopenNote(id))
+  ipcMain.handle('notes:start-progress', (_event, { id }) =>
+    broadcastNoteChange('status', startProgress(id), { id, status: 'in_progress' })
+  )
+  ipcMain.handle('notes:complete', (_event, { id }) =>
+    broadcastNoteChange('status', completeNote(id), { id, status: 'completed' })
+  )
+  ipcMain.handle('notes:reopen', (_event, { id }) =>
+    broadcastNoteChange('status', reopenNote(id), { id, status: 'in_progress' })
+  )
 
-  ipcMain.handle('tags:create', (_event, { name, color }) => createTag(name, color))
-  ipcMain.handle('tags:delete', (_event, { name }) => deleteTag(name))
+  ipcMain.handle('tags:create', (_event, { name, color, pinned }) => {
+    const tag = createTag(name, color, pinned)
+    return broadcastTagChange('create', tag, { tag })
+  })
+  ipcMain.handle('tags:update', (_event, { id, fields }) => {
+    const result = updateTag(id, fields)
+    broadcastTagChange('update', result, {
+      tag: result.tag,
+      oldName: result.oldName
+    })
+    broadcastNoteChange('tag', true, { tagId: result.tag.id })
+    return result.tag
+  })
+  ipcMain.handle('tags:delete', (_event, { id }) => {
+    const deleted = deleteTag(id)
+    if (deleted) {
+      broadcastTagChange('delete', true, { id: Number(id) })
+      broadcastNoteChange('tag', true, { tagId: Number(id) })
+    }
+    return deleted
+  })
+  ipcMain.handle('tags:set-pinned', (_event, { id, pinned }) => {
+    const tag = setTagPinned(id, pinned)
+    return broadcastTagChange('pin', tag, { tag })
+  })
   ipcMain.handle('tags:list', () => listTags())
-  ipcMain.handle('tags:get', (_event, { name }) => getTagByName(name))
-  ipcMain.handle('tags:usage', (_event, { name }) => getTagUsage(name))
-  ipcMain.handle('note-tags:bind', (_event, { noteId, tagName }) => bindTag(noteId, tagName))
-  ipcMain.handle('note-tags:unbind', (_event, { noteId, tagName }) => unbindTag(noteId, tagName))
-  ipcMain.handle('note-tags:set', (_event, { noteId, tagNames }) => {
-    setNoteTags(noteId, tagNames)
-    return getNoteTags(noteId)
+  ipcMain.handle('tags:get', (_event, { id }) => getTagById(id))
+  ipcMain.handle('tags:usage', (_event, { id }) => getTagUsage(id))
+  ipcMain.handle('note-tags:bind', (_event, { noteId, tagId }) =>
+    broadcastNoteChange('tag', bindTag(noteId, tagId), { id: noteId, tagId })
+  )
+  ipcMain.handle('note-tags:unbind', (_event, { noteId, tagId }) =>
+    broadcastNoteChange('tag', unbindTag(noteId, tagId), { id: noteId, tagId })
+  )
+  ipcMain.handle('note-tags:set', (_event, { noteId, tagIds }) => {
+    setNoteTagIds(noteId, tagIds)
+    const tags = getNoteTags(noteId)
+    broadcastNoteChange('tag', true, { id: noteId })
+    return tags
   })
   ipcMain.handle('note-tags:list', (_event, { noteId }) => getNoteTags(noteId))
 
@@ -330,8 +415,8 @@ export function registerBusinessIpcHandlers({
 
   ipcMain.handle('images:save-batch', async (_event, { noteId, images }) => {
     const batch = Array.isArray(images) ? images : []
-    const remaining = 50 - getImageCount(noteId)
-    if (batch.length > remaining) throw new Error(`最多还能添加 ${Math.max(0, remaining)} 张图片`)
+    const remaining = MAX_ATTACHMENTS_PER_NOTE - getImageCount(noteId)
+    assertAttachmentBatchWithinLimit(batch, { maxCount: remaining })
 
     const db = getDb()
     const writtenFiles = []
@@ -354,7 +439,10 @@ export function registerBusinessIpcHandlers({
     })
 
     try {
-      return transaction()
+      const results = transaction()
+      await Promise.all(stagedImages.map(cleanupStagedImage))
+      broadcastNoteChange('attachment', true, { id: noteId })
+      return results
     } catch (error) {
       await Promise.all(writtenFiles.map(deleteImageFile))
       await Promise.all(stagedImages.map(cleanupStagedImage))
@@ -362,7 +450,12 @@ export function registerBusinessIpcHandlers({
     }
   })
 
-  ipcMain.handle('images:delete', async (_event, { id }) => deleteImageRecordAndFile(id))
+  ipcMain.handle('images:delete', async (_event, { id }) => {
+    const attachment = getDb().prepare('SELECT note_id FROM note_attachments WHERE id = ?').get(id)
+    const deleted = await deleteImageRecordAndFile(id)
+    if (deleted) broadcastNoteChange('attachment', true, { id: attachment?.note_id })
+    return deleted
+  })
   ipcMain.handle('images:list', (_event, { noteId }) => listImageRecords(noteId))
   ipcMain.handle('images:get-base64', (_event, { relativePath }) => getImageBase64(relativePath))
   ipcMain.handle('images:get-thumbnail', (_event, { relativePath, maxSize }) =>

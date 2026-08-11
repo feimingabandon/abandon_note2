@@ -18,6 +18,15 @@
  */
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
 import ImagePreview from './ImagePreview.vue'
+import { useMessage } from '../../composables/useMessage.js'
+import {
+  MAX_ATTACHMENTS_PER_NOTE,
+  MAX_ATTACHMENT_BATCH_BYTES,
+  MAX_IMAGE_BYTES,
+  getBase64DecodedSize
+} from '../../../../shared/attachment-rules.js'
+
+const { showMessage } = useMessage()
 
 const props = defineProps({
   noteId: { type: Number, default: null },
@@ -40,12 +49,12 @@ let imageLoadSeq = 0
 
 /** 支持的图片扩展名 */
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']
-/** 单图片最大 50MB */
-const MAX_SIZE = 50 * 1024 * 1024
-/** 单便签最多 50 张 */
-const MAX_COUNT = 50
-
-const canAdd = computed(() => !props.readonly && images.value.length < MAX_COUNT)
+const canAdd = computed(() => !props.readonly && images.value.length < MAX_ATTACHMENTS_PER_NOTE)
+const pendingAddedBytes = computed(() =>
+  images.value
+    .filter((image) => !image.saved)
+    .reduce((total, image) => total + Math.max(0, Number(image.size) || 0), 0)
+)
 
 /** 大图预览 */
 const previewVisible = ref(false)
@@ -89,20 +98,31 @@ async function loadImages() {
 // 文件处理（拖拽 / 选择共用）
 // ============================================================
 async function processFiles(files) {
-  const available = MAX_COUNT - images.value.length
+  const available = MAX_ATTACHMENTS_PER_NOTE - images.value.length
   if (available <= 0) return
 
   // 预筛选有效文件
   const valid = []
+  let totalBytes = props.mode === 'persist' ? 0 : pendingAddedBytes.value
+  let oversizedCount = 0
+  let aggregateRejected = false
   for (const file of Array.from(files).slice(0, available)) {
     const ext = file.name.split('.').pop()?.toLowerCase()
     if (!IMAGE_EXTS.includes(ext)) continue
-    if (file.size > MAX_SIZE) {
+    if (file.size > MAX_IMAGE_BYTES) {
       console.warn(`[ImagePicker] 图片过大，跳过:`, file.name)
+      oversizedCount += 1
+      continue
+    }
+    if (totalBytes + file.size > MAX_ATTACHMENT_BATCH_BYTES) {
+      aggregateRejected = true
       continue
     }
     valid.push(file)
+    totalBytes += file.size
   }
+  if (oversizedCount > 0) showMessage('warning', '单张图片不能超过 50MB')
+  if (aggregateRejected) showMessage('warning', '单批新增图片总量不能超过 200MB')
   if (valid.length === 0) return
 
   // 立即插入占位（带 spinner）
@@ -288,18 +308,20 @@ function clearImages() {
   emitDraftChange()
 }
 
-function getDataUrlSize(dataUrl) {
-  const base64 = String(dataUrl || '').split(',')[1] || ''
-  if (!base64) return 0
-  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
-  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding)
-}
-
 /** 程序化添加图片（供 ScreenshotPicker 等外部调用） */
 function addImage(dataUrl, ext, name, size) {
   if (!canAdd.value) return
   const base64 = dataUrl.split(',')[1]
-  const resolvedSize = Number(size) > 0 ? Number(size) : getDataUrlSize(dataUrl)
+  const resolvedSize = Number(size) > 0 ? Number(size) : getBase64DecodedSize(base64)
+  if (resolvedSize > MAX_IMAGE_BYTES) {
+    showMessage('warning', '单张图片不能超过 50MB')
+    return
+  }
+  const currentBatchBytes = props.mode === 'persist' ? 0 : pendingAddedBytes.value
+  if (currentBatchBytes + resolvedSize > MAX_ATTACHMENT_BATCH_BYTES) {
+    showMessage('warning', '单批新增图片总量不能超过 200MB')
+    return
+  }
   if (props.mode === 'persist' && props.noteId) {
     window.api
       .saveImages(props.noteId, [{ base64, ext }])
@@ -456,18 +478,17 @@ function formatSize(bytes) {
   width: 100%;
   min-width: 0;
   aspect-ratio: 1;
-  border: 1px dashed rgba(128, 128, 128, 0.2);
+  border: 1px dashed var(--ui-border-control);
   border-radius: 6rem;
   cursor: pointer;
   transition:
     border-color 150ms ease,
     background-color 150ms ease;
   flex-shrink: 0;
-  background: rgba(255, 255, 255, 0.02);
+  background: transparent;
 }
 .ip-dropzone:hover {
-  border-color: rgba(128, 128, 128, 0.35);
-  background: rgba(255, 255, 255, 0.02);
+  border-color: var(--ui-border-hover);
 }
 .ip-dropzone--active {
   border-color: #0071e3;
@@ -519,8 +540,8 @@ function formatSize(bytes) {
   aspect-ratio: 1;
   padding: 6rem;
   border-radius: 6rem;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(128, 128, 128, 0.08);
+  background: var(--ui-surface-subtle);
+  border: 1px solid var(--ui-border-divider);
   flex-shrink: 0;
   transition:
     transform var(--motion-control) var(--ease-standard),
@@ -591,7 +612,7 @@ function formatSize(bytes) {
 
 .ip-thumb__size {
   position: absolute;
-  z-index: 1;
+  z-index: var(--z-local-content);
   top: 50%;
   left: 50%;
   padding: 4rem 7rem;
@@ -621,7 +642,7 @@ function formatSize(bytes) {
 .ip-spinner {
   width: 32rem;
   height: 32rem;
-  border: 3rem solid rgba(128, 128, 128, 0.15);
+  border: 3rem solid color-mix(in srgb, var(--text-color) 15%, transparent);
   border-top-color: #0071e3;
   border-radius: 50%;
   animation: ip-spin 0.8s linear infinite;

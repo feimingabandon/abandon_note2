@@ -6,7 +6,8 @@ const props = defineProps({
   min: { type: Number, default: Number.NEGATIVE_INFINITY },
   max: { type: Number, default: Number.POSITIVE_INFINITY },
   step: { type: Number, default: 1 },
-  ariaLabel: { type: String, required: true }
+  ariaLabel: { type: String, required: true },
+  disabled: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -17,6 +18,7 @@ function clamp(value) {
 }
 
 function commit(value, fallback = props.modelValue) {
+  if (props.disabled) return
   const parsed = Number(value)
   const normalized = Number.isFinite(parsed) ? Math.trunc(parsed) : Math.trunc(Number(fallback))
   const next = clamp(Number.isFinite(normalized) ? normalized : props.min)
@@ -25,6 +27,7 @@ function commit(value, fallback = props.modelValue) {
 }
 
 function handleInput(event) {
+  if (props.disabled) return
   draft.value = event.target.value
   if (event.target.value.trim() === '') return
 
@@ -35,6 +38,7 @@ function handleInput(event) {
 }
 
 function stepBy(direction) {
+  if (props.disabled) return
   const current = Number(draft.value)
   const base = Number.isFinite(current) ? current : props.modelValue
   commit(base + props.step * direction)
@@ -49,13 +53,14 @@ watch(
 </script>
 
 <template>
-  <div class="number-stepper">
+  <div class="number-stepper" :class="{ 'is-disabled': disabled }">
     <input
       :value="draft"
       type="text"
       inputmode="numeric"
       autocomplete="off"
       :aria-label="ariaLabel"
+      :disabled="disabled"
       @input="handleInput"
       @blur="commit(draft)"
       @keydown.up.prevent="stepBy(1)"
@@ -67,7 +72,7 @@ watch(
       <button
         type="button"
         :aria-label="`${ariaLabel}增加`"
-        :disabled="modelValue >= max"
+        :disabled="disabled || modelValue >= max"
         @click="stepBy(1)"
       >
         <svg viewBox="0 0 12 8" aria-hidden="true">
@@ -77,7 +82,7 @@ watch(
       <button
         type="button"
         :aria-label="`${ariaLabel}减少`"
-        :disabled="modelValue <= min"
+        :disabled="disabled || modelValue <= min"
         @click="stepBy(-1)"
       >
         <svg viewBox="0 0 12 8" aria-hidden="true">
@@ -97,9 +102,9 @@ watch(
   width: 88rem;
   height: 32rem;
   overflow: hidden;
-  border: 1rem solid rgb(var(--bg-color) / 0.12);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--ui-surface-control);
   transition:
     border-color 160ms ease,
     background-color 160ms ease,
@@ -107,13 +112,12 @@ watch(
 }
 
 .number-stepper:hover {
-  border-color: rgb(var(--bg-color) / 0.2);
-  background: rgba(255, 255, 255, 0.07);
+  border-color: var(--ui-border-hover);
 }
 
 .number-stepper:focus-within {
   border-color: color-mix(in srgb, #0a84ff 72%, transparent);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--ui-surface-control);
   box-shadow: 0 0 0 3rem color-mix(in srgb, #0a84ff 14%, transparent);
 }
 
@@ -133,16 +137,17 @@ watch(
 
 .number-stepper__controls {
   position: absolute;
-  top: 3rem;
-  right: 3rem;
-  bottom: 3rem;
+  top: 0;
+  right: 0;
+  bottom: 0;
   display: grid;
   width: var(--stepper-controls-width);
   grid-template-rows: 1fr 1fr;
   overflow: hidden;
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
-  border-radius: 5rem;
-  background: rgb(var(--bg-color) / 0.06);
+  border: 0;
+  border-left: 1px solid var(--ui-border-divider);
+  border-radius: 0;
+  background: transparent;
 }
 
 .number-stepper__controls button {
@@ -152,7 +157,7 @@ watch(
   place-items: center;
   border: 0;
   background: transparent;
-  color: #000;
+  color: var(--text-color);
   opacity: 0.45;
   cursor: pointer;
   transition:
@@ -163,17 +168,17 @@ watch(
 }
 
 .number-stepper__controls button + button {
-  border-top: 1rem solid rgb(var(--bg-color) / 0.1);
+  border-top: 1px solid var(--ui-border-divider);
 }
 
 .number-stepper__controls button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
-  color: #000;
+  background: var(--ui-fill-hover);
+  color: var(--text-color);
   opacity: 0.7;
 }
 
 .number-stepper__controls button:active:not(:disabled) {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
 
 .number-stepper__controls button:disabled {

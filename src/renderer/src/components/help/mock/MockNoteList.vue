@@ -2,7 +2,7 @@
 /**
  * MockNoteList.vue — 便签列表整机的静态只读复刻（帮助图解「整机图」专用）
  *
- * 组合：顶部工具栏（标题 + 功能切换标签 + 时间线/自定义切换）、新建/搜索操作框、
+ * 组合：顶部工具栏（标题 + 功能切换标签 + 排列方式选择）、新建/搜索操作框、
  * 分组标签行、若干便签卡片、底部计数。用于便签模块开头的整机标注图。
  */
 import MockActionBar from './MockActionBar.vue'
@@ -72,7 +72,7 @@ import MockNoteCard from './MockNoteCard.vue'
         时间线
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
           <path
-            d="M3.5 5.5h9l-2.4-2.4M12.5 10.5h-9l2.4 2.4"
+            d="m4 6 4 4 4-4"
             stroke="currentColor"
             stroke-width="1.2"
             stroke-linecap="round"
@@ -156,7 +156,7 @@ import MockNoteCard from './MockNoteCard.vue'
   margin: 0 auto;
   padding: 2rem;
   border-radius: 9rem;
-  background: rgba(128, 128, 128, 0.08);
+  background: var(--ui-surface-subtle);
 }
 .mnl-tab {
   display: grid;
@@ -167,7 +167,6 @@ import MockNoteCard from './MockNoteCard.vue'
   color: var(--text-color-secondary);
 }
 .mnl-tab--active {
-  background: rgb(var(--bg-color) / 0.5);
   color: var(--text-color);
 }
 .mnl-mode {

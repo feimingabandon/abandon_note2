@@ -28,6 +28,11 @@ import RemoteNoticeHistoryDialog from './RemoteNoticeHistoryDialog.vue'
 import { useMessage } from '../../composables/useMessage.js' // 消息弹窗
 import { applyGlassBaseSettings, applySettingsSnapshot } from '../../utils/applySettingsSnapshot.js'
 import {
+  captureFocusedElement,
+  restoreFocusedElement,
+  trapModalTab
+} from '../../utils/modalFocus.js'
+import {
   DEFAULT_SETTINGS,
   createDefaultSettings,
   VIEW_MODES
@@ -86,6 +91,7 @@ const rendered = ref(props.visible)
 const panelActive = ref(false)
 const panelRef = ref(null)
 const closeButtonRef = ref(null)
+const settingsPreviousFocus = captureFocusedElement()
 const panelSize = ref(viewDefaults.value.ui.settingsPanelSize)
 const panelStyle = computed(() =>
   isMonthView.value ? { width: panelSize.value + '%' } : { height: panelSize.value + '%' }
@@ -207,6 +213,15 @@ const close = () => {
     rendered.value = false
     emit('update:visible', false)
   }, 350)
+}
+
+function onPanelKeydown(event) {
+  if (event.key === 'Escape') {
+    event.stopPropagation()
+    close()
+    return
+  }
+  trapModalTab(event, panelRef.value)
 }
 
 watch(
@@ -856,6 +871,14 @@ onMounted(async () => {
       if (info?.version) appVersion.value = info.version
     })
     .catch((error) => console.warn('[SettingsPanel] 获取应用版本失败:', error))
+  await nextTick()
+  if (componentUnmounted) return
+  openRaf = requestAnimationFrame(() => {
+    openRaf = null
+    if (!props.visible || componentUnmounted) return
+    panelActive.value = true
+    closeButtonRef.value?.focus({ preventScroll: true })
+  })
   // 两项都是本地 IPC；设置面板不再等待任何网络请求。
   await Promise.all([loadSettingsSnapshot(), loadRemoteHealth()])
   if (componentUnmounted) return
@@ -898,15 +921,6 @@ onMounted(async () => {
 
   loadSchedulerHealth()
   _schedulerTimer = setInterval(loadSchedulerHealth, 10000)
-
-  await nextTick()
-  if (componentUnmounted) return
-  openRaf = requestAnimationFrame(() => {
-    openRaf = null
-    if (!props.visible || componentUnmounted) return
-    panelActive.value = true
-    closeButtonRef.value?.focus({ preventScroll: true })
-  })
 })
 
 onBeforeUnmount(() => {
@@ -944,6 +958,8 @@ onBeforeUnmount(() => {
     clearInterval(_schedulerTimer)
     _schedulerTimer = null
   }
+  // 等父组件撤销底层 inert 后再恢复，否则浏览器会拒绝聚焦原触发按钮。
+  setTimeout(() => restoreFocusedElement(settingsPreviousFocus), 0)
 })
 
 /** 清空除设置外的业务数据（便签/模板/标签/附件），保留 app_settings。 */
@@ -1013,7 +1029,11 @@ const onConfirmResetSettings = async () => {
           'settings-panel--month': isMonthView
         }"
         :style="panelStyle"
+        role="dialog"
+        aria-modal="true"
+        aria-label="设置"
         :aria-busy="isResetting"
+        @keydown="onPanelKeydown"
       >
         <!-- 顶部拖拽指示条（拖拽调整面板高度） -->
         <div
@@ -1739,7 +1759,7 @@ const onConfirmResetSettings = async () => {
 .settings-wrapper {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: var(--z-global-panel);
   /* 透明模态层接住面板外点击；底层 .app-scene 同时由 inert 阻断交互。 */
   pointer-events: auto;
   border-radius: var(--window-radius); /* 同步窗口圆角，裁剪面板直角 */
@@ -1751,7 +1771,7 @@ const onConfirmResetSettings = async () => {
   content: '';
   position: absolute;
   inset: 0;
-  background: rgba(18, 20, 24, 0.04);
+  background: var(--surface-modal-scrim);
   opacity: 0;
   transition: opacity 250ms ease;
   pointer-events: none;
@@ -1778,7 +1798,7 @@ const onConfirmResetSettings = async () => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background-color: rgb(var(--bg-color) / var(--glass-opacity-base));
+  background-color: var(--surface-modal);
   border: 0;
 }
 
@@ -1816,7 +1836,7 @@ const onConfirmResetSettings = async () => {
 
 .settings-panel--month .drag-indicator {
   position: absolute;
-  z-index: 2;
+  z-index: var(--z-local-raised);
   top: 0;
   bottom: 0;
   left: 0;
@@ -1848,14 +1868,14 @@ const onConfirmResetSettings = async () => {
   width: 36rem;
   height: 4rem;
   border-radius: 2rem;
-  background-color: rgba(255, 255, 255, 0.2);
+  background-color: color-mix(in srgb, var(--text-color) 20%, transparent);
   transition:
     transform var(--motion-control) var(--ease-standard),
     background-color var(--motion-fast) ease;
 }
 .drag-indicator:hover .drag-bar {
   transform: scaleX(1.18);
-  background-color: rgba(255, 255, 255, 0.32);
+  background-color: color-mix(in srgb, var(--text-color) 32%, transparent);
 }
 
 /* ---- 面板头部 ---- */
@@ -1883,7 +1903,7 @@ const onConfirmResetSettings = async () => {
   height: 28rem;
   border: none;
   border-radius: 50%;
-  background-color: rgba(255, 255, 255, 0.08);
+  background-color: var(--ui-surface-control);
   color: var(--text-color);
   opacity: 0.6;
   cursor: pointer;
@@ -1896,11 +1916,11 @@ const onConfirmResetSettings = async () => {
     transform var(--motion-control) var(--ease-standard);
 }
 .panel-close-btn:hover {
-  background-color: rgba(255, 255, 255, 0.15);
+  background-color: var(--ui-fill-hover);
   opacity: 1;
 }
 .panel-close-btn:active:not(:disabled) {
-  transform: scale(0.9);
+  transform: scale(0.98);
   transition-duration: 70ms;
 }
 .panel-close-btn:disabled {
@@ -1965,14 +1985,10 @@ const onConfirmResetSettings = async () => {
   row-gap: 8rem;
   padding: 10rem 14rem;
   border-radius: 10rem;
-  background-color: rgba(255, 255, 255, 0.04);
+  background-color: var(--ui-surface-subtle);
   margin-bottom: 4rem;
   transition: background-color 120ms ease;
 }
-.setting-item:hover {
-  background-color: rgba(255, 255, 255, 0.07);
-}
-
 /* 原生模糊参数随启用状态平滑展开/收起；grid 可适应内容高度。 */
 .native-blur-options {
   overflow: hidden;
@@ -2044,9 +2060,9 @@ const onConfirmResetSettings = async () => {
   grid-template-columns: repeat(2, minmax(78rem, 1fr));
   gap: 2rem;
   padding: 2rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 10%, transparent);
+  border: 0;
   border-radius: 8rem;
-  background-color: color-mix(in srgb, var(--text-color) 4%, transparent);
+  background-color: var(--ui-fill-passive);
 }
 .titlebar-style-selector button {
   min-height: 28rem;
@@ -2066,7 +2082,7 @@ const onConfirmResetSettings = async () => {
 }
 .titlebar-style-selector button:hover:not(.active) {
   color: var(--text-color);
-  background-color: color-mix(in srgb, var(--text-color) 6%, transparent);
+  background-color: var(--ui-fill-hover);
 }
 .titlebar-style-selector button.active {
   color: var(--text-color);
@@ -2074,7 +2090,7 @@ const onConfirmResetSettings = async () => {
   box-shadow: 0 1rem 4rem rgba(0, 0, 0, 0.16);
 }
 .titlebar-style-selector button:active {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
 .titlebar-style-selector button:focus-visible {
   outline: 2rem solid #0078d4;
@@ -2173,7 +2189,7 @@ const onConfirmResetSettings = async () => {
   overflow: visible;
   white-space: nowrap;
 }
-.setting-item.setting-item-slider .setting-label :deep(.help-btn-wrap) {
+.setting-item.setting-item-slider .setting-label :deep(.setting-help-btn) {
   flex: 0 0 auto;
 }
 /* 左/右范围标签：各固定 6%，空 span 也占位 */
@@ -2222,7 +2238,7 @@ const onConfirmResetSettings = async () => {
   /* 等宽字体：7 个字符宽度恒定，宽度用 7ch 刚好包住 #RRGGBB，不再留空 */
   width: calc(7ch + 22rem);
   padding: 5rem 8rem;
-  border: 1rem solid transparent;
+  border: 1px solid transparent;
   border-radius: 6rem;
   background: transparent;
   color: var(--text-color);
@@ -2250,7 +2266,7 @@ const onConfirmResetSettings = async () => {
   appearance: none;
   width: 31rem;
   height: 31rem;
-  border: 1rem solid color-mix(in srgb, var(--text-color) 15%, transparent);
+  border: 1px solid var(--ui-border-hover);
   border-radius: 6rem;
   cursor: pointer;
   padding: 0;
@@ -2291,7 +2307,7 @@ const onConfirmResetSettings = async () => {
   height: 22rem;
   border: none;
   border-radius: 50%;
-  background: rgba(128, 128, 128, 0.1);
+  background: var(--ui-surface-control);
   color: var(--text-color-secondary);
   font-size: calc(var(--fs-body) * 0.95);
   cursor: pointer;
@@ -2302,11 +2318,11 @@ const onConfirmResetSettings = async () => {
   flex-shrink: 0;
 }
 .sched-refresh-btn:hover {
-  background: rgba(128, 128, 128, 0.2);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .sched-refresh-btn:active {
-  transform: scale(0.92);
+  transform: scale(0.98);
   transition: transform 70ms ease;
 }
 .setting-hint-inline {
@@ -2351,8 +2367,8 @@ const onConfirmResetSettings = async () => {
 .sched-task-card {
   padding: 10rem;
   border-radius: 8rem;
-  background: rgba(128, 128, 128, 0.04);
-  border: 1px solid rgba(128, 128, 128, 0.08);
+  background: var(--ui-surface-subtle);
+  border: 1px solid var(--ui-border-divider);
 }
 .sched-task-card--disabled {
   opacity: 0.6;

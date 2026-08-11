@@ -1,6 +1,12 @@
 <script setup>
-import { onBeforeUnmount, useSlots, watch } from 'vue'
+import { nextTick, onBeforeUnmount, ref, useSlots, watch } from 'vue'
 import { retainModalBlur } from '../../utils/modalBlur.js'
+import {
+  captureFocusedElement,
+  focusModal,
+  restoreFocusedElement,
+  trapModalTab
+} from '../../utils/modalFocus.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -11,7 +17,7 @@ const props = defineProps({
   width: { type: String, default: 'min(560rem, calc(100vw - 40rem))' },
   height: { type: String, default: 'auto' },
   maxHeight: { type: String, default: 'calc(100vh - 40rem)' },
-  zIndex: { type: Number, default: 41000 },
+  zIndex: { type: String, default: 'var(--z-global-modal)' },
   closeDisabled: { type: Boolean, default: false },
   closeOnBackdrop: { type: Boolean, default: true },
   flush: { type: Boolean, default: false }
@@ -19,7 +25,10 @@ const props = defineProps({
 
 const emit = defineEmits(['update:visible', 'close'])
 const slots = useSlots()
+const dialogRef = ref(null)
 let releaseBackgroundBlur = null
+let previouslyFocused = null
+let focusFrame = null
 
 function acquireBlur() {
   if (releaseBackgroundBlur) return
@@ -41,25 +50,51 @@ function onBackdrop() {
   if (props.closeOnBackdrop) close()
 }
 
+function scheduleModalFocus() {
+  if (focusFrame !== null) cancelAnimationFrame(focusFrame)
+  focusFrame = requestAnimationFrame(() => {
+    focusFrame = null
+    focusModal(dialogRef.value)
+  })
+}
+
+function scheduleFocusRestore() {
+  const target = previouslyFocused
+  previouslyFocused = null
+  if (focusFrame !== null) cancelAnimationFrame(focusFrame)
+  focusFrame = requestAnimationFrame(() => {
+    focusFrame = null
+    restoreFocusedElement(target)
+  })
+}
+
 function onKeydown(event) {
-  if (event.key === 'Escape') close()
+  if (event.key === 'Escape') {
+    event.stopPropagation()
+    close()
+    return
+  }
+  trapModalTab(event, dialogRef.value)
 }
 
 watch(
   () => props.visible,
-  (visible) => {
+  async (visible) => {
     if (visible) {
+      previouslyFocused = captureFocusedElement()
       acquireBlur()
-      window.addEventListener('keydown', onKeydown)
+      await nextTick()
+      scheduleModalFocus()
     } else {
-      window.removeEventListener('keydown', onKeydown)
+      scheduleFocusRestore()
     }
   },
   { immediate: true }
 )
 
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown)
+  if (focusFrame !== null) cancelAnimationFrame(focusFrame)
+  restoreFocusedElement(previouslyFocused)
   freeBlur()
 })
 </script>
@@ -77,11 +112,14 @@ onBeforeUnmount(() => {
         @click.self="onBackdrop"
       >
         <section
+          ref="dialogRef"
           class="app-modal-card"
           role="dialog"
           aria-modal="true"
+          tabindex="-1"
           :aria-label="ariaLabel || title"
           :style="{ width, height, maxHeight }"
+          @keydown="onKeydown"
         >
           <header class="app-modal-header">
             <div class="app-modal-heading">
@@ -123,7 +161,7 @@ onBeforeUnmount(() => {
   padding: 20rem;
   overflow: hidden;
   border-radius: var(--window-radius);
-  background: rgba(12, 14, 18, 0.14);
+  background: var(--surface-modal-scrim);
 }
 
 .app-modal-card {
@@ -135,7 +173,7 @@ onBeforeUnmount(() => {
   border: 0;
   border-radius: 14rem;
   color: var(--text-color);
-  background: rgb(var(--bg-color) / var(--glass-complex-opacity));
+  background: var(--surface-modal);
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.42);
 }
 
@@ -146,7 +184,7 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   gap: 16rem;
   padding: 17rem 19rem;
-  border-bottom: 1rem solid color-mix(in srgb, var(--text-color) 10%, transparent);
+  border-bottom: 1px solid var(--ui-border-divider);
 }
 
 .app-modal-heading {
@@ -205,7 +243,7 @@ onBeforeUnmount(() => {
 }
 
 .app-modal-close:active:not(:disabled) {
-  transform: scale(0.9);
+  transform: scale(0.98);
   transition-duration: 70ms;
 }
 
@@ -234,7 +272,7 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   gap: 10rem;
   padding: 13rem 19rem;
-  border-top: 1rem solid color-mix(in srgb, var(--text-color) 10%, transparent);
+  border-top: 1px solid var(--ui-border-divider);
 }
 
 .app-modal-enter-active,

@@ -163,10 +163,10 @@ function toggle() {
 }
 
 function onEnter(el, done) {
-  enterPopover(el, done, 'menu')
+  enterPopover(el, done, 'dropdown')
 }
 function onLeave(el, done) {
-  leavePopover(el, done, 'menu')
+  leavePopover(el, done, 'dropdown')
 }
 
 // ============ 点击外部关闭 ============
@@ -257,10 +257,16 @@ onBeforeUnmount(() => {
   gap: 4rem;
   width: 100%;
   padding: 5rem 10rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1rem solid rgba(255, 255, 255, 0.1);
+  background: var(--ui-surface-control);
+  border: 1px solid var(--ui-border-control);
   border-radius: 6rem;
-  transition: border-color 150ms ease;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease;
+}
+.fsi-trigger:hover:not(.has-warning),
+.fsi-trigger.is-open:not(.has-warning) {
+  border-color: var(--ui-border-hover);
 }
 .fsi-trigger.has-warning {
   border-color: rgba(255, 59, 48, 0.4);
@@ -297,17 +303,19 @@ onBeforeUnmount(() => {
   border-radius: 4rem;
   background: transparent;
   cursor: pointer;
-  transition: background-color 120ms ease;
-}
-.fsi-arrow-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
 }
 
 .fsi-arrow {
   flex-shrink: 0;
   opacity: 0.45;
   color: var(--text-color);
-  transition: transform 200ms ease;
+  transition:
+    transform 200ms ease,
+    opacity 160ms ease;
+}
+.fsi-trigger:hover .fsi-arrow,
+.fsi-trigger.is-open .fsi-arrow {
+  opacity: 0.78;
 }
 .fsi-arrow.is-open {
   transform: rotate(180deg);
@@ -319,12 +327,12 @@ onBeforeUnmount(() => {
   top: calc(100% + 4rem);
   left: 0;
   right: 0;
-  z-index: 100;
+  z-index: var(--z-local-top);
   border-radius: 10rem;
   box-shadow: 0 10rem 30rem rgba(0, 0, 0, 0.24);
   overflow: hidden;
   transform-origin: top center;
-  will-change: transform, opacity;
+  will-change: clip-path;
 }
 .fsi-panel-glass {
   background-color: var(--surface-float);
@@ -353,7 +361,7 @@ onBeforeUnmount(() => {
   transition: background-color 120ms ease;
 }
 .fsi-option:hover {
-  background-color: rgba(255, 255, 255, 0.1);
+  background-color: var(--ui-fill-hover);
 }
 .fsi-option.is-active {
   color: #0071e3;

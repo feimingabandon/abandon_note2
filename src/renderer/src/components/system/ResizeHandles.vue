@@ -16,7 +16,7 @@
  *
  * 注意事项：
  *   - 整个容器设置 pointer-events: none，仅各手柄区域开启 pointer-events: auto
- *   - z-index: 9999 确保手柄始终在最顶层可交互
+ *   - 使用组件局部最高层级，窗口级浮层仍可按统一全局顺序覆盖
  *   - 设置了最小宽高限制（200x200），防止窗口被缩得过小
  */
 
@@ -133,7 +133,7 @@ async function onMouseDown(e, direction) {
   position: absolute;
   inset: 0; /* 等同于 top:0; right:0; bottom:0; left:0 */
   pointer-events: none; /* 容器本身不响应鼠标事件 */
-  z-index: 9999; /* 确保在所有内容之上 */
+  z-index: var(--z-local-top);
 }
 
 /* 单个手柄的公共样式 */

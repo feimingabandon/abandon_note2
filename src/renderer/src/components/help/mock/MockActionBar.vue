@@ -67,7 +67,7 @@ defineProps({
   flex-basis: 36rem;
   height: 36rem;
   overflow: hidden;
-  border: 1px solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 10rem;
   background: rgba(128, 128, 128, 0.03);
 }

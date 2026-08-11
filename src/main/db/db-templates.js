@@ -1,7 +1,7 @@
 /** 循环模板 CRUD、标签快照配置与可恢复删除。 */
 import { getDb } from './db-connection.js'
 import { calculateNextRun, normalizeRecurrenceRule } from '../services/recurrence-rules.js'
-import { requireSingleAssignedTag } from '../../shared/tag-rules.js'
+import { requireSingleAssignedTagId } from '../../shared/tag-rules.js'
 
 const now = () => Date.now()
 
@@ -17,22 +17,22 @@ function normalizeContent(content) {
   return value
 }
 
-function normalizeTagNames(tagNames = []) {
-  return requireSingleAssignedTag(tagNames)
+function normalizeTagIds(tagIds = []) {
+  return requireSingleAssignedTagId(tagIds)
 }
 
-function ensureTagsExist(db, tagNames) {
-  if (tagNames.length === 0) return
-  const placeholders = tagNames.map(() => '?').join(',')
-  const rows = db.prepare(`SELECT name FROM tags WHERE name IN (${placeholders})`).all(...tagNames)
-  if (rows.length !== tagNames.length) throw new Error('模板包含不存在的标签')
+function ensureTagsExist(db, tagIds) {
+  if (tagIds.length === 0) return
+  const placeholders = tagIds.map(() => '?').join(',')
+  const rows = db.prepare(`SELECT id FROM tags WHERE id IN (${placeholders})`).all(...tagIds)
+  if (rows.length !== tagIds.length) throw new Error('模板包含不存在的标签')
 }
 
-function replaceTemplateTags(db, templateId, tagNames) {
-  ensureTagsExist(db, tagNames)
+function replaceTemplateTags(db, templateId, tagIds) {
+  ensureTagsExist(db, tagIds)
   db.prepare('DELETE FROM template_tags WHERE template_id = ?').run(templateId)
-  const insert = db.prepare('INSERT INTO template_tags (template_id, tag_name) VALUES (?, ?)')
-  for (const tagName of tagNames) insert.run(templateId, tagName)
+  const insert = db.prepare('INSERT INTO template_tags (template_id, tag_id) VALUES (?, ?)')
+  for (const tagId of tagIds) insert.run(templateId, tagId)
 }
 
 function getTemplateRow(db, id) {
@@ -44,7 +44,7 @@ function attachTags(db, template) {
   template.tags = db
     .prepare(
       `SELECT t.* FROM tags t
-       INNER JOIN template_tags tt ON tt.tag_name = t.name
+       INNER JOIN template_tags tt ON tt.tag_id = t.id
        WHERE tt.template_id = ?
        ORDER BY tt.rowid ASC`
     )
@@ -62,7 +62,7 @@ function attachTagsToTemplates(db, templates) {
     const rows = db
       .prepare(
         `SELECT tt.template_id, t.* FROM template_tags tt
-         INNER JOIN tags t ON t.name = tt.tag_name
+         INNER JOIN tags t ON t.id = tt.tag_id
          WHERE tt.template_id IN (${placeholders})
          ORDER BY tt.rowid ASC`
       )
@@ -76,13 +76,13 @@ function attachTagsToTemplates(db, templates) {
 }
 
 export function createTemplate(
-  { recurrenceRule, content = '', notifyEnabled = true, isPinned = false, tagNames = [] } = {},
+  { recurrenceRule, content = '', notifyEnabled = true, isPinned = false, tagIds = [] } = {},
   timestamp = now()
 ) {
   const db = getDb()
   const normalizedContent = normalizeContent(content)
   const normalizedRule = normalizeRecurrenceRule(recurrenceRule)
-  const normalizedTags = normalizeTagNames(tagNames)
+  const normalizedTags = normalizeTagIds(tagIds)
   const nextRunAt = calculateNextRun(normalizedRule, timestamp, timestamp)
 
   return db.transaction(() => {
@@ -156,8 +156,8 @@ export function updateTemplate(id, fields = {}, timestamp = now()) {
       templateId
     )
 
-    if (fields.tagNames !== undefined)
-      replaceTemplateTags(db, templateId, normalizeTagNames(fields.tagNames))
+    if (fields.tagIds !== undefined)
+      replaceTemplateTags(db, templateId, normalizeTagIds(fields.tagIds))
     return attachTags(db, getTemplateRow(db, templateId))
   })()
 }

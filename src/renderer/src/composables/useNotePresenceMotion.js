@@ -1,5 +1,6 @@
 const EASING = 'cubic-bezier(0.32, 0.72, 0, 1)'
-const AUXILIARY_SELECTOR = '.nl-group-label-row, .nl-zone-label, .nl-footer-count'
+const AUXILIARY_SELECTOR =
+  '.nl-group-label-row, .nl-zone-label, .nl-tag-group-header, .nl-footer-count'
 
 /** 便签列表的 FLIP、依次进出场与辅助文字动画。 */
 export function useNotePresenceMotion(
@@ -31,9 +32,10 @@ export function useNotePresenceMotion(
     const clone = element.cloneNode(true)
     clone.removeAttribute('tabindex')
     clone.setAttribute('aria-hidden', 'true')
+    clone.setAttribute('data-presence-clone', '')
     Object.assign(clone.style, {
       position: 'fixed',
-      zIndex: '9998',
+      zIndex: 'var(--z-global-presence)',
       left: `${rect.left}px`,
       top: `${rect.top}px`,
       width: `${rect.width}px`,

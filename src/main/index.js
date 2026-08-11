@@ -37,13 +37,7 @@ import {
 import { createWindowMotionBackend } from './window-motion/index.js'
 import { DockTransitionState } from './window-motion/dock-transition-state.js'
 
-import {
-  createNote,
-  getNoteById,
-  activateNotes,
-  snoozeNote,
-  claimDueSnoozedNotes
-} from './db/db-notes.js'
+import { createNote, getNoteById, activateNotes } from './db/db-notes.js'
 import {
   acknowledgeRemoteNotice,
   getRemoteNoticeCursor,
@@ -102,6 +96,7 @@ import {
 } from '../shared/settings-schema.js'
 import { getSystemNotificationCapability } from '../shared/notification-policy.js'
 import { registerBusinessIpcHandlers } from './ipc/register-business-ipc.js'
+import { registerCalendarIpcHandlers } from './ipc/register-calendar-ipc.js'
 import {
   getViewSettingsScope,
   readApplicationSettings,
@@ -117,7 +112,6 @@ const APP_NAME = '便签'
 // Windows 会直接展示原始 ID，因此开发时使用中文名称作为通知来源标识。
 const WINDOWS_APP_USER_MODEL_ID = app.isPackaged ? APP_ID : APP_NAME
 const APP_PROTOCOL = 'abandon-note'
-const SNOOZE_DELAY_MS = 10 * 60 * 1000
 const SYSTEM_NOTIFICATION_CAPABILITY = getSystemNotificationCapability(process.platform)
 const integrationAppRoot =
   process.env.ABANDON_INTEGRATION_TEST === '1' ? process.env.ABANDON_INTEGRATION_APP_ROOT : null
@@ -138,6 +132,7 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'sticky.alwaysOnTop',
   'wallpaper.blurRadius',
   'ui.settingsPanelSize',
+  'ui.dayPanelSize',
   'remote.receiveNotices',
   'remote.uploadDeviceInfo',
   'listFilter'
@@ -191,7 +186,31 @@ let stickyService = null
 
 /** 是否正在执行退出流程（托盘菜单「退出」触发） */
 let isQuitting = false
-let suppressInitialWindowShow = false
+let pendingNotificationNoteId = null
+
+function sendPendingNotificationNote() {
+  if (
+    !pendingNotificationNoteId ||
+    !mainWindow ||
+    mainWindow.isDestroyed() ||
+    mainWindow.webContents.isDestroyed() ||
+    mainWindow.webContents.isLoadingMainFrame()
+  ) {
+    return false
+  }
+  mainWindow.webContents.send('notification:open-note', { id: pendingNotificationNoteId })
+  pendingNotificationNoteId = null
+  return true
+}
+
+function openNotificationNote(noteId) {
+  const parsedNoteId = Number(noteId)
+  if (!Number.isInteger(parsedNoteId) || parsedNoteId <= 0) return false
+  pendingNotificationNoteId = parsedNoteId
+  openMainWindow()
+  sendPendingNotificationNote()
+  return true
+}
 
 /** 处理 Windows 富通知通过自定义协议回传的操作。 */
 function handleNotificationProtocol(rawUrl) {
@@ -202,19 +221,8 @@ function handleNotificationProtocol(rawUrl) {
     const noteId = Number(url.searchParams.get('id'))
     if (!Number.isInteger(noteId) || noteId <= 0) return true
 
-    if (url.pathname === '/snooze') {
-      if (!mainWindow) suppressInitialWindowShow = true
-      const result = snoozeNote(noteId, SNOOZE_DELAY_MS)
-      if (result) {
-        console.log(`[notification] 便签 #${noteId} 已延后 10 分钟提醒`)
-      } else {
-        console.log(`[notification] 便签 #${noteId} 已非进行中，忽略延后提醒`)
-      }
-      return true
-    }
-
     if (url.pathname === '/open') {
-      openMainWindow()
+      openNotificationNote(noteId)
       return true
     }
   } catch (error) {
@@ -2056,13 +2064,11 @@ app.whenReady().then(async () => {
   // 【渲染就绪】渲染进程初始化完成后发送此消息，主进程收到后显示窗口
   ipcMain.on('renderer-ready', (event) => {
     if (event.sender !== mainWindow?.webContents) return
-    logger.info('startup', '渲染进程就绪', { suppressInitialWindowShow })
+    logger.info('startup', '渲染进程就绪')
     if (mainWindow && !mainWindow.isDestroyed()) {
-      if (suppressInitialWindowShow) {
-        suppressInitialWindowShow = false
-      } else {
-        mainWindow.show()
-      }
+      mainWindow.show()
+      mainWindow.focus()
+      sendPendingNotificationNote()
     }
   })
 
@@ -2466,8 +2472,7 @@ app.whenReady().then(async () => {
     getMainWindow: () => mainWindow,
     icon,
     platform: process.platform,
-    snoozeDelayMs: SNOOZE_DELAY_MS,
-    snoozeNote
+    openNote: openNotificationNote
   })
 
   // 3.3 生效便签激活任务（含通知）
@@ -2484,20 +2489,6 @@ app.whenReady().then(async () => {
       }
       if (result.count > 0 && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('notes:changed', { reason: 'activation' })
-      }
-    }
-  })
-
-  // 3.4 独立延后提醒任务：只领取仍处于进行中的到期便签。
-  scheduler.register({
-    name: 'snoozedReminderTask',
-    shouldRun: () => true,
-    execute: () => {
-      const due = claimDueSnoozedNotes()
-      for (const note of due) {
-        if (notificationService.trySend(note.content, { noteId: note.id })) {
-          console.log(`[snoozed-notify] 便签 #${note.id} 已再次发送系统通知`)
-        }
       }
     }
   })
@@ -2522,7 +2513,8 @@ app.whenReady().then(async () => {
         const preview = (note.content || '').trim().slice(0, 10) || '空内容'
         if (
           notificationService.trySend(note.content, {
-            title: `「${preview}」已通过模板生成新的便签`
+            title: `「${preview}」已通过模板生成新的便签`,
+            noteId: note.id
           })
         ) {
           console.log(`[generation-notify]「${preview}」已由循环模板生成便签，模板已发送通知`)
@@ -2617,6 +2609,7 @@ app.whenReady().then(async () => {
     getMainWindow: () => mainWindow,
     platform: process.platform
   })
+  registerCalendarIpcHandlers({ ipcMain })
 
   screenshotService = new ScreenshotService({
     ipcMain,

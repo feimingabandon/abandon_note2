@@ -6,7 +6,7 @@ import TagSelector from '../ui/TagSelector.vue'
 const props = defineProps({
   open: { type: Boolean, default: false },
   statuses: { type: Array, default: () => [] },
-  tagNames: { type: Array, default: () => [] },
+  tagIds: { type: Array, default: () => [] },
   timePreset: { type: String, default: 'all' },
   customFrom: { type: String, default: '' },
   customTo: { type: String, default: '' },
@@ -129,7 +129,7 @@ onBeforeUnmount(() => {
 
       <div class="sfp-row sfp-row--tags">
         <span class="sfp-label">标签</span>
-        <TagSelector :model-value="tagNames" @update:model-value="emit('update-tags', $event)" />
+        <TagSelector :model-value="tagIds" @update:model-value="emit('update-tags', $event)" />
       </div>
 
       <div class="sfp-row">
@@ -218,7 +218,7 @@ onBeforeUnmount(() => {
 .sfp-content {
   box-sizing: border-box;
   padding: 4rem 7rem 8rem;
-  border: 1px solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 10rem;
   background: transparent;
 }
@@ -252,7 +252,7 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, #0a84ff 8%, transparent);
 }
 .sfp-reset:active {
-  transform: scale(0.95);
+  transform: scale(0.98);
 }
 .sfp-reset.is-acknowledged {
   background: color-mix(in srgb, #0a84ff 11%, transparent);
@@ -296,9 +296,9 @@ onBeforeUnmount(() => {
   gap: 5rem;
   min-height: 27rem;
   padding: 0 10rem;
-  border: 1rem solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
-  background: rgba(128, 128, 128, 0.05);
+  background: var(--ui-surface-control);
   background-clip: padding-box;
   color: var(--text-color-secondary);
   font: inherit;
@@ -314,12 +314,12 @@ onBeforeUnmount(() => {
 }
 .sfp-chip:hover,
 .sfp-toggle:hover {
-  background: rgba(128, 128, 128, 0.1);
+  border-color: var(--ui-border-hover);
   color: var(--text-color);
 }
 .sfp-chip:active,
 .sfp-toggle:active {
-  transform: scale(0.96);
+  transform: scale(0.98);
 }
 .sfp-chip.is-selected,
 .sfp-toggle.is-selected {
@@ -395,9 +395,9 @@ onBeforeUnmount(() => {
   flex: 0 1 auto;
   min-height: 27rem;
   padding: 0;
-  border: 1rem solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
-  background: rgba(128, 128, 128, 0.05);
+  background: var(--ui-surface-control);
   background-clip: padding-box;
   transition:
     border-color var(--motion-fast) ease,

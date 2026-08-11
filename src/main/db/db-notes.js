@@ -4,7 +4,7 @@
  * 状态模型：initialized → in_progress ⇄ completed
  */
 import { getDb } from './db-connection.js'
-import { normalizeAssignedTagNames } from '../../shared/tag-rules.js'
+import { normalizeAssignedTagIds } from '../../shared/tag-rules.js'
 
 const now = () => Date.now()
 export const MIN_NOTE_DURATION_DAYS = 1
@@ -94,11 +94,11 @@ export function createRecurringNoteSnapshot({
   content = '',
   effectiveAt,
   isPinned = 0,
-  tagNames = []
+  tagIds = []
 } = {}) {
   const db = getDb()
   // 循环任务可能读取到旧版本留下的多标签模板；生成新便签时稳定继承第一项。
-  const normalizedTagNames = normalizeAssignedTagNames(tagNames).slice(0, 1)
+  const normalizedTagIds = normalizeAssignedTagIds(tagIds).slice(0, 1)
   const ts = now()
   const scheduledAt = Number(effectiveAt)
   if (!Number.isFinite(scheduledAt) || scheduledAt <= 0) {
@@ -109,14 +109,14 @@ export function createRecurringNoteSnapshot({
     .prepare(
       `INSERT INTO notes (
          note_type, content, status, is_pinned, notify_enabled,
-         effective_at, finished_at, remind_again_at, sort_order, created_at, updated_at
-       ) VALUES ('one_time', ?, 'in_progress', ?, 0, ?, ?, NULL, 0, ?, ?)`
+         effective_at, finished_at, sort_order, created_at, updated_at
+       ) VALUES ('one_time', ?, 'in_progress', ?, 0, ?, ?, 0, ?, ?)`
     )
     .run(content, isPinned ? 1 : 0, scheduledAt, ts, ts, ts)
 
   const noteId = Number(result.lastInsertRowid)
-  const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (?, ?)')
-  for (const tagName of normalizedTagNames) insertTag.run(noteId, tagName)
+  const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_id) VALUES (?, ?)')
+  for (const tagId of normalizedTagIds) insertTag.run(noteId, tagId)
 
   return getNoteById(noteId)
 }
@@ -163,7 +163,7 @@ export function getNoteById(id) {
   note.tags = getDb()
     .prepare(
       `SELECT t.* FROM tags t
-       INNER JOIN note_tags nt ON nt.tag_name = t.name
+       INNER JOIN note_tags nt ON nt.tag_id = t.id
        WHERE nt.note_id = ?
        ORDER BY nt.rowid ASC`
     )
@@ -181,7 +181,7 @@ export function deleteNote(id) {
   const result = getDb()
     .prepare(
       `UPDATE notes
-       SET is_deleted = 1, notify_enabled = 0, remind_again_at = NULL, updated_at = ?
+       SET is_deleted = 1, notify_enabled = 0, updated_at = ?
        WHERE id = ? AND is_deleted = 0`
     )
     .run(ts, id)
@@ -212,7 +212,7 @@ function transitionNote(id, targetStatus, { setEffectiveAtToNow = false } = {}) 
     ? db
         .prepare(
           `UPDATE notes
-         SET status = ?, effective_at = ?, notify_enabled = 0, remind_again_at = NULL,
+         SET status = ?, effective_at = ?, notify_enabled = 0,
              finished_at = ?, updated_at = ?
          WHERE id = ? AND status = ? AND is_deleted = 0`
         )
@@ -220,7 +220,7 @@ function transitionNote(id, targetStatus, { setEffectiveAtToNow = false } = {}) 
     : db
         .prepare(
           `UPDATE notes
-         SET status = ?, notify_enabled = 0, remind_again_at = NULL,
+         SET status = ?, notify_enabled = 0,
              finished_at = ?, updated_at = ?
          WHERE id = ? AND status = ? AND is_deleted = 0`
         )
@@ -239,9 +239,9 @@ export function completeNote(id) {
   return transitionNote(id, 'completed')
 }
 
-/** completed → in_progress：重新进行时按当前时间重新进入时间线。 */
+/** completed → in_progress：恢复原任务，保留原生效时间与持续区间。 */
 export function reopenNote(id) {
-  return transitionNote(id, 'in_progress', { setEffectiveAtToNow: true })
+  return transitionNote(id, 'in_progress')
 }
 
 /**
@@ -266,7 +266,7 @@ export function activateNotes() {
     const result = db
       .prepare(
         `UPDATE notes
-         SET status = 'in_progress', notify_enabled = 0, remind_again_at = NULL,
+         SET status = 'in_progress', notify_enabled = 0,
              finished_at = ?, updated_at = ?
          WHERE status = 'initialized' AND is_deleted = 0 AND effective_at <= ?`
       )
@@ -283,68 +283,6 @@ export function activateNotes() {
         .filter((note) => note.notify_enabled === 1)
         .map(({ id, content }) => ({ id, content }))
     }
-  })()
-}
-
-/**
- * 为进行中的便签安排一次独立延后提醒。
- * 不改变状态、原始提醒参数、状态时间或内容修改时间。
- */
-export function snoozeNote(id, delayMs = 10 * 60 * 1000) {
-  const parsedId = Number(id)
-  const parsedDelay = Number(delayMs)
-  if (
-    !Number.isInteger(parsedId) ||
-    parsedId <= 0 ||
-    !Number.isFinite(parsedDelay) ||
-    parsedDelay <= 0
-  ) {
-    return null
-  }
-
-  const remindAt = now() + parsedDelay
-  const result = getDb()
-    .prepare(
-      `UPDATE notes
-       SET remind_again_at = ?
-       WHERE id = ? AND status = 'in_progress' AND is_deleted = 0`
-    )
-    .run(remindAt, parsedId)
-
-  return result.changes === 1 ? { id: parsedId, remindAt } : null
-}
-
-/**
- * 原子领取到期的延后提醒，并立即清空，防止同一轮或恢复补偿时重复通知。
- */
-export function claimDueSnoozedNotes() {
-  const db = getDb()
-  const ts = now()
-
-  return db.transaction(() => {
-    const due = db
-      .prepare(
-        `SELECT id, content
-         FROM notes
-         WHERE status = 'in_progress'
-           AND is_deleted = 0
-           AND remind_again_at IS NOT NULL
-           AND remind_again_at <= ?`
-      )
-      .all(ts)
-
-    if (due.length === 0) return []
-
-    db.prepare(
-      `UPDATE notes
-       SET remind_again_at = NULL
-       WHERE status = 'in_progress'
-         AND is_deleted = 0
-         AND remind_again_at IS NOT NULL
-         AND remind_again_at <= ?`
-    ).run(ts)
-
-    return due
   })()
 }
 
@@ -370,9 +308,13 @@ export function claimDueSnoozedNotes() {
  * @property {boolean} has_image
  */
 
+function escapeLikePattern(value) {
+  return String(value).replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')
+}
+
 function buildWhereClause({
   statuses,
-  tagNames,
+  tagIds,
   search,
   includeDeleted = false,
   extraWhere = [],
@@ -386,24 +328,24 @@ function buildWhereClause({
     params.push(...statuses)
   }
 
-  if (tagNames?.length) {
+  if (tagIds?.length) {
     where.push(`n.id IN (
       SELECT note_id FROM note_tags
-      WHERE tag_name IN (${tagNames.map(() => '?').join(',')})
+      WHERE tag_id IN (${tagIds.map(() => '?').join(',')})
     )`)
-    params.push(...tagNames)
+    params.push(...tagIds)
   }
 
   if (search?.trim()) {
-    where.push(`n.content LIKE '%' || ? || '%'`)
-    params.push(search.trim())
+    where.push(`n.content LIKE '%' || ? || '%' ESCAPE '\\'`)
+    params.push(escapeLikePattern(search.trim()))
   }
 
   return { whereClause: where.length ? `WHERE ${where.join(' AND ')}` : '', params }
 }
 
 /** @returns {NoteListItem[]} */
-function toNoteListItems(notes) {
+export function toNoteListItems(notes) {
   if (!notes?.length) return []
 
   const db = getDb()
@@ -415,7 +357,7 @@ function toNoteListItems(notes) {
     .prepare(
       `SELECT nt.note_id, t.id, t.name, t.color
        FROM note_tags nt
-       INNER JOIN tags t ON t.name = nt.tag_name
+       INNER JOIN tags t ON t.id = nt.tag_id
        WHERE nt.note_id IN (${placeholders})
        ORDER BY nt.rowid ASC`
     )
@@ -461,15 +403,35 @@ function toNoteListItems(notes) {
   })
 }
 
+/**
+ * 查询可能与当前月份相交的真实便签。candidateFrom 已按最大持续天数
+ * 向前扩展，避免 SQLite 对每行做本地日期运算；精确区间相交由日历服务统一判断。
+ */
+export function queryCalendarNotes({ candidateFrom, visibleEndExclusive } = {}) {
+  const from = Number(candidateFrom)
+  const end = Number(visibleEndExclusive)
+  if (!Number.isFinite(from) || !Number.isFinite(end) || from >= end) {
+    throw new Error('无效的月历查询范围')
+  }
+  const notes = getDb()
+    .prepare(
+      `SELECT n.* FROM notes n
+       WHERE n.is_deleted = 0 AND n.effective_at >= ? AND n.effective_at < ?
+       ORDER BY n.is_pinned DESC, n.effective_at ASC, n.duration_days DESC, n.id ASC`
+    )
+    .all(from, end)
+  return toNoteListItems(notes)
+}
+
 // ============================================================
 // 时间线查询
 // ============================================================
 
-export function queryPinnedNotes({ statuses, tagNames, search } = {}) {
+export function queryPinnedNotes({ statuses, tagIds, search } = {}) {
   const db = getDb()
   const { whereClause, params } = buildWhereClause({
     statuses,
-    tagNames,
+    tagIds,
     search,
     extraWhere: ['n.is_pinned = 1']
   })
@@ -481,11 +443,11 @@ export function queryPinnedNotes({ statuses, tagNames, search } = {}) {
   return toNoteListItems(notes)
 }
 
-export function queryRecentNotes({ statuses, tagNames, search, cutoffTime } = {}) {
+export function queryRecentNotes({ statuses, tagIds, search, cutoffTime } = {}) {
   const db = getDb()
   const { whereClause, params } = buildWhereClause({
     statuses,
-    tagNames,
+    tagIds,
     search,
     extraWhere: ['n.is_pinned = 0', 'n.effective_at > ?'],
     extraParams: [cutoffTime]
@@ -500,7 +462,7 @@ export function queryRecentNotes({ statuses, tagNames, search, cutoffTime } = {}
 
 export function queryEarlierNotes({
   statuses,
-  tagNames,
+  tagIds,
   search,
   cutoffTime,
   limit = 10,
@@ -509,7 +471,7 @@ export function queryEarlierNotes({
   const db = getDb()
   const { whereClause, params } = buildWhereClause({
     statuses,
-    tagNames,
+    tagIds,
     search,
     extraWhere: ['n.is_pinned = 0', 'n.effective_at <= ?'],
     extraParams: [cutoffTime]
@@ -530,11 +492,11 @@ export function queryEarlierNotes({
 // 自定义排序查询
 // ============================================================
 
-export function queryCustomPinned({ statuses, tagNames, search } = {}) {
+export function queryCustomPinned({ statuses, tagIds, search } = {}) {
   const db = getDb()
   const { whereClause, params } = buildWhereClause({
     statuses,
-    tagNames,
+    tagIds,
     search,
     extraWhere: ['n.is_pinned = 1']
   })
@@ -544,11 +506,11 @@ export function queryCustomPinned({ statuses, tagNames, search } = {}) {
   return toNoteListItems(notes)
 }
 
-export function queryCustomNormal({ statuses, tagNames, search, limit = 10, offset = 0 } = {}) {
+export function queryCustomNormal({ statuses, tagIds, search, limit = 10, offset = 0 } = {}) {
   const db = getDb()
   const { whereClause, params } = buildWhereClause({
     statuses,
-    tagNames,
+    tagIds,
     search,
     extraWhere: ['n.is_pinned = 0']
   })
@@ -565,6 +527,102 @@ export function queryCustomNormal({ statuses, tagNames, search, limit = 10, offs
 }
 
 // ============================================================
+// 标签分组查询
+// ============================================================
+
+/**
+ * 查询标签分组概览。标签筛选只决定展示哪些真实标签组；未筛选标签时，
+ * 额外返回一个“未分类”合成组。total 始终受状态条件约束。
+ */
+export function queryTagGroups({ statuses, tagIds } = {}) {
+  const db = getDb()
+  const selectedTagIds = Array.isArray(tagIds)
+    ? [...new Set(tagIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))]
+    : []
+  const statusList = Array.isArray(statuses) ? statuses : []
+  const statusJoin = statusList.length
+    ? `AND n.status IN (${statusList.map(() => '?').join(',')})`
+    : ''
+  const tagWhere = selectedTagIds.length
+    ? `WHERE t.id IN (${selectedTagIds.map(() => '?').join(',')})`
+    : ''
+
+  const groups = db
+    .prepare(
+      `SELECT t.id, t.name, t.color, t.created_at, COUNT(n.id) AS total
+       FROM tags t
+       LEFT JOIN note_tags nt ON nt.tag_id = t.id
+       LEFT JOIN notes n ON n.id = nt.note_id AND n.is_deleted = 0 ${statusJoin}
+       ${tagWhere}
+       GROUP BY t.id, t.name, t.color, t.created_at
+       ORDER BY t.created_at ASC, t.id ASC`
+    )
+    .all(...statusList, ...selectedTagIds)
+    .map((group) => ({
+      key: `tag:${group.id}`,
+      id: group.id,
+      name: group.name,
+      color: group.color,
+      total: Number(group.total) || 0,
+      untagged: false
+    }))
+
+  if (selectedTagIds.length > 0) return groups
+
+  const { whereClause, params } = buildWhereClause({
+    statuses: statusList,
+    extraWhere: ['NOT EXISTS (SELECT 1 FROM note_tags nt WHERE nt.note_id = n.id)']
+  })
+  const untaggedTotal = db
+    .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
+    .get(...params).total
+  groups.push({
+    key: 'untagged',
+    id: null,
+    name: '未分类',
+    color: null,
+    total: Number(untaggedTotal) || 0,
+    untagged: true
+  })
+  return groups
+}
+
+/**
+ * 分页查询单个标签组。tagId 为 null 时查询“未分类”；组内只按生效时间
+ * 从未来到过去排列，id 仅用于相同时间下提供稳定顺序。
+ */
+export function queryTagGroupNotes({ tagId = null, statuses, limit = 10, offset = 0 } = {}) {
+  const db = getDb()
+  const untagged = tagId === null
+  const normalizedTagId = untagged ? null : Number(tagId)
+  if (!untagged && (!Number.isInteger(normalizedTagId) || normalizedTagId <= 0)) {
+    throw new Error('无效的标签 ID')
+  }
+
+  const extraWhere = untagged
+    ? ['NOT EXISTS (SELECT 1 FROM note_tags nt WHERE nt.note_id = n.id)']
+    : ['EXISTS (SELECT 1 FROM note_tags nt WHERE nt.note_id = n.id AND nt.tag_id = ?)']
+  const { whereClause, params } = buildWhereClause({
+    statuses,
+    extraWhere,
+    extraParams: untagged ? [] : [normalizedTagId]
+  })
+  const safeLimit = Math.min(100, Math.max(1, Math.trunc(Number(limit)) || 10))
+  const safeOffset = Math.max(0, Math.trunc(Number(offset)) || 0)
+  const { total } = db
+    .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
+    .get(...params)
+  const notes = db
+    .prepare(
+      `SELECT n.* FROM notes n ${whereClause}
+       ORDER BY n.effective_at DESC, n.id DESC LIMIT ? OFFSET ?`
+    )
+    .all(...params, safeLimit, safeOffset)
+
+  return { notes: toNoteListItems(notes), total: Number(total) || 0 }
+}
+
+// ============================================================
 // 独立搜索工作区
 // ============================================================
 
@@ -575,7 +633,7 @@ export function queryCustomNormal({ statuses, tagNames, search, limit = 10, offs
 export function searchNotes({
   search,
   statuses,
-  tagNames,
+  tagIds,
   timeFrom,
   timeTo,
   onlyPinned = false,
@@ -607,7 +665,7 @@ export function searchNotes({
   const { whereClause, params } = buildWhereClause({
     search,
     statuses,
-    tagNames,
+    tagIds,
     includeDeleted,
     extraWhere,
     extraParams

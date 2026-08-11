@@ -399,10 +399,10 @@ defineExpose({
   flex-basis: 36rem;
   min-width: 0;
   height: 36rem;
-  border: 1px solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 10rem;
   overflow: hidden;
-  background: rgba(128, 128, 128, 0.03);
+  background: var(--ui-surface-subtle);
   transition:
     flex-grow 300ms cubic-bezier(0.22, 1, 0.36, 1),
     flex-basis 300ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -446,10 +446,10 @@ defineExpose({
   transition: background 150ms ease;
 }
 .ab-box-btn:hover {
-  background: rgba(128, 128, 128, 0.06);
+  background: var(--ui-fill-hover);
 }
 .ab-box-btn:active {
-  transform: scale(0.92);
+  transform: scale(0.98);
   transition: transform 70ms ease;
 }
 
@@ -458,7 +458,7 @@ defineExpose({
   position: absolute;
   top: 0;
   left: 0;
-  z-index: 1;
+  z-index: var(--z-local-content);
 }
 .ab-btn-fixed--right {
   left: auto;
@@ -469,7 +469,7 @@ defineExpose({
 .ab-collapse-row-hit {
   position: absolute;
   top: 0;
-  z-index: 1;
+  z-index: var(--z-local-content);
   height: 36rem;
   padding: 0;
   border: 0;
@@ -484,10 +484,6 @@ defineExpose({
   left: 0;
   right: 36rem;
 }
-.ab-collapse-row-hit:hover {
-  background: rgba(128, 128, 128, 0.025);
-}
-
 /* === SVG 图标 === */
 .ab-icon {
   width: 16rem;
@@ -541,7 +537,7 @@ defineExpose({
 .ab-inline-hint {
   position: absolute;
   top: 0;
-  z-index: 0;
+  z-index: var(--z-local-base);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -664,12 +660,12 @@ defineExpose({
   width: 36rem;
   height: 4rem;
   border-radius: 2rem;
-  background-color: rgba(255, 255, 255, 0.2);
+  background-color: color-mix(in srgb, var(--text-color) 20%, transparent);
 }
 
 .ab-drag-handle:hover .ab-drag-bar {
   transform: scaleX(1.18);
-  background-color: rgba(255, 255, 255, 0.32);
+  background-color: color-mix(in srgb, var(--text-color) 32%, transparent);
 }
 .ab-drag-bar {
   transition:

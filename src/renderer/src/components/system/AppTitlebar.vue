@@ -113,7 +113,7 @@ const toggleLock = async () => {
   -webkit-app-region: drag; /* 允许通过此区域拖拽移动窗口 */
   flex-shrink: 0; /* 禁止在 flex 布局中被压缩 */
   gap: 8px; /* 子元素间距 */
-  border-bottom: 1px solid rgb(var(--bg-color) / 0.1); /* 标题栏底部分割线 */
+  border-bottom: 1px solid var(--ui-border-divider); /* 标题栏底部分割线 */
 }
 
 /* 红绿灯按钮容器 */
@@ -154,7 +154,7 @@ const toggleLock = async () => {
   opacity: 1;
 }
 .light:active {
-  transform: scale(0.86);
+  transform: scale(0.98);
   transition-duration: 70ms;
 }
 .light.pinned .light-icon,
@@ -273,7 +273,7 @@ const toggleLock = async () => {
   opacity: 0.72;
 }
 .app-titlebar--microsoft .light:hover {
-  background-color: color-mix(in srgb, var(--text-color) 9%, transparent);
+  background-color: var(--ui-fill-hover);
 }
 .app-titlebar--microsoft .light:hover .light-icon {
   opacity: 1;

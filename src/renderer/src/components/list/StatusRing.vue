@@ -72,7 +72,7 @@ function activate() {
 <style scoped>
 .sr-control {
   position: relative;
-  z-index: 2;
+  z-index: var(--z-local-raised);
   display: block;
   width: 20rem;
   height: 20rem;

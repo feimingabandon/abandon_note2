@@ -93,6 +93,12 @@ const api = {
     ipcRenderer.on('app:message', handler)
     return () => ipcRenderer.removeListener('app:message', handler)
   },
+  /** 点击便签系统通知后，由主进程要求当前视图定位并打开对应便签。 */
+  onNotificationOpenNote: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('notification:open-note', handler)
+    return () => ipcRenderer.removeListener('notification:open-note', handler)
+  },
 
   // ---- 应用更新（全手动模式：仅检查新版本与打开发布页，固定仓库地址） ----
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
@@ -136,8 +142,8 @@ const api = {
   /** 创建便签 */
   createNote: (options) => ipcRenderer.invoke('notes:create', options),
   /** 原子创建便签（含图片 + 标签，事务保护） */
-  createNoteWithAssets: ({ options, images, tagNames }) =>
-    ipcRenderer.invoke('notes:create-with-assets', { options, images, tagNames }),
+  createNoteWithAssets: ({ options, images, tagIds }) =>
+    ipcRenderer.invoke('notes:create-with-assets', { options, images, tagIds }),
   /** 更新便签（部分字段） */
   updateNote: (id, fields) => ipcRenderer.invoke('notes:update', { id, fields }),
   /** 原子保存编辑草稿（字段、标签及附件变更） */
@@ -160,6 +166,10 @@ const api = {
   queryCustomPinned: (options) => ipcRenderer.invoke('notes:query-custom-pinned', options),
   /** 查询日常便签（自定义模式，分页） */
   queryCustomNormal: (options) => ipcRenderer.invoke('notes:query-custom-normal', options),
+  /** 查询标签分组及各组在当前状态筛选下的便签数量 */
+  queryTagGroups: (options) => ipcRenderer.invoke('notes:query-tag-groups', options),
+  /** 分页查询单个标签组；tagId 为 null 时查询未分类 */
+  queryTagGroupNotes: (options) => ipcRenderer.invoke('notes:query-tag-group', options),
   /** 在独立搜索工作区查询全部未删除便签 */
   searchNotes: (options) => ipcRenderer.invoke('notes:search', options),
   /** 查询全部未删除便签总数（不受筛选影响） */
@@ -180,26 +190,39 @@ const api = {
     ipcRenderer.on('notes:changed', handler)
     return () => ipcRenderer.removeListener('notes:changed', handler)
   },
+  /** 获取固定 7×6 的月历日期与当前可见范围内的真实便签。 */
+  getMonthCalendarData: (year, month) => ipcRenderer.invoke('calendar:get-month', { year, month }),
 
   // ---- 标签管理 ----
   /** 创建标签 */
-  createTag: (name, color) => ipcRenderer.invoke('tags:create', { name, color }),
-  /** 删除标签（按名称） */
-  deleteTag: (name) => ipcRenderer.invoke('tags:delete', { name }),
+  createTag: (name, color, pinned = false) =>
+    ipcRenderer.invoke('tags:create', { name, color, pinned }),
+  /** 修改标签（按稳定 ID） */
+  updateTag: (id, fields) => ipcRenderer.invoke('tags:update', { id, fields }),
+  /** 删除标签（按稳定 ID） */
+  deleteTag: (id) => ipcRenderer.invoke('tags:delete', { id }),
+  /** 置顶或取消置顶标签。 */
+  setTagPinned: (id, pinned) => ipcRenderer.invoke('tags:set-pinned', { id, pinned }),
   /** 获取全部标签 */
   listTags: () => ipcRenderer.invoke('tags:list'),
-  /** 获取单个标签（按名称） */
-  getTag: (name) => ipcRenderer.invoke('tags:get', { name }),
+  /** 获取单个标签（按稳定 ID） */
+  getTag: (id) => ipcRenderer.invoke('tags:get', { id }),
   /** 获取删除标签会影响的便签与模板数量 */
-  getTagUsage: (name) => ipcRenderer.invoke('tags:usage', { name }),
+  getTagUsage: (id) => ipcRenderer.invoke('tags:usage', { id }),
+  /** 监听标签新增、修改与删除；返回取消监听函数。 */
+  onTagsChanged: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('tags:changed', handler)
+    return () => ipcRenderer.removeListener('tags:changed', handler)
+  },
 
   // ---- 便签-标签关联 ----
   /** 绑定标签到便签 */
-  bindTag: (noteId, tagName) => ipcRenderer.invoke('note-tags:bind', { noteId, tagName }),
+  bindTag: (noteId, tagId) => ipcRenderer.invoke('note-tags:bind', { noteId, tagId }),
   /** 取消绑定 */
-  unbindTag: (noteId, tagName) => ipcRenderer.invoke('note-tags:unbind', { noteId, tagName }),
-  /** 整体设置便签标签（事务替换，tagNames 为字符串数组） */
-  setNoteTags: (noteId, tagNames) => ipcRenderer.invoke('note-tags:set', { noteId, tagNames }),
+  unbindTag: (noteId, tagId) => ipcRenderer.invoke('note-tags:unbind', { noteId, tagId }),
+  /** 整体设置便签标签（事务替换，tagIds 为正整数数组） */
+  setNoteTagIds: (noteId, tagIds) => ipcRenderer.invoke('note-tags:set', { noteId, tagIds }),
   /** 获取便签的标签列表 */
   getNoteTags: (noteId) => ipcRenderer.invoke('note-tags:list', { noteId }),
 

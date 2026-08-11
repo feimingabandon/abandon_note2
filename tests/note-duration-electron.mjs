@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -56,13 +56,30 @@ function seedLegacyListDatabase(userDataPath) {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
-    PRAGMA user_version = 1;
+    CREATE TABLE tags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      color TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE note_tags (
+      note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+      tag_name TEXT NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
+      PRIMARY KEY (note_id, tag_name)
+    );
+    PRAGMA user_version = 0;
   `)
   db.prepare(
     `INSERT INTO notes (
        content, status, effective_at, finished_at, created_at, updated_at
      ) VALUES ('旧库单日便签', 'initialized', ?, ?, ?, ?)`
   ).run(future, now, now, now)
+  db.prepare('INSERT INTO tags (name, color, created_at) VALUES (?, ?, ?)').run(
+    '旧库标签',
+    '#007aff',
+    now
+  )
+  db.prepare('INSERT INTO note_tags (note_id, tag_name) VALUES (1, ?)').run('旧库标签')
   const insertSetting = db.prepare(`
     INSERT INTO app_settings
       (window_name, type, key, value, remark, created_at, updated_at)
@@ -98,6 +115,7 @@ try {
     'blur_engine.dll'
   )
   seedLegacyListDatabase(testUserData)
+  process.argv.push('abandon-note://notification/open?id=1')
   require(resolve('out', 'main', 'index.js'))
   const mainChunk = readdirSync(resolve('out', 'main', 'chunks')).find((name) =>
     /^index-[\w-]+\.js$/.test(name)
@@ -116,8 +134,36 @@ async function runTests() {
     const window = await waitUntil(() => getListWindow(), '列表主窗口未启动', 10000)
     await waitUntil(() => window.isVisible(), '列表主窗口未显示')
 
+    await waitUntil(
+      () =>
+        window.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.app-editor-dialog textarea')?.value.includes('旧库单日便签'))`
+        ),
+      '冷启动通知没有定位并打开对应便签'
+    )
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `document.activeElement === document.querySelector('.app-editor-dialog textarea')`
+      ),
+      true,
+      '通知打开编辑器后焦点必须进入正文'
+    )
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.app-editor-close').click()`
+    )
+    await waitUntil(
+      () => window.webContents.executeJavaScript(`!document.querySelector('.app-editor-dialog')`),
+      '通知打开的编辑器无法关闭'
+    )
+
     const migrated = await window.webContents.executeJavaScript(`window.api.getNote(1)`)
     assert.equal(migrated.duration_days, 1, '旧库便签必须自动补为持续 1 天')
+    assert.equal(migrated.tags[0]?.name, '旧库标签', 'V0 旧库标签关联迁移失败')
+    assert.equal(
+      existsSync(join(testUserData, 'app-v0-before-v3.db')),
+      true,
+      'V0 旧库在标签 ID 迁移前必须创建备份'
+    )
 
     await waitUntil(
       () =>
@@ -126,6 +172,59 @@ async function runTests() {
         ),
       '旧库便签未进入列表'
     )
+
+    await window.webContents.executeJavaScript(
+      `window.api.createTag('空层级测试', '#ff9500', false)`
+    )
+    await window.webContents.executeJavaScript(`document.querySelector('.sg-btn--tags').click()`)
+    await waitUntil(
+      () =>
+        window.webContents.executeJavaScript(
+          `document.querySelector('.nl-tags .ts-more')?.textContent.includes('2')`
+        ),
+      '标签筛选面板没有载入新增标签'
+    )
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.nl-tags .ts-more').click()`
+    )
+    await waitUntil(
+      () => window.webContents.executeJavaScript(`Boolean(document.querySelector('.ts-panel'))`),
+      '标签下拉面板未打开'
+    )
+    await window.webContents.executeJavaScript(`(() => {
+      const row = Array.from(document.querySelectorAll('.ts-panel-row')).find((node) => node.textContent.includes('空层级测试'))
+      row.querySelector('.ts-panel-select').click()
+    })()`)
+    await waitUntil(
+      () =>
+        window.webContents.executeJavaScript(
+          `Boolean(document.querySelector('[data-presence-clone]'))`
+        ),
+      '标签筛选没有生成便签退场副本'
+    )
+    const filterLayers = await window.webContents.executeJavaScript(`(() => ({
+      presence: Number.parseInt(getComputedStyle(document.querySelector('[data-presence-clone]')).zIndex, 10),
+      popover: Number.parseInt(getComputedStyle(document.querySelector('.ts-panel')).zIndex, 10)
+    }))()`)
+    assert.ok(
+      filterLayers.presence < filterLayers.popover,
+      `便签退场层必须低于标签面板层，实际为 ${filterLayers.presence} / ${filterLayers.popover}`
+    )
+    await window.webContents.executeJavaScript(`(() => {
+      const row = Array.from(document.querySelectorAll('.ts-panel-row')).find((node) => node.textContent.includes('空层级测试'))
+      row.querySelector('.ts-panel-select').click()
+    })()`)
+    await waitUntil(
+      () =>
+        window.webContents.executeJavaScript(
+          `Boolean(Array.from(document.querySelectorAll('.nl-card:not([data-presence-clone])')).find((card) => card.textContent.includes('旧库单日便签')))`
+        ),
+      '取消标签筛选后便签没有恢复'
+    )
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.nl-tags .ts-more').click()`
+    )
+
     await window.webContents.executeJavaScript(`(() => {
       const card = Array.from(document.querySelectorAll('.nl-card')).find((node) => node.textContent.includes('旧库单日便签'))
       card.querySelector('.sr-control[title="提前开始"]').click()
@@ -254,7 +353,7 @@ async function runTests() {
         window.webContents.executeJavaScript(`window.api.searchNotes({
           search: '月视图跨日便签',
           statuses: [],
-          tagNames: [],
+          tagIds: [],
           includeDeleted: false,
           sort: 'effective',
           limit: 20,

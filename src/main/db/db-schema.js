@@ -1,5 +1,5 @@
 /** 数据库结构版本。公开版本只能通过显式迁移递增。 */
-export const DATABASE_SCHEMA_VERSION = 2
+export const DATABASE_SCHEMA_VERSION = 5
 
 function hasColumn(db, tableName, columnName) {
   return db
@@ -23,11 +23,154 @@ function migrateToVersion2(db) {
   }
 }
 
+function migrateTagRelationTable(db, { tableName, ownerColumn, ownerTable }) {
+  if (hasColumn(db, tableName, 'tag_id')) return
+  if (!hasColumn(db, tableName, 'tag_name')) {
+    throw new Error(`${tableName} 缺少 tag_name，无法迁移标签关联`)
+  }
+
+  const orphanCount = db
+    .prepare(
+      `SELECT COUNT(*) AS total
+       FROM ${tableName} relation
+       LEFT JOIN tags t ON t.name = relation.tag_name
+       WHERE t.id IS NULL`
+    )
+    .get().total
+  if (orphanCount > 0) {
+    throw new Error(`${tableName} 存在 ${orphanCount} 条无效标签关联，已取消迁移`)
+  }
+
+  const temporaryTable = `${tableName}_v3`
+  const previousCount = db.prepare(`SELECT COUNT(*) AS total FROM ${tableName}`).get().total
+  db.exec(`
+    DROP TABLE IF EXISTS ${temporaryTable};
+    CREATE TABLE ${temporaryTable} (
+      ${ownerColumn} INTEGER NOT NULL REFERENCES ${ownerTable}(id) ON DELETE CASCADE,
+      tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+      PRIMARY KEY (${ownerColumn}, tag_id)
+    );
+    INSERT INTO ${temporaryTable} (${ownerColumn}, tag_id)
+    SELECT relation.${ownerColumn}, t.id
+    FROM ${tableName} relation
+    INNER JOIN tags t ON t.name = relation.tag_name;
+  `)
+  const migratedCount = db.prepare(`SELECT COUNT(*) AS total FROM ${temporaryTable}`).get().total
+  if (migratedCount !== previousCount) {
+    throw new Error(`${tableName} 标签关联迁移数量不一致：${previousCount} → ${migratedCount}`)
+  }
+  db.exec(`
+    DROP TABLE ${tableName};
+    ALTER TABLE ${temporaryTable} RENAME TO ${tableName};
+  `)
+}
+
+function migrateListFilterSettingsToTagIds(db) {
+  const rows = db
+    .prepare("SELECT window_name, key, value FROM app_settings WHERE key = 'list_filter'")
+    .all()
+  if (rows.length === 0) return
+
+  const findTagId = db.prepare('SELECT id FROM tags WHERE name = ?')
+  const update = db.prepare(
+    'UPDATE app_settings SET value = ?, updated_at = ? WHERE window_name = ? AND key = ?'
+  )
+  const timestamp = Date.now()
+
+  for (const row of rows) {
+    let value
+    try {
+      value = JSON.parse(row.value || '{}')
+    } catch {
+      continue
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+
+    const existingIds = Array.isArray(value.tagIds)
+      ? value.tagIds.map(Number).filter((id) => Number.isInteger(id) && id > 0)
+      : []
+    const migratedIds = Array.isArray(value.tagNames)
+      ? value.tagNames
+          .filter((name) => typeof name === 'string' && name.trim())
+          .map((name) => findTagId.get(name.trim())?.id)
+          .filter((id) => Number.isInteger(id) && id > 0)
+      : []
+    value.tagIds = [...new Set(existingIds.length > 0 ? existingIds : migratedIds)]
+    delete value.tagNames
+    update.run(JSON.stringify(value), timestamp, row.window_name, row.key)
+  }
+}
+
+/** V3 将便签与模板的标签关联从可变名称迁移为稳定 tag_id。 */
+function migrateToVersion3(db) {
+  migrateTagRelationTable(db, {
+    tableName: 'note_tags',
+    ownerColumn: 'note_id',
+    ownerTable: 'notes'
+  })
+  migrateTagRelationTable(db, {
+    tableName: 'template_tags',
+    ownerColumn: 'template_id',
+    ownerTable: 'note_templates'
+  })
+  migrateListFilterSettingsToTagIds(db)
+
+  const violations = db.pragma('foreign_key_check')
+  if (violations.length > 0) {
+    throw new Error(`V3 标签迁移后存在 ${violations.length} 条外键异常`)
+  }
+}
+
+/** V4 为标签增加稳定的用户置顶状态；不引入会频繁重排的最近使用时间。 */
+function migrateToVersion4(db) {
+  if (!hasColumn(db, 'tags', 'is_pinned')) {
+    db.exec(`
+      ALTER TABLE tags
+      ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0, 1));
+    `)
+  }
+  if (!hasColumn(db, 'tags', 'pinned_at')) {
+    db.exec('ALTER TABLE tags ADD COLUMN pinned_at INTEGER;')
+  }
+}
+
+/** V5 移除已经废弃的“稍后提醒”状态；普通到时提醒不受影响。 */
+function migrateToVersion5(db) {
+  db.exec('DROP INDEX IF EXISTS idx_notes_remind_again_at;')
+  if (hasColumn(db, 'notes', 'remind_again_at')) {
+    db.exec('ALTER TABLE notes DROP COLUMN remind_again_at;')
+  }
+}
+
+function ensureTagRelationIndexes(db) {
+  if (hasColumn(db, 'note_tags', 'tag_id')) {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id ON note_tags(tag_id);')
+  }
+  if (hasColumn(db, 'template_tags', 'tag_id')) {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_template_tags_tag_id ON template_tags(tag_id);')
+  }
+}
+
 function migrateDatabaseSchema(db, existingVersion) {
   const missingDurationDays = !hasColumn(db, 'notes', 'duration_days')
-  if (existingVersion >= DATABASE_SCHEMA_VERSION && !missingDurationDays) return
+  const missingTagIds =
+    !hasColumn(db, 'note_tags', 'tag_id') || !hasColumn(db, 'template_tags', 'tag_id')
+  const missingTagPinning =
+    !hasColumn(db, 'tags', 'is_pinned') || !hasColumn(db, 'tags', 'pinned_at')
+  const hasObsoleteSnoozeColumn = hasColumn(db, 'notes', 'remind_again_at')
+  if (
+    existingVersion >= DATABASE_SCHEMA_VERSION &&
+    !missingDurationDays &&
+    !missingTagIds &&
+    !missingTagPinning &&
+    !hasObsoleteSnoozeColumn
+  )
+    return
   db.transaction(() => {
     if (existingVersion < 2 || missingDurationDays) migrateToVersion2(db)
+    if (existingVersion < 3 || missingTagIds) migrateToVersion3(db)
+    if (existingVersion < 4 || missingTagPinning) migrateToVersion4(db)
+    if (existingVersion < 5 || hasObsoleteSnoozeColumn) migrateToVersion5(db)
     if (existingVersion < DATABASE_SCHEMA_VERSION) {
       db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
     }
@@ -63,6 +206,7 @@ export function createDatabaseSchema(db) {
   createNotesSchema(db)
   createRemoteServiceSchema(db)
   migrateDatabaseSchema(db, existingVersion)
+  ensureTagRelationIndexes(db)
   if (existingVersion < DATABASE_SCHEMA_VERSION) {
     console.log(
       `[db-schema] 数据库结构版本 ${existingVersion} → ${DATABASE_SCHEMA_VERSION}` +
@@ -119,7 +263,6 @@ export function createNotesSchema(db) {
       duration_days       INTEGER NOT NULL DEFAULT 1
                           CHECK(duration_days >= 1 AND duration_days <= 365),
       finished_at         INTEGER,
-      remind_again_at     INTEGER,
       sort_order          INTEGER NOT NULL DEFAULT 0,
       created_at          INTEGER NOT NULL,
       updated_at          INTEGER NOT NULL
@@ -128,7 +271,6 @@ export function createNotesSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_notes_effective_at ON notes(effective_at);
     CREATE INDEX IF NOT EXISTS idx_notes_is_pinned ON notes(is_pinned);
     CREATE INDEX IF NOT EXISTS idx_notes_status_pinned_sort ON notes(status, is_pinned, sort_order);
-    CREATE INDEX IF NOT EXISTS idx_notes_remind_again_at ON notes(remind_again_at);
     CREATE INDEX IF NOT EXISTS idx_notes_is_deleted ON notes(is_deleted);
 
     CREATE TABLE IF NOT EXISTS note_templates (
@@ -198,21 +340,21 @@ export function createNotesSchema(db) {
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       name        TEXT NOT NULL UNIQUE,
       color       TEXT,
-      created_at  INTEGER NOT NULL
+      created_at  INTEGER NOT NULL,
+      is_pinned   INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0, 1)),
+      pinned_at   INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS note_tags (
-      note_id   INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-      tag_name  TEXT NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
-      PRIMARY KEY (note_id, tag_name)
+      note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+      tag_id  INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+      PRIMARY KEY (note_id, tag_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_note_tags_tag_name ON note_tags(tag_name);
 
     CREATE TABLE IF NOT EXISTS template_tags (
       template_id  INTEGER NOT NULL REFERENCES note_templates(id) ON DELETE CASCADE,
-      tag_name     TEXT NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
-      PRIMARY KEY (template_id, tag_name)
+      tag_id        INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+      PRIMARY KEY (template_id, tag_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_template_tags_tag_name ON template_tags(tag_name);
   `)
 }

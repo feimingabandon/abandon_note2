@@ -12,7 +12,12 @@
     <!-- 关闭按钮 -->
     <button class="mnp-close" aria-label="关闭">
       <svg viewBox="0 0 14 14" width="11" height="11" fill="none">
-        <path d="M1 1L13 13M1 13L13 1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        <path
+          d="M1 1L13 13M1 13L13 1"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+        />
       </svg>
     </button>
 
@@ -26,31 +31,68 @@
       <span class="mnp-label">生效时间？</span>
       <span class="mnp-control mnp-select">
         立即生效
-        <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 6l4 4 4-4" /></svg>
+        <svg
+          viewBox="0 0 16 16"
+          width="11"
+          height="11"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+        >
+          <path d="M4 6l4 4 4-4" />
+        </svg>
       </span>
     </div>
 
     <!-- 系统提醒 -->
     <div class="mnp-row">
       <span class="mnp-label">启用系统提醒？</span>
-      <span class="mnp-control"><span class="mnp-toggle"><i /></span></span>
+      <span class="mnp-control"
+        ><span class="mnp-toggle"><i /></span
+      ></span>
     </div>
 
     <!-- 置顶 -->
     <div class="mnp-row">
       <span class="mnp-label">置顶？</span>
-      <span class="mnp-control"><span class="mnp-toggle mnp-toggle--on"><i /></span></span>
+      <span class="mnp-control"
+        ><span class="mnp-toggle mnp-toggle--on"><i /></span
+      ></span>
     </div>
 
     <!-- 标签 -->
     <div class="mnp-row mnp-row--tags">
       <span class="mnp-label">标签？</span>
       <div class="mnp-tags">
-        <span class="mnp-tag"><i class="mnp-tag-dot" style="background:#ef4444" />重要</span>
-        <span class="mnp-tag"><i class="mnp-tag-dot" style="background:#22c55e" />日常</span>
+        <span class="mnp-tag"><i class="mnp-tag-dot" style="background: #ef4444" />重要</span>
+        <span class="mnp-tag"><i class="mnp-tag-dot" style="background: #22c55e" />日常</span>
         <span class="mnp-tag-actions">
-          <svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M16 7a7 7 0 1 0 .4 5M16 3v4h-4" /></svg>
-          <svg viewBox="0 0 1024 1024" width="14" height="14" fill="none"><path d="M512 200V824" stroke="currentColor" stroke-width="100" stroke-linecap="round"/><path d="M200 512H824" stroke="currentColor" stroke-width="100" stroke-linecap="round"/></svg>
+          <svg
+            viewBox="0 0 20 20"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+          >
+            <path d="M16 7a7 7 0 1 0 .4 5M16 3v4h-4" />
+          </svg>
+          <svg viewBox="0 0 1024 1024" width="14" height="14" fill="none">
+            <path
+              d="M512 200V824"
+              stroke="currentColor"
+              stroke-width="100"
+              stroke-linecap="round"
+            />
+            <path
+              d="M200 512H824"
+              stroke="currentColor"
+              stroke-width="100"
+              stroke-linecap="round"
+            />
+          </svg>
         </span>
       </div>
     </div>
@@ -60,7 +102,10 @@
       <span class="mnp-label">图片？</span>
       <div class="mnp-images">
         <span class="mnp-img-slot">
-          <svg viewBox="0 0 1024 1024" width="18" height="18" fill="none"><path d="M512 200V824" stroke="currentColor" stroke-width="80" stroke-linecap="round"/><path d="M200 512H824" stroke="currentColor" stroke-width="80" stroke-linecap="round"/></svg>
+          <svg viewBox="0 0 1024 1024" width="18" height="18" fill="none">
+            <path d="M512 200V824" stroke="currentColor" stroke-width="80" stroke-linecap="round" />
+            <path d="M200 512H824" stroke="currentColor" stroke-width="80" stroke-linecap="round" />
+          </svg>
         </span>
       </div>
     </div>
@@ -79,7 +124,7 @@
   padding: 16rem;
   border-radius: 14rem;
   background: rgb(var(--bg-color) / 0.06);
-  border: 1px solid color-mix(in srgb, var(--text-color) 8%, transparent);
+  border: 1px solid var(--ui-border-divider);
 }
 .mnp-close {
   position: absolute;
@@ -98,7 +143,7 @@
 .mnp-textarea {
   min-height: 72rem;
   padding: 10rem 12rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+  border: 1px solid var(--ui-border-hover);
   border-radius: 10rem;
   background: rgb(var(--bg-color) / 0.04);
 }
@@ -132,7 +177,7 @@
   align-items: center;
   gap: 4rem;
   padding: 4rem 10rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+  border: 1px solid var(--ui-border-hover);
   border-radius: 8rem;
   color: var(--text-color);
   font-size: var(--fs-secondary);
@@ -176,7 +221,7 @@
   gap: 5rem;
   padding: 3rem 10rem;
   border-radius: 12rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+  border: 1px solid var(--ui-border-hover);
   font-size: calc(var(--fs-secondary) * 0.9);
   color: var(--text-color);
 }
@@ -201,7 +246,7 @@
   place-items: center;
   width: 56rem;
   height: 56rem;
-  border: 1px dashed color-mix(in srgb, var(--text-color) 20%, transparent);
+  border: 1px dashed var(--ui-border-hover);
   border-radius: 8rem;
   color: var(--text-color-secondary);
 }

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, nextTick, onMounted, onBeforeUnmount, useId } from 'vue'
 
 /**
  * HelpButton.vue — 问号帮助按钮 + 玻璃态 tooltip
@@ -17,6 +17,7 @@ const placement = ref('bottom')
 const tipStyle = reactive({ top: '0px', left: '0px' })
 const triggerRef = ref(null)
 const tipRef = ref(null)
+const tooltipId = useId()
 
 const GAP = 8
 const PAD = 4 // 视口安全边距
@@ -120,17 +121,28 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
 </script>
 
 <template>
-  <span ref="triggerRef" class="help-btn-wrap" @click="onClick">
-    <span class="setting-help-btn" :class="{ 'is-active': visible }" aria-label="帮助">?</span>
-  </span>
+  <button
+    ref="triggerRef"
+    type="button"
+    class="setting-help-btn"
+    :class="{ 'is-active': visible }"
+    aria-label="查看帮助"
+    :aria-expanded="visible"
+    :aria-describedby="visible ? tooltipId : undefined"
+    @click="onClick"
+  >
+    <span aria-hidden="true">?</span>
+  </button>
   <Teleport to="body">
     <Transition name="tooltip-fade">
       <span
         v-if="visible"
+        :id="tooltipId"
         ref="tipRef"
         class="help-tooltip"
         :class="'help-tooltip--' + placement"
         :style="{ top: tipStyle.top, left: tipStyle.left }"
+        role="tooltip"
         >{{ text }}</span
       >
     </Transition>
@@ -138,11 +150,6 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
 </template>
 
 <style>
-.help-btn-wrap {
-  display: inline-flex;
-  line-height: 1;
-}
-
 /* ---- 问号按钮 ---- */
 .setting-help-btn {
   display: inline-flex;
@@ -152,7 +159,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
   height: 16rem;
   border: none;
   border-radius: 50%;
-  background: rgba(128, 128, 128, 0.12);
+  background: var(--ui-fill-passive);
   color: var(--text-color-secondary, #999);
   font-size: 10rem;
   font-weight: 700;
@@ -161,25 +168,29 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
   flex-shrink: 0;
   line-height: 1;
   padding: 0;
+  outline: none;
   transition:
     background 150ms ease,
     color 150ms ease;
 }
+.setting-help-btn:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, #0a84ff 24%, transparent);
+}
 .setting-help-btn:hover {
-  background: rgba(128, 128, 128, 0.25);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 /* 打开 tooltip 时固定激活背景色：与 hover 一致且不随悬停变化，关闭后自动恢复。 */
 .setting-help-btn.is-active,
 .setting-help-btn.is-active:hover {
-  background: rgba(128, 128, 128, 0.25);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 
 /* ---- tooltip ---- */
 .help-tooltip {
   position: fixed;
-  z-index: 9999;
+  z-index: var(--z-global-popover);
   max-width: 280rem;
   padding: 7rem 12rem;
   white-space: normal;

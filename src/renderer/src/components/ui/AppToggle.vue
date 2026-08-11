@@ -39,7 +39,7 @@ const emit = defineEmits(['update:modelValue'])
   border: none;
   padding: 0;
   cursor: pointer;
-  background-color: rgba(255, 255, 255, 0.06);
+  background-color: var(--ui-fill-pressed);
   transition:
     background-color 220ms var(--ease-standard),
     transform var(--motion-fast) ease,
@@ -67,9 +67,10 @@ const emit = defineEmits(['update:modelValue'])
   display: block;
   width: 20rem;
   height: 20rem;
+  box-sizing: border-box;
   border-radius: 50%;
   background: transparent;
-  border: 3rem solid #ffffff;
+  border: 2px solid #fff;
   box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.2);
   transition: transform 220ms var(--ease-standard);
   transform: translateY(-50%);
@@ -80,12 +81,12 @@ const emit = defineEmits(['update:modelValue'])
 }
 
 .switch:active:not(:disabled) {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
 .switch:active:not(:disabled) .switch-thumb {
-  transform: translateY(-50%) scale(0.9);
+  transform: translateY(-50%);
 }
 .switch.on:active:not(:disabled) .switch-thumb {
-  transform: translate(20rem, -50%) scale(0.9);
+  transform: translate(20rem, -50%);
 }
 </style>

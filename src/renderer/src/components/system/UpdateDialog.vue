@@ -217,7 +217,7 @@ async function openManual(provider) {
   gap: 5rem;
   padding: 13rem 14rem;
   border-radius: 10rem;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--ui-surface-control);
   margin-top: 14rem;
 }
 
@@ -293,7 +293,7 @@ async function openManual(provider) {
 }
 
 .manual-link:active {
-  transform: scale(0.99);
+  transform: scale(0.98);
 }
 
 .manual-link-label {

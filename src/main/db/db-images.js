@@ -13,15 +13,19 @@ import { app, nativeImage } from 'electron'
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { mkdir, writeFile, unlink, stat, readFile, rm } from 'fs/promises'
 import { getDb } from './db-connection.js'
+import {
+  MAX_ATTACHMENTS_PER_NOTE,
+  MAX_IMAGE_BYTES,
+  getBase64DecodedSize
+} from '../../shared/attachment-rules.js'
 
 const ATTACHMENTS_ROOT = 'attachments'
 const STAGING_ROOT = '.attachments-staging'
 const OPERATION_MANIFEST = 'operation.json'
+const ADDITION_TARGET_MANIFEST = 'target.json'
 
 const now = () => Date.now()
 
-/** 单图片最大 50MB */
-const MAX_IMAGE_SIZE = 50 * 1024 * 1024
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'])
 
 function ensureDir(dirPath) {
@@ -66,9 +70,13 @@ function decodeImage(base64Data, ext) {
   const normalizedExt = String(ext || '').toLowerCase()
   if (!IMAGE_EXTENSIONS.has(normalizedExt)) throw new Error('不支持的图片格式')
 
-  const buffer = Buffer.from(String(base64Data || ''), 'base64')
+  const encoded = String(base64Data || '')
+  const estimatedSize = getBase64DecodedSize(encoded)
+  if (estimatedSize === 0) throw new Error('图片内容为空')
+  if (estimatedSize > MAX_IMAGE_BYTES) throw new Error('单张图片不能超过 50MB')
+  const buffer = Buffer.from(encoded, 'base64')
   if (buffer.length === 0) throw new Error('图片内容为空')
-  if (buffer.length > MAX_IMAGE_SIZE) throw new Error('单张图片不能超过 50MB')
+  if (buffer.length > MAX_IMAGE_BYTES) throw new Error('单张图片不能超过 50MB')
   return { buffer, normalizedExt }
 }
 
@@ -78,10 +86,18 @@ export async function stageImage(base64Data, ext) {
   const stagingDir = join(app.getPath('userData'), STAGING_ROOT)
   await ensureDirAsync(stagingDir)
   const fileName = `${now()}-${randomUUID()}.${normalizedExt}`
-  const pendingPath = join(stagingDir, fileName)
-  await writeFile(pendingPath, buffer)
-  const fileSize = (await stat(pendingPath)).size
-  return { pendingPath, fileName, fileSize }
+  const operationDirectory = join(stagingDir, `add-${randomUUID()}`)
+  await ensureDirAsync(operationDirectory)
+  const pendingPath = join(operationDirectory, 'payload')
+  try {
+    writeOperationManifest(operationDirectory, { version: 1, type: 'image-add' })
+    await writeFile(pendingPath, buffer)
+    const fileSize = (await stat(pendingPath)).size
+    return { pendingPath, fileName, fileSize, operationDirectory }
+  } catch (error) {
+    await rm(operationDirectory, { recursive: true, force: true })
+    throw error
+  }
 }
 
 /** 在数据库事务内执行同卷重命名；大文件内容此前已经异步写完。 */
@@ -92,8 +108,18 @@ export function commitStagedImage(noteId, staged) {
   const subDir = join(root, 'images', String(noteId))
   ensureDir(subDir)
   const filePath = join(subDir, staged.fileName)
-  renameSync(staged.pendingPath, filePath)
   const relativePath = join(ATTACHMENTS_ROOT, 'images', String(noteId), staged.fileName)
+  if (!staged.operationDirectory) throw new Error('暂存图片缺少恢复目录')
+  writeOperationManifest(
+    staged.operationDirectory,
+    {
+      version: 1,
+      type: 'image-add-target',
+      relativePath
+    },
+    ADDITION_TARGET_MANIFEST
+  )
+  renameSync(staged.pendingPath, filePath)
   return { relativePath, fileSize: staged.fileSize }
 }
 
@@ -110,9 +136,9 @@ export async function cleanupStagedImage(staged) {
   }
 }
 
-function writeOperationManifest(operationDirectory, manifest) {
-  const temporaryPath = join(operationDirectory, `${OPERATION_MANIFEST}.tmp`)
-  const finalPath = join(operationDirectory, OPERATION_MANIFEST)
+function writeOperationManifest(operationDirectory, manifest, fileName = OPERATION_MANIFEST) {
+  const temporaryPath = join(operationDirectory, `${fileName}.tmp`)
+  const finalPath = join(operationDirectory, fileName)
   writeFileSync(temporaryPath, JSON.stringify(manifest), 'utf8')
   renameSync(temporaryPath, finalPath)
 }
@@ -215,9 +241,6 @@ export function getImageThumbnail(relativePath, maxSize = 240) {
 // ============================================================
 // DB CRUD（note_attachments 表）
 // ============================================================
-
-/** 单个便签附件上限 */
-const MAX_ATTACHMENTS_PER_NOTE = 50
 
 /**
  * 添加图片附件记录到数据库

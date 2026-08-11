@@ -111,18 +111,17 @@ defineExpose({ getImages, getDraftChanges, clearImages })
   width: 100%;
   min-width: 0;
   aspect-ratio: 1;
-  border: 1px dashed rgba(128, 128, 128, 0.2);
+  border: 1px dashed var(--ui-border-control);
   border-radius: 6rem;
   cursor: pointer;
   transition:
     border-color 150ms ease,
     background-color 150ms ease;
   flex-shrink: 0;
-  background: rgba(255, 255, 255, 0.02);
+  background: transparent;
 }
 .sp-btn:hover {
-  border-color: rgba(128, 128, 128, 0.35);
-  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--ui-border-hover);
 }
 .sp-btn:active:not(.sp-btn--busy) {
   transform: scale(0.98);
@@ -159,12 +158,12 @@ defineExpose({ getImages, getDraftChanges, clearImages })
 }
 .sp-btn--busy {
   cursor: default;
-  border-color: rgba(128, 128, 128, 0.12);
+  border-color: var(--ui-border-hover);
 }
 .sp-btn__spinner {
   width: 24rem;
   height: 24rem;
-  border: 2.5rem solid rgba(128, 128, 128, 0.15);
+  border: 2.5rem solid color-mix(in srgb, var(--text-color) 15%, transparent);
   border-top-color: #0071e3;
   border-radius: 50%;
   animation: sp-spin 0.7s linear infinite;

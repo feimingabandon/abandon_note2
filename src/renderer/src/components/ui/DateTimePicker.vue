@@ -357,7 +357,7 @@ function updatePanelPosition() {
     position: 'fixed',
     top: rect.bottom + 4 + 'px',
     left: left + 'px',
-    zIndex: 100
+    zIndex: 'var(--z-global-popover)'
   }
 }
 
@@ -696,18 +696,18 @@ function onLeave(el, done) {
   font-size: inherit;
   font-family: inherit;
   color: var(--text-color);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
+  background: var(--ui-surface-control);
+  border: 1px solid var(--ui-border-control);
   border-radius: 6rem;
   cursor: pointer;
   outline: none;
   transition: border-color 150ms ease;
 }
 .dt-trigger:hover:not(.is-disabled) {
-  border-color: rgb(var(--bg-color) / 0.18);
+  border-color: var(--ui-border-hover);
 }
 .dt-trigger.is-open {
-  border-color: rgb(var(--bg-color) / 0.25);
+  border-color: var(--ui-border-hover);
 }
 .dt-trigger.is-disabled {
   opacity: 0.4;
@@ -729,7 +729,7 @@ function onLeave(el, done) {
   right: 5rem;
   top: 50%;
   transform: translateY(-50%) scale(0.9);
-  z-index: 1;
+  z-index: var(--z-local-content);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -755,7 +755,7 @@ function onLeave(el, done) {
 }
 .dt-clear-btn.is-visible:hover {
   opacity: 1;
-  background: rgba(128, 128, 128, 0.15);
+  background: var(--ui-fill-hover);
 }
 .dt-clear-btn:disabled {
   pointer-events: none;
@@ -797,7 +797,7 @@ function onLeave(el, done) {
 .dt-divider {
   height: 1px;
   margin: 0;
-  background: rgb(var(--bg-color) / 0.1);
+  background: var(--ui-border-divider);
   flex-shrink: 0;
 }
 
@@ -823,10 +823,10 @@ function onLeave(el, done) {
   transition: background-color 120ms ease;
 }
 .dt-header-field:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--ui-surface-control);
 }
 .dt-header-field.active {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--ui-surface-subtle);
 }
 .dt-header-field-label {
   font-size: var(--fs-secondary);
@@ -848,8 +848,8 @@ function onLeave(el, done) {
   transition: border-color 120ms ease;
 }
 .dt-header-input:focus {
-  border-color: color-mix(in srgb, var(--text-color) 20%, transparent);
-  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--ui-border-hover);
+  background: var(--ui-surface-subtle);
 }
 .dt-header-input::placeholder {
   color: var(--text-color-secondary);
@@ -857,7 +857,7 @@ function onLeave(el, done) {
 }
 .dt-header-sep {
   width: 1px;
-  background: color-mix(in srgb, var(--text-color) 10%, transparent);
+  background: var(--ui-border-control);
   flex-shrink: 0;
 }
 
@@ -888,7 +888,7 @@ function onLeave(el, done) {
   transform: translateX(10rem);
 }
 .dt-view.is-active {
-  z-index: 1;
+  z-index: var(--z-local-content);
   opacity: 1;
   transform: translateX(0);
   pointer-events: auto;
@@ -919,7 +919,7 @@ function onLeave(el, done) {
     color 120ms ease;
 }
 .dt-nav-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .dt-nav-label {
@@ -937,7 +937,7 @@ function onLeave(el, done) {
   transition: background-color 120ms ease;
 }
 .dt-nav-label:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--ui-surface-control);
 }
 .dt-weekdays {
   display: grid;
@@ -994,7 +994,7 @@ function onLeave(el, done) {
     color 120ms ease;
 }
 .dt-cell:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--ui-fill-hover);
 }
 .dt-cell.is-other {
   color: var(--text-color-secondary);
@@ -1071,8 +1071,8 @@ function onLeave(el, done) {
   font-family: inherit;
   font-weight: 500;
   color: var(--text-color);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1rem solid color-mix(in srgb, var(--text-color) 10%, transparent);
+  background: var(--ui-surface-control);
+  border: 1px solid var(--ui-border-control);
   border-radius: 14rem;
   cursor: pointer;
   outline: none;
@@ -1082,8 +1082,7 @@ function onLeave(el, done) {
     border-color 120ms ease;
 }
 .dt-sc-chip:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: color-mix(in srgb, var(--text-color) 20%, transparent);
+  border-color: var(--ui-border-hover);
 }
 .dt-footer-spacer {
   flex: 1;
@@ -1117,7 +1116,7 @@ function onLeave(el, done) {
 .dt-nav-btn:active,
 .dt-sc-chip:active,
 .dt-btn:active {
-  transform: scale(0.94);
+  transform: scale(0.98);
   transition-duration: 70ms;
 }
 </style>

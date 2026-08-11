@@ -17,6 +17,7 @@ const props = defineProps({
   note: { type: Object, required: true },
   draggable: { type: Boolean, default: false },
   muted: { type: Boolean, default: false },
+  colorByTag: { type: Boolean, default: true },
   statusTransition: { type: Object, default: null }
 })
 
@@ -45,7 +46,9 @@ const showReminder = computed(
 )
 
 const tags = computed(() => (Array.isArray(props.note.tags) ? props.note.tags : []))
-const noteTextColor = computed(() => getNoteTextColor(props.note))
+const noteTextColor = computed(() =>
+  props.colorByTag ? getNoteTextColor(props.note) : 'var(--text-color)'
+)
 const visibleTags = computed(() => tags.value.slice(0, 2))
 const hiddenTagCount = computed(() => Math.max(0, tags.value.length - 2))
 const attachmentCount = computed(() => Number(props.note.attachment_count) || 0)
@@ -611,7 +614,6 @@ async function toggleTags() {
 <style scoped>
 .nl-card {
   --card-surface-opacity: 0.08;
-  --card-surface-hover-opacity: 0.12;
   --content-strength: 100%;
   position: relative;
   isolation: isolate;
@@ -622,7 +624,7 @@ async function toggleTags() {
   margin: 0 0 5rem;
   padding: 12rem 14rem 11rem;
   overflow: visible;
-  border: 1px solid color-mix(in srgb, var(--text-color) 7%, transparent);
+  border: 1px solid var(--ui-border-divider);
   border-radius: 11rem;
   outline: none;
   background: rgb(var(--bg-color) / var(--card-surface-opacity));
@@ -630,7 +632,6 @@ async function toggleTags() {
   transition:
     background-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
     border-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1),
     transform 100ms ease;
 }
 
@@ -638,7 +639,7 @@ async function toggleTags() {
 .nl-card::before {
   content: '';
   position: absolute;
-  z-index: 3;
+  z-index: var(--z-local-raised);
   inset: 0;
   border-radius: 0;
   clip-path: inset(0 round 11rem);
@@ -692,9 +693,7 @@ async function toggleTags() {
 }
 
 .nl-card:hover {
-  border-color: color-mix(in srgb, var(--text-color) 12%, transparent);
-  background: rgb(var(--bg-color) / var(--card-surface-hover-opacity));
-  box-shadow: 0 5rem 18rem rgba(0, 0, 0, 0.05);
+  border-color: var(--ui-border-control);
 }
 
 @keyframes nl-status-sweep-motion {
@@ -736,28 +735,21 @@ async function toggleTags() {
 .nl-card--completed::after {
   content: '';
   position: absolute;
-  z-index: 4;
+  z-index: var(--z-local-overlay);
   inset: 0;
   pointer-events: none;
   border-radius: inherit;
   background: rgba(128, 128, 128, 0.1);
   transition: background-color 180ms ease;
 }
-.nl-card--completed:hover::after {
-  background: rgba(128, 128, 128, 0.075);
-}
-
 .nl-card--initialized {
   --card-surface-opacity: 0.08;
-  --card-surface-hover-opacity: 0.12;
 }
 .nl-card--in_progress {
   --card-surface-opacity: 0.14;
-  --card-surface-hover-opacity: 0.18;
 }
 .nl-card--completed {
   --card-surface-opacity: 0.075;
-  --card-surface-hover-opacity: 0.095;
   --content-strength: 60%;
 }
 .nl-card--muted {
@@ -766,7 +758,7 @@ async function toggleTags() {
 
 .nl-drag-handle {
   position: absolute;
-  z-index: 6;
+  z-index: var(--z-local-top);
   top: 9rem;
   right: 8rem;
   display: grid;
@@ -831,7 +823,7 @@ async function toggleTags() {
 
 .nl-card-body {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-local-content);
   min-width: 0;
   transition: opacity 180ms ease;
 }
@@ -892,7 +884,7 @@ async function toggleTags() {
 }
 .nl-card-disclosure:hover,
 .nl-card-disclosure:focus-visible {
-  background: color-mix(in srgb, var(--text-color) 7%, transparent);
+  background: var(--ui-fill-hover);
   color: color-mix(in srgb, var(--text-color) 82%, transparent);
 }
 .nl-card-disclosure:focus-visible {
@@ -984,7 +976,7 @@ async function toggleTags() {
 }
 .nl-card-more-tags:hover,
 .nl-card-more-tags[aria-expanded='true'] {
-  background: color-mix(in srgb, var(--text-color) 7%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .nl-card-icon,
@@ -1008,7 +1000,7 @@ async function toggleTags() {
 .nl-card-attachment:hover,
 .nl-card-attachment[aria-expanded='true'] {
   color: var(--text-color);
-  background: color-mix(in srgb, var(--text-color) 7%, transparent);
+  background: var(--ui-fill-hover);
 }
 .nl-card-icon svg,
 .nl-card-copy svg,
@@ -1018,7 +1010,7 @@ async function toggleTags() {
 
 .nl-image-panel-shell {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-local-content);
   display: grid;
   grid-column: 1 / -1;
   grid-template-rows: 0fr;
@@ -1040,12 +1032,12 @@ async function toggleTags() {
   margin-top: 10rem;
   padding: 10rem 0 2rem;
   overflow-y: auto;
-  border-top: 1px solid color-mix(in srgb, var(--text-color) 7%, transparent);
+  border-top: 1px solid var(--ui-border-divider);
 }
 
 .nl-tag-popover-shell {
   position: fixed;
-  z-index: 10000;
+  z-index: var(--z-global-popover);
   width: max-content;
   max-width: min(260px, calc(100vw - 16px));
   border-radius: 10rem;
@@ -1091,7 +1083,7 @@ async function toggleTags() {
 
 .nl-context-menu-shell {
   position: fixed;
-  z-index: 10001;
+  z-index: var(--z-global-popover);
   width: 128rem;
   border-radius: 10rem;
   box-shadow: 0 12rem 34rem rgba(0, 0, 0, 0.22);
@@ -1128,7 +1120,7 @@ async function toggleTags() {
 .nl-context-menu button:hover:not(:disabled),
 .nl-context-menu button:focus-visible:not(:disabled) {
   outline: none;
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
 }
 .nl-context-menu button:disabled {
   opacity: 0.38;

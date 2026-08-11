@@ -49,7 +49,7 @@ const colorMap = {
   top: 16px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 10000;
+  z-index: var(--z-global-toast);
   display: flex;
   flex-direction: column;
   align-items: center;

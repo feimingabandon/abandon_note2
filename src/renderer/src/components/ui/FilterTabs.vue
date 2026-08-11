@@ -40,11 +40,15 @@ async function onClick(value) {
     <button
       v-for="opt in options"
       :key="opt.value"
+      type="button"
       class="sg-btn"
       :class="[
         `sg-btn--${opt.value}`,
         { 'sg-btn--active': modelValue === opt.value, 'sg-btn--anim': animating === opt.value }
       ]"
+      :aria-label="opt.label"
+      :aria-pressed="modelValue === opt.value"
+      :title="opt.label"
       @click="onClick(opt.value)"
       @animationend="animating = ''"
     >
@@ -102,10 +106,11 @@ async function onClick(value) {
   gap: 0;
   padding: 3rem 4rem;
   border-radius: 8rem;
-  background: color-mix(in srgb, var(--text-color) 4%, transparent);
+  background: var(--ui-surface-subtle);
 }
 
 .sg-btn {
+  appearance: none;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -117,8 +122,16 @@ async function onClick(value) {
   opacity: 0.6;
   cursor: pointer;
   transition:
+    background-color 150ms ease,
     color 150ms ease,
     opacity 150ms ease;
+}
+
+.sg-btn:hover:not(.sg-btn--active) {
+  border-radius: 6rem;
+  background: var(--ui-fill-hover);
+  color: var(--text-color);
+  opacity: 0.82;
 }
 
 /* 图标随 rem 缩放（窗口变宽 → 图标变大）
@@ -129,12 +142,11 @@ async function onClick(value) {
   height: 22rem;
 }
 
-/* 选中态：文本色 + 极淡圆角背景 */
+/* 选中态只提高图标对比度；分组容器已负责材质层级，不再叠加灰色胶囊。 */
 .sg-btn--active {
   color: var(--text-color);
   opacity: 1;
-  background: color-mix(in srgb, var(--text-color) 6%, transparent);
-  border-radius: 6rem;
+  background: transparent;
 }
 
 /* ===== 点击动画 ===== */

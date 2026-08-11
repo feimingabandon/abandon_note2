@@ -74,7 +74,7 @@ defineProps({
 .mtc-card {
   --card-surface-opacity: 0.08;
   padding: 14rem 14rem 12rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 7%, transparent);
+  border: 1px solid var(--ui-border-divider);
   border-radius: 11rem;
   background: rgb(var(--bg-color) / var(--card-surface-opacity));
   color: var(--text-color);

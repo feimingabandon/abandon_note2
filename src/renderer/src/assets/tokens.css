@@ -32,6 +32,18 @@
   margin: 0;
 }
 
+/* 所有普通按钮的最低点击反馈。使用 :where 保持零特异性，组件可按语义覆盖。 */
+:where(button) {
+  transform-origin: center;
+  transition-property: transform;
+  transition-duration: var(--motion-control, 180ms);
+  transition-timing-function: var(--ease-standard, ease);
+}
+:where(button:not(:disabled):active) {
+  transform: scale(0.98);
+  transition-duration: 70ms;
+}
+
 /* 全局隐藏滚动条 —— 保留滚动功能，不占布局空间，零抖动
    鼠标滚轮 / 触控板 / 键盘方向键均可正常滚动 */
 ::-webkit-scrollbar {
@@ -81,14 +93,53 @@ html.month-view {
   --fs-title: calc(var(--font-size-base) * 1.125); /* 标题（base=18 → 20.25） */
   --fs-body: var(--font-size-base); /* 正文/标签/按钮 */
   --fs-secondary: calc(var(--font-size-base) * 0.8); /* 所有辅助文字（base=18 → 15.75） */
+  --fs-month-event: calc(var(--font-size-base) * 0.72); /* 月历日期格便签摘要 */
 
   /* 持久化 CSS 变量由 main.js 在挂载前从 shared/settings-schema.js 注入。 */
   --glass-opacity-base: var(--popup-opacity);
 
+  /* ---- 中性材质层级 ----
+   * 常态表面从背景色派生，避免文字色填充在壁纸上形成灰膜；中性边线从文字色派生，
+   * 在纯白、纯黑与图片背景上都保留方向正确的对比。组件细线固定使用 1px。 */
+  --ui-border-divider: color-mix(in srgb, var(--text-color) 6%, transparent);
+  --ui-border-control: color-mix(in srgb, var(--text-color) 12%, transparent);
+  --ui-border-hover: color-mix(in srgb, var(--text-color) 16%, transparent);
+  --ui-surface-subtle: rgb(var(--bg-color) / 0.1);
+  --ui-surface-control: rgb(var(--bg-color) / 0.18);
+  --ui-surface-control-hover: rgb(var(--bg-color) / 0.26);
+  --ui-fill-passive: color-mix(in srgb, var(--text-color) 5%, transparent);
+  --ui-fill-hover: color-mix(in srgb, var(--text-color) 4%, transparent);
+  --ui-fill-pressed: color-mix(in srgb, var(--text-color) 10%, transparent);
+
+  /* 模态内容必须先形成稳定表面，再承载内部控件；用户透明度仍可向上调高。 */
+  --surface-panel: rgb(var(--bg-color) / max(var(--popup-opacity), 0.52));
+  --surface-modal: rgb(var(--bg-color) / max(var(--popup-opacity), 0.72));
+  --surface-modal-scrim: rgba(0, 0, 0, 0.12);
+
   /* 高频交互浮层使用稳定的实体表面，而非局部毛玻璃。
    * 背景色与文字色均来自运行时设置，因此主题改变时会同步更新。 */
-  --surface-float: color-mix(in srgb, rgb(var(--bg-color)) 96%, var(--text-color) 4%);
-  --surface-float-border: color-mix(in srgb, var(--text-color) 10%, transparent);
+  --surface-float: rgb(var(--bg-color) / 0.94);
+  --surface-float-border: var(--ui-border-control);
+
+  /* ---- 层级令牌 ----
+   * 局部层级只在组件自己的层叠上下文中比较；全局层级只用于 body 直属浮层、
+   * Teleport 和脱离组件树的动画副本。组件内禁止继续写任意数字 z-index。 */
+  --z-local-base: 0;
+  --z-local-content: 1;
+  --z-local-raised: 2;
+  --z-local-overlay: 3;
+  --z-local-top: 4;
+
+  --z-global-presence: 1;
+  --z-global-panel: 2;
+  --z-global-workspace: 3;
+  --z-global-editor: 4;
+  --z-global-modal: 5;
+  --z-global-popover: 6;
+  --z-global-preview: 7;
+  --z-global-confirm: 8;
+  --z-global-toast: 9;
+  --z-global-critical: 10;
 
   /* ---- Motion Tokens：克制、连续的 Apple 风格反馈 ---- */
   --motion-fast: 120ms;

@@ -117,7 +117,7 @@ import MockTemplateCard from './MockTemplateCard.vue'
 .mtp-header {
   text-align: center;
   padding-bottom: 8rem;
-  border-bottom: 1px solid rgb(var(--bg-color) / 0.1);
+  border-bottom: 1px solid var(--ui-border-divider);
   color: var(--text-color);
   font-size: var(--fs-body);
   font-weight: 600;
@@ -126,7 +126,7 @@ import MockTemplateCard from './MockTemplateCard.vue'
   display: flex;
   align-items: center;
   height: 36rem;
-  border: 1px dashed color-mix(in srgb, var(--text-color) 18%, transparent);
+  border: 1px dashed var(--ui-border-hover);
   border-radius: 10rem;
   background: rgba(128, 128, 128, 0.03);
 }
@@ -155,7 +155,7 @@ import MockTemplateCard from './MockTemplateCard.vue'
   flex: 1;
   height: 32rem;
   padding: 0 10rem;
-  border: 1px solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 9rem;
   background: rgba(128, 128, 128, 0.03);
   color: var(--text-color-secondary);
@@ -170,7 +170,7 @@ import MockTemplateCard from './MockTemplateCard.vue'
   gap: 5rem;
   height: 32rem;
   padding: 0 10rem;
-  border: 1px solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 9rem;
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
@@ -180,7 +180,7 @@ import MockTemplateCard from './MockTemplateCard.vue'
   place-items: center;
   width: 32rem;
   height: 32rem;
-  border: 1px solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 9rem;
   color: var(--text-color-secondary);
 }

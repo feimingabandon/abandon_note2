@@ -149,12 +149,12 @@ describe('template editor state guards', () => {
     },
     notifyEnabled: true,
     isPinned: false,
-    tagNames: ['工作', '重要']
+    tagIds: [8, 3]
   }
 
   it('detects semantic form changes while ignoring tag order', () => {
     const initial = createTemplateFormSnapshot(basePayload)
-    expect(createTemplateFormSnapshot({ ...basePayload, tagNames: ['重要', '工作'] })).toBe(initial)
+    expect(createTemplateFormSnapshot({ ...basePayload, tagIds: [3, 8] })).toBe(initial)
     expect(createTemplateFormSnapshot({ ...basePayload, content: '修改后的正文' })).not.toBe(
       initial
     )

@@ -42,7 +42,7 @@ const emit = defineEmits(['click'])
   font-family: inherit;
   font-weight: 500;
   color: var(--text-color);
-  background-color: rgba(255, 255, 255, 0.06);
+  background-color: var(--ui-surface-control);
   cursor: pointer;
   outline: none;
   transition:
@@ -53,10 +53,10 @@ const emit = defineEmits(['click'])
 }
 
 .base-btn:hover:not(:disabled) {
-  background-color: rgba(255, 255, 255, 0.12);
+  background-color: var(--ui-surface-control-hover);
 }
 .base-btn:active:not(:disabled) {
-  transform: scale(0.97);
+  transform: scale(0.98);
   transition-duration: 70ms;
 }
 .base-btn:disabled {

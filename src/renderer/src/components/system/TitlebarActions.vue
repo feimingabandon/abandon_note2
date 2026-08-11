@@ -50,7 +50,7 @@ defineProps({
 }
 
 .titlebar-actions-group :deep(.titlebar-btn:active) {
-  transform: scale(0.9);
+  transform: scale(0.98);
   transition-duration: 70ms;
 }
 
@@ -77,7 +77,7 @@ defineProps({
 }
 
 .titlebar-actions-group--microsoft :deep(.titlebar-btn:hover) {
-  background-color: color-mix(in srgb, var(--text-color) 9%, transparent);
+  background-color: var(--ui-fill-hover);
 }
 
 .titlebar-actions-group--microsoft :deep(.titlebar-btn:hover .btn-icon) {

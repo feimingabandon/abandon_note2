@@ -47,7 +47,7 @@ const yearDates = ref([{ month: 1, day: 1 }])
 const timeOfDay = ref(currentTimeOfDay())
 const notifyEnabled = ref(systemNotificationsSupported)
 const isPinned = ref(false)
-const tagNames = ref([])
+const tagIds = ref([])
 const previewAt = ref(null)
 const previewError = ref('')
 const initialSnapshot = ref('')
@@ -142,7 +142,7 @@ function loadInitial(template) {
   notifyEnabled.value =
     systemNotificationsSupported && (template ? Number(template.notify_enabled) === 1 : true)
   isPinned.value = template ? Number(template.is_pinned) === 1 : false
-  tagNames.value = (template?.tags || []).map((tag) => tag.name)
+  tagIds.value = (template?.tags || []).map((tag) => tag.id)
 }
 
 const recurrenceRule = computed(() => ({
@@ -162,7 +162,7 @@ const currentSnapshot = computed(() =>
     recurrenceRule: recurrenceRule.value,
     notifyEnabled: systemNotificationsSupported && notifyEnabled.value,
     isPinned: isPinned.value,
-    tagNames: tagNames.value
+    tagIds: tagIds.value
   })
 )
 const hasChanges = computed(
@@ -229,7 +229,7 @@ watch(
 
 function submit() {
   if (!canSubmit.value) return
-  if (tagNames.value.length > MAX_ASSIGNED_TAGS) {
+  if (tagIds.value.length > MAX_ASSIGNED_TAGS) {
     showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)
     return
   }
@@ -238,7 +238,7 @@ function submit() {
     recurrenceRule: recurrenceRule.value,
     notifyEnabled: systemNotificationsSupported && notifyEnabled.value,
     isPinned: isPinned.value,
-    tagNames: [...tagNames.value]
+    tagIds: [...tagIds.value]
   })
 }
 
@@ -266,6 +266,7 @@ onBeforeUnmount(() => {
     <div class="tf-fields scroll-y">
       <ResizableTextarea
         v-model="content"
+        :initial-focus="editorMode"
         :rows="4"
         placeholder="请输入循环生成的便签内容…（Enter 换行）"
       />
@@ -321,7 +322,7 @@ onBeforeUnmount(() => {
       <div class="tf-field">
         <label>标签</label>
         <TagSelector
-          v-model="tagNames"
+          v-model="tagIds"
           :max-selected="MAX_ASSIGNED_TAGS"
           @selection-limit-exceeded="showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)"
         />
@@ -483,7 +484,7 @@ label,
 }
 .tf-submit:active:not(:disabled),
 .tf-secondary:active {
-  transform: scale(0.985);
+  transform: scale(0.98);
 }
 .tf-secondary {
   background: color-mix(in srgb, var(--text-color) 7%, transparent);

@@ -11,7 +11,7 @@ const VALID_NOTE_STATUSES = new Set(['initialized', 'in_progress', 'completed'])
 
 const DEFAULT_LIST_FILTER = {
   listMode: 'timeline',
-  tagNames: [],
+  tagIds: [],
   statusFilter: ['initialized', 'in_progress', 'completed']
 }
 
@@ -104,9 +104,11 @@ function parseListFilter(value, fallback) {
     return cloneValue(fallback)
   }
 
-  const listMode = candidate.listMode === 'custom' ? 'custom' : 'timeline'
-  const tagNames = Array.isArray(candidate.tagNames)
-    ? [...new Set(candidate.tagNames.filter((name) => typeof name === 'string' && name.trim()))]
+  const listMode = ['timeline', 'custom', 'tag-group'].includes(candidate.listMode)
+    ? candidate.listMode
+    : 'timeline'
+  const tagIds = Array.isArray(candidate.tagIds)
+    ? [...new Set(candidate.tagIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))]
     : []
   const hasStatusFilter = Array.isArray(candidate.statusFilter)
   const statuses = hasStatusFilter
@@ -115,7 +117,7 @@ function parseListFilter(value, fallback) {
 
   return {
     listMode,
-    tagNames,
+    tagIds,
     // 空数组是合法状态，表示“不额外筛选”；只有字段缺失/类型错误才回退默认值。
     statusFilter: hasStatusFilter ? statuses : cloneValue(fallback.statusFilter)
   }
@@ -256,6 +258,15 @@ const definitions = [
     parse: (value, fallback) => parseNumber(value, fallback, { min: 25, max: 95, integer: true }),
     serialize: String,
     remark: '当前视图设置面板尺寸百分比（25~95）'
+  },
+  {
+    id: 'ui.dayPanelSize',
+    path: ['ui', 'dayPanelSize'],
+    db: { type: 'ui', key: 'day_panel_size' },
+    defaultValue: 34,
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 25, max: 50 }),
+    serialize: String,
+    remark: '月视图日期侧栏宽度百分比（25~50）'
   },
   {
     id: 'window.lockState',

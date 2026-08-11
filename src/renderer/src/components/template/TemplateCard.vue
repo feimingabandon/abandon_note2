@@ -261,23 +261,19 @@ onBeforeUnmount(() => {
 <style scoped>
 .tc-card {
   --card-surface-opacity: 0.08;
-  --card-surface-hover-opacity: 0.12;
   position: relative;
   padding: 14rem 14rem 12rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 7%, transparent);
+  border: 1px solid var(--ui-border-divider);
   border-radius: 11rem;
   background: rgb(var(--bg-color) / var(--card-surface-opacity));
   color: var(--text-color);
   transition:
     background-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
     border-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1),
     opacity 180ms ease;
 }
 .tc-card:hover {
-  border-color: color-mix(in srgb, var(--text-color) 12%, transparent);
-  background: rgb(var(--bg-color) / var(--card-surface-hover-opacity));
-  box-shadow: 0 5rem 18rem rgba(0, 0, 0, 0.05);
+  border-color: var(--ui-border-control);
 }
 .tc-card.is-deleted {
   opacity: 0.72;
@@ -383,7 +379,7 @@ onBeforeUnmount(() => {
 }
 .tc-disclosure:hover,
 .tc-disclosure:focus-visible {
-  background: color-mix(in srgb, var(--text-color) 7%, transparent);
+  background: var(--ui-fill-hover);
   color: color-mix(in srgb, var(--text-color) 82%, transparent);
 }
 .tc-disclosure:focus-visible {
@@ -472,10 +468,10 @@ onBeforeUnmount(() => {
 }
 .tc-menu {
   position: fixed;
-  z-index: 30000;
+  z-index: var(--z-global-popover);
   width: 154rem;
   padding: 5rem;
-  border: 1rem solid var(--surface-float-border);
+  border: 1px solid var(--surface-float-border);
   border-radius: 10rem;
   background: var(--surface-float);
   box-shadow: 0 12rem 32rem rgba(0, 0, 0, 0.28);
@@ -493,7 +489,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .tc-menu button:hover {
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
 }
 .tc-menu .danger {
   color: #ff453a;

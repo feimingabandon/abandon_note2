@@ -8,6 +8,12 @@
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import BaseButton from './BaseButton.vue'
 import { retainModalBlur } from '../../utils/modalBlur.js'
+import {
+  captureFocusedElement,
+  focusModal,
+  restoreFocusedElement,
+  trapModalTab
+} from '../../utils/modalFocus.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -21,8 +27,11 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'confirm', 'cancel'])
 const rendered = ref(props.visible)
 const active = ref(false)
+const cardRef = ref(null)
 let animTimer = null
 let releaseBackgroundBlur = null
+let focusFrame = null
+let previouslyFocused = null
 
 function acquireModalBlur() {
   if (releaseBackgroundBlur) return
@@ -41,10 +50,26 @@ function close(type) {
     animTimer = null
     rendered.value = false
     freeModalBlur()
+    const target = previouslyFocused
+    previouslyFocused = null
+    if (focusFrame !== null) cancelAnimationFrame(focusFrame)
+    focusFrame = requestAnimationFrame(() => {
+      focusFrame = null
+      restoreFocusedElement(target)
+    })
     emit('update:visible', false)
     if (type === 'confirm') emit('confirm')
     else emit('cancel')
   }, 250)
+}
+
+function onKeydown(event) {
+  if (event.key === 'Escape') {
+    event.stopPropagation()
+    close()
+    return
+  }
+  trapModalTab(event, cardRef.value)
 }
 
 watch(
@@ -55,11 +80,15 @@ watch(
         clearTimeout(animTimer)
         animTimer = null
       }
+      previouslyFocused = captureFocusedElement()
       acquireModalBlur()
       rendered.value = true
       await nextTick()
-      requestAnimationFrame(() => {
+      if (focusFrame !== null) cancelAnimationFrame(focusFrame)
+      focusFrame = requestAnimationFrame(() => {
+        focusFrame = null
         active.value = true
+        focusModal(cardRef.value)
       })
     } else if (rendered.value) {
       close()
@@ -70,6 +99,8 @@ watch(
 
 onBeforeUnmount(() => {
   if (animTimer) clearTimeout(animTimer)
+  if (focusFrame !== null) cancelAnimationFrame(focusFrame)
+  restoreFocusedElement(previouslyFocused)
   freeModalBlur()
 })
 </script>
@@ -84,7 +115,17 @@ onBeforeUnmount(() => {
       data-keep-settings-open
       @click.self="close()"
     >
-      <div class="confirm-card" :class="{ active }" @click.stop>
+      <div
+        ref="cardRef"
+        class="confirm-card"
+        :class="{ active }"
+        role="dialog"
+        aria-modal="true"
+        tabindex="-1"
+        :aria-label="title"
+        @click.stop
+        @keydown="onKeydown"
+      >
         <h3 class="confirm-title">{{ title }}</h3>
         <p class="confirm-message">{{ message }}</p>
         <div class="confirm-actions">
@@ -104,7 +145,7 @@ onBeforeUnmount(() => {
 .confirm-overlay {
   position: fixed;
   inset: 0;
-  z-index: 40000;
+  z-index: var(--z-global-confirm);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -116,7 +157,7 @@ onBeforeUnmount(() => {
 }
 
 .confirm-overlay.active {
-  background-color: rgba(12, 14, 18, 0.14);
+  background-color: var(--surface-modal-scrim);
   pointer-events: auto;
 }
 
@@ -125,7 +166,7 @@ onBeforeUnmount(() => {
   max-width: calc(100vw - 48rem);
   padding: 24rem;
   border-radius: 14rem;
-  background-color: rgb(var(--bg-color) / var(--glass-complex-opacity));
+  background-color: var(--surface-modal);
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.42);
   opacity: 0;
   transform: translateY(6rem);

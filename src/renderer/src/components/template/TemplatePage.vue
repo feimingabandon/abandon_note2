@@ -10,6 +10,12 @@ import { filterAndSortTemplates, isTemplateEditTarget } from '../../utils/templa
 import { useMessage } from '../../composables/useMessage.js'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
 import { retainModalBlur } from '../../utils/modalBlur.js'
+import {
+  captureFocusedElement,
+  focusModal,
+  restoreFocusedElement,
+  trapModalTab
+} from '../../utils/modalFocus.js'
 
 const { showMessage } = useMessage()
 const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
@@ -40,6 +46,7 @@ const notifyOnly = ref(false)
 const sort = ref('next')
 const editing = ref(null)
 const editFormRef = ref(null)
+const editOverlayRef = ref(null)
 const savingEdit = ref(false)
 const editDiscardConfirmVisible = ref(false)
 const confirmVisible = ref(false)
@@ -58,6 +65,7 @@ let loadSeq = 0
 let scrollPending = false
 let loadingMore = false
 let saveEditSequence = 0
+let editPreviousFocus = null
 
 const PAGE_FIRST = 10
 const PAGE_MORE = 20
@@ -132,13 +140,31 @@ watch(queryInput, (value) => {
     query.value = value
   }, 120)
 })
-watch(editing, (value) => {
-  if (value && !releaseEditBackgroundBlur) releaseEditBackgroundBlur = retainModalBlur()
+watch(editing, async (value) => {
+  if (!value) return
+  if (!releaseEditBackgroundBlur) releaseEditBackgroundBlur = retainModalBlur()
+  await nextTick()
+  focusModal(editOverlayRef.value)
 })
 
 function releaseEditBlur() {
   releaseEditBackgroundBlur?.()
   releaseEditBackgroundBlur = null
+}
+
+function finishEditClose() {
+  releaseEditBlur()
+  restoreFocusedElement(editPreviousFocus)
+  editPreviousFocus = null
+}
+
+function onEditModalKeydown(event) {
+  if (event.key === 'Escape') {
+    event.stopPropagation()
+    requestCloseEdit()
+    return
+  }
+  trapModalTab(event, editOverlayRef.value)
 }
 
 const {
@@ -287,6 +313,7 @@ async function createTemplate(payload) {
 
 function requestAction(name, template) {
   if (name === 'edit') {
+    editPreviousFocus = captureFocusedElement()
     editing.value = template
     return
   }
@@ -394,9 +421,9 @@ async function saveEdit(payload) {
     savingEdit.value = false
   }
 }
-function toggleFilterTag(name) {
+function toggleFilterTag(id) {
   const next = new Set(selectedTags.value)
-  next.has(name) ? next.delete(name) : next.add(name)
+  next.has(id) ? next.delete(id) : next.add(id)
   selectedTags.value = [...next]
 }
 
@@ -428,6 +455,7 @@ onBeforeUnmount(() => {
   stopChanged?.()
   filterResizeObserver?.disconnect()
   releaseEditBlur()
+  restoreFocusedElement(editPreviousFocus)
 })
 </script>
 
@@ -522,9 +550,9 @@ onBeforeUnmount(() => {
               <div>
                 <button
                   v-for="tag in tags"
-                  :key="tag.name"
-                  :class="{ active: selectedTags.includes(tag.name) }"
-                  @click="toggleFilterTag(tag.name)"
+                  :key="tag.id"
+                  :class="{ active: selectedTags.includes(tag.id) }"
+                  @click="toggleFilterTag(tag.id)"
                 >
                   {{ tag.name }}
                 </button>
@@ -583,12 +611,15 @@ onBeforeUnmount(() => {
   </section>
 
   <Teleport to="body">
-    <Transition name="tp-modal" @after-leave="releaseEditBlur">
+    <Transition name="tp-modal" @after-leave="finishEditClose">
       <div
         v-if="editing"
+        ref="editOverlayRef"
         class="tp-edit-overlay"
         data-modal-layer="template-editor"
+        tabindex="-1"
         @click.self="requestCloseEdit"
+        @keydown="onEditModalKeydown"
       >
         <section class="tp-edit-dialog" role="dialog" aria-modal="true" aria-label="修改循环模板">
           <header>
@@ -640,6 +671,8 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+  overflow: hidden;
+  border-radius: inherit;
   background: transparent;
 }
 .tp-page-header {
@@ -650,7 +683,7 @@ onBeforeUnmount(() => {
   min-height: 47rem;
   flex-shrink: 0;
   padding: 0 16rem;
-  border-bottom: 1px solid rgb(var(--bg-color) / 0.1);
+  border-bottom: 1px solid var(--ui-border-divider);
   color: var(--text-color);
   font-size: var(--fs-body);
   font-weight: 600;
@@ -686,15 +719,15 @@ onBeforeUnmount(() => {
   min-width: 0;
   height: 34rem;
   overflow: hidden;
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--ui-surface-control);
   transition:
     border-color 160ms ease,
     background-color 160ms ease;
 }
 .tp-search:focus-within {
-  border-color: rgb(var(--bg-color) / 0.18);
+  border-color: var(--ui-border-hover);
 }
 .tp-search svg {
   width: 16rem;
@@ -741,11 +774,11 @@ onBeforeUnmount(() => {
     transform var(--motion-fast) ease;
 }
 .tp-search button:hover {
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .tp-search button:active {
-  transform: scale(0.94);
+  transform: scale(0.98);
 }
 .tp-filter-button {
   display: inline-flex;
@@ -754,10 +787,10 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   min-height: 30rem;
   padding: 0 7rem;
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
-  background: rgba(255, 255, 255, 0.05);
-  color: #000;
+  background: var(--ui-surface-control);
+  color: var(--text-color);
   opacity: 0.45;
   font: inherit;
   font-size: var(--fs-secondary);
@@ -770,16 +803,16 @@ onBeforeUnmount(() => {
     transform var(--motion-fast) ease;
 }
 .tp-filter-button:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #000;
+  border-color: var(--ui-border-hover);
+  color: var(--text-color);
   opacity: 0.7;
 }
 .tp-filter-button.is-open {
-  border-color: rgb(var(--bg-color) / 0.18);
+  border-color: var(--ui-border-hover);
   opacity: 1;
 }
 .tp-filter-button:active {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
 .tp-filter-button svg {
   width: 13rem;
@@ -812,11 +845,11 @@ onBeforeUnmount(() => {
     transform var(--motion-fast) ease;
 }
 .tp-refresh-button:hover {
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .tp-refresh-button:active {
-  transform: scale(0.94);
+  transform: scale(0.98);
 }
 .tp-refresh-button svg {
   width: 16rem;
@@ -863,7 +896,7 @@ onBeforeUnmount(() => {
   gap: 0;
   box-sizing: border-box;
   padding: 4rem 7rem 8rem;
-  border: 1px solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 10rem;
   background: transparent;
   overflow: hidden;
@@ -896,7 +929,7 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, #0a84ff 8%, transparent);
 }
 .tp-filter-reset:active {
-  transform: scale(0.95);
+  transform: scale(0.98);
 }
 .tp-filter-reset.is-acknowledged {
   background: color-mix(in srgb, #0a84ff 11%, transparent);
@@ -936,9 +969,9 @@ onBeforeUnmount(() => {
 .tp-filter-tags button {
   min-height: 27rem;
   padding: 0 10rem;
-  border: 1rem solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
-  background: rgba(128, 128, 128, 0.05);
+  background: var(--ui-surface-control);
   color: var(--text-color-secondary);
   font: inherit;
   font-size: var(--fs-secondary);
@@ -952,12 +985,12 @@ onBeforeUnmount(() => {
 }
 .tp-filter-chips button:hover,
 .tp-filter-tags button:hover {
-  background: rgba(128, 128, 128, 0.1);
+  border-color: var(--ui-border-hover);
   color: var(--text-color);
 }
 .tp-filter-chips button:active,
 .tp-filter-tags button:active {
-  transform: scale(0.96);
+  transform: scale(0.98);
 }
 .tp-filter-chips button.active,
 .tp-filter-tags button.active {
@@ -1049,12 +1082,12 @@ onBeforeUnmount(() => {
 }
 .tp-edit-overlay {
   position: fixed;
-  z-index: 21000;
+  z-index: var(--z-global-editor);
   inset: 0;
   display: grid;
   place-items: center;
   padding: 22rem;
-  background: rgba(18, 20, 24, 0.04);
+  background: var(--surface-modal-scrim);
 }
 .tp-edit-dialog {
   display: flex;
@@ -1063,9 +1096,9 @@ onBeforeUnmount(() => {
   height: min(639rem, 100%);
   min-height: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--text-color) 10%, transparent);
+  border: 1px solid var(--ui-border-control);
   border-radius: 16rem;
-  background-color: rgb(var(--bg-color) / var(--glass-opacity-base));
+  background-color: var(--surface-modal);
   box-shadow: 0 22rem 56rem rgba(0, 0, 0, 0.28);
 }
 .tp-edit-dialog header {
@@ -1075,7 +1108,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   min-height: 42rem;
   padding: 0 12rem 0 16rem;
-  border-bottom: 1px solid color-mix(in srgb, var(--text-color) 8%, transparent);
+  border-bottom: 1px solid var(--ui-border-divider);
   color: var(--text-color);
   font-size: var(--fs-body);
   font-weight: 600;
@@ -1100,11 +1133,11 @@ onBeforeUnmount(() => {
     transform 140ms var(--ease-standard);
 }
 .tp-edit-dialog header button:hover {
-  background: color-mix(in srgb, var(--text-color) 9%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .tp-edit-dialog header button:active {
-  transform: scale(0.9);
+  transform: scale(0.98);
 }
 .tp-edit-dialog header button:disabled {
   opacity: 0.38;

@@ -457,8 +457,8 @@ onBeforeUnmount(() => {
   right: 0;
   top: 50%;
   height: var(--ts-row-height);
-  border-top: 1px solid color-mix(in srgb, var(--text-color) 20%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--text-color) 20%, transparent);
+  border-top: 1px solid var(--ui-border-hover);
+  border-bottom: 1px solid var(--ui-border-hover);
   transform: translateY(-50%);
   pointer-events: none;
 }

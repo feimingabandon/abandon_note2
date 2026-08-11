@@ -336,7 +336,6 @@ onUnmounted(() => {
 <style scoped>
 .src-card {
   --card-surface-opacity: 0.08;
-  --card-surface-hover-opacity: 0.12;
   display: grid;
   grid-template-columns: 21rem minmax(0, 1fr);
   gap: 9rem;
@@ -344,28 +343,23 @@ onUnmounted(() => {
   min-width: 0;
   padding: 12rem 14rem 11rem;
   overflow: visible;
-  border: 1px solid color-mix(in srgb, var(--text-color) 7%, transparent);
+  border: 1px solid var(--ui-border-divider);
   border-radius: 11rem;
   background: rgb(var(--bg-color) / var(--card-surface-opacity));
   color: var(--text-color);
   cursor: default;
   transition:
     border-color var(--motion-control) ease,
-    background-color var(--motion-control) ease,
-    box-shadow var(--motion-control) ease;
+    background-color var(--motion-control) ease;
 }
 .src-card:hover {
-  border-color: color-mix(in srgb, var(--text-color) 12%, transparent);
-  background: rgb(var(--bg-color) / var(--card-surface-hover-opacity));
-  box-shadow: 0 5rem 18rem rgba(0, 0, 0, 0.05);
+  border-color: var(--ui-border-control);
 }
 .src-card--in_progress {
   --card-surface-opacity: 0.14;
-  --card-surface-hover-opacity: 0.18;
 }
 .src-card--completed {
   --card-surface-opacity: 0.075;
-  --card-surface-hover-opacity: 0.095;
 }
 .src-card :deep(.sr-control) {
   pointer-events: none;
@@ -462,12 +456,12 @@ onUnmounted(() => {
 .src-disclosure:hover,
 .src-disclosure:focus-visible {
   outline: none;
-  background: color-mix(in srgb, var(--text-color) 7%, transparent);
+  background: var(--ui-fill-hover);
   color: color-mix(in srgb, var(--text-color) 82%, transparent);
 }
 .src-context-menu-shell {
   position: fixed;
-  z-index: 10001;
+  z-index: var(--z-global-popover);
   width: 128rem;
   overflow: hidden;
   border-radius: 10rem;
@@ -504,7 +498,7 @@ onUnmounted(() => {
 .src-context-menu button:hover:not(:disabled),
 .src-context-menu button:focus-visible:not(:disabled) {
   outline: none;
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
 }
 .src-context-menu button:disabled {
   opacity: 0.38;

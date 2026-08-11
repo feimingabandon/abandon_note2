@@ -22,6 +22,11 @@
   --sticky-font-size: 16px;
   --sticky-corner-radius: 0;
   --sticky-content-bottom-space: 18px;
+  --z-local-base: 0;
+  --z-local-content: 1;
+  --z-local-raised: 2;
+  --z-local-overlay: 3;
+  --z-local-top: 4;
   font-family: 'OPPOSans', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   font-weight: 500;
 }
@@ -79,7 +84,7 @@ input {
 
 .sticky-actions {
   position: relative;
-  z-index: 2;
+  z-index: var(--z-local-raised);
   display: flex;
   align-items: center;
   gap: 1px;
@@ -147,7 +152,7 @@ input {
   position: absolute;
   top: 28px;
   left: 0;
-  z-index: 5;
+  z-index: var(--z-local-top);
   width: 132px;
   padding: 8px;
   border: 1px solid color-mix(in srgb, var(--sticky-text) 18%, transparent);
@@ -167,7 +172,7 @@ input {
   min-width: 22px;
   height: 22px;
   padding: 0;
-  border: 1px solid rgba(31, 35, 40, 0.22);
+  border: 1px solid color-mix(in srgb, var(--sticky-text) 22%, transparent);
 }
 
 .sticky-actions .sticky-swatch[aria-pressed='true'] {

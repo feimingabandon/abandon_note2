@@ -14,7 +14,7 @@ function findCurrentBackgroundLayer() {
       return readLayerZIndex(layer) >= readLayerZIndex(top) ? layer : top
     }, null)
   }
-  return document.querySelector('.app-scene')
+  return document.querySelector('.app-scene, .month-scene')
 }
 
 function retainTarget(target) {

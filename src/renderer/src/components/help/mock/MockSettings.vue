@@ -193,7 +193,7 @@
 .ms-hex,
 .ms-stepper {
   padding: 3rem 8rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+  border: 1px solid var(--ui-border-hover);
   border-radius: 7rem;
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);

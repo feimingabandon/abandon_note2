@@ -5,6 +5,7 @@ import TitlebarActions from './components/system/TitlebarActions.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue'
 import SettingsPanel from './components/system/SettingsPanel.vue'
 import MessageToast from './components/system/MessageToast.vue'
+import MonthWorkspace from './components/month/MonthWorkspace.vue'
 import UpdateDialog from './components/system/UpdateDialog.vue'
 import RemoteNoticeDialog from './components/system/RemoteNoticeDialog.vue'
 import { createMessageProvider } from './composables/useMessage.js'
@@ -20,6 +21,8 @@ const titlebarStyle = ref(defaults.appearance.titlebarStyle)
 const showSettings = ref(false)
 const showUpdateDialog = ref(false)
 const showRemoteNoticeDialog = ref(false)
+const monthBusinessModalOpen = ref(false)
+const monthWorkspaceRef = ref(null)
 const pendingRemoteNotices = ref([])
 const updateChecking = ref(false)
 const updateResult = ref(null)
@@ -32,6 +35,7 @@ let releaseSettingsBackgroundBlur = null
 let stopSettingsListener = null
 let stopAppMessageListener = null
 let stopRemoteNoticesListener = null
+let stopNotificationOpenListener = null
 
 function openSettings() {
   if (!releaseSettingsBackgroundBlur) releaseSettingsBackgroundBlur = retainModalBlur()
@@ -58,7 +62,13 @@ async function syncWallpaper(snapshot) {
   }
   try {
     const data = await window.api.getWallpaperData(Number(wallpaper.activeId), false)
-    if (sequence !== wallpaperSequence || !data) return
+    if (sequence !== wallpaperSequence) return
+    if (!data) {
+      wallpaperVisible.value = false
+      wallpaperUrl.value = ''
+      wallpaperRenderKey.value = null
+      return
+    }
     wallpaperUrl.value = data
     wallpaperRenderKey.value = Number(wallpaper.activeId)
     wallpaperVisible.value = true
@@ -89,6 +99,19 @@ async function loadPendingRemoteNotices({ show = false } = {}) {
 function onRemoteNoticeAcknowledged(id) {
   pendingRemoteNotices.value = pendingRemoteNotices.value.filter((notice) => notice.id !== id)
   if (!pendingRemoteNotices.value.length) showRemoteNoticeDialog.value = false
+}
+
+async function openNoteFromNotification(payload) {
+  const noteId = Number(payload?.id)
+  if (!Number.isInteger(noteId) || noteId <= 0) return
+  const closingModal = showSettings.value || showUpdateDialog.value || showRemoteNoticeDialog.value
+  showSettings.value = false
+  releaseSettingsBlur()
+  showUpdateDialog.value = false
+  showRemoteNoticeDialog.value = false
+  await new Promise((resolve) => requestAnimationFrame(resolve))
+  if (closingModal) await new Promise((resolve) => setTimeout(resolve, 240))
+  await monthWorkspaceRef.value?.openNote?.(noteId)
 }
 
 async function checkForUpdates() {
@@ -126,6 +149,9 @@ onMounted(async () => {
   stopRemoteNoticesListener = window.api.onRemoteNoticesChanged?.(() => {
     void loadPendingRemoteNotices({ show: true })
   })
+  stopNotificationOpenListener = window.api.onNotificationOpenNote?.((payload) => {
+    void openNoteFromNotification(payload)
+  })
   document.addEventListener('mouseenter', onMouseEnter)
   document.addEventListener('mouseleave', onMouseLeave)
   await loadPendingRemoteNotices({ show: true })
@@ -136,6 +162,7 @@ onUnmounted(() => {
   stopSettingsListener?.()
   stopAppMessageListener?.()
   stopRemoteNoticesListener?.()
+  stopNotificationOpenListener?.()
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
   releaseSettingsBlur()
@@ -158,14 +185,13 @@ onUnmounted(() => {
 
     <div
       class="month-scene"
-      :class="{ 'is-ui-background-blurred': showSettings }"
-      :inert="showSettings || showUpdateDialog || showRemoteNoticeDialog"
+      :class="{ 'is-ui-background-blurred': showSettings || monthBusinessModalOpen }"
+      :inert="showSettings || monthBusinessModalOpen || showUpdateDialog || showRemoteNoticeDialog"
     >
       <ResizeHandles :locked="locked" />
       <AppTitlebar
         v-model:locked="locked"
         v-model:always-on-top="alwaysOnTop"
-        title="月视图"
         :style-variant="titlebarStyle"
       >
         <TitlebarActions :style-variant="titlebarStyle">
@@ -185,7 +211,12 @@ onUnmounted(() => {
           </button>
         </TitlebarActions>
       </AppTitlebar>
-      <main class="month-content" aria-label="月视图内容区域" />
+      <main class="month-content" aria-label="月视图内容区域">
+        <MonthWorkspace
+          ref="monthWorkspaceRef"
+          @modal-state-change="monthBusinessModalOpen = $event"
+        />
+      </main>
     </div>
 
     <SettingsPanel
@@ -227,7 +258,7 @@ onUnmounted(() => {
 
 .month-scene {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-local-content);
   display: flex;
   flex-direction: column;
   transition: filter 180ms ease;
@@ -240,7 +271,7 @@ onUnmounted(() => {
 
 .month-wallpaper {
   position: absolute;
-  z-index: 0;
+  z-index: var(--z-local-base);
   inset: 0;
   overflow: hidden;
   border-radius: inherit;

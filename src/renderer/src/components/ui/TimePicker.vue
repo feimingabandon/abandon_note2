@@ -7,7 +7,8 @@ const props = defineProps({
   modelValue: { type: String, default: '09:00' },
   disabled: { type: Boolean, default: false },
   width: { type: [String, Number], default: '112rem' },
-  ariaLabel: { type: String, default: '选择时间' }
+  ariaLabel: { type: String, default: '选择时间' },
+  panelTitle: { type: String, default: '生成时间' }
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
@@ -163,7 +164,7 @@ onBeforeUnmount(() => {
           :aria-label="ariaLabel"
         >
           <header>
-            <span>生成时间</span>
+            <span>{{ panelTitle }}</span>
             <strong>{{ displayTime }}</strong>
           </header>
 
@@ -205,9 +206,9 @@ onBeforeUnmount(() => {
   width: 100%;
   min-height: 32rem;
   padding: 0 9rem 0 11rem;
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 7rem;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--ui-surface-control);
   color: var(--text-color);
   font: inherit;
   font-variant-numeric: tabular-nums;
@@ -220,8 +221,7 @@ onBeforeUnmount(() => {
     transform var(--motion-fast) var(--ease-standard);
 }
 .time-picker__trigger:hover:not(:disabled) {
-  border-color: rgb(var(--bg-color) / 0.18);
-  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--ui-border-hover);
 }
 .time-picker__trigger.is-open {
   border-color: color-mix(in srgb, #0a84ff 72%, transparent);
@@ -246,7 +246,7 @@ onBeforeUnmount(() => {
 }
 .time-picker__panel {
   position: fixed;
-  z-index: 30000;
+  z-index: var(--z-global-popover);
   display: flex;
   box-sizing: border-box;
   width: 224rem;
@@ -267,7 +267,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   min-height: 42rem;
   padding: 0 13rem;
-  border-bottom: 1px solid color-mix(in srgb, var(--text-color) 8%, transparent);
+  border-bottom: 1px solid var(--ui-border-divider);
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
 }
@@ -310,7 +310,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   min-height: 44rem;
   padding: 0 10rem;
-  border-top: 1px solid color-mix(in srgb, var(--text-color) 8%, transparent);
+  border-top: 1px solid var(--ui-border-divider);
 }
 .time-picker__panel footer > div {
   display: flex;
@@ -331,7 +331,7 @@ onBeforeUnmount(() => {
     transform var(--motion-fast) var(--ease-standard);
 }
 .time-picker__panel footer button:active {
-  transform: scale(0.96);
+  transform: scale(0.98);
 }
 .time-picker__now {
   background: color-mix(in srgb, #0a84ff 10%, transparent);
@@ -345,7 +345,7 @@ onBeforeUnmount(() => {
   color: var(--text-color-secondary);
 }
 .time-picker__cancel:hover {
-  background: color-mix(in srgb, var(--text-color) 7%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .time-picker__done {

@@ -68,15 +68,15 @@ export function runRecurringTemplates({ now = Date.now(), reason = 'scheduled' }
             deleteNote(previous.id)
         }
 
-        const tagNames = db
-          .prepare('SELECT tag_name FROM template_tags WHERE template_id = ? ORDER BY rowid')
+        const tagIds = db
+          .prepare('SELECT tag_id FROM template_tags WHERE template_id = ? ORDER BY rowid')
           .all(template.id)
-          .map((row) => row.tag_name)
+          .map((row) => row.tag_id)
         const note = createRecurringNoteSnapshot({
           content: template.content,
           effectiveAt: scheduledAt,
           isPinned: template.is_pinned,
-          tagNames
+          tagIds
         })
         const nextRunAt = calculateNextRun(rule, scheduledAt, template.schedule_anchor_at)
 
@@ -90,7 +90,9 @@ export function runRecurringTemplates({ now = Date.now(), reason = 'scheduled' }
 
         return {
           type: 'generated',
-          notification: template.notify_enabled ? { content: note.content || '' } : null
+          notification: template.notify_enabled
+            ? { id: note.id, content: note.content || '' }
+            : null
         }
       })()
 

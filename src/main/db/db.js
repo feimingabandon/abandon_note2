@@ -19,6 +19,7 @@ import { readdir, rm } from 'fs/promises'
 import { randomUUID } from 'crypto'
 import { clearDb, getDb as getConnectionDb, setDb } from './db-connection.js'
 import { createDatabaseSchema } from './db-schema.js'
+import { createTagIdMigrationBackup } from './db-migration-backup.js'
 import { resolveImagePath } from './db-images.js'
 
 /** 数据库实例引用，整个应用生命周期内复用 */
@@ -40,6 +41,7 @@ export function initDatabase() {
     connection.pragma('synchronous = NORMAL')
     connection.pragma('cache_size = -8000')
     connection.pragma('foreign_keys = ON')
+    createTagIdMigrationBackup(connection, dbPath)
     createDatabaseSchema(connection)
     db = connection
     setDb(connection)
@@ -157,12 +159,45 @@ async function recoverImageDeletionOperation(operationDirectory) {
   return true
 }
 
+async function recoverImageAdditionOperation(operationDirectory) {
+  const manifestPath = join(operationDirectory, ATTACHMENT_OPERATION_MANIFEST)
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  if (manifest?.version !== 1 || manifest?.type !== 'image-add') return false
+
+  const pendingPath = join(operationDirectory, 'payload')
+  if (existsSync(pendingPath)) {
+    // 文件仍在暂存区，说明尚未进入数据库事务，可以直接丢弃。
+    await rm(operationDirectory, { recursive: true, force: true })
+    return true
+  }
+
+  const targetManifestPath = join(operationDirectory, 'target.json')
+  if (!existsSync(targetManifestPath)) {
+    await rm(operationDirectory, { recursive: true, force: true })
+    return true
+  }
+  const target = JSON.parse(readFileSync(targetManifestPath, 'utf8'))
+  if (target?.version !== 1 || target?.type !== 'image-add-target' || !target.relativePath) {
+    throw new Error('附件新增恢复目标无效')
+  }
+
+  const finalPath = resolveImagePath(target.relativePath)
+  const row = getConnectionDb()
+    .prepare('SELECT 1 FROM note_attachments WHERE file_path = ? LIMIT 1')
+    .get(target.relativePath)
+  // 重命名成功但事务未提交时，最终文件没有数据库记录，必须清理孤儿文件。
+  if (!row && existsSync(finalPath)) await rm(finalPath, { force: true })
+  await rm(operationDirectory, { recursive: true, force: true })
+  return true
+}
+
 async function recoverAttachmentStagingDirectory(stagingDirectory) {
   const entries = await readdir(stagingDirectory, { withFileTypes: true })
   for (const entry of entries) {
     const path = join(stagingDirectory, entry.name)
     if (entry.isDirectory()) {
       try {
+        if (await recoverImageAdditionOperation(path)) continue
         if (await recoverImageDeletionOperation(path)) continue
       } catch (error) {
         console.warn('[images] 恢复暂存附件失败，保留现场:', error)

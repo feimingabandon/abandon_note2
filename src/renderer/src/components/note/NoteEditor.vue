@@ -14,6 +14,11 @@ import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import NoteDurationField from './NoteDurationField.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
+import {
+  createSafeScheduleShortcutTimestamp,
+  MIN_SCHEDULE_LEAD_TIME_MINUTES,
+  MIN_SCHEDULE_LEAD_TIME_MS
+} from '../../../../shared/note-scheduling-rules.js'
 
 const props = defineProps({
   note: { type: Object, required: true }
@@ -34,15 +39,13 @@ const effectiveAt = ref('')
 const durationDays = ref(1)
 const notifyEnabled = ref(false)
 const isPinned = ref(false)
-const tagNames = ref([])
+const tagIds = ref([])
 const saving = ref(false)
 const mounted = ref(false)
 const imagePickerRef = ref(null)
 const attachmentDirty = ref(false)
 const initialSnapshot = ref(null)
 const confirmVisible = ref(false)
-
-const FIVE_MINUTES = 5 * 60 * 1000
 
 function pad(value) {
   return String(value).padStart(2, '0')
@@ -55,7 +58,7 @@ function formatDateTime(timestamp) {
 }
 
 function normalizedTags(tags) {
-  return [...tags].map(String).sort((a, b) => a.localeCompare(b))
+  return [...tags].map(Number).sort((a, b) => a - b)
 }
 
 function createSnapshot(note) {
@@ -66,7 +69,7 @@ function createSnapshot(note) {
     durationDays: Number(note.duration_days) || 1,
     notifyEnabled: systemNotificationsSupported && !!note.notify_enabled,
     isPinned: !!note.is_pinned,
-    tagNames: normalizedTags(note.tags?.map((tag) => tag.name) || [])
+    tagIds: normalizedTags(note.tags?.map((tag) => tag.id) || [])
   }
 }
 
@@ -80,7 +83,7 @@ function resetFromNote(note) {
   durationDays.value = snapshot.durationDays
   notifyEnabled.value = snapshot.notifyEnabled
   isPinned.value = snapshot.isPinned
-  tagNames.value = [...snapshot.tagNames]
+  tagIds.value = [...snapshot.tagIds]
   attachmentDirty.value = false
 }
 
@@ -108,7 +111,10 @@ const today = computed(() => {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate())
 })
 const dateShortcuts = [
-  { label: '今天', getValue: () => new Date(Date.now() + FIVE_MINUTES) },
+  {
+    label: '今天',
+    getValue: () => new Date(createSafeScheduleShortcutTimestamp())
+  },
   {
     label: '明天',
     getValue: () => {
@@ -129,7 +135,7 @@ const dateShortcuts = [
 
 const scheduleHelp = computed(() => {
   if (status.value === 'initialized')
-    return '仅初始化状态允许修改，新的生效时间需在当前时间 5 分钟之后。'
+    return `仅初始化状态允许修改，新的生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后。`
   if (status.value === 'in_progress') return '便签生效后不能修改原始生效时间。'
   return '已完成便签的生效时间不可修改。'
 })
@@ -151,7 +157,7 @@ const hasChanges = computed(() => {
     durationDays.value !== initial.durationDays ||
     notifyEnabled.value !== initial.notifyEnabled ||
     isPinned.value !== initial.isPinned ||
-    JSON.stringify(normalizedTags(tagNames.value)) !== JSON.stringify(initial.tagNames)
+    JSON.stringify(normalizedTags(tagIds.value)) !== JSON.stringify(initial.tagIds)
   )
 })
 
@@ -180,7 +186,7 @@ async function handleSave() {
     return
   }
 
-  if (tagNames.value.length > MAX_ASSIGNED_TAGS) {
+  if (tagIds.value.length > MAX_ASSIGNED_TAGS) {
     showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)
     return
   }
@@ -192,8 +198,8 @@ async function handleSave() {
       return
     }
     const effectiveAtChanged = effectiveAt.value !== initialSnapshot.value?.effectiveAt
-    if (effectiveAtChanged && effectiveTimestamp - Date.now() < FIVE_MINUTES) {
-      showMessage('warning', '生效时间需在当前时间 5 分钟之后')
+    if (effectiveAtChanged && effectiveTimestamp - Date.now() < MIN_SCHEDULE_LEAD_TIME_MS) {
+      showMessage('warning', `生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后`)
       return
     }
   }
@@ -214,7 +220,7 @@ async function handleSave() {
         notifyEnabled: systemNotificationsSupported && notifyEnabled.value,
         isPinned: isPinned.value
       },
-      tagNames: [...tagNames.value],
+      tagIds: [...tagIds.value],
       ...attachmentChanges
     })
     showMessage('success', '便签已保存')
@@ -236,6 +242,7 @@ defineExpose({ requestClose })
       <ResizableTextarea
         v-model="content"
         class="ne-stagger"
+        initial-focus
         style="animation-delay: 0ms"
         placeholder="输入便签内容…（Enter 换行）"
         :rows="4"
@@ -282,7 +289,7 @@ defineExpose({ requestClose })
           >标签<HelpButton text="每条便签最多保留一个分类标签；历史多标签需删减后才能保存。"
         /></label>
         <TagSelector
-          v-model="tagNames"
+          v-model="tagIds"
           :max-selected="MAX_ASSIGNED_TAGS"
           @selection-limit-exceeded="showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)"
         />
@@ -448,7 +455,7 @@ defineExpose({ requestClose })
   color: var(--text-color-secondary);
 }
 .ne-dismiss:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text-color) 13%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .ne-submit {
@@ -462,7 +469,7 @@ defineExpose({ requestClose })
 }
 .ne-dismiss:active:not(:disabled),
 .ne-submit:active:not(:disabled) {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
 .ne-dismiss:disabled,
 .ne-submit:disabled {

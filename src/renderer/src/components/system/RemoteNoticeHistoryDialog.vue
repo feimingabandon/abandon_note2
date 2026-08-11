@@ -109,7 +109,7 @@ watch(visible, (value) => {
   margin-top: 6rem;
 }
 
-/* 卡片布局对齐便签列表（NoteCard）：圆角长方形 + 半透明背景，悬停加深 */
+/* 卡片布局对齐便签列表（NoteCard）：圆角长方形 + 半透明背景。 */
 .history-list button {
   display: flex;
   align-items: center;
@@ -117,7 +117,7 @@ watch(visible, (value) => {
   width: 100%;
   min-height: 52rem;
   padding: 12rem 14rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 7%, transparent);
+  border: 1px solid var(--ui-border-divider);
   border-radius: 11rem;
   color: var(--text-color);
   background: rgb(var(--bg-color) / 0.08);
@@ -130,8 +130,7 @@ watch(visible, (value) => {
 }
 
 .history-list button:hover {
-  border-color: color-mix(in srgb, var(--text-color) 12%, transparent);
-  background: rgb(var(--bg-color) / 0.14);
+  border-color: var(--ui-border-control);
 }
 
 .history-state {

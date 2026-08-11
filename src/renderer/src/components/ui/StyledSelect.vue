@@ -26,6 +26,7 @@ const props = defineProps({
   placeholder: { type: String, default: '-' },
   size: { type: String, default: '' },
   width: { type: [String, Number], default: '' },
+  ariaLabel: { type: String, default: '' },
   disabled: { type: Boolean, default: false }
 })
 
@@ -72,9 +73,8 @@ function updatePanelPosition() {
     top: rect.bottom + 4 + 'px',
     left: rect.left + 'px',
     minWidth: rect.width + 'px',
-    // Teleport 到 body 后必须高于所有宿主容器：循环模板层（15000）、编辑模态层（20000）、
-    // AppModalShell 系模态（41000/43000，如应用日志、软件通知），否则面板会被压在模态下透色。
-    zIndex: 45000
+    // Teleport 到 body 后统一进入全局 Popover 层，可覆盖普通编辑器与 AppModalShell。
+    zIndex: 'var(--z-global-popover)'
   }
 }
 
@@ -86,11 +86,11 @@ function select(opt) {
 }
 
 function onEnter(el, done) {
-  enterPopover(el, done, 'menu')
+  enterPopover(el, done, 'dropdown')
 }
 
 function onLeave(el, done) {
-  leavePopover(el, done, 'menu')
+  leavePopover(el, done, 'dropdown')
 }
 
 // 点击外部关闭
@@ -127,6 +127,9 @@ onBeforeUnmount(() => {
       class="sel-trigger"
       :class="{ 'is-open': open, 'is-disabled': disabled }"
       :disabled="disabled"
+      :aria-label="ariaLabel || undefined"
+      aria-haspopup="listbox"
+      :aria-expanded="open"
       @click="toggle"
     >
       <span class="sel-label" :class="{ 'is-placeholder': !modelValue && modelValue !== 0 }">
@@ -153,6 +156,7 @@ onBeforeUnmount(() => {
                 :key="opt.value"
                 class="sel-option"
                 :class="{ 'is-active': modelValue === opt.value, 'is-disabled': opt.disabled }"
+                :data-value="String(opt.value)"
                 :disabled="opt.disabled"
                 @click="select(opt)"
               >
@@ -183,18 +187,20 @@ onBeforeUnmount(() => {
   font-size: inherit;
   font-family: inherit;
   color: var(--text-color);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
+  background: var(--ui-surface-control);
+  border: 1px solid var(--ui-border-control);
   border-radius: 6rem;
   cursor: pointer;
   outline: none;
-  transition: border-color 150ms ease;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease;
 }
 .sel-trigger:hover:not(.is-disabled) {
-  border-color: rgb(var(--bg-color) / 0.18);
+  border-color: var(--ui-border-hover);
 }
 .sel-trigger.is-open {
-  border-color: rgb(var(--bg-color) / 0.25);
+  border-color: var(--ui-border-hover);
 }
 .sel-trigger.is-disabled {
   opacity: 0.4;
@@ -216,7 +222,13 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   opacity: 0.45;
   color: var(--text-color);
-  transition: transform 200ms ease;
+  transition:
+    transform 200ms ease,
+    opacity 160ms ease;
+}
+.sel-trigger:hover:not(.is-disabled) .sel-arrow,
+.sel-trigger.is-open .sel-arrow {
+  opacity: 0.78;
 }
 .sel-arrow.is-open {
   transform: rotate(180deg);
@@ -228,7 +240,7 @@ onBeforeUnmount(() => {
   box-shadow: 0 10rem 30rem rgba(0, 0, 0, 0.24);
   overflow: hidden;
   transform-origin: top center;
-  will-change: transform, opacity;
+  will-change: clip-path;
 }
 .sel-panel-glass {
   min-width: 100%;
@@ -257,7 +269,7 @@ onBeforeUnmount(() => {
   transition: background-color 120ms ease;
 }
 .sel-option:hover {
-  background-color: rgba(255, 255, 255, 0.1);
+  background-color: var(--ui-fill-hover);
 }
 .sel-option.is-active {
   color: #0071e3;

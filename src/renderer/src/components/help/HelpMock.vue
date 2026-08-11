@@ -39,7 +39,7 @@ defineProps({
 .help-mock-stage {
   position: relative;
   padding: 14rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 10%, transparent);
+  border: 1px solid var(--ui-border-control);
   border-radius: 16rem;
   background:
     linear-gradient(180deg, rgb(var(--bg-color) / 0.05), rgb(var(--bg-color) / 0.02)),
@@ -60,7 +60,7 @@ defineProps({
 /* ---- 编号标注圆点：叠加在仿造件之上，呼应真实截图的圈注 ---- */
 .help-mock-pin {
   position: absolute;
-  z-index: 5;
+  z-index: var(--z-local-top);
   display: grid;
   place-items: center;
   width: 20rem;

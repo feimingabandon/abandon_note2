@@ -113,6 +113,8 @@ npm test        # vitest 单元测试 + Electron 集成测试
 npm run lint    # eslint 检查
 ```
 
+界面、主题和组件样式改动请遵守 [UI 材质与边线开发标准](docs/UI_DESIGN_STANDARD.md)。
+
 ### 构建打包
 
 ```bash

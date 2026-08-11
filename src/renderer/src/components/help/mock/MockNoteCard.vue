@@ -107,7 +107,7 @@ const STATUS_LABEL = {
   gap: 9rem;
   min-width: 0;
   padding: 12rem 14rem 11rem;
-  border: 1px solid color-mix(in srgb, var(--text-color) 7%, transparent);
+  border: 1px solid var(--ui-border-divider);
   border-radius: 11rem;
   background: rgb(var(--bg-color) / var(--card-surface-opacity));
   color: var(--text-color);
@@ -135,7 +135,7 @@ const STATUS_LABEL = {
 
 .mc-body {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-local-content);
   min-width: 0;
 }
 .mc-text {

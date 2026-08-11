@@ -505,7 +505,7 @@ onBeforeUnmount(() => {
   margin-top: 6rem;
   padding: 14rem;
   border-radius: 12rem;
-  background: color-mix(in srgb, var(--text-color) 4%, transparent);
+  background: var(--ui-surface-subtle);
 }
 .wp-heading {
   display: flex;
@@ -547,9 +547,9 @@ onBeforeUnmount(() => {
   justify-content: center;
   gap: 7rem;
   min-height: 54rem;
-  border: 1px dashed color-mix(in srgb, var(--text-color) 18%, transparent);
+  border: 1px dashed var(--ui-border-hover);
   border-radius: 10rem;
-  background: rgba(128, 128, 128, 0.03);
+  background: var(--ui-surface-subtle);
   color: var(--text-color);
   cursor: pointer;
   transition:
@@ -559,10 +559,9 @@ onBeforeUnmount(() => {
 }
 .wp-source:hover {
   border-color: rgba(0, 113, 227, 0.55);
-  background: rgba(128, 128, 128, 0.06);
 }
 .wp-source:active {
-  transform: scale(0.985);
+  transform: scale(0.98);
 }
 .wp-source-icon {
   font-size: 20rem;
@@ -602,7 +601,7 @@ onBeforeUnmount(() => {
     background 150ms ease;
 }
 .wp-library-toggle:hover {
-  background: color-mix(in srgb, var(--text-color) 4%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .wp-library-toggle-meta {
@@ -635,7 +634,7 @@ onBeforeUnmount(() => {
   padding: 18rem;
   text-align: center;
   border-radius: 9rem;
-  background: color-mix(in srgb, var(--text-color) 3%, transparent);
+  background: var(--ui-surface-subtle);
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
 }
@@ -668,7 +667,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   border: 1px solid transparent;
   border-radius: 10rem;
-  background: color-mix(in srgb, var(--text-color) 4%, transparent);
+  background: var(--ui-surface-subtle);
   transition:
     border-color 160ms ease,
     opacity 180ms ease,
@@ -691,7 +690,7 @@ onBeforeUnmount(() => {
   width: 100%;
   aspect-ratio: 16/10;
   object-fit: cover;
-  background: color-mix(in srgb, var(--text-color) 5%, transparent);
+  background: var(--ui-surface-control);
 }
 .wp-card img {
   animation: wp-thumb-in 180ms ease both;
@@ -770,7 +769,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .wp-card-actions button:hover {
-  background: color-mix(in srgb, var(--text-color) 7%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .wp-card-actions button:disabled {

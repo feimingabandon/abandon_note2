@@ -6,7 +6,8 @@ const props = defineProps({
   placeholder: { type: String, default: '' },
   rows: { type: Number, default: 4 },
   minHeight: { type: Number, default: 60 },
-  maxHeight: { type: Number, default: 300 }
+  maxHeight: { type: Number, default: 300 },
+  initialFocus: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -61,6 +62,7 @@ defineExpose({ focus })
       :value="modelValue"
       :placeholder="placeholder"
       :rows="rows"
+      :data-modal-initial-focus="initialFocus ? '' : null"
       @input="emit('update:modelValue', $event.target.value)"
     />
     <div class="rt-resize" @mousedown="onDragStart">
@@ -79,10 +81,10 @@ defineExpose({ focus })
   min-height: 90rem;
   padding: 10rem 12rem;
   resize: none;
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
   outline: none;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--ui-surface-control);
   color: var(--text-color);
   font-family: inherit;
   font-size: var(--fs-body);
@@ -91,7 +93,7 @@ defineExpose({ focus })
   transition: border-color 150ms ease;
 }
 .rt-textarea:focus {
-  border-color: rgb(var(--bg-color) / 0.18);
+  border-color: var(--ui-border-hover);
 }
 .rt-textarea::placeholder {
   color: var(--text-color-secondary);

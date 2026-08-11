@@ -19,6 +19,10 @@ import HelpButton from '../ui/HelpButton.vue'
 import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
+import {
+  MIN_SCHEDULE_LEAD_TIME_MINUTES,
+  MIN_SCHEDULE_LEAD_TIME_MS
+} from '../../../../shared/note-scheduling-rules.js'
 
 const emit = defineEmits(['create'])
 const props = defineProps({
@@ -139,7 +143,7 @@ onBeforeUnmount(() => {
 const content = ref('')
 const effectiveAt = ref('') // "YYYY-MM-DD HH:mm:ss" 或空（空 = 立即生效）
 const durationDays = ref(1)
-const tagNames = ref([]) // 仅保存用户自定义标签；内容类型由正文和附件推导
+const tagIds = ref([]) // 仅保存用户自定义标签 ID；内容类型由正文和附件推导
 const notifyEnabled = ref(false) // 启用系统提醒开关
 const isPinned = ref(false) // 置顶开关
 const submitState = ref('idle') // idle | creating | success
@@ -196,14 +200,13 @@ watch(effectiveAt, (val) => {
 // ============================================================
 // 创建便签
 // ============================================================
-const FIVE_MINUTES = 5 * 60 * 1000
 const SUCCESS_HOLD = 550
 
 function resetForm() {
   content.value = ''
   effectiveAt.value = ''
   durationDays.value = 1
-  tagNames.value = []
+  tagIds.value = []
   notifyEnabled.value = false
   isPinned.value = false
   imagePickerRef.value?.clearImages()
@@ -237,16 +240,19 @@ async function handleCreate() {
     return
   }
 
-  if (tagNames.value.length > MAX_ASSIGNED_TAGS) {
+  if (tagIds.value.length > MAX_ASSIGNED_TAGS) {
     showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)
     return
   }
 
-  // 校验：生效时间不能距离当下不足 5 分钟
+  // 校验：显式设置的生效时间必须留出统一的最小提前量。
   if (effectiveAt.value) {
     const ts = new Date(effectiveAt.value).getTime()
-    if (ts - Date.now() < FIVE_MINUTES) {
-      showMessage('warning', '生效时间需在当前时间 5 分钟之后，请重新选择')
+    if (ts - Date.now() < MIN_SCHEDULE_LEAD_TIME_MS) {
+      showMessage(
+        'warning',
+        `生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后，请重新选择`
+      )
       return
     }
   }
@@ -273,7 +279,7 @@ async function handleCreate() {
     await window.api.createNoteWithAssets({
       options,
       images: imgs,
-      tagNames: [...tagNames.value]
+      tagIds: [...tagIds.value]
     })
 
     submitState.value = 'success'
@@ -354,7 +360,7 @@ async function handleCreate() {
           >标签<HelpButton text="每条便签最多设置一个分类标签；正文和图片类型由系统自动识别。"
         /></label>
         <TagSelector
-          v-model="tagNames"
+          v-model="tagIds"
           :max-selected="MAX_ASSIGNED_TAGS"
           @selection-limit-exceeded="showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)"
         />
@@ -534,7 +540,7 @@ async function handleCreate() {
   translate: 0 -2rem;
 }
 .nnp-submit:active:not(:disabled) {
-  transform: scale(0.985);
+  transform: scale(0.98);
   transition:
     background-color var(--motion-fast) ease,
     transform 70ms ease;

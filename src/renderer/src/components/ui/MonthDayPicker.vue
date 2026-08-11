@@ -260,9 +260,9 @@ onBeforeUnmount(() => {
 .mdp-chip {
   display: inline-flex;
   overflow: hidden;
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--ui-surface-control);
 }
 .mdp-chip button,
 .mdp-trigger {
@@ -287,7 +287,7 @@ onBeforeUnmount(() => {
     color var(--motion-fast) ease;
 }
 .mdp-chip-remove:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .mdp-chip-remove:disabled,
@@ -311,9 +311,9 @@ onBeforeUnmount(() => {
   gap: 5rem;
   min-height: 31rem;
   padding: 0 10rem;
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--ui-surface-control);
   transition:
     border-color var(--motion-fast) ease,
     background-color var(--motion-fast) ease,
@@ -322,13 +322,12 @@ onBeforeUnmount(() => {
 }
 .mdp-trigger:hover,
 .mdp-trigger.is-open {
-  border-color: rgb(var(--bg-color) / 0.18);
-  background: rgba(255, 255, 255, 0.09);
+  border-color: var(--ui-border-hover);
   color: var(--text-color);
 }
 .mdp-trigger:active,
 .mdp-chip button:active {
-  transform: scale(0.96);
+  transform: scale(0.98);
 }
 .mdp-trigger svg {
   width: 14rem;
@@ -355,7 +354,7 @@ onBeforeUnmount(() => {
 }
 .mdp-panel {
   position: fixed;
-  z-index: 30000;
+  z-index: var(--z-global-popover);
   width: min(310rem, calc(100vw - 24px));
   padding: 10rem;
   border: 1px solid var(--surface-float-border);
@@ -394,11 +393,11 @@ onBeforeUnmount(() => {
     transform var(--motion-fast) ease;
 }
 .mdp-header button:hover {
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
   color: var(--text-color);
 }
 .mdp-header button:active {
-  transform: scale(0.9);
+  transform: scale(0.98);
 }
 .mdp-header svg {
   width: 16rem;
@@ -447,10 +446,10 @@ onBeforeUnmount(() => {
     transform var(--motion-fast) var(--ease-standard);
 }
 .mdp-day:hover:not(:disabled) span {
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  background: var(--ui-fill-hover);
 }
 .mdp-day:active span {
-  transform: scale(0.9);
+  transform: scale(0.98);
 }
 .mdp-day.is-other {
   color: color-mix(in srgb, var(--text-color) 28%, transparent);
@@ -470,7 +469,7 @@ onBeforeUnmount(() => {
   gap: 8rem;
   margin-top: 6rem;
   padding-top: 8rem;
-  border-top: 1px solid color-mix(in srgb, var(--text-color) 7%, transparent);
+  border-top: 1px solid var(--ui-border-divider);
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
 }
@@ -496,7 +495,7 @@ onBeforeUnmount(() => {
   color: var(--text-color-secondary);
 }
 .mdp-cancel:hover {
-  background: color-mix(in srgb, var(--text-color) 7%, transparent);
+  background: var(--ui-fill-hover);
 }
 .mdp-done {
   background: #0a84ff;
@@ -506,7 +505,7 @@ onBeforeUnmount(() => {
   background: #0077ed;
 }
 .mdp-footer button:active:not(:disabled) {
-  transform: scale(0.96);
+  transform: scale(0.98);
 }
 .mdp-done:disabled {
   opacity: 0.34;

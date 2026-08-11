@@ -168,14 +168,14 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   padding: 2rem;
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
+  border: 1px solid var(--ui-border-control);
   border-radius: 10rem;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--ui-surface-control);
   isolation: isolate;
 }
 .tfs-indicator {
   position: absolute;
-  z-index: 0;
+  z-index: var(--z-local-base);
   top: 2rem;
   bottom: 2rem;
   left: 2rem;
@@ -204,11 +204,10 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
 }
 .tfs-segments button {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-local-content);
   padding: 7rem;
 }
 .tfs-segments button:hover:not(.active) {
-  background: rgba(255, 255, 255, 0.06);
   color: var(--text-color);
 }
 .tfs-segments button.active {
@@ -216,7 +215,7 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
 }
 .tfs-segments button:active,
 .tfs-choice-grid button:active {
-  transform: scale(0.95);
+  transform: scale(0.98);
 }
 .tfs-panel-viewport {
   position: relative;
@@ -270,12 +269,12 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
 }
 .tfs-choice-grid button {
   min-height: 29rem;
-  border: 1rem solid rgb(var(--bg-color) / 0.1);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--ui-border-control);
+  background: var(--ui-surface-control);
   font-size: var(--fs-secondary);
 }
 .tfs-choice-grid button:hover:not(.active) {
-  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--ui-border-hover);
   color: var(--text-color);
 }
 .tfs-choice-grid button.active {

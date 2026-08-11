@@ -19,16 +19,14 @@ export class NotificationService {
     getMainWindow,
     icon,
     platform = process.platform,
-    snoozeDelayMs,
-    snoozeNote
+    openNote
   }) {
     this.appProtocol = appProtocol
     this.capability = capability
     this.getMainWindow = getMainWindow
     this.icon = icon
     this.platform = platform
-    this.snoozeDelayMs = snoozeDelayMs
-    this.snoozeNote = snoozeNote
+    this.openNote = openNote
   }
 
   notifyFailure(scene, title, body, error) {
@@ -49,7 +47,6 @@ export class NotificationService {
 
     if (this.platform === 'win32' && Number.isInteger(parsedNoteId) && parsedNoteId > 0) {
       const openUrl = `${this.appProtocol}://notification/open?id=${parsedNoteId}`
-      const snoozeUrl = `${this.appProtocol}://notification/snooze?id=${parsedNoteId}`
       const iconUri = escapeToastXml(pathToFileURL(this.icon).href)
       const toastXml = `<toast launch="${openUrl}" activationType="protocol">
         <visual>
@@ -60,10 +57,6 @@ export class NotificationService {
           </binding>
         </visual>
         <audio silent="${silent ? 'true' : 'false'}"/>
-        <actions>
-          <action content="明白" arguments="dismiss" activationType="system"/>
-          <action content="稍后提醒（10分钟）" arguments="${snoozeUrl}" activationType="protocol"/>
-        </actions>
       </toast>`
       const notification = new Notification({ toastXml })
       notification.on('failed', (_event, error) => {
@@ -75,27 +68,10 @@ export class NotificationService {
 
     const hasNote = Number.isInteger(parsedNoteId) && parsedNoteId > 0
     const options = { title, body: summary, silent, icon: this.icon }
-    if (hasNote) {
-      options.actions = [{ type: 'button', text: '稍后提醒（10分钟）' }]
-      options.closeButtonText = '明白'
-    }
     const notification = new Notification(options)
     if (hasNote) {
       notification.on('click', () => {
-        const mainWindow = this.getMainWindow()
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.show()
-          mainWindow.focus()
-        }
-      })
-      notification.on('action', (_event, index) => {
-        if (index !== 0) return
-        const result = this.snoozeNote(parsedNoteId, this.snoozeDelayMs)
-        if (result) {
-          console.log(`[notification] 便签 #${parsedNoteId} 已延后 10 分钟提醒`)
-        } else {
-          console.log(`[notification] 便签 #${parsedNoteId} 已非进行中，忽略延后提醒`)
-        }
+        this.openNote?.(parsedNoteId)
       })
     }
     notification.on('failed', (_event, error) => {

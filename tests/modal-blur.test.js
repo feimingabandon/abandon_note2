@@ -36,8 +36,8 @@ describe('modal background blur manager', () => {
   })
 
   it('blurs only the highest existing modal layer when another modal is nested', () => {
-    const settings = createElement('1000')
-    const editor = createElement('20000')
+    const settings = createElement('2')
+    const editor = createElement('4')
     vi.stubGlobal('document', {
       querySelectorAll: () => [settings, editor],
       querySelector: () => null

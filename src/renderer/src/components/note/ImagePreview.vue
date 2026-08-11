@@ -261,7 +261,7 @@ onUnmounted(() => {
 .ipv-overlay {
   position: fixed;
   inset: 0;
-  z-index: 35000;
+  z-index: var(--z-global-preview);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -307,7 +307,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 6rem;
   padding: 10rem 16rem;
-  z-index: 10;
+  z-index: var(--z-local-top);
   background: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent);
   user-select: none;
 }
@@ -341,7 +341,7 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.22);
 }
 .ipv-btn:active {
-  transform: scale(0.9);
+  transform: scale(0.98);
   transition: transform 70ms ease;
 }
 .ipv-btn svg {
