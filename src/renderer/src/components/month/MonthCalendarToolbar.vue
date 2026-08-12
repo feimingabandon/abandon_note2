@@ -11,7 +11,9 @@ const props = defineProps({
   year: { type: Number, required: true },
   month: { type: Number, required: true },
   refreshing: { type: Boolean, default: false },
-  busy: { type: Boolean, default: false }
+  busy: { type: Boolean, default: false },
+  weatherLocationLabel: { type: String, default: '' },
+  weatherSourceLabel: { type: String, default: '' }
 })
 const emit = defineEmits(['previous', 'next', 'today', 'jump', 'refresh'])
 const pickerOpen = ref(false)
@@ -145,7 +147,18 @@ function finishRefreshSpin() {
 
 <template>
   <header class="month-toolbar" :class="{ 'is-busy': busy }">
-    <div aria-hidden="true"></div>
+    <button
+      v-if="weatherLocationLabel"
+      type="button"
+      class="month-toolbar__weather-meta"
+      title="查看天气数据来源"
+      @click="window.api.openWeatherSource()"
+    >
+      <span>{{ weatherLocationLabel }}</span>
+      <i aria-hidden="true">·</i>
+      <small>{{ weatherSourceLabel }}</small>
+    </button>
+    <div v-else aria-hidden="true"></div>
 
     <div class="month-toolbar__navigation" aria-label="月份导航">
       <button
@@ -282,7 +295,7 @@ function finishRefreshSpin() {
   align-items: center;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   gap: 12rem;
-  padding: 0 4rem 10rem;
+  padding: 0 4rem;
 }
 .month-toolbar__navigation,
 .month-toolbar__actions {
@@ -298,6 +311,51 @@ function finishRefreshSpin() {
 }
 .month-toolbar__actions {
   justify-self: end;
+}
+.month-toolbar__weather-meta {
+  display: flex !important;
+  min-width: 0 !important;
+  max-width: 100%;
+  height: 30rem !important;
+  align-items: center !important;
+  justify-self: start;
+  flex-direction: row;
+  gap: 5rem;
+  padding: 0 7rem !important;
+  color: var(--text-color-secondary) !important;
+  line-height: 1.15;
+  text-align: left;
+}
+.month-toolbar__weather-meta:hover:not(:disabled) {
+  background: transparent !important;
+  color: var(--text-color) !important;
+}
+.month-toolbar__weather-meta span,
+.month-toolbar__weather-meta small {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.month-toolbar__weather-meta span {
+  min-width: 0;
+  font-size: var(--fs-secondary);
+  font-weight: 500;
+}
+.month-toolbar__weather-meta i {
+  flex: 0 0 auto;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  font-style: normal;
+  opacity: 0.55;
+}
+.month-toolbar__weather-meta small {
+  flex: 0 1 auto;
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.72);
+  font-weight: 400;
+  opacity: 0.72;
 }
 .month-toolbar button {
   display: grid;
@@ -332,7 +390,7 @@ function finishRefreshSpin() {
 .month-toolbar.is-busy button:disabled {
   opacity: 1;
 }
-.month-toolbar button:active:not(:disabled) {
+.month-toolbar button:not([aria-haspopup]):active:not(:disabled) {
   transform: scale(0.98);
 }
 .month-toolbar__today {

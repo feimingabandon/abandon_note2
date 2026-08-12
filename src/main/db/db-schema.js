@@ -1,5 +1,5 @@
 /** 数据库结构版本。公开版本只能通过显式迁移递增。 */
-export const DATABASE_SCHEMA_VERSION = 5
+export const DATABASE_SCHEMA_VERSION = 6
 
 function hasColumn(db, tableName, columnName) {
   return db
@@ -142,6 +142,49 @@ function migrateToVersion5(db) {
   }
 }
 
+/**
+ * V6 用全局稳定顺序替代标签置顶。
+ *
+ * 旧数据先按“置顶优先、最近置顶优先、其余按最近创建优先”生成排序槽位，
+ * 尽量保持升级前标签选择器和管理弹窗中的可见顺序；完成后物理移除废弃字段。
+ */
+function migrateToVersion6(db) {
+  const hadSortOrder = hasColumn(db, 'tags', 'sort_order')
+  const hasPinned = hasColumn(db, 'tags', 'is_pinned')
+  const hasPinnedAt = hasColumn(db, 'tags', 'pinned_at')
+
+  if (!hadSortOrder) {
+    db.exec('ALTER TABLE tags ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;')
+  }
+
+  const sortState = db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              COUNT(DISTINCT sort_order) AS distinct_total,
+              SUM(CASE WHEN sort_order <= 0 THEN 1 ELSE 0 END) AS invalid_total
+       FROM tags`
+    )
+    .get()
+  const needsInitialOrder =
+    !hadSortOrder ||
+    Number(sortState.invalid_total) > 0 ||
+    Number(sortState.distinct_total) !== Number(sortState.total)
+
+  if (needsInitialOrder) {
+    const legacyOrder = hasPinned
+      ? `is_pinned DESC,
+         CASE WHEN is_pinned = 1 THEN ${hasPinnedAt ? 'COALESCE(pinned_at, 0)' : '0'} END DESC,
+         created_at DESC, id DESC`
+      : 'created_at DESC, id DESC'
+    const rows = db.prepare(`SELECT id FROM tags ORDER BY ${legacyOrder}`).all()
+    const update = db.prepare('UPDATE tags SET sort_order = ? WHERE id = ?')
+    rows.forEach((row, index) => update.run((index + 1) * 65536, row.id))
+  }
+
+  if (hasPinnedAt) db.exec('ALTER TABLE tags DROP COLUMN pinned_at;')
+  if (hasPinned) db.exec('ALTER TABLE tags DROP COLUMN is_pinned;')
+}
+
 function ensureTagRelationIndexes(db) {
   if (hasColumn(db, 'note_tags', 'tag_id')) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id ON note_tags(tag_id);')
@@ -155,22 +198,29 @@ function migrateDatabaseSchema(db, existingVersion) {
   const missingDurationDays = !hasColumn(db, 'notes', 'duration_days')
   const missingTagIds =
     !hasColumn(db, 'note_tags', 'tag_id') || !hasColumn(db, 'template_tags', 'tag_id')
-  const missingTagPinning =
-    !hasColumn(db, 'tags', 'is_pinned') || !hasColumn(db, 'tags', 'pinned_at')
+  const missingTagSortOrder = !hasColumn(db, 'tags', 'sort_order')
+  const hasObsoleteTagPinning =
+    hasColumn(db, 'tags', 'is_pinned') || hasColumn(db, 'tags', 'pinned_at')
   const hasObsoleteSnoozeColumn = hasColumn(db, 'notes', 'remind_again_at')
   if (
     existingVersion >= DATABASE_SCHEMA_VERSION &&
     !missingDurationDays &&
     !missingTagIds &&
-    !missingTagPinning &&
+    !missingTagSortOrder &&
+    !hasObsoleteTagPinning &&
     !hasObsoleteSnoozeColumn
   )
     return
   db.transaction(() => {
     if (existingVersion < 2 || missingDurationDays) migrateToVersion2(db)
     if (existingVersion < 3 || missingTagIds) migrateToVersion3(db)
-    if (existingVersion < 4 || missingTagPinning) migrateToVersion4(db)
+    // 新数据库直接创建 V6 最终结构；只有缺少排序字段的旧库才临时补齐 V4 字段，
+    // 供 V6 将用户原有的置顶偏好转换成初始顺序。
+    if (existingVersion < 6 && missingTagSortOrder) migrateToVersion4(db)
     if (existingVersion < 5 || hasObsoleteSnoozeColumn) migrateToVersion5(db)
+    if (existingVersion < 6 || missingTagSortOrder || hasObsoleteTagPinning) {
+      migrateToVersion6(db)
+    }
     if (existingVersion < DATABASE_SCHEMA_VERSION) {
       db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
     }
@@ -341,8 +391,7 @@ export function createNotesSchema(db) {
       name        TEXT NOT NULL UNIQUE,
       color       TEXT,
       created_at  INTEGER NOT NULL,
-      is_pinned   INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0, 1)),
-      pinned_at   INTEGER
+      sort_order  INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS note_tags (

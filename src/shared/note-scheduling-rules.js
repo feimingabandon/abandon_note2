@@ -1,6 +1,18 @@
 export const MIN_SCHEDULE_LEAD_TIME_MINUTES = 2
 export const MIN_SCHEDULE_LEAD_TIME_MS = MIN_SCHEDULE_LEAD_TIME_MINUTES * 60 * 1000
 export const SCHEDULE_SHORTCUT_SAFETY_MARGIN_MS = 60 * 1000
+export const DEFAULT_NEW_NOTE_SCHEDULE_TIME = '00:01'
+
+function padClockPart(value) {
+  return String(value).padStart(2, '0')
+}
+
+export function defaultMonthNoteEffectiveTime(dateKey, todayKey, currentTime = Date.now()) {
+  if (String(dateKey) > String(todayKey)) return DEFAULT_NEW_NOTE_SCHEDULE_TIME
+  const now = currentTime instanceof Date ? currentTime : new Date(Number(currentTime))
+  if (Number.isNaN(now.getTime())) throw new Error('当前时间无效')
+  return `${padClockPart(now.getHours())}:${padClockPart(now.getMinutes())}`
+}
 
 export function createSafeScheduleShortcutTimestamp(currentTime = Date.now()) {
   const timestamp = Number(currentTime)

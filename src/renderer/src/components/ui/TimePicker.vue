@@ -227,9 +227,6 @@ onBeforeUnmount(() => {
   border-color: color-mix(in srgb, #0a84ff 72%, transparent);
   box-shadow: 0 0 0 3rem color-mix(in srgb, #0a84ff 12%, transparent);
 }
-.time-picker__trigger:active:not(:disabled) {
-  transform: scale(0.98);
-}
 .time-picker__trigger:disabled {
   opacity: 0.4;
   cursor: default;

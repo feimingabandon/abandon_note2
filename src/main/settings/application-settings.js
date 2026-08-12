@@ -1,5 +1,10 @@
 import { getAllSettings, setSettingsBatch } from '../db/db.js'
-import { DEFAULT_SETTINGS, serializeSetting, VIEW_MODES } from '../../shared/settings-schema.js'
+import {
+  DEFAULT_SETTINGS,
+  resolveSettingsRows,
+  serializeSetting,
+  VIEW_MODES
+} from '../../shared/settings-schema.js'
 
 export const APPLICATION_SETTINGS_SCOPE = 'application'
 export const VIEW_SETTINGS_SCOPES = Object.freeze({
@@ -28,7 +33,9 @@ function parseStoredBoolean(value, fallback) {
  * 因而缺值时做兼容回读；不批量改库，用户下次修改时自然写入新作用域。
  */
 export function readApplicationSettings() {
-  const applicationRows = rowMap(getAllSettings(APPLICATION_SETTINGS_SCOPE))
+  const applicationSettingRows = getAllSettings(APPLICATION_SETTINGS_SCOPE)
+  const applicationRows = rowMap(applicationSettingRows)
+  const applicationResolved = resolveSettingsRows(applicationSettingRows)
   const legacyRows = rowMap(getAllSettings(VIEW_SETTINGS_SCOPES[VIEW_MODES.LIST]))
   const receiveNotices =
     applicationRows.get('remote:receive_notices') ?? legacyRows.get('remote:receive_notices')
@@ -38,6 +45,7 @@ export function readApplicationSettings() {
 
   return {
     activeView: storedView === VIEW_MODES.MONTH ? VIEW_MODES.MONTH : VIEW_MODES.LIST,
+    weather: applicationResolved.weather,
     remote: {
       receiveNotices: parseStoredBoolean(receiveNotices, DEFAULT_SETTINGS.remote.receiveNotices),
       uploadDeviceInfo: parseStoredBoolean(
@@ -55,7 +63,12 @@ export function writeActiveView(viewMode) {
 }
 
 export function writeApplicationSetting(id, value) {
-  if (id !== 'remote.receiveNotices' && id !== 'remote.uploadDeviceInfo') {
+  if (
+    id !== 'remote.receiveNotices' &&
+    id !== 'remote.uploadDeviceInfo' &&
+    id !== 'weather.enabled' &&
+    id !== 'weather.location'
+  ) {
     throw new Error(`未知应用级设置项: ${id}`)
   }
   setSettingsBatch(APPLICATION_SETTINGS_SCOPE, [serializeSetting(id, value)])

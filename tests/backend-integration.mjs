@@ -4,15 +4,19 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { DATABASE_SCHEMA_VERSION, createDatabaseSchema } from '../src/main/db/db-schema.js'
-import { createTagIdMigrationBackup } from '../src/main/db/db-migration-backup.js'
+import {
+  createDatabaseMigrationBackup,
+  createTagIdMigrationBackup
+} from '../src/main/db/db-migration-backup.js'
 import { clearDb, setDb } from '../src/main/db/db-connection.js'
 import {
   createTag,
   deleteTag,
   getNoteTags,
   getTagUsage,
+  listTags,
   setNoteTagIds,
-  setTagPinned,
+  updateTagOrder,
   updateTag
 } from '../src/main/db/db-tags.js'
 import {
@@ -38,6 +42,7 @@ import {
   reopenNote
 } from '../src/main/db/db-notes.js'
 import { getMonthCalendarData } from '../src/main/calendar/calendar-service.js'
+import { queryDailyReportNotes } from '../src/main/services/daily-report.js'
 import { getOrCreateInstallationId } from '../src/main/db/db-identity.js'
 import {
   acknowledgeRemoteNotice,
@@ -88,6 +93,37 @@ try {
 } finally {
   versionZeroDb.close()
   rmSync(backupRoot, { recursive: true, force: true })
+}
+
+const v5BackupRoot = mkdtempSync(join(tmpdir(), 'abandon-v5-backup-test-'))
+const v5BackupSourcePath = join(v5BackupRoot, 'app.db')
+const versionFiveDb = new Database(v5BackupSourcePath)
+try {
+  versionFiveDb.exec(`
+    CREATE TABLE tags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      color TEXT,
+      created_at INTEGER NOT NULL,
+      is_pinned INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0, 1)),
+      pinned_at INTEGER
+    );
+    INSERT INTO tags (id, name, color, created_at, is_pinned, pinned_at)
+      VALUES (1, 'V5 置顶标签', '#007aff', 1000, 1, 2000);
+    PRAGMA user_version = 5;
+  `)
+  const backupPath = createDatabaseMigrationBackup(versionFiveDb, v5BackupSourcePath)
+  assert.equal(backupPath, join(v5BackupRoot, 'app-v5-before-v6.db'))
+  assert.equal(existsSync(backupPath), true)
+  assert.equal(createDatabaseMigrationBackup(versionFiveDb, v5BackupSourcePath), backupPath)
+  const backupDb = new Database(backupPath, { readonly: true })
+  assert.deepEqual(backupDb.prepare('SELECT id, name, is_pinned, pinned_at FROM tags').all(), [
+    { id: 1, name: 'V5 置顶标签', is_pinned: 1, pinned_at: 2000 }
+  ])
+  backupDb.close()
+} finally {
+  versionFiveDb.close()
+  rmSync(v5BackupRoot, { recursive: true, force: true })
 }
 
 const legacyDb = new Database(':memory:')
@@ -207,9 +243,9 @@ assert.deepEqual(
   tagIdMigrationDb
     .prepare("PRAGMA table_info('tags')")
     .all()
-    .filter((column) => ['is_pinned', 'pinned_at'].includes(column.name))
+    .filter((column) => ['sort_order', 'is_pinned', 'pinned_at'].includes(column.name))
     .map((column) => column.name),
-  ['is_pinned', 'pinned_at']
+  ['sort_order']
 )
 assert.deepEqual(tagIdMigrationDb.prepare('SELECT * FROM note_tags').all(), [
   { note_id: 51, tag_id: 41 }
@@ -225,6 +261,41 @@ assert.deepEqual(
 )
 assert.deepEqual(tagIdMigrationDb.pragma('foreign_key_check'), [])
 tagIdMigrationDb.close()
+
+// V5 的标签置顶偏好必须原子转换为 V6 全局顺序，迁移后不再保留置顶字段。
+const tagOrderMigrationDb = new Database(':memory:')
+tagOrderMigrationDb.pragma('foreign_keys = ON')
+createDatabaseSchema(tagOrderMigrationDb)
+tagOrderMigrationDb.exec(`
+  INSERT INTO tags (id, name, color, created_at, sort_order) VALUES
+    (71, '旧普通标签', '#007aff', 1000, 65536),
+    (72, '旧置顶标签一', '#ff3b30', 2000, 131072),
+    (73, '旧置顶标签二', '#34c759', 3000, 196608);
+  ALTER TABLE tags DROP COLUMN sort_order;
+  ALTER TABLE tags ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0, 1));
+  ALTER TABLE tags ADD COLUMN pinned_at INTEGER;
+  UPDATE tags SET is_pinned = 1, pinned_at = 100 WHERE id = 72;
+  UPDATE tags SET is_pinned = 1, pinned_at = 200 WHERE id = 73;
+  PRAGMA user_version = 5;
+`)
+createDatabaseSchema(tagOrderMigrationDb)
+assert.equal(tagOrderMigrationDb.pragma('user_version', { simple: true }), DATABASE_SCHEMA_VERSION)
+assert.deepEqual(
+  tagOrderMigrationDb
+    .prepare("PRAGMA table_info('tags')")
+    .all()
+    .map((column) => column.name),
+  ['id', 'name', 'color', 'created_at', 'sort_order']
+)
+assert.deepEqual(
+  tagOrderMigrationDb
+    .prepare('SELECT id FROM tags ORDER BY sort_order ASC, id ASC')
+    .all()
+    .map((row) => row.id),
+  [73, 72, 71]
+)
+assert.deepEqual(tagOrderMigrationDb.pragma('foreign_key_check'), [])
+tagOrderMigrationDb.close()
 
 const db = new Database(':memory:')
 db.pragma('foreign_keys = ON')
@@ -357,22 +428,23 @@ try {
 
   const dailyTag = createTag('日常', '#007aff')
   const importantTag = createTag('重要', '#ff3b30')
-  const createdPinnedTag = createTag('置顶新建', '#34c759', true)
-  assert.equal(createdPinnedTag.is_pinned, 1)
-  assert.equal(Number.isFinite(Number(createdPinnedTag.pinned_at)), true)
-  assert.equal(deleteTag(createdPinnedTag.id), true)
-  const pinnedDailyTag = setTagPinned(dailyTag.id, true, 123456)
-  assert.equal(pinnedDailyTag.is_pinned, 1)
-  assert.equal(pinnedDailyTag.pinned_at, 123456)
-  const unpinnedDailyTag = setTagPinned(dailyTag.id, false)
-  assert.equal(unpinnedDailyTag.is_pinned, 0)
-  assert.equal(unpinnedDailyTag.pinned_at, null)
-  const editedPinnedTag = updateTag(importantTag.id, {
+  const orderedThirdTag = createTag('排序测试', '#34c759')
+  assert.deepEqual(
+    listTags().map((tag) => tag.id),
+    [dailyTag.id, importantTag.id, orderedThirdTag.id]
+  )
+  updateTagOrder([orderedThirdTag.id, dailyTag.id])
+  assert.deepEqual(
+    listTags().map((tag) => tag.id),
+    [orderedThirdTag.id, importantTag.id, dailyTag.id]
+  )
+  assert.equal(listTags().find((tag) => tag.id === importantTag.id).sort_order, 131072)
+  assert.equal(deleteTag(orderedThirdTag.id), true)
+  const editedTag = updateTag(importantTag.id, {
     name: '重要',
-    color: '#ff3b30',
-    pinned: true
+    color: '#ff3b30'
   }).tag
-  assert.equal(editedPinnedTag.is_pinned, 1)
+  assert.equal(editedTag.name, '重要')
   assert.throws(
     () => updateTag(importantTag.id, { name: '日常', color: '#ff3b30' }),
     /标签名称已存在/
@@ -810,6 +882,16 @@ try {
   assert.equal(
     calendar.notes.some((note) => note.content === '月历范围外便签'),
     false
+  )
+  assert.deepEqual(
+    queryDailyReportNotes({ dateKey: '2026-08-01', statuses: ['completed'] }).map(
+      (note) => note.content
+    ),
+    ['月历跨月便签']
+  )
+  assert.deepEqual(
+    queryDailyReportNotes({ dateKey: '2026-08-01', statuses: ['in_progress'] }),
+    []
   )
 
   console.log('backend integration tests passed')

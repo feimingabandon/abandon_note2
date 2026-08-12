@@ -58,6 +58,63 @@ function parseNullableInteger(value) {
   return Number.isFinite(parsed) ? Math.round(parsed) : null
 }
 
+function parseWeatherLocation(value) {
+  if (value === null || value === undefined || value === '') return null
+  let candidate = value
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate)
+    } catch {
+      return null
+    }
+  }
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null
+  if (
+    candidate.latitude === null ||
+    candidate.latitude === undefined ||
+    candidate.latitude === '' ||
+    candidate.longitude === null ||
+    candidate.longitude === undefined ||
+    candidate.longitude === ''
+  ) {
+    return null
+  }
+  const latitude = Number(candidate.latitude)
+  const longitude = Number(candidate.longitude)
+  const name = String(candidate.name || '')
+    .trim()
+    .slice(0, 80)
+  if (!name || !Number.isFinite(latitude) || latitude < -90 || latitude > 90) return null
+  if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) return null
+  const locationId =
+    candidate.id === null || candidate.id === undefined || candidate.id === ''
+      ? null
+      : Number(candidate.id)
+  return {
+    id: Number.isFinite(locationId) && locationId > 0 ? Math.round(locationId) : null,
+    name,
+    admin1: String(candidate.admin1 || '')
+      .trim()
+      .slice(0, 80),
+    admin2: String(candidate.admin2 || '')
+      .trim()
+      .slice(0, 80),
+    country: String(candidate.country || '')
+      .trim()
+      .slice(0, 80),
+    countryCode: String(candidate.countryCode || '')
+      .trim()
+      .toUpperCase()
+      .slice(0, 2),
+    latitude: Number(latitude.toFixed(5)),
+    longitude: Number(longitude.toFixed(5)),
+    timezone:
+      String(candidate.timezone || 'auto')
+        .trim()
+        .slice(0, 80) || 'auto'
+  }
+}
+
 function parseBoolean(value, fallback) {
   if (value === true || value === 'true' || value === 1 || value === '1') return true
   if (value === false || value === 'false' || value === 0 || value === '0') return false
@@ -263,7 +320,7 @@ const definitions = [
     id: 'ui.dayPanelSize',
     path: ['ui', 'dayPanelSize'],
     db: { type: 'ui', key: 'day_panel_size' },
-    defaultValue: 34,
+    defaultValue: 25,
     parse: (value, fallback) => parseNumber(value, fallback, { min: 25, max: 50 }),
     serialize: String,
     remark: '月视图日期侧栏宽度百分比（25~50）'
@@ -321,6 +378,24 @@ const definitions = [
     parse: parseBoolean,
     serialize: String,
     remark: '新建便利贴默认置顶状态'
+  },
+  {
+    id: 'weather.enabled',
+    path: ['weather', 'enabled'],
+    db: { type: 'weather', key: 'enabled' },
+    defaultValue: false,
+    parse: parseBoolean,
+    serialize: String,
+    remark: '天气展示开关'
+  },
+  {
+    id: 'weather.location',
+    path: ['weather', 'location'],
+    db: { type: 'weather', key: 'location' },
+    defaultValue: null,
+    parse: parseWeatherLocation,
+    serialize: JSON.stringify,
+    remark: '用户确认的天气城市及 WGS84 坐标'
   },
   {
     id: 'remote.receiveNotices',

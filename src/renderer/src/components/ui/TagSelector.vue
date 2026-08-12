@@ -1,10 +1,9 @@
 <script setup>
-/** 轻量标签选择器：外层只展示当前选中、置顶和最新创建的快捷标签。 */
+/** 轻量标签选择器：外层优先展示当前选中标签，其余遵循全局手动顺序。 */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 import TagManagerDialog from './TagManagerDialog.vue'
 import TagSelectorRow from './TagSelectorRow.vue'
-import { useMessage } from '../../composables/useMessage.js'
 
 const props = defineProps({
   modelValue: { type: Array, default: () => [] },
@@ -12,7 +11,6 @@ const props = defineProps({
   maxSelected: { type: Number, default: 0 }
 })
 const emit = defineEmits(['update:modelValue', 'refresh', 'selectionLimitExceeded'])
-const { showMessage } = useMessage()
 
 const tags = ref([])
 const selectedIds = ref(new Set(props.modelValue.map(Number)))
@@ -34,43 +32,15 @@ const tagById = computed(() => new Map(tags.value.map((tag) => [Number(tag.id), 
 const selectedTags = computed(() =>
   [...selectedIds.value].map((id) => tagById.value.get(Number(id))).filter(Boolean)
 )
-const pinnedTags = computed(() =>
-  tags.value
-    .filter((tag) => Number(tag.is_pinned) === 1 && !selectedIds.value.has(Number(tag.id)))
-    .sort(
-      (a, b) =>
-        Number(b.pinned_at || 0) - Number(a.pinned_at || 0) ||
-        Number(b.created_at || 0) - Number(a.created_at || 0)
-    )
+const remainingTags = computed(() =>
+  tags.value.filter((tag) => !selectedIds.value.has(Number(tag.id)))
 )
-const newestTags = computed(() =>
-  tags.value
-    .filter((tag) => Number(tag.is_pinned) !== 1 && !selectedIds.value.has(Number(tag.id)))
-    .sort(
-      (a, b) => Number(b.created_at || 0) - Number(a.created_at || 0) || Number(b.id) - Number(a.id)
-    )
-)
-const quickCandidates = computed(() => [
-  ...selectedTags.value,
-  ...pinnedTags.value,
-  ...newestTags.value
-])
+const quickCandidates = computed(() => [...selectedTags.value, ...remainingTags.value])
 const visibleTags = computed(() => quickCandidates.value.slice(0, visibleCount.value))
 const normalizedQuery = computed(() => panelQuery.value.trim().toLocaleLowerCase())
 const matchesQuery = (tag) =>
   !normalizedQuery.value || tag.name.toLocaleLowerCase().includes(normalizedQuery.value)
-const panelTags = computed(() =>
-  tags.value.filter(matchesQuery).sort((a, b) => {
-    if (Number(a.is_pinned) !== Number(b.is_pinned))
-      return Number(b.is_pinned) - Number(a.is_pinned)
-    if (Number(a.is_pinned))
-      return (
-        Number(b.pinned_at || 0) - Number(a.pinned_at || 0) ||
-        Number(b.created_at || 0) - Number(a.created_at || 0)
-      )
-    return Number(b.created_at || 0) - Number(a.created_at || 0) || Number(b.id) - Number(a.id)
-  })
-)
+const panelTags = computed(() => tags.value.filter(matchesQuery))
 const selectedSummary = computed(() => {
   const names = selectedTags.value.map((tag) => tag.name)
   if (names.length === 0) return '未选择'
@@ -127,11 +97,16 @@ function toggleTag(tagId) {
   const next = new Set(selectedIds.value)
   if (next.has(id)) next.delete(id)
   else {
-    if (props.maxSelected > 0 && next.size >= props.maxSelected) {
+    // 单选场景采用原生单选语义：选择新标签时自然替换旧标签，而不是提示超限。
+    if (props.maxSelected === 1) {
+      next.clear()
+      next.add(id)
+    } else if (props.maxSelected > 0 && next.size >= props.maxSelected) {
       emit('selectionLimitExceeded', props.maxSelected)
       return
+    } else {
+      next.add(id)
     }
-    next.add(id)
   }
   selectedIds.value = next
   emit('update:modelValue', [...next])
@@ -189,27 +164,6 @@ function onDocumentPointerDown(event) {
 
 function onDocumentKeydown(event) {
   if (event.key === 'Escape' && panelOpen.value) closePanel()
-}
-
-async function togglePinned(tag) {
-  const previousPinned = Number(tag.is_pinned) === 1
-  const previousPinnedAt = tag.pinned_at
-  tag.is_pinned = previousPinned ? 0 : 1
-  tag.pinned_at = previousPinned ? null : Date.now()
-  scheduleMeasure()
-  try {
-    if (typeof window.api.setTagPinned !== 'function') {
-      throw new Error('置顶接口未就绪，请完全重启应用')
-    }
-    const updated = await window.api.setTagPinned(tag.id, !previousPinned)
-    Object.assign(tag, updated)
-  } catch (error) {
-    tag.is_pinned = previousPinned ? 1 : 0
-    tag.pinned_at = previousPinnedAt
-    showMessage('error', error.message || '修改置顶状态失败')
-    console.error('[TagSelector] 修改标签置顶状态失败:', error)
-  }
-  await loadTags()
 }
 
 async function openManager() {
@@ -295,6 +249,7 @@ onBeforeUnmount(() => {
           type="button"
           class="ts-more"
           :class="{ active: panelOpen }"
+          aria-haspopup="listbox"
           :aria-expanded="panelOpen"
           @click="togglePanel"
         >
@@ -338,7 +293,6 @@ onBeforeUnmount(() => {
               :tag="tag"
               :selected="selectedIds.has(Number(tag.id))"
               @toggle="toggleTag"
-              @pin="togglePinned"
             />
             <p v-if="panelTags.length === 0" class="ts-panel-empty">没有匹配的标签</p>
           </div>
@@ -451,8 +405,7 @@ onBeforeUnmount(() => {
 .ts-more.active {
   background: var(--ui-fill-hover);
 }
-.ts-refresh:active,
-.ts-more:active {
+.ts-refresh:active {
   transform: scale(0.98);
 }
 .ts-refresh svg {

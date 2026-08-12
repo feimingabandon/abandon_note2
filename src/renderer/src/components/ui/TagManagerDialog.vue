@@ -4,11 +4,11 @@ import AppModalShell from './AppModalShell.vue'
 import BaseButton from './BaseButton.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import TagEditorForm from './TagEditorForm.vue'
-import TagPinButton from './TagPinButton.vue'
 import { useMessage } from '../../composables/useMessage.js'
 
 const props = defineProps({
-  visible: { type: Boolean, default: false }
+  visible: { type: Boolean, default: false },
+  createOnOpen: { type: Boolean, default: false }
 })
 const emit = defineEmits(['update:visible'])
 const { showMessage } = useMessage()
@@ -32,7 +32,6 @@ const tags = ref([])
 const query = ref('')
 const loading = ref(false)
 const saving = ref(false)
-const pinningTagIds = ref(new Set())
 const toolbarInputRef = ref(null)
 const formOpen = ref(false)
 const formMode = ref('create')
@@ -40,7 +39,6 @@ const editingTag = ref(null)
 const formName = ref('')
 const formColor = ref('')
 const formColorText = ref('')
-const formPinned = ref(false)
 const formError = ref('')
 const editUsage = ref(null)
 const tagToDelete = ref(null)
@@ -59,12 +57,7 @@ const filteredTags = computed(() => {
   const rows = keyword
     ? tags.value.filter((tag) => tag.name.toLocaleLowerCase().includes(keyword))
     : [...tags.value]
-  return rows.sort((a, b) => {
-    if (Number(a.is_pinned) !== Number(b.is_pinned))
-      return Number(b.is_pinned) - Number(a.is_pinned)
-    if (Number(a.is_pinned)) return Number(b.pinned_at || 0) - Number(a.pinned_at || 0)
-    return Number(b.created_at || 0) - Number(a.created_at || 0) || Number(b.id) - Number(a.id)
-  })
+  return rows
 })
 const formColorInvalid = computed(
   () => !!formColorText.value && !/^#[0-9a-f]{6}$/i.test(formColorText.value)
@@ -89,9 +82,11 @@ watch(formColor, (value) => {
 })
 watch(
   () => props.visible,
-  (visible) => {
-    if (visible) loadTags()
-    else {
+  async (visible) => {
+    if (visible) {
+      await loadTags()
+      if (props.createOnOpen) openCreate()
+    } else {
       closeForm({ restoreFocus: false })
       showDeleteDialog.value = false
       clearDelete()
@@ -119,7 +114,6 @@ function resetForm() {
   formName.value = ''
   formColor.value = ''
   formColorText.value = ''
-  formPinned.value = false
   formError.value = ''
   editUsage.value = null
   formTriggerElement = null
@@ -150,7 +144,6 @@ async function openEdit(tag, event) {
   formName.value = tag.name
   formColor.value = tag.color || ''
   formColorText.value = formColor.value
-  formPinned.value = Number(tag.is_pinned) === 1
   formError.value = ''
   editUsage.value = null
   formOpen.value = true
@@ -214,8 +207,7 @@ async function saveTag() {
     mode: formMode.value,
     tagId: editingTag.value?.id ?? null,
     name,
-    color: formColor.value || null,
-    pinned: formPinned.value
+    color: formColor.value || null
   }
   saving.value = true
   formError.value = ''
@@ -223,11 +215,10 @@ async function saveTag() {
     if (operation.mode === 'edit') {
       await window.api.updateTag(operation.tagId, {
         name: operation.name,
-        color: operation.color,
-        pinned: operation.pinned
+        color: operation.color
       })
     } else {
-      const created = await window.api.createTag(operation.name, operation.color, operation.pinned)
+      const created = await window.api.createTag(operation.name, operation.color)
       if (!created) throw new Error('标签名称已存在')
     }
     if (isCurrentFormOperation(operation)) {
@@ -249,46 +240,6 @@ async function saveTag() {
 function isCurrentFormOperation(operation) {
   if (!formOpen.value || formMode.value !== operation.mode) return false
   return operation.mode !== 'edit' || editingTag.value?.id === operation.tagId
-}
-
-function setTagPinning(tagId, pinning) {
-  const next = new Set(pinningTagIds.value)
-  if (pinning) next.add(Number(tagId))
-  else next.delete(Number(tagId))
-  pinningTagIds.value = next
-}
-
-function syncEditingPinned(tagId, pinned) {
-  if (formOpen.value && formMode.value === 'edit' && editingTag.value?.id === Number(tagId)) {
-    formPinned.value = Boolean(pinned)
-  }
-}
-
-async function togglePinned(tag) {
-  if (saving.value || pinningTagIds.value.has(Number(tag.id))) return
-  const previousPinned = Number(tag.is_pinned) === 1
-  const previousPinnedAt = tag.pinned_at
-  setTagPinning(tag.id, true)
-  tag.is_pinned = previousPinned ? 0 : 1
-  tag.pinned_at = previousPinned ? null : Date.now()
-  syncEditingPinned(tag.id, !previousPinned)
-  try {
-    if (typeof window.api.setTagPinned !== 'function') {
-      throw new Error('置顶接口未就绪，请完全重启应用')
-    }
-    const updated = await window.api.setTagPinned(tag.id, !previousPinned)
-    Object.assign(tag, updated)
-    syncEditingPinned(tag.id, Number(updated.is_pinned) === 1)
-  } catch (error) {
-    tag.is_pinned = previousPinned ? 1 : 0
-    tag.pinned_at = previousPinnedAt
-    syncEditingPinned(tag.id, previousPinned)
-    showMessage('error', error.message || '修改置顶状态失败')
-    console.error('[TagManagerDialog] 修改置顶状态失败:', error)
-  } finally {
-    setTagPinning(tag.id, false)
-  }
-  await loadTags()
 }
 
 async function requestDelete(tag) {
@@ -370,7 +321,6 @@ async function confirmDelete() {
               :name="formName"
               :color="formColor"
               :color-text="formColorText"
-              :pinned="formPinned"
               :error="formError"
               :saving="saving"
               :color-invalid="formColorInvalid"
@@ -378,7 +328,6 @@ async function confirmDelete() {
               @update:name="formName = $event"
               @update:color="formColor = $event"
               @update:color-text="onColorTextInput"
-              @update:pinned="formPinned = $event"
               @cancel="closeForm"
               @save="saveTag"
             />
@@ -408,12 +357,6 @@ async function confirmDelete() {
               }"
             />
             <span class="tm-name" :title="tag.name">{{ tag.name }}</span>
-            <TagPinButton
-              :pinned="Number(tag.is_pinned) === 1"
-              :label="tag.name"
-              :disabled="saving || pinningTagIds.has(Number(tag.id))"
-              @toggle="togglePinned(tag)"
-            />
             <button
               type="button"
               class="tm-edit"
@@ -440,8 +383,6 @@ async function confirmDelete() {
                   :name="formName"
                   :color="formColor"
                   :color-text="formColorText"
-                  :pinned="formPinned"
-                  :pinned-disabled="pinningTagIds.has(Number(tag.id))"
                   :error="formError"
                   :usage-text="usageText"
                   :saving="saving"
@@ -450,7 +391,6 @@ async function confirmDelete() {
                   @update:name="formName = $event"
                   @update:color="formColor = $event"
                   @update:color-text="onColorTextInput"
-                  @update:pinned="formPinned = $event"
                   @cancel="closeForm"
                   @save="saveTag"
                 />

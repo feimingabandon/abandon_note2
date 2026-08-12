@@ -576,6 +576,71 @@ bool Engine::SyncGeometryFromParent() {
     return true;
 }
 
+bool Engine::SyncAndShow() {
+    if (!m_overlayHwnd || !IsWindow(m_overlayHwnd)) {
+        m_lastError.store(BlurErrorCode::OverlayWindowFailed);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
+    if (!m_parentHwnd || !IsWindow(m_parentHwnd)) {
+        m_lastError.store(BlurErrorCode::InvalidParentWindow);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
+
+    // Effect Graph 可以在 Electron show:false 时提前初始化，但背景层绝不能
+    // 脱离父窗口独立出现。首次 show、托盘恢复和视图切换都会再次提交配置。
+    if (!IsWindowVisible(m_parentHwnd)) {
+        ShowWindow(m_overlayHwnd, SW_HIDE);
+        if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
+        return true;
+    }
+
+    RECT rect{};
+    if (!GetWindowRect(m_parentHwnd, &rect)) {
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
+
+    const bool parentTopmost =
+        (GetWindowLongPtrW(m_parentHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    const bool overlayTopmost =
+        (GetWindowLongPtrW(m_overlayHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+
+    // 首次启动时 Overlay 仍隐藏，先进入与父窗口相同的 Z-order band。最终一次
+    // 提交再同时设置几何、紧贴父窗口后方并显示，避免 SetWindowPos 与
+    // ShowWindow 之间被安装器、WPS/Excel 等前台窗口插入。运行期重配也沿用
+    // 这条路径；同 band 时不会产生额外层级切换。
+    if (parentTopmost != overlayTopmost) {
+        if (!SetWindowPos(m_overlayHwnd, parentTopmost ? HWND_TOPMOST : HWND_NOTOPMOST,
+            0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) {
+            m_lastError.store(BlurErrorCode::UnknownFailure);
+            m_runtimeHealthy.store(false);
+            return false;
+        }
+    }
+
+    if (!SetWindowPos(m_overlayHwnd, m_parentHwnd,
+        rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
+        SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
+    try {
+        UpdateVisualSize();
+    }
+    catch (...) {
+        ShowWindow(m_overlayHwnd, SW_HIDE);
+        m_lastError.store(BlurErrorCode::EffectGraphFailed);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
+    if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
+    return true;
+}
+
 bool Engine::SyncZOrder() {
     if (!m_overlayHwnd || !IsWindow(m_overlayHwnd)) {
         m_lastError.store(BlurErrorCode::OverlayWindowFailed);
@@ -586,6 +651,14 @@ bool Engine::SyncZOrder() {
         m_lastError.store(BlurErrorCode::InvalidParentWindow);
         m_runtimeHealthy.store(false);
         return false;
+    }
+
+    // 父窗口隐藏时维持“背景层也隐藏”的强不变量。Z-order 修复请求可以来自
+    // 异步 WinEvent/焦点事件，不能让迟到的请求重新留下孤立 Overlay。
+    if (!IsWindowVisible(m_parentHwnd)) {
+        ShowWindow(m_overlayHwnd, SW_HIDE);
+        if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
+        return true;
     }
 
     const bool parentTopmost =
@@ -748,9 +821,7 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         {
             auto cfg = self->GetConfig();
             if (cfg.enabled) {
-                if (self->SyncGeometryFromParent() && self->SyncZOrder()) {
-                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                } else {
+                if (!self->SyncAndShow()) {
                     ShowWindow(hwnd, SW_HIDE);
                 }
             } else {
@@ -761,9 +832,7 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
     case WM_BLUR_SHOW:
         if (self->GetConfig().enabled) {
-            if (self->SyncGeometryFromParent() && self->SyncZOrder()) {
-                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            } else {
+            if (!self->SyncAndShow()) {
                 ShowWindow(hwnd, SW_HIDE);
             }
         }

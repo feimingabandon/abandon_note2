@@ -43,6 +43,10 @@
   transform: scale(0.98);
   transition-duration: 70ms;
 }
+/* 选择器和菜单由面板展开/收起提供反馈，不叠加按钮按压缩放。 */
+:where(button[aria-haspopup]:not(:disabled):active) {
+  transform: none;
+}
 
 /* 全局隐藏滚动条 —— 保留滚动功能，不占布局空间，零抖动
    鼠标滚轮 / 触控板 / 键盘方向键均可正常滚动 */

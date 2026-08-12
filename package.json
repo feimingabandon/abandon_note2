@@ -35,9 +35,11 @@
     "build:mac:arm64": "npm run build && electron-builder --mac dmg --arm64 --publish never"
   },
   "dependencies": {
+    "@aurouscia/china-areas": "^0.7.0",
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "better-sqlite3": "13.0.1",
+    "chinese-days": "1.5.9",
     "koffi": "2.16.2",
     "vuedraggable": "^4.1.0"
   },

@@ -20,6 +20,7 @@ import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 import {
+  DEFAULT_NEW_NOTE_SCHEDULE_TIME,
   MIN_SCHEDULE_LEAD_TIME_MINUTES,
   MIN_SCHEDULE_LEAD_TIME_MS
 } from '../../../../shared/note-scheduling-rules.js'
@@ -168,25 +169,18 @@ const today = computed(() => {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate())
 })
 
-/** 自定义快捷选项（不含过去日期） */
+function dateAtDefaultScheduleTime(dayOffset = 0) {
+  const date = new Date()
+  date.setDate(date.getDate() + dayOffset)
+  date.setHours(0, 1, 0, 0)
+  return date
+}
+
+/** 自定义快捷选项（不含过去日期，时间统一为当天 00:01） */
 const dateShortcuts = [
-  { label: '今天', getValue: () => new Date() },
-  {
-    label: '明天',
-    getValue: () => {
-      const d = new Date()
-      d.setDate(d.getDate() + 1)
-      return d
-    }
-  },
-  {
-    label: '三天后',
-    getValue: () => {
-      const d = new Date()
-      d.setDate(d.getDate() + 3)
-      return d
-    }
-  }
+  { label: '今天', getValue: () => dateAtDefaultScheduleTime() },
+  { label: '明天', getValue: () => dateAtDefaultScheduleTime(1) },
+  { label: '三天后', getValue: () => dateAtDefaultScheduleTime(3) }
 ]
 
 // 生效时间被清空时，强制关闭系统提醒
@@ -323,6 +317,7 @@ async function handleCreate() {
           placeholder="立即生效"
           :min-date="today"
           :shortcuts="dateShortcuts"
+          :default-time="`${DEFAULT_NEW_NOTE_SCHEDULE_TIME}:00`"
         />
       </div>
 

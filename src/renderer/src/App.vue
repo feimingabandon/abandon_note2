@@ -14,7 +14,7 @@
  *     └── main.content（主内容区域，可滚动）
  */
 
-import { nextTick, ref, onMounted, onUnmounted } from 'vue'
+import { nextTick, ref, onMounted, onUnmounted, watch } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue' // 自定义窗口缩放手柄
@@ -22,6 +22,9 @@ import SettingsPanel from './components/system/SettingsPanel.vue' // 底部弹�
 import MessageToast from './components/system/MessageToast.vue'
 import UpdateDialog from './components/system/UpdateDialog.vue'
 import RemoteNoticeDialog from './components/system/RemoteNoticeDialog.vue'
+import HolidayDataNoticeDialog from './components/system/HolidayDataNoticeDialog.vue'
+import DailyReportDialog from './components/report/DailyReportDialog.vue'
+import DailyReportButton from './components/report/DailyReportButton.vue'
 import NoteList from './components/list/NoteList.vue'
 import NoteEditor from './components/note/NoteEditor.vue'
 import ActionBar from './components/list/ActionBar.vue'
@@ -30,6 +33,7 @@ import HelpPage from './components/help/HelpPage.vue'
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
+import { useTodayKey } from './composables/useTodayKey.js'
 import {
   captureFocusedElement,
   focusModal,
@@ -45,6 +49,10 @@ const { showMessage } = createMessageProvider()
 const showSettings = ref(false)
 const showUpdateDialog = ref(false)
 const showRemoteNoticeDialog = ref(false)
+const showHolidayDataNoticeDialog = ref(false)
+const showDailyReportDialog = ref(false)
+const pendingHolidayDataNotice = ref(null)
+const holidayNoticeTodayKey = useTodayKey()
 const pendingRemoteNotices = ref([])
 const updateChecking = ref(false)
 const updateResult = ref(null)
@@ -72,14 +80,65 @@ async function loadPendingRemoteNotices({ show = false } = {}) {
   }
 }
 
+function maybeShowHolidayDataNotice() {
+  if (
+    pendingHolidayDataNotice.value?.required &&
+    !showRemoteNoticeDialog.value &&
+    !showSettings.value &&
+    !showUpdateDialog.value
+  ) {
+    showHolidayDataNoticeDialog.value = true
+  }
+}
+
+async function loadHolidayDataNotice() {
+  try {
+    const notice = await window.api.getHolidayDataNotice()
+    pendingHolidayDataNotice.value = notice?.required ? notice : null
+    maybeShowHolidayDataNotice()
+  } catch (error) {
+    console.warn('[App] 读取节假日数据提醒失败:', error)
+  }
+}
+
+watch(holidayNoticeTodayKey, (nextDateKey, previousDateKey) => {
+  if (nextDateKey.slice(0, 4) !== previousDateKey.slice(0, 4)) void loadHolidayDataNotice()
+})
+
+async function dismissHolidayDataNotice({ openSettingsAfter = false } = {}) {
+  const year = pendingHolidayDataNotice.value?.year
+  showHolidayDataNoticeDialog.value = false
+  pendingHolidayDataNotice.value = null
+  if (year) {
+    await window.api
+      .dismissHolidayDataNotice(year)
+      .catch((error) => console.warn('[App] 保存节假日提醒状态失败:', error))
+  }
+  if (openSettingsAfter) setTimeout(openSettings, 220)
+}
+
+function closeRemoteNoticeDialog() {
+  showRemoteNoticeDialog.value = false
+  maybeShowHolidayDataNotice()
+}
+
 function onRemoteNoticeAcknowledged(id) {
   pendingRemoteNotices.value = pendingRemoteNotices.value.filter((notice) => notice.id !== id)
-  if (!pendingRemoteNotices.value.length) showRemoteNoticeDialog.value = false
+  if (!pendingRemoteNotices.value.length) {
+    showRemoteNoticeDialog.value = false
+    maybeShowHolidayDataNotice()
+  }
 }
 
 function openSettings() {
   if (!releaseSettingsBackgroundBlur) releaseSettingsBackgroundBlur = retainModalBlur()
   showSettings.value = true
+}
+
+function openDailyReport() {
+  closeTemplates()
+  closeHelp()
+  showDailyReportDialog.value = true
 }
 
 function releaseSettingsBlur() {
@@ -94,7 +153,12 @@ async function checkForUpdates({ showResult = true } = {}) {
   if (showResult) showUpdateDialog.value = true
   try {
     updateResult.value = await window.api.checkForUpdate()
-    if (!showResult && updateResult.value?.status === 'available') {
+    if (
+      !showResult &&
+      updateResult.value?.status === 'available' &&
+      !showHolidayDataNoticeDialog.value &&
+      !showRemoteNoticeDialog.value
+    ) {
       showUpdateDialog.value = true
     }
   } catch (error) {
@@ -337,6 +401,7 @@ onMounted(async () => {
     void loadPendingRemoteNotices({ show: true })
   })
   await loadPendingRemoteNotices({ show: true })
+  await loadHolidayDataNotice()
 
   // 通知主进程渲染已完成，可以安全地显示窗口了
   // 主进程收到后会调用 mainWindow.show()
@@ -472,7 +537,14 @@ onUnmounted(() => {
     <!-- 设置打开时，底层场景不可点击且不可获取键盘焦点。 -->
     <div
       class="app-scene"
-      :inert="showSettings || !!selectedNote || showUpdateDialog || showRemoteNoticeDialog"
+      :inert="
+        showSettings ||
+        !!selectedNote ||
+        showUpdateDialog ||
+        showRemoteNoticeDialog ||
+        showHolidayDataNoticeDialog ||
+        showDailyReportDialog
+      "
     >
       <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
       <ResizeHandles :locked="locked" />
@@ -484,6 +556,7 @@ onUnmounted(() => {
       >
         <!-- 设置和帮助按钮组 -->
         <TitlebarActions :style-variant="titlebarStyle">
+          <DailyReportButton @open="openDailyReport" />
           <button
             class="titlebar-btn titlebar-btn-template"
             :class="{ 'is-active': templatePanelActive }"
@@ -611,9 +684,19 @@ onUnmounted(() => {
     <RemoteNoticeDialog
       v-if="showRemoteNoticeDialog && pendingRemoteNotices.length"
       :notices="pendingRemoteNotices"
-      @close="showRemoteNoticeDialog = false"
+      @close="closeRemoteNoticeDialog"
       @acknowledged="onRemoteNoticeAcknowledged"
     />
+
+    <HolidayDataNoticeDialog
+      v-if="pendingHolidayDataNotice"
+      :visible="showHolidayDataNoticeDialog"
+      :year="pendingHolidayDataNotice.year"
+      @dismiss="dismissHolidayDataNotice()"
+      @open-settings="dismissHolidayDataNotice({ openSettingsAfter: true })"
+    />
+
+    <DailyReportDialog v-model:visible="showDailyReportDialog" />
 
     <!-- 应用内消息弹窗（Apple 风格 Toast，固定顶部居中） -->
     <MessageToast />

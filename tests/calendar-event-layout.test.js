@@ -75,6 +75,34 @@ describe('month multi-day event layout', () => {
     expect(counts.get('2026-08-07')).toBe(1)
   })
 
+  it('sorts the day panel by duration, pin state, effective time and stable id', () => {
+    const shortPinned = note(8, 2026, 8, 3, 1, { is_pinned: 1 })
+    const longLater = note(6, 2026, 8, 3, 4, { effective_at: localTs(2026, 8, 3, 11) })
+    const longEarlierHigherId = note(7, 2026, 8, 3, 4, {
+      effective_at: localTs(2026, 8, 3, 8)
+    })
+    const longEarlierLowerId = note(5, 2026, 8, 3, 4, {
+      effective_at: localTs(2026, 8, 3, 8)
+    })
+    const longPinned = note(9, 2026, 8, 3, 4, { is_pinned: 1 })
+
+    expect(
+      notesCoveringDate(
+        [shortPinned, longLater, longEarlierHigherId, longEarlierLowerId, longPinned],
+        '2026-08-03'
+      ).map((item) => item.id)
+    ).toEqual([9, 5, 7, 6, 8])
+  })
+
+  it('sorts pinned notes first when ordinary notes both last one day', () => {
+    const ordinary = note(20, 2026, 8, 12, 1)
+    const pinned = note(21, 2026, 8, 12, 1, { is_pinned: 1 })
+
+    expect(notesCoveringDate([ordinary, pinned], '2026-08-12').map((item) => item.id)).toEqual([
+      21, 20
+    ])
+  })
+
   it('reports overflow even when no event lane fits in the date cell', () => {
     expect(hasHiddenCalendarNotes(4, 0)).toBe(true)
     expect(hasHiddenCalendarNotes(4, 4)).toBe(false)

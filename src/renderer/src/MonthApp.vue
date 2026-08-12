@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue'
@@ -8,7 +8,11 @@ import MessageToast from './components/system/MessageToast.vue'
 import MonthWorkspace from './components/month/MonthWorkspace.vue'
 import UpdateDialog from './components/system/UpdateDialog.vue'
 import RemoteNoticeDialog from './components/system/RemoteNoticeDialog.vue'
+import HolidayDataNoticeDialog from './components/system/HolidayDataNoticeDialog.vue'
+import DailyReportDialog from './components/report/DailyReportDialog.vue'
+import DailyReportButton from './components/report/DailyReportButton.vue'
 import { createMessageProvider } from './composables/useMessage.js'
+import { useTodayKey } from './composables/useTodayKey.js'
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
 import { createDefaultSettings, VIEW_MODES } from '../../shared/settings-schema.js'
@@ -21,6 +25,10 @@ const titlebarStyle = ref(defaults.appearance.titlebarStyle)
 const showSettings = ref(false)
 const showUpdateDialog = ref(false)
 const showRemoteNoticeDialog = ref(false)
+const showHolidayDataNoticeDialog = ref(false)
+const showDailyReportDialog = ref(false)
+const pendingHolidayDataNotice = ref(null)
+const holidayNoticeTodayKey = useTodayKey()
 const monthBusinessModalOpen = ref(false)
 const monthWorkspaceRef = ref(null)
 const pendingRemoteNotices = ref([])
@@ -36,6 +44,15 @@ let stopSettingsListener = null
 let stopAppMessageListener = null
 let stopRemoteNoticesListener = null
 let stopNotificationOpenListener = null
+let resolveMonthWorkspaceReady = null
+const monthWorkspaceReady = new Promise((resolve) => {
+  resolveMonthWorkspaceReady = resolve
+})
+
+function onMonthWorkspaceReady() {
+  resolveMonthWorkspaceReady?.()
+  resolveMonthWorkspaceReady = null
+}
 
 function openSettings() {
   if (!releaseSettingsBackgroundBlur) releaseSettingsBackgroundBlur = retainModalBlur()
@@ -96,9 +113,54 @@ async function loadPendingRemoteNotices({ show = false } = {}) {
   }
 }
 
+function maybeShowHolidayDataNotice() {
+  if (
+    pendingHolidayDataNotice.value?.required &&
+    !showRemoteNoticeDialog.value &&
+    !showSettings.value &&
+    !showUpdateDialog.value
+  ) {
+    showHolidayDataNoticeDialog.value = true
+  }
+}
+
+async function loadHolidayDataNotice() {
+  try {
+    const notice = await window.api.getHolidayDataNotice()
+    pendingHolidayDataNotice.value = notice?.required ? notice : null
+    maybeShowHolidayDataNotice()
+  } catch (error) {
+    console.warn('[MonthApp] 读取节假日数据提醒失败:', error)
+  }
+}
+
+watch(holidayNoticeTodayKey, (nextDateKey, previousDateKey) => {
+  if (nextDateKey.slice(0, 4) !== previousDateKey.slice(0, 4)) void loadHolidayDataNotice()
+})
+
+async function dismissHolidayDataNotice({ openSettingsAfter = false } = {}) {
+  const year = pendingHolidayDataNotice.value?.year
+  showHolidayDataNoticeDialog.value = false
+  pendingHolidayDataNotice.value = null
+  if (year) {
+    await window.api
+      .dismissHolidayDataNotice(year)
+      .catch((error) => console.warn('[MonthApp] 保存节假日提醒状态失败:', error))
+  }
+  if (openSettingsAfter) setTimeout(openSettings, 220)
+}
+
+function closeRemoteNoticeDialog() {
+  showRemoteNoticeDialog.value = false
+  maybeShowHolidayDataNotice()
+}
+
 function onRemoteNoticeAcknowledged(id) {
   pendingRemoteNotices.value = pendingRemoteNotices.value.filter((notice) => notice.id !== id)
-  if (!pendingRemoteNotices.value.length) showRemoteNoticeDialog.value = false
+  if (!pendingRemoteNotices.value.length) {
+    showRemoteNoticeDialog.value = false
+    maybeShowHolidayDataNotice()
+  }
 }
 
 async function openNoteFromNotification(payload) {
@@ -155,6 +217,8 @@ onMounted(async () => {
   document.addEventListener('mouseenter', onMouseEnter)
   document.addEventListener('mouseleave', onMouseLeave)
   await loadPendingRemoteNotices({ show: true })
+  await loadHolidayDataNotice()
+  await monthWorkspaceReady
   window.api.rendererReady()
 })
 
@@ -186,7 +250,14 @@ onUnmounted(() => {
     <div
       class="month-scene"
       :class="{ 'is-ui-background-blurred': showSettings || monthBusinessModalOpen }"
-      :inert="showSettings || monthBusinessModalOpen || showUpdateDialog || showRemoteNoticeDialog"
+      :inert="
+        showSettings ||
+        monthBusinessModalOpen ||
+        showUpdateDialog ||
+        showRemoteNoticeDialog ||
+        showHolidayDataNoticeDialog ||
+        showDailyReportDialog
+      "
     >
       <ResizeHandles :locked="locked" />
       <AppTitlebar
@@ -195,6 +266,7 @@ onUnmounted(() => {
         :style-variant="titlebarStyle"
       >
         <TitlebarActions :style-variant="titlebarStyle">
+          <DailyReportButton month-view @open="showDailyReportDialog = true" />
           <button
             class="titlebar-btn titlebar-btn-settings month-titlebar-btn"
             title="设置"
@@ -215,6 +287,7 @@ onUnmounted(() => {
         <MonthWorkspace
           ref="monthWorkspaceRef"
           @modal-state-change="monthBusinessModalOpen = $event"
+          @ready="onMonthWorkspaceReady"
         />
       </main>
     </div>
@@ -235,9 +308,17 @@ onUnmounted(() => {
     <RemoteNoticeDialog
       v-if="showRemoteNoticeDialog && pendingRemoteNotices.length"
       :notices="pendingRemoteNotices"
-      @close="showRemoteNoticeDialog = false"
+      @close="closeRemoteNoticeDialog"
       @acknowledged="onRemoteNoticeAcknowledged"
     />
+    <HolidayDataNoticeDialog
+      v-if="pendingHolidayDataNotice"
+      :visible="showHolidayDataNoticeDialog"
+      :year="pendingHolidayDataNotice.year"
+      @dismiss="dismissHolidayDataNotice()"
+      @open-settings="dismissHolidayDataNotice({ openSettingsAfter: true })"
+    />
+    <DailyReportDialog v-model:visible="showDailyReportDialog" />
     <MessageToast />
   </div>
 </template>

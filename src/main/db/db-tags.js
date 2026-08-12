@@ -22,16 +22,20 @@ const now = () => Date.now()
  * @param {string|null} [color=null] - 十六进制颜色，如 '#FF5733'
  * @returns {Object|null} 创建的标签对象，名称冲突返回 null
  */
-export function createTag(name, color = null, pinned = false) {
+export function createTag(name, color = null) {
   const normalizedName = normalizeTagName(name)
   const normalizedColor = normalizeTagColor(color)
   const ts = now()
   try {
-    getDb()
-      .prepare(
-        'INSERT INTO tags (name, color, created_at, is_pinned, pinned_at) VALUES (?, ?, ?, ?, ?)'
-      )
-      .run(normalizedName, normalizedColor, ts, pinned ? 1 : 0, pinned ? ts : null)
+    const db = getDb()
+    const nextSortOrder =
+      Number(db.prepare('SELECT MAX(sort_order) AS max_order FROM tags').get()?.max_order) + 65536
+    db.prepare('INSERT INTO tags (name, color, created_at, sort_order) VALUES (?, ?, ?, ?)').run(
+      normalizedName,
+      normalizedColor,
+      ts,
+      nextSortOrder
+    )
     return getTagByName(normalizedName)
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') return null
@@ -54,7 +58,7 @@ function normalizeTagColor(value) {
 }
 
 /** 按稳定 ID 修改标签名称与颜色；关联表无需改写。 */
-export function updateTag(id, { name, color = null, pinned } = {}) {
+export function updateTag(id, { name, color = null } = {}) {
   const tagId = Number(id)
   if (!Number.isInteger(tagId) || tagId <= 0) throw new Error('无效的标签 ID')
   const normalizedName = normalizeTagName(name)
@@ -62,16 +66,12 @@ export function updateTag(id, { name, color = null, pinned } = {}) {
   const db = getDb()
   const current = getTagById(tagId)
   if (!current) throw new Error('标签不存在')
-  const nextPinned = pinned === undefined ? Number(current.is_pinned) === 1 : Boolean(pinned)
-  const pinnedAt = nextPinned
-    ? Number(current.is_pinned) === 1 && current.pinned_at
-      ? current.pinned_at
-      : now()
-    : null
   try {
-    db.prepare(
-      'UPDATE tags SET name = ?, color = ?, is_pinned = ?, pinned_at = ? WHERE id = ?'
-    ).run(normalizedName, normalizedColor, nextPinned ? 1 : 0, pinnedAt, tagId)
+    db.prepare('UPDATE tags SET name = ?, color = ? WHERE id = ?').run(
+      normalizedName,
+      normalizedColor,
+      tagId
+    )
   } catch (error) {
     if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') throw new Error('标签名称已存在')
     throw error
@@ -109,22 +109,35 @@ export function getTagByName(name) {
 
 /**
  * 获取所有标签
- * @returns {Object[]} 标签列表，按创建时间倒序
+ * @returns {Object[]} 标签列表，按用户定义的全局顺序
  */
 export function listTags() {
-  return getDb().prepare('SELECT * FROM tags ORDER BY created_at DESC, id DESC').all()
+  return getDb().prepare('SELECT * FROM tags ORDER BY sort_order ASC, id ASC').all()
 }
 
-/** 置顶标签保持稳定顺序：只有显式置顶时才更新 pinned_at。 */
-export function setTagPinned(id, pinned, timestamp = now()) {
-  const tagId = Number(id)
-  if (!Number.isInteger(tagId) || tagId <= 0) throw new Error('无效的标签 ID')
-  const isPinned = Boolean(pinned)
-  const result = getDb()
-    .prepare('UPDATE tags SET is_pinned = ?, pinned_at = ? WHERE id = ?')
-    .run(isPinned ? 1 : 0, isPinned ? Number(timestamp) : null, tagId)
-  if (result.changes !== 1) throw new Error('标签不存在')
-  return getTagById(tagId)
+/**
+ * 按当前可见标签的顺序交换它们原本占据的排序槽位。
+ * 未包含在 orderedTagIds 中的标签不会被写入，支持筛选后的局部拖拽。
+ */
+export function updateTagOrder(orderedTagIds) {
+  if (!Array.isArray(orderedTagIds) || orderedTagIds.length === 0) return listTags()
+  const ids = orderedTagIds.map(Number)
+  if (ids.some((id) => !Number.isInteger(id) || id <= 0) || new Set(ids).size !== ids.length) {
+    throw new Error('标签排序包含无效或重复的标签 ID')
+  }
+
+  const db = getDb()
+  const placeholders = ids.map(() => '?').join(',')
+  const rows = db
+    .prepare(`SELECT id, sort_order FROM tags WHERE id IN (${placeholders})`)
+    .all(...ids)
+  if (rows.length !== ids.length) throw new Error('标签排序包含不存在的标签')
+  const slots = rows.map((row) => Number(row.sort_order)).sort((a, b) => a - b)
+  const update = db.prepare('UPDATE tags SET sort_order = ? WHERE id = ?')
+  db.transaction(() => {
+    ids.forEach((id, index) => update.run(slots[index], id))
+  })()
+  return listTags()
 }
 
 // ============================================================

@@ -1,11 +1,9 @@
 <script setup>
-import TagPinButton from './TagPinButton.vue'
-
 defineProps({
   tag: { type: Object, required: true },
   selected: { type: Boolean, default: false }
 })
-defineEmits(['toggle', 'pin'])
+defineEmits(['toggle'])
 </script>
 
 <template>
@@ -27,10 +25,5 @@ defineEmits(['toggle', 'pin'])
         <path d="m3 8.5 3 3 7-7" />
       </svg>
     </button>
-    <TagPinButton
-      :pinned="Number(tag.is_pinned) === 1"
-      :label="tag.name"
-      @toggle="$emit('pin', tag)"
-    />
   </div>
 </template>

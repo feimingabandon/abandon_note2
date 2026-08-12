@@ -25,6 +25,7 @@ import HelpButton from '../ui/HelpButton.vue'
 import WallpaperSettings from '../wallpaper/WallpaperSettings.vue'
 import LogViewerDialog from './LogViewerDialog.vue'
 import RemoteNoticeHistoryDialog from './RemoteNoticeHistoryDialog.vue'
+import WeatherSettings from '../weather/WeatherSettings.vue'
 import { useMessage } from '../../composables/useMessage.js' // 消息弹窗
 import { applyGlassBaseSettings, applySettingsSnapshot } from '../../utils/applySettingsSnapshot.js'
 import {
@@ -100,6 +101,10 @@ const isResetting = ref(false)
 const showLogViewer = ref(false)
 const showNoticeHistory = ref(false)
 const appVersion = ref('未知')
+const currentHolidayYear = new Date().getFullYear()
+const holidayDataStatus = ref(null)
+const holidayDataBusy = ref('')
+const holidayDataError = ref('')
 
 /** 关闭动画定时器 ID，用于取消竞态关闭 */
 let closeTimer = null
@@ -457,6 +462,110 @@ let _blurEnableFeedbackPending = false
 let stopBlurRuntimeListener = null
 let stopBlurDiagnosticListener = null
 let stopRemoteHealthListener = null
+let stopHolidayDataListener = null
+
+const holidayDataStatusLabel = computed(() =>
+  holidayDataStatus.value?.available ? '● 数据可用' : '○ 需要更新'
+)
+
+const holidayDataSourceLabel = computed(() => {
+  const status = holidayDataStatus.value
+  if (!status?.available) return '暂无数据'
+  if (status.source === 'download') return '在线下载'
+  if (status.source === 'import') return '手动导入'
+  return '应用内置'
+})
+
+const holidayCoveredYearsLabel = computed(() => {
+  const years = holidayDataStatus.value?.coveredYears || []
+  if (!years.length) return '无'
+  const ranges = []
+  let start = years[0]
+  let end = years[0]
+  for (const year of years.slice(1)) {
+    if (year === end + 1) {
+      end = year
+      continue
+    }
+    ranges.push(start === end ? String(start) : `${start}–${end}`)
+    start = year
+    end = year
+  }
+  ranges.push(start === end ? String(start) : `${start}–${end}`)
+  return ranges.join('、')
+})
+
+const holidayDataSourceDetail = computed(() => {
+  const status = holidayDataStatus.value
+  if (!status?.available) return '未安装当前年份数据'
+  return [status.sourceName, formatHolidayDataTime(status.updatedAt)].filter(Boolean).join(' · ')
+})
+
+function formatHolidayDataTime(timestamp) {
+  if (!timestamp) return '随应用提供'
+  return new Date(timestamp).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+async function loadHolidayDataStatus() {
+  try {
+    holidayDataStatus.value = await window.api.getHolidayDataStatus(currentHolidayYear)
+    holidayDataError.value = ''
+  } catch (error) {
+    console.warn('[SettingsPanel] 读取节假日数据状态失败:', error)
+    holidayDataError.value = error?.message || '无法读取节假日数据状态'
+  }
+}
+
+async function importHolidayData() {
+  if (holidayDataBusy.value) return
+  holidayDataBusy.value = 'import'
+  holidayDataError.value = ''
+  try {
+    const result = await window.api.importHolidayData()
+    if (result?.canceled) return
+    holidayDataStatus.value = result.status
+    const years = result.importedYears || []
+    showMessage('success', `已导入 ${years.join('、')} 年节假日数据`)
+  } catch (error) {
+    console.warn('[SettingsPanel] 导入节假日数据失败:', error)
+    holidayDataError.value = error?.message || '导入失败'
+    showMessage('error', holidayDataError.value, 4000)
+  } finally {
+    holidayDataBusy.value = ''
+  }
+}
+
+async function downloadCurrentHolidayData() {
+  if (holidayDataBusy.value) return
+  holidayDataBusy.value = 'download'
+  holidayDataError.value = ''
+  try {
+    const result = await window.api.downloadHolidayData(currentHolidayYear)
+    holidayDataStatus.value = result.status
+    showMessage('success', `${currentHolidayYear} 年节假日数据已下载并导入`)
+  } catch (error) {
+    console.warn('[SettingsPanel] 下载节假日数据失败:', error)
+    holidayDataError.value = error?.message || '下载失败'
+    showMessage('error', holidayDataError.value, 4000)
+  } finally {
+    holidayDataBusy.value = ''
+  }
+}
+
+async function openHolidayDataLink() {
+  try {
+    await window.api.openHolidayDataLink(currentHolidayYear)
+  } catch (error) {
+    console.warn('[SettingsPanel] 打开节假日数据地址失败:', error)
+    showMessage('error', error?.message || '无法打开下载地址', 4000)
+  }
+}
 
 const blurDiagnosticMeta = computed(() => {
   const states = {
@@ -477,6 +586,54 @@ const cssBlur = ref(DEFAULT_SETTINGS.css.bgBlur)
 const cssOpacity = ref(DEFAULT_SETTINGS.css.popupOpacity)
 
 const { showMessage } = useMessage()
+const weatherRefreshing = ref(false)
+
+function weatherRefreshTime(timestamp) {
+  if (!timestamp) return '未知时间'
+  return new Date(timestamp).toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+function weatherRefreshErrorMessage(error) {
+  return String(error?.message || '天气更新失败').replace(
+    /^Error invoking remote method '[^']+': (?:Error: )?/,
+    ''
+  )
+}
+
+async function refreshWeatherManually() {
+  if (weatherRefreshing.value) return
+  weatherRefreshing.value = true
+  const startedAt = performance.now()
+  try {
+    const forecast = await window.api.refreshWeatherForecast()
+    const place = forecast?.location?.name || '当前地区'
+    const updatedAt = weatherRefreshTime(forecast?.fetchedAt)
+    const status = forecast?.manualRefresh?.status
+    if (status === 'current') {
+      showMessage('success', `当前已是最新天气：${place}，更新于 ${updatedAt}`)
+    } else if (status === 'stale') {
+      showMessage(
+        'warning',
+        `天气更新失败，继续使用 ${updatedAt} 的缓存：${forecast?.warning || '网络不可用'}`,
+        4000
+      )
+    } else {
+      showMessage(
+        'success',
+        `天气已更新：${place}，共 ${forecast?.days?.length || 0} 天预报（${updatedAt}）`
+      )
+    }
+  } catch (error) {
+    showMessage('error', weatherRefreshErrorMessage(error), 4000)
+  } finally {
+    const remaining = 520 - (performance.now() - startedAt)
+    if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining))
+    weatherRefreshing.value = false
+  }
+}
 
 /**
  * 使用元素的真实高度驱动原生模糊参数区动画。
@@ -879,8 +1036,8 @@ onMounted(async () => {
     panelActive.value = true
     closeButtonRef.value?.focus({ preventScroll: true })
   })
-  // 两项都是本地 IPC；设置面板不再等待任何网络请求。
-  await Promise.all([loadSettingsSnapshot(), loadRemoteHealth()])
+  // 三项都是本地 IPC；设置面板只在用户点击下载时访问网络。
+  await Promise.all([loadSettingsSnapshot(), loadRemoteHealth(), loadHolidayDataStatus()])
   if (componentUnmounted) return
 
   stopBlurRuntimeListener = window.api.onSettingsChanged?.((snapshot) => {
@@ -918,6 +1075,9 @@ onMounted(async () => {
   stopBlurDiagnosticListener = window.api.onBlurDiagnosticChanged?.((diagnostic) => {
     if (diagnostic) blurDiagnostic.value = diagnostic
   })
+  stopHolidayDataListener = window.api.onHolidayDataChanged?.(() => {
+    void loadHolidayDataStatus()
+  })
 
   loadSchedulerHealth()
   _schedulerTimer = setInterval(loadSchedulerHealth, 10000)
@@ -931,6 +1091,8 @@ onBeforeUnmount(() => {
   stopBlurDiagnosticListener = null
   stopRemoteHealthListener?.()
   stopRemoteHealthListener = null
+  stopHolidayDataListener?.()
+  stopHolidayDataListener = null
   onDragEnd()
   // 正常关闭时这里已完成 flush；强制卸载时也不能丢失最后一次修改。
   flushPendingSettingSaves().catch((e) => console.warn('[SettingsPanel] 卸载前保存设置失败:', e))
@@ -1498,6 +1660,109 @@ const onConfirmResetSettings = async () => {
               <div class="setting-right">
                 <AppToggle v-model="autoStart" />
               </div>
+            </div>
+          </section>
+
+          <!-- ========== 天气 ========== -->
+          <section class="settings-section">
+            <h3 class="section-title">
+              <span>天气</span>
+              <button
+                type="button"
+                class="weather-refresh-btn"
+                :class="{ 'is-refreshing': weatherRefreshing }"
+                :disabled="weatherRefreshing"
+                title="手动更新天气"
+                aria-label="手动更新天气"
+                @click="refreshWeatherManually"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+            </h3>
+            <WeatherSettings />
+          </section>
+
+          <!-- ========== 日历与节假日数据 ========== -->
+          <section class="settings-section">
+            <h3 class="section-title">
+              <span>日历与节假日数据</span>
+              <span
+                class="remote-health-badge sched-badge"
+                :class="holidayDataStatus?.available ? 'sched-badge--ok' : 'sched-badge--warn'"
+              >
+                {{ holidayDataStatusLabel }}
+              </span>
+            </h3>
+
+            <p
+              v-if="holidayDataStatus && !holidayDataStatus.available"
+              class="holiday-data-message"
+            >
+              尚未安装 {{ currentHolidayYear }} 年节假日数据；月视图将不显示“休 /
+              班”标记，农历与节气不受影响。
+            </p>
+            <p v-if="holidayDataError" class="holiday-data-message is-error">
+              {{ holidayDataError }}
+            </p>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >当前年份<HelpButton
+                    text="程序检查当前年份最终生效的数据。用户导入或下载的数据优先，缺失时回退应用内置数据。"
+                /></span>
+                <span class="setting-hint-caption"
+                  >可用年份 {{ holidayCoveredYearsLabel }}；农历自 1900-01-31、节气自 1900
+                  年起支持至 2100 年</span
+                >
+              </div>
+              <div class="setting-right">
+                <span class="setting-value">{{ currentHolidayYear }}</span>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label">当前数据源</span>
+                <span class="setting-hint-caption">
+                  {{ holidayDataSourceDetail }}
+                </span>
+              </div>
+              <div class="setting-right">
+                <span class="setting-value">{{ holidayDataSourceLabel }}</span>
+              </div>
+            </div>
+
+            <div class="setting-item setting-item-full setting-button-row">
+              <BaseButton
+                variant="primary"
+                :disabled="Boolean(holidayDataBusy)"
+                @click="downloadCurrentHolidayData"
+              >
+                {{ holidayDataBusy === 'download' ? '正在下载…' : '下载并导入' }}
+              </BaseButton>
+              <BaseButton :disabled="Boolean(holidayDataBusy)" @click="importHolidayData">
+                {{ holidayDataBusy === 'import' ? '正在导入…' : '导入 JSON' }}
+              </BaseButton>
+            </div>
+            <div class="setting-item setting-item-full">
+              <BaseButton
+                variant="default"
+                style="width: 100%"
+                :disabled="Boolean(holidayDataBusy)"
+                @click="openHolidayDataLink"
+              >
+                在浏览器中打开 {{ currentHolidayYear }} 年 JSON
+              </BaseButton>
             </div>
           </section>
 
@@ -2166,6 +2431,16 @@ const onConfirmResetSettings = async () => {
   line-height: 1.4;
 }
 
+.holiday-data-message {
+  margin: -2rem 2rem 6rem;
+  color: rgb(255, 149, 0);
+  font-size: calc(var(--fs-secondary) * 0.88);
+  line-height: 1.4;
+}
+.holiday-data-message.is-error {
+  color: rgb(255, 59, 48);
+}
+
 /* 持久错误提示（恒显示，不自动消失）—— Apple 风格：图标 + 文字 */
 .setting-error {
   display: inline-flex;
@@ -2301,6 +2576,40 @@ const onConfirmResetSettings = async () => {
   display: flex;
   align-items: center;
   gap: 8rem;
+}
+.weather-refresh-btn {
+  display: grid;
+  width: 22rem;
+  height: 22rem;
+  flex: 0 0 auto;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-color-secondary);
+  cursor: pointer;
+}
+.weather-refresh-btn:hover:not(:disabled) {
+  background: var(--ui-fill-hover);
+}
+.weather-refresh-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #0a84ff 24%, transparent);
+}
+.weather-refresh-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.weather-refresh-btn:disabled {
+  cursor: wait;
+}
+.weather-refresh-btn.is-refreshing svg {
+  animation: weather-refresh-spin 720ms linear infinite;
+}
+@keyframes weather-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .sched-refresh-btn {
   width: 22rem;

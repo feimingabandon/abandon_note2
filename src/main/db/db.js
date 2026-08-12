@@ -19,7 +19,7 @@ import { readdir, rm } from 'fs/promises'
 import { randomUUID } from 'crypto'
 import { clearDb, getDb as getConnectionDb, setDb } from './db-connection.js'
 import { createDatabaseSchema } from './db-schema.js'
-import { createTagIdMigrationBackup } from './db-migration-backup.js'
+import { createDatabaseMigrationBackup } from './db-migration-backup.js'
 import { resolveImagePath } from './db-images.js'
 
 /** 数据库实例引用，整个应用生命周期内复用 */
@@ -41,7 +41,7 @@ export function initDatabase() {
     connection.pragma('synchronous = NORMAL')
     connection.pragma('cache_size = -8000')
     connection.pragma('foreign_keys = ON')
-    createTagIdMigrationBackup(connection, dbPath)
+    createDatabaseMigrationBackup(connection, dbPath)
     createDatabaseSchema(connection)
     db = connection
     setDb(connection)

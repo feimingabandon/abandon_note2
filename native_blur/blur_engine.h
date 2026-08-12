@@ -126,6 +126,7 @@ private:
     // ---- DPI 动态切换 ----
     void HandleDpiChanged(WPARAM wParam, LPARAM lParam);
     bool SyncGeometryFromParent();
+    bool SyncAndShow();
     bool SyncZOrder();
     bool IsZOrderAdjacent() const;
     void QueueZOrderSync();

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
-import { app, BrowserWindow, screen } from 'electron'
+import { app, BrowserWindow, powerMonitor, screen } from 'electron'
 import koffi from 'koffi'
 
 const WAIT_STEP_MS = 25
@@ -515,9 +515,9 @@ async function runMonthViewTests() {
           const body = document.querySelector('.month-workspace__body').getBoundingClientRect()
           return panel.width / body.width
         })()`)
-      return Math.abs(ratio - 0.34) < 0.015 ? ratio : false
+      return Math.abs(ratio - 0.25) < 0.015 ? ratio : false
     }, '日期侧栏没有稳定到默认宽度')
-    assert.ok(Math.abs(initialPanelRatio - 0.34) < 0.015, '日期侧栏默认宽度必须为 34%')
+    assert.ok(Math.abs(initialPanelRatio - 0.25) < 0.015, '日期侧栏默认宽度必须为 25%')
     const openedToolbarLayout = await monthWindow.webContents.executeJavaScript(`(() => {
       const calendar = document.querySelector('.month-workspace__calendar').getBoundingClientRect()
       const title = document.querySelector('.month-toolbar__title').getBoundingClientRect()
@@ -544,34 +544,48 @@ async function runMonthViewTests() {
         targetX: Math.round(body.left + body.width * 0.42)
       }
     })()`)
-    monthWindow.webContents.sendInputEvent({
-      type: 'mouseDown',
-      x: resizeGeometry.startX,
-      y: resizeGeometry.y,
-      button: 'left',
-      clickCount: 1
-    })
-    monthWindow.webContents.sendInputEvent({
-      type: 'mouseMove',
-      x: resizeGeometry.targetX,
-      y: resizeGeometry.y,
-      button: 'left'
-    })
-    monthWindow.webContents.sendInputEvent({
-      type: 'mouseUp',
-      x: resizeGeometry.targetX,
-      y: resizeGeometry.y,
-      button: 'left',
-      clickCount: 1
-    })
+    await monthWindow.webContents.executeJavaScript(`(() => {
+      const handle = document.querySelector('.month-day-panel__resize')
+      const options = {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 41,
+        pointerType: 'mouse',
+        button: 0,
+        buttons: 1,
+        clientY: ${resizeGeometry.y}
+      }
+      handle.dispatchEvent(new PointerEvent('pointerdown', {
+        ...options,
+        clientX: ${resizeGeometry.startX}
+      }))
+      window.dispatchEvent(new PointerEvent('pointermove', {
+        ...options,
+        clientX: ${resizeGeometry.targetX}
+      }))
+      window.dispatchEvent(new PointerEvent('pointerup', {
+        ...options,
+        button: 0,
+        buttons: 0,
+        clientX: ${resizeGeometry.targetX}
+      }))
+    })()`)
     await waitUntil(async () => {
-      const size = await monthWindow.webContents.executeJavaScript(
-        `window.api.getSettingsSnapshot().then((snapshot) => snapshot.values.ui.dayPanelSize)`
+      const result = await monthWindow.webContents.executeJavaScript(
+        `window.api.getSettingsSnapshot()
+          .then((snapshot) => ({ size: snapshot.values.ui.dayPanelSize, error: '' }))
+          .catch((error) => ({ size: null, error: error?.message || String(error) }))`
       )
+      if (result.error) throw new Error(`读取日期侧栏设置失败：${result.error}`)
+      const size = result.size
       return Math.abs(size - 42) < 1.5
     }, '拖动日期侧栏后没有保存百分比宽度')
 
+    const reloadFinished = new Promise((resolveReload) => {
+      monthWindow.webContents.once('did-finish-load', resolveReload)
+    })
     monthWindow.webContents.reload()
+    await reloadFinished
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
@@ -603,6 +617,41 @@ async function runMonthViewTests() {
       return panel.width / body.width
     })()`)
     assert.ok(Math.abs(restoredPanelRatio - 0.42) < 0.02, '日期侧栏没有恢复持久化宽度')
+
+    const narrowHeaderLayout = await monthWindow.webContents.executeJavaScript(`(async () => {
+      const panel = document.querySelector('.month-day-panel')
+      const originalWidth = panel.style.width
+      panel.style.width = '50%'
+      await new Promise(requestAnimationFrame)
+      await new Promise(requestAnimationFrame)
+
+      const cell = document.querySelector('.month-day-cell:not(.is-outside) .month-day-cell__lunar')?.closest('.month-day-cell')
+      const header = cell.querySelector('.month-day-cell__header')
+      const label = cell.querySelector('.month-day-cell__lunar')
+      const badges = cell.querySelector('.month-day-cell__badges')
+      label.textContent = '中国人民抗日战争胜利纪念日/国家公祭日'
+      badges.innerHTML = '<span class="month-day-cell__holiday is-off">休</span><span class="month-day-cell__today">今</span>'
+      await new Promise(requestAnimationFrame)
+
+      const headerRect = header.getBoundingClientRect()
+      const badgesRect = badges.getBoundingClientRect()
+      const children = Array.from(badges.children, (node) => node.getBoundingClientRect())
+      const result = {
+        headerFits: header.scrollWidth <= header.clientWidth + 0.5,
+        labelEllipsized: label.scrollWidth > label.clientWidth,
+        labelWidth: label.getBoundingClientRect().width,
+        badgesInside: badgesRect.left >= headerRect.left - 0.5 && badgesRect.right <= headerRect.right + 0.5,
+        badgesVisible: children.every((rect) => rect.width >= 15 && rect.height >= 15)
+      }
+      panel.style.width = originalWidth
+      return result
+    })()`)
+    assert.equal(narrowHeaderLayout.headerFits, true, '侧栏最大宽度下日期格顶部不得横向溢出')
+    assert.equal(narrowHeaderLayout.labelEllipsized, true, '长节日名称必须在窄日期格中省略')
+    assert.ok(narrowHeaderLayout.labelWidth > 0, '窄日期格仍应为节日文字保留弹性槽')
+    assert.equal(narrowHeaderLayout.badgesInside, true, '“休 / 今”徽标不得被长节日名称挤出日期格')
+    assert.equal(narrowHeaderLayout.badgesVisible, true, '窄日期格中的状态徽标必须保持可见尺寸')
+
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-day-cell[data-date="${resizeDateKey}"]').click()`
     )
@@ -1018,20 +1067,30 @@ async function runMonthViewTests() {
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
-          `Array.from(document.querySelectorAll('.month-note-card p')).some((node) => node.textContent === '今天立即便签')`
+          `Array.from(document.querySelectorAll('.month-day-panel .nl-card-text')).some((node) => node.textContent === '今天立即便签')`
         ),
       '今天默认时间创建的便签没有进入当日侧栏'
     )
     const immediateStatus = await monthWindow.webContents.executeJavaScript(`(() => {
-      const card = Array.from(document.querySelectorAll('.month-note-card')).find((item) => item.querySelector('p')?.textContent === '今天立即便签')
+      const card = Array.from(document.querySelectorAll('.month-day-panel .nl-card')).find((item) => item.querySelector('.nl-card-text')?.textContent === '今天立即便签')
       return card?.className
     })()`)
-    assert.match(immediateStatus || '', /is-in_progress/, '今天未调整时间必须创建为立即进行中')
+    assert.match(immediateStatus || '', /nl-card--in_progress/, '今天未调整时间必须创建为立即进行中')
 
     await monthWindow.webContents.executeJavaScript(`(() => {
-      const card = Array.from(document.querySelectorAll('.month-note-card')).find((item) => item.querySelector('p')?.textContent === '今天立即便签')
-      Array.from(card.querySelectorAll('button')).find((button) => button.textContent.trim() === '修改').click()
+      const card = Array.from(document.querySelectorAll('.month-day-panel .nl-card')).find((item) => item.querySelector('.nl-card-text')?.textContent === '今天立即便签')
+      card.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 180 }))
     })()`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.nl-context-menu'))`
+        ),
+      '日期侧栏便签操作菜单没有打开'
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `Array.from(document.querySelectorAll('.nl-context-menu button')).find((button) => button.textContent.trim() === '修改').click()`
+    )
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
@@ -1056,25 +1115,58 @@ async function runMonthViewTests() {
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
-          `Array.from(document.querySelectorAll('.month-note-card p')).some((node) => node.textContent === '今天立即便签-已修改')`
+          `Array.from(document.querySelectorAll('.month-day-panel .nl-card-text')).some((node) => node.textContent === '今天立即便签-已修改')`
         ),
       '月视图编辑结果没有刷新到日期侧栏'
     )
     await monthWindow.webContents.executeJavaScript(`(() => {
-      const card = Array.from(document.querySelectorAll('.month-note-card')).find((item) => item.querySelector('p')?.textContent === '今天立即便签-已修改')
-      Array.from(card.querySelectorAll('button')).find((button) => button.textContent.trim() === '完成').click()
+      const card = Array.from(document.querySelectorAll('.month-day-panel .nl-card')).find((item) => item.querySelector('.nl-card-text')?.textContent === '今天立即便签-已修改')
+      card.querySelector('.sr-control[aria-label="标记完成"]').click()
     })()`)
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
-          `Array.from(document.querySelectorAll('.month-note-card')).some((item) => item.classList.contains('is-completed') && item.querySelector('p')?.textContent === '今天立即便签-已修改')`
+          `Array.from(document.querySelectorAll('.month-day-panel .nl-card')).some((item) => item.classList.contains('nl-card--completed') && item.querySelector('.nl-card-text')?.textContent === '今天立即便签-已修改')`
         ),
       '月视图没有完成便签或完成态没有保留在日期范围中'
     )
+
     await monthWindow.webContents.executeJavaScript(`(() => {
-      const card = Array.from(document.querySelectorAll('.month-note-card')).find((item) => item.querySelector('p')?.textContent === '今天立即便签-已修改')
-      Array.from(card.querySelectorAll('button')).find((button) => button.textContent.trim() === '删除').click()
+      const card = Array.from(document.querySelectorAll('.month-day-panel .nl-card')).find((item) => item.querySelector('.nl-card-text')?.textContent === '今天立即便签-已修改')
+      card.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 180 }))
     })()`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Array.from(document.querySelectorAll('.nl-context-menu button')).some((button) => button.textContent.trim() === '置顶')`
+        ),
+      '共享便签卡片没有提供置顶操作'
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `Array.from(document.querySelectorAll('.nl-context-menu button')).find((button) => button.textContent.trim() === '置顶').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Boolean(Array.from(document.querySelectorAll('.month-day-panel .nl-card')).find((item) => item.querySelector('.nl-card-text')?.textContent === '今天立即便签-已修改')?.querySelector('.nl-card-icon[aria-label="已置顶"]'))`
+        ),
+      '月视图置顶便签后没有更新共享卡片状态'
+    )
+
+    await monthWindow.webContents.executeJavaScript(`(() => {
+      const card = Array.from(document.querySelectorAll('.month-day-panel .nl-card')).find((item) => item.querySelector('.nl-card-text')?.textContent === '今天立即便签-已修改')
+      card.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 180 }))
+    })()`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.nl-context-menu'))`
+        ),
+      '日期侧栏删除前没有打开便签操作菜单'
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `Array.from(document.querySelectorAll('.nl-context-menu button')).find((button) => button.textContent.trim() === '删除').click()`
+    )
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
@@ -1089,7 +1181,7 @@ async function runMonthViewTests() {
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
-          `!Array.from(document.querySelectorAll('.month-note-card p')).some((node) => node.textContent === '今天立即便签-已修改')`
+          `!Array.from(document.querySelectorAll('.month-day-panel .nl-card-text')).some((node) => node.textContent === '今天立即便签-已修改')`
         ),
       '删除后便签仍留在月视图日期侧栏'
     )
@@ -1130,7 +1222,7 @@ async function runMonthViewTests() {
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
-          `Array.from(document.querySelectorAll('.month-note-card p')).some((node) => node.textContent === '未来日期便签')`
+          `Array.from(document.querySelectorAll('.month-day-panel .nl-card-text')).some((node) => node.textContent === '未来日期便签')`
         ),
       '日期侧栏新建的未来便签没有落在选中日期'
     )
@@ -1333,6 +1425,58 @@ async function runMonthViewTests() {
     )
     await waitUntil(() => getEdgeStatus().state === 'stopped', '月视图恢复后没有停止原生边缘监视器')
 
+    const outsideWindow = {
+      x: workArea.x + workArea.width - 2,
+      y: workArea.y + workArea.height - 2
+    }
+    const hideFromVisibleTop = async (message) => {
+      assert.equal(setCursorPos(outsideWindow.x, outsideWindow.y), 1)
+      await monthWindow.webContents.executeJavaScript(`window.api.windowHover(false)`)
+      await waitUntil(
+        () => monthWindow.getBounds().y + monthWindow.getBounds().height <= workArea.y,
+        message
+      )
+    }
+    const showFromTopTrigger = async (message) => {
+      assert.equal(setCursorPos(topTriggerX, workArea.y), 1)
+      await waitUntil(() => monthWindow.getBounds().y === workArea.y, message)
+      await waitUntil(
+        () => getEdgeStatus().state === 'stopped',
+        `${message}：原生边缘监视器没有停止`
+      )
+    }
+
+    // 锁屏会将隐藏窗口故障开放地恢复到可见边缘；解锁后必须重建
+    // dockSide，否则后续鼠标离开不会再隐藏。
+    await hideFromVisibleTop('锁屏回归测试前月视图没有隐藏')
+    powerMonitor.emit('lock-screen')
+    await waitUntil(
+      () => monthWindow.getBounds().y === workArea.y,
+      '锁屏后月视图没有恢复到可见边缘'
+    )
+    powerMonitor.emit('unlock-screen')
+    await wait(100)
+    await hideFromVisibleTop('解锁后月视图丢失了贴边隐藏状态')
+    await showFromTopTrigger('解锁回归测试后月视图没有滑回')
+
+    // DPI、分辨率、任务栏工作区与显示器增删共用同一处拓扑恢复逻辑。
+    screen.emit('display-metrics-changed', {}, display, ['workArea'])
+    await wait(400)
+    await hideFromVisibleTop('显示器指标变化后月视图丢失了贴边隐藏状态')
+    await showFromTopTrigger('显示器变化回归测试后月视图没有滑回')
+
+    // 关闭到托盘会清理贴边会话；通知、托盘菜单和第二实例都进入
+    // openMainWindow，重新显示时应按当前几何恢复贴边方向。
+    await monthWindow.webContents.executeJavaScript(`window.api.closeWindow()`)
+    await waitUntil(() => !monthWindow.isVisible(), '月视图没有正常关闭到托盘')
+    app.emit('second-instance', {}, [])
+    await waitUntil(
+      () => monthWindow.isVisible() && monthWindow.getBounds().y === workArea.y,
+      '第二实例唤醒没有恢复顶部贴边窗口'
+    )
+    await hideFromVisibleTop('托盘/第二实例唤醒后月视图丢失了贴边隐藏状态')
+    await showFromTopTrigger('托盘唤醒回归测试后月视图没有滑回')
+
     // 月视图配置只允许 top。靠近底部并离开鼠标后，不得再次创建触发条或滑出屏幕。
     const bottomY = workArea.y + workArea.height - expectedBounds.height
     monthWindow.setPosition(expectedBounds.x, bottomY)
@@ -1343,7 +1487,7 @@ async function runMonthViewTests() {
     assert.equal(monthWindow.getBounds().y, bottomY, '月视图底部不得自动隐藏')
 
     report(
-      'month view integration passed: calendar grid, panel persistence, multi-day layout, daily counts, CRUD, navbar, settings and native top dock'
+      'month view integration passed: calendar grid, panel persistence, multi-day layout, daily counts, CRUD, navbar, settings, native top dock and dock-state recovery'
     )
   } catch (error) {
     console.error(error)

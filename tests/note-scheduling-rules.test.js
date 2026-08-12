@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   assertMinimumScheduleLeadTime,
   createSafeScheduleShortcutTimestamp,
+  DEFAULT_NEW_NOTE_SCHEDULE_TIME,
+  defaultMonthNoteEffectiveTime,
   MIN_SCHEDULE_LEAD_TIME_MS
 } from '../src/shared/note-scheduling-rules.js'
 
@@ -28,5 +30,12 @@ describe('note scheduling rules', () => {
     expect(shortcut % 60_000).toBe(0)
     expect(shortcut - currentTime).toBeGreaterThanOrEqual(MIN_SCHEDULE_LEAD_TIME_MS + 60_000)
     expect(() => assertMinimumScheduleLeadTime(shortcut, currentTime + 60_000)).not.toThrow()
+  })
+
+  it('uses 00:01 for future month dates while preserving today immediate defaults', () => {
+    const currentTime = new Date(2026, 7, 11, 14, 37, 45)
+    expect(DEFAULT_NEW_NOTE_SCHEDULE_TIME).toBe('00:01')
+    expect(defaultMonthNoteEffectiveTime('2026-08-12', '2026-08-11', currentTime)).toBe('00:01')
+    expect(defaultMonthNoteEffectiveTime('2026-08-11', '2026-08-11', currentTime)).toBe('14:37')
   })
 })

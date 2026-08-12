@@ -11,11 +11,14 @@ import TagSelector from '../ui/TagSelector.vue'
 import FilterTabs from '../ui/FilterTabs.vue'
 import NoteCard from './NoteCard.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
+import TagManagerDialog from '../ui/TagManagerDialog.vue'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
+import { useMessage } from '../../composables/useMessage.js'
 
 const emit = defineEmits(['edit'])
+const { showMessage } = useMessage()
 
 /** 排序模式：timeline | custom | tag-group */
 const sortMode = ref(DEFAULT_SETTINGS.listFilter.listMode)
@@ -39,6 +42,7 @@ let modePresenceSwitching = false
 async function selectSortMode(nextMode) {
   modeMenuOpen.value = false
   if (nextMode === sortMode.value || modeSwitchRunning || replayRefreshRunning) return
+  if (nextMode !== 'tag-group') exitTagGroupSortMode()
   modeSwitchRunning = true
   const previousMode = sortMode.value
   const previousTimeline = noteList.value
@@ -502,10 +506,23 @@ const TAG_GROUP_INITIAL_LIMIT = 10
 const TAG_GROUP_MORE_LIMIT = 20
 const tagGroups = ref([])
 const expandedTagGroupKeys = new Set()
+const tagGroupDragging = ref(false)
+const tagGroupSortMode = ref(false)
+const tagGroupSortPreparing = ref(false)
+const tagGroupContextMenuVisible = ref(false)
+const tagGroupContextMenuRef = ref(null)
+const tagGroupContextMenuStyle = ref({})
+const tagManagerVisible = ref(false)
 let tagGroupGeneration = 0
+let tagGroupSortEntrySequence = 0
+let tagGroupSortEntryTimer = null
+let resolveTagGroupSortEntry = null
 
 const tagGroupMatchingTotal = computed(() =>
   tagGroups.value.reduce((total, group) => total + group.total, 0)
+)
+const tagGroupCanSort = computed(
+  () => tagGroups.value.filter((group) => !group.untagged).length > 1
 )
 
 function activeStatuses() {
@@ -569,6 +586,8 @@ async function loadTagGroups({ showLoading = true, preserveAnchor = false } = {}
         ...group,
         expanded: Boolean(previous?.expanded || expandedTagGroupKeys.has(group.key)),
         notes: [],
+        opening: false,
+        openingRequest: 0,
         loading: false,
         error: null,
         hasMore: Number(group.total) > 0,
@@ -601,12 +620,167 @@ async function loadTagGroups({ showLoading = true, preserveAnchor = false } = {}
 }
 
 async function toggleTagGroup(group) {
-  group.expanded = !group.expanded
-  if (group.expanded) expandedTagGroupKeys.add(group.key)
-  else expandedTagGroupKeys.delete(group.key)
-  if (group.expanded && group.notes.length === 0 && group.total > 0) {
-    await loadTagGroupPage(group, { reset: true })
+  if (
+    tagGroupSortMode.value ||
+    tagGroupSortPreparing.value ||
+    tagGroupDragging.value ||
+    group.opening
+  )
+    return
+
+  if (group.expanded) {
+    group.expanded = false
+    expandedTagGroupKeys.delete(group.key)
+    return
   }
+
+  if (group.notes.length === 0 && group.total > 0) {
+    const openingRequest = ++group.openingRequest
+    group.opening = true
+    try {
+      const loadResult = await loadTagGroupPage(group, { reset: true })
+      if (loadResult?.status === 'cancelled' || group.openingRequest !== openingRequest) return
+
+      // 首次加载完成后另起一个渲染周期再挂载面板，确保进入动画测得完整卡片高度。
+      await nextTick()
+      if (tagGroupDragging.value || !tagGroups.value.includes(group)) return
+
+      group.expanded = true
+      expandedTagGroupKeys.add(group.key)
+    } finally {
+      group.opening = false
+    }
+    return
+  }
+
+  if (tagGroupDragging.value || !tagGroups.value.includes(group)) return
+  group.expanded = true
+  expandedTagGroupKeys.add(group.key)
+}
+
+function collapseAllTagGroups() {
+  expandedTagGroupKeys.clear()
+  tagGroups.value.forEach((group) => {
+    if (group.opening) group.openingRequest++
+    group.expanded = false
+  })
+}
+
+function exitTagGroupSortMode() {
+  tagGroupSortEntrySequence++
+  clearTimeout(tagGroupSortEntryTimer)
+  tagGroupSortEntryTimer = null
+  resolveTagGroupSortEntry?.()
+  resolveTagGroupSortEntry = null
+  tagGroupSortPreparing.value = false
+  tagGroupSortMode.value = false
+  tagGroupDragging.value = false
+}
+
+async function toggleTagGroupSortMode() {
+  if (tagGroupDragging.value || tagGroupSortPreparing.value) return
+  if (tagGroupSortMode.value) {
+    exitTagGroupSortMode()
+    return
+  }
+
+  closeTagGroupContextMenu()
+  modeMenuOpen.value = false
+  tagGroupSortPreparing.value = true
+  const shouldWaitForCollapse = tagGroups.value.some((group) => group.expanded || group.opening)
+  collapseAllTagGroups()
+  const entrySequence = ++tagGroupSortEntrySequence
+  await nextTick()
+  if (shouldWaitForCollapse) {
+    await new Promise((resolve) => {
+      resolveTagGroupSortEntry = resolve
+      tagGroupSortEntryTimer = setTimeout(() => {
+        tagGroupSortEntryTimer = null
+        resolveTagGroupSortEntry = null
+        resolve()
+      }, 300)
+    })
+  }
+  if (entrySequence !== tagGroupSortEntrySequence || sortMode.value !== 'tag-group') return
+  tagGroupSortPreparing.value = false
+  tagGroupSortMode.value = true
+}
+
+function canMoveTagGroup(event) {
+  if (event.draggedContext?.element?.untagged) return false
+  // “未分类”是系统分组，始终保留在列表末尾。
+  return !(event.relatedContext?.element?.untagged && event.willInsertAfter)
+}
+
+function normalizeUntaggedLast() {
+  const untagged = tagGroups.value.find((group) => group.untagged)
+  if (!untagged) return
+  tagGroups.value = [...tagGroups.value.filter((group) => !group.untagged), untagged]
+}
+
+function onTagGroupDragStart() {
+  tagGroupDragging.value = true
+}
+
+async function onTagGroupDragEnd() {
+  tagGroupDragging.value = false
+  normalizeUntaggedLast()
+  const orderedTagIds = tagGroups.value
+    .filter((group) => !group.untagged)
+    .map((group) => Number(group.id))
+  try {
+    await window.api.updateTagOrder(orderedTagIds)
+  } catch (error) {
+    console.error('[NoteList] 保存标签顺序失败:', error)
+    showMessage('error', error.message || '保存标签顺序失败')
+    await loadTagGroups({ showLoading: false, preserveAnchor: true })
+  }
+}
+
+function closeTagGroupContextMenu() {
+  tagGroupContextMenuVisible.value = false
+  document.removeEventListener('pointerdown', onTagGroupContextMenuOutside)
+  document.removeEventListener('keydown', onTagGroupContextMenuKeydown)
+  window.removeEventListener('resize', closeTagGroupContextMenu)
+  window.removeEventListener('scroll', closeTagGroupContextMenu, true)
+}
+
+function onTagGroupContextMenuOutside(event) {
+  if (tagGroupContextMenuRef.value?.contains(event.target)) return
+  closeTagGroupContextMenu()
+}
+
+function onTagGroupContextMenuKeydown(event) {
+  if (event.key === 'Escape') closeTagGroupContextMenu()
+}
+
+async function openTagGroupContextMenu(event) {
+  if (tagGroupSortMode.value || tagGroupSortPreparing.value) {
+    event.preventDefault()
+    return
+  }
+  if (event.target.closest?.('[data-note-id]')) return
+  event.preventDefault()
+  closeTagGroupContextMenu()
+  tagGroupContextMenuStyle.value = { left: `${event.clientX}px`, top: `${event.clientY}px` }
+  tagGroupContextMenuVisible.value = true
+  await nextTick()
+  const rect = tagGroupContextMenuRef.value?.getBoundingClientRect()
+  if (!rect) return
+  const gap = 8
+  tagGroupContextMenuStyle.value = {
+    left: `${Math.max(gap, Math.min(event.clientX, window.innerWidth - rect.width - gap))}px`,
+    top: `${Math.max(gap, Math.min(event.clientY, window.innerHeight - rect.height - gap))}px`
+  }
+  document.addEventListener('pointerdown', onTagGroupContextMenuOutside)
+  document.addEventListener('keydown', onTagGroupContextMenuKeydown)
+  window.addEventListener('resize', closeTagGroupContextMenu)
+  window.addEventListener('scroll', closeTagGroupContextMenu, true)
+}
+
+function openCreateTagManager() {
+  closeTagGroupContextMenu()
+  tagManagerVisible.value = true
 }
 
 function retryTagGroup(group) {
@@ -1092,6 +1266,7 @@ function isCurrentFilterState(state) {
 async function applyFilterState(state) {
   if (!state || isCurrentFilterState(state)) return false
   restoring = true
+  if (state.listMode !== 'tag-group') exitTagGroupSortMode()
   sortMode.value = state.listMode
   tagFilterIds.value = [...state.tagIds]
   statusFilter.value = [...state.statusFilter]
@@ -1147,11 +1322,23 @@ const stopSettingsChanged = window.api.onSettingsChanged?.(async (snapshot) => {
   if (changed) await switchMode(sortMode.value)
 })
 
+let tagsChangedTimer = null
+const stopTagsChanged = window.api.onTagsChanged?.(() => {
+  if (sortMode.value !== 'tag-group') return
+  clearTimeout(tagsChangedTimer)
+  tagsChangedTimer = setTimeout(
+    () => loadTagGroups({ showLoading: false, preserveAnchor: true }),
+    60
+  )
+})
+
 onUnmounted(() => {
   presenceMotionSeq++
   loadSeq++
+  exitTagGroupSortMode()
   disposePresenceMotion()
   clearTimeout(notesChangedTimer)
+  clearTimeout(tagsChangedTimer)
   clearTimeout(_customSyncTimer)
   for (const timer of statusTransitionTimers.values()) clearTimeout(timer)
   statusTransitionTimers.clear()
@@ -1159,6 +1346,8 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onModeMenuKeydown)
   stopNotesChanged?.()
   stopSettingsChanged?.()
+  stopTagsChanged?.()
+  closeTagGroupContextMenu()
   earlierRequestSeq++
   customMoreRequestSeq++
   tagGroupGeneration++
@@ -1170,6 +1359,7 @@ watch(
   [sortMode, tagFilterIds, statusFilter],
   ([nextMode], [previousMode]) => {
     if (restoring) return
+    if (nextMode !== 'tag-group') exitTagGroupSortMode()
     if (nextMode !== previousMode) {
       if (!modePresenceSwitching) switchMode(nextMode)
     } else refreshInBackground()
@@ -1235,6 +1425,46 @@ defineExpose({
       <!-- 左：标题板块 -->
       <div class="nl-toolbar-left">
         <span class="nl-title">便签</span>
+        <button
+          v-if="sortMode === 'tag-group'"
+          type="button"
+          class="nl-tag-group-sort-toggle"
+          :class="{
+            'nl-tag-group-sort-toggle--active': tagGroupSortMode || tagGroupSortPreparing
+          }"
+          :disabled="!tagGroupCanSort || tagGroupSortPreparing"
+          :aria-pressed="tagGroupSortMode"
+          :aria-busy="tagGroupSortPreparing || undefined"
+          :aria-label="tagGroupSortMode ? '完成标签排序' : '调整标签顺序'"
+          :title="tagGroupSortMode ? '完成排序' : '调整标签顺序'"
+          @click="toggleTagGroupSortMode"
+        >
+          <svg
+            v-if="tagGroupSortMode"
+            class="nl-tag-group-sort-check"
+            width="15"
+            height="15"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="m3.2 8.1 3 3 6.6-6.6"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <svg v-else class="nl-tag-group-sort-grip" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="5" cy="3.25" r="1.2" />
+            <circle cx="11" cy="3.25" r="1.2" />
+            <circle cx="5" cy="8" r="1.2" />
+            <circle cx="11" cy="8" r="1.2" />
+            <circle cx="5" cy="12.75" r="1.2" />
+            <circle cx="11" cy="12.75" r="1.2" />
+          </svg>
+        </button>
       </div>
 
       <!-- 中：功能板块（单选切换） -->
@@ -1429,88 +1659,169 @@ defineExpose({
 
     <!-- ======== 标签分组模式 ======== -->
     <template v-else-if="sortMode === 'tag-group'">
-      <div ref="tagGroupScrollRef" class="nl-tag-groups nl-list-scroll scroll-y">
+      <div
+        ref="tagGroupScrollRef"
+        class="nl-tag-groups nl-list-scroll scroll-y"
+        @contextmenu="openTagGroupContextMenu"
+      >
         <div v-if="tagGroups.length === 0" class="nl-empty-state">暂无标签组</div>
-        <section v-for="group in tagGroups" :key="group.key" class="nl-tag-group">
-          <button
-            type="button"
-            class="nl-tag-group-header"
-            :class="{
-              'nl-tag-group-header--expanded': group.expanded,
-              'nl-tag-group-header--empty': group.total === 0
-            }"
-            :aria-expanded="group.expanded"
-            :aria-controls="`nl-tag-group-${group.id ?? 'untagged'}`"
-            @click="toggleTagGroup(group)"
-          >
-            <svg
-              class="nl-tag-group-chevron"
-              :class="{ 'nl-tag-group-chevron--open': group.expanded }"
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="m6 4 4 4-4 4"
-                stroke="currentColor"
-                stroke-width="1.4"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-            <span
-              class="nl-tag-group-dot"
-              :class="{ 'nl-tag-group-dot--untagged': group.untagged }"
-              :style="group.color ? { backgroundColor: group.color } : null"
-              aria-hidden="true"
-            ></span>
-            <span class="nl-tag-group-name">{{ group.name }}</span>
-            <span class="nl-tag-group-count">{{ group.total }}</span>
-          </button>
-          <Transition :css="false" @enter="onPanelEnter" @leave="onPanelLeave">
-            <div
-              v-if="group.expanded"
-              :id="`nl-tag-group-${group.id ?? 'untagged'}`"
-              class="nl-tag-group-content"
-            >
-              <div v-if="group.total === 0" class="nl-tag-group-empty">当前状态下暂无便签</div>
-              <template v-else>
-                <NoteCard
-                  v-for="note in group.notes"
-                  :key="note.id"
-                  :note="note"
-                  :color-by-tag="false"
-                  :status-transition="statusTransitionFor(note.id)"
-                  @edit="emit('edit', $event)"
-                  @status-action="onCardStatusAction"
-                />
-                <div v-if="group.loading" class="nl-tag-group-hint">加载中…</div>
+        <draggable
+          v-model="tagGroups"
+          item-key="key"
+          handle=".nl-tag-group-sort-handle"
+          ghost-class="nl-tag-group-ghost"
+          chosen-class="nl-tag-group-chosen"
+          drag-class="nl-tag-group-dragging"
+          :animation="180"
+          :disabled="!tagGroupSortMode"
+          :move="canMoveTagGroup"
+          :scroll="true"
+          :scroll-sensitivity="56"
+          :scroll-speed="12"
+          @start="onTagGroupDragStart"
+          @end="onTagGroupDragEnd"
+        >
+          <template #item="{ element: group }">
+            <section class="nl-tag-group" :class="{ 'nl-tag-group--untagged': group.untagged }">
+              <div
+                class="nl-tag-group-header"
+                :class="{
+                  'nl-tag-group-header--expanded': group.expanded,
+                  'nl-tag-group-header--empty': group.total === 0,
+                  'nl-tag-group-header--sorting': tagGroupSortMode,
+                  'nl-tag-group-sort-handle': tagGroupSortMode && !group.untagged
+                }"
+              >
                 <button
-                  v-else-if="group.error"
                   type="button"
-                  class="nl-tag-group-more"
-                  @click="retryTagGroup(group)"
+                  class="nl-tag-group-toggle"
+                  :aria-expanded="group.expanded"
+                  :aria-busy="group.opening || undefined"
+                  :aria-disabled="tagGroupSortMode || tagGroupSortPreparing || undefined"
+                  :aria-label="
+                    tagGroupSortMode && !group.untagged ? `拖动标签 ${group.name} 排序` : undefined
+                  "
+                  :tabindex="tagGroupSortMode ? -1 : 0"
+                  :aria-controls="`nl-tag-group-${group.id ?? 'untagged'}`"
+                  @click="toggleTagGroup(group)"
                 >
-                  加载失败，点击重试
+                  <svg
+                    v-if="tagGroupSortMode && !group.untagged"
+                    class="nl-tag-group-row-grip"
+                    viewBox="0 0 16 16"
+                    aria-hidden="true"
+                  >
+                    <circle cx="5" cy="3.25" r="1.2" />
+                    <circle cx="11" cy="3.25" r="1.2" />
+                    <circle cx="5" cy="8" r="1.2" />
+                    <circle cx="11" cy="8" r="1.2" />
+                    <circle cx="5" cy="12.75" r="1.2" />
+                    <circle cx="11" cy="12.75" r="1.2" />
+                  </svg>
+                  <span
+                    v-else-if="tagGroupSortMode"
+                    class="nl-tag-group-row-grip-placeholder"
+                    aria-hidden="true"
+                  ></span>
+                  <svg
+                    v-else
+                    class="nl-tag-group-chevron"
+                    :class="{ 'nl-tag-group-chevron--open': group.expanded || group.opening }"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="m6 4 4 4-4 4"
+                      stroke="currentColor"
+                      stroke-width="1.4"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  <span
+                    class="nl-tag-group-dot"
+                    :class="{ 'nl-tag-group-dot--untagged': group.untagged }"
+                    :style="group.color ? { backgroundColor: group.color } : null"
+                    aria-hidden="true"
+                  ></span>
+                  <span class="nl-tag-group-name">{{ group.name }}</span>
                 </button>
-                <button
-                  v-else-if="group.hasMore"
-                  type="button"
-                  class="nl-tag-group-more"
-                  @click="loadTagGroupPage(group)"
+                <span class="nl-tag-group-count">{{ group.total }}</span>
+              </div>
+              <Transition :css="false" @enter="onPanelEnter" @leave="onPanelLeave">
+                <div
+                  v-if="group.expanded"
+                  :id="`nl-tag-group-${group.id ?? 'untagged'}`"
+                  class="nl-tag-group-content"
                 >
-                  显示更多
-                </button>
-              </template>
-            </div>
-          </Transition>
-        </section>
+                  <div class="nl-tag-group-content-inner">
+                    <div v-if="group.total === 0" class="nl-tag-group-empty">
+                      当前状态下暂无便签
+                    </div>
+                    <template v-else>
+                      <NoteCard
+                        v-for="note in group.notes"
+                        :key="note.id"
+                        :note="note"
+                        :color-by-tag="false"
+                        allow-create-tag
+                        :status-transition="statusTransitionFor(note.id)"
+                        @edit="emit('edit', $event)"
+                        @status-action="onCardStatusAction"
+                        @create-tag="openCreateTagManager"
+                      />
+                      <div v-if="group.loading" class="nl-tag-group-hint">加载中…</div>
+                      <button
+                        v-else-if="group.error"
+                        type="button"
+                        class="nl-tag-group-more"
+                        @click="retryTagGroup(group)"
+                      >
+                        加载失败，点击重试
+                      </button>
+                      <button
+                        v-else-if="group.hasMore"
+                        type="button"
+                        class="nl-tag-group-more"
+                        @click="loadTagGroupPage(group)"
+                      >
+                        显示更多
+                      </button>
+                    </template>
+                  </div>
+                </div>
+              </Transition>
+            </section>
+          </template>
+        </draggable>
       </div>
       <div v-if="tagGroups.length > 0 || allNoteTotal > 0" class="nl-footer-count">
         <span>{{ tagGroups.length }} 个标签组，{{ tagGroupMatchingTotal }} 条便签</span>
       </div>
+
+      <Teleport to="body">
+        <Transition name="nl-tag-group-menu">
+          <div
+            v-if="tagGroupContextMenuVisible"
+            ref="tagGroupContextMenuRef"
+            class="nl-tag-group-menu-shell"
+            :style="tagGroupContextMenuStyle"
+            role="menu"
+            aria-label="标签分组操作"
+            @click.stop
+            @contextmenu.prevent
+          >
+            <div class="nl-tag-group-menu">
+              <button role="menuitem" @click="openCreateTagManager">新建标签分组</button>
+            </div>
+          </div>
+        </Transition>
+      </Teleport>
+
+      <TagManagerDialog v-model:visible="tagManagerVisible" create-on-open />
     </template>
 
     <!-- ======== 自定义模式 ======== -->
@@ -1651,6 +1962,46 @@ defineExpose({
   font-size: var(--fs-title);
   font-weight: 700;
 }
+.nl-tag-group-sort-toggle {
+  width: 26rem;
+  height: 26rem;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6rem;
+  background: transparent;
+  color: var(--text-color-secondary);
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
+}
+.nl-tag-group-sort-toggle:hover:not(:disabled),
+.nl-tag-group-sort-toggle:focus-visible {
+  outline: none;
+  background: var(--ui-fill-hover);
+  color: var(--text-color);
+}
+.nl-tag-group-sort-toggle--active {
+  background: var(--ui-fill-pressed);
+  color: var(--text-color);
+}
+.nl-tag-group-sort-toggle:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+.nl-tag-group-sort-toggle svg {
+  width: 15rem;
+  height: 15rem;
+}
+.nl-tag-group-sort-grip {
+  fill: currentColor;
+}
+.nl-tag-group-sort-check {
+  fill: none;
+}
 
 /* 展示模式选择 */
 .nl-mode-menu-root {
@@ -1674,9 +2025,6 @@ defineExpose({
 }
 .nl-mode-toggle:hover {
   color: var(--text-color);
-}
-.nl-mode-toggle:active {
-  transform: scale(0.98);
 }
 .nl-mode-label {
   display: inline-block;
@@ -1905,30 +2253,68 @@ defineExpose({
   align-items: center;
   gap: 7rem;
   min-height: 34rem;
-  padding: 6rem 0;
-  border: 0;
+  padding: 4rem 0;
   border-radius: 7rem;
   background: transparent;
   color: var(--text-color-secondary);
-  font: inherit;
   font-size: var(--fs-secondary);
+  transition: color var(--motion-control) ease;
+}
+.nl-tag-group-toggle {
+  display: flex;
+  min-width: 0;
+  min-height: 26rem;
+  flex: 1;
+  align-items: center;
+  gap: 7rem;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   text-align: left;
   cursor: pointer;
-  transition:
-    color var(--motion-control) ease,
-    transform var(--motion-control) var(--ease-standard);
+}
+.nl-tag-group-toggle:focus-visible {
+  outline: 1px solid #007aff;
+  outline-offset: 1px;
+  border-radius: 5rem;
 }
 .nl-tag-group-header:hover {
   color: var(--text-color);
 }
 .nl-tag-group-header:active {
-  transform: scale(0.98);
+  transform: none;
+}
+.nl-tag-group-toggle:active {
+  transform: none;
 }
 .nl-tag-group-header--expanded {
   color: var(--text-color);
 }
 .nl-tag-group-header--empty {
   opacity: 0.58;
+}
+.nl-tag-group-sort-handle,
+.nl-tag-group-sort-handle .nl-tag-group-toggle {
+  cursor: grab;
+  user-select: none;
+}
+.nl-tag-group-sort-handle:active,
+.nl-tag-group-sort-handle:active .nl-tag-group-toggle,
+.nl-tag-group-dragging .nl-tag-group-toggle {
+  cursor: grabbing;
+}
+.nl-tag-group-row-grip,
+.nl-tag-group-row-grip-placeholder {
+  width: 14rem;
+  height: 16rem;
+  flex: 0 0 auto;
+}
+.nl-tag-group-row-grip {
+  fill: currentColor;
+  opacity: 0.68;
 }
 .nl-tag-group-dot {
   width: 8rem;
@@ -1942,6 +2328,7 @@ defineExpose({
 }
 .nl-tag-group-name {
   min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1949,21 +2336,74 @@ defineExpose({
 }
 .nl-tag-group-count {
   flex: 0 0 auto;
-  margin-left: auto;
   color: var(--text-color-secondary);
   font-size: calc(var(--fs-secondary) * 0.82);
   font-variant-numeric: tabular-nums;
   opacity: 0.72;
 }
+.nl-tag-group-ghost {
+  opacity: 0.34;
+}
+.nl-tag-group-chosen .nl-tag-group-header,
+.nl-tag-group-dragging .nl-tag-group-header {
+  color: var(--text-color);
+}
+.nl-tag-group-menu-shell {
+  position: fixed;
+  z-index: var(--z-global-popover);
+  width: 148rem;
+  overflow: hidden;
+  border-radius: 10rem;
+  box-shadow: 0 12rem 34rem rgb(0 0 0 / 0.22);
+}
+.nl-tag-group-menu {
+  display: grid;
+  padding: 5rem;
+  border: 1px solid var(--surface-float-border);
+  border-radius: inherit;
+  background: var(--surface-float);
+}
+.nl-tag-group-menu button {
+  width: 100%;
+  padding: 7rem 9rem;
+  border: 0;
+  border-radius: 6rem;
+  background: transparent;
+  color: var(--text-color);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+.nl-tag-group-menu button:hover,
+.nl-tag-group-menu button:focus-visible {
+  outline: none;
+  background: var(--ui-fill-hover);
+}
+.nl-tag-group-menu-enter-active,
+.nl-tag-group-menu-leave-active {
+  transition:
+    opacity 130ms ease,
+    transform 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.nl-tag-group-menu-enter-from,
+.nl-tag-group-menu-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+}
 .nl-tag-group-chevron {
   flex: 0 0 auto;
   opacity: 0.64;
+  transform: rotate(180deg);
   transition: transform var(--motion-control) var(--ease-standard);
 }
 .nl-tag-group-chevron--open {
   transform: rotate(90deg);
 }
 .nl-tag-group-content {
+  min-height: 0;
+}
+.nl-tag-group-content-inner {
   padding: 7rem 0 2rem 18rem;
 }
 .nl-tag-group-empty,

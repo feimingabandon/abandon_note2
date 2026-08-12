@@ -13,6 +13,7 @@ import { useTodayKey } from '../../composables/useTodayKey.js'
 import { combineLocalDateAndTime } from '../../../../shared/calendar/calendar-date-rules.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 import {
+  defaultMonthNoteEffectiveTime,
   MIN_SCHEDULE_LEAD_TIME_MINUTES,
   MIN_SCHEDULE_LEAD_TIME_MS
 } from '../../../../shared/note-scheduling-rules.js'
@@ -20,9 +21,9 @@ import {
 const props = defineProps({ dateKey: { type: String, required: true } })
 const emit = defineEmits(['created', 'close'])
 const { showMessage } = useMessage()
+const todayKey = useTodayKey()
 const now = new Date()
-const pad = (value) => String(value).padStart(2, '0')
-const initialTime = `${pad(now.getHours())}:${pad(now.getMinutes())}`
+const initialTime = defaultMonthNoteEffectiveTime(props.dateKey, todayKey.value, now)
 const content = ref('')
 const time = ref(initialTime)
 const timeDirty = ref(false)
@@ -33,7 +34,6 @@ const tagIds = ref([])
 const imagePickerRef = ref(null)
 const saving = ref(false)
 const discardVisible = ref(false)
-const todayKey = useTodayKey()
 const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
   supported: true,
   reason: ''

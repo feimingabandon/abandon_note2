@@ -18,10 +18,11 @@ const props = defineProps({
   draggable: { type: Boolean, default: false },
   muted: { type: Boolean, default: false },
   colorByTag: { type: Boolean, default: true },
+  allowCreateTag: { type: Boolean, default: false },
   statusTransition: { type: Object, default: null }
 })
 
-const emit = defineEmits(['status-action', 'edit'])
+const emit = defineEmits(['status-action', 'edit', 'create-tag'])
 const { showMessage } = useMessage()
 const sharedNow = useSharedMinuteClock()
 const systemNotificationsSupported =
@@ -68,6 +69,7 @@ const contentAnimating = ref(false)
 const contentShellHeight = ref('auto')
 const deleting = ref(false)
 const creatingSticky = ref(false)
+const togglingPinned = ref(false)
 const showDeleteDialog = ref(false)
 const CONTENT_PREVIEW_LINES = 3
 // 产品规范：交互动画始终开启，不跟随系统 MinAnimate / reduced-motion 设置。
@@ -212,6 +214,13 @@ const effectiveDisplay = computed(() => {
       : `${target.getFullYear()}年${target.getMonth() + 1}月${target.getDate()}日`
   return `${dateLabel} (${dayDiff}天后) 生效`
 })
+const timingTitle = computed(() => {
+  const parts = [effectiveDisplay.value]
+  if (isTerminal.value && finishedTime.value) {
+    parts.push(`${finishedLabel} ${finishedTime.value}`)
+  }
+  return parts.join(' · ')
+})
 
 function handleStatusAction() {
   if (canChangeStatus.value) emit('status-action', props.note)
@@ -260,6 +269,7 @@ function onContextMenuKeydown(event) {
 
 async function openContextMenu(event) {
   event.preventDefault()
+  event.stopPropagation()
   closeTags()
   closeContextMenu()
   contextMenuStyle.value = { left: `${event.clientX}px`, top: `${event.clientY}px` }
@@ -282,7 +292,28 @@ async function openContextMenu(event) {
 /** 修改打开现有编辑器；桌面展示和删除均通过受限主进程能力完成。 */
 async function onContextMenuAction(action) {
   closeContextMenu()
-  if (action === 'edit') emit('edit', props.note)
+  if (action === 'edit') {
+    emit('edit', props.note)
+    return
+  }
+  if (action === 'pin') {
+    if (togglingPinned.value) return
+    togglingPinned.value = true
+    const nextPinned = !Number(props.note.is_pinned)
+    try {
+      const updated = await window.api.updateNote(props.note.id, {
+        is_pinned: nextPinned ? 1 : 0
+      })
+      if (!updated) throw new Error('便签不存在或已被删除')
+      showMessage('success', nextPinned ? '已置顶' : '已取消置顶')
+    } catch (error) {
+      console.error('[NoteCard] 更新置顶状态失败:', props.note.id, error)
+      showMessage('error', error.message || '无法更新置顶状态')
+    } finally {
+      togglingPinned.value = false
+    }
+    return
+  }
   if (action === 'sticky') {
     if (creatingSticky.value) return
     creatingSticky.value = true
@@ -300,6 +331,10 @@ async function onContextMenuAction(action) {
     } finally {
       creatingSticky.value = false
     }
+    return
+  }
+  if (action === 'create-tag') {
+    emit('create-tag')
     return
   }
   if (action !== 'delete' || deleting.value) return
@@ -407,19 +442,22 @@ async function toggleTags() {
         <div class="nl-card-context">
           <span class="nl-card-status">{{ status.label }}</span>
           <span class="nl-card-separator" aria-hidden="true">·</span>
-          <time class="nl-card-time" :datetime="effectiveIso">{{ effectiveDisplay }}</time>
-          <template v-if="isTerminal && finishedTime">
-            <span class="nl-card-separator" aria-hidden="true">·</span>
-            <time class="nl-card-time nl-card-time--finished"
-              >{{ finishedLabel }} {{ finishedTime }}</time
-            >
-          </template>
+          <span class="nl-card-timing" :title="timingTitle">
+            <time class="nl-card-time" :datetime="effectiveIso">{{ effectiveDisplay }}</time>
+            <template v-if="isTerminal && finishedTime">
+              <span class="nl-card-separator" aria-hidden="true">·</span>
+              <time class="nl-card-time nl-card-time--finished"
+                >{{ finishedLabel }} {{ finishedTime }}</time
+              >
+            </template>
+          </span>
         </div>
 
         <div
           v-if="
             visibleTags.length ||
             hiddenTagCount ||
+            note.is_pinned ||
             showReminder ||
             attachmentCount ||
             contentOverflows ||
@@ -444,6 +482,19 @@ async function toggleTags() {
           >
             +{{ hiddenTagCount }}
           </button>
+
+          <span v-if="note.is_pinned" class="nl-card-icon" title="已置顶" aria-label="已置顶">
+            <svg
+              viewBox="0 0 20 20"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path d="m7 3 6 1-1 4 3 3-4 1-3 5-1-6-3-2 4-2Z" />
+            </svg>
+          </span>
 
           <span
             v-if="showReminder"
@@ -564,6 +615,9 @@ async function toggleTags() {
           @contextmenu.prevent
         >
           <div class="nl-context-menu">
+            <button role="menuitem" :disabled="togglingPinned" @click="onContextMenuAction('pin')">
+              {{ note.is_pinned ? '取消置顶' : '置顶' }}
+            </button>
             <button role="menuitem" @click="onContextMenuAction('edit')">修改</button>
             <button
               role="menuitem"
@@ -572,6 +626,12 @@ async function toggleTags() {
             >
               {{ creatingSticky ? '正在创建…' : '贴到桌面' }}
             </button>
+            <template v-if="allowCreateTag">
+              <div class="nl-context-menu__divider" role="separator" />
+              <button role="menuitem" @click="onContextMenuAction('create-tag')">
+                新建标签分组
+              </button>
+            </template>
             <div class="nl-context-menu__divider" role="separator" />
             <button
               class="nl-context-menu__delete"
@@ -589,7 +649,7 @@ async function toggleTags() {
     <ConfirmDialog
       v-model:visible="showDeleteDialog"
       title="删除便签？"
-      message="便签会从列表中移除，但正文和图片仍会保留，可在搜索中启用“包含已删除”查看。"
+      message="便签会从列表和月视图中移除，但正文和图片仍会保留，可在搜索中启用“包含已删除”查看。"
       confirm-text="删除"
       cancel-text="取消"
       variant="danger"
@@ -900,8 +960,8 @@ async function toggleTags() {
 
 .nl-card-meta {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
+  flex-wrap: nowrap;
+  align-items: center;
   justify-content: space-between;
   gap: 9rem;
   min-width: 0;
@@ -912,13 +972,12 @@ async function toggleTags() {
 }
 .nl-card-context {
   display: flex;
-  flex: 1 0 auto;
-  flex-wrap: wrap;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4rem;
-  width: max-content;
-  max-width: 100%;
   min-width: 0;
+  overflow: hidden;
 }
 .nl-card-status {
   flex-shrink: 0;
@@ -926,7 +985,15 @@ async function toggleTags() {
   font-weight: 500;
 }
 .nl-card-separator {
+  flex-shrink: 0;
   opacity: 0.44;
+}
+.nl-card-timing {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .nl-card-time {
   white-space: nowrap;
@@ -941,16 +1008,17 @@ async function toggleTags() {
   align-items: center;
 }
 .nl-card-utilities {
-  flex: 1 0 auto;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 5rem;
-  width: max-content;
-  max-width: 100%;
+  width: auto;
+  max-width: 58%;
   min-width: 0;
 }
 .nl-card-tag,
 .nl-card-more-tags {
+  min-width: 0;
   max-width: min(140rem, 42vw);
   padding: 2rem 6rem;
   overflow: hidden;

@@ -6,9 +6,11 @@ import {
   localMidnightTimestamp,
   noteDateRange
 } from '../../shared/calendar/calendar-date-rules.js'
+import { buildCalendarDayMetadata } from './calendar-metadata.js'
 
 export function getMonthCalendarData(year, month) {
   const grid = buildMonthGrid(year, month)
+  const metadataByDate = buildCalendarDayMetadata(grid.monthStart, grid.monthEnd)
   const visibleStartOrdinal = dateOrdinal(grid.monthStart)
   const visibleEndOrdinal = dateOrdinal(grid.monthEnd)
   const candidateFromKey = addCalendarDays(grid.monthStart, -364)
@@ -21,5 +23,12 @@ export function getMonthCalendarData(year, month) {
     const range = noteDateRange(note)
     return range.startOrdinal <= visibleEndOrdinal && range.endOrdinal >= visibleStartOrdinal
   })
-  return { ...grid, notes }
+  return {
+    ...grid,
+    days: grid.days.map((day) => ({
+      ...day,
+      metadata: day.inCurrentMonth ? metadataByDate.get(day.key) || {} : {}
+    })),
+    notes
+  }
 }

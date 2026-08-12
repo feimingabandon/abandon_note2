@@ -6,9 +6,10 @@ const props = defineProps({
   note: { type: Object, required: true }
 })
 const accent = computed(() => {
+  if (props.note.status === 'completed') return '#8e8e93'
   const tagColor = props.note.tags?.[0]?.color
   if (tagColor) return tagColor
-  return { initialized: '#0a84ff', in_progress: '#ff9f0a', completed: '#8e8e93' }[props.note.status]
+  return { initialized: '#0a84ff', in_progress: '#ff9f0a' }[props.note.status]
 })
 const fullTitle = computed(() => String(props.note.content || '').trim())
 const previewText = computed(() => {
@@ -129,14 +130,12 @@ onBeforeUnmount(() => {
       gridColumn: `${segment.columnStart} / span ${segment.columnSpan}`
     }"
     :data-preview="previewText"
-    :aria-label="`${note.status === 'completed' ? '已完成：' : ''}${fullTitle}`"
+    :aria-label="fullTitle"
     :aria-expanded="tooltipVisible"
     @click.stop="toggleTooltip"
   >
     <span v-if="!segment.continuesBefore" class="month-event-bar__dot" aria-hidden="true" />
-    <span class="month-event-bar__text"
-      >{{ note.status === 'completed' ? '已完成 · ' : '' }}{{ previewText }}</span
-    >
+    <span class="month-event-bar__text">{{ previewText }}</span>
     <span v-if="segment.continuesAfter" class="month-event-bar__continuation" aria-hidden="true"
       >›</span
     >

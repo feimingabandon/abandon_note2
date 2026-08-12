@@ -11,7 +11,8 @@ const props = defineProps({
   days: { type: Array, default: () => [] },
   notes: { type: Array, default: () => [] },
   selectedKey: { type: String, default: '' },
-  todayKey: { type: String, required: true }
+  todayKey: { type: String, required: true },
+  weatherByDate: { type: Map, default: () => new Map() }
 })
 const emit = defineEmits(['select-date', 'create'])
 const weekRefs = ref([])
@@ -83,6 +84,18 @@ function createForDay(day) {
   if (day.inCurrentMonth) emit('create', day)
 }
 
+function weatherPrecipitationLabel(weather) {
+  if (
+    weather?.precipitationProbability !== null &&
+    weather?.precipitationProbability !== undefined
+  ) {
+    return `降水概率 ${weather.precipitationProbability}%`
+  }
+  return weather?.precipitation !== null && weather?.precipitation !== undefined
+    ? `预计降水 ${weather.precipitation} mm`
+    : '暂无降水数据'
+}
+
 watch([segments, () => props.days], async () => {
   await nextTick()
   queueCapacityCalculation()
@@ -135,11 +148,49 @@ onBeforeUnmount(() => {
             <div class="month-day-cell__header">
               <span class="month-day-cell__number">{{ day.day }}</span>
               <span
-                v-if="day.inCurrentMonth && day.key === todayKey"
-                class="month-day-cell__today"
-                aria-label="今天"
+                v-if="day.inCurrentMonth && day.metadata?.displayLabel"
+                class="month-day-cell__lunar"
+                :class="{
+                  'is-festival': day.metadata.festival,
+                  'is-public-holiday-festival': day.metadata.hasPublicHolidayFestival,
+                  'is-solar-term': !day.metadata.festival && day.metadata.solarTerm
+                }"
+                :title="
+                  day.metadata.detailLabel ||
+                  `农历${day.metadata.lunar?.monthText}${day.metadata.lunar?.dayText}`
+                "
               >
-                今
+                {{ day.metadata.displayLabel }}
+              </span>
+              <span
+                v-if="day.inCurrentMonth && weatherByDate.get(day.key)"
+                class="month-day-cell__weather"
+                :title="`${weatherByDate.get(day.key).label}，${weatherByDate.get(day.key).temperatureMin}°～${weatherByDate.get(day.key).temperatureMax}°，${weatherPrecipitationLabel(weatherByDate.get(day.key))}`"
+              >
+                <span aria-hidden="true">{{ weatherByDate.get(day.key).icon }}</span>
+                <span class="month-day-cell__weather-temperature">
+                  {{ weatherByDate.get(day.key).temperatureMin }}°·{{
+                    weatherByDate.get(day.key).temperatureMax
+                  }}°
+                </span>
+              </span>
+              <span class="month-day-cell__badges">
+                <span
+                  v-if="day.inCurrentMonth && day.metadata?.holiday"
+                  class="month-day-cell__holiday"
+                  :class="`is-${day.metadata.holiday.type}`"
+                  :title="`${day.metadata.holiday.name} · ${day.metadata.holiday.type === 'off' ? '休息' : '调班'}`"
+                  :aria-label="`${day.metadata.holiday.name}，${day.metadata.holiday.type === 'off' ? '休息' : '调班工作'}`"
+                >
+                  {{ day.metadata.holiday.type === 'off' ? '休' : '班' }}
+                </span>
+                <span
+                  v-if="day.inCurrentMonth && day.key === todayKey"
+                  class="month-day-cell__today"
+                  aria-label="今天"
+                >
+                  今
+                </span>
               </span>
             </div>
             <button
@@ -240,6 +291,7 @@ onBeforeUnmount(() => {
 }
 .month-day-cell {
   position: relative;
+  container-type: inline-size;
   min-width: 0;
   overflow: hidden;
   padding: 5rem 7rem;
@@ -263,10 +315,20 @@ onBeforeUnmount(() => {
   color: color-mix(in srgb, var(--text-color-secondary) 58%, transparent);
 }
 .month-day-cell__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
   min-width: 0;
+  grid-template-columns: 23rem minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 3rem;
+}
+.month-day-cell__badges {
+  display: inline-flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  grid-column: 4;
+  align-items: center;
+  gap: 4rem;
+  justify-self: end;
 }
 .month-day-cell.is-selected {
   border-color: color-mix(in srgb, #0a84ff 58%, transparent);
@@ -276,11 +338,13 @@ onBeforeUnmount(() => {
   display: inline-flex;
   width: 23rem;
   height: 23rem;
+  flex: 0 0 23rem;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
   font-size: var(--fs-secondary);
   font-variant-numeric: tabular-nums;
+  grid-column: 1;
 }
 .month-day-cell__today {
   display: inline-grid;
@@ -313,6 +377,64 @@ onBeforeUnmount(() => {
   line-height: 1;
   pointer-events: none;
   white-space: nowrap;
+}
+.month-day-cell__holiday {
+  display: inline-grid;
+  width: 18rem;
+  height: 18rem;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 5rem;
+  font-size: calc(var(--fs-secondary) * 0.68);
+  font-weight: 650;
+  line-height: 1;
+  pointer-events: none;
+}
+.month-day-cell__holiday.is-off {
+  background: color-mix(in srgb, #34c759 14%, transparent);
+  color: #34c759;
+}
+.month-day-cell__holiday.is-work {
+  background: color-mix(in srgb, #ff9f0a 14%, transparent);
+  color: #ff9f0a;
+}
+.month-day-cell__lunar {
+  display: block;
+  min-width: 0;
+  flex: 1;
+  grid-column: 2;
+  overflow: hidden;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  line-height: 1.15;
+  opacity: 0.82;
+  pointer-events: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.month-day-cell__weather {
+  display: inline-flex;
+  min-width: 0;
+  grid-column: 3;
+  align-items: center;
+  gap: 2rem;
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.75);
+  line-height: 1;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.month-day-cell__weather-temperature {
+  font-variant-numeric: tabular-nums;
+}
+.month-day-cell__lunar.is-festival,
+.month-day-cell__lunar.is-solar-term {
+  color: #0a84ff;
+  opacity: 1;
+}
+.month-day-cell__lunar.is-public-holiday-festival {
+  color: #34c759;
+  opacity: 1;
 }
 .month-day-cell__overflow {
   position: absolute;
@@ -384,5 +506,50 @@ onBeforeUnmount(() => {
 .month-day-cell__create:disabled {
   cursor: not-allowed;
   opacity: 0;
+}
+
+@container (max-width: 90rem) {
+  .month-day-cell__header {
+    grid-template-columns: 20rem minmax(0, 1fr) auto;
+    column-gap: 2rem;
+  }
+
+  .month-day-cell__number {
+    width: 20rem;
+    height: 20rem;
+    flex-basis: 20rem;
+  }
+
+  .month-day-cell__badges {
+    gap: 2rem;
+  }
+
+  .month-day-cell__today {
+    width: 18rem;
+    height: 18rem;
+  }
+
+  .month-day-cell__holiday {
+    width: 16rem;
+    height: 16rem;
+  }
+}
+
+@container (max-width: 150rem) {
+  .month-day-cell__weather-temperature {
+    display: none;
+  }
+}
+
+@container (max-width: 112rem) {
+  .month-day-cell__weather {
+    display: none;
+  }
+  .month-day-cell__header {
+    grid-template-columns: 20rem minmax(0, 1fr) auto;
+  }
+  .month-day-cell__badges {
+    grid-column: 3;
+  }
 }
 </style>

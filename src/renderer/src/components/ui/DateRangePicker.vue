@@ -184,7 +184,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="triggerRef" class="drp-control">
-    <button type="button" class="drp-trigger" :aria-expanded="open" @click="togglePanel">
+    <button
+      type="button"
+      class="drp-trigger"
+      aria-haspopup="dialog"
+      :aria-expanded="open"
+      @click="togglePanel"
+    >
       <span>{{ displayValue }}</span>
       <svg
         v-if="!hasAppliedRange"

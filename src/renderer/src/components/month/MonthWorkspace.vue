@@ -1,10 +1,11 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import MonthCalendarToolbar from './MonthCalendarToolbar.vue'
 import MonthCalendarGrid from './MonthCalendarGrid.vue'
 import MonthDayPanel from './MonthDayPanel.vue'
 import MonthNoteCreator from './MonthNoteCreator.vue'
 import NoteEditor from '../note/NoteEditor.vue'
+import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { useTodayKey } from '../../composables/useTodayKey.js'
 import {
@@ -19,22 +20,29 @@ import {
   dateKeyFromParts,
   parseDateKey
 } from '../../../../shared/calendar/calendar-date-rules.js'
+import { createDefaultSettings, VIEW_MODES } from '../../../../shared/settings-schema.js'
 import { notesCoveringDate } from '../../../../shared/calendar/calendar-event-layout.js'
+import { weatherLocationLabel } from '../../../../shared/weather-rules.js'
 
 const { showMessage } = useMessage()
-const emit = defineEmits(['modal-state-change'])
+const emit = defineEmits(['modal-state-change', 'ready'])
 const now = new Date()
 const viewYear = ref(now.getFullYear())
 const viewMonth = ref(now.getMonth() + 1)
 const todayKey = useTodayKey()
+const defaultDayPanelSize = createDefaultSettings(VIEW_MODES.MONTH).ui.dayPanelSize
 const calendarData = ref({ days: [], notes: [] })
+const weatherEnabled = ref(false)
+const weatherForecast = ref(null)
+const weatherLoading = ref(false)
+const weatherError = ref('')
 const loading = ref(true)
 const refreshing = ref(false)
 const transitioning = ref(false)
 const loadError = ref('')
 const selectedKey = ref('')
 const panelOpen = ref(false)
-const dayPanelSize = ref(34)
+const dayPanelSize = ref(defaultDayPanelSize)
 const creatorDate = ref('')
 const editingNote = ref(null)
 const editorRef = ref(null)
@@ -43,8 +51,16 @@ const calendarSurfaceRef = ref(null)
 const creatorRef = ref(null)
 const creatorOverlayRef = ref(null)
 const editorOverlayRef = ref(null)
+const statusTransitions = reactive(new Map())
+const statusTransitionTimers = new Map()
+const earlyStartConfirmVisible = ref(false)
+const earlyStartNote = ref(null)
 let stopNotesListener = null
+let stopHolidayDataListener = null
+let stopWeatherSettingsListener = null
+let stopWeatherForecastListener = null
 let loadSequence = 0
+let weatherLoadSequence = 0
 let resizeCleanup = null
 let notesChangedTimer = null
 let previouslyFocused = null
@@ -54,6 +70,46 @@ const selectedNotes = computed(() =>
   selectedKey.value ? notesCoveringDate(calendarData.value.notes, selectedKey.value) : []
 )
 const modalOpen = computed(() => Boolean(creatorDate.value || editingNote.value))
+const weatherByDate = computed(
+  () => new Map((weatherForecast.value?.days || []).map((day) => [day.date, day]))
+)
+const selectedWeather = computed(() => weatherByDate.value.get(selectedKey.value) || null)
+const earlyStartMessage = computed(() => {
+  const durationDays = Math.max(1, Number(earlyStartNote.value?.duration_days) || 1)
+  if (durationDays > 1) {
+    return `该便签设置了持续 ${durationDays} 天。提前执行后，生效时间将改为当前时间，月视图中的连续显示日期也会从今天重新计算。是否确认提前执行？`
+  }
+  return '该便签尚未到达生效时间。提前执行后，生效时间将改为当前时间。是否确认提前执行？'
+})
+const toolbarWeatherLocation = computed(() =>
+  weatherEnabled.value && weatherForecast.value?.location
+    ? weatherLocationLabel(weatherForecast.value.location)
+    : ''
+)
+const toolbarWeatherSource = computed(() => {
+  const source = weatherForecast.value?.source
+  if (!source) return ''
+  return source.model?.name ? `${source.attribution} · ${source.model.name}` : source.attribution
+})
+
+async function loadWeather({ quiet = false } = {}) {
+  const sequence = ++weatherLoadSequence
+  weatherLoading.value = true
+  weatherError.value = ''
+  try {
+    const forecast = await window.api.getWeatherForecast()
+    if (sequence !== weatherLoadSequence) return
+    weatherForecast.value = forecast
+    if (weatherForecast.value?.warning) weatherError.value = weatherForecast.value.warning
+  } catch (error) {
+    if (sequence !== weatherLoadSequence) return
+    weatherForecast.value = null
+    weatherError.value = error?.message || '天气获取失败'
+    if (!quiet) showMessage('warning', weatherError.value)
+  } finally {
+    if (sequence === weatherLoadSequence) weatherLoading.value = false
+  }
+}
 
 function daysInMonth(year, month) {
   return new Date(year, month, 0).getDate()
@@ -127,7 +183,7 @@ async function focusCalendarDate(dateKey) {
 
 function startRefreshContentAnimation(phase) {
   const elements = calendarSurfaceRef.value?.querySelectorAll(
-    '.month-week__events, .month-day-cell__count, .month-day-cell__overflow'
+    '.month-week__events, .month-day-cell__count, .month-day-cell__overflow, .month-day-cell__lunar, .month-day-cell__holiday'
   )
   return Array.from(elements || [], (element) => {
     const finalOpacity = Number.parseFloat(getComputedStyle(element).opacity) || 1
@@ -268,6 +324,117 @@ function refreshMonth() {
   void refreshMonthContent({ manual: true })
 }
 
+function statusTimerKey(noteId, kind) {
+  return `${noteId}:${kind}`
+}
+
+function clearStatusTimer(noteId, kind) {
+  const key = statusTimerKey(noteId, kind)
+  clearTimeout(statusTransitionTimers.get(key))
+  statusTransitionTimers.delete(key)
+}
+
+function scheduleStatusTransition(noteId, kind, delay, callback) {
+  const key = statusTimerKey(noteId, kind)
+  clearTimeout(statusTransitionTimers.get(key))
+  const timer = setTimeout(async () => {
+    statusTransitionTimers.delete(key)
+    await callback?.()
+  }, delay)
+  statusTransitionTimers.set(key, timer)
+}
+
+function setStatusTransition(noteId, state) {
+  if (state) statusTransitions.set(noteId, state)
+  else statusTransitions.delete(noteId)
+}
+
+function mergeCalendarNote(updated, { preserveEffectiveAt = false } = {}) {
+  calendarData.value = {
+    ...calendarData.value,
+    notes: calendarData.value.notes.map((note) =>
+      note.id === updated.id
+        ? {
+            ...note,
+            ...updated,
+            effective_at: preserveEffectiveAt ? note.effective_at : updated.effective_at,
+            tags: Array.isArray(updated.tags) ? updated.tags : note.tags,
+            attachment_count: Number.isFinite(Number(updated.attachment_count))
+              ? Number(updated.attachment_count)
+              : note.attachment_count
+          }
+        : note
+    )
+  }
+}
+
+function onCardStatusAction(note) {
+  if (note.status === 'initialized') {
+    earlyStartNote.value = note
+    earlyStartConfirmVisible.value = true
+    return
+  }
+  void executeCardStatusAction(note)
+}
+
+function confirmEarlyStart() {
+  const note = earlyStartNote.value
+  earlyStartNote.value = null
+  if (note) void executeCardStatusAction(note)
+}
+
+function cancelEarlyStart() {
+  earlyStartNote.value = null
+}
+
+async function executeCardStatusAction(note) {
+  if (statusTransitions.has(note.id)) return
+  const from = note.status
+  const to =
+    from === 'initialized' || from === 'completed'
+      ? 'in_progress'
+      : from === 'in_progress'
+        ? 'completed'
+        : null
+  if (!to) return
+
+  setStatusTransition(note.id, { from, to, phase: 'acknowledging' })
+  scheduleStatusTransition(note.id, 'waiting', 120, () => {
+    const current = statusTransitions.get(note.id)
+    if (current?.phase === 'acknowledging') {
+      setStatusTransition(note.id, { from, to, phase: 'waiting' })
+    }
+  })
+
+  try {
+    let updated = null
+    if (from === 'initialized') updated = await window.api.startProgress(note.id)
+    else if (from === 'in_progress') updated = await window.api.completeNote(note.id)
+    else if (from === 'completed') updated = await window.api.reopenNote(note.id)
+    if (!updated) throw new Error('状态接口未返回更新后的便签')
+
+    clearStatusTimer(note.id, 'waiting')
+    setStatusTransition(note.id, { from, to, phase: 'playing' })
+    const commitDelay = to === 'completed' ? 920 : 125
+    scheduleStatusTransition(note.id, 'commit', commitDelay, () => {
+      mergeCalendarNote(updated, { preserveEffectiveAt: from === 'initialized' })
+    })
+    scheduleStatusTransition(note.id, 'finish', 1000, async () => {
+      setStatusTransition(note.id, null)
+      clearTimeout(notesChangedTimer)
+      notesChangedTimer = null
+      if (transitioning.value) queueNotesRefresh()
+      else await refreshMonthContent()
+    })
+  } catch (error) {
+    clearStatusTimer(note.id, 'waiting')
+    console.error('[MonthWorkspace] 状态修改失败:', note.id, error)
+    showMessage('error', error.message || '无法修改便签状态')
+    setStatusTransition(note.id, { from, to, phase: 'error' })
+    scheduleStatusTransition(note.id, 'finish', 320, () => setStatusTransition(note.id, null))
+  }
+}
+
 async function goToday() {
   const today = parseDateKey(todayKey.value)
   if (today.year === viewYear.value && today.month === viewMonth.value) {
@@ -371,7 +538,7 @@ function queueNotesRefresh() {
   clearTimeout(notesChangedTimer)
   notesChangedTimer = setTimeout(() => {
     notesChangedTimer = null
-    if (transitioning.value) {
+    if (transitioning.value || statusTransitions.size > 0) {
       queueNotesRefresh()
       return
     }
@@ -384,10 +551,11 @@ function startPanelResize(event) {
   event.preventDefault()
   const bounds = workspaceBodyRef.value.getBoundingClientRect()
   const pointerId = event.pointerId
+  const handle = event.currentTarget
   try {
-    event.currentTarget?.setPointerCapture?.(pointerId)
+    if (event.isTrusted) handle?.setPointerCapture?.(pointerId)
   } catch {
-    // 合成输入或指针已释放时继续使用 window 级监听，不影响拖拽与持久化。
+    // 指针已释放时继续使用 window 级监听，不影响拖拽与持久化。
   }
   document.body.classList.add('is-resizing-month-day-panel')
 
@@ -399,6 +567,11 @@ function startPanelResize(event) {
     window.removeEventListener('pointermove', onMove)
     window.removeEventListener('pointerup', finish)
     window.removeEventListener('pointercancel', finish)
+    try {
+      if (handle?.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId)
+    } catch {
+      // 捕获可能已由浏览器自动释放；结束逻辑仍需继续保存宽度。
+    }
     document.body.classList.remove('is-resizing-month-day-panel')
     resizeCleanup = null
     try {
@@ -416,15 +589,35 @@ function startPanelResize(event) {
 onMounted(async () => {
   try {
     const snapshot = await window.api.getSettingsSnapshot()
+    weatherEnabled.value = Boolean(snapshot?.values?.weather?.enabled)
     dayPanelSize.value = Math.min(
       50,
-      Math.max(25, Number(snapshot?.values?.ui?.dayPanelSize) || 34)
+      Math.max(25, Number(snapshot?.values?.ui?.dayPanelSize) || defaultDayPanelSize)
     )
   } catch (error) {
     console.warn('[MonthWorkspace] 读取日期侧栏设置失败:', error)
   }
   stopNotesListener = window.api.onNotesChanged?.(queueNotesRefresh)
-  await loadMonth()
+  stopHolidayDataListener = window.api.onHolidayDataChanged?.(queueNotesRefresh)
+  stopWeatherSettingsListener = window.api.onSettingsChanged?.((snapshot) => {
+    weatherEnabled.value = Boolean(snapshot?.values?.weather?.enabled)
+    if (weatherEnabled.value && snapshot?.values?.weather?.location) {
+      void loadWeather({ quiet: true })
+    } else {
+      weatherForecast.value = null
+      weatherError.value = ''
+    }
+  })
+  stopWeatherForecastListener = window.api.onWeatherForecastUpdated?.((forecast) => {
+    if (!weatherEnabled.value) return
+    weatherForecast.value = forecast
+    weatherError.value = forecast?.warning || ''
+  })
+  const monthLoadPromise = loadMonth()
+  // 月视图可见性只依赖本地日历数据；天气网络请求在后台补齐，不能阻塞窗口就绪。
+  if (weatherEnabled.value) void loadWeather({ quiet: true })
+  await monthLoadPromise
+  emit('ready')
 })
 
 watch(modalOpen, (open) => emit('modal-state-change', open), { immediate: true })
@@ -449,7 +642,12 @@ defineExpose({
 
 onBeforeUnmount(() => {
   stopNotesListener?.()
+  stopHolidayDataListener?.()
+  stopWeatherSettingsListener?.()
+  stopWeatherForecastListener?.()
   clearTimeout(notesChangedTimer)
+  for (const timer of statusTransitionTimers.values()) clearTimeout(timer)
+  statusTransitionTimers.clear()
   if (modalFocusFrame !== null) cancelAnimationFrame(modalFocusFrame)
   restoreFocusedElement(previouslyFocused)
   resizeCleanup?.()
@@ -468,9 +666,16 @@ onBeforeUnmount(() => {
           :date-key="selectedKey"
           :notes="selectedNotes"
           :can-create="selectedKey >= todayKey"
+          :weather="selectedWeather"
+          :weather-location="weatherForecast?.location || null"
+          :weather-fetched-at="weatherForecast?.fetchedAt || null"
+          :weather-stale="Boolean(weatherForecast?.cache?.stale)"
+          :weather-error="weatherError"
+          :status-transitions="statusTransitions"
           @close="panelOpen = false"
           @create="openCreator(selectedKey)"
           @edit="openEditor"
+          @status-action="onCardStatusAction"
           @resize-start="startPanelResize"
         />
       </Transition>
@@ -481,6 +686,8 @@ onBeforeUnmount(() => {
           :month="viewMonth"
           :refreshing="refreshing"
           :busy="transitioning"
+          :weather-location-label="toolbarWeatherLocation"
+          :weather-source-label="toolbarWeatherSource"
           @previous="goPrevious"
           @next="goNext"
           @today="goToday"
@@ -493,6 +700,7 @@ onBeforeUnmount(() => {
             :notes="calendarData.notes"
             :selected-key="selectedKey"
             :today-key="todayKey"
+            :weather-by-date="weatherByDate"
             @select-date="selectDate"
             @create="openCreator"
           />
@@ -557,6 +765,16 @@ onBeforeUnmount(() => {
         </div>
       </Transition>
     </Teleport>
+
+    <ConfirmDialog
+      v-model:visible="earlyStartConfirmVisible"
+      title="提前执行便签？"
+      :message="earlyStartMessage"
+      confirm-text="提前执行"
+      cancel-text="取消"
+      @confirm="confirmEarlyStart"
+      @cancel="cancelEarlyStart"
+    />
   </div>
 </template>
 

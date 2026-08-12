@@ -95,8 +95,11 @@ import {
   VIEW_MODES
 } from '../shared/settings-schema.js'
 import { getSystemNotificationCapability } from '../shared/notification-policy.js'
+import { weatherDailyRefreshKey } from '../shared/weather-rules.js'
 import { registerBusinessIpcHandlers } from './ipc/register-business-ipc.js'
 import { registerCalendarIpcHandlers } from './ipc/register-calendar-ipc.js'
+import { registerDailyReportIpcHandlers } from './ipc/register-daily-report-ipc.js'
+import { registerWeatherIpcHandlers } from './ipc/register-weather-ipc.js'
 import {
   getViewSettingsScope,
   readApplicationSettings,
@@ -133,11 +136,18 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'wallpaper.blurRadius',
   'ui.settingsPanelSize',
   'ui.dayPanelSize',
+  'weather.enabled',
+  'weather.location',
   'remote.receiveNotices',
   'remote.uploadDeviceInfo',
   'listFilter'
 ])
-const APPLICATION_SETTING_IDS = new Set(['remote.receiveNotices', 'remote.uploadDeviceInfo'])
+const APPLICATION_SETTING_IDS = new Set([
+  'remote.receiveNotices',
+  'remote.uploadDeviceInfo',
+  'weather.enabled',
+  'weather.location'
+])
 const REMOTE_BASE_URL =
   process.env.ABANDON_REMOTE_BASE_URL || 'https://note.zhenshiyin.top/api/v1/client'
 
@@ -164,6 +174,7 @@ let appUpdateService = null
 let remoteCoordinator = null
 let notificationService = null
 let screenshotService = null
+let weatherRuntime = null
 
 /** 当前只允许存在一个主视图；值持久化在 application 设置作用域。 */
 let activeViewMode = VIEW_MODES.LIST
@@ -330,6 +341,7 @@ function refreshResolvedSettings({ incrementRevision = false } = {}) {
   const applicationSettings = readApplicationSettings()
   const nextSettings = resolveSettingsRows(getAllSettings(getActiveWindowName()), activeViewMode)
   nextSettings.remote = { ...applicationSettings.remote }
+  nextSettings.weather = structuredClone(applicationSettings.weather)
   const changed = JSON.stringify(nextSettings) !== JSON.stringify(resolvedSettings)
   resolvedSettings = nextSettings
   syncBlurConfigFromResolved()
@@ -1001,6 +1013,16 @@ function createWindow({ preferredDisplay = null } = {}) {
     }
   })
   const createdWindow = mainWindow
+  const mainSession = mainWindow.webContents.session
+  const allowMainWindowGeolocation = (webContents, permission) =>
+    permission === 'geolocation' && webContents === mainWindow?.webContents
+  // 只放行当前本地主窗口的设备定位；其他 Web API 权限一律拒绝。
+  mainSession.setPermissionCheckHandler((webContents, permission) =>
+    allowMainWindowGeolocation(webContents, permission)
+  )
+  mainSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(allowMainWindowGeolocation(webContents, permission))
+  })
   setWindowLogContext(mainWindow, { role: getActiveWindowProfile().logRole })
   lastVisibleMainWindowBounds = { ...mainWindow.getBounds() }
   windowMotionBackend = createWindowMotionBackend(mainWindow, screen)
@@ -1090,6 +1112,7 @@ function createWindow({ preferredDisplay = null } = {}) {
   mainWindow.on('resize', () => {
     if (windowMotionBackend?.isMoving()) return
     debouncedSaveGeometry()
+    syncVisibleDockSide({ source: 'window-resize' })
   })
   mainWindow.on('move', () => {
     if (windowMotionBackend?.isMoving()) return
@@ -1098,24 +1121,8 @@ function createWindow({ preferredDisplay = null } = {}) {
 
   // 【贴边隐藏 - 边缘检测】窗口移动时检测是否靠近屏幕左/右边缘
   mainWindow.on('move', () => {
-    if (
-      !mainWindow ||
-      mainWindow.isDestroyed() ||
-      windowMotionBackend?.isMoving() ||
-      isDockHidden ||
-      isSliding
-    ) {
-      return
-    }
-    const side = detectDockSide()
-    if (side) {
-      if (dockSide !== side) {
-        dockSide = side
-        snapToEdge(side)
-      }
-    } else {
-      dockSide = null
-    }
+    if (windowMotionBackend?.isMoving()) return
+    syncVisibleDockSide({ source: 'window-move', snap: true })
   })
 
   // 拦截窗口关闭事件：最小化到托盘而非退出
@@ -1141,6 +1148,12 @@ function createWindow({ preferredDisplay = null } = {}) {
       if (!runBlurRuntimeOperation(() => blurSetConfig(blurConfig), '恢复毛玻璃配置')) return
     }
     runBlurRuntimeOperation(blurReSyncZOrder, '恢复毛玻璃窗口层级')
+  })
+
+  // 启动恢复、托盘/通知唤醒和视图切换都可能直接把窗口放回已保存的
+  // 边缘位置，却不会产生可靠的用户 move 事件。显示后主动重建可见态贴边方向。
+  mainWindow.on('show', () => {
+    syncVisibleDockSide({ source: 'window-show', snap: true })
   })
 
   // 窗口销毁时清除引用和贴边资源
@@ -1438,6 +1451,9 @@ function handleDockDisplayTopologyChange() {
       console.warn('[settings] 保存显示器变化后的窗口位置失败:', error)
     }
   }
+  // resetDockState() 会清空 dockSide。窗口约束回可见工作区后，必须根据
+  // 新显示器几何重建方向，否则解锁、DPI/分辨率变化后只能靠再次拖动恢复。
+  syncVisibleDockSide({ source: 'display-topology-change', snap: true })
 }
 
 function attachDockDisplayListeners() {
@@ -1517,6 +1533,43 @@ function detectDockSide() {
     if (nearEdge && windowMotionBackend?.isDockEdgeExposed(side)) return side
   }
   return null
+}
+
+/**
+ * 根据当前可见窗口几何同步贴边方向。这里只重建可见态，不直接触发隐藏；
+ * 真正收起仍由鼠标离开事件决定，避免系统恢复后窗口立即消失。
+ */
+function syncVisibleDockSide({ source = 'unknown', snap = false } = {}) {
+  if (
+    !mainWindow ||
+    mainWindow.isDestroyed() ||
+    !mainWindow.isVisible() ||
+    isDockTransitionActive()
+  ) {
+    return dockSide
+  }
+
+  const previousSide = dockSide
+  let nextSide = null
+  try {
+    nextSide = detectDockSide()
+  } catch (error) {
+    dockSide = null
+    logger.error('dock.side-sync', error, { source, previousSide })
+    return null
+  }
+
+  dockSide = nextSide
+  if (nextSide && snap && nextSide !== previousSide) snapToEdge(nextSide)
+
+  if (dockSide !== previousSide) {
+    logger.info('dock.side-sync', '可见窗口贴边方向已同步', {
+      source,
+      previousSide,
+      dockSide
+    })
+  }
+  return dockSide
 }
 
 /** 将窗口吸附到指定边缘 */
@@ -1828,8 +1881,8 @@ function toggleWindow() {
     hideToTray()
   } else {
     mainWindow.show()
-    // 从托盘恢复后重新检测贴边（hideToTray 中的 resetDockState 清除了 dockSide）
-    dockSide = detectDockSide()
+    // show 事件会同步方向；这里再做一次幂等同步，避免平台不发 show。
+    syncVisibleDockSide({ source: 'tray-show', snap: true })
   }
 }
 
@@ -1839,6 +1892,7 @@ function openMainWindow() {
     doShow('open-main-window')
   } else {
     mainWindow.show()
+    syncVisibleDockSide({ source: 'open-main-window', snap: true })
   }
   mainWindow.focus()
 }
@@ -2195,6 +2249,8 @@ app.whenReady().then(async () => {
     // 作用域，保证“恢复当前视图”绝不会顺带重置公共隐私选择。
     writeApplicationSetting('remote.receiveNotices', resolvedSettings.remote.receiveNotices)
     writeApplicationSetting('remote.uploadDeviceInfo', resolvedSettings.remote.uploadDeviceInfo)
+    writeApplicationSetting('weather.enabled', resolvedSettings.weather.enabled)
+    writeApplicationSetting('weather.location', resolvedSettings.weather.location)
     clearSettings(getActiveWindowName())
     refreshResolvedSettings({ incrementRevision: true })
     applyResolvedWindowRuntime()
@@ -2231,6 +2287,11 @@ app.whenReady().then(async () => {
       }
     } else {
       // 鼠标离开窗口 —— 若已吸附边缘且未锁定，延迟后执行隐藏（锁定时窗口固定，不自动滑走）
+      // 这也是最后一道自愈入口：即使某个系统显示/恢复事件没有重建 dockSide，
+      // 真实的鼠标离开也会先根据当前几何补齐状态。
+      if (!dockSide && !isDockHidden && !isSliding) {
+        syncVisibleDockSide({ source: 'window-hover-leave', snap: true })
+      }
       if (dockSide && !isDockHidden && !isSliding && !isLocked) {
         if (hideTimer) clearTimeout(hideTimer)
         hideTimer = setTimeout(() => {
@@ -2609,7 +2670,45 @@ app.whenReady().then(async () => {
     getMainWindow: () => mainWindow,
     platform: process.platform
   })
-  registerCalendarIpcHandlers({ ipcMain })
+  registerCalendarIpcHandlers({
+    ipcMain,
+    dialog,
+    shell,
+    getMainWindow: () => mainWindow
+  })
+  registerDailyReportIpcHandlers({
+    ipcMain,
+    dialog,
+    shell,
+    getMainWindow: () => mainWindow
+  })
+  weatherRuntime = registerWeatherIpcHandlers({
+    ipcMain,
+    shell,
+    userDataPath,
+    getMainWindow: () => mainWindow,
+    getWeatherSettings: () => structuredClone(resolvedSettings.weather)
+  })
+  void weatherRuntime.refreshAtStartup().catch((error) => {
+    logger.warn('weather.startup-refresh', error?.message || '启动时天气更新失败')
+  })
+  // 3.8 每天 09:00 后最多更新一次。若 09:00 时系统休眠，恢复后的首次 tick 补执行；
+  // 若应用在 09:00 后启动，启动更新已经覆盖当天，不再额外请求。
+  let lastWeatherDailyRefreshKey = weatherDailyRefreshKey(Date.now())
+  scheduler.register({
+    name: 'weatherDailyRefreshTask',
+    maxFailures: Infinity,
+    shouldRun: (context) => {
+      const dateKey = weatherDailyRefreshKey(context.now)
+      return Boolean(dateKey && dateKey !== lastWeatherDailyRefreshKey)
+    },
+    execute: (context) => {
+      lastWeatherDailyRefreshKey = weatherDailyRefreshKey(context.now)
+      void weatherRuntime.refreshDaily().catch((error) => {
+        logger.warn('weather.daily-refresh', error?.message || '每日天气更新失败')
+      })
+    }
+  })
 
   screenshotService = new ScreenshotService({
     ipcMain,

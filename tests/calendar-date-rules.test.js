@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_CALENDAR_YEAR,
+  MIN_CALENDAR_YEAR,
   addCalendarDays,
   buildMonthGrid,
   combineLocalDateAndTime,
@@ -36,5 +38,31 @@ describe('month calendar date rules', () => {
   it('rejects unsupported years and invalid dates', () => {
     expect(() => buildMonthGrid(1899, 12)).toThrow(/年份/)
     expect(() => addCalendarDays('2026-02-30', 1)).toThrow(/日期不存在/)
+  })
+
+  it('builds every supported month across 1900–2100 without boundary drift', () => {
+    const failures = []
+    for (let year = MIN_CALENDAR_YEAR; year <= MAX_CALENDAR_YEAR; year += 1) {
+      for (let month = 1; month <= 12; month += 1) {
+        const grid = buildMonthGrid(year, month)
+        const expectedDayCount = new Date(Date.UTC(year, month, 0)).getUTCDate()
+        const currentDays = grid.days.filter((day) => day.inCurrentMonth)
+        const ordinals = grid.days.map((day) => dateOrdinal(day.key))
+        const contiguous = ordinals.every(
+          (ordinal, index) => index === 0 || ordinal === ordinals[index - 1] + 1
+        )
+        if (
+          grid.days.length !== 42 ||
+          currentDays.length !== expectedDayCount ||
+          currentDays[0]?.day !== 1 ||
+          currentDays.at(-1)?.day !== expectedDayCount ||
+          !contiguous
+        ) {
+          failures.push({ year, month })
+        }
+      }
+    }
+
+    expect(failures).toEqual([])
   })
 })

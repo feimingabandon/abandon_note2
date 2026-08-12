@@ -35,7 +35,7 @@ describe('view-specific defaults', () => {
     expect(list.ui.settingsPanelSize).toBe(70)
     expect(month.geometry).toMatchObject({ widthRatio: 0.7, heightRatio: 0.7 })
     expect(month.ui.settingsPanelSize).toBe(40)
-    expect(month.ui.dayPanelSize).toBe(34)
+    expect(month.ui.dayPanelSize).toBe(25)
   })
 
   it('uses the same native glass defaults for list and month views', () => {
@@ -160,5 +160,59 @@ describe('list filter setting', () => {
         }
       ]).listFilter.listMode
     ).toBe('timeline')
+  })
+})
+
+describe('weather settings', () => {
+  it('keeps weather disabled until a valid local location is selected', () => {
+    expect(DEFAULT_SETTINGS.weather).toEqual({ enabled: false, location: null })
+    expect(serializeSetting('weather.enabled', true)).toMatchObject({
+      type: 'weather',
+      key: 'enabled',
+      value: 'true'
+    })
+  })
+
+  it('normalizes persisted WGS84 coordinates and rejects invalid locations', () => {
+    const location = {
+      id: 1816670,
+      name: '北京',
+      admin1: '北京市',
+      admin2: '',
+      country: '中国',
+      countryCode: 'cn',
+      latitude: 39.9041999,
+      longitude: 116.4073963,
+      timezone: 'Asia/Shanghai'
+    }
+    expect(JSON.parse(serializeSetting('weather.location', location).value)).toMatchObject({
+      name: '北京',
+      countryCode: 'CN',
+      latitude: 39.9042,
+      longitude: 116.4074
+    })
+    expect(
+      serializeSetting('weather.location', { name: '错误', latitude: 190, longitude: 0 }).value
+    ).toBeNull()
+  })
+
+  it('restores the complete saved city information from a database row', () => {
+    const location = {
+      id: null,
+      name: '广州市',
+      admin1: '广东省',
+      admin2: '',
+      country: '中华人民共和国',
+      countryCode: 'CN',
+      latitude: 23.28224,
+      longitude: 113.66902,
+      timezone: 'Asia/Shanghai'
+    }
+    const persisted = serializeSetting('weather.location', location)
+
+    expect(
+      resolveSettingsRows([{ type: persisted.type, key: persisted.key, value: persisted.value }])
+        .weather.location
+    ).toEqual(location)
   })
 })

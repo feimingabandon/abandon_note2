@@ -28,7 +28,7 @@ export function useNotePresenceMotion(
     return getContainer()?.closest(rootSelector) || null
   }
 
-  function animateRemovedCard({ element, rect }, order) {
+  function animateRemovedCard({ element, rect }, order, translateX = 10) {
     const clone = element.cloneNode(true)
     clone.removeAttribute('tabindex')
     clone.setAttribute('aria-hidden', 'true')
@@ -52,7 +52,7 @@ export function useNotePresenceMotion(
     const animation = clone.animate(
       [
         { opacity: 1, translate: '0 0' },
-        { opacity: 0, translate: '10px 0' }
+        { opacity: 0, translate: `${translateX}px 0` }
       ],
       { duration: 240, delay: Math.min(order, 10) * 36, easing: EASING, fill: 'both' }
     )
@@ -63,14 +63,17 @@ export function useNotePresenceMotion(
     animation.finished.then(removeClone, removeClone)
   }
 
-  function animateRetainedCards(before, { reenterIds = [] } = {}) {
+  function animateRetainedCards(
+    before,
+    { reenterIds = [], exitTranslateX = 10, enterTranslateX = 10 } = {}
+  ) {
     const after = captureVisibleCardLayout()
     const reenterIdSet = new Set([...reenterIds].map(String))
     let removedIndex = 0
     for (const [id, snapshot] of before) {
       const current = after.get(id)
       if (!current || reenterIdSet.has(id)) {
-        animateRemovedCard(snapshot, removedIndex++)
+        animateRemovedCard(snapshot, removedIndex++, exitTranslateX)
         continue
       }
       const deltaX = snapshot.rect.left - current.rect.left
@@ -92,7 +95,7 @@ export function useNotePresenceMotion(
       const targetOpacity = getComputedStyle(current.element).opacity
       current.element.animate(
         [
-          { opacity: 0, translate: '10px 0' },
+          { opacity: 0, translate: `${enterTranslateX}px 0` },
           { opacity: targetOpacity, translate: '0 0' }
         ],
         {
@@ -123,6 +126,11 @@ export function useNotePresenceMotion(
     for (const element of root.querySelectorAll(`${cardSelector}, ${auxiliarySelector}`)) {
       for (const animation of element.getAnimations()) animation.cancel()
     }
+    for (const clone of detachedClones) {
+      for (const animation of clone.getAnimations()) animation.cancel()
+      clone.remove()
+    }
+    detachedClones.clear()
   }
 
   async function animateCurrentCardsOut({ includeAuxiliary = false } = {}) {

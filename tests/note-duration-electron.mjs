@@ -173,9 +173,7 @@ async function runTests() {
       '旧库便签未进入列表'
     )
 
-    await window.webContents.executeJavaScript(
-      `window.api.createTag('空层级测试', '#ff9500', false)`
-    )
+    await window.webContents.executeJavaScript(`window.api.createTag('空层级测试', '#ff9500')`)
     await window.webContents.executeJavaScript(`document.querySelector('.sg-btn--tags').click()`)
     await waitUntil(
       () =>
@@ -271,6 +269,13 @@ async function runTests() {
       () =>
         window.webContents.executeJavaScript(`Boolean(document.querySelector('.dt-panel-wrap'))`),
       '生效时间选择器未打开'
+    )
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `document.querySelectorAll('.dt-panel-wrap .dt-header-input')[1].value`
+      ),
+      '00:01:00',
+      '列表新建便签打开生效时间面板时必须默认到当天 00:01'
     )
     await window.webContents.executeJavaScript(`(() => {
       const shortcut = Array.from(document.querySelectorAll('.dt-sc-chip')).find((node) => node.textContent.trim() === '明天')

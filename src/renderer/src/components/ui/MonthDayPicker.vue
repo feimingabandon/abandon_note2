@@ -325,7 +325,6 @@ onBeforeUnmount(() => {
   border-color: var(--ui-border-hover);
   color: var(--text-color);
 }
-.mdp-trigger:active,
 .mdp-chip button:active {
   transform: scale(0.98);
 }

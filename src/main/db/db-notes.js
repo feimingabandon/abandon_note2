@@ -549,13 +549,13 @@ export function queryTagGroups({ statuses, tagIds } = {}) {
 
   const groups = db
     .prepare(
-      `SELECT t.id, t.name, t.color, t.created_at, COUNT(n.id) AS total
+      `SELECT t.id, t.name, t.color, t.created_at, t.sort_order, COUNT(n.id) AS total
        FROM tags t
        LEFT JOIN note_tags nt ON nt.tag_id = t.id
        LEFT JOIN notes n ON n.id = nt.note_id AND n.is_deleted = 0 ${statusJoin}
        ${tagWhere}
-       GROUP BY t.id, t.name, t.color, t.created_at
-       ORDER BY t.created_at ASC, t.id ASC`
+       GROUP BY t.id, t.name, t.color, t.created_at, t.sort_order
+       ORDER BY t.sort_order ASC, t.id ASC`
     )
     .all(...statusList, ...selectedTagIds)
     .map((group) => ({
@@ -563,6 +563,7 @@ export function queryTagGroups({ statuses, tagIds } = {}) {
       id: group.id,
       name: group.name,
       color: group.color,
+      sort_order: group.sort_order,
       total: Number(group.total) || 0,
       untagged: false
     }))

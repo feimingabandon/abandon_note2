@@ -29,8 +29,8 @@ import {
   getTagById,
   getTagUsage,
   listTags,
-  setTagPinned,
   setNoteTagIds,
+  updateTagOrder,
   updateTag,
   unbindTag
 } from '../db/db-tags.js'
@@ -347,8 +347,8 @@ export function registerBusinessIpcHandlers({
     broadcastNoteChange('status', reopenNote(id), { id, status: 'in_progress' })
   )
 
-  ipcMain.handle('tags:create', (_event, { name, color, pinned }) => {
-    const tag = createTag(name, color, pinned)
+  ipcMain.handle('tags:create', (_event, { name, color }) => {
+    const tag = createTag(name, color)
     return broadcastTagChange('create', tag, { tag })
   })
   ipcMain.handle('tags:update', (_event, { id, fields }) => {
@@ -368,9 +368,10 @@ export function registerBusinessIpcHandlers({
     }
     return deleted
   })
-  ipcMain.handle('tags:set-pinned', (_event, { id, pinned }) => {
-    const tag = setTagPinned(id, pinned)
-    return broadcastTagChange('pin', tag, { tag })
+  ipcMain.handle('tags:update-order', (_event, { tagIds }) => {
+    const tags = updateTagOrder(tagIds)
+    const normalizedTagIds = Array.isArray(tagIds) ? tagIds.map(Number) : []
+    return broadcastTagChange('reorder', tags, { tagIds: normalizedTagIds })
   })
   ipcMain.handle('tags:list', () => listTags())
   ipcMain.handle('tags:get', (_event, { id }) => getTagById(id))

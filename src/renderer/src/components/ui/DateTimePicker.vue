@@ -17,6 +17,7 @@ const props = defineProps({
   disabled: { type: Boolean, default: false },
   clearable: { type: Boolean, default: true },
   minDate: { type: Date, default: null },
+  defaultTime: { type: String, default: '' },
   shortcuts: {
     type: Array,
     default: () => [
@@ -175,14 +176,23 @@ function parseValue(val) {
   return true
 }
 
-function resetToNow() {
+function parseClockTime(value) {
+  const match = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(value || ''))
+  if (!match) return null
+  const parts = match.slice(1).map((part) => Number(part || 0))
+  if (parts[0] > 23 || parts[1] > 59 || parts[2] > 59) return null
+  return parts
+}
+
+function resetToDefault() {
   const n = new Date()
   year.value = n.getFullYear()
   month.value = n.getMonth() + 1
   day.value = n.getDate()
-  hour.value = n.getHours()
-  minute.value = n.getMinutes()
-  second.value = n.getSeconds()
+  const defaultTime = parseClockTime(props.defaultTime)
+  hour.value = defaultTime?.[0] ?? n.getHours()
+  minute.value = defaultTime?.[1] ?? n.getMinutes()
+  second.value = defaultTime?.[2] ?? n.getSeconds()
 }
 
 // ==================== 可编辑输入框 ====================
@@ -280,7 +290,7 @@ function commitTime() {
 watch(
   () => props.modelValue,
   (val) => {
-    if (!parseValue(val)) resetToNow()
+    if (!parseValue(val)) resetToDefault()
   },
   { immediate: true }
 )
@@ -367,7 +377,7 @@ function toggle() {
     open.value = false
     return
   }
-  if (!parseValue(props.modelValue)) resetToNow()
+  if (!parseValue(props.modelValue)) resetToDefault()
   viewYear.value = year.value
   viewMonth.value = month.value - 1
   currentView.value = 'calendar'
@@ -396,7 +406,7 @@ function doClear(e) {
   e.stopPropagation()
   emit('update:modelValue', '')
   emit('clear')
-  resetToNow()
+  resetToDefault()
 }
 
 function applyShortcut(sc) {
@@ -454,6 +464,8 @@ function onLeave(el, done) {
       class="dt-trigger"
       :class="{ 'is-open': open, 'is-disabled': disabled }"
       :disabled="disabled"
+      aria-haspopup="dialog"
+      :aria-expanded="open"
       @click="toggle"
     >
       <span class="dt-label" :class="{ 'is-placeholder': !modelValue }">{{ displayText }}</span>

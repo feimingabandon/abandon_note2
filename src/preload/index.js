@@ -184,6 +184,12 @@ const api = {
   completeNote: (id) => ipcRenderer.invoke('notes:complete', { id }),
   /** 将已完成便签重新恢复为进行中 */
   reopenNote: (id) => ipcRenderer.invoke('notes:reopen', { id }),
+  /** 查询指定日期和多选状态下的日报便签预览。 */
+  previewDailyReport: (options) => ipcRenderer.invoke('daily-report:preview', options),
+  /** 由系统保存对话框导出选中的日报便签为 TXT。 */
+  exportDailyReport: (options) => ipcRenderer.invoke('daily-report:export', options),
+  /** 打开最近一次成功导出的日报所在文件夹。 */
+  openDailyReportExportFolder: () => ipcRenderer.invoke('daily-report:open-export-folder'),
   /** 监听调度器等主进程来源的便签变化；返回取消监听函数。 */
   onNotesChanged: (callback) => {
     const handler = (_event, payload) => callback(payload)
@@ -192,17 +198,49 @@ const api = {
   },
   /** 获取固定 7×6 的月历日期与当前可见范围内的真实便签。 */
   getMonthCalendarData: (year, month) => ipcRenderer.invoke('calendar:get-month', { year, month }),
+  /** 获取某年份最终生效的节假日数据状态（用户数据优先，内置数据兜底）。 */
+  getHolidayDataStatus: (year = new Date().getFullYear()) =>
+    ipcRenderer.invoke('calendar:holiday-data-status', { year }),
+  /** 通过系统文件选择器导入 chinese-days JSON。 */
+  importHolidayData: () => ipcRenderer.invoke('calendar:holiday-data-import'),
+  /** 从固定的 chinese-days 官方 CDN 下载指定年份并导入。 */
+  downloadHolidayData: (year = new Date().getFullYear()) =>
+    ipcRenderer.invoke('calendar:holiday-data-download', { year }),
+  /** 在默认浏览器中打开固定的按年份 JSON 地址。 */
+  openHolidayDataLink: (year = new Date().getFullYear()) =>
+    ipcRenderer.invoke('calendar:holiday-data-open-link', { year }),
+  /** 返回当前年份尚无数据且本年度尚未提醒时的应用内通知。 */
+  getHolidayDataNotice: () => ipcRenderer.invoke('calendar:holiday-data-notice'),
+  dismissHolidayDataNotice: (year) =>
+    ipcRenderer.invoke('calendar:holiday-data-dismiss-notice', { year }),
+  onHolidayDataChanged: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('calendar:holiday-data-changed', handler)
+    return () => ipcRenderer.removeListener('calendar:holiday-data-changed', handler)
+  },
+
+  // ---- 天气（Open-Meteo，无 API Key） ----
+  getWeatherDivisionTree: () => ipcRenderer.invoke('weather:get-division-tree'),
+  resolveWeatherLocation: (location) =>
+    ipcRenderer.invoke('weather:resolve-location', { location }),
+  getWeatherForecast: () => ipcRenderer.invoke('weather:get-forecast'),
+  refreshWeatherForecast: () => ipcRenderer.invoke('weather:refresh-forecast'),
+  onWeatherForecastUpdated: (callback) => {
+    const handler = (_event, forecast) => callback(forecast)
+    ipcRenderer.on('weather:forecast-updated', handler)
+    return () => ipcRenderer.removeListener('weather:forecast-updated', handler)
+  },
+  openWeatherSource: () => ipcRenderer.invoke('weather:open-source'),
 
   // ---- 标签管理 ----
   /** 创建标签 */
-  createTag: (name, color, pinned = false) =>
-    ipcRenderer.invoke('tags:create', { name, color, pinned }),
+  createTag: (name, color) => ipcRenderer.invoke('tags:create', { name, color }),
   /** 修改标签（按稳定 ID） */
   updateTag: (id, fields) => ipcRenderer.invoke('tags:update', { id, fields }),
   /** 删除标签（按稳定 ID） */
   deleteTag: (id) => ipcRenderer.invoke('tags:delete', { id }),
-  /** 置顶或取消置顶标签。 */
-  setTagPinned: (id, pinned) => ipcRenderer.invoke('tags:set-pinned', { id, pinned }),
+  /** 只重排传入的可见标签；其他标签保留原排序槽位。 */
+  updateTagOrder: (tagIds) => ipcRenderer.invoke('tags:update-order', { tagIds }),
   /** 获取全部标签 */
   listTags: () => ipcRenderer.invoke('tags:list'),
   /** 获取单个标签（按稳定 ID） */
