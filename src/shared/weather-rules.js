@@ -36,6 +36,27 @@ export function describeWeatherCode(value) {
   return WEATHER_BY_CODE.get(Number(value)) || { label: '未知天气', icon: '•' }
 }
 
+function isFiniteWeatherNumber(value) {
+  if (value === null || value === undefined || value === '') return false
+  return Number.isFinite(Number(value))
+}
+
+/**
+ * 日历中只展示具备天气码和高低温的完整日预报。
+ * Open-Meteo 模型超出可用预报范围时会返回 null，旧版曾将它们误转为 0。
+ * 同时屏蔽这类历史占位数据，但保留 0°～5° 等真实低温预报。
+ */
+export function isDisplayableWeatherDay(day) {
+  if (
+    !isFiniteWeatherNumber(day?.weatherCode) ||
+    !isFiniteWeatherNumber(day?.temperatureMin) ||
+    !isFiniteWeatherNumber(day?.temperatureMax)
+  ) {
+    return false
+  }
+  return !(Number(day.temperatureMin) === 0 && Number(day.temperatureMax) === 0)
+}
+
 export function weatherDailyRefreshKey(timestamp = Date.now(), refreshHour = 9) {
   const date = new Date(timestamp)
   if (Number.isNaN(date.getTime()) || date.getHours() < refreshHour) return null

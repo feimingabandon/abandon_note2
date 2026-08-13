@@ -36,6 +36,7 @@ export default defineConfig({
         input: {
           index: resolve('src/renderer/index.html'),
           month: resolve('src/renderer/month.html'),
+          week: resolve('src/renderer/week.html'),
           sticky: resolve('src/renderer/sticky.html')
         }
       }

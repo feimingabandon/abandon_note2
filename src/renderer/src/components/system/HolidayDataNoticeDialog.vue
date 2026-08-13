@@ -22,7 +22,7 @@ const emit = defineEmits(['dismiss', 'open-settings'])
     <div class="holiday-notice">
       <span class="holiday-notice__icon" aria-hidden="true">!</span>
       <div>
-        <p>月视图会继续显示公历、农历、节气和便签，但暂时隐藏“休 / 班”标记。</p>
+        <p>日历视图会继续显示公历、农历、节气和便签，但暂时隐藏“休 / 班”标记。</p>
         <p>你可以在设置中在线下载，也可以从官方地址获取 JSON 后手动导入。</p>
       </div>
     </div>

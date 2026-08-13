@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue'
@@ -17,7 +17,16 @@ import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
 import { createDefaultSettings, VIEW_MODES } from '../../shared/settings-schema.js'
 
-const defaults = createDefaultSettings(VIEW_MODES.MONTH)
+const props = defineProps({
+  viewMode: {
+    type: String,
+    default: VIEW_MODES.MONTH,
+    validator: (value) => value === VIEW_MODES.MONTH || value === VIEW_MODES.WEEK
+  }
+})
+const isWeekView = computed(() => props.viewMode === VIEW_MODES.WEEK)
+const viewLabel = computed(() => (isWeekView.value ? '周视图' : '月视图'))
+const defaults = createDefaultSettings(props.viewMode)
 const { showMessage } = createMessageProvider()
 const locked = ref(defaults.window.lockState)
 const alwaysOnTop = ref(defaults.window.alwaysOnTop)
@@ -29,8 +38,8 @@ const showHolidayDataNoticeDialog = ref(false)
 const showDailyReportDialog = ref(false)
 const pendingHolidayDataNotice = ref(null)
 const holidayNoticeTodayKey = useTodayKey()
-const monthBusinessModalOpen = ref(false)
-const monthWorkspaceRef = ref(null)
+const calendarBusinessModalOpen = ref(false)
+const calendarWorkspaceRef = ref(null)
 const pendingRemoteNotices = ref([])
 const updateChecking = ref(false)
 const updateResult = ref(null)
@@ -44,14 +53,14 @@ let stopSettingsListener = null
 let stopAppMessageListener = null
 let stopRemoteNoticesListener = null
 let stopNotificationOpenListener = null
-let resolveMonthWorkspaceReady = null
-const monthWorkspaceReady = new Promise((resolve) => {
-  resolveMonthWorkspaceReady = resolve
+let resolveCalendarWorkspaceReady = null
+const calendarWorkspaceReady = new Promise((resolve) => {
+  resolveCalendarWorkspaceReady = resolve
 })
 
-function onMonthWorkspaceReady() {
-  resolveMonthWorkspaceReady?.()
-  resolveMonthWorkspaceReady = null
+function onCalendarWorkspaceReady() {
+  resolveCalendarWorkspaceReady?.()
+  resolveCalendarWorkspaceReady = null
 }
 
 function openSettings() {
@@ -91,7 +100,7 @@ async function syncWallpaper(snapshot) {
     wallpaperVisible.value = true
   } catch (error) {
     if (sequence === wallpaperSequence) wallpaperVisible.value = false
-    console.warn('[MonthApp] 读取月视图壁纸失败:', error)
+    console.warn(`[MonthApp] 读取${viewLabel.value}壁纸失败:`, error)
   }
 }
 
@@ -173,7 +182,7 @@ async function openNoteFromNotification(payload) {
   showRemoteNoticeDialog.value = false
   await new Promise((resolve) => requestAnimationFrame(resolve))
   if (closingModal) await new Promise((resolve) => setTimeout(resolve, 240))
-  await monthWorkspaceRef.value?.openNote?.(noteId)
+  await calendarWorkspaceRef.value?.openNote?.(noteId)
 }
 
 async function checkForUpdates() {
@@ -201,7 +210,7 @@ onMounted(async () => {
     applySnapshot(await window.api.getSettingsSnapshot())
   } catch (error) {
     applySnapshot({ values: defaults })
-    console.warn('[MonthApp] 读取设置失败，使用月视图默认值:', error)
+    console.warn(`[MonthApp] 读取设置失败，使用${viewLabel.value}默认值:`, error)
   }
   stopSettingsListener = window.api.onSettingsChanged?.(applySnapshot)
   stopAppMessageListener = window.api.onAppMessage?.((payload) => {
@@ -218,7 +227,7 @@ onMounted(async () => {
   document.addEventListener('mouseleave', onMouseLeave)
   await loadPendingRemoteNotices({ show: true })
   await loadHolidayDataNotice()
-  await monthWorkspaceReady
+  await calendarWorkspaceReady
   window.api.rendererReady()
 })
 
@@ -234,7 +243,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="month-root app-bg">
+  <div class="month-root app-bg" :class="{ 'is-week-view': isWeekView }">
     <Transition name="month-wallpaper">
       <div v-if="wallpaperVisible" :key="wallpaperRenderKey" class="month-wallpaper">
         <div
@@ -249,10 +258,10 @@ onUnmounted(() => {
 
     <div
       class="month-scene"
-      :class="{ 'is-ui-background-blurred': showSettings || monthBusinessModalOpen }"
+      :class="{ 'is-ui-background-blurred': showSettings || calendarBusinessModalOpen }"
       :inert="
         showSettings ||
-        monthBusinessModalOpen ||
+        calendarBusinessModalOpen ||
         showUpdateDialog ||
         showRemoteNoticeDialog ||
         showHolidayDataNoticeDialog ||
@@ -283,11 +292,12 @@ onUnmounted(() => {
           </button>
         </TitlebarActions>
       </AppTitlebar>
-      <main class="month-content" aria-label="月视图内容区域">
+      <main class="month-content" :aria-label="`${viewLabel}内容区域`">
         <MonthWorkspace
-          ref="monthWorkspaceRef"
-          @modal-state-change="monthBusinessModalOpen = $event"
-          @ready="onMonthWorkspaceReady"
+          ref="calendarWorkspaceRef"
+          :view-mode="viewMode"
+          @modal-state-change="calendarBusinessModalOpen = $event"
+          @ready="onCalendarWorkspaceReady"
         />
       </main>
     </div>
@@ -295,7 +305,7 @@ onUnmounted(() => {
     <SettingsPanel
       v-if="showSettings"
       v-model:visible="showSettings"
-      view-mode="month"
+      :view-mode="viewMode"
       @blur-release="releaseSettingsBlur"
       @check-update="checkForUpdates"
     />

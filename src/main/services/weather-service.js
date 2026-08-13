@@ -9,6 +9,7 @@ import chinaAdminCenters from '../data/china-weather-admin-centers.js'
 import {
   WEATHER_SOURCE,
   describeWeatherCode,
+  isDisplayableWeatherDay,
   normalizeWeatherLocation,
   weatherLocationKey
 } from '../../shared/weather-rules.js'
@@ -18,12 +19,18 @@ const GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1/search'
 const REQUEST_TIMEOUT_MS = 12_000
 const SEARCH_RESULT_LIMIT = 8
 const MANUAL_REFRESH_MIN_INTERVAL_MS = 5 * 60 * 1000
+const CACHE_VERSION = 2
 const CHINA_WEATHER_MODEL = Object.freeze({
   id: 'cma_grapes_global',
   name: 'CMA GRAPES',
   provider: '中国气象局'
 })
 const AUTO_WEATHER_MODEL = Object.freeze({ id: 'auto', name: '自动模型' })
+const CHINA_HYBRID_WEATHER_MODEL = Object.freeze({
+  id: 'cma_grapes_global+auto',
+  name: 'CMA GRAPES + 自动补齐',
+  provider: '中国气象局 / Open-Meteo'
+})
 
 // Electron 打包后，ESM 默认导出可能被包装成带数字键的对象；统一还原为数组。
 const chinaAreaRecords = Array.isArray(chinaAreas)
@@ -134,6 +141,7 @@ function weatherModelForLocation(location) {
 }
 
 function numberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null
   const number = Number(value)
   return Number.isFinite(number) ? number : null
 }
@@ -141,6 +149,43 @@ function numberOrNull(value) {
 function roundOrNull(value) {
   const number = numberOrNull(value)
   return number === null ? null : Math.round(number)
+}
+
+function sanitizeForecast(forecast) {
+  if (!forecast || typeof forecast !== 'object') return forecast
+  return {
+    ...forecast,
+    days: Array.isArray(forecast.days)
+      ? forecast.days.filter((day) => isDisplayableWeatherDay(day))
+      : []
+  }
+}
+
+function mergeForecasts(primary, fallback) {
+  if (!primary) return fallback
+  if (!fallback) return primary
+
+  const primaryDays = Array.isArray(primary.days) ? primary.days : []
+  const fallbackDays = Array.isArray(fallback.days) ? fallback.days : []
+  const primaryDates = new Set(primaryDays.map((day) => day.date))
+  const daysByDate = new Map(fallbackDays.map((day) => [day.date, day]))
+  for (const day of primaryDays) daysByDate.set(day.date, day)
+
+  const fallbackSupplemented = fallbackDays.some((day) => !primaryDates.has(day.date))
+  const usesPrimary = primaryDays.length > 0
+  const base = usesPrimary ? primary : fallback
+  const source =
+    usesPrimary && fallbackSupplemented
+      ? { ...WEATHER_SOURCE, model: CHINA_HYBRID_WEATHER_MODEL }
+      : base.source
+
+  return {
+    ...base,
+    timezone: primary.timezone || fallback.timezone,
+    current: primary.current || fallback.current,
+    days: [...daysByDate.values()].sort((left, right) => left.date.localeCompare(right.date)),
+    source
+  }
 }
 
 async function responseJson(response) {
@@ -158,7 +203,7 @@ export class WeatherService {
     this.cachePath = cachePath
     this.fetchImpl = fetchImpl
     this.cacheLoaded = false
-    this.cache = { version: 1, forecasts: {} }
+    this.cache = { version: CACHE_VERSION, forecasts: {} }
   }
 
   async loadCache() {
@@ -166,8 +211,23 @@ export class WeatherService {
     this.cacheLoaded = true
     try {
       const parsed = JSON.parse(await readFile(this.cachePath, 'utf8'))
-      if (parsed?.version === 1 && parsed.forecasts && typeof parsed.forecasts === 'object') {
-        this.cache = parsed
+      if (
+        (parsed?.version === 1 || parsed?.version === CACHE_VERSION) &&
+        parsed.forecasts &&
+        typeof parsed.forecasts === 'object'
+      ) {
+        let changed = parsed.version !== CACHE_VERSION
+        const forecasts = Object.fromEntries(
+          Object.entries(parsed.forecasts).map(([key, forecast]) => {
+            const sanitized = sanitizeForecast(forecast)
+            if ((forecast?.days?.length || 0) !== (sanitized?.days?.length || 0)) changed = true
+            return [key, sanitized]
+          })
+        )
+        this.cache = { version: CACHE_VERSION, forecasts }
+        if (changed) {
+          await this.saveCache().catch((error) => console.warn('[weather] 迁移缓存失败:', error))
+        }
       }
     } catch (error) {
       if (error?.code !== 'ENOENT') console.warn('[weather] 读取缓存失败，将重新获取:', error)
@@ -334,49 +394,77 @@ export class WeatherService {
     })
   }
 
-  normalizeForecast(data, location, fetchedAt) {
+  createForecastUrl(location, model) {
+    const url = new URL(FORECAST_URL)
+    url.searchParams.set('latitude', String(location.latitude))
+    url.searchParams.set('longitude', String(location.longitude))
+    url.searchParams.set(
+      'current',
+      'temperature_2m,apparent_temperature,weather_code,wind_speed_10m'
+    )
+    url.searchParams.set(
+      'daily',
+      'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,wind_speed_10m_max'
+    )
+    url.searchParams.set('forecast_days', '16')
+    url.searchParams.set('timezone', location.timezone || 'auto')
+    if (model.id !== 'auto') url.searchParams.set('models', model.id)
+    return url
+  }
+
+  normalizeForecast(data, location, fetchedAt, model = weatherModelForLocation(location)) {
     const daily = data?.daily || {}
     const times = Array.isArray(daily.time) ? daily.time : []
     const currentCode = roundOrNull(data?.current?.weather_code)
     const currentDate = String(data?.current?.time || '').slice(0, 10)
-    const days = times.map((date, index) => {
-      const dailyCode = roundOrNull(daily.weather_code?.[index])
-      // 日 weather_code 是当天最严重天气；今天优先展示当前实况，避免一次短时阵雨
-      // 把整天误导性地概括为雷阵雨。未来日期仍保留日预报码。
-      const code = String(date) === currentDate && currentCode !== null ? currentCode : dailyCode
-      const description = describeWeatherCode(code)
-      return {
-        date: String(date),
-        weatherCode: code,
-        dailyWeatherCode: dailyCode,
-        label: description.label,
-        icon: description.icon,
-        temperatureMax: roundOrNull(daily.temperature_2m_max?.[index]),
-        temperatureMin: roundOrNull(daily.temperature_2m_min?.[index]),
-        precipitationProbability: roundOrNull(daily.precipitation_probability_max?.[index]),
-        precipitation: numberOrNull(daily.precipitation_sum?.[index]),
-        windSpeedMax: roundOrNull(daily.wind_speed_10m_max?.[index])
-      }
-    })
-    const currentDescription = describeWeatherCode(currentCode)
+    const days = times
+      .map((date, index) => {
+        const dailyCode = roundOrNull(daily.weather_code?.[index])
+        // 日 weather_code 是当天最严重天气；今天优先展示当前实况，避免一次短时阵雨
+        // 把整天误导性地概括为雷阵雨。未来日期仍保留日预报码。
+        const code = String(date) === currentDate && currentCode !== null ? currentCode : dailyCode
+        const description =
+          code === null ? { label: '未知天气', icon: '•' } : describeWeatherCode(code)
+        return {
+          date: String(date),
+          weatherCode: code,
+          dailyWeatherCode: dailyCode,
+          label: description.label,
+          icon: description.icon,
+          temperatureMax: roundOrNull(daily.temperature_2m_max?.[index]),
+          temperatureMin: roundOrNull(daily.temperature_2m_min?.[index]),
+          precipitationProbability: roundOrNull(daily.precipitation_probability_max?.[index]),
+          precipitation: numberOrNull(daily.precipitation_sum?.[index]),
+          windSpeedMax: roundOrNull(daily.wind_speed_10m_max?.[index])
+        }
+      })
+      .filter((day) => isDisplayableWeatherDay(day))
+    const currentTemperature = roundOrNull(data?.current?.temperature_2m)
+    const currentDescription = currentCode === null ? null : describeWeatherCode(currentCode)
     return {
       location,
       fetchedAt,
       timezone: data?.timezone || location.timezone || 'auto',
-      current: data?.current
-        ? {
-            time: data.current.time,
-            weatherCode: currentCode,
-            label: currentDescription.label,
-            icon: currentDescription.icon,
-            temperature: roundOrNull(data.current.temperature_2m),
-            apparentTemperature: roundOrNull(data.current.apparent_temperature),
-            windSpeed: roundOrNull(data.current.wind_speed_10m)
-          }
-        : null,
+      current:
+        data?.current && currentCode !== null && currentTemperature !== null
+          ? {
+              time: data.current.time,
+              weatherCode: currentCode,
+              label: currentDescription.label,
+              icon: currentDescription.icon,
+              temperature: currentTemperature,
+              apparentTemperature: roundOrNull(data.current.apparent_temperature),
+              windSpeed: roundOrNull(data.current.wind_speed_10m)
+            }
+          : null,
       days,
-      source: { ...WEATHER_SOURCE, model: weatherModelForLocation(location) }
+      source: { ...WEATHER_SOURCE, model }
     }
+  }
+
+  async requestForecast(location, fetchedAt, model) {
+    const data = await this.request(this.createForecastUrl(location, model))
+    return this.normalizeForecast(data, location, fetchedAt, model)
   }
 
   async getForecast(rawLocation, { refresh = false, cacheOnly = false, shouldStore = null } = {}) {
@@ -391,24 +479,22 @@ export class WeatherService {
     }
     if (cacheOnly) return null
 
-    const url = new URL(FORECAST_URL)
-    url.searchParams.set('latitude', String(location.latitude))
-    url.searchParams.set('longitude', String(location.longitude))
-    url.searchParams.set(
-      'current',
-      'temperature_2m,apparent_temperature,weather_code,wind_speed_10m'
-    )
-    url.searchParams.set(
-      'daily',
-      'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,wind_speed_10m_max'
-    )
-    url.searchParams.set('forecast_days', '16')
-    url.searchParams.set('timezone', location.timezone || 'auto')
     const model = weatherModelForLocation(location)
-    if (model.id !== 'auto') url.searchParams.set('models', model.id)
 
     try {
-      const forecast = this.normalizeForecast(await this.request(url), location, now)
+      let forecast
+      if (model.id === CHINA_WEATHER_MODEL.id) {
+        const [primaryResult, fallbackResult] = await Promise.allSettled([
+          this.requestForecast(location, now, CHINA_WEATHER_MODEL),
+          this.requestForecast(location, now, AUTO_WEATHER_MODEL)
+        ])
+        const primary = primaryResult.status === 'fulfilled' ? primaryResult.value : null
+        const fallback = fallbackResult.status === 'fulfilled' ? fallbackResult.value : null
+        if (!primary && !fallback) throw primaryResult.reason || fallbackResult.reason
+        forecast = mergeForecasts(primary, fallback)
+      } else {
+        forecast = await this.requestForecast(location, now, model)
+      }
       // 地区可能在请求期间被修改。由调用方确认结果仍属于当前设置，避免旧请求
       // 后完成时覆盖新地区缓存；服务独立使用时保持原有写入行为。
       if (typeof shouldStore !== 'function' || shouldStore() !== false) {

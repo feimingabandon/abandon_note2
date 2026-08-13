@@ -17,11 +17,14 @@ const DEFAULT_LIST_FILTER = {
 
 export const VIEW_MODES = Object.freeze({
   LIST: 'list',
-  MONTH: 'month'
+  MONTH: 'month',
+  WEEK: 'week'
 })
 
-function normalizeViewMode(value) {
-  return value === VIEW_MODES.MONTH ? VIEW_MODES.MONTH : VIEW_MODES.LIST
+const VALID_VIEW_MODES = new Set(Object.values(VIEW_MODES))
+
+export function normalizeViewMode(value) {
+  return VALID_VIEW_MODES.has(value) ? value : VIEW_MODES.LIST
 }
 
 function cloneValue(value) {
@@ -323,7 +326,7 @@ const definitions = [
     defaultValue: 25,
     parse: (value, fallback) => parseNumber(value, fallback, { min: 25, max: 50 }),
     serialize: String,
-    remark: '月视图日期侧栏宽度百分比（25~50）'
+    remark: '日历视图日期侧栏宽度百分比（25~50）'
   },
   {
     id: 'window.lockState',
@@ -503,10 +506,13 @@ function buildDefaults(viewMode = VIEW_MODES.LIST) {
   SETTING_DEFINITIONS.forEach((definition) => {
     setAtPath(defaults, definition.path, cloneValue(definition.defaultValue))
   })
-  if (normalizeViewMode(viewMode) === VIEW_MODES.MONTH) {
+  if ([VIEW_MODES.MONTH, VIEW_MODES.WEEK].includes(normalizeViewMode(viewMode))) {
     defaults.geometry.widthRatio = 0.7
     defaults.geometry.heightRatio = 0.7
     defaults.ui.settingsPanelSize = 40
+  }
+  if (normalizeViewMode(viewMode) === VIEW_MODES.WEEK) {
+    defaults.geometry.heightRatio = 0.5
   }
   return defaults
 }

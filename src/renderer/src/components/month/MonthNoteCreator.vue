@@ -18,7 +18,10 @@ import {
   MIN_SCHEDULE_LEAD_TIME_MS
 } from '../../../../shared/note-scheduling-rules.js'
 
-const props = defineProps({ dateKey: { type: String, required: true } })
+const props = defineProps({
+  dateKey: { type: String, required: true },
+  viewLabel: { type: String, default: '月视图' }
+})
 const emit = defineEmits(['created', 'close'])
 const { showMessage } = useMessage()
 const todayKey = useTodayKey()
@@ -124,7 +127,12 @@ defineExpose({ requestClose })
 </script>
 
 <template>
-  <section class="month-creator" role="dialog" aria-modal="true" aria-label="月视图新建便签">
+  <section
+    class="month-creator"
+    role="dialog"
+    aria-modal="true"
+    :aria-label="`${viewLabel}新建便签`"
+  >
     <header>
       <div>
         <strong>新建便签</strong><span>{{ dateLabel }}</span>

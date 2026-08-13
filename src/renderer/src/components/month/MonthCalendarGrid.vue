@@ -6,8 +6,13 @@ import {
   hasHiddenCalendarNotes,
   noteCountsByDate
 } from '../../../../shared/calendar/calendar-event-layout.js'
+import {
+  calendarGridNavigationTarget,
+  calendarGridTabKey
+} from '../../utils/calendar-grid-navigation.js'
 
 const props = defineProps({
+  viewMode: { type: String, default: 'month' },
   days: { type: Array, default: () => [] },
   notes: { type: Array, default: () => [] },
   selectedKey: { type: String, default: '' },
@@ -16,8 +21,14 @@ const props = defineProps({
 })
 const emit = defineEmits(['select-date', 'create'])
 const weekRefs = ref([])
-const capacityByWeek = ref([0, 0, 0, 0, 0, 0])
-const currentDays = computed(() => props.days.filter((day) => day.inCurrentMonth))
+const dayCellRefs = new Map()
+const rowCount = computed(() => (props.viewMode === 'week' ? 1 : 6))
+const capacityByWeek = ref(Array.from({ length: rowCount.value }, () => 0))
+function isActiveDay(day) {
+  return day?.isActive ?? day?.inCurrentMonth
+}
+
+const currentDays = computed(() => props.days.filter(isActiveDay))
 const segments = computed(() =>
   buildCalendarEventSegments(props.days, props.notes, {
     activeStartKey: currentDays.value[0]?.key,
@@ -32,7 +43,7 @@ const visibleNoteCounts = computed(() => {
     if (!segmentIsVisible(segment)) continue
     for (let offset = 0; offset < segment.columnSpan; offset += 1) {
       const day = props.days[segment.weekIndex * 7 + segment.columnStart - 1 + offset]
-      if (day?.inCurrentMonth) counts.set(day.key, (counts.get(day.key) || 0) + 1)
+      if (isActiveDay(day)) counts.set(day.key, (counts.get(day.key) || 0) + 1)
     }
   }
   return counts
@@ -43,6 +54,11 @@ let resizeFrame = null
 
 function setWeekRef(element, index) {
   if (element) weekRefs.value[index] = element
+}
+
+function setDayCellRef(element, key) {
+  if (element) dayCellRefs.set(key, element)
+  else dayCellRefs.delete(key)
 }
 
 function segmentIsVisible(segment) {
@@ -65,7 +81,7 @@ function calculateCapacity() {
     const height = element?.getBoundingClientRect().height || 0
     return Math.max(0, Math.floor((height - headerHeight - footerHeight) / pitch))
   })
-  capacityByWeek.value = Array.from({ length: 6 }, (_, index) => next[index] || 0)
+  capacityByWeek.value = Array.from({ length: rowCount.value }, (_, index) => next[index] || 0)
 }
 
 function queueCapacityCalculation() {
@@ -77,11 +93,30 @@ function queueCapacityCalculation() {
 }
 
 function selectDay(day) {
-  if (day.inCurrentMonth) emit('select-date', day)
+  if (isActiveDay(day)) emit('select-date', day)
+}
+
+const tabStopKey = computed(() => calendarGridTabKey(props.days, props.selectedKey, props.todayKey))
+
+async function handleDayKeydown(event, day) {
+  if (event.target !== event.currentTarget) return
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    selectDay(day)
+    return
+  }
+  const target = calendarGridNavigationTarget(props.days, day.key, event.key)
+  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key))
+    return
+  event.preventDefault()
+  if (!target) return
+  if (target.key !== day.key) selectDay(target)
+  await nextTick()
+  dayCellRefs.get(target.key)?.focus()
 }
 
 function createForDay(day) {
-  if (day.inCurrentMonth) emit('create', day)
+  if (isActiveDay(day)) emit('create', day)
 }
 
 function weatherPrecipitationLabel(weather) {
@@ -114,14 +149,21 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="month-grid" role="grid" aria-label="月历" aria-rowcount="7" aria-colcount="7">
+  <section
+    class="month-grid"
+    :class="{ 'is-week-view': viewMode === 'week' }"
+    role="grid"
+    :aria-label="viewMode === 'week' ? '周历' : '月历'"
+    :aria-rowcount="rowCount + 1"
+    aria-colcount="7"
+  >
     <div class="month-grid__weekdays" role="row">
       <span v-for="weekday in weekdays" :key="weekday" role="columnheader">周{{ weekday }}</span>
     </div>
 
     <div class="month-grid__weeks">
       <div
-        v-for="weekIndex in 6"
+        v-for="weekIndex in rowCount"
         :key="weekIndex"
         :ref="(element) => setWeekRef(element, weekIndex - 1)"
         class="month-week"
@@ -131,24 +173,27 @@ onBeforeUnmount(() => {
           <div
             v-for="day in days.slice((weekIndex - 1) * 7, weekIndex * 7)"
             :key="day.key"
+            :ref="(element) => setDayCellRef(element, day.key)"
             class="month-day-cell"
             :class="{
-              'is-outside': !day.inCurrentMonth,
-              'is-selected': day.inCurrentMonth && day.key === selectedKey,
-              'is-today': day.inCurrentMonth && day.key === todayKey
+              'is-outside': !isActiveDay(day),
+              'is-selected': isActiveDay(day) && day.key === selectedKey,
+              'is-today': isActiveDay(day) && day.key === todayKey
             }"
             :data-date="day.key"
             role="gridcell"
-            :aria-disabled="!day.inCurrentMonth"
-            :tabindex="day.inCurrentMonth ? 0 : -1"
+            :aria-label="`${day.year}年${day.month}月${day.day}日`"
+            :aria-disabled="!isActiveDay(day)"
+            :aria-selected="isActiveDay(day) && day.key === selectedKey"
+            :aria-current="isActiveDay(day) && day.key === todayKey ? 'date' : undefined"
+            :tabindex="isActiveDay(day) && day.key === tabStopKey ? 0 : -1"
             @click="selectDay(day)"
-            @keydown.enter.prevent="selectDay(day)"
-            @keydown.space.prevent="selectDay(day)"
+            @keydown="handleDayKeydown($event, day)"
           >
             <div class="month-day-cell__header">
               <span class="month-day-cell__number">{{ day.day }}</span>
               <span
-                v-if="day.inCurrentMonth && day.metadata?.displayLabel"
+                v-if="isActiveDay(day) && day.metadata?.displayLabel"
                 class="month-day-cell__lunar"
                 :class="{
                   'is-festival': day.metadata.festival,
@@ -163,7 +208,7 @@ onBeforeUnmount(() => {
                 {{ day.metadata.displayLabel }}
               </span>
               <span
-                v-if="day.inCurrentMonth && weatherByDate.get(day.key)"
+                v-if="isActiveDay(day) && weatherByDate.get(day.key)"
                 class="month-day-cell__weather"
                 :title="`${weatherByDate.get(day.key).label}，${weatherByDate.get(day.key).temperatureMin}°～${weatherByDate.get(day.key).temperatureMax}°，${weatherPrecipitationLabel(weatherByDate.get(day.key))}`"
               >
@@ -176,7 +221,7 @@ onBeforeUnmount(() => {
               </span>
               <span class="month-day-cell__badges">
                 <span
-                  v-if="day.inCurrentMonth && day.metadata?.holiday"
+                  v-if="isActiveDay(day) && day.metadata?.holiday"
                   class="month-day-cell__holiday"
                   :class="`is-${day.metadata.holiday.type}`"
                   :title="`${day.metadata.holiday.name} · ${day.metadata.holiday.type === 'off' ? '休息' : '调班'}`"
@@ -185,7 +230,7 @@ onBeforeUnmount(() => {
                   {{ day.metadata.holiday.type === 'off' ? '休' : '班' }}
                 </span>
                 <span
-                  v-if="day.inCurrentMonth && day.key === todayKey"
+                  v-if="isActiveDay(day) && day.key === todayKey"
                   class="month-day-cell__today"
                   aria-label="今天"
                 >
@@ -194,9 +239,10 @@ onBeforeUnmount(() => {
               </span>
             </div>
             <button
-              v-if="day.inCurrentMonth"
+              v-if="isActiveDay(day)"
               type="button"
               class="month-day-cell__create"
+              :tabindex="day.key === tabStopKey && day.key >= todayKey ? 0 : -1"
               :disabled="day.key < todayKey"
               :title="day.key < todayKey ? '不能为过去日期新建便签' : '在这一天新建便签'"
               :aria-label="`在 ${day.key} 新建便签`"
@@ -205,7 +251,7 @@ onBeforeUnmount(() => {
               +
             </button>
             <span
-              v-if="day.inCurrentMonth && noteCounts.get(day.key)"
+              v-if="isActiveDay(day) && noteCounts.get(day.key)"
               class="month-day-cell__count"
               :title="
                 dayHasHiddenNotes(day)
@@ -221,7 +267,7 @@ onBeforeUnmount(() => {
               {{ noteCounts.get(day.key) }}
             </span>
             <span
-              v-if="day.inCurrentMonth && dayHasHiddenNotes(day)"
+              v-if="isActiveDay(day) && dayHasHiddenNotes(day)"
               class="month-day-cell__overflow"
               aria-label="还有便签未显示，点击日期查看全部"
             >
@@ -268,6 +314,9 @@ onBeforeUnmount(() => {
   flex: 1;
   grid-template-rows: repeat(6, minmax(0, 1fr));
   row-gap: var(--calendar-gap);
+}
+.month-grid.is-week-view .month-grid__weeks {
+  grid-template-rows: minmax(0, 1fr);
 }
 .month-week {
   position: relative;
@@ -332,7 +381,7 @@ onBeforeUnmount(() => {
 }
 .month-day-cell.is-selected {
   border-color: color-mix(in srgb, #0a84ff 58%, transparent);
-  box-shadow: inset 0 0 0 1rem color-mix(in srgb, #0a84ff 24%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #0a84ff 24%, transparent);
 }
 .month-day-cell__number {
   display: inline-flex;

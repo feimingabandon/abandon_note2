@@ -959,7 +959,7 @@ const earlyStartNote = ref(null)
 const earlyStartMessage = computed(() => {
   const durationDays = Math.max(1, Number(earlyStartNote.value?.duration_days) || 1)
   if (durationDays > 1) {
-    return `该便签设置了持续 ${durationDays} 天。提前执行后，生效时间将改为当前时间，月视图中的连续显示日期也会从今天重新计算。是否确认提前执行？`
+    return `该便签设置了持续 ${durationDays} 天。提前执行后，生效时间将改为当前时间，日历视图中的连续显示日期也会从今天重新计算。是否确认提前执行？`
   }
   return '该便签尚未到达生效时间。提前执行后，生效时间将改为当前时间。是否确认提前执行？'
 })

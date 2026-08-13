@@ -69,7 +69,7 @@ defineProps({
   overflow: hidden;
   border: 1px solid var(--ui-border-control);
   border-radius: 10rem;
-  background: rgba(128, 128, 128, 0.03);
+  background: var(--ui-fill-hover);
 }
 .mab-box--grow {
   flex-grow: 1;

@@ -90,6 +90,7 @@ import {
 import {
   DEFAULT_SETTINGS,
   createDefaultSettings,
+  normalizeViewMode,
   resolveSettingsRows,
   serializeSetting,
   VIEW_MODES
@@ -100,8 +101,11 @@ import { registerBusinessIpcHandlers } from './ipc/register-business-ipc.js'
 import { registerCalendarIpcHandlers } from './ipc/register-calendar-ipc.js'
 import { registerDailyReportIpcHandlers } from './ipc/register-daily-report-ipc.js'
 import { registerWeatherIpcHandlers } from './ipc/register-weather-ipc.js'
+import { createMainWindowIpc } from './ipc/ipc-authorization.js'
 import {
+  ensureViewSettingsInitialized,
   getViewSettingsScope,
+  prepareViewSettingsForSwitch,
   readApplicationSettings,
   writeActiveView,
   writeApplicationSetting
@@ -393,7 +397,7 @@ function getViewSettings(viewMode) {
 }
 
 function getWallpaperUsage(id) {
-  return [VIEW_MODES.LIST, VIEW_MODES.MONTH].filter((viewMode) => {
+  return Object.values(VIEW_MODES).filter((viewMode) => {
     const wallpaper = getViewSettings(viewMode).wallpaper
     return wallpaper.activeId === Number(id)
   })
@@ -953,7 +957,7 @@ function createStableDockBounds(bounds, side, workArea) {
  */
 function createWindow({ preferredDisplay = null } = {}) {
   blurWindowSyncListenersAttached = false
-  // 月视图首次创建优先沿用列表所在显示器；已有几何信息时仍以持久化位置为准。
+  // 日历视图首次创建优先沿用列表所在显示器；已有几何信息时仍以持久化位置为准。
   const display = preferredDisplay || screen.getPrimaryDisplay()
   const screenW = display.workAreaSize.width // 可用工作区宽度（排除任务栏）
   const screenH = display.workAreaSize.height // 可用工作区高度
@@ -1080,6 +1084,7 @@ function createWindow({ preferredDisplay = null } = {}) {
    * 窗口 resize/move 事件触发频繁，使用 500ms 防抖避免频繁写数据库
    */
   const debouncedSaveGeometry = () => {
+    if (switchingMainView) return
     if (Date.now() < suppressGeometryPersistenceUntil) return
     if (isDockGeometryPersistenceSuppressed()) return
     if (!mainWindow || mainWindow.isDestroyed()) return
@@ -1915,7 +1920,7 @@ function destroyBlurRuntimeForWindowReplacement() {
 
 /** 销毁当前唯一主视图并使用另一套独立设置创建目标视图。 */
 function switchMainView(targetMode) {
-  const normalized = targetMode === VIEW_MODES.MONTH ? VIEW_MODES.MONTH : VIEW_MODES.LIST
+  const normalized = normalizeViewMode(targetMode)
   if (switchingMainView) return false
   // 启用毛玻璃时有一段壁纸退场等待。让这次设置事务先在原视图完整收敛，
   // 再执行最后一次托盘切换请求，避免异步尾部写入另一个视图作用域。
@@ -1935,14 +1940,28 @@ function switchMainView(targetMode) {
       )
       restoreDockWindowToVisiblePosition()
       resetDockState()
-      mainWindow.hide()
     }
 
     if (geometryTimer) {
       clearTimeout(geometryTimer)
       geometryTimer = null
     }
-    geometryDirty = false
+    const pendingGeometry =
+      geometryDirty && mainWindow && !mainWindow.isDestroyed()
+        ? getPersistableWindowBounds({
+            dockStableBounds: dockMotionSession?.stableBounds,
+            lastVisibleBounds: lastVisibleMainWindowBounds,
+            currentBounds: mainWindow.getBounds()
+          })
+        : null
+    const switchPreparation = prepareViewSettingsForSwitch({
+      sourceViewMode: previousMode,
+      targetViewMode: normalized,
+      pendingGeometry
+    })
+    if (switchPreparation.geometryPersisted) geometryDirty = false
+
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide()
     destroyBlurRuntimeForWindowReplacement()
 
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2037,6 +2056,7 @@ app.whenReady().then(async () => {
     console.warn('[storage] 恢复未完成的存储操作失败:', error)
   }
   activeViewMode = readApplicationSettings().activeView
+  ensureViewSettingsInitialized(activeViewMode)
   resolvedSettings = createDefaultSettings(activeViewMode)
   refreshResolvedSettings({ incrementRevision: true })
   handleProtocolArgs(process.argv)
@@ -2048,6 +2068,7 @@ app.whenReady().then(async () => {
   })
 
   // ---- IPC 通道注册 ----
+  const mainWindowIpc = createMainWindowIpc(ipcMain, () => mainWindow)
 
   ipcMain.on('logs:write', (event, payload) => {
     const win = BrowserWindow.fromWebContents(event.sender)
@@ -2060,8 +2081,7 @@ app.whenReady().then(async () => {
     })
   })
 
-  ipcMain.handle('logs:query', async (event, query) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('无权读取应用日志')
+  mainWindowIpc.handle('logs:query', async (_event, query) => {
     return {
       ...(await queryLogs(query)),
       files: getLogFiles().map((file) => ({
@@ -2072,15 +2092,13 @@ app.whenReady().then(async () => {
     }
   })
 
-  ipcMain.handle('logs:open-folder', async (event) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('无权打开日志目录')
+  mainWindowIpc.handle('logs:open-folder', async () => {
     const errorMessage = await shell.openPath(getLogDirectory())
     if (errorMessage) throw new Error(errorMessage)
     return true
   })
 
-  ipcMain.handle('logs:export', async (event) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('无权导出应用日志')
+  mainWindowIpc.handle('logs:export', async () => {
     const result = await dialog.showSaveDialog(mainWindow, {
       title: '导出诊断日志',
       defaultPath: `abandon-note-diagnostics-${new Date().toISOString().slice(0, 10)}.jsonl`,
@@ -2097,18 +2115,15 @@ app.whenReady().then(async () => {
 
   // ---- 应用更新（全手动模式：只检查新版本，下载安装由用户前往发布页完成） ----
   // 所有 URL 均由主进程固定；renderer 不可传入任意地址。
-  ipcMain.handle('update:check', async (event) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('无权检查应用更新')
+  mainWindowIpc.handle('update:check', async () => {
     return appUpdateService.check()
   })
 
-  ipcMain.handle('app:get-info', (event) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('无权读取应用信息')
+  mainWindowIpc.handle('app:get-info', () => {
     return { version: app.getVersion(), platform: process.platform, arch: process.arch }
   })
 
-  ipcMain.handle('update:open-manual', async (event, provider) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('无权打开更新页面')
+  mainWindowIpc.handle('update:open-manual', async (_event, provider) => {
     const url = UPDATE_LINKS[provider]
     if (!url) throw new Error('未知的更新来源')
     await shell.openExternal(url)
@@ -2133,19 +2148,19 @@ app.whenReady().then(async () => {
   })
 
   // 【窗口锁定 - 切换锁定状态】
-  ipcMain.handle('toggle-lock', () => {
+  mainWindowIpc.handle('toggle-lock', () => {
     const snapshot = persistSettingValue('window.lockState', !isLocked)
     return snapshot.values.window.lockState
   })
 
   // 【窗口置顶 - 切换】
-  ipcMain.handle('toggle-always-on-top', () => {
+  mainWindowIpc.handle('toggle-always-on-top', () => {
     const snapshot = persistSettingValue('window.alwaysOnTop', !alwaysOnTop)
     return snapshot.values.window.alwaysOnTop
   })
 
   // 【缩放手柄 - 获取边界】返回当前窗口的位置和尺寸
-  ipcMain.handle('window-get-bounds', (event) => {
+  mainWindowIpc.handle('window-get-bounds', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     return win ? win.getBounds() : null
   })
@@ -2177,7 +2192,7 @@ app.whenReady().then(async () => {
 
   // ---- 设置 IPC ----
   // renderer 只提交 schema ID，数据库 type/key、校验、序列化均由共享 schema 决定。
-  ipcMain.handle('set-setting-value', (_event, id, value) => {
+  mainWindowIpc.handle('set-setting-value', (_event, id, value) => {
     if (!RENDERER_WRITABLE_SETTING_IDS.has(id))
       throw new Error(`renderer 无权直接写入设置项: ${id}`)
     persistSettingValue(id, value)
@@ -2185,7 +2200,7 @@ app.whenReady().then(async () => {
   })
 
   /** 获取 DB 值覆盖共享默认值后的完整设置快照。 */
-  ipcMain.handle('get-settings-snapshot', () => {
+  mainWindowIpc.handle('get-settings-snapshot', () => {
     // 每次查询都重新读取 SQLite，避免设置页拿到陈旧的主进程内存副本。
     const changed = refreshResolvedSettings()
     if (changed) {
@@ -2198,10 +2213,12 @@ app.whenReady().then(async () => {
   })
 
   // ---- 远程软件通知（全部阅读状态仅保存在本地） ----
-  ipcMain.handle('remote-notices:list-pending', () => listPendingRemoteNotices())
-  ipcMain.handle('remote-notices:list', (_event, query) => listRemoteNotices(query))
-  ipcMain.handle('remote-notices:acknowledge', (_event, { id }) => acknowledgeRemoteNotice(id))
-  ipcMain.handle('remote-notices:open-link', (_event, { id }) => {
+  mainWindowIpc.handle('remote-notices:list-pending', () => listPendingRemoteNotices())
+  mainWindowIpc.handle('remote-notices:list', (_event, query) => listRemoteNotices(query))
+  mainWindowIpc.handle('remote-notices:acknowledge', (_event, { id }) =>
+    acknowledgeRemoteNotice(id)
+  )
+  mainWindowIpc.handle('remote-notices:open-link', (_event, { id }) => {
     const link = getRemoteNoticeLink(id)
     if (!link) return false
     try {
@@ -2216,7 +2233,7 @@ app.whenReady().then(async () => {
     }
   })
   // 设置页面只读取启动阶段缓存，不允许因为打开设置而产生新的服务器请求。
-  ipcMain.handle('remote:get-health', () =>
+  mainWindowIpc.handle('remote:get-health', () =>
     remoteCoordinator
       ? remoteCoordinator.getHealthSnapshot()
       : {
@@ -2232,10 +2249,10 @@ app.whenReady().then(async () => {
 
   /**
    * 恢复当前视图的持久化设置默认值。
-   * 不触碰应用级设置、另一视图、业务数据或开机自启 OS 状态。
+   * 不触碰应用级设置、其他视图、业务数据或开机自启 OS 状态。
    * 当前窗口立即恢复默认宽高并保留当前位置，同时清除下次启动时的几何记录。
    */
-  ipcMain.handle('reset-settings', () => {
+  mainWindowIpc.handle('reset-settings', () => {
     if (isDockTransitionActive()) {
       throw new Error('请先显示贴边窗口，再恢复默认设置')
     }
@@ -2318,7 +2335,7 @@ app.whenReady().then(async () => {
   // ---- 系统模糊 IPC ----
 
   /** 设置模糊配置（立即生效 + 持久化到数据库） */
-  ipcMain.handle('set-blur-config', async (_event, config) => {
+  mainWindowIpc.handle('set-blur-config', async (_event, config) => {
     blurSettingsRequestsInFlight += 1
     try {
       const requestRevision = ++blurConfigRequestRevision
@@ -2418,15 +2435,15 @@ app.whenReady().then(async () => {
   })
 
   // ---- 主页面壁纸 IPC ----
-  ipcMain.handle('wallpapers:list', () => listWallpaperLibraryRecords())
-  ipcMain.handle('wallpapers:get-thumbnail', (_event, { id, maxSize }) =>
+  mainWindowIpc.handle('wallpapers:list', () => listWallpaperLibraryRecords())
+  mainWindowIpc.handle('wallpapers:get-thumbnail', (_event, { id, maxSize }) =>
     getWallpaperThumbnail(id, maxSize)
   )
-  ipcMain.handle('wallpapers:get-data', (_event, { id, original = false }) =>
+  mainWindowIpc.handle('wallpapers:get-data', (_event, { id, original = false }) =>
     getWallpaperDataUrl(id, { original })
   )
-  ipcMain.handle('wallpapers:save', (_event, payload) => saveWallpaperVersion(payload || {}))
-  ipcMain.handle('wallpapers:activate', (_event, { id }) => {
+  mainWindowIpc.handle('wallpapers:save', (_event, payload) => saveWallpaperVersion(payload || {}))
+  mainWindowIpc.handle('wallpapers:activate', (_event, { id }) => {
     const record = markWallpaperUsed(id)
     const previousFailureState = {
       failed: blurRuntimeFailed,
@@ -2465,8 +2482,8 @@ app.whenReady().then(async () => {
       throw error
     }
   })
-  ipcMain.handle('wallpapers:disable', () => persistWallpaperState({ enabled: false }))
-  ipcMain.handle('wallpapers:delete', async (_event, { id }) => {
+  mainWindowIpc.handle('wallpapers:disable', () => persistWallpaperState({ enabled: false }))
+  mainWindowIpc.handle('wallpapers:delete', async (_event, { id }) => {
     const parsedId = Number(id)
     const usedBy = getWallpaperUsage(parsedId)
     const deleted = await deleteWallpaperVersion(parsedId, {
@@ -2502,7 +2519,7 @@ app.whenReady().then(async () => {
   stickyService = new ElectronStickyService({
     getMainWindow: () => mainWindow,
     getNoteById,
-    // 便利贴属于列表能力；月视图处于活动状态时也不能把它的默认占位值当成
+    // 便利贴属于列表能力；日历视图处于活动状态时也不能把它的默认占位值当成
     // 用户在列表设置页保存的便利贴外观。
     getDefaultAppearance: () => getViewSettings(VIEW_MODES.LIST).sticky,
     preloadPath: join(PRELOAD_ROOT, 'sticky.js'),
@@ -2636,7 +2653,7 @@ app.whenReady().then(async () => {
   })
 
   // 【清空便签数据】仅清理便签、模板、标签和附件，保留 app_settings。
-  ipcMain.handle('clear-note-data', async () => {
+  mainWindowIpc.handle('clear-note-data', async () => {
     await clearNoteData()
     mainWindow?.webContents.send('notes:changed', { reason: 'note-data-cleared' })
     return true
@@ -2649,7 +2666,7 @@ app.whenReady().then(async () => {
    * 每次打开设置页面时直接读取 OS；不再维护数据库副本。
    * @returns {{ value: boolean, error: string|null }}
    */
-  ipcMain.handle('verify-auto-start', () => {
+  mainWindowIpc.handle('verify-auto-start', () => {
     return readAutoStartRuntime()
   })
 
@@ -2657,7 +2674,7 @@ app.whenReady().then(async () => {
    * 设置开机自启
    * 只更新 OS 注册表/LoginItem，并返回回读后的真实状态。
    */
-  ipcMain.handle('set-auto-start', (_event, enabled) => {
+  mainWindowIpc.handle('set-auto-start', (_event, enabled) => {
     app.setLoginItemSettings({ openAtLogin: Boolean(enabled) })
     const actual = readAutoStartRuntime().value
     settingsRevision += 1
@@ -2712,14 +2729,15 @@ app.whenReady().then(async () => {
 
   screenshotService = new ScreenshotService({
     ipcMain,
-    preloadPath: join(PRELOAD_ROOT, 'screenshot.js')
+    preloadPath: join(PRELOAD_ROOT, 'screenshot.js'),
+    getMainWindow: () => mainWindow
   })
   screenshotService.initialize()
 
   // ---- 调度器健康检查 IPC ----
 
   // 【调度器 - 健康检查】
-  ipcMain.handle('scheduler:health', () => {
+  mainWindowIpc.handle('scheduler:health', () => {
     return scheduler.getHealth()
   })
 

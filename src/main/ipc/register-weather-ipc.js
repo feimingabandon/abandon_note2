@@ -1,6 +1,7 @@
 import { join } from 'path'
 import { WeatherService } from '../services/weather-service.js'
 import { weatherLocationKey, WEATHER_SOURCE } from '../../shared/weather-rules.js'
+import { assertMainWindowSender } from './ipc-authorization.js'
 
 export function registerWeatherIpcHandlers({
   ipcMain,
@@ -13,9 +14,7 @@ export function registerWeatherIpcHandlers({
   const service =
     weatherService || new WeatherService({ cachePath: join(userDataPath, 'cache', 'weather.json') })
   const forecastRequests = new Map()
-  const assertAuthorized = (event) => {
-    if (event.sender !== getMainWindow()?.webContents) throw new Error('无权访问天气服务')
-  }
+  const assertAuthorized = (event) => assertMainWindowSender(event, getMainWindow, '天气服务')
 
   const isCurrentLocation = (key) => {
     const settings = getWeatherSettings()

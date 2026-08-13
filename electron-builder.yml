@@ -8,6 +8,11 @@ files:
   - '!src/*'
   # 显式排除所有打包输出目录，防止切换 output 目录时旧产物被打进 asar
   - '!dist*/**'
+  # 防止手动拷贝到仓库根目录的旧安装产物被嵌套打进 app.asar。
+  - '!Abandon-Note-*-setup.exe'
+  - '!Abandon-Note-*-setup.exe.blockmap'
+  - '!latest.yml'
+  - '!.audit-unpacked/**'
   - '!{tests,docs,unused,scripts,native_blur,.github,.idea,.vs}/**'
   - '!{.codex-*,debug.log,identifier.sqlite}'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
@@ -64,19 +69,17 @@ nsis:
     - en_US
 mac:
   icon: build/icon.icns
-  identity: null
   category: public.app-category.productivity
+  hardenedRuntime: true
   target:
     - target: dmg
       arch:
         - x64
         - arm64
+  entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
-    - NSCameraUsageDescription: Application requests access to the device's camera.
-    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
-    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
-  notarize: false
+    NSLocationUsageDescription: Abandon Note uses your location only when you choose device location for weather.
+  notarize: true
 dmg:
   artifactName: Abandon-Note-${version}-macos-${arch}.${ext}

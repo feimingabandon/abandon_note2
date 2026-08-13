@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   describeWeatherCode,
+  isDisplayableWeatherDay,
   normalizeWeatherLocation,
   weatherDailyRefreshKey,
   weatherLocationFromReverseGeocode,
@@ -8,6 +9,18 @@ import {
 } from '../src/shared/weather-rules.js'
 
 describe('weather rules', () => {
+  it('only displays complete daily weather and rejects legacy zero placeholders', () => {
+    expect(isDisplayableWeatherDay({ weatherCode: 0, temperatureMin: 0, temperatureMax: 5 })).toBe(
+      true
+    )
+    expect(isDisplayableWeatherDay({ weatherCode: 0, temperatureMin: 0, temperatureMax: 0 })).toBe(
+      false
+    )
+    expect(
+      isDisplayableWeatherDay({ weatherCode: null, temperatureMin: null, temperatureMax: null })
+    ).toBe(false)
+  })
+
   it('maps WMO weather codes to local Chinese labels', () => {
     expect(describeWeatherCode(0)).toEqual({ label: '晴', icon: '☀️' })
     expect(describeWeatherCode(63).label).toBe('中雨')

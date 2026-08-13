@@ -4,6 +4,7 @@ import {
   MIN_CALENDAR_YEAR,
   addCalendarDays,
   buildMonthGrid,
+  buildWeekGrid,
   combineLocalDateAndTime,
   dateOrdinal,
   localDateKey
@@ -64,5 +65,63 @@ describe('month calendar date rules', () => {
     }
 
     expect(failures).toEqual([])
+  })
+})
+
+describe('week calendar date rules', () => {
+  it('builds a Monday-to-Sunday week around the anchor date', () => {
+    const grid = buildWeekGrid('2026-08-12')
+
+    expect(grid).toMatchObject({
+      anchorDate: '2026-08-12',
+      weekStart: '2026-08-10',
+      weekEnd: '2026-08-16',
+      visibleStart: '2026-08-10',
+      visibleEnd: '2026-08-16'
+    })
+    expect(grid.days).toHaveLength(7)
+    expect(grid.days.map((day) => day.key)).toEqual([
+      '2026-08-10',
+      '2026-08-11',
+      '2026-08-12',
+      '2026-08-13',
+      '2026-08-14',
+      '2026-08-15',
+      '2026-08-16'
+    ])
+    expect(grid.days.map((day) => day.weekday)).toEqual([0, 1, 2, 3, 4, 5, 6])
+    expect(grid.days.every((day) => day.weekIndex === 0 && day.inCurrentMonth)).toBe(true)
+    expect(grid.days.every((day) => day.isActive)).toBe(true)
+  })
+
+  it('keeps all seven cross-month and cross-year dates active', () => {
+    const crossMonth = buildWeekGrid('2026-09-01')
+    const crossYear = buildWeekGrid('2027-01-01')
+
+    expect([crossMonth.weekStart, crossMonth.weekEnd]).toEqual(['2026-08-31', '2026-09-06'])
+    expect(crossMonth.days.every((day) => day.inCurrentMonth && day.isActive)).toBe(true)
+    expect([crossYear.weekStart, crossYear.weekEnd]).toEqual(['2026-12-28', '2027-01-03'])
+    expect(crossYear.days.map((day) => day.key)).toHaveLength(7)
+  })
+
+  it('rejects invalid anchors and anchors outside the supported year range', () => {
+    expect(() => buildWeekGrid('2026-02-30')).toThrow(/日期不存在/)
+    expect(() => buildWeekGrid('1899-12-31')).toThrow(/周范围/)
+    expect(() => buildWeekGrid('2101-01-03')).toThrow(/周范围/)
+  })
+
+  it('allows anchors in the complete final week even when it extends beyond 2100', () => {
+    const finalWeek = buildWeekGrid('2101-01-02')
+
+    expect([finalWeek.weekStart, finalWeek.weekEnd]).toEqual(['2100-12-27', '2101-01-02'])
+    expect(finalWeek.anchorDate).toBe('2101-01-02')
+    expect(finalWeek.days.every((day) => day.inCurrentMonth && day.isActive)).toBe(true)
+  })
+
+  it('keeps the first intersecting week complete across the lower date boundary', () => {
+    const firstWeek = buildWeekGrid('1900-01-01')
+
+    expect([firstWeek.weekStart, firstWeek.weekEnd]).toEqual(['1900-01-01', '1900-01-07'])
+    expect(firstWeek.days.every((day) => day.inCurrentMonth && day.isActive)).toBe(true)
   })
 })

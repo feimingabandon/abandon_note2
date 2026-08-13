@@ -126,7 +126,7 @@ const STATUS_LABEL = {
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: rgba(128, 128, 128, 0.1);
+  background: var(--ui-fill-pressed);
   pointer-events: none;
 }
 .mc-card--completed .mc-body {

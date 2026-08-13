@@ -198,6 +198,8 @@ const api = {
   },
   /** 获取固定 7×6 的月历日期与当前可见范围内的真实便签。 */
   getMonthCalendarData: (year, month) => ipcRenderer.invoke('calendar:get-month', { year, month }),
+  /** 获取锚点日期所在周（周一至周日）的日期、元数据与真实便签。 */
+  getWeekCalendarData: (anchorDate) => ipcRenderer.invoke('calendar:get-week', { anchorDate }),
   /** 获取某年份最终生效的节假日数据状态（用户数据优先，内置数据兜底）。 */
   getHolidayDataStatus: (year = new Date().getFullYear()) =>
     ipcRenderer.invoke('calendar:holiday-data-status', { year }),

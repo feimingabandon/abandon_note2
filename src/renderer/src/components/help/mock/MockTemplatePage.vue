@@ -128,7 +128,7 @@ import MockTemplateCard from './MockTemplateCard.vue'
   height: 36rem;
   border: 1px dashed var(--ui-border-hover);
   border-radius: 10rem;
-  background: rgba(128, 128, 128, 0.03);
+  background: var(--ui-fill-hover);
 }
 .mtp-create-plus {
   display: flex;
@@ -157,7 +157,7 @@ import MockTemplateCard from './MockTemplateCard.vue'
   padding: 0 10rem;
   border: 1px solid var(--ui-border-control);
   border-radius: 9rem;
-  background: rgba(128, 128, 128, 0.03);
+  background: var(--ui-fill-hover);
   color: var(--text-color-secondary);
 }
 .mtp-search-ph {

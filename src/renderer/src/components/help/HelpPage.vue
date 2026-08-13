@@ -329,7 +329,7 @@ onBeforeUnmount(() => {
                   </li>
                   <li>
                     <strong>持续天数</strong> —— 选择生效时间后显示，默认 1
-                    天。只决定便签在月视图中连续占用的日期格数，不会自动完成便签，也不改变列表状态。
+                    天。只决定便签在日历视图中连续占用的日期格数，不会自动完成便签，也不改变列表状态。
                   </li>
                   <li>
                     <strong>系统提醒</strong> ——
@@ -1227,7 +1227,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   padding: 2rem;
   border-radius: 9rem;
-  background: rgba(128, 128, 128, 0.12);
+  background: var(--ui-fill-pressed);
 }
 .help-fig-seg--wrap {
   flex-wrap: wrap;
@@ -1253,7 +1253,7 @@ onBeforeUnmount(() => {
   padding: 0 10rem;
   border: 1px dashed var(--ui-border-hover);
   border-radius: 10rem;
-  background: rgba(128, 128, 128, 0.03);
+  background: var(--ui-fill-hover);
 }
 .help-fig-plus {
   display: grid;
@@ -1357,7 +1357,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 60rem;
   border-radius: 10rem;
-  background: rgba(128, 128, 128, 0.08);
+  background: var(--ui-fill-pressed);
   color: var(--text-color-secondary);
 }
 .help-fig-imgbox svg {

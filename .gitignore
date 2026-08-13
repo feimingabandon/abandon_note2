@@ -1,7 +1,6 @@
 node_modules
-dist
-dist-local/
-dist_v4
+/dist*/
+.audit-unpacked/
 out
 output/
 .vs/

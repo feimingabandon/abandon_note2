@@ -9,6 +9,7 @@ import { normalizeAssignedTagIds } from '../../shared/tag-rules.js'
 const now = () => Date.now()
 export const MIN_NOTE_DURATION_DAYS = 1
 export const MAX_NOTE_DURATION_DAYS = 365
+const MAX_QUERY_PAGE_SIZE = 100
 const TRANSITIONS = {
   initialized: new Set(['in_progress']),
   in_progress: new Set(['completed']),
@@ -32,6 +33,18 @@ export function normalizeNoteDurationDays(value = MIN_NOTE_DURATION_DAYS) {
     throw new Error(`持续天数必须是 ${MIN_NOTE_DURATION_DAYS}~${MAX_NOTE_DURATION_DAYS} 之间的整数`)
   }
   return durationDays
+}
+
+function normalizeQueryLimit(value, fallback) {
+  const parsed = Math.trunc(Number(value))
+  if (parsed === 0) return 0
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(MAX_QUERY_PAGE_SIZE, Math.max(1, parsed))
+}
+
+function normalizeQueryOffset(value) {
+  const parsed = Math.trunc(Number(value))
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0
 }
 
 // ============================================================
@@ -469,6 +482,8 @@ export function queryEarlierNotes({
   offset = 0
 } = {}) {
   const db = getDb()
+  const safeLimit = normalizeQueryLimit(limit, 10)
+  const safeOffset = normalizeQueryOffset(offset)
   const { whereClause, params } = buildWhereClause({
     statuses,
     tagIds,
@@ -484,7 +499,7 @@ export function queryEarlierNotes({
       `SELECT n.* FROM notes n ${whereClause}
        ORDER BY n.effective_at DESC, n.created_at DESC LIMIT ? OFFSET ?`
     )
-    .all(...params, limit, offset)
+    .all(...params, safeLimit, safeOffset)
   return { notes: toNoteListItems(notes), total }
 }
 
@@ -508,6 +523,8 @@ export function queryCustomPinned({ statuses, tagIds, search } = {}) {
 
 export function queryCustomNormal({ statuses, tagIds, search, limit = 10, offset = 0 } = {}) {
   const db = getDb()
+  const safeLimit = normalizeQueryLimit(limit, 10)
+  const safeOffset = normalizeQueryOffset(offset)
   const { whereClause, params } = buildWhereClause({
     statuses,
     tagIds,
@@ -522,7 +539,7 @@ export function queryCustomNormal({ statuses, tagIds, search, limit = 10, offset
       `SELECT n.* FROM notes n ${whereClause}
        ORDER BY n.sort_order ASC, n.created_at DESC LIMIT ? OFFSET ?`
     )
-    .all(...params, limit, offset)
+    .all(...params, safeLimit, safeOffset)
   return { notes: toNoteListItems(notes), total }
 }
 

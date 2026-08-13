@@ -155,7 +155,7 @@
   gap: 10rem;
   padding: 10rem 14rem;
   border-radius: 10rem;
-  background: rgba(128, 128, 128, 0.05);
+  background: var(--ui-fill-passive);
 }
 .ms-label {
   display: inline-flex;
@@ -170,7 +170,7 @@
   width: 15rem;
   height: 15rem;
   border-radius: 50%;
-  background: rgba(128, 128, 128, 0.16);
+  background: var(--ui-fill-pressed);
   color: var(--text-color-secondary);
   font-size: calc(var(--fs-secondary) * 0.78);
   font-weight: 700;

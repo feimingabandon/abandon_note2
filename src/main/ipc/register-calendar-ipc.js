@@ -1,4 +1,4 @@
-import { getMonthCalendarData } from '../calendar/calendar-service.js'
+import { getMonthCalendarData, getWeekCalendarData } from '../calendar/calendar-service.js'
 import {
   dismissMissingHolidayDataNotice,
   downloadHolidayData,
@@ -7,11 +7,10 @@ import {
   importHolidayDataFile
 } from '../calendar/holiday-data-service.js'
 import { holidayDataDownloadUrl } from '../../shared/calendar/holiday-data-rules.js'
+import { assertMainWindowSender } from './ipc-authorization.js'
 
 export function registerCalendarIpcHandlers({ ipcMain, dialog, shell, getMainWindow }) {
-  const assertAuthorized = (event) => {
-    if (event.sender !== getMainWindow()?.webContents) throw new Error('无权访问日历数据')
-  }
+  const assertAuthorized = (event) => assertMainWindowSender(event, getMainWindow, '日历数据')
   const broadcastChanged = (payload) => {
     const window = getMainWindow()
     if (window && !window.isDestroyed())
@@ -21,6 +20,10 @@ export function registerCalendarIpcHandlers({ ipcMain, dialog, shell, getMainWin
   ipcMain.handle('calendar:get-month', (event, { year, month } = {}) => {
     assertAuthorized(event)
     return getMonthCalendarData(year, month)
+  })
+  ipcMain.handle('calendar:get-week', (event, { anchorDate } = {}) => {
+    assertAuthorized(event)
+    return getWeekCalendarData(anchorDate)
   })
   ipcMain.handle('calendar:holiday-data-status', (event, { year } = {}) => {
     assertAuthorized(event)

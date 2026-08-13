@@ -77,14 +77,17 @@ const props = defineProps({
   viewMode: {
     type: String,
     default: VIEW_MODES.LIST,
-    validator: (value) => value === VIEW_MODES.LIST || value === VIEW_MODES.MONTH
+    validator: (value) => Object.values(VIEW_MODES).includes(value)
   }
 })
 
 const emit = defineEmits(['update:visible', 'blur-release', 'check-update'])
 
 const el = document.documentElement
-const isMonthView = computed(() => props.viewMode === VIEW_MODES.MONTH)
+const isCalendarView = computed(
+  () => props.viewMode === VIEW_MODES.MONTH || props.viewMode === VIEW_MODES.WEEK
+)
+const calendarViewLabel = computed(() => (props.viewMode === VIEW_MODES.WEEK ? '周视图' : '月视图'))
 const viewDefaults = computed(() => createDefaultSettings(props.viewMode))
 
 // ---- 面板动画控制 ----
@@ -95,7 +98,7 @@ const closeButtonRef = ref(null)
 const settingsPreviousFocus = captureFocusedElement()
 const panelSize = ref(viewDefaults.value.ui.settingsPanelSize)
 const panelStyle = computed(() =>
-  isMonthView.value ? { width: panelSize.value + '%' } : { height: panelSize.value + '%' }
+  isCalendarView.value ? { width: panelSize.value + '%' } : { height: panelSize.value + '%' }
 )
 const isResetting = ref(false)
 const showLogViewer = ref(false)
@@ -127,7 +130,7 @@ function onDragStart(e) {
   isDragging = true
   dragPointerId = e.pointerId
   dragHandle = e.currentTarget
-  dragStartPoint = isMonthView.value ? e.clientX : e.clientY
+  dragStartPoint = isCalendarView.value ? e.clientX : e.clientY
   dragLatestPoint = dragStartPoint
   dragStartSize = panelSize.value
   dragHandle.setPointerCapture(e.pointerId)
@@ -139,7 +142,7 @@ function onDragStart(e) {
 
 function onDragMove(e) {
   if (!isDragging || e.pointerId !== dragPointerId || !panelRef.value) return
-  dragLatestPoint = isMonthView.value ? e.clientX : e.clientY
+  dragLatestPoint = isCalendarView.value ? e.clientX : e.clientY
   // RAF 节流：每帧只更新一次
   if (dragRaf) return
   dragRaf = requestAnimationFrame(() => {
@@ -148,7 +151,7 @@ function onDragMove(e) {
     if (!panel) return
     const wrapper = panel.parentElement
     const wrapperBounds = wrapper?.getBoundingClientRect()
-    const extent = isMonthView.value
+    const extent = isCalendarView.value
       ? wrapperBounds?.width || window.innerWidth
       : wrapperBounds?.height || window.innerHeight
     const delta = dragStartPoint - dragLatestPoint
@@ -157,7 +160,7 @@ function onDragMove(e) {
     newSize = Math.max(25, Math.min(95, newSize))
     newSize = Math.round(newSize)
     // 直接操作 DOM 绕过 Vue 响应式
-    if (isMonthView.value) panel.style.width = newSize + '%'
+    if (isCalendarView.value) panel.style.width = newSize + '%'
     else panel.style.height = newSize + '%'
     panelSize.value = newSize
   })
@@ -177,7 +180,7 @@ function onDragEnd(e) {
   }
   if (panelRef.value) {
     panelRef.value.style.transition = ''
-    if (isMonthView.value) panelRef.value.style.width = panelSize.value + '%'
+    if (isCalendarView.value) panelRef.value.style.width = panelSize.value + '%'
     else panelRef.value.style.height = panelSize.value + '%'
   }
   if (handle?.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId)
@@ -1176,7 +1179,7 @@ const onConfirmResetSettings = async () => {
     <div
       v-if="rendered"
       class="settings-wrapper"
-      :class="{ active: panelActive, 'settings-wrapper--month': isMonthView }"
+      :class="{ active: panelActive, 'settings-wrapper--month': isCalendarView }"
       data-modal-layer="settings"
     >
       <!-- 遮罩层（已移除） -->
@@ -1188,7 +1191,7 @@ const onConfirmResetSettings = async () => {
         :class="{
           active: panelActive,
           'is-resetting': isResetting,
-          'settings-panel--month': isMonthView
+          'settings-panel--month': isCalendarView
         }"
         :style="panelStyle"
         role="dialog"
@@ -1250,8 +1253,8 @@ const onConfirmResetSettings = async () => {
                 <span class="setting-label"
                   >导航栏风格<HelpButton
                     :text="
-                      isMonthView
-                        ? '只切换月视图导航栏的布局和按钮外观，不改变关闭、置顶、锁定、设置和帮助按钮。'
+                      isCalendarView
+                        ? `只切换${calendarViewLabel}导航栏的布局和按钮外观，不改变关闭、置顶、锁定、设置和帮助按钮。`
                         : '只切换列表导航栏的布局和按钮外观，不改变关闭、置顶、锁定、循环模板、设置和帮助功能。'
                     "
                 /></span>
@@ -1384,7 +1387,7 @@ const onConfirmResetSettings = async () => {
           </section>
 
           <!-- ========== 便利贴基础设置 ========== -->
-          <section v-if="!isMonthView" class="settings-section">
+          <section v-if="!isCalendarView" class="settings-section">
             <h3 class="section-title">便利贴</h3>
 
             <div class="setting-item">
@@ -1707,7 +1710,7 @@ const onConfirmResetSettings = async () => {
               v-if="holidayDataStatus && !holidayDataStatus.available"
               class="holiday-data-message"
             >
-              尚未安装 {{ currentHolidayYear }} 年节假日数据；月视图将不显示“休 /
+              尚未安装 {{ currentHolidayYear }} 年节假日数据；日历视图将不显示“休 /
               班”标记，农历与节气不受影响。
             </p>
             <p v-if="holidayDataError" class="holiday-data-message is-error">

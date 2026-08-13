@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import { app, BrowserWindow, screen } from 'electron'
 import koffi from 'koffi'
@@ -38,6 +39,34 @@ async function runNativeEdgeMonitorTests() {
   const consumeEventJson = dll.func('WindowMotion_ConsumeEdgeEventJson', 'str', [])
   const user32 = koffi.load('user32.dll')
   const setCursorPos = user32.func('int SetCursorPos(int X, int Y)')
+  const getForegroundWindow = user32.func('intptr_t GetForegroundWindow()')
+
+  async function moveCursorAndConfirm(point) {
+    assert.equal(setCursorPos(point.x, point.y), 1)
+    await waitUntil(() => {
+      const current = screen.getCursorScreenPoint()
+      if (current.x === point.x && current.y === point.y) return true
+      setCursorPos(point.x, point.y)
+      return false
+    }, `无法将鼠标移动到 (${point.x}, ${point.y})`)
+  }
+
+  async function moveCursorAndWaitForEvent(point, eventPromise, timeoutMessage) {
+    assert.equal(setCursorPos(point.x, point.y), 1)
+    // Windows 偶尔会在显示器/窗口切换时覆盖一次测试注入的鼠标位置；在同一个
+    // 有界等待窗口内重申目标位置，避免把系统输入竞争误判成原生监视器回归。
+    const retryTimer = setInterval(() => setCursorPos(point.x, point.y), POLL_INTERVAL_MS * 2)
+    try {
+      return await Promise.race([
+        eventPromise,
+        wait(EVENT_TIMEOUT_MS).then(() => {
+          throw new Error(timeoutMessage)
+        })
+      ])
+    } finally {
+      clearInterval(retryTimer)
+    }
+  }
 
   function getHandle(window) {
     const buffer = window.getNativeWindowHandle()
@@ -46,6 +75,49 @@ async function runNativeEdgeMonitorTests() {
 
   function getStatus() {
     return JSON.parse(getStatusJson())
+  }
+
+  async function startForegroundHelper(mode, bounds) {
+    const childEnvironment = { ...process.env }
+    delete childEnvironment.ELECTRON_RUN_AS_NODE
+    const child = spawn(
+      process.execPath,
+      [resolve('tests', 'fullscreen-foreground-electron.mjs'), mode, JSON.stringify(bounds)],
+      {
+        env: childEnvironment,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true
+      }
+    )
+    let output = ''
+    let errorOutput = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => {
+      output += chunk
+    })
+    child.stderr.on('data', (chunk) => {
+      errorOutput += chunk
+    })
+    try {
+      await waitUntil(
+        () => output.includes(`FOREGROUND_READY:${mode}`),
+        `${mode} 前台测试窗口未就绪：${errorOutput}`
+      )
+    } catch (error) {
+      child.kill()
+      throw error
+    }
+    return { child, output: () => output, errorOutput: () => errorOutput }
+  }
+
+  async function stopForegroundHelper(helper) {
+    const child = helper?.child
+    if (!child || child.exitCode !== null) return
+    const exited = new Promise((resolvePromise) => child.once('exit', resolvePromise))
+    child.stdin.write('quit\n')
+    await Promise.race([exited, wait(2000)])
+    if (child.exitCode === null) child.kill()
   }
 
   function getBounds(side, workArea) {
@@ -82,10 +154,12 @@ async function runNativeEdgeMonitorTests() {
   let testWindow = null
   let originalCursor = null
   let generation = 0
+  let foregroundHelper = null
 
   try {
     originalCursor = screen.getCursorScreenPoint()
-    const workArea = screen.getPrimaryDisplay().workArea
+    const primaryDisplay = screen.getPrimaryDisplay()
+    const workArea = primaryDisplay.workArea
     const messageId = getMessageId()
     assert.ok(messageId > 0, 'DLL 必须注册有效的 Windows 边缘消息')
 
@@ -130,13 +204,11 @@ async function runNativeEdgeMonitorTests() {
       }
 
       const inside = getInsidePoint(side, bounds, workArea)
-      assert.equal(setCursorPos(inside.x, inside.y), 1)
-      const event = await Promise.race([
+      const event = await moveCursorAndWaitForEvent(
+        inside,
         eventPromise,
-        wait(EVENT_TIMEOUT_MS).then(() => {
-          throw new Error(`${side} 原生边缘监视器没有在真实鼠标触边后发送消息`)
-        })
-      ])
+        `${side} 原生边缘监视器没有在真实鼠标触边后发送消息`
+      )
       assert.deepEqual(
         { kind: event.kind, generation: event.generation, side: event.side },
         { kind: 'trigger', generation, side }
@@ -175,15 +247,83 @@ async function runNativeEdgeMonitorTests() {
       const event = JSON.parse(consumeEventJson())
       if (event.kind !== 'none') resolveTopEvent(event)
     })
-    assert.equal(setCursorPos(topInside.x, topInside.y), 1)
-    const topEvent = await Promise.race([
+    const topEvent = await moveCursorAndWaitForEvent(
+      topInside,
       topEventPromise,
-      wait(EVENT_TIMEOUT_MS).then(() => {
-        throw new Error('鼠标离开并重新触顶后没有触发')
-      })
-    ])
+      '鼠标离开并重新触顶后没有触发'
+    )
     assert.equal(topEvent.kind, 'trigger')
     assert.equal(disarm(generation), 1)
+
+    // 同一显示器由其他进程真正全屏覆盖时，触边必须保持隐藏。退出全屏后也不能
+    // 因鼠标仍停在边缘而突然弹出，必须离开并重新进入才允许触发。
+    await moveCursorAndConfirm(outside)
+    foregroundHelper = await startForegroundHelper('fullscreen', primaryDisplay.bounds)
+    assert.notEqual(Number(getForegroundWindow()), 0, '全屏辅助窗口未成为有效前台窗口')
+    generation += 1
+    assert.equal(arm(getHandle(testWindow), -2, 2, POLL_INTERVAL_MS, generation), 1)
+    await waitUntil(() => getStatus().workerAlive, '全屏测试的边缘监视线程未启动')
+    await moveCursorAndConfirm(topInside)
+    const blockedStatus = await waitUntil(
+      () => {
+        const status = getStatus()
+        return status.fullscreenBlockCount === 1 && status.state === 'waiting-outside' && status
+      },
+      `其他进程全屏时触边没有被抑制；helper=${foregroundHelper.output()}；status=${JSON.stringify(getStatus())}`
+    )
+    assert.equal(blockedStatus.pendingEvent, 'none', '全屏拦截不得向主进程发布唤出事件')
+
+    await stopForegroundHelper(foregroundHelper)
+    foregroundHelper = null
+    await wait(250)
+    assert.equal(getStatus().state, 'waiting-outside', '退出全屏时鼠标未离边不得自动触发')
+    assert.equal(getStatus().pendingEvent, 'none', '退出全屏时不得补发旧触边意图')
+    assert.equal(setCursorPos(outside.x, outside.y), 1)
+    await waitUntil(() => getStatus().state === 'armed', '全屏拦截后离开边缘没有重新布防')
+    testWindow.focus()
+
+    testWindow.unhookWindowMessage(messageId)
+    let resolveAfterFullscreenEvent
+    const afterFullscreenEventPromise = new Promise((resolvePromise) => {
+      resolveAfterFullscreenEvent = resolvePromise
+    })
+    testWindow.hookWindowMessage(messageId, () => {
+      const event = JSON.parse(consumeEventJson())
+      if (event.kind !== 'none') resolveAfterFullscreenEvent(event)
+    })
+    const afterFullscreenEvent = await moveCursorAndWaitForEvent(
+      topInside,
+      afterFullscreenEventPromise,
+      '离开全屏并重新触边后没有恢复正常唤出'
+    )
+    assert.equal(afterFullscreenEvent.kind, 'trigger')
+    assert.equal(disarm(generation), 1)
+
+    // 普通最大化窗口不属于全屏游戏保护范围，仍应正常触发。
+    await moveCursorAndConfirm(outside)
+    foregroundHelper = await startForegroundHelper('maximized', primaryDisplay.bounds)
+    generation += 1
+    testWindow.unhookWindowMessage(messageId)
+    let resolveMaximizedEvent
+    const maximizedEventPromise = new Promise((resolvePromise) => {
+      resolveMaximizedEvent = resolvePromise
+    })
+    testWindow.hookWindowMessage(messageId, () => {
+      const event = JSON.parse(consumeEventJson())
+      if (event.kind !== 'none') resolveMaximizedEvent(event)
+    })
+    assert.equal(arm(getHandle(testWindow), -2, 2, POLL_INTERVAL_MS, generation), 1)
+    await waitUntil(() => getStatus().workerAlive, '最大化测试的边缘监视线程未启动')
+    const maximizedEvent = await moveCursorAndWaitForEvent(
+      topInside,
+      maximizedEventPromise,
+      '普通最大化窗口错误地阻止了贴边唤出'
+    )
+    assert.equal(maximizedEvent.kind, 'trigger')
+    assert.equal(getStatus().fullscreenBlockCount, 0)
+    assert.equal(disarm(generation), 1)
+    await stopForegroundHelper(foregroundHelper)
+    foregroundHelper = null
 
     assert.equal(setCursorPos(outside.x, outside.y), 1)
     for (let cycle = 0; cycle < 100; cycle += 1) {
@@ -198,10 +338,11 @@ async function runNativeEdgeMonitorTests() {
     assert.equal(getStatus().state, 'stopped', '压力循环后原生监视器必须完全停止')
 
     console.log(
-      'native edge monitor integration test passed: left/right/top polling, Windows message delivery, generation isolation, initial-inside rearm and 100 lifecycle cycles'
+      'native edge monitor integration test passed: left/right/top polling, Windows message delivery, fullscreen suppression, maximized-window passthrough, generation isolation, initial-inside rearm and 100 lifecycle cycles'
     )
   } finally {
     disarm(0)
+    await stopForegroundHelper(foregroundHelper)
     if (testWindow && !testWindow.isDestroyed()) testWindow.destroy()
     if (originalCursor) setCursorPos(originalCursor.x, originalCursor.y)
   }

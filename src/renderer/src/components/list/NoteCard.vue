@@ -649,7 +649,7 @@ async function toggleTags() {
     <ConfirmDialog
       v-model:visible="showDeleteDialog"
       title="删除便签？"
-      message="便签会从列表和月视图中移除，但正文和图片仍会保留，可在搜索中启用“包含已删除”查看。"
+      message="便签会从列表、月视图和周视图中移除，但正文和图片仍会保留，可在搜索中启用“包含已删除”查看。"
       confirm-text="删除"
       cancel-text="取消"
       variant="danger"
@@ -799,7 +799,7 @@ async function toggleTags() {
   inset: 0;
   pointer-events: none;
   border-radius: inherit;
-  background: rgba(128, 128, 128, 0.1);
+  background: var(--ui-fill-passive);
   transition: background-color 180ms ease;
 }
 .nl-card--initialized {

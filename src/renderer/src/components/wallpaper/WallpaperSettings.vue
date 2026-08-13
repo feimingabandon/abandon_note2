@@ -33,7 +33,8 @@ const deleteMessage = computed(() => {
   const usedBy = deleteTarget.value?.usedBy || []
   const labels = [
     usedBy.includes('list') ? '便签列表' : null,
-    usedBy.includes('month') ? '月视图' : null
+    usedBy.includes('month') ? '月视图' : null,
+    usedBy.includes('week') ? '周视图' : null
   ].filter(Boolean)
   const usage = labels.length
     ? `该版本正在被${labels.join('和')}使用，删除后对应视图会自动关闭壁纸。`
@@ -436,6 +437,7 @@ onBeforeUnmount(() => {
                   </span>
                   <span v-if="record.usedBy?.includes('list')">列表使用中</span>
                   <span v-if="record.usedBy?.includes('month')">月视图使用中</span>
+                  <span v-if="record.usedBy?.includes('week')">周视图使用中</span>
                 </div>
                 <div class="wp-card-actions">
                   <button

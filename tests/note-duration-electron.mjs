@@ -436,7 +436,7 @@ async function runTests() {
       `document.querySelector('.confirm-message').textContent`
     )
     assert.match(confirmText, /持续 5 天/)
-    assert.match(confirmText, /月视图/)
+    assert.match(confirmText, /日历视图/)
 
     report(
       'legacy migration, animated duration field, create, edit and early-start confirmation passed'

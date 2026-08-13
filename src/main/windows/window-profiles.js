@@ -16,6 +16,14 @@ export const WINDOW_PROFILES = Object.freeze({
     logRole: 'month',
     dockEdges: Object.freeze(['top']),
     defaultCentered: true
+  }),
+  [VIEW_MODES.WEEK]: Object.freeze({
+    viewMode: VIEW_MODES.WEEK,
+    settingsScope: 'week',
+    rendererFile: 'week.html',
+    logRole: 'week',
+    dockEdges: Object.freeze(['top']),
+    defaultCentered: true
   })
 })
 

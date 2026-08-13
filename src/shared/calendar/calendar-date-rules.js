@@ -1,8 +1,11 @@
 export const MIN_CALENDAR_YEAR = 1900
 export const MAX_CALENDAR_YEAR = 2100
+export const MIN_CALENDAR_DATE = `${MIN_CALENDAR_YEAR}-01-01`
+export const MAX_CALENDAR_DATE = `${MAX_CALENDAR_YEAR}-12-31`
 export const CALENDAR_COLUMN_COUNT = 7
 export const CALENDAR_ROW_COUNT = 6
 export const CALENDAR_CELL_COUNT = CALENDAR_COLUMN_COUNT * CALENDAR_ROW_COUNT
+export const WEEK_CALENDAR_CELL_COUNT = CALENDAR_COLUMN_COUNT
 
 function pad(value) {
   return String(value).padStart(2, '0')
@@ -85,31 +88,44 @@ export function combineLocalDateAndTime(dateKey, timeValue) {
   return new Date(year, month - 1, day, hour, minute, second, 0).getTime()
 }
 
+function buildCalendarRangeDays(startKey, count, isInCurrentMonth = () => true) {
+  return Array.from({ length: count }, (_, index) => {
+    const key = addCalendarDays(startKey, index)
+    const { year, month, day } = parseDateKey(key)
+    const weekday = index % CALENDAR_COLUMN_COUNT
+    return {
+      key,
+      year,
+      month,
+      day,
+      weekday,
+      weekIndex: Math.floor(index / CALENDAR_COLUMN_COUNT),
+      columnIndex: weekday,
+      inCurrentMonth: isInCurrentMonth({ year, month, day, key }),
+      metadata: {}
+    }
+  })
+}
+
 export function buildMonthGrid(year, month) {
   const normalized = assertCalendarYearMonth(year, month)
   const first = new Date(normalized.year, normalized.month - 1, 1)
   const last = new Date(normalized.year, normalized.month, 0)
   const mondayOffset = (first.getDay() + 6) % 7
   const visibleStartDate = new Date(normalized.year, normalized.month - 1, 1 - mondayOffset)
-  const days = Array.from({ length: CALENDAR_CELL_COUNT }, (_, index) => {
-    const date = new Date(
-      visibleStartDate.getFullYear(),
-      visibleStartDate.getMonth(),
-      visibleStartDate.getDate() + index
-    )
-    const dayYear = date.getFullYear()
-    const dayMonth = date.getMonth() + 1
-    return {
-      key: dateKeyFromParts(dayYear, dayMonth, date.getDate()),
-      year: dayYear,
-      month: dayMonth,
-      day: date.getDate(),
-      weekday: index % CALENDAR_COLUMN_COUNT,
-      weekIndex: Math.floor(index / CALENDAR_COLUMN_COUNT),
-      columnIndex: index % CALENDAR_COLUMN_COUNT,
-      inCurrentMonth: dayYear === normalized.year && dayMonth === normalized.month,
-      metadata: {}
-    }
+  const visibleStart = dateKeyFromParts(
+    visibleStartDate.getFullYear(),
+    visibleStartDate.getMonth() + 1,
+    visibleStartDate.getDate()
+  )
+  const days = buildCalendarRangeDays(
+    visibleStart,
+    CALENDAR_CELL_COUNT,
+    ({ year: dayYear, month: dayMonth }) =>
+      dayYear === normalized.year && dayMonth === normalized.month
+  )
+  days.forEach((day) => {
+    day.isActive = day.inCurrentMonth
   })
   return {
     ...normalized,
@@ -117,6 +133,35 @@ export function buildMonthGrid(year, month) {
     monthEnd: dateKeyFromParts(normalized.year, normalized.month, last.getDate()),
     visibleStart: days[0].key,
     visibleEnd: days[days.length - 1].key,
+    days
+  }
+}
+
+/** 根据锚点日期生成周一至周日的完整周历网格。 */
+export function buildWeekGrid(anchorDate) {
+  const parsedAnchor = parseDateKey(anchorDate)
+  const normalizedAnchor = dateKeyFromParts(parsedAnchor.year, parsedAnchor.month, parsedAnchor.day)
+  const anchorOrdinal = dateOrdinal(normalizedAnchor)
+  // 1970-01-01 为周四；+3 后取模可得到周一为 0 的列序号。
+  const mondayOffset = (((anchorOrdinal + 3) % CALENDAR_COLUMN_COUNT) + CALENDAR_COLUMN_COUNT) % 7
+  const weekStart = dateKeyFromOrdinal(anchorOrdinal - mondayOffset)
+  const weekEnd = addCalendarDays(weekStart, WEEK_CALENDAR_CELL_COUNT - 1)
+  if (weekEnd < MIN_CALENDAR_DATE || weekStart > MAX_CALENDAR_DATE) {
+    throw new Error(`周范围必须与 ${MIN_CALENDAR_DATE}~${MAX_CALENDAR_DATE} 相交`)
+  }
+  const days = buildCalendarRangeDays(weekStart, WEEK_CALENDAR_CELL_COUNT).map((day) => ({
+    ...day,
+    // 周视图跨月日期也属于当前有效范围；保留该字段以兼容共用日期格。
+    inCurrentMonth: true,
+    isActive: true
+  }))
+
+  return {
+    anchorDate: normalizedAnchor,
+    weekStart,
+    weekEnd,
+    visibleStart: weekStart,
+    visibleEnd: weekEnd,
     days
   }
 }

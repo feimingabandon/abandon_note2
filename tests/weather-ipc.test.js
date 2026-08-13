@@ -124,14 +124,16 @@ describe('天气 IPC 请求协调', () => {
   })
 })
 
-describe('月视图天气加载', () => {
-  it('本地月份数据就绪后立即显示，天气在后台加载', () => {
+describe('日历视图天气加载', () => {
+  it('本地日历数据就绪后立即显示，天气在后台加载', () => {
     const workspace = readFileSync(MONTH_WORKSPACE_PATH, 'utf8')
     const mountBlock = workspace.slice(workspace.indexOf('onMounted(async () => {'))
 
-    expect(mountBlock).toContain('const monthLoadPromise = loadMonth()')
+    expect(mountBlock).toContain(
+      'const calendarLoadPromise = isWeekView.value ? loadWeek(todayKey.value) : loadMonth()'
+    )
     expect(mountBlock).toContain('if (weatherEnabled.value) void loadWeather({ quiet: true })')
-    expect(mountBlock.indexOf('await monthLoadPromise')).toBeLessThan(
+    expect(mountBlock.indexOf('await calendarLoadPromise')).toBeLessThan(
       mountBlock.indexOf("emit('ready')")
     )
     expect(mountBlock).not.toContain('Promise.all([loadMonth(), loadWeather')

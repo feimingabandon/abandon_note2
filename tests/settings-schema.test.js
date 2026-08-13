@@ -27,25 +27,31 @@ describe('titlebar appearance setting', () => {
 })
 
 describe('view-specific defaults', () => {
-  it('keeps list geometry and panel defaults separate from month view', () => {
+  it('keeps list geometry and panel defaults separate from calendar views', () => {
     const list = createDefaultSettings(VIEW_MODES.LIST)
     const month = createDefaultSettings(VIEW_MODES.MONTH)
+    const week = createDefaultSettings(VIEW_MODES.WEEK)
 
     expect(list.geometry).toMatchObject({ widthRatio: 0.25, heightRatio: 0.9 })
     expect(list.ui.settingsPanelSize).toBe(70)
     expect(month.geometry).toMatchObject({ widthRatio: 0.7, heightRatio: 0.7 })
     expect(month.ui.settingsPanelSize).toBe(40)
     expect(month.ui.dayPanelSize).toBe(25)
+    expect(week.geometry).toMatchObject({ widthRatio: 0.7, heightRatio: 0.5 })
+    expect(week.ui).toMatchObject({ settingsPanelSize: 40, dayPanelSize: 25 })
   })
 
-  it('uses the same native glass defaults for list and month views', () => {
+  it('uses the same native glass defaults for all views', () => {
     const list = createDefaultSettings(VIEW_MODES.LIST)
     const month = createDefaultSettings(VIEW_MODES.MONTH)
+    const week = createDefaultSettings(VIEW_MODES.WEEK)
 
     expect(list.css.windowOpacity).toBe(0.3)
     expect(month.css.windowOpacity).toBe(0.3)
+    expect(week.css.windowOpacity).toBe(0.3)
     expect(list.blur.radius).toBe(12)
     expect(month.blur.radius).toBe(12)
+    expect(week.blur.radius).toBe(12)
   })
 
   it('persists and clamps each view panel size', () => {

@@ -23,8 +23,8 @@ function occupyLane(weekLanes, lane, columnStart, columnSpan) {
 }
 
 /**
- * 把真实便签区间裁剪到当前 42 格，并按自然周拆为横条。横条只保存布局信息，
- * 不复制或改写便签数据。lane 在六行之间尽量连续，且分配顺序稳定可测试。
+ * 把真实便签区间裁剪到当前日历网格，并按自然周拆为横条。横条只保存布局信息，
+ * 不复制或改写便签数据。lane 在各周之间尽量连续，且分配顺序稳定可测试。
  */
 export function buildCalendarEventSegments(days, notes, { activeStartKey, activeEndKey } = {}) {
   if (!days?.length || !notes?.length) return []
@@ -38,7 +38,7 @@ export function buildCalendarEventSegments(days, notes, { activeStartKey, active
     gridEndOrdinal,
     activeEndKey ? dateOrdinal(activeEndKey) : gridEndOrdinal
   )
-  const weekLanes = Array.from({ length: 6 }, () => [])
+  const weekLanes = Array.from({ length: Math.ceil(days.length / 7) }, () => [])
   const previousLaneByNote = new Map()
   const segments = []
 

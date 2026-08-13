@@ -15,7 +15,7 @@ const emit = defineEmits(['update:modelValue'])
     <div v-if="visible" class="note-duration-field">
       <div class="note-duration-field__inner">
         <label class="note-duration-field__label"
-          >持续天数<HelpButton text="只决定月视图中这条便签连续占用的日期格数，不改变便签状态。"
+          >持续天数<HelpButton text="只决定日历视图中这条便签连续占用的日期格数，不改变便签状态。"
         /></label>
         <div class="note-duration-field__control">
           <NumberStepper

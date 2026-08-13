@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cwchar>
+#include <dwmapi.h>
+#include <iterator>
 #include <mutex>
 #include <process.h>
 
@@ -29,10 +32,12 @@ struct Runtime {
     std::atomic<ULONGLONG> lastPollTick{0};
     std::atomic<int> lastError{0};
     std::atomic<int> cursorFailureCount{0};
+    std::atomic<unsigned int> fullscreenBlockCount{0};
 
     HANDLE stopEvent = nullptr;
     HANDLE workerThread = nullptr;
     HWND notifyWindow = nullptr;
+    HMONITOR targetMonitor = nullptr;
     int side = 0;
     int pollIntervalMs = 100;
     RECT triggerArea{};
@@ -48,6 +53,73 @@ bool IsValidSide(int side) {
 bool IsInside(const POINT& point, const RECT& area) {
     return point.x >= area.left && point.x < area.right &&
         point.y >= area.top && point.y < area.bottom;
+}
+
+bool CoversMonitor(const RECT& bounds, const RECT& monitor, LONG tolerance) {
+    return bounds.left <= monitor.left + tolerance &&
+        bounds.top <= monitor.top + tolerance &&
+        bounds.right >= monitor.right - tolerance &&
+        bounds.bottom >= monitor.bottom - tolerance;
+}
+
+bool IsForegroundFullscreenOnTargetMonitor(const Runtime& runtime) {
+    const HWND foreground = GetForegroundWindow();
+    if (!foreground || !IsWindow(foreground) || !IsWindowVisible(foreground) ||
+        IsIconic(foreground) || !runtime.targetMonitor) {
+        return false;
+    }
+
+    if (foreground == GetShellWindow()) return false;
+    wchar_t className[64]{};
+    if (GetClassNameW(foreground, className, static_cast<int>(std::size(className))) > 0 &&
+        (wcscmp(className, L"Progman") == 0 || wcscmp(className, L"WorkerW") == 0 ||
+            wcscmp(className, L"Shell_TrayWnd") == 0)) {
+        return false;
+    }
+
+    DWORD foregroundProcess = 0;
+    DWORD notifyProcess = 0;
+    GetWindowThreadProcessId(foreground, &foregroundProcess);
+    GetWindowThreadProcessId(runtime.notifyWindow, &notifyProcess);
+    // Abandon Note 自己的主窗口、毛玻璃层或应用内浮窗不得阻止唤出。
+    if (foregroundProcess && notifyProcess && foregroundProcess == notifyProcess) return false;
+
+    DWORD cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(
+            foreground,
+            DWMWA_CLOAKED,
+            &cloaked,
+            sizeof(cloaked))) &&
+        cloaked != 0) {
+        return false;
+    }
+
+    MONITORINFO monitorInfo{};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    if (!GetMonitorInfoW(runtime.targetMonitor, &monitorInfo)) return false;
+
+    RECT foregroundBounds{};
+    if (FAILED(DwmGetWindowAttribute(
+            foreground,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &foregroundBounds,
+            sizeof(foregroundBounds))) &&
+        !GetWindowRect(foreground, &foregroundBounds)) {
+        return false;
+    }
+
+    const LONG_PTR style = GetWindowLongPtrW(foreground, GWL_STYLE);
+    const bool hasStandardFrame =
+        (style & WS_CAPTION) == WS_CAPTION && (style & WS_THICKFRAME) == WS_THICKFRAME;
+    if (IsZoomed(foreground) && hasStandardFrame) return false;
+
+    const UINT dpi = std::max<UINT>(96, GetDpiForWindow(foreground));
+    const LONG tolerance = std::max<LONG>(2, MulDiv(2, dpi, 96));
+    if (!CoversMonitor(foregroundBounds, monitorInfo.rcMonitor, tolerance)) return false;
+
+    // 自动隐藏任务栏时，普通最大化窗口也可能占满 rcMonitor。保留带标准窗口框架的
+    // 最大化应用可触边行为；无边框全屏、F11 全屏与游戏窗口仍会被拦截。
+    return true;
 }
 
 bool HasPendingEvent(Runtime& runtime) {
@@ -141,6 +213,14 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
         }
 
         if (state == State::Armed && !previousInside && inside) {
+            if (IsForegroundFullscreenOnTargetMonitor(*runtime)) {
+                runtime->fullscreenBlockCount.fetch_add(1);
+                // 全屏期间的一次触边意图只拦截一次。即使游戏随后退出，也必须先
+                // 离开边缘再重新进入，避免窗口在状态切换瞬间自行弹出。
+                runtime->state.store(State::WaitingOutside);
+                previousInside = true;
+                continue;
+            }
             PublishEvent(*runtime, EventKind::Trigger, 0);
             break;
         }
@@ -171,9 +251,11 @@ int StopLocked(Runtime& runtime, std::uint64_t generation) {
     runtime.workerThread = nullptr;
     runtime.stopEvent = nullptr;
     runtime.notifyWindow = nullptr;
+    runtime.targetMonitor = nullptr;
     runtime.workerAlive.store(false);
     runtime.state.store(State::Stopped);
     runtime.cursorFailureCount.store(0);
+    runtime.fullscreenBlockCount.store(0);
     runtime.lastError.store(0);
     {
         std::lock_guard<std::mutex> eventLock(runtime.eventMutex);
@@ -258,6 +340,7 @@ int Arm(
 
     g_runtime.stopEvent = stopEvent;
     g_runtime.notifyWindow = hwnd;
+    g_runtime.targetMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     g_runtime.side = side;
     g_runtime.pollIntervalMs = std::clamp(pollIntervalMs, 25, 1000);
     g_runtime.triggerArea = triggerArea;
@@ -265,6 +348,7 @@ int Arm(
     g_runtime.lastPollTick.store(GetTickCount64());
     g_runtime.lastError.store(0);
     g_runtime.cursorFailureCount.store(0);
+    g_runtime.fullscreenBlockCount.store(0);
     g_runtime.state.store(IsInside(cursor, triggerArea) ? State::WaitingOutside : State::Armed);
     {
         std::lock_guard<std::mutex> eventLock(g_runtime.eventMutex);
@@ -295,7 +379,7 @@ UINT GetMessageId() {
 }
 
 const char* GetStatusJson() {
-    thread_local char json[768]{};
+    thread_local char json[896]{};
     PendingEvent event{};
     {
         std::lock_guard<std::mutex> lock(g_runtime.eventMutex);
@@ -308,7 +392,8 @@ const char* GetStatusJson() {
     sprintf_s(
         json,
         "{\"state\":\"%s\",\"workerAlive\":%s,\"generation\":%llu,\"side\":%d,"
-        "\"lastError\":%d,\"cursorFailureCount\":%d,\"lastPollAgeMs\":%llu,"
+        "\"lastError\":%d,\"cursorFailureCount\":%d,\"fullscreenBlockCount\":%u,"
+        "\"lastPollAgeMs\":%llu,"
         "\"pollIntervalMs\":%d,\"triggerArea\":{\"left\":%ld,\"top\":%ld,"
         "\"right\":%ld,\"bottom\":%ld},\"pendingEvent\":\"%s\"}",
         StateName(g_runtime.state.load()),
@@ -317,6 +402,7 @@ const char* GetStatusJson() {
         g_runtime.side,
         g_runtime.lastError.load(),
         g_runtime.cursorFailureCount.load(),
+        g_runtime.fullscreenBlockCount.load(),
         static_cast<unsigned long long>(pollAge),
         g_runtime.pollIntervalMs,
         area.left,

@@ -72,6 +72,7 @@ import {
   MIN_SCHEDULE_LEAD_TIME_MINUTES,
   MIN_SCHEDULE_LEAD_TIME_MS
 } from '../../shared/note-scheduling-rules.js'
+import { createMainWindowIpc } from './ipc-authorization.js'
 
 function sendToMainWindow(getMainWindow, channel, payload) {
   const window = getMainWindow()
@@ -86,10 +87,11 @@ function sendToMainWindow(getMainWindow, channel, payload) {
  * 不负责应用生命周期、窗口创建或调度器启动。
  */
 export function registerBusinessIpcHandlers({
-  ipcMain,
+  ipcMain: rawIpcMain,
   getMainWindow,
   platform = process.platform
 }) {
+  const ipcMain = createMainWindowIpc(rawIpcMain, getMainWindow, '便签业务数据')
   const enforceNotificationPolicy = (payload) => enforceSystemNotificationPolicy(payload, platform)
   const normalizeUserCreateOptions = (payload) => {
     const options = enforceNotificationPolicy(payload)

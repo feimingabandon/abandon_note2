@@ -14,5 +14,12 @@ describe('main window profiles', () => {
       dockEdges: ['top'],
       defaultCentered: true
     })
+    expect(getWindowProfile('week')).toMatchObject({
+      settingsScope: 'week',
+      rendererFile: 'week.html',
+      logRole: 'week',
+      dockEdges: ['top'],
+      defaultCentered: true
+    })
   })
 })

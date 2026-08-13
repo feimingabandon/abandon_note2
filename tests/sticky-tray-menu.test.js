@@ -65,4 +65,21 @@ describe('sticky tray menu', () => {
     viewMenu.submenu.find((item) => item.label === '便签列表').click()
     expect(switchMainView).toHaveBeenCalledWith('list')
   })
+
+  it('offers and selects the week view', () => {
+    const switchMainView = vi.fn()
+    const template = buildStickyTrayTemplate({
+      stickyService: createStickyService(),
+      openMainWindow: vi.fn(),
+      activeViewMode: 'week',
+      switchMainView,
+      quitApplication: vi.fn()
+    })
+    const viewMenu = template.find((item) => item.label === '当前视图：周视图')
+
+    expect(viewMenu.submenu).toHaveLength(3)
+    expect(viewMenu.submenu.find((item) => item.label === '周视图').checked).toBe(true)
+    viewMenu.submenu.find((item) => item.label === '月视图').click()
+    expect(switchMainView).toHaveBeenCalledWith('month')
+  })
 })

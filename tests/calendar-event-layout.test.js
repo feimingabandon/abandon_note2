@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildMonthGrid } from '../src/shared/calendar/calendar-date-rules.js'
+import { buildMonthGrid, buildWeekGrid } from '../src/shared/calendar/calendar-date-rules.js'
 import {
   buildCalendarEventSegments,
   hasHiddenCalendarNotes,
@@ -126,5 +126,38 @@ describe('month multi-day event layout', () => {
       endKey: '2026-08-31',
       continuesAfter: true
     })
+  })
+
+  it('clips week-view event bars at Monday and Sunday while preserving continuation flags', () => {
+    const grid = buildWeekGrid('2026-08-12')
+    const segments = buildCalendarEventSegments(
+      grid.days,
+      [note(30, 2026, 8, 8, 5), note(31, 2026, 8, 15, 5)],
+      { activeStartKey: grid.weekStart, activeEndKey: grid.weekEnd }
+    )
+
+    expect(segments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          noteId: 30,
+          weekIndex: 0,
+          startKey: '2026-08-10',
+          columnStart: 1,
+          columnSpan: 3,
+          continuesBefore: true,
+          continuesAfter: false
+        }),
+        expect.objectContaining({
+          noteId: 31,
+          weekIndex: 0,
+          endKey: '2026-08-16',
+          columnStart: 6,
+          columnSpan: 2,
+          continuesBefore: false,
+          continuesAfter: true
+        })
+      ])
+    )
+    expect(segments.every((segment) => segment.weekIndex === 0)).toBe(true)
   })
 })

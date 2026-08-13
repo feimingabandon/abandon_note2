@@ -6,12 +6,11 @@ import {
   queryDailyReportNotes,
   selectDailyReportNotes
 } from '../services/daily-report.js'
+import { assertMainWindowSender } from './ipc-authorization.js'
 
 export function registerDailyReportIpcHandlers({ ipcMain, dialog, shell, getMainWindow }) {
   let lastExportPath = ''
-  const assertAuthorized = (event) => {
-    if (event.sender !== getMainWindow()?.webContents) throw new Error('无权访问日报导出功能')
-  }
+  const assertAuthorized = (event) => assertMainWindowSender(event, getMainWindow, '日报导出功能')
 
   const openLastExportFolder = async () => {
     if (!lastExportPath) throw new Error('没有可打开的日报导出位置')

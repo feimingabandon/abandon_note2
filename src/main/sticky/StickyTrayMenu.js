@@ -1,3 +1,11 @@
+import { normalizeViewMode, VIEW_MODES } from '../../shared/settings-schema.js'
+
+const VIEW_LABELS = Object.freeze({
+  [VIEW_MODES.LIST]: '便签列表',
+  [VIEW_MODES.MONTH]: '月视图',
+  [VIEW_MODES.WEEK]: '周视图'
+})
+
 export function buildStickyTrayTemplate({
   stickyService,
   openMainWindow,
@@ -5,6 +13,7 @@ export function buildStickyTrayTemplate({
   switchMainView = () => {},
   quitApplication
 }) {
+  const normalizedViewMode = normalizeViewMode(activeViewMode)
   const stickies = stickyService?.list() || []
   const count = stickies.length
   const overview =
@@ -27,21 +36,13 @@ export function buildStickyTrayTemplate({
   return [
     { label: '打开主窗口', click: openMainWindow },
     {
-      label: `当前视图：${activeViewMode === 'month' ? '月视图' : '便签列表'}`,
-      submenu: [
-        {
-          label: '便签列表',
-          type: 'radio',
-          checked: activeViewMode !== 'month',
-          click: () => switchMainView('list')
-        },
-        {
-          label: '月视图',
-          type: 'radio',
-          checked: activeViewMode === 'month',
-          click: () => switchMainView('month')
-        }
-      ]
+      label: `当前视图：${VIEW_LABELS[normalizedViewMode]}`,
+      submenu: Object.values(VIEW_MODES).map((viewMode) => ({
+        label: VIEW_LABELS[viewMode],
+        type: 'radio',
+        checked: normalizedViewMode === viewMode,
+        click: () => switchMainView(viewMode)
+      }))
     },
     { type: 'separator' },
     {

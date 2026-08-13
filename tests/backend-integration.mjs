@@ -35,6 +35,8 @@ import {
   getNoteById,
   normalizeNoteDurationDays,
   normalizeRequiredNoteContent,
+  queryCustomNormal,
+  queryEarlierNotes,
   queryPinnedNotes,
   searchNotes,
   queryTagGroupNotes,
@@ -762,6 +764,14 @@ try {
     searchNotes({ search: '_', includeDeleted: false }).notes.map((note) => note.id),
     [literalUnderscoreNote.id]
   )
+
+  const pageCutoff = Date.now() + 60_000
+  assert.equal(
+    queryEarlierNotes({ cutoffTime: pageCutoff, limit: 0, offset: -10 }).notes.length,
+    0
+  )
+  assert.equal(queryEarlierNotes({ cutoffTime: pageCutoff, limit: -1 }).notes.length <= 100, true)
+  assert.equal(queryCustomNormal({ limit: 10_000, offset: -5 }).notes.length <= 100, true)
 
   const completedForReopen = createNote({ content: '重新进行保留原时间' })
   const originalEffectiveAt = completedForReopen.effective_at
