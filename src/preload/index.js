@@ -54,6 +54,8 @@ const api = {
   // ---- 设置桥接（双向通信，均返回 Promise） ----
   /** 按共享 schema ID 写入设置；数据库键名和校验不暴露给 renderer */
   setSettingValue: (id, value) => ipcRenderer.invoke('set-setting-value', id, value),
+  /** 原子更新小黑条模式与贴边方向多选 */
+  setDockConfig: (config) => ipcRenderer.invoke('set-dock-config', config),
   /** 获取 DB 值覆盖共享默认值后的完整设置快照 */
   getSettingsSnapshot: () => ipcRenderer.invoke('get-settings-snapshot'),
   /** 只恢复当前视图的独立默认设置（不影响公共设置、其他视图和业务数据） */

@@ -16,7 +16,9 @@ describe('NativeEdgeMonitor', () => {
       }
     )
 
-    expect(monitor.arm('top', 8, { pollIntervalMs: 100 })).toMatchObject({ success: true })
+    const options = { pollIntervalMs: 100, revealHandleEnabled: true }
+    expect(monitor.arm('top', 8, options)).toMatchObject({ success: true })
+    expect(arm).toHaveBeenCalledWith({}, 'top', 8, options)
     expect(monitor.arm('top', 9)).toMatchObject({ success: false, code: -8 })
     expect(arm).toHaveBeenCalledOnce()
     expect(monitor.disarm()).toBe(true)
@@ -37,6 +39,32 @@ describe('NativeEdgeMonitor', () => {
     )
 
     expect(monitor.arm('top', 3)).toMatchObject({ success: false, code: -3 })
+    expect(monitor.activeGeneration).toBe(0)
+  })
+
+  it('retains a timed-out startup generation until native cleanup succeeds', () => {
+    const disarm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
+    const monitor = new NativeEdgeMonitor(
+      {},
+      {
+        arm: () => ({
+          success: false,
+          cleanupRequired: true,
+          code: -15,
+          error: '初始化超时'
+        }),
+        disarm,
+        getStatus: () => ({ state: 'failed' }),
+        consumeEvent: () => null,
+        getMessageId: () => 0xc123
+      }
+    )
+
+    expect(monitor.arm('left', 12)).toMatchObject({ success: false, cleanupRequired: true })
+    expect(monitor.activeGeneration).toBe(12)
+    expect(monitor.disarm()).toBe(false)
+    expect(monitor.activeGeneration).toBe(12)
+    expect(monitor.disarm()).toBe(true)
     expect(monitor.activeGeneration).toBe(0)
   })
 })

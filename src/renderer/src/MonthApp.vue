@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue'
@@ -8,14 +8,20 @@ import MessageToast from './components/system/MessageToast.vue'
 import MonthWorkspace from './components/month/MonthWorkspace.vue'
 import UpdateDialog from './components/system/UpdateDialog.vue'
 import RemoteNoticeDialog from './components/system/RemoteNoticeDialog.vue'
+import FirstUseNoticeDialog from './components/system/FirstUseNoticeDialog.vue'
 import HolidayDataNoticeDialog from './components/system/HolidayDataNoticeDialog.vue'
 import DailyReportDialog from './components/report/DailyReportDialog.vue'
 import DailyReportButton from './components/report/DailyReportButton.vue'
+import HelpPage from './components/help/HelpPage.vue'
 import { createMessageProvider } from './composables/useMessage.js'
 import { useTodayKey } from './composables/useTodayKey.js'
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
-import { createDefaultSettings, VIEW_MODES } from '../../shared/settings-schema.js'
+import {
+  createDefaultSettings,
+  FIRST_USE_NOTICE_VERSION,
+  VIEW_MODES
+} from '../../shared/settings-schema.js'
 
 const props = defineProps({
   viewMode: {
@@ -34,8 +40,14 @@ const titlebarStyle = ref(defaults.appearance.titlebarStyle)
 const showSettings = ref(false)
 const showUpdateDialog = ref(false)
 const showRemoteNoticeDialog = ref(false)
+const showFirstUseNotice = ref(false)
 const showHolidayDataNoticeDialog = ref(false)
 const showDailyReportDialog = ref(false)
+const helpRendered = ref(false)
+const helpPanelActive = ref(false)
+const helpBlurActive = ref(false)
+const helpPhase = ref('closed') // closed | opening | open | closing
+const helpPanelRef = ref(null)
 const pendingHolidayDataNotice = ref(null)
 const holidayNoticeTodayKey = useTodayKey()
 const calendarBusinessModalOpen = ref(false)
@@ -64,8 +76,49 @@ function onCalendarWorkspaceReady() {
 }
 
 function openSettings() {
+  closeHelp()
   if (!releaseSettingsBackgroundBlur) releaseSettingsBackgroundBlur = retainModalBlur()
   showSettings.value = true
+}
+
+function openDailyReport() {
+  closeHelp()
+  showDailyReportDialog.value = true
+}
+
+async function openHelp() {
+  if (helpPhase.value === 'opening' || helpPhase.value === 'open') return
+  helpPhase.value = 'opening'
+  helpBlurActive.value = true
+  if (!helpRendered.value) {
+    helpRendered.value = true
+    await nextTick()
+    void helpPanelRef.value?.offsetWidth
+  }
+  if (helpPhase.value !== 'opening') return
+  helpPanelActive.value = true
+}
+
+function closeHelp() {
+  if (helpPhase.value === 'closed' || helpPhase.value === 'closing') return
+  helpPhase.value = 'closing'
+  helpPanelActive.value = false
+  helpBlurActive.value = false
+}
+
+function onHelpTransitionEnd(event) {
+  if (event.target !== helpPanelRef.value || event.propertyName !== 'transform') return
+  if (helpPhase.value === 'opening' && helpPanelActive.value) {
+    helpPhase.value = 'open'
+  } else if (helpPhase.value === 'closing' && !helpPanelActive.value) {
+    helpRendered.value = false
+    helpPhase.value = 'closed'
+  }
+}
+
+function toggleHelp() {
+  if (helpPhase.value === 'closed' || helpPhase.value === 'closing') void openHelp()
+  else closeHelp()
 }
 
 function releaseSettingsBlur() {
@@ -113,10 +166,23 @@ function applySnapshot(snapshot) {
   void syncWallpaper(snapshot)
 }
 
+function revealFirstUseNoticeFromSnapshot(snapshot) {
+  const pending = (snapshot?.values?.onboarding?.noticeVersion ?? 0) < FIRST_USE_NOTICE_VERSION
+  if (!pending || showFirstUseNotice.value) return
+
+  showUpdateDialog.value = false
+  showRemoteNoticeDialog.value = false
+  showHolidayDataNoticeDialog.value = false
+  showDailyReportDialog.value = false
+  showFirstUseNotice.value = true
+}
+
 async function loadPendingRemoteNotices({ show = false } = {}) {
   try {
     pendingRemoteNotices.value = await window.api.listPendingRemoteNotices()
-    if (show && pendingRemoteNotices.value.length) showRemoteNoticeDialog.value = true
+    if (show && !showFirstUseNotice.value && pendingRemoteNotices.value.length) {
+      showRemoteNoticeDialog.value = true
+    }
   } catch (error) {
     console.warn('[MonthApp] 读取未确认通知失败:', error)
   }
@@ -125,6 +191,7 @@ async function loadPendingRemoteNotices({ show = false } = {}) {
 function maybeShowHolidayDataNotice() {
   if (
     pendingHolidayDataNotice.value?.required &&
+    !showFirstUseNotice.value &&
     !showRemoteNoticeDialog.value &&
     !showSettings.value &&
     !showUpdateDialog.value
@@ -172,7 +239,28 @@ function onRemoteNoticeAcknowledged(id) {
   }
 }
 
+function showNextStartupNotice() {
+  if (pendingRemoteNotices.value.length) {
+    showRemoteNoticeDialog.value = true
+    return
+  }
+  maybeShowHolidayDataNotice()
+}
+
+function onFirstUseCompleted({ route } = {}) {
+  showFirstUseNotice.value = false
+  showMessage(
+    'success',
+    route === 'support'
+      ? '感谢你的支持。你的认可，会成为 Abandon 便签继续前进的动力。'
+      : '感谢你选择 Abandon 便签。你的使用，就是对我最大的肯定。',
+    4200
+  )
+  setTimeout(showNextStartupNotice, 240)
+}
+
 async function openNoteFromNotification(payload) {
+  if (showFirstUseNotice.value) return
   const noteId = Number(payload?.id)
   if (!Number.isInteger(noteId) || noteId <= 0) return
   const closingModal = showSettings.value || showUpdateDialog.value || showRemoteNoticeDialog.value
@@ -207,12 +295,19 @@ const onMouseLeave = () => window.api.windowHover(false)
 
 onMounted(async () => {
   try {
-    applySnapshot(await window.api.getSettingsSnapshot())
+    const snapshot = await window.api.getSettingsSnapshot()
+    applySnapshot(snapshot)
+    showFirstUseNotice.value =
+      (snapshot?.values?.onboarding?.noticeVersion ?? 0) < FIRST_USE_NOTICE_VERSION
   } catch (error) {
     applySnapshot({ values: defaults })
+    showFirstUseNotice.value = true
     console.warn(`[MonthApp] 读取设置失败，使用${viewLabel.value}默认值:`, error)
   }
-  stopSettingsListener = window.api.onSettingsChanged?.(applySnapshot)
+  stopSettingsListener = window.api.onSettingsChanged?.((snapshot) => {
+    applySnapshot(snapshot)
+    revealFirstUseNoticeFromSnapshot(snapshot)
+  })
   stopAppMessageListener = window.api.onAppMessage?.((payload) => {
     if (payload?.text)
       showMessage(payload.type || 'warning', payload.text, payload.duration ?? 2500)
@@ -262,6 +357,7 @@ onUnmounted(() => {
       :inert="
         showSettings ||
         calendarBusinessModalOpen ||
+        showFirstUseNotice ||
         showUpdateDialog ||
         showRemoteNoticeDialog ||
         showHolidayDataNoticeDialog ||
@@ -275,7 +371,7 @@ onUnmounted(() => {
         :style-variant="titlebarStyle"
       >
         <TitlebarActions :style-variant="titlebarStyle">
-          <DailyReportButton month-view @open="showDailyReportDialog = true" />
+          <DailyReportButton month-view @open="openDailyReport" />
           <button
             class="titlebar-btn titlebar-btn-settings month-titlebar-btn"
             title="设置"
@@ -285,21 +381,45 @@ onUnmounted(() => {
           </button>
           <button
             class="titlebar-btn titlebar-btn-help month-titlebar-btn"
-            title="帮助（暂未开放）"
-            aria-disabled="true"
+            :class="{ 'is-active': helpPanelActive }"
+            :title="helpPanelActive ? '关闭帮助' : '帮助'"
+            aria-controls="help-workspace"
+            :aria-expanded="helpPanelActive"
+            @click="toggleHelp"
           >
             <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
           </button>
         </TitlebarActions>
       </AppTitlebar>
-      <main class="month-content" :aria-label="`${viewLabel}内容区域`">
-        <MonthWorkspace
-          ref="calendarWorkspaceRef"
-          :view-mode="viewMode"
-          @modal-state-change="calendarBusinessModalOpen = $event"
-          @ready="onCalendarWorkspaceReady"
-        />
-      </main>
+      <div class="month-content-stage">
+        <main
+          class="month-content"
+          :class="{ 'is-ui-background-blurred': helpBlurActive }"
+          :inert="helpRendered"
+          :aria-label="`${viewLabel}内容区域`"
+        >
+          <MonthWorkspace
+            ref="calendarWorkspaceRef"
+            :view-mode="viewMode"
+            @modal-state-change="calendarBusinessModalOpen = $event"
+            @ready="onCalendarWorkspaceReady"
+          />
+        </main>
+
+        <div v-if="helpRendered" class="month-help-wrapper">
+          <div
+            id="help-workspace"
+            ref="helpPanelRef"
+            class="month-help-panel"
+            :class="{ active: helpPanelActive }"
+            role="region"
+            :aria-label="`${viewLabel}帮助中心`"
+            @transitionend="onHelpTransitionEnd"
+          >
+            <HelpPage :view-mode="viewMode" />
+          </div>
+        </div>
+      </div>
     </div>
 
     <SettingsPanel
@@ -308,6 +428,11 @@ onUnmounted(() => {
       :view-mode="viewMode"
       @blur-release="releaseSettingsBlur"
       @check-update="checkForUpdates"
+    />
+    <FirstUseNoticeDialog
+      v-if="showFirstUseNotice"
+      :visible="showFirstUseNotice"
+      @completed="onFirstUseCompleted"
     />
     <UpdateDialog
       v-model:visible="showUpdateDialog"
@@ -358,6 +483,43 @@ onUnmounted(() => {
 .month-content {
   flex: 1;
   min-height: 0;
+  transition: filter 180ms ease;
+}
+
+.month-content-stage {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.month-help-wrapper {
+  position: absolute;
+  z-index: var(--z-global-workspace);
+  inset: 0;
+  overflow: hidden;
+  border-radius: var(--window-radius);
+  pointer-events: auto;
+}
+
+.month-help-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  background-color: var(--surface-panel);
+  box-shadow: -12px 0 36px rgba(0, 0, 0, 0.16);
+  transform: translateX(100%);
+  transition: transform 360ms var(--ease-standard);
+  will-change: transform;
+}
+
+.month-help-panel.active {
+  transform: translateX(0);
 }
 
 .month-wallpaper {

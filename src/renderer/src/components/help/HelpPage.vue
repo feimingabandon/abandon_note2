@@ -3,80 +3,135 @@
  * HelpPage.vue — 帮助中心（从右滑入的整页面板）
  *
  * 布局：悬浮多级目录（模块 → 子标题，scroll-spy 高亮 + 点击平滑滚动） + 右侧滚动讲解区。
- * 信息架构按「页面」组织：便签列表 / 便签模板 / 设置 各为一个模块，模块下再拆分功能子标题；
- * 没有独立界面、藏在幕后的能力统一收进「杂项」，用多级标题精确定位。
- * 讲解范式：图解式 —— 每个有界面的模块先给一张整机仿造图（HelpMock + 编号标注），
- * 再逐条以「局部小图 + 解释」（HelpFigureBlock）拆解各子功能；幕后能力（杂项）无独立界面，保留文字讲解。
+ * 信息架构按用户任务组织：快速开始 → 窗口与托盘 → 创建与整理 → 常用工具 → 设置 → 数据与隐私。
+ * 讲解范式：稳定结构使用 HTML 仿造图，状态变化使用连续帧图，危险操作使用完整结果链路。
  */
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import HelpMock from './HelpMock.vue'
 import HelpFigureBlock from './HelpFigureBlock.vue'
-import MockNoteList from './mock/MockNoteList.vue'
 import MockNoteCard from './mock/MockNoteCard.vue'
 import MockStatusRing from './mock/MockStatusRing.vue'
-import MockActionBar from './mock/MockActionBar.vue'
 import MockTemplatePage from './mock/MockTemplatePage.vue'
 import MockTemplateCard from './mock/MockTemplateCard.vue'
-import MockSettings from './mock/MockSettings.vue'
 import MockNewNotePanel from './mock/MockNewNotePanel.vue'
+import MockWindowGuide from './mock/MockWindowGuide.vue'
+import MockTrayMenu from './mock/MockTrayMenu.vue'
+import MockSearchFlow from './mock/MockSearchFlow.vue'
+import MockModeComparison from './mock/MockModeComparison.vue'
+import MockDockFlow from './mock/MockDockFlow.vue'
+import MockStickyWindow from './mock/MockStickyWindow.vue'
+import MockCalendarToolbar from './mock/MockCalendarToolbar.vue'
+import MockCalendarStrip from './mock/MockCalendarStrip.vue'
+import MockCalendarDayPanel from './mock/MockCalendarDayPanel.vue'
+import wechatAppreciationQr from '../../resources/help/wechat-appreciation-qr.png'
+import alipayAppreciationQr from '../../resources/help/alipay-appreciation-qr.jpg'
+
+const props = defineProps({
+  viewMode: {
+    type: String,
+    default: 'list',
+    validator: (value) => ['list', 'month', 'week'].includes(value)
+  }
+})
+
+const isListView = computed(() => props.viewMode === 'list')
+const isWeekView = computed(() => props.viewMode === 'week')
+const viewLabel = computed(() => {
+  if (isWeekView.value) return '周视图'
+  return isListView.value ? '便签列表' : '月视图'
+})
 
 /**
  * 多级目录：每个模块对应一个「页面 / 功能域」，items 为该模块内的功能子标题（锚点）。
  * items 为空的模块（首页）自身即为锚点。
  */
+const listSections = [
+  {
+    id: 'notes',
+    title: '创建与整理',
+    hint: '新建 · 状态 · 排序',
+    items: [
+      { id: 'notes-create', title: '新建便签' },
+      { id: 'notes-status', title: '状态流转' },
+      { id: 'notes-search', title: '搜索便签' },
+      { id: 'notes-edit', title: '卡片与右键操作' },
+      { id: 'notes-list', title: '筛选与排序' }
+    ]
+  },
+  {
+    id: 'tools',
+    title: '常用工具',
+    hint: '便利贴 · 日报 · 模板',
+    items: [
+      { id: 'tools-sticky', title: '贴到桌面' },
+      { id: 'tools-report', title: '日报导出' },
+      { id: 'tools-template', title: '循环模板' }
+    ]
+  }
+]
+
+const calendarSections = [
+  {
+    id: 'calendar',
+    title: isWeekView.value ? '周视图' : '月视图',
+    hint: isWeekView.value ? '周导航 · 七天 · 侧栏' : '月份 · 日期格 · 侧栏',
+    items: [
+      { id: 'calendar-navigation', title: '日期导航' },
+      { id: 'calendar-grid', title: isWeekView.value ? '一周七天' : '月历日期格' },
+      { id: 'calendar-day-panel', title: '日期侧栏' },
+      { id: 'calendar-notes', title: '新建与管理便签' },
+      { id: 'calendar-weather', title: '天气与节假日' }
+    ]
+  },
+  {
+    id: 'calendar-tools',
+    title: '常用工具',
+    hint: '日报 · 便利贴',
+    items: [
+      { id: 'calendar-report', title: '日报导出' },
+      { id: 'calendar-sticky', title: '贴到桌面' }
+    ]
+  }
+]
+
+const settingsItems = [
+  { id: 'settings-scope', title: '设置作用域' },
+  { id: 'settings-appearance', title: '外观与字体' },
+  ...(isListView.value ? [{ id: 'settings-sticky', title: '便利贴默认样式' }] : []),
+  { id: 'settings-blur', title: '毛玻璃与壁纸' },
+  { id: 'settings-common', title: '公共服务' },
+  { id: 'settings-tools', title: '恢复与诊断' }
+]
+
 const sections = [
   { id: 'home', title: '首页', hint: '关于与支持', items: [] },
   {
-    id: 'notes',
-    title: '便签列表',
-    hint: '新建 · 卡片 · 搜索',
+    id: 'window',
+    title: '窗口与托盘',
+    hint: '关闭 · 置顶 · 贴边',
     items: [
-      { id: 'notes-overview', title: '整体预览' },
-      { id: 'notes-create', title: '新建便签' },
-      { id: 'notes-card', title: '便签卡片' },
-      { id: 'notes-status', title: '状态流转' },
-      { id: 'notes-search', title: '搜索便签' },
-      { id: 'notes-edit', title: '修改与删除' },
-      { id: 'notes-list', title: '列表与排序' }
+      { id: 'window-titlebar', title: '导航栏' },
+      { id: 'window-tray', title: '托盘菜单' },
+      { id: 'window-dock', title: '贴边隐藏' }
     ]
   },
-  {
-    id: 'template',
-    title: '便签模板',
-    hint: '周期自动生成',
-    items: [
-      { id: 'template-overview', title: '整体预览' },
-      { id: 'template-create', title: '新建模板' },
-      { id: 'template-frequency', title: '频率规则' },
-      { id: 'template-card', title: '模板管理' },
-      { id: 'template-run', title: '运行与容错' }
-    ]
-  },
+  ...(isListView.value ? listSections : calendarSections),
   {
     id: 'settings',
     title: '设置',
-    hint: '外观 · 窗口 · 工具',
-    items: [
-      { id: 'settings-overview', title: '整体预览' },
-      { id: 'settings-appearance', title: '外观基调' },
-      { id: 'settings-blur', title: '系统毛玻璃' },
-      { id: 'settings-wallpaper', title: '壁纸' },
-      { id: 'settings-window', title: '窗口与缩放' },
-      { id: 'settings-tools', title: '数据与工具' }
-    ]
+    hint: '作用域 · 外观 · 数据',
+    items: settingsItems
   },
   {
-    id: 'misc',
-    title: '杂项',
-    hint: '幕后能力',
+    id: 'safety',
+    title: '数据与隐私',
+    hint: '找回 · 清理 · 排障',
     items: [
-      { id: 'misc-snap', title: '贴边隐藏' },
-      { id: 'misc-notify', title: '系统通知' },
-      { id: 'misc-protocol', title: '通知点击跳转' },
-      { id: 'misc-screenshot', title: '截图选取' },
-      { id: 'misc-storage', title: '数据存储与找回' },
-      { id: 'misc-scheduler', title: '后台调度器' },
-      { id: 'misc-autostart', title: '开机自启' }
+      { id: 'safety-delete', title: '删除与找回' },
+      { id: 'safety-privacy', title: '远程服务与隐私' },
+      { id: 'safety-platform', title: '平台差异' },
+      { id: 'safety-troubleshoot', title: '故障排查' },
+      { id: 'safety-support', title: '项目与支持' }
     ]
   }
 ]
@@ -88,13 +143,16 @@ const anchors = sections.flatMap((s) =>
     : [{ id: s.id, title: s.title, moduleId: s.id }]
 )
 
-/** 作者可后续替换的个人信息占位。 */
+/** 项目与支持信息。 */
 const profile = reactive({
   greeting:
     '这是一个常驻桌面的便签工具，希望它能帮你把「要做的事」安静地放在看得见的地方。感谢试用 —— 有想法或问题都欢迎反馈。',
-  repo: 'https://gitcode.com/zou-feiming/abandon_note2',
-  blog: '',
-  donateReady: false
+  gitcode: 'https://gitcode.com/zou-feiming/abandon_note2',
+  github: 'https://github.com/feimingabandon/abandon_note2',
+  blog: 'https://blog.csdn.net/qq_43483251',
+  email: '1160653906@qq.com',
+  donate: wechatAppreciationQr,
+  donateAlt: alipayAppreciationQr
 })
 
 // 悬浮目录的折叠状态：true = 已收起（仅保留唤出按钮），不占用文档流。打开帮助中心时默认收起。
@@ -232,7 +290,7 @@ onBeforeUnmount(() => {
 
       <!-- 右侧滚动讲解区 -->
       <div ref="contentRef" class="help-content scroll-y">
-        <!-- 首页：纯个人内容区 -->
+        <!-- 首页：作者信息、支持入口与快速开始 -->
         <section
           :ref="(el) => registerAnchor('home', el)"
           data-anchor-id="home"
@@ -248,73 +306,191 @@ onBeforeUnmount(() => {
               <h3>请作者喝杯咖啡</h3>
               <p class="help-donate-lead">0.01 也是对作者最大的肯定。</p>
               <div class="help-donate-row">
-                <div class="help-donate-slot">
-                  <span v-if="!profile.donateReady">打赏二维码占位</span>
-                  <img v-else :src="profile.donate" alt="打赏二维码" />
-                </div>
-                <div class="help-donate-slot">
-                  <span v-if="!profile.donateReady">打赏二维码占位</span>
-                  <img v-else :src="profile.donateAlt" alt="打赏二维码" />
-                </div>
+                <figure class="help-donate-item">
+                  <div class="help-donate-slot">
+                    <img :src="profile.donate" alt="小邹的微信赞赏码" />
+                  </div>
+                  <figcaption>微信赞赏码</figcaption>
+                </figure>
+                <figure class="help-donate-item">
+                  <div class="help-donate-slot">
+                    <img :src="profile.donateAlt" alt="小邹的支付宝收款码" />
+                  </div>
+                  <figcaption>支付宝</figcaption>
+                </figure>
               </div>
               <p class="help-home-note">支持是持续更新的动力 ☕</p>
             </div>
 
             <div class="help-home-card">
-              <h3>项目与联系</h3>
+              <h3>项目与支持</h3>
               <ul class="help-link-list">
                 <li>
-                  <span class="help-link-label">代码仓库</span>
-                  <span class="help-link-value">{{ profile.repo || '待补充' }}</span>
+                  <span class="help-link-label">GitCode 仓库</span>
+                  <a
+                    class="help-link-value"
+                    :href="profile.gitcode"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {{ profile.gitcode }}
+                  </a>
                 </li>
                 <li>
-                  <span class="help-link-label">博客</span>
-                  <span class="help-link-value">{{ profile.blog || '待补充' }}</span>
+                  <span class="help-link-label">GitHub 仓库</span>
+                  <a
+                    class="help-link-value"
+                    :href="profile.github"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {{ profile.github }}
+                  </a>
+                </li>
+                <li>
+                  <span class="help-link-label">作者博客</span>
+                  <a
+                    class="help-link-value"
+                    :href="profile.blog"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {{ profile.blog }}
+                  </a>
+                </li>
+                <li>
+                  <span class="help-link-label">联系邮箱</span>
+                  <span class="help-link-value">{{ profile.email }}</span>
                 </li>
               </ul>
-              <p class="help-home-note">后续这里放作者的更多内容。</p>
+              <p class="help-home-note">问题反馈、版本信息和后续内容会在这里持续补充。</p>
+            </div>
+          </div>
+
+          <h2 class="help-home-subtitle">快速开始</h2>
+          <p v-if="isListView" class="help-home-greeting">
+            先创建一条便签，再用状态、标签和排序整理它；需要单独展示时，把它贴到桌面。关闭主窗口只会隐藏到托盘，只有从托盘选择“退出应用”才会真正结束程序。
+          </p>
+          <p v-else class="help-home-greeting">
+            {{
+              viewLabel
+            }}用于按日期查看便签。先定位日期，点击日期格打开当天侧栏；可从日期格或侧栏新建便签，也能在侧栏直接修改、完成、删除或贴到桌面。
+          </p>
+          <div class="help-quick-steps" aria-label="快速开始步骤">
+            <template v-if="isListView">
+              <div><strong>点击＋</strong><small>输入正文并创建</small></div>
+              <div><strong>推进状态</strong><small>点击左侧状态圆环</small></div>
+              <div><strong>整理便签</strong><small>筛选、排序或分组</small></div>
+              <div><strong>贴到桌面</strong><small>生成只读便利贴</small></div>
+            </template>
+            <template v-else>
+              <div>
+                <strong>定位日期</strong
+                ><small>{{ isWeekView ? '选择周次或日期' : '选择年份和月份' }}</small>
+              </div>
+              <div><strong>点击日期</strong><small>展开当天侧栏</small></div>
+              <div><strong>新建便签</strong><small>自动使用所选日期</small></div>
+              <div><strong>管理便签</strong><small>修改、完成或贴桌面</small></div>
+            </template>
+          </div>
+
+          <div class="help-term-grid">
+            <div class="help-term-card">
+              <strong>便签</strong>
+              <span>保存在便签列表中的正文、时间、状态、标签和图片。</span>
+            </div>
+            <div class="help-term-card">
+              <strong>便利贴</strong>
+              <span>由某条便签生成的桌面临时展示窗口，关闭它不会删除来源便签。</span>
+            </div>
+            <div class="help-term-card">
+              <strong>当前视图</strong>
+              <span>当前是{{ viewLabel }}。便签列表、月视图和周视图各自保存窗口配置。</span>
             </div>
           </div>
         </section>
 
-        <!-- 模块一：便签列表 -->
-        <section data-section-id="notes" class="help-section">
+        <!-- 模块一：窗口与托盘 -->
+        <section data-section-id="window" class="help-section">
           <div class="help-section-head">
-            <h2>便签列表</h2>
+            <h2>窗口与托盘</h2>
             <p class="help-summary">
-              主界面的核心页面。所有便签以卡片形式呈现，从<strong>新建</strong>、<strong>查看</strong>、<strong>搜索</strong>到<strong>修改删除</strong>都在这里完成。便签按
-              <strong>初始化 → 进行中 → 已完成</strong> 三态流转，点击卡片左侧圆环即可推进。
+              导航栏管理<strong>当前主窗口</strong>，托盘负责恢复窗口、切换视图和管理桌面便利贴。便签列表、月视图和周视图使用各自独立的窗口外观、位置、尺寸与贴边设置。
             </p>
           </div>
 
           <div
-            :ref="(el) => registerAnchor('notes-overview', el)"
-            data-anchor-id="notes-overview"
+            :ref="(el) => registerAnchor('window-titlebar', el)"
+            data-anchor-id="window-titlebar"
             class="help-anchor"
           >
-            <h3 class="help-anchor-title">整体预览</h3>
+            <h3 class="help-anchor-title">导航栏</h3>
             <p class="help-anchor-desc">
-              下面是便签列表的完整界面（HTML
-              仿造，仅供查看）。图上的红色编号对应下方逐条讲解的区域，看图对号即可。
+              Apple 与 Windows 风格只改变按钮排布和外观，不改变功能。下面是{{
+                viewLabel
+              }}中完整的按钮组成。
             </p>
-            <HelpMock
-              caption="便签列表整机示意（仿造界面，非真实数据）"
-              :annotations="[
-                { n: 1, x: 25, y: 34 },
-                { n: 2, x: 64, y: 52 },
-                { n: 3, x: 11, y: 52 },
-                { n: 4, x: 80, y: 34 },
-                { n: 5, x: 52, y: 70 },
-                { n: 6, x: 90, y: 12 }
-              ]"
-            >
-              <MockNoteList />
+            <HelpMock caption="导航栏结构示意；窗口置顶与便签置顶是两个不同功能">
+              <MockWindowGuide :view-mode="viewMode" />
             </HelpMock>
+            <ul class="help-points">
+              <li><strong>关闭：</strong>隐藏当前窗口，可从托盘恢复；不会退出程序。</li>
+              <li><strong>窗口置顶：</strong>默认开启；关闭后窗口回到普通系统层级。</li>
+              <li><strong>锁定：</strong>禁止移动和缩放，并停用贴边自动隐藏。</li>
+              <li>
+                <strong>业务按钮：</strong>日报、<template v-if="isListView">循环模板、</template
+                >设置和帮助；循环模板只出现在便签列表视图。
+              </li>
+            </ul>
+          </div>
+
+          <div
+            :ref="(el) => registerAnchor('window-tray', el)"
+            data-anchor-id="window-tray"
+            class="help-anchor"
+          >
+            <h3 class="help-anchor-title">托盘菜单</h3>
+            <div class="help-wide-figure"><MockTrayMenu /></div>
+            <ul class="help-points">
+              <li><strong>打开主窗口：</strong>显示当前选择的主视图。</li>
+              <li>
+                <strong>当前视图：</strong
+                >在便签列表、月视图、周视图之间切换；切换时加载目标视图自己的设置。
+              </li>
+              <li><strong>显示全部便利贴：</strong>一次显示所有已创建的桌面便利贴。</li>
+              <li><strong>便利贴总览：</strong>选择某张便利贴后可显示并聚焦，也可只关闭这一张。</li>
+              <li class="help-point-danger">
+                <strong>关闭全部便利贴：</strong>只结束桌面临时展示，不删除便签列表中的来源内容。
+              </li>
+              <li><strong>退出应用：</strong>真正结束程序与后台调度。</li>
+            </ul>
+          </div>
+
+          <div
+            :ref="(el) => registerAnchor('window-dock', el)"
+            data-anchor-id="window-dock"
+            class="help-anchor"
+          >
+            <h3 class="help-anchor-title">贴边隐藏</h3>
+            <div class="help-wide-figure"><MockDockFlow /></div>
+            <p class="help-anchor-desc">
+              设置支持为列表、月和周视图分别多选上、左、右边缘。把窗口拖到当前视图已启用且真实可触达的屏幕边缘，鼠标离开后窗口会自动收起；未选择任何边缘时关闭该视图的贴边隐藏。开启“贴边隐藏小黑条”后，触边只显示确认条，只有点击小黑条后才展开完整窗口；关闭该选项时则会触边直接展开。锁定窗口时不会自动隐藏。
+            </p>
+          </div>
+        </section>
+
+        <!-- 模块二：创建与整理 -->
+        <section v-if="isListView" data-section-id="notes" class="help-section">
+          <div class="help-section-head">
+            <h2>便签列表</h2>
+            <p class="help-summary">
+              便签列表负责<strong>创建、状态流转、筛选、排序、修改与删除</strong>。上方标签和状态条件对三种排序模式共同生效，切换模式不会清空当前筛选。
+            </p>
           </div>
 
           <div class="help-figures">
             <div :ref="(el) => registerAnchor('notes-create', el)" data-anchor-id="notes-create">
-              <HelpFigureBlock :n="1" title="新建便签">
+              <HelpFigureBlock title="新建便签">
                 <template #figure><MockNewNotePanel /></template>
                 <p>点击顶部操作栏的「＋」按钮展开面板。下面是各字段说明：</p>
                 <ol class="help-anno-list">
@@ -324,8 +500,7 @@ onBeforeUnmount(() => {
                   </li>
                   <li>
                     <strong>生效时间</strong> ——
-                    默认「立即生效」，创建后直接进入「进行中」。也可选「指定时间」（最早当前 +2
-                    分钟），到点前保持「初始化」，到点后自动切为「进行中」。
+                    默认「立即生效」，创建后直接进入「进行中」。也可选择未来时间，到点前保持「初始化」，到点后由后台调度器自动切为「进行中」。
                   </li>
                   <li>
                     <strong>持续天数</strong> —— 选择生效时间后显示，默认 1
@@ -333,23 +508,20 @@ onBeforeUnmount(() => {
                   </li>
                   <li>
                     <strong>系统提醒</strong> ——
-                    生效时间到达时弹出系统通知。仅在选择了「指定时间」后可开启；「立即生效」时此项不可用。<br />
+                    生效时间到达时弹出操作系统通知。仅在选择了未来生效时间后可开启；「立即生效」时此项不可用。<br />
                     <em class="help-anno-warn"
                       >⚠️ macOS 平台暂时无法开启系统通知（受限于 Electron 平台约束）。</em
                     >
                   </li>
                   <li>
                     <strong>置顶</strong> ——
-                    开启后便签始终固定在列表最顶部，不受时间排序影响。多条置顶便签按创建时间倒序排列。
+                    开启后便签进入列表的置顶区域。它只影响便签排序，不等于把整个应用窗口置顶。
                   </li>
                   <li>
                     <strong>标签</strong> ——
                     每条便签最多添加一个分类标签，用于分类管理和搜索筛选。外层优先显示当前选中的标签，其余标签遵循标签分组中的手动顺序；「更多」后的数字是标签总数。打开更多面板可搜索和选择标签，进入「管理标签」后可新建、修改和删除。标签全局共享，所有便签和模板复用同一套。
                   </li>
-                  <li>
-                    <strong>图片附件</strong> —— 支持点击上传或粘贴。单张 ≤ 50MB，单批新增 ≤
-                    200MB，每条最多 50 张（JPG / PNG / WebP）。
-                  </li>
+                  <li><strong>图片附件</strong> —— 支持截图、点击选择、拖入或粘贴图片。</li>
                   <li>
                     <strong>创建便签</strong> —— 正文非空后可点击。创建成功后显示绿色
                     ✔，面板自动收起并重置字段。
@@ -358,30 +530,8 @@ onBeforeUnmount(() => {
               </HelpFigureBlock>
             </div>
 
-            <div :ref="(el) => registerAnchor('notes-card', el)" data-anchor-id="notes-card">
-              <HelpFigureBlock :n="2" title="便签卡片">
-                <template #figure>
-                  <MockNoteCard
-                    status="in_progress"
-                    content="下午 3 点和设计团队过一遍新版本的交互稿。"
-                    time-text="今天 15:00"
-                    :tags="[{ name: '工作' }]"
-                    :more-tags="1"
-                    :attachments="2"
-                    disclosure
-                  />
-                </template>
-                <p>
-                  卡片正文下方是信息行：左侧「状态 ·
-                  时间」，右下角依次是<strong>标签</strong>、<strong>复制正文</strong>、<strong>图片附件</strong>。标签超过
-                  2 个折叠为「+N」，点击展开；正文超过 3
-                  行自动折叠，点右侧<strong>箭头</strong>展开或收起。
-                </p>
-              </HelpFigureBlock>
-            </div>
-
             <div :ref="(el) => registerAnchor('notes-status', el)" data-anchor-id="notes-status">
-              <HelpFigureBlock :n="3" title="状态流转">
+              <HelpFigureBlock title="状态流转">
                 <template #figure>
                   <div class="help-fig-rings">
                     <span><MockStatusRing status="initialized" /><em>初始化</em></span>
@@ -390,436 +540,611 @@ onBeforeUnmount(() => {
                   </div>
                 </template>
                 <p>
-                  卡片左侧圆环既显示状态又是主操作按钮：<strong>蓝色</strong>初始化、<strong>橙色</strong>进行中、<strong>绿色</strong>已完成。点击圆环推进到下一状态，完成后还能点回「重新进行」。
+                  卡片左侧圆环既显示状态又是主操作按钮：<strong>初始化</strong>表示尚未到生效时间，<strong>进行中</strong>表示已经生效，<strong>已完成</strong>表示用户已完成。到点后初始化会自动变为进行中；点击圆环可以手动提前执行、标记完成或重新进行。
                 </p>
               </HelpFigureBlock>
             </div>
 
             <div :ref="(el) => registerAnchor('notes-search', el)" data-anchor-id="notes-search">
-              <HelpFigureBlock :n="4" title="搜索便签">
-                <template #figure><MockActionBar grow="search" /></template>
-                <p>
-                  搜索框按正文关键词即时查找；点筛选按钮展开<strong>高级筛选</strong>，多条件可叠加：<strong>状态</strong>、<strong>标签</strong>（多选为「同时满足
-                  AND」）、<strong>时间范围</strong>、<strong>置顶 / 含附件</strong
-                  >、<strong>包含已删除</strong>（用于找回）。结果分屏加载，每屏 5 条。
-                </p>
-              </HelpFigureBlock>
+              <h3 class="help-anchor-title">搜索便签</h3>
+              <div class="help-wide-figure"><MockSearchFlow /></div>
+              <p class="help-anchor-desc">
+                第一次点击放大镜进入搜索模式，第二次点击展开完整搜索面板。正文关键词与高级筛选可以叠加；高级筛选支持状态、标签、时间范围、仅看置顶、仅看含附件和“包含已删除”。搜索结果分批加载，每批
+                5
+                条。已删除便签可在这里<strong>恢复</strong>，也可经过危险确认后<strong>彻底删除</strong>。
+              </p>
             </div>
 
             <div :ref="(el) => registerAnchor('notes-edit', el)" data-anchor-id="notes-edit">
-              <HelpFigureBlock :n="5" title="修改与删除">
+              <HelpFigureBlock title="便签卡片与右键操作">
                 <template #figure>
-                  <div class="help-fig-menu">
-                    <span>修改</span>
-                    <span class="is-danger">删除</span>
+                  <div class="help-card-and-menu">
+                    <MockNoteCard
+                      status="in_progress"
+                      content="下午 3 点和设计团队确认交互稿。"
+                      time-text="今天 15:00"
+                      :tags="[{ name: '工作' }]"
+                      :attachments="2"
+                      disclosure
+                    />
+                    <div class="help-fig-menu">
+                      <span>置顶</span>
+                      <span>修改</span>
+                      <span>贴到桌面</span>
+                      <span>新建标签分组</span>
+                      <span class="is-danger">删除</span>
+                    </div>
                   </div>
                 </template>
                 <p>
-                  在卡片上<strong>右键</strong>打开「修改 /
-                  删除」菜单。修改会打开编辑器，可改正文、生效时间、提醒、置顶、标签与附件。删除是<strong>软删除</strong>（移入回收，数据仍在），在搜索里启用「包含已删除」即可找回并恢复。
+                  正文超过显示高度时可展开或收起；信息行提供标签、复制正文和图片附件。右键菜单可执行<strong>置顶、修改、删除、贴到桌面</strong>；只有标签分组模式还会显示<strong>新建标签分组</strong>，在分组空白处右键也能创建。普通删除是逻辑删除，可在搜索中找回。
                 </p>
               </HelpFigureBlock>
             </div>
 
             <div :ref="(el) => registerAnchor('notes-list', el)" data-anchor-id="notes-list">
-              <HelpFigureBlock :n="6" title="列表与排序">
-                <template #figure>
-                  <div class="help-fig-seg">
-                    <span class="is-active">时间线</span>
-                    <span>自定义</span>
-                    <span>标签分组</span>
-                  </div>
-                </template>
+              <HelpFigureBlock title="筛选与三种排序">
+                <template #figure><MockModeComparison /></template>
                 <p>
-                  列表提供三种组织方式：<strong>时间线模式</strong>按生效时间自动排列、置顶始终在前；<strong>自定义模式</strong>可拖拽卡片手动调整顺序，适合固定清单；<strong>标签分组模式</strong>按筛选出的标签及“未分类”组织可折叠分组，组内从未来到过去排列并按需加载。点击“便签”标题旁的排序按钮会先收起全部分组，再进入整行拖动模式；点击勾号完成排序，“未分类”始终固定在末尾，筛选后的局部排序不会改动隐藏标签。分组空白处或便签右键可直接新建标签分组。右上角可直接选择。
+                  上方<strong>标签</strong>和<strong>状态</strong>均可多选；未选择条件表示查询全部。太极按钮用于收起筛选面板并刷新列表。<strong>时间线</strong>依次显示置顶、未来、今天、昨天、前天和更早；更早首次加载
+                  10 条，继续滚动每次加载 20
+                  条。<strong>自定义</strong>把置顶与日常分开拖动排序，日常首次 10 条、滚动后每批 20
+                  条。<strong>标签分组</strong>默认折叠，每组首次 10 条，点击“显示更多”再加载 20
+                  条；点击“便签”标题旁的排序按钮会先收起全部分组，再进入整行拖动模式，完成后点击勾号保存；“未分类”固定在最后。
                 </p>
               </HelpFigureBlock>
             </div>
           </div>
         </section>
 
-        <!-- 模块二：便签模板 -->
-        <section data-section-id="template" class="help-section">
+        <!-- 模块三：常用工具 -->
+        <section v-if="isListView" data-section-id="tools" class="help-section">
           <div class="help-section-head">
-            <h2>便签模板</h2>
+            <h2>常用工具</h2>
             <p class="help-summary">
-              把重复出现的事情做成<strong>循环模板</strong>，系统会按设定的周期到点自动生成一条新便签，无需每次手动新建。
+              把单条便签<strong>临时贴到桌面</strong>、把指定日期内容<strong>导出为日报</strong>，或用<strong>循环模板</strong>按周期自动生成新便签。
             </p>
           </div>
 
           <div
-            :ref="(el) => registerAnchor('template-overview', el)"
-            data-anchor-id="template-overview"
+            :ref="(el) => registerAnchor('tools-sticky', el)"
+            data-anchor-id="tools-sticky"
             class="help-anchor"
           >
-            <h3 class="help-anchor-title">整体预览</h3>
-            <p class="help-anchor-desc">
-              下面是便签模板页的完整界面（仿造，仅供查看）。图上编号对应下方逐条讲解。
-            </p>
-            <HelpMock
-              caption="便签模板页整机示意（仿造界面）"
-              :annotations="[
-                { n: 1, x: 30, y: 22 },
-                { n: 2, x: 52, y: 56 },
-                { n: 3, x: 62, y: 62 },
-                { n: 4, x: 18, y: 56 }
-              ]"
-            >
-              <MockTemplatePage />
-            </HelpMock>
+            <h3 class="help-anchor-title">贴到桌面</h3>
+            <div class="help-wide-figure help-sticky-preview"><MockStickyWindow /></div>
+            <ul class="help-points">
+              <li>桌面便利贴是<strong>只读临时展示</strong>，不在其中编辑或删除来源便签。</li>
+              <li>便利贴可临时调整背景、字号和窗口置顶，这些展示设置不会写回来源便签。</li>
+              <li>关闭一张或全部便利贴，只结束桌面展示；来源便签仍保留在列表中。</li>
+              <li>可从托盘的“便利贴总览”重新显示并聚焦指定便利贴。</li>
+            </ul>
           </div>
 
-          <div class="help-figures">
-            <div
-              :ref="(el) => registerAnchor('template-create', el)"
-              data-anchor-id="template-create"
-            >
-              <HelpFigureBlock :n="1" title="新建模板">
-                <template #figure>
-                  <div class="help-fig-createbox">
-                    <span class="help-fig-plus">+</span>
-                    <em>展开以新建循环模板…</em>
-                  </div>
-                </template>
-                <p>
-                  在模板页新建模板，填正文再配置生成规则。除频率外可预设生成便签的附加属性：<strong>生成时刻</strong>（时分）、<strong
-                    >通知 / 置顶 / 标签</strong
-                  >。配置时会实时显示<strong>下次生成预览</strong>，便于确认规则正确。
-                </p>
-              </HelpFigureBlock>
+          <div
+            :ref="(el) => registerAnchor('tools-report', el)"
+            data-anchor-id="tools-report"
+            class="help-anchor"
+          >
+            <h3 class="help-anchor-title">日报导出</h3>
+            <div class="help-process-row">
+              <span>选择日期</span><i>→</i><span>筛选并勾选便签</span><i>→</i><span>保存 TXT</span>
             </div>
+            <p class="help-anchor-desc">
+              点击导航栏日报按钮，先选择日期和状态范围，再勾选要导出的便签。确认后通过系统保存对话框生成
+              TXT 文件；导出成功后可以直接打开文件所在位置。
+            </p>
+          </div>
 
-            <div
-              :ref="(el) => registerAnchor('template-frequency', el)"
-              data-anchor-id="template-frequency"
-            >
-              <HelpFigureBlock :n="2" title="频率规则">
+          <div
+            :ref="(el) => registerAnchor('tools-template', el)"
+            data-anchor-id="tools-template"
+            class="help-anchor"
+          >
+            <h3 class="help-anchor-title">循环模板</h3>
+            <p class="help-anchor-desc">
+              循环模板按钮只出现在便签列表视图。模板不会反复修改同一条便签，而是在每个命中的时间点<strong>生成一条新的便签</strong>。
+            </p>
+            <HelpMock caption="循环模板页示意；新建、规则预览和模板卡片集中在同一工作区">
+              <MockTemplatePage />
+            </HelpMock>
+            <div class="help-figures">
+              <HelpFigureBlock title="创建与频率">
                 <template #figure>
                   <div class="help-fig-seg help-fig-seg--wrap">
-                    <span class="is-active">每天</span>
-                    <span>每周</span>
-                    <span>每月</span>
-                    <span>每年</span>
+                    <span>每天</span><span class="is-active">每周</span><span>每月</span
+                    ><span>每年</span>
                   </div>
                 </template>
                 <p>
-                  支持四种周期：<strong>每天</strong>（可设间隔 N
-                  天，1–3650）、<strong>每周</strong>（勾选周几）、<strong>每月</strong>（第几日
-                  1–31）、<strong>每年</strong>（月份 + 日期，对 2 月 29 日等做闰年处理）。
+                  填写正文，选择每天、每周、每月或每年的生成规则，并预设生成时刻、系统提醒、便签置顶和标签。下次生成时间会实时预览，保存前先确认是否符合预期。
                 </p>
               </HelpFigureBlock>
-            </div>
-
-            <div :ref="(el) => registerAnchor('template-card', el)" data-anchor-id="template-card">
-              <HelpFigureBlock :n="3" title="模板管理">
+              <HelpFigureBlock title="暂停、恢复与删除">
                 <template #figure>
                   <MockTemplateCard
                     state="running"
                     state-label="运行中"
-                    rule="每天 09:00"
-                    content="早会前梳理今天的三件要事。"
-                    context-text="下次 明天 09:00"
+                    rule="每周 一 09:00"
+                    content="整理本周工作计划。"
+                    context-text="下次 周一 09:00"
                     :tags="[{ name: '工作' }]"
                     notify
-                    pinned
                   />
                 </template>
                 <p>
-                  每个模板是一张卡片，可随时调整运行状态：<strong>暂停 / 恢复</strong
-                  >（暂停后不再生成，恢复从下一周期继续）、<strong>删除 / 恢复</strong
-                  >（软删除可恢复）、<strong>彻底删除</strong>（永久移除）。还可按启用 / 暂停 /
-                  已删除等状态<strong>筛选</strong>。
-                </p>
-              </HelpFigureBlock>
-            </div>
-
-            <div :ref="(el) => registerAnchor('template-run', el)" data-anchor-id="template-run">
-              <HelpFigureBlock :n="4" title="运行与容错">
-                <template #figure>
-                  <MockTemplateCard
-                    state="paused"
-                    state-label="已暂停"
-                    rule="每周 一/三/五 20:00"
-                    content="健身打卡：完成一次力量训练。"
-                    context-text="已暂停"
-                    :tags="[{ name: '健康' }]"
-                  />
-                </template>
-                <p>
-                  后台调度按规则驱动模板，并内置稳健策略：<strong>错过不补偿</strong>（应用未运行错过的不批量补齐，只按最新周期继续）、<strong>通知去重</strong>（同一次生成不重复推送）、<strong>连续失败自动暂停</strong>（连续失败
-                  3 次自动暂停，避免反复报错）。
+                  右键模板可以暂停、恢复或删除。暂停期间不再生成，恢复后从下一周期继续；普通删除可恢复，彻底删除永久移除。应用未运行时错过的旧周期不会在下次启动时批量补齐；连续生成失败
+                  3 次会自动暂停。
                 </p>
               </HelpFigureBlock>
             </div>
           </div>
         </section>
 
-        <!-- 模块三：设置 -->
+        <!-- 月视图 / 周视图：共用日历能力，按视图粒度显示差异 -->
+        <template v-if="!isListView">
+          <section data-section-id="calendar" class="help-section">
+            <div class="help-section-head">
+              <h2>{{ viewLabel }}</h2>
+              <p class="help-summary">
+                {{
+                  isWeekView ? '周视图一次聚焦周一至周日七天' : '月视图固定展示七列六行'
+                }}，便签按生效日期和持续天数形成日期横条。点击日期格可打开当天侧栏，再进行新建、修改、状态切换或删除。
+              </p>
+            </div>
+
+            <div
+              :ref="(el) => registerAnchor('calendar-navigation', el)"
+              data-anchor-id="calendar-navigation"
+              class="help-anchor"
+            >
+              <h3 class="help-anchor-title">日期导航</h3>
+              <div class="help-wide-figure"><MockCalendarToolbar :view-mode="viewMode" /></div>
+              <ul class="help-points">
+                <li>
+                  左右箭头切换<strong>{{
+                    isWeekView ? '上一周 / 下一周' : '上个月 / 下个月'
+                  }}</strong
+                  >；“今天”返回当前日期，刷新只更新内容，不改变当前范围。
+                </li>
+                <li v-if="isWeekView">
+                  点击中间日期范围打开日期选择器；选中任意一天后，视图跳转到该日期所在的完整周。
+                </li>
+                <li v-else>点击中间年月打开年份与月份面板；选中后月历按时间方向切换。</li>
+                <li>左侧天气位置与数据来源仅在天气已启用并成功获取数据时显示。</li>
+              </ul>
+            </div>
+
+            <div
+              :ref="(el) => registerAnchor('calendar-grid', el)"
+              data-anchor-id="calendar-grid"
+              class="help-anchor"
+            >
+              <h3 class="help-anchor-title">{{ isWeekView ? '一周七天' : '月历日期格' }}</h3>
+              <div class="help-wide-figure"><MockCalendarStrip :view-mode="viewMode" /></div>
+              <div class="help-setting-table">
+                <div>
+                  <strong>顶部信息</strong
+                  ><span>公历日期、农历或节日，以及“今 / 休 / 班”状态徽标。</span>
+                </div>
+                <div>
+                  <strong>便签横条</strong
+                  ><span
+                    >按生效时间与持续天数跨日期显示；同一天内容过多时保留可见横条并显示三个圆点。</span
+                  >
+                </div>
+                <div>
+                  <strong>底部信息</strong
+                  ><span
+                    >左侧＋新建当天便签，中间圆点表示仍有未展示内容，右侧数字是当天便签总数。</span
+                  >
+                </div>
+                <div>
+                  <strong>点击日期</strong
+                  ><span
+                    >第一次展开当天侧栏；再次点击同一日期收起；点击其他日期则保持侧栏展开并切换内容。</span
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div
+              :ref="(el) => registerAnchor('calendar-day-panel', el)"
+              data-anchor-id="calendar-day-panel"
+              class="help-anchor"
+            >
+              <HelpFigureBlock title="日期侧栏">
+                <template #figure><MockCalendarDayPanel /></template>
+                <p>
+                  日期侧栏展示所选日期、农历、天气和当天便签。侧栏复用便签列表的完整卡片，因此可以点击状态圆环、复制正文、查看附件、修改、置顶、贴到桌面或逻辑删除。
+                </p>
+                <p>
+                  点击左上角箭头收起侧栏；拖动侧栏与日历之间的边界可调整宽度，月视图和周视图分别保存自己的侧栏尺寸。
+                </p>
+              </HelpFigureBlock>
+            </div>
+
+            <div
+              :ref="(el) => registerAnchor('calendar-notes', el)"
+              data-anchor-id="calendar-notes"
+              class="help-anchor"
+            >
+              <HelpFigureBlock title="新建与管理便签">
+                <template #figure><MockNewNotePanel /></template>
+                <p>
+                  点击日期格左下角＋，或日期侧栏右上角＋，打开与便签列表一致的新建表单。选择今天且不调整时间时立即生效；选择未来日期时默认使用当天
+                  00:01，仍可手动修改。
+                </p>
+                <p>
+                  过去日期不能新建便签。创建或修改成功后，日期横条、当天数量和侧栏卡片会自动同步，不需要手动刷新。
+                </p>
+              </HelpFigureBlock>
+            </div>
+
+            <div
+              :ref="(el) => registerAnchor('calendar-weather', el)"
+              data-anchor-id="calendar-weather"
+              class="help-anchor"
+            >
+              <h3 class="help-anchor-title">天气与节假日</h3>
+              <div class="help-effect-grid">
+                <div>
+                  <strong>天气</strong
+                  ><span
+                    >宽日期格显示图标和温度；空间不足时逐步缩减，完整数据仍保留在日期侧栏。</span
+                  >
+                </div>
+                <div>
+                  <strong>农历与节日</strong
+                  ><span>节日优先于节气，节气优先于普通农历日期；同日内容过长时会省略显示。</span>
+                </div>
+                <div>
+                  <strong>休 / 班</strong
+                  ><span
+                    >绿色“休”表示法定休息日，橙色“班”表示调班工作日；年度数据缺失时自动隐藏。</span
+                  >
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section data-section-id="calendar-tools" class="help-section">
+            <div class="help-section-head">
+              <h2>常用工具</h2>
+              <p class="help-summary">
+                从导航栏导出日报，或从日期侧栏的便签卡片生成只读桌面便利贴。
+              </p>
+            </div>
+
+            <div
+              :ref="(el) => registerAnchor('calendar-report', el)"
+              data-anchor-id="calendar-report"
+              class="help-anchor"
+            >
+              <h3 class="help-anchor-title">日报导出</h3>
+              <div class="help-process-row">
+                <span>选择日期</span><i>→</i><span>筛选并勾选便签</span><i>→</i
+                ><span>保存 TXT</span>
+              </div>
+              <p class="help-anchor-desc">
+                日报按钮位于导航栏。导出使用你在弹窗中选择的日期和便签，不会因为当前日历正显示某个月或某一周而限制范围。
+              </p>
+            </div>
+
+            <div
+              :ref="(el) => registerAnchor('calendar-sticky', el)"
+              data-anchor-id="calendar-sticky"
+              class="help-anchor"
+            >
+              <h3 class="help-anchor-title">贴到桌面</h3>
+              <div class="help-wide-figure help-sticky-preview"><MockStickyWindow /></div>
+              <p class="help-anchor-desc">
+                在日期侧栏的便签卡片上打开右键菜单并选择“贴到桌面”。便利贴只读展示来源正文，可临时调整字号、背景和置顶；关闭便利贴不会删除日历中的来源便签。
+              </p>
+            </div>
+          </section>
+        </template>
+
+        <!-- 模块四：设置 -->
         <section data-section-id="settings" class="help-section">
           <div class="help-section-head">
             <h2>设置</h2>
             <p class="help-summary">
-              设置面板集中管理<strong>外观、窗口与数据</strong>。所有数值改动都会即时预览，满意后自动保存。
+              设置面板同时包含<strong>当前视图独立设置</strong>和<strong>整个应用公共设置</strong>。外观数值通常即时预览并自动保存，危险操作会再次确认。
             </p>
           </div>
 
           <div
-            :ref="(el) => registerAnchor('settings-overview', el)"
-            data-anchor-id="settings-overview"
+            :ref="(el) => registerAnchor('settings-scope', el)"
+            data-anchor-id="settings-scope"
             class="help-anchor"
           >
-            <h3 class="help-anchor-title">整体预览</h3>
-            <p class="help-anchor-desc">
-              下面是设置面板的完整界面（仿造，仅供查看）。图上编号对应下方逐条讲解。
-            </p>
-            <HelpMock
-              caption="设置面板整机示意（仿造界面）"
-              :annotations="[
-                { n: 1, x: 74, y: 30 },
-                { n: 2, x: 82, y: 54 },
-                { n: 3, x: 40, y: 62 },
-                { n: 4, x: 82, y: 80 },
-                { n: 5, x: 82, y: 90 }
-              ]"
-            >
-              <MockSettings />
-            </HelpMock>
+            <h3 class="help-anchor-title">先看设置作用域</h3>
+            <div class="help-scope-grid">
+              <div>
+                <span class="help-scope-chip">仅当前{{ viewLabel }}</span>
+                <p>
+                  导航栏风格、背景与文字、字体、毛玻璃、壁纸、窗口圆角、贴边边缘、窗口位置和尺寸。
+                </p>
+              </div>
+              <div>
+                <span class="help-scope-chip help-scope-chip--shared">所有视图</span>
+                <p>开机自启、天气位置、节假日数据、远程通知与设备信息开关。</p>
+              </div>
+              <div v-if="isListView">
+                <span class="help-scope-chip help-scope-chip--list">仅便签列表</span>
+                <p>便利贴初始字号、背景颜色、圆角和默认置顶。</p>
+              </div>
+              <div v-if="!isListView">
+                <span class="help-scope-chip help-scope-chip--calendar">当前日历视图</span>
+                <p>日期侧栏宽度由{{ viewLabel }}独立保存，不会改变另一个日历视图。</p>
+              </div>
+              <div>
+                <span class="help-scope-chip help-scope-chip--calendar">月/周视图</span>
+                <p>天气展示、日历与节假日内容；其数据源属于应用公共资源。</p>
+              </div>
+            </div>
           </div>
 
-          <div class="help-figures">
-            <div
-              :ref="(el) => registerAnchor('settings-appearance', el)"
-              data-anchor-id="settings-appearance"
-            >
-              <HelpFigureBlock :n="1" title="外观基调">
-                <template #figure>
-                  <div class="help-fig-appearance">
-                    <span class="help-fig-dot" style="background: #1c1c1e" />
-                    <span class="help-fig-dot help-fig-dot--active" style="background: #ffffff" />
-                    <span class="help-fig-dot" style="background: #0a84ff" />
-                    <span class="help-fig-hex">#FFFFFF</span>
-                  </div>
-                </template>
-                <p>
-                  调整整体配色与字号：<strong>背景色 / 文字色</strong>自定义窗口配色；<strong
-                    >基准字号</strong
-                  >
-                  14–22（默认 17），整个界面按此比例缩放；<strong>窗口不透明度</strong> 0–1（默认
-                  0.6）；<strong>弹层霜层浓度</strong> 0–1（默认 0.2）。
-                </p>
-              </HelpFigureBlock>
+          <div
+            :ref="(el) => registerAnchor('settings-appearance', el)"
+            data-anchor-id="settings-appearance"
+            class="help-anchor"
+          >
+            <h3 class="help-anchor-title">外观与字体</h3>
+            <div class="help-setting-table">
+              <div>
+                <strong>导航栏风格</strong><span>切换 Apple / Windows 排布，不改变按钮功能。</span>
+              </div>
+              <div>
+                <strong>背景颜色</strong
+                ><span>当前视图的基础背景色，也是毛玻璃着色和透明回退的基色。</span>
+              </div>
+              <div>
+                <strong>字体大小</strong
+                ><span>当前视图的全局基础字号；正文、标题和辅助文字按统一比例联动。</span>
+              </div>
+              <div>
+                <strong>文字颜色</strong
+                ><span>当前视图的主文字颜色，次要文字与中性边线由它自动派生。</span>
+              </div>
             </div>
+          </div>
 
-            <div :ref="(el) => registerAnchor('settings-blur', el)" data-anchor-id="settings-blur">
-              <HelpFigureBlock :n="2" title="系统毛玻璃">
-                <template #figure>
-                  <div class="help-fig-stack">
-                    <span class="help-fig-toggle help-fig-toggle--on"><i /></span>
-                    <span class="help-fig-slider"
-                      ><i style="width: 52%" /><b style="left: 52%"
-                    /></span>
-                  </div>
-                </template>
-                <p>
-                  开启后窗口背后呈现真实系统毛玻璃（默认开启），<strong>与壁纸互斥</strong>。可调<strong
-                    >模糊半径</strong
-                  >
-                  0–40（默认 20）、<strong>饱和度</strong> 0–2（默认 1.8）、<strong>圆角</strong>
-                  0–30（默认 12）、<strong>内容背景模糊</strong> 0–30（默认 10）。
-                </p>
-              </HelpFigureBlock>
+          <div
+            v-if="isListView"
+            :ref="(el) => registerAnchor('settings-sticky', el)"
+            data-anchor-id="settings-sticky"
+            class="help-anchor"
+          >
+            <h3 class="help-anchor-title">便利贴默认样式</h3>
+            <p class="help-anchor-desc">
+              默认字号、背景颜色、圆角和默认置顶只决定<strong>以后新建便利贴</strong>的初始外观，不会批量修改已经显示的便利贴，也不会改变来源便签正文。
+            </p>
+          </div>
+
+          <div
+            :ref="(el) => registerAnchor('settings-blur', el)"
+            data-anchor-id="settings-blur"
+            class="help-anchor"
+          >
+            <h3 class="help-anchor-title">毛玻璃与壁纸</h3>
+            <div class="help-effect-grid">
+              <div>
+                <strong>玻璃浓度</strong><span>背景色覆盖强度；0 更通透，1 更接近不透明纯色。</span>
+              </div>
+              <div><strong>模糊半径</strong><span>背景被打散的程度，不等于透明度。</span></div>
+              <div><strong>饱和度</strong><span>模糊背景的色彩鲜艳程度。</span></div>
+              <div><strong>窗口圆角</strong><span>0 为直角，数值越大越圆润。</span></div>
             </div>
+            <ul class="help-points">
+              <li>
+                Windows 支持原生模糊半径与饱和度调节；macOS 使用系统 Vibrancy，主要支持开启或关闭。
+              </li>
+              <li>
+                启动时会检查原生毛玻璃是否可用；不可用时自动回退到背景颜色、玻璃浓度和圆角，不阻断应用使用。
+              </li>
+              <li>
+                关闭毛玻璃后可以启用壁纸。壁纸支持截图、导入、历史壁纸、裁切和额外模糊；启用壁纸会关闭原生毛玻璃。
+              </li>
+            </ul>
+          </div>
 
-            <div
-              :ref="(el) => registerAnchor('settings-wallpaper', el)"
-              data-anchor-id="settings-wallpaper"
-            >
-              <HelpFigureBlock :n="3" title="壁纸">
-                <template #figure>
-                  <div class="help-fig-imgbox">
-                    <svg viewBox="0 0 48 32" aria-hidden="true">
-                      <rect
-                        x="1"
-                        y="1"
-                        width="46"
-                        height="30"
-                        rx="3"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.5"
-                      />
-                      <circle cx="13" cy="11" r="3.5" fill="currentColor" />
-                      <path
-                        d="M4 27l11-10 7 6 6-5 16 12"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.5"
-                        stroke-linejoin="round"
-                      />
-                    </svg>
-                  </div>
-                </template>
-                <p>
-                  为窗口设置自定义背景图（默认关闭），<strong>启用后自动关闭系统毛玻璃</strong>。导入图片后可用<strong>裁剪编辑器</strong>缩放、平移到合适构图；<strong
-                    >壁纸模糊</strong
-                  >
-                  0–30（默认 8）让背景不干扰阅读。
-                </p>
-              </HelpFigureBlock>
+          <div
+            :ref="(el) => registerAnchor('settings-common', el)"
+            data-anchor-id="settings-common"
+            class="help-anchor"
+          >
+            <h3 class="help-anchor-title">公共服务</h3>
+            <div class="help-setting-table">
+              <div>
+                <strong>开机自启</strong><span>直接读写操作系统登录项，不保存在便签数据库中。</span>
+              </div>
+              <div>
+                <strong>天气</strong
+                ><span
+                  >只在月视图和周视图展示，可手动选择城市或请求系统定位；越远期的预报不确定性越高。</span
+                >
+              </div>
+              <div>
+                <strong>日历与节假日</strong
+                ><span
+                  >缺少当前年度数据时不显示“休 / 班”，但不影响日历、农历和便签；可下载或导入
+                  JSON。</span
+                >
+              </div>
+              <div>
+                <strong>远程服务</strong
+                ><span>分别控制软件通知和设备基础信息；修改后的选择从下次启动按新设置执行。</span>
+              </div>
+              <div>
+                <strong>通知历史</strong
+                ><span>查看已经保存的软件通知，即使关闭后续接收也不会删除历史记录。</span>
+              </div>
             </div>
+          </div>
 
-            <div
-              :ref="(el) => registerAnchor('settings-window', el)"
-              data-anchor-id="settings-window"
-            >
-              <HelpFigureBlock :n="4" title="窗口与缩放">
-                <template #figure>
-                  <div class="help-fig-stack">
-                    <span class="help-fig-toggle help-fig-toggle--on"><i /></span>
-                    <span class="help-fig-toggle"><i /></span>
-                  </div>
-                </template>
-                <p>
-                  <strong>窗口置顶</strong
-                  >默认开启，让便签始终浮在其他窗口之上；<strong>锁定窗口</strong>默认关闭，锁定后禁止拖动与缩放，防止误触；<strong>窗口缩放</strong>可拖动边缘调整，范围约
-                  240–16384 像素。
-                </p>
-              </HelpFigureBlock>
-            </div>
-
-            <div
-              :ref="(el) => registerAnchor('settings-tools', el)"
-              data-anchor-id="settings-tools"
-            >
-              <HelpFigureBlock :n="5" title="数据与工具">
-                <template #figure>
-                  <div class="help-fig-stack">
-                    <span class="help-fig-toggle help-fig-toggle--on"><i /></span>
-                    <span class="help-fig-btn">调度器诊断</span>
-                  </div>
-                </template>
-                <p>
-                  <strong>开机自启</strong
-                  >开启后随系统登录自动启动；<strong>调度器诊断</strong>查看后台调度运行状态，便于排查提醒异常；<strong
-                    >清空数据 / 重置设置</strong
-                  >请谨慎操作，用于彻底清理或恢复默认。
-                </p>
-              </HelpFigureBlock>
+          <div
+            :ref="(el) => registerAnchor('settings-tools', el)"
+            data-anchor-id="settings-tools"
+            class="help-anchor"
+          >
+            <h3 class="help-anchor-title">恢复与诊断</h3>
+            <div class="help-action-grid">
+              <div><strong>检查更新</strong><span>手动查询新版本。</span></div>
+              <div><strong>查看日志</strong><span>排查窗口、数据库和后台任务问题。</span></div>
+              <div>
+                <strong>恢复默认设置</strong
+                ><span>只恢复当前视图独立设置；不修改其他视图、公共开关或便签数据。</span>
+              </div>
+              <div class="is-danger">
+                <strong>清空便签数据</strong
+                ><span>永久清除便签、模板、标签和附件；设置不受影响且无法恢复。</span>
+              </div>
+              <div>
+                <strong>调度器诊断</strong
+                ><span>检查便签生效、系统提醒和循环模板等定时任务是否正常运行。</span>
+              </div>
             </div>
           </div>
         </section>
 
-        <!-- 模块四：杂项（无独立界面的幕后能力，用多级标题精确定位） -->
-        <section data-section-id="misc" class="help-section help-section--last">
+        <!-- 模块五：数据与隐私 -->
+        <section data-section-id="safety" class="help-section help-section--last">
           <div class="help-section-head">
-            <h2>杂项</h2>
+            <h2>数据与隐私</h2>
             <p class="help-summary">
-              这些能力没有独立的设置界面，却默默支撑着日常体验。下面按主题分条讲清它们各自「藏」在哪里、如何触发。
+              先确认操作影响的是<strong>主窗口、桌面便利贴还是来源便签</strong>。普通删除尽量可恢复，只有明确标记为永久操作的入口才会物理清理数据。
             </p>
           </div>
 
           <div
-            :ref="(el) => registerAnchor('misc-snap', el)"
-            data-anchor-id="misc-snap"
+            :ref="(el) => registerAnchor('safety-delete', el)"
+            data-anchor-id="safety-delete"
             class="help-anchor"
           >
-            <h3 class="help-anchor-title">贴边隐藏</h3>
-            <p class="help-anchor-desc">
-              把窗口拖到屏幕边缘（吸附阈值约 20
-              像素）时，窗口会自动收起为一条细边，鼠标移上去再滑出，节省桌面空间。
-            </p>
-          </div>
-
-          <div
-            :ref="(el) => registerAnchor('misc-notify', el)"
-            data-anchor-id="misc-notify"
-            class="help-anchor"
-          >
-            <h3 class="help-anchor-title">系统通知</h3>
-            <div class="help-sub">
-              <h4 class="help-subhead">通知展示</h4>
-              <p class="help-sub-text">
-                Windows 到生效时间时使用系统富通知提醒。macOS 系统通知需要付费的 Apple Developer
-                证书签名，当前版本暂未开通，因此新建便签、修改便签和循环模板中的通知设置会被禁用。
-              </p>
+            <h3 class="help-anchor-title">删除与找回</h3>
+            <div class="help-delete-flow">
+              <div>
+                <span>{{ isListView ? '首页右键删除' : '日期侧栏右键删除' }}</span
+                ><strong>逻辑删除</strong><small>正文与图片仍保留</small>
+              </div>
+              <i>→</i>
+              <div>
+                <span>{{ isListView ? '搜索“包含已删除”' : '切换便签列表并搜索已删除' }}</span
+                ><strong>查看已删除便签</strong><small>仍可阅读内容</small>
+              </div>
+              <i>→</i>
+              <div>
+                <span>选择后续操作</span><strong>恢复 / 彻底删除</strong
+                ><small>彻底删除不可恢复</small>
+              </div>
+            </div>
+            <div class="help-warning-card">
+              <strong>不要混淆三个操作</strong>
+              <span
+                >关闭主窗口只隐藏到托盘；关闭便利贴只结束临时桌面展示；删除便签才会改变来源数据。</span
+              >
             </div>
           </div>
 
           <div
-            :ref="(el) => registerAnchor('misc-protocol', el)"
-            data-anchor-id="misc-protocol"
+            :ref="(el) => registerAnchor('safety-privacy', el)"
+            data-anchor-id="safety-privacy"
             class="help-anchor"
           >
-            <h3 class="help-anchor-title">通知点击跳转</h3>
+            <h3 class="help-anchor-title">远程服务与隐私</h3>
+            <div class="help-privacy-grid">
+              <div class="is-local">
+                <strong>始终保存在本地</strong
+                ><span>便签正文、标签、循环模板内容、图片附件、壁纸。</span>
+              </div>
+              <div>
+                <strong>软件通知请求</strong
+                ><span>系统类型、应用版本和通知游标，用于获取适用的软件通知。</span>
+              </div>
+              <div>
+                <strong>可选设备信息</strong
+                ><span
+                  >安装标识、应用版本、系统版本与架构、CPU、GPU、内存、语言和启动/退出时间。</span
+                >
+              </div>
+            </div>
             <p class="help-anchor-desc">
-              Windows
-              用户点击系统通知后，会通过自定义协议（<code>abandon-note://</code>）唤起应用并定位到对应便签，即使窗口当前被隐藏或最小化也能被唤出。macOS
-              当前不启用系统通知。
+              “接收软件通知”和“检测设备基础信息”可以分别关闭。程序不会通过这些远程服务上传便签正文、标签、模板内容、附件或壁纸。
             </p>
           </div>
 
           <div
-            :ref="(el) => registerAnchor('misc-screenshot', el)"
-            data-anchor-id="misc-screenshot"
+            :ref="(el) => registerAnchor('safety-platform', el)"
+            data-anchor-id="safety-platform"
             class="help-anchor"
           >
-            <h3 class="help-anchor-title">截图选取</h3>
-            <p class="help-anchor-desc">
-              新建 / 编辑便签时可发起截图，框选屏幕区域直接作为图片附件插入，无需先存成文件再上传。
-            </p>
-          </div>
-
-          <div
-            :ref="(el) => registerAnchor('misc-storage', el)"
-            data-anchor-id="misc-storage"
-            class="help-anchor"
-          >
-            <h3 class="help-anchor-title">数据存储与找回</h3>
-            <div class="help-sub">
-              <h4 class="help-subhead">本地存储</h4>
-              <p class="help-sub-text">
-                所有便签、模板与设置保存在本地 SQLite 数据库；图片附件与壁纸分别存放在独立的
-                attachments / wallpapers 目录，随应用一起持久化。
-              </p>
-              <h4 class="help-subhead">软删除找回</h4>
-              <p class="help-sub-text">
-                删除便签或模板只是标记为已删除，数据仍在。便签可在搜索里启用「包含已删除」找回，模板可在其筛选中恢复；确认不再需要时再执行彻底删除。
-              </p>
+            <h3 class="help-anchor-title">平台差异</h3>
+            <div class="help-platform-grid">
+              <div>
+                <strong>Windows 10 / 11</strong
+                ><span>支持系统通知及点击通知定位便签；受支持版本可调原生毛玻璃半径与饱和度。</span>
+              </div>
+              <div>
+                <strong>macOS</strong
+                ><span>使用系统 Vibrancy；当前版本未开放系统通知，因此相关通知开关会被禁用。</span>
+              </div>
             </div>
           </div>
 
           <div
-            :ref="(el) => registerAnchor('misc-scheduler', el)"
-            data-anchor-id="misc-scheduler"
+            :ref="(el) => registerAnchor('safety-troubleshoot', el)"
+            data-anchor-id="safety-troubleshoot"
             class="help-anchor"
           >
-            <h3 class="help-anchor-title">后台调度器</h3>
-            <div class="help-sub">
-              <h4 class="help-subhead">整分对齐</h4>
-              <p class="help-sub-text">
-                调度主线按整分钟触发，负责激活到期便签、推送提醒、生成模板便签，让「到点」尽量精准。
-              </p>
-              <h4 class="help-subhead">看门狗与熔断</h4>
-              <p class="help-sub-text">
-                另有看门狗定期（约 5
-                分钟）自检，发现主线卡住会重启；异常连续累积到阈值会触发熔断并弹出告警通知，提示可能需要检查。
-              </p>
-              <h4 class="help-subhead">状态自动流转</h4>
-              <p class="help-sub-text">
-                每分钟检查一次，把到达生效时间的「初始化」便签自动推进为「进行中」，无需手动干预。
-              </p>
+            <h3 class="help-anchor-title">故障排查</h3>
+            <div class="help-setting-table">
+              <div>
+                <strong>提醒或状态未按时变化</strong
+                ><span>打开“调度器诊断”查看最近执行时间；异常时先完全退出并重新启动应用。</span>
+              </div>
+              <div>
+                <strong>毛玻璃不可用</strong
+                ><span>查看运行诊断；应用会自动回退，仍可继续使用背景颜色、透明度和壁纸。</span>
+              </div>
+              <div>
+                <strong>新年度没有休/班</strong
+                ><span
+                  >在“日历与节假日数据”中下载；下载失败时使用导入 JSON，不影响其他日历功能。</span
+                >
+              </div>
+              <div>
+                <strong>需要提交问题</strong
+                ><span>先打开“查看日志”确认问题时间，再随问题描述一起提供必要日志。</span>
+              </div>
             </div>
           </div>
 
           <div
-            :ref="(el) => registerAnchor('misc-autostart', el)"
-            data-anchor-id="misc-autostart"
+            :ref="(el) => registerAnchor('safety-support', el)"
+            data-anchor-id="safety-support"
             class="help-anchor"
           >
-            <h3 class="help-anchor-title">开机自启</h3>
-            <p class="help-anchor-desc">
-              在设置中开启开机自启后，应用会随系统登录在后台启动，确保循环模板与提醒不会因为忘记打开而错过。
-            </p>
+            <h3 class="help-anchor-title">项目与支持</h3>
+            <p class="help-anchor-desc">{{ profile.greeting }}</p>
+            <div class="help-support-card">
+              <div class="help-support-item">
+                <span>GitCode 仓库</span>
+                <a :href="profile.gitcode" target="_blank" rel="noopener noreferrer">
+                  {{ profile.gitcode }}
+                </a>
+              </div>
+              <div class="help-support-item">
+                <span>GitHub 仓库</span>
+                <a :href="profile.github" target="_blank" rel="noopener noreferrer">
+                  {{ profile.github }}
+                </a>
+              </div>
+              <div class="help-support-item">
+                <span>联系邮箱</span><strong>{{ profile.email }}</strong>
+              </div>
+            </div>
           </div>
         </section>
       </div>
@@ -1065,6 +1390,7 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   padding: 20rem 22rem 40rem;
   color: var(--text-color);
+  container-type: inline-size;
   /* 帮助中心为阅读页，正文可选中复制（覆盖全局 body 的 user-select:none）。 */
   user-select: text;
 }
@@ -1388,6 +1714,11 @@ onBeforeUnmount(() => {
   font-size: var(--fs-secondary);
   line-height: 1.8;
 }
+.help-home-subtitle {
+  margin: 24rem 0 8rem;
+  font-size: calc(var(--fs-body) * 1.12);
+  font-weight: 650;
+}
 .help-home-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220rem, 1fr));
@@ -1417,12 +1748,21 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 12rem;
 }
+.help-donate-item {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6rem;
+  min-width: 0;
+  margin: 0;
+}
 .help-donate-slot {
   display: grid;
   place-items: center;
-  flex: 1;
-  min-width: 0;
+  width: 100%;
+  min-height: 0;
   aspect-ratio: 1 / 1;
+  overflow: hidden;
   border: 1px dashed var(--ui-border-hover);
   border-radius: 12rem;
   color: var(--text-color-secondary);
@@ -1430,10 +1770,20 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 .help-donate-slot img {
+  display: block;
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
   border-radius: 12rem;
+}
+.help-donate-item figcaption {
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.88);
+  text-align: center;
 }
 .help-home-note {
   margin: 0;
@@ -1460,6 +1810,13 @@ onBeforeUnmount(() => {
 .help-link-value {
   overflow-wrap: anywhere;
   font-size: var(--fs-secondary);
+}
+.help-link-list a {
+  color: var(--ui-accent);
+  text-decoration: none;
+}
+.help-link-list a:hover {
+  text-decoration: underline;
 }
 
 /* ---- 可折叠字段列表（备用） ---- */
@@ -1540,5 +1897,275 @@ onBeforeUnmount(() => {
   color: #e6a700;
   font-style: normal;
   font-size: calc(var(--fs-secondary) * 0.88);
+}
+
+/* ---- 任务导向帮助页：步骤、作用域和状态流程 ---- */
+.help-scope-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22rem;
+  padding: 3rem 8rem;
+  border-radius: 999px;
+  background: var(--ui-accent-subtle);
+  color: var(--ui-accent);
+  font-size: calc(var(--fs-secondary) * 0.82);
+  font-weight: 600;
+}
+.help-scope-chip--shared {
+  background: color-mix(in srgb, #30d158 16%, transparent);
+  color: color-mix(in srgb, #30d158 78%, var(--text-color));
+}
+.help-scope-chip--list {
+  background: color-mix(in srgb, #bf5af2 16%, transparent);
+  color: color-mix(in srgb, #bf5af2 78%, var(--text-color));
+}
+.help-scope-chip--calendar {
+  background: color-mix(in srgb, #ff9f0a 16%, transparent);
+  color: color-mix(in srgb, #ff9f0a 78%, var(--text-color));
+}
+.help-quick-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8rem;
+  margin-top: 18rem;
+}
+.help-quick-steps > div {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4rem;
+  min-width: 0;
+  min-height: 68rem;
+  padding: 10rem 7rem;
+  border: 1px solid var(--ui-border-divider);
+  border-radius: 12rem;
+  background: var(--ui-surface-subtle);
+  text-align: center;
+}
+.help-quick-steps strong {
+  font-size: calc(var(--fs-secondary) * 0.9);
+}
+.help-quick-steps small {
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.74);
+  line-height: 1.4;
+}
+.help-term-grid,
+.help-scope-grid,
+.help-effect-grid,
+.help-action-grid,
+.help-privacy-grid,
+.help-platform-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180rem, 1fr));
+  gap: 10rem;
+  margin-top: 14rem;
+}
+.help-term-card,
+.help-scope-grid > div,
+.help-effect-grid > div,
+.help-action-grid > div,
+.help-privacy-grid > div,
+.help-platform-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 7rem;
+  min-width: 0;
+  padding: 13rem;
+  border: 1px solid var(--ui-border-divider);
+  border-radius: 12rem;
+  background: var(--ui-surface-subtle);
+}
+.help-term-card strong,
+.help-effect-grid strong,
+.help-action-grid strong,
+.help-privacy-grid strong,
+.help-platform-grid strong {
+  font-size: var(--fs-secondary);
+  font-weight: 650;
+}
+.help-term-card span,
+.help-scope-grid p,
+.help-effect-grid span,
+.help-action-grid span,
+.help-privacy-grid span,
+.help-platform-grid span {
+  margin: 0;
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.9);
+  line-height: 1.65;
+}
+.help-wide-figure {
+  margin: 12rem 0;
+  padding: 14rem;
+  border: 1px solid var(--ui-border-divider);
+  border-radius: 14rem;
+  background: var(--ui-surface-subtle);
+  container-type: inline-size;
+}
+.help-wide-figure > * {
+  margin-inline: auto;
+}
+.help-point-danger {
+  color: #ff453a;
+}
+.help-point-danger strong {
+  color: inherit;
+}
+.help-card-and-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 8rem;
+  width: 100%;
+}
+.help-card-and-menu .help-fig-menu {
+  align-self: flex-end;
+}
+.help-process-row,
+.help-delete-flow {
+  display: grid;
+  align-items: center;
+  gap: 9rem;
+  margin: 12rem 0 16rem;
+}
+.help-process-row > i,
+.help-delete-flow > i {
+  color: var(--text-color-secondary);
+  font-style: normal;
+  text-align: center;
+}
+.help-process-row {
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+}
+.help-process-row span {
+  padding: 10rem;
+  border-radius: 10rem;
+  background: var(--ui-fill-passive);
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.9);
+  text-align: center;
+}
+.help-setting-table {
+  display: flex;
+  flex-direction: column;
+  margin: 10rem 0;
+  border-top: 1px solid var(--ui-border-divider);
+}
+.help-setting-table > div {
+  display: grid;
+  grid-template-columns: minmax(120rem, 0.34fr) minmax(0, 1fr);
+  gap: 12rem;
+  padding: 11rem 4rem;
+  border-bottom: 1px solid var(--ui-border-divider);
+}
+.help-setting-table strong {
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+}
+.help-setting-table span {
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.92);
+  line-height: 1.65;
+}
+.help-action-grid .is-danger {
+  border-color: color-mix(in srgb, #ff453a 42%, var(--ui-border-divider));
+}
+.help-action-grid .is-danger strong {
+  color: #ff453a;
+}
+.help-delete-flow {
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+}
+.help-delete-flow > div {
+  display: flex;
+  flex-direction: column;
+  gap: 5rem;
+  min-width: 0;
+  min-height: 94rem;
+  padding: 12rem;
+  border-radius: 11rem;
+  background: var(--ui-surface-subtle);
+  text-align: center;
+}
+.help-delete-flow span,
+.help-delete-flow small {
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.8);
+  line-height: 1.45;
+}
+.help-delete-flow strong {
+  font-size: calc(var(--fs-secondary) * 0.94);
+}
+.help-delete-flow > div:last-of-type strong {
+  color: #ff453a;
+}
+.help-warning-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5rem;
+  padding: 12rem 14rem;
+  border-left: 3rem solid var(--ui-warning);
+  border-radius: 0 10rem 10rem 0;
+  background: color-mix(in srgb, var(--ui-warning) 11%, transparent);
+}
+.help-warning-card strong {
+  font-size: var(--fs-secondary);
+}
+.help-warning-card span {
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.9);
+  line-height: 1.6;
+}
+.help-privacy-grid .is-local {
+  border-color: color-mix(in srgb, #30d158 38%, var(--ui-border-divider));
+}
+.help-support-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12rem;
+  padding: 12rem 14rem;
+  border: 1px solid var(--ui-border-divider);
+  border-radius: 10rem;
+  background: var(--ui-surface-subtle);
+}
+.help-support-item {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4rem;
+}
+.help-support-card span {
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.82);
+}
+.help-support-card strong,
+.help-support-card a {
+  overflow-wrap: anywhere;
+  font-size: var(--fs-secondary);
+}
+.help-support-card a {
+  color: var(--ui-accent);
+  text-decoration: none;
+}
+.help-support-card a:hover {
+  text-decoration: underline;
+}
+
+@container (max-width: 560px) {
+  .help-process-row,
+  .help-delete-flow {
+    grid-template-columns: 1fr;
+  }
+  .help-process-row > i,
+  .help-delete-flow > i {
+    transform: rotate(90deg);
+  }
+}
+
+@container (max-width: 430px) {
+  .help-setting-table > div {
+    grid-template-columns: 1fr;
+    gap: 5rem;
+  }
 }
 </style>

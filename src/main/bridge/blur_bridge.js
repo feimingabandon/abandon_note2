@@ -38,7 +38,11 @@ const EDGE_MONITOR_RESULT_MESSAGES = Object.freeze({
   [-8]: '已经存在活动的原生边缘监视器',
   [-9]: '停止原生边缘监视线程超时',
   [-10]: '注册 Windows 边缘通知消息失败',
-  [-11]: '贴边会话代次无效'
+  [-11]: '贴边会话代次无效',
+  [-12]: '原生小黑条显示模式无效',
+  [-13]: '注册原生小黑条窗口类失败',
+  [-14]: '创建原生小黑条窗口失败',
+  [-15]: '原生边缘监视线程初始化超时'
 })
 
 function getNativeDockSide(side) {
@@ -157,6 +161,19 @@ function initNative() {
       'int',
       'uint64_t'
     ])
+    // Ex 是向后兼容的可选扩展；旧 DLL 仍可加载并继续使用触边即唤出的旧 ABI。
+    try {
+      lib.WindowMotion_ArmEdgeMonitorEx = lib.func('WindowMotion_ArmEdgeMonitorEx', 'int', [
+        'intptr_t',
+        'int',
+        'int',
+        'int',
+        'uint64_t',
+        'int'
+      ])
+    } catch {
+      lib.WindowMotion_ArmEdgeMonitorEx = null
+    }
     lib.WindowMotion_DisarmEdgeMonitor = lib.func('WindowMotion_DisarmEdgeMonitor', 'int', [
       'uint64_t'
     ])
@@ -279,22 +296,30 @@ export function armWindowEdgeMonitor(
   window,
   side,
   generation,
-  { thicknessDip = 2, pollIntervalMs = 100 } = {}
+  { thicknessDip = 2, pollIntervalMs = 100, revealHandleEnabled = false } = {}
 ) {
   if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
     return { success: false, code: null, error: 'Windows 原生边缘监视器不可用' }
   }
   const nativeSide = getNativeDockSide(side)
   if (!nativeSide) return { success: false, code: -2, error: EDGE_MONITOR_RESULT_MESSAGES[-2] }
-  const code = lib.WindowMotion_ArmEdgeMonitor(
+  if (revealHandleEnabled && !lib.WindowMotion_ArmEdgeMonitorEx) {
+    return { success: false, code: null, error: '当前原生 DLL 不支持小黑条模式' }
+  }
+  const args = [
     getWindowHandleValue(window),
     nativeSide,
     Math.max(1, Math.round(thicknessDip)),
     Math.max(25, Math.round(pollIntervalMs)),
     Number(generation)
-  )
+  ]
+  // 关闭小黑条时继续调用旧导出，确保旧行为与 ABI 路径均保持不变。
+  const code = revealHandleEnabled
+    ? lib.WindowMotion_ArmEdgeMonitorEx(...args, 1)
+    : lib.WindowMotion_ArmEdgeMonitor(...args)
   return {
     success: code === 1,
+    cleanupRequired: code === -15,
     code,
     error:
       code === 1 ? null : EDGE_MONITOR_RESULT_MESSAGES[code] || `原生边缘监视器启动失败 (${code})`
@@ -316,6 +341,7 @@ export function getWindowEdgeMonitorStatus() {
   if (process.platform !== 'win32' || !initNative()) {
     return {
       supported: false,
+      revealHandleSupported: false,
       state: 'unavailable',
       workerAlive: false,
       generation: 0,
@@ -323,7 +349,12 @@ export function getWindowEdgeMonitorStatus() {
     }
   }
   const status = JSON.parse(lib.WindowMotion_GetEdgeMonitorStatusJson())
-  return { ...status, supported: true, side: getDockSideName(status.side) }
+  return {
+    ...status,
+    supported: true,
+    revealHandleSupported: Boolean(lib.WindowMotion_ArmEdgeMonitorEx),
+    side: getDockSideName(status.side)
+  }
 }
 
 export function consumeWindowEdgeMonitorEvent() {

@@ -115,6 +115,11 @@ html.month-view {
   --ui-fill-hover: color-mix(in srgb, var(--text-color) 4%, transparent);
   --ui-fill-pressed: color-mix(in srgb, var(--text-color) 10%, transparent);
 
+  /* ---- 交互语义色 ---- */
+  --ui-accent: #0a84ff;
+  --ui-accent-subtle: color-mix(in srgb, var(--ui-accent) 15%, transparent);
+  --ui-warning: rgb(255, 149, 0);
+
   /* 模态内容必须先形成稳定表面，再承载内部控件；用户透明度仍可向上调高。 */
   --surface-panel: rgb(var(--bg-color) / max(var(--popup-opacity), 0.52));
   --surface-modal: rgb(var(--bg-color) / max(var(--popup-opacity), 0.72));

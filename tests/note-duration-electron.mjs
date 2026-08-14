@@ -88,6 +88,7 @@ function seedLegacyListDatabase(userDataPath) {
   insertSetting.run('application', 'application', 'active_view', 'list', now, now)
   insertSetting.run('application', 'remote', 'receive_notices', 'false', now, now)
   insertSetting.run('application', 'remote', 'upload_device_info', 'false', now, now)
+  insertSetting.run('application', 'onboarding', 'first_use_notice_version', '1', now, now)
   insertSetting.run('main', 'system', 'blur_enabled', 'false', now, now)
   db.close()
 }

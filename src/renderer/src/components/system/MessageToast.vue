@@ -60,11 +60,11 @@ const colorMap = {
 /* ---- 单条消息 ---- */
 .msg-toast {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   padding: 10px 18px;
   min-width: 200px;
-  max-width: 420px;
+  max-width: min(420px, calc(100vw - 32px));
   border-radius: 14px;
 
   /* 背景 = 窗口文字色（反色） + 透明度 */
@@ -90,6 +90,7 @@ const colorMap = {
   flex-shrink: 0;
   width: 18px;
   height: 18px;
+  margin-top: 2px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -102,10 +103,10 @@ const colorMap = {
 
 /* ---- 文本 ---- */
 .msg-text {
+  min-width: 0;
   line-height: 1.35;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* ============ TransitionGroup 动画 ============ */

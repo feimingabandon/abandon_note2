@@ -8,6 +8,8 @@
  */
 
 const VALID_NOTE_STATUSES = new Set(['initialized', 'in_progress', 'completed'])
+export const DOCK_EDGES = Object.freeze(['top', 'left', 'right'])
+const MAX_DOCK_EDGE_ENTRIES = 12
 
 const DEFAULT_LIST_FILTER = {
   listMode: 'timeline',
@@ -20,6 +22,9 @@ export const VIEW_MODES = Object.freeze({
   MONTH: 'month',
   WEEK: 'week'
 })
+
+/** 当前首次使用须知版本；以后正文发生重大变化时递增即可重新提示一次。 */
+export const FIRST_USE_NOTICE_VERSION = 1
 
 const VALID_VIEW_MODES = new Set(Object.values(VIEW_MODES))
 
@@ -122,6 +127,25 @@ function parseBoolean(value, fallback) {
   if (value === true || value === 'true' || value === 1 || value === '1') return true
   if (value === false || value === 'false' || value === 0 || value === '0') return false
   return fallback
+}
+
+function parseDockEdges(value, fallback) {
+  let candidate = value
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate)
+    } catch {
+      return cloneValue(fallback)
+    }
+  }
+  if (!Array.isArray(candidate) || candidate.length > MAX_DOCK_EDGE_ENTRIES) {
+    return cloneValue(fallback)
+  }
+
+  if (candidate.some((side) => !DOCK_EDGES.includes(side))) return cloneValue(fallback)
+
+  const selected = new Set(candidate)
+  return DOCK_EDGES.filter((side) => selected.has(side))
 }
 
 function parseTitlebarStyle(value, fallback) {
@@ -347,6 +371,26 @@ const definitions = [
     remark: '窗口置顶状态'
   },
   {
+    id: 'dock.revealHandleEnabled',
+    path: ['dock', 'revealHandleEnabled'],
+    db: { type: 'dock', key: 'dock_reveal_handle_enabled' },
+    defaultValue: false,
+    parse: parseBoolean,
+    serialize: String,
+    remark: '贴边隐藏后是否先显示点击确认条'
+  },
+  {
+    id: 'dock.enabledEdges',
+    path: ['dock', 'enabledEdges'],
+    db: { type: 'dock', key: 'dock_enabled_edges' },
+    // 各视图兼容默认值由 buildDefaults 注入；直接序列化非法输入时回退为空，
+    // 保证 renderer 异常载荷不会意外启用任何边缘。
+    defaultValue: [],
+    parse: parseDockEdges,
+    serialize: JSON.stringify,
+    remark: '当前视图允许贴边隐藏的方向（top / left / right）'
+  },
+  {
     id: 'sticky.fontSize',
     path: ['sticky', 'fontSize'],
     db: { type: 'sticky', key: 'sticky_font_size' },
@@ -417,6 +461,15 @@ const definitions = [
     parse: parseBoolean,
     serialize: String,
     remark: '上传基础设备信息与启动退出时间'
+  },
+  {
+    id: 'onboarding.noticeVersion',
+    path: ['onboarding', 'noticeVersion'],
+    db: { type: 'onboarding', key: 'first_use_notice_version' },
+    defaultValue: 0,
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 0, max: 999, integer: true }),
+    serialize: String,
+    remark: '用户已确认的首次使用须知版本（0 表示尚未确认）'
   },
   {
     id: 'listFilter',
@@ -510,6 +563,10 @@ function buildDefaults(viewMode = VIEW_MODES.LIST) {
     defaults.geometry.widthRatio = 0.7
     defaults.geometry.heightRatio = 0.7
     defaults.ui.settingsPanelSize = 40
+    defaults.dock.enabledEdges = ['top']
+  } else {
+    // 保持升级前列表视图仅允许左右贴边隐藏的行为。
+    defaults.dock.enabledEdges = ['left', 'right']
   }
   if (normalizeViewMode(viewMode) === VIEW_MODES.WEEK) {
     defaults.geometry.heightRatio = 0.5

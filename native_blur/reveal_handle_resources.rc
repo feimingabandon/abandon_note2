@@ -1,0 +1,4 @@
+#include "reveal_handle_resource.h"
+
+IDR_REVEAL_AVATAR_PNG RCDATA "resources/reveal_avatar.png"
+IDR_REVEAL_OPPOSANS_TTF RCDATA "resources/OPPOSans-Medium-Reveal.ttf"

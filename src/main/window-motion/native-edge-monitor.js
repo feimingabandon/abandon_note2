@@ -35,7 +35,9 @@ export class NativeEdgeMonitor {
       return { success: false, code: -8, error: '已经存在活动的原生边缘监视器' }
     }
     const result = this.armNative(this.window, side, generation, options)
-    if (result.success) this.activeGeneration = generation
+    // 启动超时表示原生线程可能仍在完成不可中断的系统初始化；必须保留代次，
+    // 让主进程的 cleanup-pending 流程持续 Disarm，不能误以为没有活动资源。
+    if (result.success || result.cleanupRequired) this.activeGeneration = generation
     return result
   }
 

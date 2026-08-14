@@ -18,6 +18,7 @@ const props = defineProps({
   height: { type: String, default: 'auto' },
   maxHeight: { type: String, default: 'calc(100vh - 40rem)' },
   zIndex: { type: String, default: 'var(--z-global-modal)' },
+  showClose: { type: Boolean, default: true },
   closeDisabled: { type: Boolean, default: false },
   closeOnBackdrop: { type: Boolean, default: true },
   flush: { type: Boolean, default: false }
@@ -128,6 +129,7 @@ onBeforeUnmount(() => {
               <p v-if="subtitle" class="app-modal-subtitle">{{ subtitle }}</p>
             </div>
             <button
+              v-if="showClose"
               type="button"
               class="app-modal-close"
               :disabled="closeDisabled"

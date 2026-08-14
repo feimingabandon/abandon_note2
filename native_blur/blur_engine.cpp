@@ -14,6 +14,7 @@
 #include <windows.ui.composition.interop.h>
 #include <DispatcherQueue.h>
 #include <shellscalingapi.h>
+#include <algorithm>
 #include <chrono>
 
 #pragma comment(lib, "dwmapi.lib")
@@ -169,6 +170,78 @@ void Engine::UpdateGeometry() {
         m_lastError.store(BlurErrorCode::OverlayWindowFailed);
         m_runtimeHealthy.store(false);
     }
+}
+
+bool Engine::MoveParentAndOverlay(
+    HWND parentHwnd,
+    int physicalX,
+    int physicalY,
+    DWORD syncTimeoutMs) {
+    const HWND overlayHwnd = m_messageHwnd.load();
+    if (parentHwnd != m_parentHwnd ||
+        !parentHwnd || !IsWindow(parentHwnd) ||
+        !overlayHwnd || !IsWindow(overlayHwnd)) {
+        return false;
+    }
+
+    RECT parentBefore{};
+    if (!GetWindowRect(parentHwnd, &parentBefore)) return false;
+    const int width = parentBefore.right - parentBefore.left;
+    const int height = parentBefore.bottom - parentBefore.top;
+    if (width <= 0 || height <= 0) return false;
+
+    // 将 Electron HWND 和 Overlay HWND 置于同一窗口位置批次。Overlay 虽属于
+    // STA 线程，但 Win32 HWND 位置可由其他线程提交；Composition 对象
+    // 不在此处访问。第二个操作同时使 Overlay 紧贴父窗口后方。
+    HDWP deferred = BeginDeferWindowPos(2);
+    if (!deferred) return false;
+    deferred = DeferWindowPos(
+        deferred,
+        parentHwnd,
+        nullptr,
+        physicalX,
+        physicalY,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    if (!deferred) return false;
+    deferred = DeferWindowPos(
+        deferred,
+        overlayHwnd,
+        parentHwnd,
+        physicalX,
+        physicalY,
+        width,
+        height,
+        SWP_NOACTIVATE);
+    if (!deferred || !EndDeferWindowPos(deferred)) return false;
+
+    // 这个同步消息是一个有界 STA barrier。它使更早排队的几何请求
+    // 收敛，并由 Overlay 所在 STA 重读父窗口最终物理边界、更新
+    // Visual 尺寸。SMTO_BLOCK 避免等待时在 Electron 主线程重入执行。
+    DWORD_PTR syncResult = 0;
+    if (!SendMessageTimeoutW(
+            overlayHwnd,
+            WM_BLUR_UPDATE_GEOMETRY,
+            1, // 同步请求不清理可能仍在队列中的异步 pending 标记。
+            0,
+            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+            std::max<DWORD>(1, syncTimeoutMs),
+            &syncResult) || syncResult != 1) {
+        return false;
+    }
+
+    RECT parentAfter{};
+    RECT overlayAfter{};
+    if (!GetWindowRect(parentHwnd, &parentAfter) ||
+        !GetWindowRect(overlayHwnd, &overlayAfter) ||
+        !EqualRect(&parentAfter, &overlayAfter)) {
+        return false;
+    }
+    // WinEvent/IME 窗口可能在验证瞬间改变层级。几何已经一致时
+    // 不因短暂的 Z-order 检查结果中止动画，交给既有去重队列自愈。
+    if (!IsZOrderAdjacent()) QueueZOrderSync();
+    return true;
 }
 
 void Engine::ReSyncZOrder() {
@@ -801,12 +874,16 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
     switch (msg) {
     case WM_BLUR_UPDATE_GEOMETRY:
-        self->m_geometryUpdatePending.store(false);
+        // wParam=1 是 WindowMotion_MoveWindow 的同步几何请求。它可能
+        // 越过已 Post 但尚未取出的异步消息，因此不能提前清除
+        // pending；真正的队列消息取出时再清除。
+        if (wParam == 0) self->m_geometryUpdatePending.store(false);
         // 在 HWND 所属的 DPI-aware STA 线程直接读取物理坐标，避免 JS DIP 换算和跨线程数据竞争。
         if (!self->SyncGeometryFromParent()) {
             ShowWindow(hwnd, SW_HIDE);
+            return 0;
         }
-        return 0;
+        return 1;
 
     case WM_DPICHANGED:
         self->HandleDpiChanged(wParam, lParam);

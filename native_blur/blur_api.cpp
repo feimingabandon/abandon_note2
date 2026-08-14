@@ -241,6 +241,24 @@ int WindowMotion_MoveWindow(void* hwndValue, int physicalX, int physicalY) {
     const HWND hwnd = static_cast<HWND>(hwndValue);
     if (!hwnd || !IsWindow(hwnd)) return 0;
 
+    auto& engine = BlurEngine::Engine::Instance();
+    if (engine.IsInitialized() && engine.GetParentWindow() == hwnd) {
+        if (engine.MoveParentAndOverlay(hwnd, physicalX, physicalY)) return 1;
+
+        // 同步 Overlay 路径异常时仍保证主窗口可移动，并留下一个
+        // 异步自愈请求；返回 0 让 JS 动画及时中止，避免继续扩大窄缝。
+        SetWindowPos(
+            hwnd,
+            nullptr,
+            physicalX,
+            physicalY,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        engine.UpdateGeometry();
+        return 0;
+    }
+
     const BOOL moved = SetWindowPos(
         hwnd,
         nullptr,
@@ -250,11 +268,6 @@ int WindowMotion_MoveWindow(void* hwndValue, int physicalX, int physicalY) {
         0,
         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     if (!moved) return 0;
-
-    auto& engine = BlurEngine::Engine::Instance();
-    if (engine.GetParentWindow() == hwnd) {
-        engine.UpdateGeometry();
-    }
     return 1;
 }
 
@@ -270,6 +283,22 @@ int WindowMotion_ArmEdgeMonitor(
         thicknessDip,
         pollIntervalMs,
         generation);
+}
+
+int WindowMotion_ArmEdgeMonitorEx(
+    void* hwndValue,
+    int side,
+    int thicknessDip,
+    int pollIntervalMs,
+    unsigned long long generation,
+    int revealMode) {
+    return WindowMotionEdgeMonitor::ArmEx(
+        static_cast<HWND>(hwndValue),
+        side,
+        thicknessDip,
+        pollIntervalMs,
+        generation,
+        revealMode);
 }
 
 int WindowMotion_DisarmEdgeMonitor(unsigned long long generation) {

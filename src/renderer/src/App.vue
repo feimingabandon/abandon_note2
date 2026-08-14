@@ -22,6 +22,7 @@ import SettingsPanel from './components/system/SettingsPanel.vue' // 底部弹�
 import MessageToast from './components/system/MessageToast.vue'
 import UpdateDialog from './components/system/UpdateDialog.vue'
 import RemoteNoticeDialog from './components/system/RemoteNoticeDialog.vue'
+import FirstUseNoticeDialog from './components/system/FirstUseNoticeDialog.vue'
 import HolidayDataNoticeDialog from './components/system/HolidayDataNoticeDialog.vue'
 import DailyReportDialog from './components/report/DailyReportDialog.vue'
 import DailyReportButton from './components/report/DailyReportButton.vue'
@@ -40,7 +41,7 @@ import {
   restoreFocusedElement,
   trapModalTab
 } from './utils/modalFocus.js'
-import { DEFAULT_SETTINGS } from '../../shared/settings-schema.js'
+import { DEFAULT_SETTINGS, FIRST_USE_NOTICE_VERSION } from '../../shared/settings-schema.js'
 
 // 注册全局应用内消息通知能力（子孙组件通过 useMessage() 获取）
 const { showMessage } = createMessageProvider()
@@ -49,6 +50,7 @@ const { showMessage } = createMessageProvider()
 const showSettings = ref(false)
 const showUpdateDialog = ref(false)
 const showRemoteNoticeDialog = ref(false)
+const showFirstUseNotice = ref(false)
 const showHolidayDataNoticeDialog = ref(false)
 const showDailyReportDialog = ref(false)
 const pendingHolidayDataNotice = ref(null)
@@ -74,7 +76,9 @@ let releaseEditorBackgroundBlur = null
 async function loadPendingRemoteNotices({ show = false } = {}) {
   try {
     pendingRemoteNotices.value = await window.api.listPendingRemoteNotices()
-    if (show && pendingRemoteNotices.value.length) showRemoteNoticeDialog.value = true
+    if (show && !showFirstUseNotice.value && pendingRemoteNotices.value.length) {
+      showRemoteNoticeDialog.value = true
+    }
   } catch (error) {
     console.warn('[App] 读取未确认通知失败:', error)
   }
@@ -83,6 +87,7 @@ async function loadPendingRemoteNotices({ show = false } = {}) {
 function maybeShowHolidayDataNotice() {
   if (
     pendingHolidayDataNotice.value?.required &&
+    !showFirstUseNotice.value &&
     !showRemoteNoticeDialog.value &&
     !showSettings.value &&
     !showUpdateDialog.value
@@ -130,6 +135,33 @@ function onRemoteNoticeAcknowledged(id) {
   }
 }
 
+function showNextStartupNotice() {
+  if (pendingRemoteNotices.value.length) {
+    showRemoteNoticeDialog.value = true
+    return
+  }
+  maybeShowHolidayDataNotice()
+  if (
+    !showHolidayDataNoticeDialog.value &&
+    updateResult.value?.status === 'available' &&
+    !showUpdateDialog.value
+  ) {
+    showUpdateDialog.value = true
+  }
+}
+
+function onFirstUseCompleted({ route } = {}) {
+  showFirstUseNotice.value = false
+  showMessage(
+    'success',
+    route === 'support'
+      ? '感谢你的支持。你的认可，会成为 Abandon 便签继续前进的动力。'
+      : '感谢你选择 Abandon 便签。你的使用，就是对我最大的肯定。',
+    4200
+  )
+  setTimeout(showNextStartupNotice, 240)
+}
+
 function openSettings() {
   if (!releaseSettingsBackgroundBlur) releaseSettingsBackgroundBlur = retainModalBlur()
   showSettings.value = true
@@ -156,6 +188,7 @@ async function checkForUpdates({ showResult = true } = {}) {
     if (
       !showResult &&
       updateResult.value?.status === 'available' &&
+      !showFirstUseNotice.value &&
       !showHolidayDataNoticeDialog.value &&
       !showRemoteNoticeDialog.value
     ) {
@@ -315,6 +348,19 @@ function applyAppSettingsSnapshot(snapshot) {
   syncWallpaperFromSnapshot(snapshot)
 }
 
+function revealFirstUseNoticeFromSnapshot(snapshot) {
+  const pending = (snapshot?.values?.onboarding?.noticeVersion ?? 0) < FIRST_USE_NOTICE_VERSION
+  if (!pending || showFirstUseNotice.value) return
+
+  // 恢复默认可能发生在设置面板内。首次须知使用更高的全局模态层覆盖设置面板，
+  // 阅读完成后用户仍可回到原来的设置上下文。
+  showUpdateDialog.value = false
+  showRemoteNoticeDialog.value = false
+  showHolidayDataNoticeDialog.value = false
+  showDailyReportDialog.value = false
+  showFirstUseNotice.value = true
+}
+
 async function syncWallpaperFromSnapshot(snapshot) {
   const wallpaper = snapshot?.values?.wallpaper || DEFAULT_SETTINGS.wallpaper
   const glassActive = Boolean(snapshot?.runtime?.blur?.effectiveEnabled)
@@ -375,15 +421,19 @@ onMounted(async () => {
     // 主进程始终返回“数据库值覆盖共享默认值”后的完整快照。
     const snapshot = await window.api.getSettingsSnapshot()
     applyAppSettingsSnapshot(snapshot)
+    showFirstUseNotice.value =
+      (snapshot?.values?.onboarding?.noticeVersion ?? 0) < FIRST_USE_NOTICE_VERSION
   } catch (err) {
     // IPC 异常时同样从唯一 schema 回退，不依赖 tokens.css 中的旧值。
     applyAppSettingsSnapshot({ values: DEFAULT_SETTINGS })
+    showFirstUseNotice.value = true
     console.warn('[App] 读取设置快照失败，使用共享默认值:', err)
   }
 
   // 主进程是设置权威源；其他入口修改或重置设置时统一刷新实际 CSS 效果。
   stopSettingsListener = window.api.onSettingsChanged?.((snapshot) => {
     applyAppSettingsSnapshot(snapshot)
+    revealFirstUseNoticeFromSnapshot(snapshot)
   })
   stopNotesChangedListener = window.api.onNotesChanged?.((event) => {
     if (event?.reason === 'note-data-cleared') selectedNote.value = null
@@ -441,6 +491,7 @@ async function onEditNote(note) {
 }
 
 async function openNoteFromNotification(payload) {
+  if (showFirstUseNotice.value) return
   const noteId = Number(payload?.id)
   if (!Number.isInteger(noteId) || noteId <= 0) return
   const closingModal = showSettings.value || showUpdateDialog.value || showRemoteNoticeDialog.value
@@ -540,6 +591,7 @@ onUnmounted(() => {
       :inert="
         showSettings ||
         !!selectedNote ||
+        showFirstUseNotice ||
         showUpdateDialog ||
         showRemoteNoticeDialog ||
         showHolidayDataNoticeDialog ||
@@ -672,6 +724,12 @@ onUnmounted(() => {
       v-model:visible="showSettings"
       @blur-release="releaseSettingsBlur"
       @check-update="openUpdateDialog"
+    />
+
+    <FirstUseNoticeDialog
+      v-if="showFirstUseNotice"
+      :visible="showFirstUseNotice"
+      @completed="onFirstUseCompleted"
     />
 
     <UpdateDialog

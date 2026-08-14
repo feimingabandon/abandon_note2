@@ -11,6 +11,12 @@ const SWP_NOSIZE = 0x0001
 const SWP_NOMOVE = 0x0002
 const SWP_NOACTIVATE = 0x0010
 const OVERLAY_CLASS_NAME = 'BlurOverlayWindow'
+const RECT = koffi.struct('RECT', {
+  left: 'int32_t',
+  top: 'int32_t',
+  right: 'int32_t',
+  bottom: 'int32_t'
+})
 
 function nativeHandle(window) {
   const buffer = window.getNativeWindowHandle()
@@ -49,6 +55,7 @@ app.once('ready', async () => {
       'uint32_t GetWindowThreadProcessId(HWND hWnd, _Out_ uint32_t *processId)'
     )
     const isWindowVisible = user32.func('int IsWindowVisible(HWND hWnd)')
+    const getWindowRect = user32.func('int GetWindowRect(HWND hWnd, _Out_ RECT *bounds)')
     const blurDllPath = process.env.ABANDON_INTEGRATION_NATIVE_DLL ||
       resolve('native_blur', 'build', 'bin', 'blur_engine.dll')
     const blurLibrary = koffi.load(blurDllPath)
@@ -62,6 +69,11 @@ app.once('ready', async () => {
     ])
     const blurReSyncOrder = blurLibrary.func('Blur_ReSyncOrder', 'void', [])
     const blurIsZOrderSynchronized = blurLibrary.func('Blur_IsZOrderSynchronized', 'int', [])
+    const moveWindowPhysical = blurLibrary.func('WindowMotion_MoveWindow', 'int', [
+      'intptr_t',
+      'int',
+      'int'
+    ])
 
     const mainWindow = new BrowserWindow({
       show: false,
@@ -182,7 +194,34 @@ app.once('ready', async () => {
       'BlurOverlay must recover after Electron is shown again'
     )
 
-    console.log('blur visibility lifecycle and z-order repair integration test passed')
+    // 贴边动画会在一个很短的时间窗口内连续调用原生移动。每次
+    // WindowMotion_MoveWindow 返回时，Overlay 必须已经与 Electron 物理边界
+    // 完全相等，不能依赖之后才取出的 PostMessage 追上下一帧。
+    const parentBounds = {}
+    const overlayBounds = {}
+    for (let frame = 0; frame < 120; frame += 1) {
+      const x = 220 + ((frame * 17) % 160)
+      const y = 160 + ((frame * 11) % 120)
+      assert.equal(
+        moveWindowPhysical(nativeHandle(mainWindow), x, y),
+        1,
+        `synchronized native move must succeed at frame ${frame}`
+      )
+      assert.equal(getWindowRect(nativeHandle(mainWindow), parentBounds), 1)
+      assert.equal(getWindowRect(overlayWindow, overlayBounds), 1)
+      assert.deepEqual(
+        overlayBounds,
+        parentBounds,
+        `BlurOverlay bounds must match Electron before frame ${frame} returns`
+      )
+    }
+    assert.equal(
+      await waitUntil(() => blurIsZOrderSynchronized() === 1),
+      true,
+      'synchronized native moves must preserve or promptly restore overlay z-order'
+    )
+
+    console.log('blur visibility, synchronized geometry and z-order integration test passed')
   } catch (error) {
     console.error(error)
     exitCode = 1

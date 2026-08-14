@@ -36,7 +36,7 @@ describe('sticky tray menu', () => {
       openMainWindow: vi.fn(),
       quitApplication: vi.fn()
     })
-    const deleteAll = template.find((item) => item.label === '× 删除全部便利贴')
+    const deleteAll = template.find((item) => item.label === '× 关闭全部便利贴')
 
     expect(deleteAll.enabled).toBe(true)
     deleteAll.click()
@@ -47,7 +47,7 @@ describe('sticky tray menu', () => {
       openMainWindow: vi.fn(),
       quitApplication: vi.fn()
     })
-    expect(emptyTemplate.find((item) => item.label === '× 删除全部便利贴').enabled).toBe(false)
+    expect(emptyTemplate.find((item) => item.label === '× 关闭全部便利贴').enabled).toBe(false)
   })
 
   it('marks the active main view and switches through the tray submenu', () => {

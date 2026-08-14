@@ -25,13 +25,24 @@ app.commandLine.appendSwitch('disable-gpu')
 app.on('window-all-closed', () => {})
 
 async function runNativeEdgeMonitorTests() {
-  const dll = koffi.load(resolve('native_blur', 'build', 'bin', 'blur_engine.dll'))
+  const dll = koffi.load(
+    process.env.ABANDON_INTEGRATION_NATIVE_DLL ||
+      resolve('native_blur', 'build', 'bin', 'blur_engine.dll')
+  )
   const arm = dll.func('WindowMotion_ArmEdgeMonitor', 'int', [
     'intptr_t',
     'int',
     'int',
     'int',
     'uint64_t'
+  ])
+  const armEx = dll.func('WindowMotion_ArmEdgeMonitorEx', 'int', [
+    'intptr_t',
+    'int',
+    'int',
+    'int',
+    'uint64_t',
+    'int'
   ])
   const disarm = dll.func('WindowMotion_DisarmEdgeMonitor', 'int', ['uint64_t'])
   const getMessageId = dll.func('WindowMotion_GetEdgeMessageId', 'uint', [])
@@ -40,6 +51,9 @@ async function runNativeEdgeMonitorTests() {
   const user32 = koffi.load('user32.dll')
   const setCursorPos = user32.func('int SetCursorPos(int X, int Y)')
   const getForegroundWindow = user32.func('intptr_t GetForegroundWindow()')
+  const mouseEvent = user32.func(
+    'void mouse_event(uint flags, uint dx, uint dy, uint data, uintptr_t extraInfo)'
+  )
 
   async function moveCursorAndConfirm(point) {
     assert.equal(setCursorPos(point.x, point.y), 1)
@@ -49,6 +63,16 @@ async function runNativeEdgeMonitorTests() {
       setCursorPos(point.x, point.y)
       return false
     }, `无法将鼠标移动到 (${point.x}, ${point.y})`)
+  }
+
+  async function moveCursorAndWaitForStatus(point, predicate, message) {
+    const retryTimer = setInterval(() => setCursorPos(point.x, point.y), POLL_INTERVAL_MS * 2)
+    try {
+      await moveCursorAndConfirm(point)
+      return await waitUntil(() => predicate(getStatus()), message)
+    } finally {
+      clearInterval(retryTimer)
+    }
   }
 
   async function moveCursorAndWaitForEvent(point, eventPromise, timeoutMessage) {
@@ -75,6 +99,68 @@ async function runNativeEdgeMonitorTests() {
 
   function getStatus() {
     return JSON.parse(getStatusJson())
+  }
+
+  function assertHandleSize(status, side) {
+    const dpi = Math.max(96, Number(status.handleDpi) || 96)
+    const expectedHorizontalWidth = Math.round((146 * dpi) / 96)
+    const expectedHorizontalHeight = Math.round((40 * dpi) / 96)
+    const expectedVerticalWidth = Math.round((50 * dpi) / 96)
+    const expectedVerticalHeight = Math.round((112 * dpi) / 96)
+    const width = status.handleRect.right - status.handleRect.left
+    const height = status.handleRect.bottom - status.handleRect.top
+    const expectedWidth =
+      side === -1 || side === 1 ? expectedVerticalWidth : expectedHorizontalWidth
+    const expectedHeight =
+      side === -1 || side === 1 ? expectedVerticalHeight : expectedHorizontalHeight
+    assert.ok(
+      Math.abs(width - expectedWidth) <= 1 && Math.abs(height - expectedHeight) <= 1,
+      `${side} 小黑条尺寸应为 ${expectedWidth}×${expectedHeight}px，实际为 ${width}×${height}px`
+    )
+  }
+
+  function movedTowardOutside(side, current, ready) {
+    if (side === -1) return current.left < ready.left
+    if (side === 1) return current.left > ready.left
+    if (side === -2) return current.top < ready.top
+    return current.top > ready.top
+  }
+
+  function isPartiallyVisible(status, side, workArea) {
+    if (status.handleState !== 'appearing' || !status.handleWindowAlive) return false
+    const boundary = {
+      left: workArea.x,
+      right: workArea.x + workArea.width,
+      top: workArea.y
+    }
+    if (side === -1) {
+      return status.handleRect.left < boundary.left && status.handleRect.right > boundary.left
+    }
+    if (side === 1) {
+      return status.handleRect.left < boundary.right && status.handleRect.right > boundary.right
+    }
+    return status.handleRect.top < boundary.top && status.handleRect.bottom > boundary.top
+  }
+
+  async function revealHandleAndAssertSliding(point, side, workArea, message) {
+    const retryTimer = setInterval(() => setCursorPos(point.x, point.y), POLL_INTERVAL_MS * 2)
+    let sawIntermediatePosition = false
+    try {
+      await moveCursorAndConfirm(point)
+      const ready = await waitUntil(() => {
+        const status = getStatus()
+        if (isPartiallyVisible(status, side, workArea)) sawIntermediatePosition = true
+        return status.handleState === 'ready' && status.handleWindowAlive && status
+      }, message)
+      assert.equal(
+        sawIntermediatePosition,
+        true,
+        `${side} 小黑条首次冷启动必须从屏外滑入，不得直接跳到终点`
+      )
+      return ready
+    } finally {
+      clearInterval(retryTimer)
+    }
   }
 
   async function startForegroundHelper(mode, bounds) {
@@ -191,13 +277,18 @@ async function runNativeEdgeMonitorTests() {
         1,
         `${side} 原生边缘监视器必须启动成功`
       )
-      const armedStatus = await waitUntil(() => {
-        const status = getStatus()
-        return status.workerAlive && ['armed', 'waiting-outside'].includes(status.state) && status
-      }, `${side} 原生边缘监视线程没有进入可用状态`)
+      const armedStatus = getStatus()
+      assert.equal(armedStatus.workerAlive, true, `${side} Arm 返回前监视线程必须已经就绪`)
+      assert.ok(
+        ['armed', 'waiting-outside'].includes(armedStatus.state),
+        `${side} Arm 返回后监视器状态必须可用`
+      )
+      assert.equal(armedStatus.handleRenderer, 'disabled', 'direct 模式不得初始化小黑条渲染器')
       assert.equal(armedStatus.generation, generation)
       assert.equal(armedStatus.side, side)
       assert.equal(armedStatus.pollIntervalMs, POLL_INTERVAL_MS)
+      await moveCursorAndConfirm(outside)
+      await waitUntil(() => getStatus().state === 'armed', `${side} 直触场景没有在离边位置稳定布防`)
       if (side === -1) {
         assert.equal(disarm(generation + 100), 1, '旧会话停止请求应当安全忽略')
         assert.equal(getStatus().workerAlive, true, '错误 generation 不得停止当前监视器')
@@ -219,6 +310,214 @@ async function runNativeEdgeMonitorTests() {
       testWindow = null
     }
 
+    // 点击小黑条模式：首次触边只揭示原生小黑条；动画完成后一次新的完整点击才发 trigger。
+    for (const side of [-1, 1, -2]) {
+      const bounds = getBounds(side, workArea)
+      testWindow = new BrowserWindow({
+        ...bounds,
+        show: true,
+        frame: false,
+        transparent: false,
+        thickFrame: false
+      })
+      const outside = getOutsidePoint(workArea)
+      await moveCursorAndConfirm(outside)
+      generation += 1
+      let resolveEvent
+      const eventPromise = new Promise((resolvePromise) => {
+        resolveEvent = resolvePromise
+      })
+      testWindow.hookWindowMessage(messageId, () => {
+        const event = JSON.parse(consumeEventJson())
+        if (event.kind !== 'none') resolveEvent(event)
+      })
+      assert.equal(
+        armEx(getHandle(testWindow), side, 2, POLL_INTERVAL_MS, generation, 1),
+        1,
+        `${side} 点击小黑条模式必须启动成功`
+      )
+      const armedHandleStatus = getStatus()
+      assert.equal(
+        armedHandleStatus.workerAlive,
+        true,
+        `${side} 小黑条 ArmEx 返回前监视线程必须已经就绪`
+      )
+      assert.equal(armedHandleStatus.mode, 'click-handle')
+      assert.equal(armedHandleStatus.handleState, 'hidden')
+      assert.equal(armedHandleStatus.handleRenderer, 'direct2d')
+      assert.equal(armedHandleStatus.handlePrewarmed, true)
+      await moveCursorAndConfirm(outside)
+      await waitUntil(
+        () => getStatus().state === 'armed',
+        `${side} 点击小黑条场景没有在离边位置稳定布防`
+      )
+      const readyHandle = await revealHandleAndAssertSliding(
+        getInsidePoint(side, bounds, workArea),
+        side,
+        workArea,
+        `${side} 首次触边后没有完成小黑条滑入动画`
+      )
+      assert.equal(readyHandle.pendingEvent, 'none', '小黑条揭示本身不得唤出主窗口')
+      assert.ok(readyHandle.handleRect.right > readyHandle.handleRect.left)
+      assert.ok(readyHandle.handleRect.bottom > readyHandle.handleRect.top)
+      assertHandleSize(readyHandle, side)
+      assert.equal(readyHandle.handleRenderer, 'direct2d', '小黑条应使用 Direct2D 绘制猫猫头像')
+      assert.equal(readyHandle.handleEmbeddedFont, true, '小黑条应使用嵌入的 OPPO Sans 字体')
+      const firstVisualFrame = readyHandle.handleVisualFrame
+      await waitUntil(
+        () => getStatus().handleVisualFrame > firstVisualFrame,
+        `${side} 猫猫头像外圈在 ready 状态下没有持续刷新`
+      )
+      // 离开边线和小黑条后必须沿出现路径反向退场；退场途中重新触边则反向出现。
+      const retreatingHandle = await moveCursorAndWaitForStatus(
+        outside,
+        (status) =>
+          status.handleState === 'retreating' &&
+          movedTowardOutside(side, status.handleRect, readyHandle.handleRect) &&
+          status,
+        `${side} 小黑条离开后没有沿屏外方向退场`
+      )
+      assert.equal(retreatingHandle.pendingEvent, 'none', '小黑条退场不得产生唤出事件')
+      const reversingHandle = await moveCursorAndWaitForStatus(
+        getInsidePoint(side, bounds, workArea),
+        (status) =>
+          ['appearing', 'ready'].includes(status.handleState) &&
+          status.handleWindowAlive &&
+          status.pendingEvent === 'none' &&
+          status,
+        `${side} 小黑条退场中重新触边后被销毁或没有反向恢复`
+      )
+      assertHandleSize(reversingHandle, side)
+      const restoredHandle = await waitUntil(() => {
+        const status = getStatus()
+        return status.handleState === 'ready' && status.handleWindowAlive && status
+      }, `${side} 小黑条反向出现后没有恢复就绪`)
+      assertHandleSize(restoredHandle, side)
+
+      // 移动真实系统光标并注入一轮新的完整按下/释放，覆盖命中区域与无激活输入路径。
+      await moveCursorAndConfirm({
+        x: Math.floor((restoredHandle.handleRect.left + restoredHandle.handleRect.right) / 2),
+        y: Math.floor((restoredHandle.handleRect.top + restoredHandle.handleRect.bottom) / 2)
+      })
+      mouseEvent(0x0002, 0, 0, 0, 0) // MOUSEEVENTF_LEFTDOWN
+      mouseEvent(0x0004, 0, 0, 0, 0) // MOUSEEVENTF_LEFTUP
+      const event = await Promise.race([
+        eventPromise,
+        wait(EVENT_TIMEOUT_MS).then(() => {
+          throw new Error(`${side} 完整点击小黑条后没有收到 trigger`)
+        })
+      ])
+      assert.deepEqual(
+        { kind: event.kind, generation: event.generation, side: event.side },
+        { kind: 'trigger', generation, side }
+      )
+      assert.equal(disarm(generation), 1)
+      testWindow.destroy()
+      testWindow = null
+    }
+
+    // 完整退场必须等滑回屏外后再销毁 HWND，且全过程不产生 trigger/fault。
+    const retreatBounds = getBounds(-2, workArea)
+    testWindow = new BrowserWindow({
+      ...retreatBounds,
+      show: true,
+      frame: false,
+      thickFrame: false
+    })
+    const retreatInside = getInsidePoint(-2, retreatBounds, workArea)
+    const retreatOutside = getOutsidePoint(workArea)
+    await moveCursorAndConfirm(retreatOutside)
+    generation += 1
+    assert.equal(
+      armEx(getHandle(testWindow), -2, 2, POLL_INTERVAL_MS, generation, 1),
+      1,
+      '小黑条完整退场场景必须启动成功'
+    )
+    await waitUntil(() => getStatus().workerAlive, '小黑条完整退场场景的监视线程没有启动')
+    await moveCursorAndConfirm(retreatOutside)
+    await waitUntil(() => getStatus().state === 'armed', '小黑条完整退场场景没有完成离边布防')
+    const retreatReady = await moveCursorAndWaitForStatus(
+      retreatInside,
+      (status) => status.handleState === 'ready' && status.handleWindowAlive && status,
+      '小黑条完整退场场景没有进入 ready'
+    )
+    await moveCursorAndWaitForStatus(
+      retreatOutside,
+      (status) =>
+        status.handleState === 'retreating' &&
+        movedTowardOutside(-2, status.handleRect, retreatReady.handleRect),
+      '小黑条没有播放滑回屏外动画'
+    )
+    const retreated = await waitUntil(() => {
+      const status = getStatus()
+      return status.handleState === 'hidden' && !status.handleWindowAlive && status
+    }, '小黑条退场完成后没有销毁原生窗口')
+    assert.equal(retreated.pendingEvent, 'none', '小黑条完整退场不得产生原生事件')
+    assert.equal(disarm(generation), 1)
+    testWindow.destroy()
+    testWindow = null
+
+    // 全屏开始时已显示的小黑条必须立即销毁，但监视线程与会话继续存活；
+    // 退出全屏且鼠标仍在边缘时不能补发或重建，必须离开后再次进入。
+    const fullscreenHandleBounds = getBounds(-2, workArea)
+    testWindow = new BrowserWindow({
+      ...fullscreenHandleBounds,
+      show: true,
+      frame: false,
+      thickFrame: false
+    })
+    const fullscreenHandleInside = getInsidePoint(-2, fullscreenHandleBounds, workArea)
+    const outsideAfterHandle = getOutsidePoint(workArea)
+    await moveCursorAndConfirm(outsideAfterHandle)
+    generation += 1
+    assert.equal(
+      armEx(getHandle(testWindow), -2, 2, POLL_INTERVAL_MS, generation, 1),
+      1,
+      '全屏小黑条场景必须启动成功'
+    )
+    await waitUntil(() => getStatus().workerAlive, '全屏小黑条场景的监视线程没有启动')
+    await moveCursorAndConfirm(outsideAfterHandle)
+    await waitUntil(() => getStatus().state === 'armed', '全屏小黑条场景没有在离边状态完成布防')
+    await moveCursorAndWaitForStatus(
+      fullscreenHandleInside,
+      (status) => status.handleState === 'ready',
+      '进入全屏前小黑条没有就绪'
+    )
+    foregroundHelper = await startForegroundHelper('fullscreen', primaryDisplay.bounds)
+    const handleBlockedStatus = await waitUntil(() => {
+      const status = getStatus()
+      return status.fullscreenBlockCount === 1 && !status.handleWindowAlive && status
+    }, '进入全屏后没有销毁已显示小黑条')
+    assert.equal(handleBlockedStatus.workerAlive, true, '全屏只应销毁小黑条，不得停止监视线程')
+    assert.equal(handleBlockedStatus.pendingEvent, 'none')
+    await stopForegroundHelper(foregroundHelper)
+    foregroundHelper = null
+    await wait(250)
+    const cursorAfterFullscreen = screen.getCursorScreenPoint()
+    const statusAfterFullscreen = getStatus()
+    const triggerAfterFullscreen = statusAfterFullscreen.triggerArea
+    const cursorStillInside =
+      cursorAfterFullscreen.x >= triggerAfterFullscreen.left &&
+      cursorAfterFullscreen.x < triggerAfterFullscreen.right &&
+      cursorAfterFullscreen.y >= triggerAfterFullscreen.top &&
+      cursorAfterFullscreen.y < triggerAfterFullscreen.bottom
+    assert.equal(
+      statusAfterFullscreen.state,
+      cursorStillInside ? 'waiting-outside' : 'armed',
+      '退出全屏后必须按当前光标是否仍在触发边线决定等待离边或直接布防'
+    )
+    assert.equal(statusAfterFullscreen.handleState, 'hidden')
+    await moveCursorAndConfirm(outsideAfterHandle)
+    await waitUntil(() => getStatus().state === 'armed', '退出全屏后离边没有重新布防')
+    await moveCursorAndWaitForStatus(
+      fullscreenHandleInside,
+      (status) => status.handleState === 'ready',
+      '退出全屏并重新触边后没有恢复小黑条'
+    )
+    assert.equal(disarm(generation), 1)
+    testWindow.destroy()
+    testWindow = null
+
     // 启动时鼠标已经在触发区，必须先离开再进入，避免窗口隐藏后立即反弹。
     const topBounds = getBounds(-2, workArea)
     testWindow = new BrowserWindow({
@@ -228,9 +527,9 @@ async function runNativeEdgeMonitorTests() {
       thickFrame: false
     })
     const topInside = getInsidePoint(-2, topBounds, workArea)
-    assert.equal(setCursorPos(topInside.x, topInside.y), 1)
-    await wait(100)
+    await moveCursorAndConfirm(topInside)
     generation += 1
+    assert.equal(setCursorPos(topInside.x, topInside.y), 1)
     assert.equal(arm(getHandle(testWindow), -2, 2, POLL_INTERVAL_MS, generation), 1)
     await waitUntil(() => getStatus().state === 'waiting-outside', '鼠标初始位于顶部时必须等待离开')
     await wait(250)
@@ -263,6 +562,8 @@ async function runNativeEdgeMonitorTests() {
     generation += 1
     assert.equal(arm(getHandle(testWindow), -2, 2, POLL_INTERVAL_MS, generation), 1)
     await waitUntil(() => getStatus().workerAlive, '全屏测试的边缘监视线程未启动')
+    await moveCursorAndConfirm(outside)
+    await waitUntil(() => getStatus().state === 'armed', '全屏测试没有在离边位置稳定布防')
     await moveCursorAndConfirm(topInside)
     const blockedStatus = await waitUntil(
       () => {
@@ -276,9 +577,21 @@ async function runNativeEdgeMonitorTests() {
     await stopForegroundHelper(foregroundHelper)
     foregroundHelper = null
     await wait(250)
-    assert.equal(getStatus().state, 'waiting-outside', '退出全屏时鼠标未离边不得自动触发')
-    assert.equal(getStatus().pendingEvent, 'none', '退出全屏时不得补发旧触边意图')
-    assert.equal(setCursorPos(outside.x, outside.y), 1)
+    const directStatusAfterFullscreen = getStatus()
+    const directCursorAfterFullscreen = screen.getCursorScreenPoint()
+    const directTrigger = directStatusAfterFullscreen.triggerArea
+    const directCursorInside =
+      directCursorAfterFullscreen.x >= directTrigger.left &&
+      directCursorAfterFullscreen.x < directTrigger.right &&
+      directCursorAfterFullscreen.y >= directTrigger.top &&
+      directCursorAfterFullscreen.y < directTrigger.bottom
+    assert.equal(
+      directStatusAfterFullscreen.state,
+      directCursorInside ? 'waiting-outside' : 'armed',
+      '退出全屏后直触监视器必须按当前光标位置决定等待离边或直接布防'
+    )
+    assert.equal(directStatusAfterFullscreen.pendingEvent, 'none', '退出全屏时不得补发旧触边意图')
+    await moveCursorAndConfirm(outside)
     await waitUntil(() => getStatus().state === 'armed', '全屏拦截后离开边缘没有重新布防')
     testWindow.focus()
 
@@ -314,6 +627,8 @@ async function runNativeEdgeMonitorTests() {
     })
     assert.equal(arm(getHandle(testWindow), -2, 2, POLL_INTERVAL_MS, generation), 1)
     await waitUntil(() => getStatus().workerAlive, '最大化测试的边缘监视线程未启动')
+    await moveCursorAndConfirm(outside)
+    await waitUntil(() => getStatus().state === 'armed', '最大化测试没有在离边位置稳定布防')
     const maximizedEvent = await moveCursorAndWaitForEvent(
       topInside,
       maximizedEventPromise,

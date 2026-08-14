@@ -193,7 +193,14 @@ class ElectronPointMotionBackend {
   }
 
   getEdgeMonitorStatus() {
-    return { supported: false, state: 'unavailable', workerAlive: false, generation: 0, side: null }
+    return {
+      supported: false,
+      revealHandleSupported: false,
+      state: 'unavailable',
+      workerAlive: false,
+      generation: 0,
+      side: null
+    }
   }
 
   consumeEdgeMonitorEvent() {

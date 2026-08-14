@@ -35,6 +35,7 @@ import {
 } from '../../utils/modalFocus.js'
 import {
   DEFAULT_SETTINGS,
+  DOCK_EDGES,
   createDefaultSettings,
   VIEW_MODES
 } from '../../../../shared/settings-schema.js'
@@ -88,7 +89,12 @@ const isCalendarView = computed(
   () => props.viewMode === VIEW_MODES.MONTH || props.viewMode === VIEW_MODES.WEEK
 )
 const calendarViewLabel = computed(() => (props.viewMode === VIEW_MODES.WEEK ? '周视图' : '月视图'))
+const currentViewLabel = computed(() =>
+  props.viewMode === VIEW_MODES.LIST ? '列表视图' : calendarViewLabel.value
+)
 const viewDefaults = computed(() => createDefaultSettings(props.viewMode))
+const dockEdgeLabels = Object.freeze({ top: '上', left: '左', right: '右' })
+const dockEdgeOptions = DOCK_EDGES.map((value) => ({ value, label: dockEdgeLabels[value] }))
 
 // ---- 面板动画控制 ----
 const rendered = ref(props.visible)
@@ -441,6 +447,82 @@ function commitStickyColor() {
 // ---- 窗口设置 ----
 const autoStart = ref(false)
 const autoStartError = ref(null) // 持久错误（null = 无错误），恒显示不自动消失
+const dockRevealHandleEnabled = ref(viewDefaults.value.dock.revealHandleEnabled)
+const dockEnabledEdges = ref([...viewDefaults.value.dock.enabledEdges])
+const dockRuntime = ref({ supported: true, revealHandleSupported: true, reason: '' })
+let _dockConfigRequestRevision = 0
+const inFlightDockConfigWrites = new Set()
+
+function normalizeDockEdgesForUi(edges) {
+  const selected = new Set(Array.isArray(edges) ? edges : viewDefaults.value.dock.enabledEdges)
+  return DOCK_EDGES.filter((side) => selected.has(side))
+}
+
+function assignDockConfig(dock = viewDefaults.value.dock) {
+  dockRevealHandleEnabled.value = Boolean(dock?.revealHandleEnabled)
+  dockEnabledEdges.value = normalizeDockEdgesForUi(dock?.enabledEdges)
+}
+
+function assignDockRuntime(runtime) {
+  if (!runtime) return
+  dockRuntime.value = {
+    supported: runtime.supported !== false,
+    revealHandleSupported: runtime.revealHandleSupported !== false,
+    reason: runtime.reason || runtime.error || ''
+  }
+}
+
+async function saveDockConfig({ revealHandleEnabled, enabledEdges }) {
+  if (!_settingsSynced || isResetting.value) return
+
+  const normalizedEdges = normalizeDockEdgesForUi(enabledEdges)
+  dockRevealHandleEnabled.value = Boolean(revealHandleEnabled)
+  dockEnabledEdges.value = normalizedEdges
+  const requestRevision = ++_dockConfigRequestRevision
+  const request = window.api.setDockConfig({
+    revealHandleEnabled: dockRevealHandleEnabled.value,
+    enabledEdges: [...normalizedEdges]
+  })
+  inFlightDockConfigWrites.add(request)
+
+  try {
+    const snapshot = await request
+    if (requestRevision !== _dockConfigRequestRevision || isResetting.value) return
+    assignDockConfig(snapshot?.values?.dock)
+  } catch (error) {
+    if (requestRevision !== _dockConfigRequestRevision || isResetting.value) return
+    console.warn('[SettingsPanel] 保存贴边隐藏设置失败:', error)
+    try {
+      const snapshot = await window.api.getSettingsSnapshot()
+      if (requestRevision === _dockConfigRequestRevision && !isResetting.value) {
+        assignDockConfig(snapshot?.values?.dock)
+      }
+    } catch (reloadError) {
+      console.warn('[SettingsPanel] 回读贴边隐藏设置失败:', reloadError)
+    }
+    showMessage('error', '贴边隐藏设置保存失败，已恢复实际配置', 4000)
+  } finally {
+    inFlightDockConfigWrites.delete(request)
+  }
+}
+
+function setDockRevealHandleEnabled(value) {
+  void saveDockConfig({
+    revealHandleEnabled: value,
+    enabledEdges: dockEnabledEdges.value
+  })
+}
+
+function toggleDockEdge(side) {
+  if (!DOCK_EDGES.includes(side)) return
+  const selected = new Set(dockEnabledEdges.value)
+  if (selected.has(side)) selected.delete(side)
+  else selected.add(side)
+  void saveDockConfig({
+    revealHandleEnabled: dockRevealHandleEnabled.value,
+    enabledEdges: [...selected]
+  })
+}
 
 /** 开机自启状态是否已从 OS 同步完成（防止首次读取触发重复设置） */
 let _autoStartSynced = false
@@ -918,7 +1000,12 @@ function cancelPendingBlurConfig() {
 }
 
 async function waitForInFlightWrites() {
-  const requests = [...inFlightSettingSaves, ...inFlightBlurSyncs, ...inFlightAutoStartWrites]
+  const requests = [
+    ...inFlightSettingSaves,
+    ...inFlightBlurSyncs,
+    ...inFlightAutoStartWrites,
+    ...inFlightDockConfigWrites
+  ]
   await Promise.allSettled(requests)
 }
 
@@ -945,6 +1032,8 @@ function assignSettingsSnapshot(snapshot) {
   panelSize.value = Number(
     snapshot.values.ui?.settingsPanelSize ?? viewDefaults.value.ui.settingsPanelSize
   )
+  assignDockConfig(snapshot.values.dock)
+  assignDockRuntime(snapshot.runtime?.dock)
 
   titlebarStyle.value = appearance.titlebarStyle
   bgColor.value = css.bgColor
@@ -1046,6 +1135,10 @@ onMounted(async () => {
   stopBlurRuntimeListener = window.api.onSettingsChanged?.((snapshot) => {
     const runtimeBlur = snapshot?.runtime?.blur
     const configuredEnabled = Boolean(snapshot?.values?.blur?.enabled)
+    if (snapshot?.values?.dock && inFlightDockConfigWrites.size === 0) {
+      assignDockConfig(snapshot.values.dock)
+    }
+    assignDockRuntime(snapshot?.runtime?.dock)
     if (!runtimeBlur) return
 
     blurCaps.value = {
@@ -1382,6 +1475,74 @@ const onConfirmResetSettings = async () => {
                     @keydown.enter="commitTextColor"
                   />
                 </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ========== 贴边隐藏 ========== -->
+          <section class="settings-section">
+            <h3 class="section-title">贴边隐藏</h3>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >贴边隐藏小黑条<HelpButton
+                    text="开启后，鼠标触碰隐藏窗口所在边缘时会先出现小黑条，点击小黑条后才展开完整窗口；关闭后，鼠标触边会直接展开窗口。"
+                /></span>
+                <span class="setting-hint-caption">仅作用于当前{{ currentViewLabel }}</span>
+                <span v-if="!dockRuntime.supported" class="setting-hint-caption dock-runtime-hint">
+                  {{ dockRuntime.reason || '当前平台暂不支持贴边隐藏' }}
+                </span>
+                <span
+                  v-else-if="!dockRuntime.revealHandleSupported"
+                  class="setting-hint-caption dock-runtime-hint"
+                >
+                  当前原生组件版本不支持小黑条模式
+                </span>
+              </div>
+              <div class="setting-right">
+                <AppToggle
+                  :model-value="dockRevealHandleEnabled"
+                  :disabled="
+                    !dockRuntime.supported ||
+                    (!dockRuntime.revealHandleSupported && !dockRevealHandleEnabled)
+                  "
+                  aria-label="贴边隐藏小黑条"
+                  @update:model-value="setDockRevealHandleEnabled"
+                />
+              </div>
+            </div>
+
+            <div class="setting-item" :class="{ 'has-hint': dockEnabledEdges.length === 0 }">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >启用边缘<HelpButton
+                    text="可同时选择上、左、右边缘。把当前视图拖到已选择且真实可触达的屏幕外边缘后，鼠标离开窗口才会触发隐藏。"
+                /></span>
+                <span
+                  v-if="dockEnabledEdges.length === 0"
+                  class="setting-hint-caption dock-empty-hint"
+                >
+                  未选择边缘时，当前{{ currentViewLabel }}不会贴边隐藏
+                </span>
+              </div>
+              <div class="dock-edge-selector" role="group" aria-label="贴边隐藏方向，可多选">
+                <button
+                  v-for="edge in dockEdgeOptions"
+                  :key="edge.value"
+                  type="button"
+                  :disabled="!dockRuntime.supported"
+                  :aria-pressed="dockEnabledEdges.includes(edge.value)"
+                  :class="{ 'is-selected': dockEnabledEdges.includes(edge.value) }"
+                  @click="toggleDockEdge(edge.value)"
+                >
+                  <span class="dock-edge-check" aria-hidden="true">
+                    <svg v-if="dockEnabledEdges.includes(edge.value)" viewBox="0 0 16 16">
+                      <path d="m3 8 3 3 7-7" />
+                    </svg>
+                  </span>
+                  {{ edge.label }}
+                </button>
               </div>
             </div>
           </section>
@@ -2011,7 +2172,7 @@ const onConfirmResetSettings = async () => {
     <ConfirmDialog
       v-model:visible="showResetSettingsDialog"
       title="恢复默认设置"
-      message="此操作只恢复当前视图的独立设置。另一个视图、远程与隐私开关、开机自启及便签数据均不受影响。"
+      message="此操作会恢复当前视图的独立设置，并将全局首次使用须知恢复为未阅读。另一个视图、远程与隐私开关、开机自启及便签数据均不受影响。"
       confirm-text="恢复"
       cancel-text="取消"
       variant="default"
@@ -2363,6 +2524,77 @@ const onConfirmResetSettings = async () => {
 .titlebar-style-selector button:focus-visible {
   outline: 2rem solid #0078d4;
   outline-offset: 1rem;
+}
+
+.dock-edge-selector {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6rem;
+}
+.dock-edge-selector button {
+  display: inline-flex;
+  min-height: 30rem;
+  align-items: center;
+  gap: 6rem;
+  padding: 0 10rem 0 7rem;
+  border: 0;
+  border-radius: 15rem;
+  background: var(--ui-fill-passive);
+  color: var(--text-color-secondary);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) ease,
+    color var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
+}
+.dock-edge-selector button:hover:not(:disabled) {
+  background: var(--ui-fill-hover);
+}
+.dock-edge-selector button:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 1px;
+}
+.dock-edge-selector button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.dock-edge-selector button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+.dock-edge-selector button.is-selected {
+  background: var(--ui-accent-subtle);
+  color: var(--text-color);
+}
+.dock-edge-check {
+  display: grid;
+  width: 16rem;
+  height: 16rem;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--ui-fill-pressed);
+}
+.dock-edge-selector button.is-selected .dock-edge-check {
+  background: var(--ui-accent);
+}
+.dock-edge-check svg {
+  width: 11rem;
+  height: 11rem;
+  fill: none;
+  stroke: #fff;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+.dock-empty-hint {
+  color: var(--ui-warning);
+  opacity: 1;
+}
+.dock-runtime-hint {
+  color: var(--ui-warning);
+  opacity: 1;
 }
 
 /* 滑块类设置项——单行水平布局：标签 ? 进度条 值 全在一行 */

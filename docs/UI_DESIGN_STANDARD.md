@@ -27,6 +27,9 @@
 | `--ui-fill-passive`          | 无边线胶囊、弱状态标识             |
 | `--ui-fill-hover`            | 图标按钮、菜单选项的小面积悬停反馈 |
 | `--ui-fill-pressed`          | 选中、按下或需要更明确的无边线填充 |
+| `--ui-accent`                | 选中、焦点等蓝色交互语义           |
+| `--ui-accent-subtle`         | 蓝色交互语义的弱填充               |
+| `--ui-warning`               | 需要用户注意但不阻断操作的提示     |
 | `--surface-panel`            | 滑入式功能面板                     |
 | `--surface-modal`            | 编辑器、确认框等模态内容表面       |
 | `--surface-modal-scrim`      | 模态内容背后的统一遮罩             |

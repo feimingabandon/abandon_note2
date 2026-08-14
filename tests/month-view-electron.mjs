@@ -87,6 +87,7 @@ function seedMonthView(userDataPath) {
   // 集成测试不访问远程服务，也不创建启用状态的 BlurOverlay。
   insert.run('application', 'remote', 'receive_notices', 'false', now, now)
   insert.run('application', 'remote', 'upload_device_info', 'false', now, now)
+  insert.run('application', 'onboarding', 'first_use_notice_version', '1', now, now)
   insert.run('month', 'system', 'blur_enabled', 'false', now, now)
   db.close()
 }
@@ -169,7 +170,7 @@ async function runMonthViewTests() {
     weekdayText: Array.from(document.querySelectorAll('.month-grid__weekdays span'), (node) => node.textContent.trim()),
     dayPanelVisible: Boolean(document.querySelector('.month-day-panel')),
     settingsButton: Boolean(document.querySelector('.month-titlebar-btn[title="设置"]')),
-    helpDisabled: document.querySelector('.month-titlebar-btn[aria-disabled="true"]')?.getAttribute('title'),
+    helpButton: Boolean(document.querySelector('.month-titlebar-btn[aria-controls="help-workspace"]')),
     templateButton: Array.from(document.querySelectorAll('button')).some((button) =>
       /模板|循环/.test(button.title || button.textContent || '')
     ),
@@ -195,11 +196,30 @@ async function runMonthViewTests() {
     ])
     assert.equal(initialUi.dayPanelVisible, false, '日期侧栏首次进入必须默认折叠')
     assert.equal(initialUi.settingsButton, true)
-    assert.match(initialUi.helpDisabled || '', /暂未开放/)
+    assert.equal(initialUi.helpButton, true, '月视图必须开放帮助中心入口')
     assert.equal(initialUi.templateButton, false, '月视图导航栏不应包含模板按钮')
     assert.equal(initialUi.controlCount, 3, '月视图应复用关闭、置顶、锁定三个窗口控制')
     assert.equal(initialUi.refreshButton, true, '今天按钮旁必须提供刷新按钮')
     assert.equal(initialUi.persistentJumpControls, false, '工具栏右侧不得常驻年月选择控件')
+
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-titlebar-btn[aria-controls="help-workspace"]').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `document.querySelector('.month-help-panel')?.classList.contains('active') && document.querySelector('.month-help-panel')?.textContent.includes('月视图')`
+        ),
+      '月视图帮助中心没有完成打开'
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-titlebar-btn[aria-controls="help-workspace"]').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(`!document.querySelector('.month-help-wrapper')`),
+      '月视图帮助中心没有完成关闭'
+    )
 
     const initialToolbarLayout = await monthWindow.webContents.executeJavaScript(`(() => {
       const toolbar = document.querySelector('.month-toolbar').getBoundingClientRect()

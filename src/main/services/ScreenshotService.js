@@ -125,10 +125,12 @@ function cropScreenshot(selection, sourceImage) {
 }
 
 export class ScreenshotService {
-  constructor({ ipcMain, preloadPath, getMainWindow }) {
+  constructor({ ipcMain, preloadPath, getMainWindow, onCaptureStart, onCaptureEnd }) {
     this.ipcMain = ipcMain
     this.preloadPath = preloadPath
     this.getMainWindow = getMainWindow
+    this.onCaptureStart = onCaptureStart
+    this.onCaptureEnd = onCaptureEnd
     this.window = null
     this.initialized = false
   }
@@ -136,9 +138,14 @@ export class ScreenshotService {
   initialize() {
     if (this.initialized) return
     this.initialized = true
-    this.ipcMain.handle('screenshot:capture', (event) => {
+    this.ipcMain.handle('screenshot:capture', async (event) => {
       if (event.sender !== this.getMainWindow?.()?.webContents) throw new Error('无权使用截图功能')
-      return this.capture(event)
+      try {
+        this.onCaptureStart?.()
+        return await this.capture(event)
+      } finally {
+        this.onCaptureEnd?.()
+      }
     })
   }
 

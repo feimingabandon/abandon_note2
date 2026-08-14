@@ -78,6 +78,84 @@ describe('view-specific defaults', () => {
   })
 })
 
+describe('dock settings', () => {
+  it('preserves the legacy dock behavior as the default for each view', () => {
+    expect(createDefaultSettings(VIEW_MODES.LIST).dock).toEqual({
+      revealHandleEnabled: false,
+      enabledEdges: ['left', 'right']
+    })
+    expect(createDefaultSettings(VIEW_MODES.MONTH).dock).toEqual({
+      revealHandleEnabled: false,
+      enabledEdges: ['top']
+    })
+    expect(createDefaultSettings(VIEW_MODES.WEEK).dock).toEqual({
+      revealHandleEnabled: false,
+      enabledEdges: ['top']
+    })
+  })
+
+  it('serializes the confirmation handle and canonical dock edge order', () => {
+    expect(serializeSetting('dock.revealHandleEnabled', true)).toMatchObject({
+      type: 'dock',
+      key: 'dock_reveal_handle_enabled',
+      value: 'true'
+    })
+    expect(serializeSetting('dock.enabledEdges', ['right', 'top', 'right', 'left'])).toMatchObject({
+      type: 'dock',
+      key: 'dock_enabled_edges',
+      value: JSON.stringify(['top', 'left', 'right'])
+    })
+    expect(serializeSetting('dock.enabledEdges', [])).toMatchObject({ value: '[]' })
+  })
+
+  it('rejects unsupported edges and uses the current view fallback for damaged rows', () => {
+    expect(serializeSetting('dock.enabledEdges', ['top', 'bottom']).value).toBe('[]')
+    expect(serializeSetting('dock.enabledEdges', Array(13).fill('top')).value).toBe('[]')
+    expect(
+      resolveSettingsRows(
+        [{ type: 'dock', key: 'dock_enabled_edges', value: '["bottom"]' }],
+        VIEW_MODES.LIST
+      ).dock.enabledEdges
+    ).toEqual(['left', 'right'])
+    expect(
+      resolveSettingsRows(
+        [{ type: 'dock', key: 'dock_enabled_edges', value: 'not-json' }],
+        VIEW_MODES.MONTH
+      ).dock.enabledEdges
+    ).toEqual(['top'])
+    expect(
+      resolveSettingsRows(
+        [
+          {
+            type: 'dock',
+            key: 'dock_enabled_edges',
+            value: JSON.stringify(Array(13).fill('left'))
+          }
+        ],
+        VIEW_MODES.WEEK
+      ).dock.enabledEdges
+    ).toEqual(['top'])
+  })
+
+  it('restores valid persisted multi-select values and keeps an empty selection', () => {
+    expect(
+      resolveSettingsRows(
+        [
+          { type: 'dock', key: 'dock_reveal_handle_enabled', value: 'true' },
+          { type: 'dock', key: 'dock_enabled_edges', value: '["right","top"]' }
+        ],
+        VIEW_MODES.WEEK
+      ).dock
+    ).toEqual({ revealHandleEnabled: true, enabledEdges: ['top', 'right'] })
+    expect(
+      resolveSettingsRows(
+        [{ type: 'dock', key: 'dock_enabled_edges', value: '[]' }],
+        VIEW_MODES.LIST
+      ).dock.enabledEdges
+    ).toEqual([])
+  })
+})
+
 describe('CSS blur setting', () => {
   it('keeps persisted UI blur at or above the 5px readability floor', () => {
     const resolved = resolveSettingsRows([{ type: 'css', key: 'bg_blur', value: '0' }])
@@ -220,5 +298,20 @@ describe('weather settings', () => {
       resolveSettingsRows([{ type: persisted.type, key: persisted.key, value: persisted.value }])
         .weather.location
     ).toEqual(location)
+  })
+})
+
+describe('first-use notice setting', () => {
+  it('defaults to unread and persists the acknowledged notice version', () => {
+    expect(DEFAULT_SETTINGS.onboarding.noticeVersion).toBe(0)
+    expect(serializeSetting('onboarding.noticeVersion', 1)).toMatchObject({
+      type: 'onboarding',
+      key: 'first_use_notice_version',
+      value: '1'
+    })
+    expect(
+      resolveSettingsRows([{ type: 'onboarding', key: 'first_use_notice_version', value: '1' }])
+        .onboarding.noticeVersion
+    ).toBe(1)
   })
 })

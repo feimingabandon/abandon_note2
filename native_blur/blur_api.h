@@ -57,6 +57,15 @@ BLUR_API int WindowMotion_ArmEdgeMonitor(
     int thicknessDip,
     int pollIntervalMs,
     unsigned long long generation);
+// revealMode: 0=保持旧行为，触边立即通知；1=先显示原生小黑条，完整点击后通知。
+// 旧 WindowMotion_ArmEdgeMonitor ABI 永远等价于 revealMode=0。
+BLUR_API int WindowMotion_ArmEdgeMonitorEx(
+    void* hwnd,
+    int side,
+    int thicknessDip,
+    int pollIntervalMs,
+    unsigned long long generation,
+    int revealMode);
 BLUR_API int WindowMotion_DisarmEdgeMonitor(unsigned long long generation);
 BLUR_API unsigned int WindowMotion_GetEdgeMessageId(void);
 BLUR_API const char* WindowMotion_GetEdgeMonitorStatusJson(void);

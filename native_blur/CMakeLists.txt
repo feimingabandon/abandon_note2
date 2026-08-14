@@ -9,6 +9,10 @@ if(NOT MSVC)
     message(FATAL_ERROR "此项目仅支持 MSVC 编译器（需要 C++/WinRT 支持）")
 endif()
 
+# 将 MSVC C/C++ 运行库静态链接进 blur_engine.dll，避免发布后的应用
+# 依赖用户电脑预装 MSVCP140/VCRUNTIME140 系列 DLL。
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 # C++/WinRT 配置
 # 使用系统安装的 Windows SDK 中的 C++/WinRT
 # 无需 NuGet 包 — C++/WinRT 已内置于 Windows SDK 10.0.17763+
@@ -18,6 +22,8 @@ set(SOURCES
     blur_engine.cpp
     blur_api.cpp
     window_motion_edge_monitor.cpp
+    reveal_handle_renderer.cpp
+    reveal_handle_resources.rc
 )
 
 set(HEADERS
@@ -25,6 +31,8 @@ set(HEADERS
     blur_api.h
     blur_effects.h
     window_motion_edge_monitor.h
+    reveal_handle_renderer.h
+    reveal_handle_resource.h
 )
 
 # 生成 DLL
@@ -42,6 +50,9 @@ target_compile_definitions(blur_engine PRIVATE
 # 链接库
 target_link_libraries(blur_engine PRIVATE
     d2d1
+    dwrite
+    windowscodecs
+    ole32
     dxguid
     dwmapi
     user32

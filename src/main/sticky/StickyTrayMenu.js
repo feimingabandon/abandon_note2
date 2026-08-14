@@ -52,7 +52,7 @@ export function buildStickyTrayTemplate({
     },
     { label: `便利贴总览（${count}）`, submenu: overview },
     {
-      label: '× 删除全部便利贴',
+      label: '× 关闭全部便利贴',
       enabled: count > 0,
       click: () => stickyService.closeAll()
     },

@@ -48,6 +48,7 @@ function seedWeekView(userDataPath) {
   insert.run('application', 'application', 'active_view', 'week', now, now)
   insert.run('application', 'remote', 'receive_notices', 'false', now, now)
   insert.run('application', 'remote', 'upload_device_info', 'false', now, now)
+  insert.run('application', 'onboarding', 'first_use_notice_version', '1', now, now)
   // 周视图第一次启动应继承月视图的窗口、侧栏与外观设置。
   insert.run('month', 'geometry', 'pos_x', '110', now, now)
   insert.run('month', 'geometry', 'pos_y', '120', now, now)
@@ -136,6 +137,7 @@ async function runWeekViewTests() {
       title: document.querySelector('.month-toolbar__title')?.textContent?.trim() || '',
       previousLabel: document.querySelector('.month-toolbar__navigation button:first-child')?.getAttribute('aria-label'),
       nextLabel: document.querySelector('.month-toolbar__navigation button:nth-of-type(3)')?.getAttribute('aria-label'),
+      helpButton: Boolean(document.querySelector('.month-titlebar-btn[aria-controls="help-workspace"]')),
       microsoftTitlebar: document.querySelector('.app-titlebar')?.classList.contains('app-titlebar--microsoft'),
       today: (() => {
         const now = new Date()
@@ -147,9 +149,30 @@ async function runWeekViewTests() {
     assert.equal(initial.label, '周历')
     assert.equal(initial.previousLabel, '上一周')
     assert.equal(initial.nextLabel, '下一周')
+    assert.equal(initial.helpButton, true, '周视图必须开放帮助中心入口')
     assert.equal(initial.selected, initial.today, '周视图初始选中日期应为今天')
     assert.equal(initial.microsoftTitlebar, true, '周视图首次启动未继承月视图导航栏风格')
     assert.match(initial.title, /年.*月.*日—.*日/)
+
+    await weekWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-titlebar-btn[aria-controls="help-workspace"]').click()`
+    )
+    await waitUntil(
+      () =>
+        weekWindow.webContents.executeJavaScript(
+          `document.querySelector('.month-help-panel')?.classList.contains('active') && document.querySelector('.month-help-panel')?.textContent.includes('周视图')`
+        ),
+      '周视图帮助中心没有完成打开'
+    )
+    await weekWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-titlebar-btn[aria-controls="help-workspace"]').click()`
+    )
+    await waitUntil(
+      () =>
+        weekWindow.webContents.executeJavaScript(`!document.querySelector('.month-help-wrapper')`),
+      '周视图帮助中心没有完成关闭'
+    )
+
     const inheritedSnapshot = await weekWindow.webContents.executeJavaScript(
       `window.api.getSettingsSnapshot()`
     )

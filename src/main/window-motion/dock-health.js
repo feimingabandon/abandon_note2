@@ -37,6 +37,15 @@ export function inspectDockHealth(snapshot) {
     } else if (snapshot.sessionSide !== snapshot.dockSide) {
       issues.push('贴边运动会话方向与当前贴边方向不一致')
     }
+    if (
+      Array.isArray(snapshot.activeDockEdges) &&
+      !snapshot.activeDockEdges.includes(snapshot.dockSide)
+    ) {
+      issues.push('隐藏方向已不在当前启用的贴边范围内')
+    }
+    if (snapshot.sessionRevealHandleEnabled !== snapshot.revealHandleEnabled) {
+      issues.push('隐藏会话的小黑条模式与当前配置不一致')
+    }
     if (snapshot.mainAtHiddenTarget !== true) {
       issues.push('主窗口未处于本轮会话记录的隐藏位置')
     }
@@ -48,6 +57,21 @@ export function inspectDockHealth(snapshot) {
     }
     if (monitor.side !== snapshot.dockSide) {
       issues.push('原生边缘监视器方向与贴边会话不一致')
+    }
+    if (typeof monitor.mode === 'string' && monitor.mode !== snapshot.sessionMonitorMode) {
+      issues.push('原生边缘监视器的小黑条模式与贴边会话不一致')
+    }
+    if (snapshot.sessionRevealHandleEnabled === true) {
+      // 原生小黑条 HWND 按需创建；尚未首次触边时 hidden + windowAlive=false 是正常态。
+      if (
+        ['animating', 'appearing', 'ready', 'retreating'].includes(monitor.handleState) &&
+        monitor.handleWindowAlive !== true
+      ) {
+        issues.push('小黑条进入显示阶段但原生窗口未运行')
+      }
+      if (monitor.handleState === 'ready' && monitor.handleVisible !== true) {
+        issues.push('小黑条已就绪但不可见')
+      }
     }
     if (!['waiting-outside', 'armed', 'trigger-pending', 'degraded'].includes(monitor.state)) {
       issues.push(`原生边缘监视器状态异常：${monitor.state}`)

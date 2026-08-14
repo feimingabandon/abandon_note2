@@ -28,7 +28,7 @@
 
     <!-- 生效时间 -->
     <div class="mnp-row">
-      <span class="mnp-label">生效时间？</span>
+      <span class="mnp-label">生效时间<i class="mnp-help">?</i></span>
       <span class="mnp-control mnp-select">
         立即生效
         <svg
@@ -47,7 +47,7 @@
 
     <!-- 系统提醒 -->
     <div class="mnp-row">
-      <span class="mnp-label">启用系统提醒？</span>
+      <span class="mnp-label">启用系统提醒<i class="mnp-help">?</i></span>
       <span class="mnp-control"
         ><span class="mnp-toggle"><i /></span
       ></span>
@@ -55,7 +55,7 @@
 
     <!-- 置顶 -->
     <div class="mnp-row">
-      <span class="mnp-label">置顶？</span>
+      <span class="mnp-label">置顶<i class="mnp-help">?</i></span>
       <span class="mnp-control"
         ><span class="mnp-toggle mnp-toggle--on"><i /></span
       ></span>
@@ -63,7 +63,7 @@
 
     <!-- 标签 -->
     <div class="mnp-row mnp-row--tags">
-      <span class="mnp-label">标签？</span>
+      <span class="mnp-label">标签<i class="mnp-help">?</i></span>
       <div class="mnp-tags">
         <span class="mnp-tag"><i class="mnp-tag-dot" style="background: #ef4444" />重要</span>
         <span class="mnp-tag"><i class="mnp-tag-dot" style="background: #22c55e" />日常</span>
@@ -99,13 +99,23 @@
 
     <!-- 图片 -->
     <div class="mnp-row mnp-row--images">
-      <span class="mnp-label">图片？</span>
+      <span class="mnp-label">图片<i class="mnp-help">?</i></span>
       <div class="mnp-images">
+        <span class="mnp-img-slot">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor">
+            <path
+              d="M20 7h-3l-2-2H9L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2Z"
+            />
+            <circle cx="12" cy="13" r="4" />
+          </svg>
+          <small>截图</small>
+        </span>
         <span class="mnp-img-slot">
           <svg viewBox="0 0 1024 1024" width="18" height="18" fill="none">
             <path d="M512 200V824" stroke="currentColor" stroke-width="80" stroke-linecap="round" />
             <path d="M200 512H824" stroke="currentColor" stroke-width="80" stroke-linecap="round" />
           </svg>
+          <small>选择</small>
         </span>
       </div>
     </div>
@@ -121,10 +131,7 @@
   display: flex;
   flex-direction: column;
   gap: 12rem;
-  padding: 16rem;
-  border-radius: 14rem;
-  background: rgb(var(--bg-color) / 0.06);
-  border: 1px solid var(--ui-border-divider);
+  padding: 12rem 4rem 4rem;
 }
 .mnp-close {
   position: absolute;
@@ -143,9 +150,9 @@
 .mnp-textarea {
   min-height: 72rem;
   padding: 10rem 12rem;
-  border: 1px solid var(--ui-border-hover);
+  border: 1px solid var(--ui-border-control);
   border-radius: 10rem;
-  background: rgb(var(--bg-color) / 0.04);
+  background: var(--ui-surface-control);
 }
 .mnp-placeholder {
   color: var(--text-color-secondary);
@@ -165,8 +172,22 @@
   gap: 8rem;
 }
 .mnp-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4rem;
   color: var(--text-color);
   font-size: var(--fs-secondary);
+}
+.mnp-help {
+  display: grid;
+  place-items: center;
+  width: 14rem;
+  height: 14rem;
+  border: 1px solid var(--ui-border-control);
+  border-radius: 50%;
+  color: var(--text-color-secondary);
+  font-style: normal;
+  font-size: calc(var(--fs-secondary) * 0.68);
 }
 .mnp-control {
   display: flex;
@@ -177,8 +198,9 @@
   align-items: center;
   gap: 4rem;
   padding: 4rem 10rem;
-  border: 1px solid var(--ui-border-hover);
+  border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
+  background: var(--ui-surface-control);
   color: var(--text-color);
   font-size: var(--fs-secondary);
 }
@@ -199,7 +221,8 @@
   width: 16rem;
   height: 16rem;
   border-radius: 50%;
-  background: white;
+  border: 2px solid #fff;
+  background: transparent;
   transition: left 0.2s;
 }
 .mnp-toggle--on {
@@ -221,7 +244,7 @@
   gap: 5rem;
   padding: 3rem 10rem;
   border-radius: 12rem;
-  border: 1px solid var(--ui-border-hover);
+  border: 1px solid var(--ui-border-control);
   font-size: calc(var(--fs-secondary) * 0.9);
   color: var(--text-color);
 }
@@ -244,19 +267,23 @@
 .mnp-img-slot {
   display: grid;
   place-items: center;
-  width: 56rem;
-  height: 56rem;
-  border: 1px dashed var(--ui-border-hover);
+  gap: 3rem;
+  width: 62rem;
+  height: 62rem;
+  border: 1px dashed var(--ui-border-control);
   border-radius: 8rem;
   color: var(--text-color-secondary);
+}
+.mnp-img-slot small {
+  font-size: calc(var(--fs-secondary) * 0.72);
 }
 /* 创建按钮 */
 .mnp-submit {
   width: 100%;
   height: 40rem;
   border: none;
-  border-radius: 12rem;
-  background: #007aff;
+  border-radius: 8rem;
+  background: #0071e3;
   color: white;
   font-size: var(--fs-body);
   font-weight: 600;

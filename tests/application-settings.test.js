@@ -21,6 +21,7 @@ let getViewSettingsScope
 let prepareViewSettingsForSwitch
 let readApplicationSettings
 let writeActiveView
+let writeApplicationSetting
 
 beforeAll(async () => {
   ;({
@@ -28,7 +29,8 @@ beforeAll(async () => {
     getViewSettingsScope,
     prepareViewSettingsForSwitch,
     readApplicationSettings,
-    writeActiveView
+    writeActiveView,
+    writeApplicationSetting
   } = await import('../src/main/settings/application-settings.js'))
 })
 
@@ -39,6 +41,23 @@ beforeEach(() => {
 })
 
 describe('application view settings', () => {
+  it('keeps the first-use notice version in the application scope', () => {
+    expect(readApplicationSettings().onboarding.noticeVersion).toBe(0)
+
+    writeApplicationSetting('onboarding.noticeVersion', 1)
+
+    expect(readApplicationSettings().onboarding.noticeVersion).toBe(1)
+    expect(db.rowsByScope.get('application')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'onboarding',
+          key: 'first_use_notice_version',
+          value: '1'
+        })
+      ])
+    )
+  })
+
   it('accepts week as the persisted active view and maps it to an independent scope', () => {
     db.rowsByScope.set('application', [{ type: 'application', key: 'active_view', value: 'week' }])
 

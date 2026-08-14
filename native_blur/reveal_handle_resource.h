@@ -1,0 +1,4 @@
+#pragma once
+
+#define IDR_REVEAL_AVATAR_PNG 101
+#define IDR_REVEAL_OPPOSANS_TTF 102

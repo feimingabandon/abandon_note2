@@ -2,13 +2,10 @@
 /**
  * HelpFigureBlock.vue — 图解式帮助的「子模块图解块」
  *
- * 职责：呈现「一张局部小图 + 一段解释文字」。左侧是聚焦某个编号标注对应区域的局部仿造件（figure 插槽），
- * 配一枚与整机舞台一致的编号徽标；右侧是标题与解释文字（默认插槽）。
- * 编号 n 与上方 HelpMock 舞台上的标注一一对应，形成「整机图 → 逐条局部图」的阅读节奏。
+ * 职责：呈现「一张聚焦当前功能的局部界面 + 一段解释文字」。
+ * 不依赖整机编号，用户可以直接按功能标题连续阅读。
  */
 defineProps({
-  /** 编号，与整机舞台标注对应。 */
-  n: { type: [Number, String], required: true },
   /** 子模块标题。 */
   title: { type: String, required: true }
 })
@@ -17,7 +14,6 @@ defineProps({
 <template>
   <section class="help-figure">
     <div class="help-figure-visual">
-      <span class="help-figure-badge">{{ n }}</span>
       <div class="help-figure-mock" inert aria-hidden="true">
         <slot name="figure" />
       </div>
@@ -32,7 +28,7 @@ defineProps({
 <style scoped>
 .help-figure {
   display: grid;
-  grid-template-columns: 200rem minmax(0, 1fr);
+  grid-template-columns: minmax(240rem, 0.9fr) minmax(0, 1.1fr);
   gap: 16rem;
   align-items: start;
   padding: 14rem;
@@ -43,30 +39,12 @@ defineProps({
   margin-top: 10rem;
 }
 
-/* ---- 左：局部小图 + 编号徽标 ---- */
+/* ---- 左：聚焦当前功能的局部界面 ---- */
 .help-figure-visual {
-  position: relative;
   padding: 12rem;
   border: 1px solid var(--ui-border-divider);
   border-radius: 12rem;
   background: color-mix(in srgb, var(--text-color) 3%, transparent);
-}
-.help-figure-badge {
-  position: absolute;
-  z-index: var(--z-local-raised);
-  top: -8rem;
-  left: -8rem;
-  display: grid;
-  place-items: center;
-  width: 20rem;
-  height: 20rem;
-  border-radius: 50%;
-  background: #ff453a;
-  color: #fff;
-  font-size: calc(var(--fs-secondary) * 0.86);
-  font-weight: 700;
-  line-height: 1;
-  box-shadow: 0 2rem 6rem rgba(0, 0, 0, 0.24);
 }
 .help-figure-mock {
   display: flex;
@@ -75,6 +53,7 @@ defineProps({
   min-height: 40rem;
   pointer-events: none;
   user-select: none;
+  container-type: inline-size;
 }
 .help-figure-mock :deep(*) {
   cursor: default !important;

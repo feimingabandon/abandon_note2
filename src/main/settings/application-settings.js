@@ -31,7 +31,8 @@ const APPLICATION_SETTING_DB_KEYS = new Set([
   'remote:receive_notices',
   'remote:upload_device_info',
   'weather:enabled',
-  'weather:location'
+  'weather:location',
+  'onboarding:first_use_notice_version'
 ])
 
 function rowMap(rows) {
@@ -62,6 +63,7 @@ export function readApplicationSettings() {
   return {
     activeView: normalizeViewMode(storedView),
     weather: applicationResolved.weather,
+    onboarding: applicationResolved.onboarding,
     remote: {
       receiveNotices: parseStoredBoolean(receiveNotices, DEFAULT_SETTINGS.remote.receiveNotices),
       uploadDeviceInfo: parseStoredBoolean(
@@ -146,7 +148,8 @@ export function writeApplicationSetting(id, value) {
     id !== 'remote.receiveNotices' &&
     id !== 'remote.uploadDeviceInfo' &&
     id !== 'weather.enabled' &&
-    id !== 'weather.location'
+    id !== 'weather.location' &&
+    id !== 'onboarding.noticeVersion'
   ) {
     throw new Error(`未知应用级设置项: ${id}`)
   }

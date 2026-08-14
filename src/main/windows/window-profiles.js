@@ -1,4 +1,4 @@
-import { VIEW_MODES } from '../../shared/settings-schema.js'
+import { DOCK_EDGES, VIEW_MODES } from '../../shared/settings-schema.js'
 
 export const WINDOW_PROFILES = Object.freeze({
   [VIEW_MODES.LIST]: Object.freeze({
@@ -6,7 +6,7 @@ export const WINDOW_PROFILES = Object.freeze({
     settingsScope: 'main',
     rendererFile: 'index.html',
     logRole: 'main',
-    dockEdges: Object.freeze(['left', 'right']),
+    supportedDockEdges: DOCK_EDGES,
     defaultCentered: false
   }),
   [VIEW_MODES.MONTH]: Object.freeze({
@@ -14,7 +14,7 @@ export const WINDOW_PROFILES = Object.freeze({
     settingsScope: 'month',
     rendererFile: 'month.html',
     logRole: 'month',
-    dockEdges: Object.freeze(['top']),
+    supportedDockEdges: DOCK_EDGES,
     defaultCentered: true
   }),
   [VIEW_MODES.WEEK]: Object.freeze({
@@ -22,7 +22,7 @@ export const WINDOW_PROFILES = Object.freeze({
     settingsScope: 'week',
     rendererFile: 'week.html',
     logRole: 'week',
-    dockEdges: Object.freeze(['top']),
+    supportedDockEdges: DOCK_EDGES,
     defaultCentered: true
   })
 })

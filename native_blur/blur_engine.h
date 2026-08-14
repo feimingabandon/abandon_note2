@@ -85,6 +85,10 @@ public:
 
     // ---- 位置/尺寸同步 ----
     void UpdateGeometry();
+    // 贴边动画专用：同批提交父窗口与 Overlay，并在有界等待后
+    // 验证两者物理边界一致。Composition 对象仍只由 STA 线程访问。
+    bool MoveParentAndOverlay(HWND parentHwnd, int physicalX, int physicalY,
+        DWORD syncTimeoutMs = 50);
 
     // ---- Z-order 重同步（父窗口置顶层变化后调用） ----
     void ReSyncZOrder();
