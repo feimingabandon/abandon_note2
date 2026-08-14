@@ -1,8 +1,3 @@
-export const UPDATE_LINKS = Object.freeze({
-  gitcode: 'https://gitcode.com/zou-feiming/abandon_note2/releases',
-  github: 'https://github.com/feimingabandon/abandon_note2/releases'
-})
-
 const RELEASE_ENDPOINTS = Object.freeze([
   {
     source: 'gitcode',
@@ -13,6 +8,11 @@ const RELEASE_ENDPOINTS = Object.freeze([
     url: 'https://api.github.com/repos/feimingabandon/abandon_note2/releases/latest'
   }
 ])
+
+const RELEASE_PAGE_BUILDERS = Object.freeze({
+  gitcode: (version) => `https://gitcode.com/zou-feiming/abandon_note2/releases/tag/v${version}`,
+  github: (version) => `https://github.com/feimingabandon/abandon_note2/releases/tag/v${version}`
+})
 
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/
 
@@ -35,14 +35,12 @@ export function compareVersions(left, right) {
   return 0
 }
 
+// 当前更新入口仅面向 Windows 10/11 x64；macOS 下载暂不在应用内提供。
 export function getTargetArtifact(version, platform, arch) {
   const normalizedVersion = normalizeVersion(version)
   if (!normalizedVersion) throw new Error('无法为无效版本确定安装包')
   if (platform === 'win32' && arch === 'x64') {
     return `Abandon-Note-${normalizedVersion}-windows-x64-setup.exe`
-  }
-  if (platform === 'darwin' && (arch === 'x64' || arch === 'arm64')) {
-    return `Abandon-Note-${normalizedVersion}-macos-${arch}.dmg`
   }
   return null
 }
@@ -60,7 +58,8 @@ export function normalizeRelease(payload, source) {
     assets: Array.isArray(rawAssets)
       ? rawAssets.map((asset) => ({
           name: String(asset?.name || asset?.file_name || ''),
-          size: Number(asset?.size || asset?.file_size || 0)
+          size: Number(asset?.size || asset?.file_size || 0),
+          downloadUrl: String(asset?.browser_download_url || asset?.download_url || '')
         }))
       : []
   }
@@ -68,7 +67,7 @@ export function normalizeRelease(payload, source) {
 
 function hasTargetArtifact(release, platform, arch) {
   const artifactName = getTargetArtifact(release.version, platform, arch)
-  if (!artifactName) return true
+  if (!artifactName) return false
   return release.assets.some((asset) => asset.name === artifactName)
 }
 
@@ -93,28 +92,62 @@ function selectPreferredRelease(releases, platform, arch) {
   )
 }
 
-function manualResult({ currentVersion, platform, arch, status = 'unsupported', error = null }) {
+function buildReleaseLinks(version) {
+  const normalizedVersion = normalizeVersion(version)
+  if (!normalizedVersion) throw new Error('无法为无效版本生成发布页地址')
+  return {
+    gitcode: RELEASE_PAGE_BUILDERS.gitcode(normalizedVersion),
+    github: RELEASE_PAGE_BUILDERS.github(normalizedVersion)
+  }
+}
+
+function getTrustedGitCodeDownloadUrl(release, artifactName) {
+  if (release?.source !== 'gitcode' || !artifactName) return null
+  const asset = release.assets.find((item) => item.name === artifactName)
+  if (!asset?.downloadUrl) return null
+
+  try {
+    const url = new URL(asset.downloadUrl)
+    const expectedPath = `/zou-feiming/abandon_note2/releases/download/v${release.version}/${artifactName}`
+    if (
+      url.protocol !== 'https:' ||
+      url.hostname !== 'gitcode.com' ||
+      decodeURIComponent(url.pathname) !== expectedPath
+    ) {
+      return null
+    }
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
+function emptyResult({ currentVersion, platform, arch, status = 'unsupported', error = null }) {
   return {
     status,
     currentVersion,
     latestVersion: null,
     platform,
     arch,
-    artifactName: getTargetArtifact(currentVersion, platform, arch),
+    artifactName: null,
+    downloadAvailable: false,
+    downloadUrl: null,
+    releaseLinks: null,
     error
   }
 }
 
-// 更新采用全手动模式：应用只负责检查新版本，下载安装由用户前往发布页完成。
+// 应用只检查版本并打开受信的浏览器地址；安装包下载和安装继续由浏览器与用户完成。
 export class AppUpdateService {
   constructor({ currentVersion, platform, arch, fetchImpl = globalThis.fetch }) {
     this.currentVersion = currentVersion
     this.platform = platform
     this.arch = arch
     this.fetch = fetchImpl
+    this.externalUrls = null
   }
 
-  async fetchLatestRelease() {
+  async fetchLatestReleases() {
     const attempts = await Promise.all(
       RELEASE_ENDPOINTS.map(async (endpoint) => {
         try {
@@ -151,9 +184,8 @@ export class AppUpdateService {
       })
     )
     const releases = attempts.map((attempt) => attempt.release).filter(Boolean)
-    if (releases.length > 0) {
-      return selectPreferredRelease(releases, this.platform, this.arch)
-    }
+    if (releases.length > 0) return releases
+
     const failures = attempts.map((attempt) => attempt.failure).filter(Boolean)
     const error = new Error(
       failures.map((failure) => `${failure.source}: ${failure.message}`).join('；')
@@ -167,40 +199,79 @@ export class AppUpdateService {
     throw error
   }
 
+  getExternalUrl(target) {
+    const url = this.externalUrls?.[target]
+    if (!url) {
+      throw new Error(
+        target === 'download'
+          ? 'GitCode 最新版安装包暂不可用，请稍后重试或使用手动下载'
+          : '请先完成更新检查'
+      )
+    }
+    return url
+  }
+
   async check() {
-    const base = manualResult({
+    this.externalUrls = null
+    const base = emptyResult({
       currentVersion: this.currentVersion,
       platform: this.platform,
       arch: this.arch
     })
+    if (!getTargetArtifact(this.currentVersion, this.platform, this.arch)) {
+      return {
+        ...base,
+        status: 'unsupported',
+        error: '当前更新下载暂时只提供 Windows x64 安装包。'
+      }
+    }
+
     try {
-      const release = await this.fetchLatestRelease()
+      const releases = await this.fetchLatestReleases()
+      const release = selectPreferredRelease(releases, this.platform, this.arch)
       const comparison = compareVersions(release.version, this.currentVersion)
+      const artifactName = getTargetArtifact(release.version, this.platform, this.arch)
+      const gitcodeRelease = releases.find(
+        (candidate) =>
+          candidate.source === 'gitcode' &&
+          compareVersions(candidate.version, release.version) === 0
+      )
+      const downloadUrl = getTrustedGitCodeDownloadUrl(gitcodeRelease, artifactName)
+      const releaseLinks = buildReleaseLinks(release.version)
+      this.externalUrls = Object.freeze({
+        download: downloadUrl,
+        gitcode: releaseLinks.gitcode,
+        github: releaseLinks.github
+      })
+
       const result = {
         ...base,
         status: comparison > 0 ? 'available' : 'current',
         latestVersion: release.version,
-        artifactName: getTargetArtifact(release.version, this.platform, this.arch),
+        artifactName,
+        downloadAvailable: Boolean(downloadUrl),
+        downloadUrl,
+        releaseLinks,
         source: release.source,
         releaseTitle: release.title,
         releaseNotes: release.notes,
         publishedAt: release.publishedAt
       }
       console.log(
-        `[update] 检查完成: 当前 ${this.currentVersion} / 最新 ${release.version} (${release.source}), 状态 ${result.status}`
+        `[update] 检查完成: 当前 ${this.currentVersion} / 最新 ${release.version} (${release.source}), 状态 ${result.status}, GitCode 下载 ${downloadUrl ? '可用' : '不可用'}`
       )
       return result
     } catch (error) {
       const unpublished = error.code === 'NO_PUBLISHED_RELEASE'
       console.error('[update] 检查更新失败:', error)
-      return manualResult({
+      return emptyResult({
         currentVersion: this.currentVersion,
         platform: this.platform,
         arch: this.arch,
         status: unpublished ? 'unpublished' : 'error',
         error: unpublished
           ? '当前还没有公开发布版本。首次 Release 发布后，这里会显示最新版本。'
-          : '暂时无法连接更新服务。请稍后重试，或使用下方发布页手动查看。'
+          : '暂时无法连接更新服务，请稍后重试。'
       })
     }
   }

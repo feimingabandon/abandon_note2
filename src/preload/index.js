@@ -102,10 +102,10 @@ const api = {
     return () => ipcRenderer.removeListener('notification:open-note', handler)
   },
 
-  // ---- 应用更新（全手动模式：仅检查新版本与打开发布页，固定仓库地址） ----
+  // ---- 应用更新（浏览器直链下载 + 对应版本发布页） ----
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
   checkForUpdate: () => ipcRenderer.invoke('update:check'),
-  openManualUpdate: (provider) => ipcRenderer.invoke('update:open-manual', provider),
+  openUpdateLink: (target) => ipcRenderer.invoke('update:open-link', target),
 
   // ---- 贴边隐藏 ----
   /** 通知主进程鼠标悬停状态（true=进入窗口, false=离开窗口） */

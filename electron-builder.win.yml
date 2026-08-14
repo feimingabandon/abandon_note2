@@ -1,0 +1,29 @@
+extends: 'file:./electron-builder.base.yml'
+win:
+  executableName: AbandonNote
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+  extraResources:
+    - from: native_blur/build/bin/
+      to: native_blur/
+      filter:
+        - '*.dll'
+nsis:
+  artifactName: Abandon-Note-${version}-windows-${arch}-setup.${ext}
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  license: LICENSE
+  installerLanguages:
+    - zh_CN
+    - en_US

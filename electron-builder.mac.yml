@@ -1,0 +1,18 @@
+# macOS 目前仅保留开发配置，不进入正式 Release 工作流。
+extends: 'file:./electron-builder.base.yml'
+mac:
+  icon: build/icon.icns
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSLocationUsageDescription: Abandon Note uses your location only when you choose device location for weather.
+  notarize: true
+dmg:
+  artifactName: Abandon-Note-${version}-macos-${arch}.${ext}

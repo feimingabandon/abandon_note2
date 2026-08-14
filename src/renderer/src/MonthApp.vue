@@ -283,6 +283,8 @@ async function checkForUpdates() {
     updateResult.value = {
       status: 'error',
       currentVersion: (await window.api.getAppInfo().catch(() => null))?.version || '未知',
+      downloadAvailable: false,
+      releaseLinks: null,
       error: `检查更新失败：${error.message}`
     }
   } finally {

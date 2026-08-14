@@ -68,7 +68,7 @@ import { Scheduler } from './services/scheduler.js'
 import { runRecurringTemplates } from './services/recurrence.js'
 import { TemplateSchedulerGuard } from './services/template-scheduler-guard.js'
 import { inspectDockHealth } from './window-motion/dock-health.js'
-import { AppUpdateService, UPDATE_LINKS } from './services/app-update.js'
+import { AppUpdateService } from './services/app-update.js'
 import { NotificationService } from './services/NotificationService.js'
 import { ScreenshotService } from './services/ScreenshotService.js'
 import { ElectronStickyService } from './sticky/ElectronStickyService.js'
@@ -2402,8 +2402,8 @@ app.whenReady().then(async () => {
     return { canceled: false, filePath: result.filePath }
   })
 
-  // ---- 应用更新（全手动模式：只检查新版本，下载安装由用户前往发布页完成） ----
-  // 所有 URL 均由主进程固定；renderer 不可传入任意地址。
+  // ---- 应用更新（检查版本后，通过浏览器直链或对应标签页下载） ----
+  // renderer 只能选择固定目标；实际 URL 来自主进程刚完成的更新检查。
   mainWindowIpc.handle('update:check', async () => {
     return appUpdateService.check()
   })
@@ -2412,9 +2412,11 @@ app.whenReady().then(async () => {
     return { version: app.getVersion(), platform: process.platform, arch: process.arch }
   })
 
-  mainWindowIpc.handle('update:open-manual', async (_event, provider) => {
-    const url = UPDATE_LINKS[provider]
-    if (!url) throw new Error('未知的更新来源')
+  mainWindowIpc.handle('update:open-link', async (_event, target) => {
+    if (!['download', 'gitcode', 'github'].includes(target)) {
+      throw new Error('未知的更新入口')
+    }
+    const url = appUpdateService.getExternalUrl(target)
     await shell.openExternal(url)
     return true
   })

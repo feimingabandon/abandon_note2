@@ -1,6 +1,6 @@
 {
   "name": "abandon_note2",
-  "version": "0.9.2",
+  "version": "1.0.0",
   "description": "Abandon便签（Abandon Note）是一款跨平台桌面便签应用。",
   "main": "./out/main/index.js",
   "author": "feimingzou",
@@ -28,11 +28,12 @@
     "dev": "chcp 65001 && electron-vite dev",
     "build": "electron-vite build",
     "postinstall": "electron-builder install-app-deps",
-    "build:unpack": "npm run build && electron-builder --dir",
+    "build:unpack": "npm run build:unpack:win",
+    "build:unpack:win": "npm run build:native:win && npm run build && electron-builder --config electron-builder.win.yml --win --x64 --dir",
     "build:native:win": "powershell -NoProfile -ExecutionPolicy Bypass -File native_blur/build.ps1",
-    "build:win": "npm run build:native:win && npm run build && electron-builder --win nsis --x64 --publish never",
-    "build:mac:x64": "npm run build && electron-builder --mac dmg --x64 --publish never",
-    "build:mac:arm64": "npm run build && electron-builder --mac dmg --arm64 --publish never"
+    "build:win": "npm run build:native:win && npm run build && electron-builder --config electron-builder.win.yml --win nsis --x64 --publish never",
+    "build:mac:x64": "npm run build && electron-builder --config electron-builder.mac.yml --mac dmg --x64 --publish never",
+    "build:mac:arm64": "npm run build && electron-builder --config electron-builder.mac.yml --mac dmg --arm64 --publish never"
   },
   "dependencies": {
     "@aurouscia/china-areas": "^0.7.0",
@@ -40,12 +41,12 @@
     "@electron-toolkit/utils": "^4.0.0",
     "better-sqlite3": "13.0.1",
     "chinese-days": "1.5.9",
-    "koffi": "2.16.2",
-    "vuedraggable": "^4.1.0"
+    "koffi": "2.16.2"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config": "^2.1.0",
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
+    "@electron/asar": "^3.4.1",
     "@vitejs/plugin-vue": "^6.0.2",
     "@zf-web-font/opposans": "^0.2.0",
     "electron": "43.2.0",
@@ -59,7 +60,8 @@
     "vite-node": "^3.2.4",
     "vitest": "^4.1.10",
     "vue": "^3.5.25",
-    "vue-eslint-parser": "^10.2.0"
+    "vue-eslint-parser": "^10.2.0",
+    "vuedraggable": "^4.1.0"
   },
   "volta": {
     "node": "22.22.3"

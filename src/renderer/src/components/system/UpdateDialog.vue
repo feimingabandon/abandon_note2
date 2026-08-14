@@ -11,18 +11,18 @@ const props = defineProps({
 
 const emit = defineEmits(['update:visible', 'retry'])
 
-const manualError = ref('')
+const actionError = ref('')
 
-const manualLinks = Object.freeze([
+const manualLinks = computed(() => [
   {
-    provider: 'gitcode',
+    target: 'gitcode',
     label: 'GitCode',
-    url: 'https://gitcode.com/zou-feiming/abandon_note2/releases'
+    url: props.result?.releaseLinks?.gitcode || ''
   },
   {
-    provider: 'github',
+    target: 'github',
     label: 'GitHub',
-    url: 'https://github.com/feimingabandon/abandon_note2/releases'
+    url: props.result?.releaseLinks?.github || ''
   }
 ])
 
@@ -32,22 +32,33 @@ const title = computed(() => {
   if (props.result?.status === 'current') return '已经是最新版本'
   if (props.result?.status === 'unpublished') return '尚未发布公开版本'
   if (props.result?.status === 'error') return '暂时无法连接更新服务'
+  if (props.result?.status === 'unsupported') return '暂不提供更新下载'
   return '应用更新'
 })
 
 const platformLabel = computed(() => {
   if (props.result?.platform === 'win32') return 'Windows x64'
-  if (props.result?.platform === 'darwin' && props.result?.arch === 'arm64')
-    return 'macOS Apple 芯片'
-  if (props.result?.platform === 'darwin') return 'macOS Intel'
   return '当前系统'
 })
 
-const availableSummary = computed(
+const hasRelease = computed(
   () =>
-    `当前版本 v${props.result?.currentVersion}，可更新到 v${props.result?.latestVersion}。` +
-    '请前往下方发布页下载安装包；更新会覆盖安装，不需要先卸载，也不会主动删除便签数据。'
+    Boolean(props.result?.latestVersion) &&
+    (props.result?.status === 'available' || props.result?.status === 'current')
 )
+
+const statusSummary = computed(() => {
+  if (props.result?.status === 'available') {
+    return (
+      `当前版本 v${props.result.currentVersion}，可更新到 v${props.result.latestVersion}。` +
+      '覆盖安装不需要先卸载，也不会主动删除便签数据。'
+    )
+  }
+  if (props.result?.status === 'current') {
+    return `当前版本 v${props.result.currentVersion}，已经是最新版。你仍然可以重新下载 v${props.result.latestVersion} 安装包。`
+  }
+  return props.result?.error || '暂时无法获取公开版本信息。'
+})
 
 const contentKey = computed(() => {
   if (props.checking) return 'checking'
@@ -57,7 +68,7 @@ const contentKey = computed(() => {
 watch(
   () => props.result?.latestVersion,
   () => {
-    manualError.value = ''
+    actionError.value = ''
   }
 )
 
@@ -65,12 +76,13 @@ function close() {
   emit('update:visible', false)
 }
 
-async function openManual(provider) {
+async function openUpdateTarget(target, label) {
   try {
-    await window.api.openManualUpdate(provider)
+    actionError.value = ''
+    await window.api.openUpdateLink(target)
   } catch (error) {
-    console.error(`[UpdateDialog] 打开 ${provider} 更新页面失败:`, error)
-    manualError.value = `无法打开更新页面：${error.message}`
+    console.error(`[UpdateDialog] 打开${label}失败:`, error)
+    actionError.value = `无法打开${label}：${error.message}`
   }
 }
 </script>
@@ -80,7 +92,7 @@ async function openManual(provider) {
     :visible="visible"
     :title="title"
     eyebrow="Abandon Note"
-    width="min(430rem, calc(100vw - 40rem))"
+    width="min(460rem, calc(100vw - 40rem))"
     @update:visible="close"
   >
     <Transition name="update-content" mode="out-in">
@@ -95,59 +107,79 @@ async function openManual(provider) {
 
         <template v-else-if="result">
           <p v-if="result.status === 'available'" class="update-summary">
-            {{ availableSummary }}
+            {{ statusSummary }}
           </p>
           <p v-else-if="result.status === 'current'" class="update-summary">
-            当前版本 v{{ result.currentVersion }}，无需更新。
+            {{ statusSummary }}
           </p>
           <p
             v-else
             class="update-summary"
             :class="{ 'update-summary--warning': result.status === 'error' }"
           >
-            {{ result.error || '请使用下方发布页下载对应系统的安装包。' }}
+            {{ statusSummary }}
           </p>
 
-          <div class="manual-section">
-            <div class="manual-heading">
-              <strong>手动更新</strong>
-              <span>点击以下地址，前往对应平台的安装包发布页</span>
-            </div>
-            <div class="manual-actions">
+          <template v-if="hasRelease">
+            <section class="download-section" aria-labelledby="browser-download-heading">
+              <div class="section-heading">
+                <strong id="browser-download-heading">浏览器下载</strong>
+                <span>点击按钮后，将在默认浏览器中直接下载 GitCode 安装包</span>
+              </div>
               <button
-                v-for="link in manualLinks"
-                :key="link.provider"
-                class="manual-link"
-                :title="`在浏览器中打开 ${link.label} 安装包发布页`"
-                @click="openManual(link.provider)"
+                class="browser-download"
+                :disabled="!result.downloadAvailable"
+                :title="
+                  result.downloadAvailable
+                    ? `使用浏览器下载 ${result.artifactName}`
+                    : 'GitCode 对应版本安装包尚未同步完成'
+                "
+                @click="openUpdateTarget('download', 'GitCode 安装包下载地址')"
               >
-                <span class="manual-link-label">{{ link.label }}：</span>
-                <span class="manual-link-url">{{ link.url }}</span>
-                <span class="manual-link-arrow" aria-hidden="true">↗</span>
+                <span class="browser-download-copy">
+                  <strong>使用浏览器下载</strong>
+                  <span>
+                    {{
+                      result.downloadAvailable
+                        ? `GitCode · ${platformLabel} · v${result.latestVersion}`
+                        : 'GitCode 安装包同步中，请稍后重试'
+                    }}
+                  </span>
+                </span>
+                <span class="browser-download-arrow" aria-hidden="true">↓</span>
               </button>
-            </div>
+              <span v-if="result.downloadAvailable" class="artifact-name">
+                {{ result.artifactName }}
+              </span>
+            </section>
+
+            <section class="manual-section" aria-labelledby="manual-download-heading">
+              <div class="section-heading">
+                <strong id="manual-download-heading">手动下载</strong>
+                <span>进入 v{{ result.latestVersion }} 的发布页面查看说明或选择附件</span>
+              </div>
+              <div class="manual-actions">
+                <button
+                  v-for="link in manualLinks"
+                  :key="link.target"
+                  class="manual-link"
+                  :title="`在浏览器中打开 ${link.label} v${result.latestVersion} 发布页`"
+                  @click="openUpdateTarget(link.target, `${link.label} 发布页`)"
+                >
+                  <span class="manual-link-label">{{ link.label }}：</span>
+                  <span class="manual-link-url">{{ link.url }}</span>
+                  <span class="manual-link-arrow" aria-hidden="true">↗</span>
+                </button>
+              </div>
+            </section>
+          </template>
+
+          <div v-else-if="result.status === 'unsupported'" class="unsupported-card">
+            <span>{{ platformLabel }}</span>
+            <strong>暂不提供该系统的应用内下载入口</strong>
           </div>
 
-          <div class="artifact-card">
-            <template v-if="result.status === 'current'">
-              <span class="artifact-label">{{ platformLabel }}</span>
-              <strong>当前无需下载任何安装包</strong>
-            </template>
-            <template v-else-if="result.status === 'unpublished'">
-              <span class="artifact-label">{{ platformLabel }}</span>
-              <strong>尚无可下载的公开安装包</strong>
-            </template>
-            <template v-else-if="result.status === 'error'">
-              <span class="artifact-label">{{ platformLabel }}</span>
-              <strong>暂时无法确认推荐版本，请在发布页选择对应系统安装包</strong>
-            </template>
-            <template v-else>
-              <span class="artifact-label">{{ platformLabel }} 推荐下载</span>
-              <strong>{{ result.artifactName || '请在发布页选择当前系统安装包' }}</strong>
-            </template>
-          </div>
-
-          <p v-if="manualError" class="manual-error">{{ manualError }}</p>
+          <p v-if="actionError" class="action-error">{{ actionError }}</p>
 
           <BaseButton
             v-if="result.status === 'error' || result.status === 'unpublished'"
@@ -165,7 +197,7 @@ async function openManual(provider) {
 
 <style scoped>
 .update-state {
-  min-height: 300rem;
+  min-height: 315rem;
 }
 
 .checking-row {
@@ -194,7 +226,7 @@ async function openManual(provider) {
   width: 20rem;
   height: 20rem;
   border: 2px solid color-mix(in srgb, var(--text-color) 15%, transparent);
-  border-top-color: #0071e3;
+  border-top-color: var(--ui-accent);
   border-radius: 50%;
   animation: update-spin 0.8s linear infinite;
 }
@@ -207,54 +239,105 @@ async function openManual(provider) {
 }
 
 .update-summary--warning,
-.manual-error {
+.action-error {
   color: color-mix(in srgb, #ff453a 78%, var(--text-color));
 }
 
-.artifact-card {
+.download-section,
+.manual-section {
   display: flex;
   flex-direction: column;
-  gap: 5rem;
-  padding: 13rem 14rem;
+  gap: 10rem;
+}
+
+.download-section {
+  padding-bottom: 15rem;
+  border-bottom: 1px solid var(--ui-border-divider);
+}
+
+.browser-download {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rem;
+  width: 100%;
+  min-height: 58rem;
+  padding: 10rem 14rem;
+  border: none;
   border-radius: 10rem;
-  background: var(--ui-surface-control);
-  margin-top: 14rem;
+  color: #fff;
+  background: var(--ui-accent);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
 }
 
-.artifact-label {
+.browser-download:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ui-accent) 88%, white);
+}
+
+.browser-download:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.browser-download:disabled {
   color: var(--text-color-secondary);
-  font-size: var(--fs-secondary);
+  background: var(--ui-surface-control);
+  cursor: not-allowed;
 }
 
-.artifact-card strong {
-  overflow-wrap: anywhere;
-  font-size: var(--fs-secondary);
+.browser-download-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3rem;
 }
 
-.manual-error {
-  margin: 9rem 0 0;
+.browser-download-copy strong {
+  font-size: var(--fs-body);
+  font-weight: 650;
+}
+
+.browser-download-copy span,
+.artifact-name,
+.action-error {
   font-size: var(--fs-secondary);
   line-height: 1.45;
 }
 
-.manual-section {
-  padding: 14rem 0;
-  border-top: 1px solid var(--surface-float-border);
-  border-bottom: 1px solid var(--surface-float-border);
+.browser-download-copy span {
+  opacity: 0.82;
 }
 
-.manual-heading {
+.browser-download-arrow {
+  flex: 0 0 auto;
+  font-size: 22rem;
+  line-height: 1;
+}
+
+.artifact-name {
+  overflow-wrap: anywhere;
+  color: var(--text-color-secondary);
+}
+
+.manual-section {
+  padding-top: 15rem;
+}
+
+.section-heading {
   display: flex;
   flex-direction: column;
   gap: 3rem;
-  margin-bottom: 10rem;
 }
 
-.manual-heading strong {
+.section-heading strong {
   font-size: var(--fs-body);
 }
 
-.manual-heading span {
+.section-heading span {
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
 }
@@ -273,10 +356,10 @@ async function openManual(provider) {
   width: 100%;
   min-height: 38rem;
   padding: 8rem 10rem;
-  border: 1px solid color-mix(in srgb, #0071e3 18%, transparent);
+  border: 1px solid var(--ui-border-control);
   border-radius: 9rem;
-  color: #0071e3;
-  background: color-mix(in srgb, #0071e3 6%, transparent);
+  color: var(--ui-accent);
+  background: var(--ui-surface-control);
   font-family: inherit;
   font-size: var(--fs-secondary);
   text-align: left;
@@ -288,8 +371,7 @@ async function openManual(provider) {
 }
 
 .manual-link:hover {
-  border-color: color-mix(in srgb, #0071e3 36%, transparent);
-  background: color-mix(in srgb, #0071e3 11%, transparent);
+  border-color: var(--ui-accent);
 }
 
 .manual-link:active {
@@ -308,6 +390,28 @@ async function openManual(provider) {
 
 .manual-link-arrow {
   font-size: var(--fs-body);
+}
+
+.unsupported-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4rem;
+  padding: 13rem 14rem;
+  border-radius: 10rem;
+  background: var(--ui-surface-subtle);
+}
+
+.unsupported-card span {
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+}
+
+.unsupported-card strong {
+  font-size: var(--fs-secondary);
+}
+
+.action-error {
+  margin: 10rem 0 0;
 }
 
 .update-title-enter-active,

@@ -205,7 +205,8 @@ async function checkForUpdates({ showResult = true } = {}) {
       currentVersion: appInfo?.version || '未知',
       platform: window.api.runtimeCapabilities?.platform,
       artifactName: null,
-      onlineDownloadSupported: false,
+      downloadAvailable: false,
+      releaseLinks: null,
       error: `检查更新失败：${error.message}`
     }
     if (showResult) showUpdateDialog.value = true

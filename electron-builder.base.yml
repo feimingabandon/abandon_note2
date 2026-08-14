@@ -1,0 +1,53 @@
+appId: io.gitee.zoufeiming.abandonnote
+productName: Abandon便签
+copyright: Copyright © 2026 feimingzou
+directories:
+  buildResources: build
+# 平台原生模块必须在生成 ASAR 前过滤；生成后只验证，不再修改包内文件。
+beforePack: scripts/configure-packaged-native.cjs
+afterPack: scripts/validate-packaged-app.cjs
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  # 显式排除所有打包输出目录，防止切换 output 目录时旧产物被打进 asar
+  - '!dist*/**'
+  # 防止手动拷贝到仓库根目录的旧安装产物被嵌套打进 app.asar。
+  - '!Abandon-Note-*-setup.exe'
+  - '!Abandon-Note-*-setup.exe.blockmap'
+  - '!latest.yml'
+  - '!.audit-unpacked/**'
+  - '!{tests,docs,unused,scripts,native_blur,.github,.idea,.vs}/**'
+  - '!{.codex-*,debug.log,identifier.sqlite}'
+  - '!AGENTS.md'
+  - '!electron-builder*.{yml,yaml,json,json5,js,cjs,ts}'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  # better-sqlite3：运行时仅加载 prebuilds/{platform}-{arch}.node（见 lib/binding.js）。
+  # 这里只排除所有发布目标均不支持的架构；当前目标的唯一二进制由 beforePack 再精确选择。
+  - '!node_modules/better-sqlite3/{deps,src,build,bin}/**'
+  - '!node_modules/better-sqlite3/prebuilds/{linux,win32-arm64,win32-ia32}*.node'
+  # koffi：运行时按 build/koffi/{平台}_{架构}/ 目录加载，策略同上。
+  - '!node_modules/koffi/{src,doc,vendor}/**'
+  - '!node_modules/koffi/lib/native/**'
+  - '!node_modules/koffi/build/koffi/win32_x64/*.{exp,lib}'
+  - '!node_modules/koffi/build/koffi/{linux,musl,freebsd,openbsd,win32_arm64,win32_ia32}*/**'
+  # 以下内容只用于前端构建、原生模块编译或 npm 包分发，运行时不读取。
+  - '!node_modules/{vuedraggable,sortablejs}/**'
+  - '!node_modules/**/node-addon-api/**'
+  - '!node_modules/@aurouscia/china-areas/dist/{json,raw,types}/**'
+  - '!node_modules/chinese-days/src/**'
+  - '!node_modules/chinese-days/dist/years/**'
+  - '!node_modules/chinese-days/dist/{holidays.ics,holidays.en.ics,index.es.js,index.d.ts}'
+# Chromium 语言包仅保留界面实际支持的中英文。
+electronLanguages:
+  - zh-CN
+  - en-US
+asarUnpack:
+  - resources/**
+  - node_modules/better-sqlite3/**
+  - node_modules/koffi/**
+protocols:
+  - name: Abandon便签通知操作
+    schemes:
+      - abandon-note

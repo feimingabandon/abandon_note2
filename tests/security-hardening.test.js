@@ -17,9 +17,9 @@ describe('渲染入口 CSP', () => {
   )
 })
 
-describe('macOS 发布加固', () => {
+describe('macOS 保留构建配置', () => {
   it('启用 Hardened Runtime、签名继承和公证，并只声明实际使用的定位权限', () => {
-    const config = read('electron-builder.yml')
+    const config = read('electron-builder.mac.yml')
     expect(config).toContain('hardenedRuntime: true')
     expect(config).toContain('entitlements: build/entitlements.mac.plist')
     expect(config).toContain('entitlementsInherit: build/entitlements.mac.plist')
@@ -37,10 +37,11 @@ describe('macOS 发布加固', () => {
     expect(entitlements).not.toContain('allow-dyld-environment-variables')
   })
 
-  it('在发布工作流中把 API 私钥写入临时 p8 文件', () => {
+  it('当前正式发布工作流只生成 Windows 资产', () => {
     const workflow = read('.github/workflows/release.yml')
-    expect(workflow).toContain('AuthKey_${APPLE_API_KEY_ID}.p8')
-    expect(workflow).toContain('openssl base64 -d -A')
-    expect(workflow).toContain('echo "APPLE_API_KEY=$api_key_path" >> "$GITHUB_ENV"')
+    expect(workflow).toContain('--config electron-builder.win.yml --win nsis --x64')
+    expect(workflow).not.toContain('  macos:')
+    expect(workflow).not.toContain('APPLE_API_KEY')
+    expect(workflow).not.toContain('MAC_CSC_LINK')
   })
 })

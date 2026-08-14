@@ -14,6 +14,24 @@ function jsonResponse(body, status = 200) {
   })
 }
 
+function windowsAsset(version, source, overrides = {}) {
+  const name = `Abandon-Note-${version}-windows-x64-setup.exe`
+  if (source === 'gitcode') {
+    return {
+      name,
+      size: 2048,
+      browser_download_url: `https://gitcode.com/zou-feiming/abandon_note2/releases/download/v${version}/${name}`,
+      ...overrides
+    }
+  }
+  return {
+    name,
+    size: 2048,
+    browser_download_url: `https://github.com/feimingabandon/abandon_note2/releases/download/v${version}/${name}`,
+    ...overrides
+  }
+}
+
 describe('app update metadata', () => {
   it('accepts stable numeric versions only', () => {
     expect(normalizeVersion('v0.9.0')).toBe('0.9.0')
@@ -28,186 +46,187 @@ describe('app update metadata', () => {
     expect(compareVersions('0.8.9', '0.9.0')).toBe(-1)
   })
 
-  it('selects the exact artifact for each supported platform', () => {
-    expect(getTargetArtifact('0.9.1', 'win32', 'x64')).toBe(
-      'Abandon-Note-0.9.1-windows-x64-setup.exe'
+  it('only exposes the Windows x64 installer in the application updater', () => {
+    expect(getTargetArtifact('0.9.2', 'win32', 'x64')).toBe(
+      'Abandon-Note-0.9.2-windows-x64-setup.exe'
     )
-    expect(getTargetArtifact('0.9.1', 'darwin', 'x64')).toBe('Abandon-Note-0.9.1-macos-x64.dmg')
-    expect(getTargetArtifact('0.9.1', 'darwin', 'arm64')).toBe('Abandon-Note-0.9.1-macos-arm64.dmg')
-    expect(getTargetArtifact('0.9.1', 'linux', 'x64')).toBeNull()
+    expect(getTargetArtifact('0.9.2', 'darwin', 'x64')).toBeNull()
+    expect(getTargetArtifact('0.9.2', 'darwin', 'arm64')).toBeNull()
+    expect(getTargetArtifact('0.9.2', 'linux', 'x64')).toBeNull()
   })
 
-  it('normalizes GitHub and GitCode release asset fields', () => {
-    expect(
-      normalizeRelease(
-        {
-          tag_name: 'v0.9.1',
-          name: 'Abandon Note v0.9.1',
-          assets: [
-            {
-              name: 'file.exe',
-              size: 123,
-              browser_download_url: 'https://github.example/file.exe'
-            }
-          ]
-        },
-        'github'
-      )
-    ).toMatchObject({
-      version: '0.9.1',
-      source: 'github',
-      assets: [{ name: 'file.exe', size: 123 }]
-    })
+  it('keeps the browser download URL returned by release APIs', () => {
+    const release = normalizeRelease(
+      {
+        tag_name: 'v0.9.2',
+        name: 'Abandon Note v0.9.2',
+        assets: [windowsAsset('0.9.2', 'gitcode')]
+      },
+      'gitcode'
+    )
 
-    expect(
-      normalizeRelease(
-        {
-          tag_name: 'v0.9.1',
-          attach_files: [{ file_name: 'file.exe', file_size: 456 }]
-        },
-        'gitcode'
-      )
-    ).toMatchObject({
+    expect(release).toMatchObject({
+      version: '0.9.2',
       source: 'gitcode',
-      assets: [{ name: 'file.exe', size: 456 }]
+      assets: [
+        {
+          name: 'Abandon-Note-0.9.2-windows-x64-setup.exe',
+          size: 2048,
+          downloadUrl:
+            'https://gitcode.com/zou-feiming/abandon_note2/releases/download/v0.9.2/Abandon-Note-0.9.2-windows-x64-setup.exe'
+        }
+      ]
     })
   })
 
   it('ignores draft, prerelease, and non-stable releases', () => {
-    expect(normalizeRelease({ tag_name: 'v0.9.1', draft: true }, 'github')).toBeNull()
-    expect(normalizeRelease({ tag_name: 'v0.9.1', prerelease: true }, 'github')).toBeNull()
-    expect(normalizeRelease({ tag_name: 'v0.9.1-beta.1' }, 'github')).toBeNull()
+    expect(normalizeRelease({ tag_name: 'v0.9.2', draft: true }, 'github')).toBeNull()
+    expect(normalizeRelease({ tag_name: 'v0.9.2', prerelease: true }, 'github')).toBeNull()
+    expect(normalizeRelease({ tag_name: 'v0.9.2-beta.1' }, 'github')).toBeNull()
   })
 
-  it('queries both sources and prefers the GitCode release at the same version', async () => {
+  it('still provides direct and manual downloads when the app is already current', async () => {
     const requestedUrls = []
     const service = new AppUpdateService({
-      currentVersion: '0.9.0',
+      currentVersion: '0.9.2',
       platform: 'win32',
       arch: 'x64',
       fetchImpl: async (url) => {
         requestedUrls.push(url)
-        if (url.includes('gitcode.com')) {
-          return jsonResponse({
-            tag_name: 'v0.9.1',
-            name: 'Abandon Note v0.9.1',
-            attach_files: [
-              {
-                file_name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
-                file_size: 2048
-              }
-            ]
-          })
-        }
+        const source = url.includes('gitcode.com') ? 'gitcode' : 'github'
         return jsonResponse({
-          tag_name: 'v0.9.1',
-          assets: [
-            {
-              name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
-              size: 2048,
-              browser_download_url: 'https://github.example/setup.exe'
-            }
-          ]
+          tag_name: 'v0.9.2',
+          name: 'Abandon Note v0.9.2',
+          assets: [windowsAsset('0.9.2', source)]
+        })
+      }
+    })
+
+    await expect(service.check()).resolves.toMatchObject({
+      status: 'current',
+      currentVersion: '0.9.2',
+      latestVersion: '0.9.2',
+      artifactName: 'Abandon-Note-0.9.2-windows-x64-setup.exe',
+      downloadAvailable: true,
+      downloadUrl:
+        'https://gitcode.com/zou-feiming/abandon_note2/releases/download/v0.9.2/Abandon-Note-0.9.2-windows-x64-setup.exe',
+      releaseLinks: {
+        gitcode: 'https://gitcode.com/zou-feiming/abandon_note2/releases/tag/v0.9.2',
+        github: 'https://github.com/feimingabandon/abandon_note2/releases/tag/v0.9.2'
+      }
+    })
+    expect(service.getExternalUrl('download')).toContain('/releases/download/v0.9.2/')
+    expect(service.getExternalUrl('gitcode')).toBe(
+      'https://gitcode.com/zou-feiming/abandon_note2/releases/tag/v0.9.2'
+    )
+    expect(service.getExternalUrl('github')).toBe(
+      'https://github.com/feimingabandon/abandon_note2/releases/tag/v0.9.2'
+    )
+    expect(requestedUrls).toHaveLength(2)
+  })
+
+  it('offers the same three targets when a newer version is available', async () => {
+    const service = new AppUpdateService({
+      currentVersion: '0.9.1',
+      platform: 'win32',
+      arch: 'x64',
+      fetchImpl: async (url) => {
+        const source = url.includes('gitcode.com') ? 'gitcode' : 'github'
+        return jsonResponse({
+          tag_name: 'v0.9.2',
+          assets: [windowsAsset('0.9.2', source)]
         })
       }
     })
 
     await expect(service.check()).resolves.toMatchObject({
       status: 'available',
-      latestVersion: '0.9.1',
-      source: 'gitcode',
-      artifactName: 'Abandon-Note-0.9.1-windows-x64-setup.exe'
-    })
-    expect(requestedUrls).toHaveLength(2)
-  })
-
-  it('uses GitHub when GitCode has no published release', async () => {
-    const service = new AppUpdateService({
-      currentVersion: '0.9.0',
-      platform: 'darwin',
-      arch: 'arm64',
-      fetchImpl: async (url) =>
-        url.includes('gitcode.com')
-          ? jsonResponse({ message: '未找到 release' }, 400)
-          : jsonResponse({
-              tag_name: 'v0.9.0',
-              assets: [
-                {
-                  name: 'Abandon-Note-0.9.0-macos-arm64.dmg',
-                  browser_download_url: 'https://github.example/app.dmg'
-                }
-              ]
-            })
-    })
-
-    await expect(service.check()).resolves.toMatchObject({
-      status: 'current',
-      latestVersion: '0.9.0',
-      source: 'github',
-      artifactName: 'Abandon-Note-0.9.0-macos-arm64.dmg'
-    })
-  })
-
-  it('chooses the higher version even when it is available only from GitHub', async () => {
-    const service = new AppUpdateService({
-      currentVersion: '0.9.0',
-      platform: 'darwin',
-      arch: 'arm64',
-      fetchImpl: async (url) =>
-        url.includes('gitcode.com')
-          ? jsonResponse({ tag_name: 'v0.9.1', attach_files: [] })
-          : jsonResponse({
-              tag_name: 'v0.9.2',
-              assets: [
-                {
-                  name: 'Abandon-Note-0.9.2-macos-arm64.dmg',
-                  browser_download_url: 'https://github.example/app.dmg'
-                }
-              ]
-            })
-    })
-
-    await expect(service.check()).resolves.toMatchObject({
-      status: 'available',
       latestVersion: '0.9.2',
-      source: 'github'
+      downloadAvailable: true,
+      releaseLinks: {
+        gitcode: 'https://gitcode.com/zou-feiming/abandon_note2/releases/tag/v0.9.2',
+        github: 'https://github.com/feimingabandon/abandon_note2/releases/tag/v0.9.2'
+      }
     })
   })
 
-  it('prefers the GitHub release that has the artifact when GitCode lacks it', async () => {
+  it('keeps manual version pages but disables direct download while GitCode is behind', async () => {
     const service = new AppUpdateService({
       currentVersion: '0.9.0',
       platform: 'win32',
       arch: 'x64',
       fetchImpl: async (url) =>
         url.includes('gitcode.com')
-          ? jsonResponse({
-              tag_name: 'v0.9.1',
-              attach_files: [{ file_name: 'SHA256SUMS.txt', file_size: 128 }]
-            })
-          : jsonResponse({
-              tag_name: 'v0.9.1',
-              assets: [
-                {
-                  name: 'Abandon-Note-0.9.1-windows-x64-setup.exe',
-                  size: 2048,
-                  browser_download_url: 'https://github.example/setup.exe'
-                }
-              ]
-            })
+          ? jsonResponse({ tag_name: 'v0.9.1', assets: [windowsAsset('0.9.1', 'gitcode')] })
+          : jsonResponse({ tag_name: 'v0.9.2', assets: [windowsAsset('0.9.2', 'github')] })
     })
 
     await expect(service.check()).resolves.toMatchObject({
       status: 'available',
-      latestVersion: '0.9.1',
+      latestVersion: '0.9.2',
       source: 'github',
-      artifactName: 'Abandon-Note-0.9.1-windows-x64-setup.exe'
+      downloadAvailable: false,
+      downloadUrl: null,
+      releaseLinks: {
+        gitcode: 'https://gitcode.com/zou-feiming/abandon_note2/releases/tag/v0.9.2',
+        github: 'https://github.com/feimingabandon/abandon_note2/releases/tag/v0.9.2'
+      }
     })
+    expect(() => service.getExternalUrl('download')).toThrow('安装包暂不可用')
+  })
+
+  it('rejects an untrusted URL even when the GitCode asset name matches', async () => {
+    const service = new AppUpdateService({
+      currentVersion: '0.9.2',
+      platform: 'win32',
+      arch: 'x64',
+      fetchImpl: async (url) => {
+        const source = url.includes('gitcode.com') ? 'gitcode' : 'github'
+        return jsonResponse({
+          tag_name: 'v0.9.2',
+          assets: [
+            windowsAsset('0.9.2', source, {
+              browser_download_url:
+                source === 'gitcode'
+                  ? 'https://example.com/Abandon-Note-0.9.2-windows-x64-setup.exe'
+                  : windowsAsset('0.9.2', 'github').browser_download_url
+            })
+          ]
+        })
+      }
+    })
+
+    await expect(service.check()).resolves.toMatchObject({
+      status: 'current',
+      downloadAvailable: false,
+      downloadUrl: null
+    })
+  })
+
+  it('does not query release APIs on platforms whose downloads are paused', async () => {
+    let requestCount = 0
+    const service = new AppUpdateService({
+      currentVersion: '0.9.2',
+      platform: 'darwin',
+      arch: 'arm64',
+      fetchImpl: async () => {
+        requestCount += 1
+        return jsonResponse({ tag_name: 'v0.9.2' })
+      }
+    })
+
+    await expect(service.check()).resolves.toMatchObject({
+      status: 'unsupported',
+      latestVersion: null,
+      downloadAvailable: false,
+      error: '当前更新下载暂时只提供 Windows x64 安装包。'
+    })
+    expect(requestCount).toBe(0)
   })
 
   it('distinguishes no published Release from a network failure', async () => {
     const noRelease = new AppUpdateService({
-      currentVersion: '0.9.0',
+      currentVersion: '0.9.2',
       platform: 'win32',
       arch: 'x64',
       fetchImpl: async () => jsonResponse({ message: 'Not Found' }, 404)
@@ -218,7 +237,7 @@ describe('app update metadata', () => {
     })
 
     const offline = new AppUpdateService({
-      currentVersion: '0.9.0',
+      currentVersion: '0.9.2',
       platform: 'win32',
       arch: 'x64',
       fetchImpl: async () => {
@@ -227,7 +246,7 @@ describe('app update metadata', () => {
     })
     await expect(offline.check()).resolves.toMatchObject({
       status: 'error',
-      error: '暂时无法连接更新服务。请稍后重试，或使用下方发布页手动查看。'
+      error: '暂时无法连接更新服务，请稍后重试。'
     })
   })
 })
