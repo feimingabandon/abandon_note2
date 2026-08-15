@@ -46,14 +46,25 @@ import {
 
 import { createNote, getNoteById, activateNotes } from './db/db-notes.js'
 import {
+  applyRemoteNoticeEvents,
   acknowledgeRemoteNotice,
-  getRemoteNoticeCursor,
+  getRemoteNoticeSyncState,
   getRemoteNoticeLink,
-  ingestRemoteNotices,
   listPendingRemoteNotices,
   listRemoteNotices
 } from './db/db-remote-notices.js'
-import { getOrCreateInstallationId } from './db/db-identity.js'
+import {
+  getOrCreateInstallationId,
+  isRemoteServiceRetired,
+  markRemoteServiceRetired
+} from './db/db-identity.js'
+import {
+  clearPendingRemoteSessionEnds,
+  listPendingRemoteSessionEnds,
+  markRemoteSessionEndAttempt,
+  queueRemoteSessionEnd,
+  removePendingRemoteSessionEnd
+} from './db/db-remote-sessions.js'
 import { RemoteCoordinator } from './services/remote/remote-coordinator.js'
 import {
   cleanupPendingWallpaperFiles,
@@ -258,6 +269,8 @@ let stickyService = null
 
 /** 是否正在执行退出流程（托盘菜单「退出」触发） */
 let isQuitting = false
+let remoteShutdownStarted = false
+let remoteShutdownFinished = false
 let pendingNotificationNoteId = null
 
 function sendPendingNotificationNote() {
@@ -2828,8 +2841,15 @@ app.whenReady().then(async () => {
     baseUrl: REMOTE_BASE_URL,
     getSettings: () => resolvedSettings,
     getInstallationId: getOrCreateInstallationId,
-    getCursor: getRemoteNoticeCursor,
-    ingestNotices: ingestRemoteNotices,
+    getNoticeSyncState: getRemoteNoticeSyncState,
+    applyNoticeEvents: applyRemoteNoticeEvents,
+    isServiceRetired: isRemoteServiceRetired,
+    markServiceRetired: markRemoteServiceRetired,
+    queueSessionEnd: queueRemoteSessionEnd,
+    listPendingSessionEnds: listPendingRemoteSessionEnds,
+    markSessionEndAttempt: markRemoteSessionEndAttempt,
+    removePendingSessionEnd: removePendingRemoteSessionEnd,
+    clearPendingSessionEnds: clearPendingRemoteSessionEnds,
     onNoticesChanged: (payload) => {
       if (!mainWindow || mainWindow.isDestroyed()) return
       mainWindow.webContents.send('remote-notices:changed', payload)
@@ -3089,10 +3109,21 @@ app.whenReady().then(async () => {
 })
 
 // 应用退出前关闭数据库连接和贴边资源，确保数据安全
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
   // 系统退出、Cmd+Q 与代码触发的 app.quit() 都必须绕过“关闭到托盘”。
   isQuitting = true
-  void remoteCoordinator?.stop()
+  if (!remoteShutdownFinished && (remoteShutdownStarted || remoteCoordinator?.hasActiveSession())) {
+    event.preventDefault()
+    if (!remoteShutdownStarted) {
+      remoteShutdownStarted = true
+      const timeout = new Promise((resolve) => setTimeout(resolve, 1600))
+      void Promise.race([remoteCoordinator.stop(), timeout]).finally(() => {
+        remoteShutdownFinished = true
+        app.quit()
+      })
+    }
+    return
+  }
   if (geometryTimer) {
     clearTimeout(geometryTimer)
     geometryTimer = null

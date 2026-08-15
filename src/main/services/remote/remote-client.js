@@ -40,11 +40,11 @@ export class RemoteClient {
     return requestJson(`${this.baseUrl}/session/start`, { method: 'POST', body: payload })
   }
 
-  endSession(sessionId) {
+  endSession(sessionId, endedAt = new Date().toISOString()) {
     return requestJson(`${this.baseUrl}/session/end`, {
       method: 'POST',
       timeoutMs: 1200,
-      body: { session_id: sessionId, ended_at: new Date().toISOString() }
+      body: { session_id: sessionId, ended_at: endedAt }
     })
   }
 

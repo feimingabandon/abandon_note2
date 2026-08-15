@@ -3,12 +3,16 @@ import { RemoteCoordinator } from '../src/main/services/remote/remote-coordinato
 
 function createCoordinator(remote, overrides = {}) {
   return new RemoteCoordinator({
-    app: { getVersion: () => '0.9.2' },
+    app: {
+      getVersion: () => '0.9.2',
+      getLocale: () => 'zh-CN',
+      getGPUInfo: async () => ({ gpuDevice: [] })
+    },
     baseUrl: 'https://example.test',
     getSettings: () => ({ remote }),
     getInstallationId: () => 'installation-id',
-    getCursor: () => 0,
-    ingestNotices: () => 0,
+    getNoticeSyncState: () => ({ streamId: null, cursor: 0 }),
+    applyNoticeEvents: () => ({ changed: 0, inserted: 0, updated: 0, revoked: 0 }),
     ...overrides
   })
 }
@@ -41,7 +45,8 @@ describe('remote startup health cache', () => {
           ok: true,
           json: async () => ({
             status: 'ok',
-            api_version: 1,
+            api_version: 2,
+            service_state: 'active',
             notice_service: true,
             report_service: false
           })
@@ -49,7 +54,7 @@ describe('remote startup health cache', () => {
       }
       return {
         ok: true,
-        json: async () => ({ next_cursor: 0, notices: [] })
+        json: async () => ({ stream_id: 'stream-id', next_cursor: 0, events: [] })
       }
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -75,7 +80,8 @@ describe('remote startup health cache', () => {
               ok: true,
               json: async () => ({
                 status: 'ok',
-                api_version: 1,
+                api_version: 2,
+                service_state: 'active',
                 notice_service: true,
                 report_service: false
               })
@@ -84,7 +90,7 @@ describe('remote startup health cache', () => {
       }
       return Promise.resolve({
         ok: true,
-        json: async () => ({ next_cursor: 0, notices: [] })
+        json: async () => ({ stream_id: 'stream-id', next_cursor: 0, events: [] })
       })
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -103,5 +109,72 @@ describe('remote startup health cache', () => {
     expect(onHealthChanged).toHaveBeenLastCalledWith(
       expect.objectContaining({ available: true, checking: false })
     )
+  })
+
+  it('persists a formal retirement state and stops all remote work', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        status: 'ok',
+        api_version: 2,
+        service_state: 'retired',
+        notice_service: false,
+        report_service: false,
+        message: '远程服务已停止'
+      })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const markServiceRetired = vi.fn()
+    const clearPendingSessionEnds = vi.fn()
+    const coordinator = createCoordinator(
+      { receiveNotices: true, uploadDeviceInfo: true },
+      { markServiceRetired, clearPendingSessionEnds }
+    )
+
+    await coordinator.start()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(markServiceRetired).toHaveBeenCalledOnce()
+    expect(clearPendingSessionEnds).toHaveBeenCalledOnce()
+    expect(coordinator.getHealthSnapshot()).toMatchObject({
+      retired: true,
+      serviceState: 'retired',
+      available: false
+    })
+  })
+
+  it('queues the session end before reporting and removes it after success', async () => {
+    const fetchMock = vi.fn(async (url, options) => ({
+      ok: true,
+      json: async () =>
+        String(url).endsWith('/session/end')
+          ? { ok: true, status: 'updated' }
+          : String(url).endsWith('/session/start')
+            ? { session_id: JSON.parse(options?.body || '{}').session_id }
+            : {
+                status: 'ok',
+                api_version: 2,
+                service_state: 'active',
+                notice_service: false,
+                report_service: true
+              }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const queueSessionEnd = vi.fn()
+    const markSessionEndAttempt = vi.fn()
+    const removePendingSessionEnd = vi.fn()
+    const coordinator = createCoordinator(
+      { receiveNotices: false, uploadDeviceInfo: true },
+      { queueSessionEnd, markSessionEndAttempt, removePendingSessionEnd }
+    )
+
+    await coordinator.start()
+    await coordinator.stop()
+
+    const sessionId = queueSessionEnd.mock.calls[0][0]
+    expect(sessionId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(queueSessionEnd).toHaveBeenCalledWith(sessionId, expect.any(String))
+    expect(markSessionEndAttempt).toHaveBeenCalledWith(sessionId)
+    expect(removePendingSessionEnd).toHaveBeenCalledWith(sessionId)
   })
 })

@@ -293,6 +293,23 @@ export function createRemoteServiceSchema(db) {
       cursor      INTEGER NOT NULL DEFAULT 0,
       updated_at  INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS remote_notice_stream_state (
+      scope       TEXT PRIMARY KEY,
+      stream_id   TEXT NOT NULL,
+      cursor      INTEGER NOT NULL DEFAULT 0,
+      updated_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS remote_session_end_outbox (
+      session_id  TEXT PRIMARY KEY,
+      ended_at    TEXT NOT NULL,
+      attempts    INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_remote_session_end_outbox_created
+      ON remote_session_end_outbox(created_at);
   `)
 }
 

@@ -277,19 +277,26 @@ const remoteHealthStatus = ref('checking')
 const remoteHealthError = ref('')
 
 function applyRemoteHealth(result) {
-  remoteHealthStatus.value = result?.checking
-    ? 'checking'
+  remoteHealthStatus.value = result?.retired
+    ? 'retired'
+    : result?.checking
+      ? 'checking'
+      : result?.available
+        ? 'available'
+        : result?.skipped
+          ? 'skipped'
+          : 'unavailable'
+  remoteHealthError.value = result?.retired
+    ? result?.message || '远程服务已正式停止，本地功能不受影响'
     : result?.available
-      ? 'available'
-      : result?.skipped
-        ? 'skipped'
-        : 'unavailable'
-  remoteHealthError.value = result?.available ? '' : result?.error || '连接失败'
+      ? ''
+      : result?.error || '连接失败'
 }
 
 const remoteHealthLabel = computed(() => {
   if (remoteHealthStatus.value === 'checking') return '检测中'
   if (remoteHealthStatus.value === 'available') return '● 连接正常'
+  if (remoteHealthStatus.value === 'retired') return '○ 服务已停止'
   if (remoteHealthStatus.value === 'skipped') return '○ 本次未检测'
   return '○ 连接异常'
 })
@@ -1951,6 +1958,9 @@ const onConfirmResetSettings = async () => {
             <p v-if="remoteHealthStatus === 'skipped'" class="remote-health-message">
               本次启动未连接远程服务器；这里的修改将在下次启动时按新设置执行。
             </p>
+            <p v-else-if="remoteHealthStatus === 'retired'" class="remote-health-message">
+              {{ remoteHealthError }}
+            </p>
             <p v-else-if="remoteHealthStatus === 'unavailable'" class="remote-health-message">
               本次启动连接远程服务器失败；这里的修改将在下次启动时按新设置执行。
             </p>
@@ -1963,7 +1973,10 @@ const onConfirmResetSettings = async () => {
                 /></span>
               </div>
               <div class="setting-right">
-                <AppToggle v-model="receiveRemoteNotices" />
+                <AppToggle
+                  v-model="receiveRemoteNotices"
+                  :disabled="remoteHealthStatus === 'retired'"
+                />
               </div>
             </div>
 
@@ -1975,7 +1988,10 @@ const onConfirmResetSettings = async () => {
                 /></span>
               </div>
               <div class="setting-right">
-                <AppToggle v-model="uploadDeviceInfo" />
+                <AppToggle
+                  v-model="uploadDeviceInfo"
+                  :disabled="remoteHealthStatus === 'retired'"
+                />
               </div>
             </div>
 

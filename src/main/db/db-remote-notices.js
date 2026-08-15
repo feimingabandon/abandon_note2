@@ -1,6 +1,6 @@
 import { getDb } from './db-connection.js'
 
-const NOTICE_SCOPE = 'notices'
+const NOTICE_SCOPE = 'notices-v2'
 
 function normalizeLimit(value, fallback = 100) {
   const parsed = Number(value)
@@ -12,47 +12,85 @@ function normalizeOffset(value) {
   return Number.isInteger(parsed) ? Math.max(0, parsed) : 0
 }
 
-export function getRemoteNoticeCursor() {
+export function getRemoteNoticeSyncState() {
   const row = getDb()
-    .prepare('SELECT cursor FROM remote_sync_state WHERE scope = ?')
+    .prepare('SELECT stream_id AS streamId, cursor FROM remote_notice_stream_state WHERE scope = ?')
     .get(NOTICE_SCOPE)
-  return Number(row?.cursor || 0)
+  return {
+    streamId: row?.streamId || null,
+    cursor: Number(row?.cursor || 0)
+  }
 }
 
-export function ingestRemoteNotices(notices, nextCursor) {
+export function applyRemoteNoticeEvents(streamId, events, nextCursor) {
+  const normalizedStreamId = String(streamId || '').trim()
+  if (!normalizedStreamId) throw new Error('通知流 ID 无效')
+  const cursor = Number(nextCursor)
+  if (!Number.isInteger(cursor) || cursor < 0) throw new Error('通知游标无效')
   const db = getDb()
   const insert = db.prepare(`
     INSERT INTO remote_notices (
       server_notice_id, sequence, title, body, link, published_at, received_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(server_notice_id) DO NOTHING
+    ON CONFLICT(server_notice_id) DO UPDATE SET
+      sequence = excluded.sequence,
+      title = excluded.title,
+      body = excluded.body,
+      link = excluded.link,
+      published_at = excluded.published_at,
+      received_at = excluded.received_at,
+      acknowledged_at = CASE WHEN ? THEN NULL ELSE remote_notices.acknowledged_at END
   `)
-  const saveCursor = db.prepare(`
-    INSERT INTO remote_sync_state (scope, cursor, updated_at)
-    VALUES (?, ?, ?)
+  const revoke = db.prepare('DELETE FROM remote_notices WHERE server_notice_id = ?')
+  const saveState = db.prepare(`
+    INSERT INTO remote_notice_stream_state (scope, stream_id, cursor, updated_at)
+    VALUES (?, ?, ?, ?)
     ON CONFLICT(scope) DO UPDATE SET
-      cursor = MAX(remote_sync_state.cursor, excluded.cursor),
+      stream_id = excluded.stream_id,
+      cursor = excluded.cursor,
       updated_at = excluded.updated_at
   `)
 
-  return db.transaction((rows, cursor) => {
+  return db.transaction((rows) => {
     const receivedAt = Date.now()
+    const previous = getRemoteNoticeSyncState()
+    const streamChanged = Boolean(previous.streamId && previous.streamId !== normalizedStreamId)
+    if (streamChanged) db.prepare('DELETE FROM remote_notices').run()
     let inserted = 0
-    rows.forEach((notice) => {
-      const result = insert.run(
-        notice.id,
-        notice.sequence,
+    let updated = 0
+    let revoked = 0
+    rows.forEach((event) => {
+      const serverNoticeId = `${normalizedStreamId}:${event.noticeId}`
+      if (event.type === 'revoke') {
+        revoked += revoke.run(serverNoticeId).changes
+        return
+      }
+      const existed = Boolean(
+        db.prepare('SELECT 1 FROM remote_notices WHERE server_notice_id = ?').get(serverNoticeId)
+      )
+      const notice = event.notice
+      insert.run(
+        serverNoticeId,
+        event.sequence,
         notice.title,
         notice.body,
         notice.link,
         notice.publishedAt,
-        receivedAt
+        receivedAt,
+        event.notifyAgain ? 1 : 0
       )
-      inserted += result.changes
+      if (existed) updated += 1
+      else inserted += 1
     })
-    saveCursor.run(NOTICE_SCOPE, cursor, receivedAt)
-    return inserted
-  })(notices, nextCursor)
+    saveState.run(NOTICE_SCOPE, normalizedStreamId, cursor, receivedAt)
+    return {
+      inserted,
+      updated,
+      revoked,
+      streamChanged,
+      changed: inserted + updated + revoked + (streamChanged ? 1 : 0)
+    }
+  })(events)
 }
 
 export function listPendingRemoteNotices() {

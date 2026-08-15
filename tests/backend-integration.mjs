@@ -48,8 +48,8 @@ import { queryDailyReportNotes } from '../src/main/services/daily-report.js'
 import { getOrCreateInstallationId } from '../src/main/db/db-identity.js'
 import {
   acknowledgeRemoteNotice,
-  getRemoteNoticeCursor,
-  ingestRemoteNotices,
+  applyRemoteNoticeEvents,
+  getRemoteNoticeSyncState,
   listPendingRemoteNotices,
   listRemoteNotices
 } from '../src/main/db/db-remote-notices.js'
@@ -368,51 +368,62 @@ try {
   )
   assert.equal(getOrCreateInstallationId(), installationId)
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM app_identity').get().count, 1)
-  assert.equal(getRemoteNoticeCursor(), 0)
-  assert.equal(
-    ingestRemoteNotices(
-      [
-        {
-          id: '101',
-          sequence: 101,
+  assert.deepEqual(getRemoteNoticeSyncState(), { streamId: null, cursor: 0 })
+  const noticeStreamId = '78c01b83-7d07-4f0d-9223-9980e0cdb9cb'
+  const initialNoticeResult = applyRemoteNoticeEvents(
+    noticeStreamId,
+    [
+      {
+        type: 'upsert',
+        noticeId: '101',
+        sequence: 101,
+        notifyAgain: false,
+        notice: {
           title: '第一条通知',
           body: '第一行\n第二行',
           link: 'https://example.com/notice/101',
           publishedAt: localTs(2026, 7, 30, 10)
-        },
-        {
-          id: '102',
-          sequence: 102,
+        }
+      },
+      {
+        type: 'upsert',
+        noticeId: '102',
+        sequence: 102,
+        notifyAgain: false,
+        notice: {
           title: '第二条通知',
           body: '正文',
           link: null,
           publishedAt: localTs(2026, 7, 30, 11)
         }
-      ],
-      102
-    ),
-    2
+      }
+    ],
+    102
   )
-  assert.equal(getRemoteNoticeCursor(), 102)
-  assert.equal(
-    ingestRemoteNotices(
-      [
-        {
-          id: '101',
-          sequence: 101,
-          title: '重复通知',
-          body: '不会覆盖',
+  assert.equal(initialNoticeResult.inserted, 2)
+  assert.deepEqual(getRemoteNoticeSyncState(), { streamId: noticeStreamId, cursor: 102 })
+  const updatedNoticeResult = applyRemoteNoticeEvents(
+    noticeStreamId,
+    [
+      {
+        type: 'upsert',
+        noticeId: '101',
+        sequence: 103,
+        notifyAgain: false,
+        notice: {
+          title: '已更新通知',
+          body: '更新后的正文',
           link: null,
           publishedAt: localTs(2026, 7, 30, 10)
         }
-      ],
-      102
-    ),
-    0
+      }
+    ],
+    103
   )
+  assert.equal(updatedNoticeResult.updated, 1)
   assert.equal(listPendingRemoteNotices().length, 2)
   const firstRemoteNotice = listPendingRemoteNotices()[0]
-  assert.equal(firstRemoteNotice.body, '第一行\n第二行')
+  assert.equal(firstRemoteNotice.body, '更新后的正文')
   assert.equal(acknowledgeRemoteNotice(firstRemoteNotice.id), true)
   const remoteHistory = listRemoteNotices()
   assert.equal(remoteHistory.total, 2)
@@ -421,6 +432,17 @@ try {
     remoteHistory.items.find((item) => item.id === firstRemoteNotice.id).acknowledgedAt > 0,
     true
   )
+  const revokeResult = applyRemoteNoticeEvents(
+    noticeStreamId,
+    [{ type: 'revoke', noticeId: '102', sequence: 104 }],
+    104
+  )
+  assert.equal(revokeResult.revoked, 1)
+  assert.equal(listRemoteNotices().total, 1)
+  const replacementStreamId = '12c37c33-8269-4915-9e69-a98988b042c6'
+  const resetResult = applyRemoteNoticeEvents(replacementStreamId, [], 0)
+  assert.equal(resetResult.streamChanged, true)
+  assert.equal(listRemoteNotices().total, 0)
   assert.equal(normalizeRequiredNoteContent('  保留首尾空白\n'), '  保留首尾空白\n')
   assert.throws(() => normalizeRequiredNoteContent(' \n\t '), /请输入便签内容/)
   assert.equal(normalizeNoteDurationDays(1), 1)
@@ -766,10 +788,7 @@ try {
   )
 
   const pageCutoff = Date.now() + 60_000
-  assert.equal(
-    queryEarlierNotes({ cutoffTime: pageCutoff, limit: 0, offset: -10 }).notes.length,
-    0
-  )
+  assert.equal(queryEarlierNotes({ cutoffTime: pageCutoff, limit: 0, offset: -10 }).notes.length, 0)
   assert.equal(queryEarlierNotes({ cutoffTime: pageCutoff, limit: -1 }).notes.length <= 100, true)
   assert.equal(queryCustomNormal({ limit: 10_000, offset: -5 }).notes.length <= 100, true)
 
@@ -899,10 +918,7 @@ try {
     ),
     ['月历跨月便签']
   )
-  assert.deepEqual(
-    queryDailyReportNotes({ dateKey: '2026-08-01', statuses: ['in_progress'] }),
-    []
-  )
+  assert.deepEqual(queryDailyReportNotes({ dateKey: '2026-08-01', statuses: ['in_progress'] }), [])
 
   console.log('backend integration tests passed')
 } finally {
