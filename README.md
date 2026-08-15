@@ -11,7 +11,7 @@
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-lightgrey)
 
-支持 Windows 10 / 11
+支持 Windows 10 / 11（x64）
 
 </div>
 
@@ -64,7 +64,7 @@ Abandon便签（Abandon Note）是一款永久免费开源、以本地存储为�
 - **三种主视图** — 通过便签列表集中整理内容，也可以在月视图和周视图中按日期安排与回顾。
 - **桌面原生体验** — 支持桌面便利贴、贴边隐藏、系统提醒与 Windows 原生毛玻璃。
 - **本地优先** — 便签、标签、循环模板、图片附件和壁纸保存在当前设备中，不要求登录账号，也不提供云同步。
-- **持续开放** — 项目基于 GPL-3.0-only 许可证开放源码，当前仍处于内测阶段，会继续完善功能、交互与 Windows 使用体验。
+- **持续开放** — 项目基于 GPL-3.0-only 许可证开放源码，并持续完善功能、交互与 Windows 使用体验。
 
 如果你有想法、建议或使用反馈，欢迎提交 Issue，或发送邮件至：1160653906@qq.com。
 
@@ -81,8 +81,8 @@ Abandon便签（Abandon Note）是一款永久免费开源、以本地存储为�
 - 🔔 **提醒通知** — 到期提醒走系统原生通知，附带应用内降级兜底
 - 📄 **日报导出** — 按日期和状态筛选便签，预览后导出为 TXT 文件
 - 📖 **帮助中心** — 内置图解式使用说明，覆盖便签、日历、便利贴和设置等主要功能
-- 🔄 **更新检查** — GitHub / GitCode 双源检查新版本，前往发布页手动下载安装
-- 💾 **本地存储** — 数据保存在本地 SQLite 数据库，不依赖网络
+- 🔄 **更新检查** — GitCode / GitHub 双源检查公开版本，可通过浏览器直接下载 GitCode 安装包，也可进入两个平台的对应版本页面手动下载
+- 💾 **本地存储** — 便签数据保存在本地 SQLite 数据库，核心便签功能无需联网
 
 ## 🖥 应用界面
 
@@ -122,16 +122,32 @@ Abandon便签（Abandon Note）是一款永久免费开源、以本地存储为�
 
 ## 💽 下载安装
 
-从以下任一渠道下载最新版安装包：
+从以下任一官方渠道下载最新版安装包：
 
-- [GitHub Releases](https://github.com/feimingabandon/abandon_note2/releases)
-- [GitCode Releases](https://gitcode.com/zou-feiming/abandon_note2/releases)
+- [GitCode Releases（国内推荐）](https://gitcode.com/zou-feiming/abandon_note2/releases)
+- [GitHub Releases（备用渠道）](https://github.com/feimingabandon/abandon_note2/releases)
+
+### 系统要求
+
+- Windows 10 / 11（x64）
+- 当前仅提供正式 Windows 安装包，暂不提供 macOS 安装包，也不支持 Windows 7
 
 ### Windows
 
-下载 `Abandon-Note-x.y.z-windows-x64-setup.exe` 安装包，双击安装即可。
+下载 `Abandon-Note-x.y.z-windows-x64-setup.exe`，双击运行并按提示选择安装目录。升级时可直接覆盖安装，通常不会影响已有便签；卸载程序默认也不会删除应用数据。重要资料仍建议额外备份。
 
-> 应用支持自动检查更新，检测到新版本后前往发布页下载安装包，覆盖安装即可升级。
+> 当前安装包尚未进行数字签名，Windows 可能显示 Microsoft Defender SmartScreen 或“未知发布者”提示。请只从上方官方发布页获取安装包，并在确认发布来源无误后安装。
+
+> 应用会检查最新公开版本。无论当前是否已经是最新版，都可以点击“使用浏览器下载”直接获取 GitCode 上的最新版安装包，或进入 GitCode / GitHub 对应版本页面查看说明并手动下载。
+
+## 🔐 数据、隐私与联网
+
+- 便签正文、标签、循环模板内容、图片附件和壁纸始终保存在当前设备中；应用不提供账号和云同步，也不会通过远程服务上传这些内容。
+- “接收软件通知”和“检测设备基础信息”默认开启，可在“设置 → 远程服务与隐私”中分别关闭，修改后的选择从下次启动起生效。
+- 设备信息仅包含安装标识、应用版本、系统版本与架构、CPU、GPU、内存、语言和启动/退出时间，用于了解基础使用情况。
+- 天气、更新检查、软件通知和设备信息检测需要访问网络；天气位置可手动选择，仅在用户主动选择“使用设备位置”时请求定位并将坐标转换为地区名称。
+
+重要内容不要只保存一份。遇到问题时，可以在设置中查看或导出运行日志，并通过 Issue 或邮件反馈。
 
 ## ⌨️ 本地开发
 
@@ -145,7 +161,7 @@ Abandon便签（Abandon Note）是一款永久免费开源、以本地存储为�
 ```bash
 git clone https://github.com/feimingabandon/abandon_note2.git
 cd abandon_note2
-npm install
+npm ci
 ```
 
 ### 开发模式
@@ -157,8 +173,10 @@ npm run dev
 ### 测试与检查
 
 ```bash
-npm test        # vitest 单元测试 + Electron 集成测试
-npm run lint    # eslint 检查
+npm run lint       # ESLint 检查
+npm test           # Vitest 单元测试 + Electron 集成测试
+npm run build      # 完整生产构建
+git diff --check   # 检查空白字符错误
 ```
 
 界面、主题和组件样式改动请遵守 [UI 材质与边线开发标准](docs/UI_DESIGN_STANDARD.md)。
@@ -166,6 +184,7 @@ npm run lint    # eslint 检查
 ### 构建打包
 
 ```bash
+npm run build:unpack:win # Windows：生成未封装目录，便于本地运行验证
 npm run build:win        # Windows：先编译原生毛玻璃模块，再打 NSIS x64 安装包
 ```
 
@@ -191,17 +210,13 @@ Abandon便签的天气、定位与日历能力离不开以下开源项目和开�
 - [chinese-days](https://github.com/vsme/chinese-days) — 提供农历、二十四节气、中国法定节假日、调休与工作日数据。
 - [@aurouscia/china-areas](https://gitee.com/au114514/au-npm-pkgs/tree/master/packages/china-areas) — 提供本地中国行政区划数据，用于手动选择天气地区。
 
-### 测试人员
+### 测试与反馈
 
 感谢所有参与测试、反馈问题并帮助改进 Abandon便签的朋友。
 
-<!-- 后续在此处补充测试人员名单。 -->
-
-- 名单待补充
-
 ## 🤝 参与贡献
 
-欢迎提交 [Issue](https://github.com/feimingabandon/abandon_note2/issues) 反馈问题或建议；提交 PR 前请确保 `npm run lint` 与 `npm test` 通过。
+欢迎提交 [Issue](https://github.com/feimingabandon/abandon_note2/issues) 反馈问题或建议；提交 PR 前请确保 `npm run lint`、`npm test`、`npm run build` 与 `git diff --check` 通过。
 
 ## 📜 许可证
 

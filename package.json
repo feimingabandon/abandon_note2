@@ -1,7 +1,7 @@
 {
   "name": "abandon_note2",
   "version": "1.0.0",
-  "description": "Abandon便签（Abandon Note）是一款跨平台桌面便签应用。",
+  "description": "Abandon便签（Abandon Note）是一款适用于 Windows 10 / 11 的本地桌面便签应用。",
   "main": "./out/main/index.js",
   "author": "feimingzou",
   "license": "GPL-3.0-only",
