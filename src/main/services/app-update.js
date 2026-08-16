@@ -143,11 +143,18 @@ function emptyResult({ currentVersion, platform, arch, status = 'unsupported', e
 
 // 应用只检查版本并打开受信的浏览器地址；安装包下载和安装继续由浏览器与用户完成。
 export class AppUpdateService {
-  constructor({ currentVersion, platform, arch, fetchImpl = globalThis.fetch }) {
+  constructor({
+    currentVersion,
+    platform,
+    arch,
+    fetchImpl = globalThis.fetch,
+    checkEnabled = true
+  }) {
     this.currentVersion = currentVersion
     this.platform = platform
     this.arch = arch
     this.fetch = fetchImpl
+    this.checkEnabled = checkEnabled
     this.externalSelection = null
   }
 
@@ -231,11 +238,21 @@ export class AppUpdateService {
       platform: this.platform,
       arch: this.arch
     })
-    if (!getTargetArtifact(this.currentVersion, this.platform, this.arch)) {
+    const currentArtifactName = getTargetArtifact(this.currentVersion, this.platform, this.arch)
+    if (!currentArtifactName) {
       return {
         ...base,
         status: 'unsupported',
         error: '当前更新下载暂时只提供 Windows x64 安装包。'
+      }
+    }
+    if (!this.checkEnabled) {
+      return {
+        ...base,
+        status: 'current',
+        relation: 'same',
+        latestVersion: this.currentVersion,
+        artifactName: currentArtifactName
       }
     }
 

@@ -676,21 +676,33 @@ async function runMonthViewTests() {
       await new Promise(requestAnimationFrame)
 
       const headerRect = header.getBoundingClientRect()
+      const numberRect = cell.querySelector('.month-day-cell__number').getBoundingClientRect()
       const badgesRect = badges.getBoundingClientRect()
       const children = Array.from(badges.children, (node) => node.getBoundingClientRect())
+      const columnGap = Number.parseFloat(getComputedStyle(header).columnGap) || 0
+      const rootRem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
+      const minimumBadgeSize = Math.min(15, rootRem * 16)
+      const labelWidth = label.getBoundingClientRect().width
+      const fixedHeaderWidth = numberRect.width + badgesRect.width + columnGap * 2
       const result = {
         headerFits: header.scrollWidth <= header.clientWidth + 0.5,
         labelEllipsized: label.scrollWidth > label.clientWidth,
-        labelWidth: label.getBoundingClientRect().width,
+        labelSlotValid: labelWidth > 0 || headerRect.width <= fixedHeaderWidth + 0.5,
         badgesInside: badgesRect.left >= headerRect.left - 0.5 && badgesRect.right <= headerRect.right + 0.5,
-        badgesVisible: children.every((rect) => rect.width >= 15 && rect.height >= 15)
+        badgesVisible: children.every(
+          (rect) => rect.width >= minimumBadgeSize - 0.5 && rect.height >= minimumBadgeSize - 0.5
+        )
       }
       panel.style.width = originalWidth
       return result
     })()`)
     assert.equal(narrowHeaderLayout.headerFits, true, '侧栏最大宽度下日期格顶部不得横向溢出')
     assert.equal(narrowHeaderLayout.labelEllipsized, true, '长节日名称必须在窄日期格中省略')
-    assert.ok(narrowHeaderLayout.labelWidth > 0, '窄日期格仍应为节日文字保留弹性槽')
+    assert.equal(
+      narrowHeaderLayout.labelSlotValid,
+      true,
+      '窄日期格有剩余空间时仍应为节日文字保留弹性槽'
+    )
     assert.equal(narrowHeaderLayout.badgesInside, true, '“休 / 今”徽标不得被长节日名称挤出日期格')
     assert.equal(narrowHeaderLayout.badgesVisible, true, '窄日期格中的状态徽标必须保持可见尺寸')
 

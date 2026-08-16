@@ -94,6 +94,30 @@ describe('app update metadata', () => {
     expect(normalizeRelease({ tag_name: 'v0.9.2-beta.1' }, 'github')).toBeNull()
   })
 
+  it('can suppress network checks in full-app integration environments', async () => {
+    let requestCount = 0
+    const service = new AppUpdateService({
+      currentVersion: '1.0.0',
+      platform: 'win32',
+      arch: 'x64',
+      checkEnabled: false,
+      fetchImpl: async () => {
+        requestCount += 1
+        throw new Error('integration tests must not access release APIs')
+      }
+    })
+
+    await expect(service.check()).resolves.toMatchObject({
+      status: 'current',
+      relation: 'same',
+      currentVersion: '1.0.0',
+      latestVersion: '1.0.0',
+      artifactName: 'Abandon-Note-1.0.0-windows-x64-setup.exe',
+      downloadAvailable: false
+    })
+    expect(requestCount).toBe(0)
+  })
+
   it('still provides direct and manual downloads when the app is already current', async () => {
     const requestedUrls = []
     const service = new AppUpdateService({

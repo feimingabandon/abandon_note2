@@ -2350,7 +2350,8 @@ app.whenReady().then(async () => {
   appUpdateService = new AppUpdateService({
     currentVersion: app.getVersion(),
     platform: process.platform,
-    arch: process.arch
+    arch: process.arch,
+    checkEnabled: process.env.ABANDON_INTEGRATION_TEST !== '1'
   })
   try {
     await Promise.all([cleanupPendingAttachmentDirs(), cleanupPendingWallpaperFiles()])
