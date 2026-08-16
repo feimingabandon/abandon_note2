@@ -613,8 +613,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 }
 .month-toolbar__arrow-icon {
   display: block;
-  width: 12rem;
-  height: 18rem;
+  width: max(12rem, 10.67px);
+  height: max(18rem, 16px);
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;

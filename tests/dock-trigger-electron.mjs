@@ -413,8 +413,17 @@ async function runNativeEdgeMonitorTests() {
 
       // 实际 HWND 外的 6 DIP 不拦截点击，但仍位于 8 DIP 离开迟滞区内；
       // 即使停留超过 300ms，也不能因轻微晃动开始退场。
-      await moveCursorAndConfirm(getNearHandlePoint(readyHandle, side))
-      await wait(450)
+      const nearHandlePoint = getNearHandlePoint(readyHandle, side)
+      const toleranceRetryTimer = setInterval(
+        () => setCursorPos(nearHandlePoint.x, nearHandlePoint.y),
+        POLL_INTERVAL_MS * 2
+      )
+      try {
+        await moveCursorAndConfirm(nearHandlePoint)
+        await wait(450)
+      } finally {
+        clearInterval(toleranceRetryTimer)
+      }
       const tolerantHandle = getStatus()
       assert.equal(tolerantHandle.handleState, 'ready', `${side} 小黑条的 8 DIP 离开迟滞未生效`)
       assert.deepEqual(tolerantHandle.handleRect, readyHandle.handleRect)
