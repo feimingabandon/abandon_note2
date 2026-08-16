@@ -7,12 +7,17 @@ export function registerWeatherIpcHandlers({
   ipcMain,
   shell,
   userDataPath,
+  appVersion,
   getMainWindow,
   getWeatherSettings,
   weatherService = null
 }) {
   const service =
-    weatherService || new WeatherService({ cachePath: join(userDataPath, 'cache', 'weather.json') })
+    weatherService ||
+    new WeatherService({
+      cachePath: join(userDataPath, 'cache', 'weather.json'),
+      userAgent: `Abandon-Note/${appVersion}`
+    })
   const forecastRequests = new Map()
   const assertAuthorized = (event) => assertMainWindowSender(event, getMainWindow, '天气服务')
 

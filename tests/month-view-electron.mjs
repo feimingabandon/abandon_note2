@@ -221,12 +221,35 @@ async function runMonthViewTests() {
       '月视图帮助中心没有完成关闭'
     )
 
+    const postHelpUi = await monthWindow.webContents.executeJavaScript(`(() => ({
+      url: location.href,
+      monthRoot: Boolean(document.querySelector('.month-root')),
+      monthContent: Boolean(document.querySelector('.month-content')),
+      toolbar: Boolean(document.querySelector('.month-toolbar')),
+      bodyText: document.body.textContent.slice(0, 160)
+    }))()`)
+    assert.equal(
+      postHelpUi.toolbar,
+      true,
+      `关闭帮助后月历工具栏必须仍然存在：${JSON.stringify(postHelpUi)}`
+    )
+
     const initialToolbarLayout = await monthWindow.webContents.executeJavaScript(`(() => {
-      const toolbar = document.querySelector('.month-toolbar').getBoundingClientRect()
-      const previous = document.querySelector('[aria-label="上个月"]').getBoundingClientRect()
-      const title = document.querySelector('.month-toolbar__title').getBoundingClientRect()
-      const next = document.querySelector('[aria-label="下个月"]').getBoundingClientRect()
+      const elements = {
+        toolbar: document.querySelector('.month-toolbar'),
+        previous: document.querySelector('[aria-label="上个月"]'),
+        title: document.querySelector('.month-toolbar__title'),
+        next: document.querySelector('[aria-label="下个月"]'),
+        arrowIcon: document.querySelector('[aria-label="上个月"] .month-toolbar__arrow-icon')
+      }
+      const missing = Object.entries(elements).filter(([, element]) => !element).map(([name]) => name)
+      if (missing.length) return { missing }
+      const toolbar = elements.toolbar.getBoundingClientRect()
+      const previous = elements.previous.getBoundingClientRect()
+      const title = elements.title.getBoundingClientRect()
+      const next = elements.next.getBoundingClientRect()
       return {
+        missing,
         toolbarCenter: toolbar.left + toolbar.width / 2,
         titleCenter: title.left + title.width / 2,
         previousRight: previous.right,
@@ -236,11 +259,10 @@ async function runMonthViewTests() {
         previousCenterY: previous.top + previous.height / 2,
         titleCenterY: title.top + title.height / 2,
         nextCenterY: next.top + next.height / 2,
-        arrowIconHeight: document
-          .querySelector('[aria-label="上个月"] .month-toolbar__arrow-icon')
-          .getBoundingClientRect().height
+        arrowIconHeight: elements.arrowIcon.getBoundingClientRect().height
       }
     })()`)
+    assert.deepEqual(initialToolbarLayout.missing, [], '月历工具栏布局元素必须完整')
     assert.ok(
       Math.abs(initialToolbarLayout.titleCenter - initialToolbarLayout.toolbarCenter) < 1,
       '年月标题必须以当前日历工具栏为中轴居中'
@@ -1095,7 +1117,11 @@ async function runMonthViewTests() {
       const card = Array.from(document.querySelectorAll('.month-day-panel .nl-card')).find((item) => item.querySelector('.nl-card-text')?.textContent === '今天立即便签')
       return card?.className
     })()`)
-    assert.match(immediateStatus || '', /nl-card--in_progress/, '今天未调整时间必须创建为立即进行中')
+    assert.match(
+      immediateStatus || '',
+      /nl-card--in_progress/,
+      '今天未调整时间必须创建为立即进行中'
+    )
 
     await monthWindow.webContents.executeJavaScript(`(() => {
       const card = Array.from(document.querySelectorAll('.month-day-panel .nl-card')).find((item) => item.querySelector('.nl-card-text')?.textContent === '今天立即便签')
@@ -1251,7 +1277,7 @@ async function runMonthViewTests() {
     const titlebar = document.querySelector('.app-titlebar')
     const group = document.querySelector('.titlebar-actions-group')
     const settings = document.querySelector('.month-titlebar-btn[title="设置"]')
-    const help = document.querySelector('.month-titlebar-btn[aria-disabled="true"]')
+    const help = document.querySelector('.month-titlebar-btn[aria-controls="help-workspace"]')
     const settingsRect = settings.getBoundingClientRect()
     const helpRect = help.getBoundingClientRect()
     return {
@@ -1292,7 +1318,7 @@ async function runMonthViewTests() {
     const microsoftTitlebar = await monthWindow.webContents.executeJavaScript(`(() => {
     const group = document.querySelector('.titlebar-actions-group')
     const settings = document.querySelector('.month-titlebar-btn[title="设置"]')
-    const help = document.querySelector('.month-titlebar-btn[aria-disabled="true"]')
+    const help = document.querySelector('.month-titlebar-btn[aria-controls="help-workspace"]')
     const icon = settings.querySelector('.btn-icon')
     const settingsRect = settings.getBoundingClientRect()
     return {
@@ -1430,7 +1456,7 @@ async function runMonthViewTests() {
       return status.workerAlive && ['armed', 'waiting-outside'].includes(status.state) && status
     }, '月视图顶部贴边后没有启动原生边缘监视器')
     assert.equal(armedStatus.side, -2, '月视图必须使用 DLL 顶部监视器')
-    assert.equal(armedStatus.pollIntervalMs, 100, '月视图原生鼠标检测周期必须为 100ms')
+    assert.equal(armedStatus.pollIntervalMs, 50, '月视图原生鼠标检测周期必须为 50ms')
     assert.equal(
       BrowserWindow.getAllWindows().filter((window) => window !== monthWindow).length,
       0,

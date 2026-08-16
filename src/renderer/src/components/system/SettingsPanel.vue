@@ -1983,8 +1983,8 @@ const onConfirmResetSettings = async () => {
             <div class="setting-item">
               <div class="setting-left">
                 <span class="setting-label"
-                  >检测设备基础信息<HelpButton
-                    text="只记录基本的设备信息，不上传便签等敏感核心信息。用于判断用户数量与用户基本属性。"
+                  >后续设备统计<HelpButton
+                    text="首次启动已经发送一次匿名基础设备统计，用于估算实际启动的安装数量。关闭后，下次启动起停止后续启动/退出统计；不会上传便签正文、标签、模板、附件或壁纸。"
                 /></span>
               </div>
               <div class="setting-right">

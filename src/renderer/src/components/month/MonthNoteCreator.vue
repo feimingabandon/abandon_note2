@@ -91,10 +91,12 @@ async function create() {
   }
   if (!isImmediateDefault.value) {
     const effectiveAt = combineLocalDateAndTime(props.dateKey, time.value)
-    if (props.dateKey === todayKey.value && effectiveAt - Date.now() < MIN_SCHEDULE_LEAD_TIME_MS) {
+    if (effectiveAt - Date.now() < MIN_SCHEDULE_LEAD_TIME_MS) {
       showMessage(
         'warning',
-        `今天的生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后；不调整时间可直接立即创建`
+        props.dateKey === todayKey.value
+          ? `今天的生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后；不调整时间可直接立即创建`
+          : `生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后，请重新选择`
       )
       return
     }

@@ -197,11 +197,19 @@ async function responseJson(response) {
 }
 
 export class WeatherService {
-  constructor({ cachePath, fetchImpl = globalThis.fetch } = {}) {
+  constructor({
+    cachePath,
+    fetchImpl = globalThis.fetch,
+    userAgent = 'Abandon-Note/unknown'
+  } = {}) {
     if (!cachePath) throw new Error('天气缓存路径不能为空')
     if (typeof fetchImpl !== 'function') throw new Error('当前运行时不支持 fetch')
+    if (!String(userAgent).trim() || /[\r\n]/.test(String(userAgent))) {
+      throw new Error('天气服务 User-Agent 无效')
+    }
     this.cachePath = cachePath
     this.fetchImpl = fetchImpl
+    this.userAgent = String(userAgent).trim()
     this.cacheLoaded = false
     this.cache = { version: CACHE_VERSION, forecasts: {} }
   }
@@ -248,7 +256,7 @@ export class WeatherService {
       return await responseJson(
         await this.fetchImpl(url, {
           signal: controller.signal,
-          headers: { Accept: 'application/json', 'User-Agent': 'AbandonNote/0.9.2' }
+          headers: { Accept: 'application/json', 'User-Agent': this.userAgent }
         })
       )
     } catch (error) {

@@ -38,4 +38,15 @@ describe('note scheduling rules', () => {
     expect(defaultMonthNoteEffectiveTime('2026-08-12', '2026-08-11', currentTime)).toBe('00:01')
     expect(defaultMonthNoteEffectiveTime('2026-08-11', '2026-08-11', currentTime)).toBe('14:37')
   })
+
+  it('moves a near-midnight future default past the safe scheduling boundary', () => {
+    const currentTime = new Date(2026, 7, 11, 23, 59, 30)
+    const selectedTime = defaultMonthNoteEffectiveTime('2026-08-12', '2026-08-11', currentTime)
+    const [hour, minute] = selectedTime.split(':').map(Number)
+    const effectiveAt = new Date(2026, 7, 12, hour, minute).getTime()
+
+    expect(effectiveAt - currentTime.getTime()).toBeGreaterThanOrEqual(
+      MIN_SCHEDULE_LEAD_TIME_MS + 60_000
+    )
+  })
 })

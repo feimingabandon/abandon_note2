@@ -8,9 +8,17 @@ function padClockPart(value) {
 }
 
 export function defaultMonthNoteEffectiveTime(dateKey, todayKey, currentTime = Date.now()) {
-  if (String(dateKey) > String(todayKey)) return DEFAULT_NEW_NOTE_SCHEDULE_TIME
   const now = currentTime instanceof Date ? currentTime : new Date(Number(currentTime))
   if (Number.isNaN(now.getTime())) throw new Error('当前时间无效')
+  if (String(dateKey) > String(todayKey)) {
+    const [year, month, day] = String(dateKey).split('-').map(Number)
+    const [hour, minute] = DEFAULT_NEW_NOTE_SCHEDULE_TIME.split(':').map(Number)
+    const defaultTimestamp = new Date(year, month - 1, day, hour, minute).getTime()
+    const safeTimestamp = createSafeScheduleShortcutTimestamp(now.getTime())
+    const selectedTimestamp = Math.max(defaultTimestamp, safeTimestamp)
+    const selected = new Date(selectedTimestamp)
+    return `${padClockPart(selected.getHours())}:${padClockPart(selected.getMinutes())}`
+  }
   return `${padClockPart(now.getHours())}:${padClockPart(now.getMinutes())}`
 }
 

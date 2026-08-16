@@ -16,7 +16,7 @@ public:
 
     bool Initialize();
     bool Prewarm(UINT width, UINT height, int side, UINT dpi);
-    bool Paint(HWND hwnd, int side, UINT dpi, std::uint64_t animationStartedAt);
+    bool Paint(HWND hwnd, int side, UINT dpi, std::uint64_t visibleElapsedMs);
     bool UsesEmbeddedFont() const;
     void DiscardWindowResources();
 

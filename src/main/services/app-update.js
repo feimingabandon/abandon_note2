@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 const RELEASE_ENDPOINTS = Object.freeze([
   {
     source: 'gitcode',
@@ -125,6 +127,8 @@ function getTrustedGitCodeDownloadUrl(release, artifactName) {
 function emptyResult({ currentVersion, platform, arch, status = 'unsupported', error = null }) {
   return {
     status,
+    relation: null,
+    checkId: null,
     currentVersion,
     latestVersion: null,
     platform,
@@ -144,7 +148,7 @@ export class AppUpdateService {
     this.platform = platform
     this.arch = arch
     this.fetch = fetchImpl
-    this.externalUrls = null
+    this.externalSelection = null
   }
 
   async fetchLatestReleases() {
@@ -199,8 +203,17 @@ export class AppUpdateService {
     throw error
   }
 
-  getExternalUrl(target) {
-    const url = this.externalUrls?.[target]
+  getExternalUrl({ target, checkId, targetVersion, relation } = {}) {
+    const selection = this.externalSelection
+    if (
+      !selection ||
+      selection.checkId !== checkId ||
+      selection.targetVersion !== normalizeVersion(targetVersion) ||
+      selection.relation !== relation
+    ) {
+      throw new Error('更新检查结果已经过期，请重新检查')
+    }
+    const url = selection.urls[target]
     if (!url) {
       throw new Error(
         target === 'download'
@@ -212,7 +225,7 @@ export class AppUpdateService {
   }
 
   async check() {
-    this.externalUrls = null
+    this.externalSelection = null
     const base = emptyResult({
       currentVersion: this.currentVersion,
       platform: this.platform,
@@ -230,6 +243,8 @@ export class AppUpdateService {
       const releases = await this.fetchLatestReleases()
       const release = selectPreferredRelease(releases, this.platform, this.arch)
       const comparison = compareVersions(release.version, this.currentVersion)
+      const relation = comparison > 0 ? 'upgrade' : comparison === 0 ? 'same' : 'downgrade'
+      const checkId = randomUUID()
       const artifactName = getTargetArtifact(release.version, this.platform, this.arch)
       const gitcodeRelease = releases.find(
         (candidate) =>
@@ -238,15 +253,23 @@ export class AppUpdateService {
       )
       const downloadUrl = getTrustedGitCodeDownloadUrl(gitcodeRelease, artifactName)
       const releaseLinks = buildReleaseLinks(release.version)
-      this.externalUrls = Object.freeze({
-        download: downloadUrl,
-        gitcode: releaseLinks.gitcode,
-        github: releaseLinks.github
+      this.externalSelection = Object.freeze({
+        checkId,
+        targetVersion: release.version,
+        relation,
+        urls: Object.freeze({
+          download: downloadUrl,
+          gitcode: releaseLinks.gitcode,
+          github: releaseLinks.github
+        })
       })
 
       const result = {
         ...base,
-        status: comparison > 0 ? 'available' : 'current',
+        status:
+          relation === 'upgrade' ? 'available' : relation === 'same' ? 'current' : 'downgrade',
+        relation,
+        checkId,
         latestVersion: release.version,
         artifactName,
         downloadAvailable: Boolean(downloadUrl),

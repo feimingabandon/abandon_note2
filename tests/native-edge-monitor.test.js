@@ -16,7 +16,7 @@ describe('NativeEdgeMonitor', () => {
       }
     )
 
-    const options = { pollIntervalMs: 100, revealHandleEnabled: true }
+    const options = { pollIntervalMs: 50, revealHandleEnabled: true }
     expect(monitor.arm('top', 8, options)).toMatchObject({ success: true })
     expect(arm).toHaveBeenCalledWith({}, 'top', 8, options)
     expect(monitor.arm('top', 9)).toMatchObject({ success: false, code: -8 })

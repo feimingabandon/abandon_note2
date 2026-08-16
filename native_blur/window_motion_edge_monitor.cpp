@@ -27,9 +27,9 @@ constexpr int kHandleHorizontalWidthDip = 146;
 constexpr int kHandleHorizontalHeightDip = 40;
 constexpr int kHandleVerticalWidthDip = 50;
 constexpr int kHandleVerticalHeightDip = 112;
-constexpr int kHandleHoverToleranceDip = 4;
-constexpr ULONGLONG kHandleAppearDurationMs = 180;
-constexpr ULONGLONG kHandleRetreatDurationMs = 150;
+constexpr int kHandleHoverToleranceDip = 8;
+constexpr ULONGLONG kHandleAppearDurationMs = 220;
+constexpr ULONGLONG kHandleRetreatDurationMs = 180;
 constexpr ULONGLONG kHandleLeaveDelayMs = 300;
 constexpr DWORD kMessagePumpTickMs = 16;
 constexpr DWORD kHandleVisualTickMs = 33;
@@ -63,9 +63,12 @@ struct Runtime {
     std::atomic<HWND> handleWindow{nullptr};
     std::atomic<bool> handleEnteredOnce{false};
     std::atomic<std::uint64_t> handleVisualFrame{0};
+    std::atomic<std::uint64_t> handleVisualElapsedMs{0};
     std::atomic<bool> handleRendererReady{false};
     std::atomic<bool> handleRendererPrewarmed{false};
     std::atomic<bool> handleEmbeddedFontReady{false};
+    std::atomic<std::uint64_t> handleWindowCreateCount{0};
+    std::atomic<int> workerStartupResult{static_cast<int>(Result::Ok)};
 
     HANDLE stopEvent = nullptr;
     HANDLE readyEvent = nullptr;
@@ -88,7 +91,6 @@ struct Runtime {
     ULONGLONG handleLeaveStartedAt = 0;
     bool handleButtonDownInside = false;
     std::unique_ptr<RevealHandleRenderer> handleRenderer;
-    ULONGLONG handleVisualStartedAt = 0;
     ULONGLONG handleVisualLastTick = 0;
     bool eventNotificationPosted = false;
     PendingEvent pendingEvent{};
@@ -283,7 +285,8 @@ LRESULT CALLBACK HandleWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
         PAINTSTRUCT paint{};
         HDC paintDc = BeginPaint(hwnd, &paint);
         if (runtime->handleRenderer && runtime->handleRenderer->Paint(
-                hwnd, runtime->side, runtime->dpi, runtime->handleVisualStartedAt)) {
+                hwnd, runtime->side, runtime->dpi,
+                runtime->handleVisualElapsedMs.load())) {
             if (paintDc) EndPaint(hwnd, &paint);
             return 0;
         }
@@ -319,6 +322,8 @@ LRESULT CALLBACK HandleWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
             runtime->handlePhase.store(HandlePhase::Hidden);
             ShowWindow(hwnd, SW_HIDE);
             QueueEvent(*runtime, EventKind::Trigger, 0);
+            // 点击确认后主进程会立即结束本轮贴边会话；这里沿用已验证的关闭
+            // 路径，普通退场才把 HWND 停在屏外供下一次触边复用。
             PostMessageW(hwnd, WM_CLOSE, 0, 0);
         }
         return 0;
@@ -366,10 +371,34 @@ void DestroyHandleWindow(Runtime& runtime) {
     runtime.handleReadyAt = 0;
     runtime.handleLeaveStartedAt = 0;
     runtime.handleButtonDownInside = false;
-    runtime.handleVisualStartedAt = 0;
     runtime.handleVisualLastTick = 0;
     runtime.handleVisualFrame.store(0);
+    runtime.handleVisualElapsedMs.store(0);
     if (hwnd && IsWindow(hwnd)) DestroyWindow(hwnd);
+}
+
+void ResetParkedHandleState(Runtime& runtime) {
+    runtime.handlePhase.store(HandlePhase::Hidden);
+    runtime.handleEnteredOnce.store(false);
+    runtime.handleAnimationStartedAt = 0;
+    runtime.handleAnimationDurationMs = 0;
+    runtime.handleReadyAt = 0;
+    runtime.handleLeaveStartedAt = 0;
+    runtime.handleButtonDownInside = false;
+    runtime.handleVisualLastTick = 0;
+}
+
+bool ParkHandleWindow(Runtime& runtime) {
+    HWND hwnd = runtime.handleWindow.load();
+    if (!hwnd || !IsWindow(hwnd)) return false;
+    if (GetCapture() == hwnd) ReleaseCapture();
+    const RECT& parked = runtime.handleOffscreenRect;
+    if (!SetWindowPos(hwnd, HWND_TOPMOST, parked.left, parked.top, 0, 0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
+        return false;
+    }
+    ResetParkedHandleState(runtime);
+    return true;
 }
 
 SIZE GetHandlePixelSize(const Runtime& runtime) {
@@ -417,6 +446,13 @@ void PositionHandleAtTouch(Runtime& runtime, const POINT& touch) {
     else OffsetRect(&runtime.handleOffscreenRect, 0, height);
 }
 
+POINT GetDefaultHandleAnchor(const Runtime& runtime) {
+    return {
+        runtime.triggerArea.left + (runtime.triggerArea.right - runtime.triggerArea.left) / 2,
+        runtime.triggerArea.top + (runtime.triggerArea.bottom - runtime.triggerArea.top) / 2
+    };
+}
+
 ULONGLONG ScaledAnimationDuration(
     const RECT& start, const RECT& finish, const RECT& fullStart, const RECT& fullFinish,
     ULONGLONG fullDuration) {
@@ -441,12 +477,23 @@ void BeginHandleAnimation(
     runtime.handleButtonDownInside = false;
 }
 
-bool CreateAndAnimateHandle(Runtime& runtime, const POINT& touch) {
+bool PrimeHandleWindow(Runtime& runtime, const POINT& touch) {
     PositionHandleAtTouch(runtime, touch);
     const RECT start = runtime.handleOffscreenRect;
     const int width = start.right - start.left;
     const int height = start.bottom - start.top;
-    HWND hwnd = CreateWindowExW(
+    HWND hwnd = runtime.handleWindow.load();
+    if (hwnd && IsWindow(hwnd)) {
+        if (!SetWindowPos(hwnd, HWND_TOPMOST, start.left, start.top, 0, 0,
+                SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
+            return false;
+        }
+        ResetParkedHandleState(runtime);
+        return true;
+    }
+
+    runtime.handleWindow.store(nullptr);
+    hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
         kHandleWindowClass, L"Abandon Note \x5c55\x5f00", WS_POPUP,
         start.left, start.top, width, height,
@@ -457,9 +504,7 @@ bool CreateAndAnimateHandle(Runtime& runtime, const POINT& touch) {
     runtime.handleReadyAt = 0;
     runtime.handleLeaveStartedAt = 0;
     runtime.handleEnteredOnce.store(false);
-    runtime.handleVisualStartedAt = GetTickCount64();
     runtime.handleVisualLastTick = 0;
-    runtime.handleVisualFrame.store(0);
     if ((!runtime.handleRenderer && !EnableHandleFallbackSurface(hwnd)) ||
         !SetWindowPos(hwnd, HWND_TOPMOST, start.left, start.top, width, height,
             SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
@@ -472,8 +517,30 @@ bool CreateAndAnimateHandle(Runtime& runtime, const POINT& touch) {
         return false;
     }
     UpdateWindow(hwnd);
+    // UpdateWindow 只保证 WM_PAINT 已处理，不保证新的 layered HWND 已进入一次
+    // 桌面合成。布防阶段只在这里等待一次 DWM，后续每帧移动不再阻塞。
+    DwmFlush();
+    runtime.handleWindowCreateCount.fetch_add(1);
+    ResetParkedHandleState(runtime);
+    return true;
+}
+
+bool RevealPrimedHandle(Runtime& runtime, const POINT& touch) {
+    if (!PrimeHandleWindow(runtime, touch)) return false;
+    HWND hwnd = runtime.handleWindow.load();
+    if (!hwnd || !IsWindow(hwnd) ||
+        !RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW)) {
+        return false;
+    }
+    // 先把同一个 HWND、鼠标对应的屏外坐标和暂停时的绿环画面提交给 DWM，
+    // 再从下一次消息循环开始滑出，避免重定位与首个位移被合并成一次可见跳变。
+    DwmFlush();
+    const RECT start = runtime.handleOffscreenRect;
+    const ULONGLONG now = GetTickCount64();
+    runtime.handleVisualLastTick = now;
+    runtime.handleVisualFrame.fetch_add(1);
     BeginHandleAnimation(runtime, HandlePhase::Appearing, start, runtime.handleFinalRect,
-        kHandleAppearDurationMs, GetTickCount64());
+        kHandleAppearDurationMs, now);
     return true;
 }
 
@@ -491,7 +558,7 @@ void UpdateHandleAnimation(Runtime& runtime, ULONGLONG now) {
     }
 
     if (phase == HandlePhase::Retreating) {
-        // 退场仅 150ms，不能依赖 100ms 主轮询判断重入；动画节拍内直接采样，
+        // 退场仅 180ms，不能依赖 50ms 主轮询判断重入；动画节拍内直接采样，
         // 避免光标在两次轮询之间重新进入时 HWND 已先滑完并销毁。
         POINT cursor{};
         if (GetCursorPos(&cursor) &&
@@ -504,10 +571,12 @@ void UpdateHandleAnimation(Runtime& runtime, ULONGLONG now) {
     const double raw = static_cast<double>(now - runtime.handleAnimationStartedAt) /
         static_cast<double>(std::max<ULONGLONG>(1, runtime.handleAnimationDurationMs));
     const double progress = std::clamp(raw, 0.0, 1.0);
-    // 退场使用出现曲线的严格时间反向：ease-out cubic <-> ease-in cubic。
-    const double eased = phase == HandlePhase::Appearing
-        ? 1.0 - std::pow(1.0 - progress, 3.0)
-        : std::pow(progress, 3.0);
+    // 短距离原生窗口如果使用 ease-out cubic，首个 16ms 就会跨过约四分之一
+    // 路程，看起来像瞬间出现。双向统一为 ease-in-out quad，保证首尾都有
+    // 可见的渐进位移，反向动画也保持一致的运动感受。
+    const double eased = progress < 0.5
+        ? 2.0 * progress * progress
+        : 1.0 - std::pow(-2.0 * progress + 2.0, 2.0) / 2.0;
     const RECT start = runtime.handleAnimationStartRect;
     const RECT finish = runtime.handleAnimationEndRect;
     const int x = static_cast<int>(std::lround(start.left + (finish.left - start.left) * eased));
@@ -525,24 +594,32 @@ void UpdateHandleAnimation(Runtime& runtime, ULONGLONG now) {
             runtime.handleLeaveStartedAt = 0;
             runtime.handleButtonDownInside = false;
         } else {
-            DestroyHandleWindow(runtime);
-            runtime.state.store(State::Armed);
+            if (!ParkHandleWindow(runtime)) {
+                QueueEvent(runtime, EventKind::Fault,
+                    static_cast<int>(Result::HandleWindowCreateFailed));
+            } else {
+                runtime.state.store(State::Armed);
+            }
         }
     }
 }
 
 void UpdateHandleVisual(Runtime& runtime, ULONGLONG now) {
     const HandlePhase phase = runtime.handlePhase.load();
-    // 滑入/退场期间只移动已预热的 layered-window 表面。
-    // 如果同一线程还在每个位移节拍重画 Direct2D，一次慢帧就会吞掉
-    // 180ms 的位移动画，用户看到的就是等待后直接跳到终点。
-    if (phase != HandlePhase::Ready) return;
+    // 绿环只在小黑条至少部分可见时累计时间并重画；完全停放到屏外后暂停。
+    // 下一次出现继续使用累计的可见时间，不补算隐藏期间，也不回到圆圈顶部。
+    if (phase == HandlePhase::Hidden) return;
     const DWORD interval = kHandleVisualTickMs;
-    if (runtime.handleVisualLastTick &&
-        now - runtime.handleVisualLastTick < interval) return;
+    if (!runtime.handleVisualLastTick) {
+        runtime.handleVisualLastTick = now;
+        return;
+    }
+    const ULONGLONG elapsed = now - runtime.handleVisualLastTick;
+    if (elapsed < interval) return;
     HWND hwnd = runtime.handleWindow.load();
     if (!hwnd || !IsWindow(hwnd)) return;
     runtime.handleVisualLastTick = now;
+    runtime.handleVisualElapsedMs.fetch_add(elapsed);
     runtime.handleVisualFrame.fetch_add(1);
     InvalidateRect(hwnd, nullptr, FALSE);
 }
@@ -721,6 +798,24 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
     MSG message{};
     PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
 
+    // 小黑条 HWND 与 layered surface 也必须在发布 ready 前完成一次屏外创建和
+    // DWM 提交。否则第一次触边时现建现移，合成器可能只呈现接近终点的帧。
+    if (runtime->revealMode == static_cast<int>(RevealMode::ClickHandle) &&
+        !PrimeHandleWindow(*runtime, GetDefaultHandleAnchor(*runtime))) {
+        runtime->workerStartupResult.store(static_cast<int>(Result::HandleWindowCreateFailed));
+        runtime->lastError.store(static_cast<int>(Result::HandleWindowCreateFailed));
+        runtime->state.store(State::Failed);
+        DestroyHandleWindow(*runtime);
+        runtime->handleRenderer.reset();
+        runtime->handleRendererReady.store(false);
+        runtime->handleRendererPrewarmed.store(false);
+        runtime->handleEmbeddedFontReady.store(false);
+        if (runtime->readyEvent) SetEvent(runtime->readyEvent);
+        if (comInitialized) CoUninitialize();
+        runtime->workerAlive.store(false);
+        return 0;
+    }
+
     // ArmEx 已同步采样启动时的光标，并据此冻结初始状态。这里不得再次采样覆盖：
     // 调用方可能在看到 workerAlive 后立即触边，二次采样会把这次真实的
     // outside -> inside 误判成“启动时已经在边缘”，从而永久等待下一次离边。
@@ -779,7 +874,14 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
             if (fullscreen) {
                 if (!fullscreenActive) {
                     runtime->fullscreenBlockCount.fetch_add(1);
-                    DestroyHandleWindow(*runtime);
+                    // 全屏保护只把同一个小黑条停回屏外；本轮贴边会话仍然
+                    // 存活，不能因此丢失 HWND、渲染资源或已累计的绿环角度。
+                    if (!ParkHandleWindow(*runtime)) {
+                        QueueEvent(*runtime, EventKind::Fault,
+                            static_cast<int>(Result::HandleWindowCreateFailed));
+                        previousInside = inside;
+                        continue;
+                    }
                 }
                 fullscreenActive = true;
                 runtime->state.store(State::WaitingOutside);
@@ -789,6 +891,12 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
             if (fullscreenActive) {
                 // 退出全屏不补发旧意图；仍在边缘时必须先离开再重新进入。
                 fullscreenActive = false;
+                if (!PrimeHandleWindow(*runtime, cursor)) {
+                    QueueEvent(*runtime, EventKind::Fault,
+                        static_cast<int>(Result::HandleWindowCreateFailed));
+                    previousInside = inside;
+                    continue;
+                }
                 runtime->state.store(inside ? State::WaitingOutside : State::Armed);
                 previousInside = inside;
                 continue;
@@ -820,7 +928,7 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
                 } else {
                     QueueEvent(*runtime, EventKind::Trigger, 0);
                 }
-            } else if (!CreateAndAnimateHandle(*runtime, cursor)) {
+            } else if (!RevealPrimedHandle(*runtime, cursor)) {
                 QueueEvent(*runtime, EventKind::Fault,
                     static_cast<int>(Result::HandleWindowCreateFailed));
             }
@@ -876,7 +984,7 @@ int StopLocked(Runtime& runtime, std::uint64_t generation) {
     runtime.handlePhase.store(HandlePhase::Hidden);
     runtime.handleEnteredOnce.store(false);
     runtime.handleVisualFrame.store(0);
-    runtime.handleVisualStartedAt = 0;
+    runtime.handleVisualElapsedMs.store(0);
     runtime.handleVisualLastTick = 0;
     runtime.state.store(State::Stopped);
     runtime.cursorFailureCount.store(0);
@@ -992,12 +1100,14 @@ int ArmEx(
     runtime.handleReadyAt = 0;
     runtime.handleLeaveStartedAt = 0;
     runtime.handleButtonDownInside = false;
-    runtime.handleVisualStartedAt = 0;
+    runtime.handleVisualElapsedMs.store(0);
     runtime.handleVisualLastTick = 0;
     runtime.handleVisualFrame.store(0);
     runtime.handleRendererReady.store(false);
     runtime.handleRendererPrewarmed.store(false);
     runtime.handleEmbeddedFontReady.store(false);
+    runtime.handleWindowCreateCount.store(0);
+    runtime.workerStartupResult.store(static_cast<int>(Result::Ok));
     runtime.eventNotificationPosted = false;
     runtime.state.store(IsInside(cursor, runtime.triggerArea) ? State::WaitingOutside : State::Armed);
     {
@@ -1040,6 +1150,26 @@ int ArmEx(
         return static_cast<int>(Result::WorkerStartTimedOut);
     }
 
+    const int startupResult = runtime.workerStartupResult.load();
+    if (startupResult != static_cast<int>(Result::Ok)) {
+        const DWORD exitWait = WaitForSingleObject(runtime.workerThread, kWorkerStartAbortGraceMs);
+        if (exitWait != WAIT_OBJECT_0) {
+            runtime.lastError.store(static_cast<int>(Result::WorkerStartTimedOut));
+            runtime.state.store(State::Failed);
+            SetEvent(runtime.stopEvent);
+            return static_cast<int>(Result::WorkerStartTimedOut);
+        }
+        CloseHandle(runtime.workerThread);
+        CloseHandle(runtime.stopEvent);
+        CloseHandle(runtime.readyEvent);
+        runtime.workerThread = nullptr;
+        runtime.stopEvent = nullptr;
+        runtime.readyEvent = nullptr;
+        runtime.workerAlive.store(false);
+        ClearPreparedRuntime(runtime);
+        return startupResult;
+    }
+
     CloseHandle(runtime.readyEvent);
     runtime.readyEvent = nullptr;
     return static_cast<int>(Result::Ok);
@@ -1056,7 +1186,7 @@ UINT GetMessageId() {
 }
 
 const char* GetStatusJson() {
-    thread_local char json[1408]{};
+    thread_local char json[1536]{};
     PendingEvent event{};
     {
         std::lock_guard<std::mutex> lock(g_runtime.eventMutex);
@@ -1081,7 +1211,8 @@ const char* GetStatusJson() {
         "\"handleVisible\":%s,\"handleWindowAlive\":%s,\"handleEnteredOnce\":%s,"
         "\"handleDpi\":%u,\"handleRenderer\":\"%s\",\"handlePrewarmed\":%s,"
         "\"handleEmbeddedFont\":%s,"
-        "\"handleVisualFrame\":%llu,"
+        "\"handleVisualFrame\":%llu,\"handleVisualElapsedMs\":%llu,"
+        "\"handleWindowCreateCount\":%llu,"
         "\"handleRect\":{\"left\":%ld,\"top\":%ld,"
         "\"right\":%ld,\"bottom\":%ld}}",
         StateName(g_runtime.state.load()),
@@ -1108,6 +1239,8 @@ const char* GetStatusJson() {
         g_runtime.handleRendererPrewarmed.load() ? "true" : "false",
         g_runtime.handleEmbeddedFontReady.load() ? "true" : "false",
         static_cast<unsigned long long>(g_runtime.handleVisualFrame.load()),
+        static_cast<unsigned long long>(g_runtime.handleVisualElapsedMs.load()),
+        static_cast<unsigned long long>(g_runtime.handleWindowCreateCount.load()),
         handle.left, handle.top, handle.right, handle.bottom);
     return json;
 }

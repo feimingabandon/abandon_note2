@@ -89,7 +89,7 @@ describe('dock health inspection', () => {
     expect(inspectDockHealth(snapshot)).toContain('原生边缘监视线程已 1500ms 未轮询')
   })
 
-  it('accepts a lazy click-handle window before the first edge touch', () => {
+  it('accepts a prewarmed off-screen click-handle window before the first edge touch', () => {
     const snapshot = healthyHiddenSnapshot({
       revealHandleEnabled: true,
       sessionRevealHandleEnabled: true,
@@ -99,7 +99,7 @@ describe('dock health inspection', () => {
         mode: 'click-handle',
         handleState: 'hidden',
         handleVisible: false,
-        handleWindowAlive: false
+        handleWindowAlive: true
       }
     })
 
@@ -126,7 +126,7 @@ describe('dock health inspection', () => {
     }
   )
 
-  it.each(['animating', 'appearing', 'ready', 'retreating'])(
+  it.each(['hidden', 'animating', 'appearing', 'ready', 'retreating'])(
     'reports a missing native handle window in the %s stage',
     (handleState) => {
       const snapshot = healthyHiddenSnapshot({
@@ -142,7 +142,7 @@ describe('dock health inspection', () => {
         }
       })
 
-      expect(inspectDockHealth(snapshot)).toContain('小黑条进入显示阶段但原生窗口未运行')
+      expect(inspectDockHealth(snapshot)).toContain('小黑条原生窗口未持续运行')
       if (handleState === 'ready') {
         expect(inspectDockHealth(snapshot)).toContain('小黑条已就绪但不可见')
       }
@@ -168,7 +168,7 @@ describe('dock health inspection', () => {
       '隐藏方向已不在当前启用的贴边范围内',
       '隐藏会话的小黑条模式与当前配置不一致',
       '原生边缘监视器的小黑条模式与贴边会话不一致',
-      '小黑条进入显示阶段但原生窗口未运行',
+      '小黑条原生窗口未持续运行',
       '小黑条已就绪但不可见'
     ])
   })

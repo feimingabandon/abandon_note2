@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { app, BrowserWindow, screen } from 'electron'
 import koffi from 'koffi'
 
-const POLL_INTERVAL_MS = 100
+const POLL_INTERVAL_MS = 50
 const EVENT_TIMEOUT_MS = 3000
 
 function wait(ms) {
@@ -84,7 +84,7 @@ async function runNativeEdgeMonitorTests() {
       return await Promise.race([
         eventPromise,
         wait(EVENT_TIMEOUT_MS).then(() => {
-          throw new Error(timeoutMessage)
+          throw new Error(`${timeoutMessage}；状态=${JSON.stringify(getStatus())}`)
         })
       ])
     } finally {
@@ -237,6 +237,33 @@ async function runNativeEdgeMonitorTests() {
     return { x: bounds.x + Math.floor(bounds.width / 2), y: workArea.y }
   }
 
+  function getAlternateInsidePoint(side, bounds, workArea) {
+    if (side === -1) return { x: workArea.x, y: bounds.y + Math.floor((bounds.height * 3) / 4) }
+    if (side === 1) {
+      return {
+        x: workArea.x + workArea.width - 1,
+        y: bounds.y + Math.floor((bounds.height * 3) / 4)
+      }
+    }
+    return { x: bounds.x + Math.floor((bounds.width * 3) / 4), y: workArea.y }
+  }
+
+  function getNearHandlePoint(status, side) {
+    const dpi = Math.max(96, Number(status.handleDpi) || 96)
+    const offset = Math.max(1, Math.round((6 * dpi) / 96))
+    const rect = status.handleRect
+    if (side === -1 || side === 1) {
+      return {
+        x: Math.floor((rect.left + rect.right) / 2),
+        y: rect.bottom + offset
+      }
+    }
+    return {
+      x: rect.right + offset,
+      y: Math.floor((rect.top + rect.bottom) / 2)
+    }
+  }
+
   let testWindow = null
   let originalCursor = null
   let generation = 0
@@ -344,6 +371,9 @@ async function runNativeEdgeMonitorTests() {
       )
       assert.equal(armedHandleStatus.mode, 'click-handle')
       assert.equal(armedHandleStatus.handleState, 'hidden')
+      assert.equal(armedHandleStatus.handleWindowAlive, true)
+      assert.equal(armedHandleStatus.handleVisible, false)
+      assert.equal(armedHandleStatus.handleWindowCreateCount, 1)
       assert.equal(armedHandleStatus.handleRenderer, 'direct2d')
       assert.equal(armedHandleStatus.handlePrewarmed, true)
       await moveCursorAndConfirm(outside)
@@ -368,6 +398,27 @@ async function runNativeEdgeMonitorTests() {
         () => getStatus().handleVisualFrame > firstVisualFrame,
         `${side} 猫猫头像外圈在 ready 状态下没有持续刷新`
       )
+
+      // 小黑条只按首次触边点定位。鼠标继续沿边移动时它必须保持稳定，
+      // 不能追逐鼠标成为难以点击的移动目标。
+      await moveCursorAndConfirm(getAlternateInsidePoint(side, bounds, workArea))
+      await wait(POLL_INTERVAL_MS * 3)
+      const fixedHandle = getStatus()
+      assert.equal(fixedHandle.handleState, 'ready')
+      assert.deepEqual(
+        fixedHandle.handleRect,
+        readyHandle.handleRect,
+        `${side} 小黑条出现后不得继续沿边跟随鼠标`
+      )
+
+      // 实际 HWND 外的 6 DIP 不拦截点击，但仍位于 8 DIP 离开迟滞区内；
+      // 即使停留超过 300ms，也不能因轻微晃动开始退场。
+      await moveCursorAndConfirm(getNearHandlePoint(readyHandle, side))
+      await wait(450)
+      const tolerantHandle = getStatus()
+      assert.equal(tolerantHandle.handleState, 'ready', `${side} 小黑条的 8 DIP 离开迟滞未生效`)
+      assert.deepEqual(tolerantHandle.handleRect, readyHandle.handleRect)
+
       // 离开边线和小黑条后必须沿出现路径反向退场；退场途中重新触边则反向出现。
       const retreatingHandle = await moveCursorAndWaitForStatus(
         outside,
@@ -416,7 +467,7 @@ async function runNativeEdgeMonitorTests() {
       testWindow = null
     }
 
-    // 完整退场必须等滑回屏外后再销毁 HWND，且全过程不产生 trigger/fault。
+    // 完整退场后 HWND 保留在屏外复用；下一次出现不得重新创建冷启动窗口。
     const retreatBounds = getBounds(-2, workArea)
     testWindow = new BrowserWindow({
       ...retreatBounds,
@@ -441,6 +492,7 @@ async function runNativeEdgeMonitorTests() {
       (status) => status.handleState === 'ready' && status.handleWindowAlive && status,
       '小黑条完整退场场景没有进入 ready'
     )
+    assert.ok(retreatReady.handleVisualElapsedMs > 0, '首次显示时绿环必须累计可见时间')
     await moveCursorAndWaitForStatus(
       retreatOutside,
       (status) =>
@@ -450,15 +502,42 @@ async function runNativeEdgeMonitorTests() {
     )
     const retreated = await waitUntil(() => {
       const status = getStatus()
-      return status.handleState === 'hidden' && !status.handleWindowAlive && status
-    }, '小黑条退场完成后没有销毁原生窗口')
+      return (
+        status.handleState === 'hidden' &&
+        status.handleWindowAlive &&
+        !status.handleVisible &&
+        status
+      )
+    }, '小黑条退场完成后没有停留在屏外复用')
     assert.equal(retreated.pendingEvent, 'none', '小黑条完整退场不得产生原生事件')
+    assert.equal(retreated.handleWindowCreateCount, 1, '完整退场不得销毁预热窗口')
+    const pausedVisualElapsedMs = retreated.handleVisualElapsedMs
+    const pausedVisualFrame = retreated.handleVisualFrame
+    await wait(250)
+    const stillPaused = getStatus()
+    assert.equal(
+      stillPaused.handleVisualElapsedMs,
+      pausedVisualElapsedMs,
+      '屏外隐藏时绿环时间必须暂停'
+    )
+    assert.equal(stillPaused.handleVisualFrame, pausedVisualFrame, '屏外隐藏时不得继续重绘绿环')
+    const reusedReady = await revealHandleAndAssertSliding(
+      retreatInside,
+      -2,
+      workArea,
+      '复用的小黑条没有再次完成滑入动画'
+    )
+    assert.equal(reusedReady.handleWindowCreateCount, 1, '重复出现不得重新创建小黑条 HWND')
+    assert.ok(
+      reusedReady.handleVisualElapsedMs > pausedVisualElapsedMs,
+      '重复出现后绿环必须从暂停进度继续，不能回到圆圈顶部'
+    )
     assert.equal(disarm(generation), 1)
     testWindow.destroy()
     testWindow = null
 
-    // 全屏开始时已显示的小黑条必须立即销毁，但监视线程与会话继续存活；
-    // 退出全屏且鼠标仍在边缘时不能补发或重建，必须离开后再次进入。
+    // 全屏开始时已显示的小黑条必须立即停回屏外，但 HWND、渲染进度与
+    // 监视会话继续存活；退出全屏后必须离开边缘再重新进入。
     const fullscreenHandleBounds = getBounds(-2, workArea)
     testWindow = new BrowserWindow({
       ...fullscreenHandleBounds,
@@ -486,9 +565,17 @@ async function runNativeEdgeMonitorTests() {
     foregroundHelper = await startForegroundHelper('fullscreen', primaryDisplay.bounds)
     const handleBlockedStatus = await waitUntil(() => {
       const status = getStatus()
-      return status.fullscreenBlockCount === 1 && !status.handleWindowAlive && status
-    }, '进入全屏后没有销毁已显示小黑条')
-    assert.equal(handleBlockedStatus.workerAlive, true, '全屏只应销毁小黑条，不得停止监视线程')
+      return (
+        status.fullscreenBlockCount === 1 &&
+        status.handleState === 'hidden' &&
+        status.handleWindowAlive &&
+        !status.handleVisible &&
+        status
+      )
+    }, '进入全屏后没有把同一个小黑条停回屏外')
+    assert.equal(handleBlockedStatus.workerAlive, true, '全屏不得停止监视线程')
+    assert.equal(handleBlockedStatus.handleWindowCreateCount, 1, '全屏不得销毁或重建小黑条 HWND')
+    const fullscreenPausedElapsedMs = handleBlockedStatus.handleVisualElapsedMs
     assert.equal(handleBlockedStatus.pendingEvent, 'none')
     await stopForegroundHelper(foregroundHelper)
     foregroundHelper = null
@@ -507,6 +594,13 @@ async function runNativeEdgeMonitorTests() {
       '退出全屏后必须按当前光标是否仍在触发边线决定等待离边或直接布防'
     )
     assert.equal(statusAfterFullscreen.handleState, 'hidden')
+    assert.equal(statusAfterFullscreen.handleWindowAlive, true)
+    assert.equal(statusAfterFullscreen.handleWindowCreateCount, 1)
+    assert.equal(
+      statusAfterFullscreen.handleVisualElapsedMs,
+      fullscreenPausedElapsedMs,
+      '全屏停放期间绿环时间必须暂停'
+    )
     await moveCursorAndConfirm(outsideAfterHandle)
     await waitUntil(() => getStatus().state === 'armed', '退出全屏后离边没有重新布防')
     await moveCursorAndWaitForStatus(

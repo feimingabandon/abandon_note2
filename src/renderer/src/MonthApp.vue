@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue'
@@ -14,6 +14,7 @@ import DailyReportDialog from './components/report/DailyReportDialog.vue'
 import DailyReportButton from './components/report/DailyReportButton.vue'
 import HelpPage from './components/help/HelpPage.vue'
 import { createMessageProvider } from './composables/useMessage.js'
+import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
 import { useTodayKey } from './composables/useTodayKey.js'
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
@@ -43,11 +44,17 @@ const showRemoteNoticeDialog = ref(false)
 const showFirstUseNotice = ref(false)
 const showHolidayDataNoticeDialog = ref(false)
 const showDailyReportDialog = ref(false)
-const helpRendered = ref(false)
-const helpPanelActive = ref(false)
-const helpBlurActive = ref(false)
-const helpPhase = ref('closed') // closed | opening | open | closing
 const helpPanelRef = ref(null)
+const helpWorkspace = useSlidingWorkspace({ getElement: () => helpPanelRef.value })
+const {
+  rendered: helpRendered,
+  active: helpPanelActive,
+  phase: helpPhase,
+  interactive: helpInteractive,
+  close: closeHelpWorkspace,
+  onTransitionEnd: onHelpTransitionEnd,
+  onTransitionCancel: onHelpTransitionCancel
+} = helpWorkspace
 const pendingHolidayDataNotice = ref(null)
 const holidayNoticeTodayKey = useTodayKey()
 const calendarBusinessModalOpen = ref(false)
@@ -86,39 +93,17 @@ function openDailyReport() {
   showDailyReportDialog.value = true
 }
 
-async function openHelp() {
-  if (helpPhase.value === 'opening' || helpPhase.value === 'open') return
-  helpPhase.value = 'opening'
-  helpBlurActive.value = true
-  if (!helpRendered.value) {
-    helpRendered.value = true
-    await nextTick()
-    void helpPanelRef.value?.offsetWidth
-  }
-  if (helpPhase.value !== 'opening') return
-  helpPanelActive.value = true
+function openHelp() {
+  void helpWorkspace.open()
 }
 
 function closeHelp() {
-  if (helpPhase.value === 'closed' || helpPhase.value === 'closing') return
-  helpPhase.value = 'closing'
-  helpPanelActive.value = false
-  helpBlurActive.value = false
-}
-
-function onHelpTransitionEnd(event) {
-  if (event.target !== helpPanelRef.value || event.propertyName !== 'transform') return
-  if (helpPhase.value === 'opening' && helpPanelActive.value) {
-    helpPhase.value = 'open'
-  } else if (helpPhase.value === 'closing' && !helpPanelActive.value) {
-    helpRendered.value = false
-    helpPhase.value = 'closed'
-  }
+  closeHelpWorkspace()
 }
 
 function toggleHelp() {
   if (helpPhase.value === 'closed' || helpPhase.value === 'closing') void openHelp()
-  else closeHelp()
+  else closeHelpWorkspace()
 }
 
 function releaseSettingsBlur() {
@@ -396,8 +381,8 @@ onUnmounted(() => {
       <div class="month-content-stage">
         <main
           class="month-content"
-          :class="{ 'is-ui-background-blurred': helpBlurActive }"
-          :inert="helpRendered"
+          :class="{ 'is-ui-background-blurred': helpInteractive }"
+          :inert="helpInteractive"
           :aria-label="`${viewLabel}内容区域`"
         >
           <MonthWorkspace
@@ -408,7 +393,11 @@ onUnmounted(() => {
           />
         </main>
 
-        <div v-if="helpRendered" class="month-help-wrapper">
+        <div
+          v-if="helpRendered"
+          class="month-help-wrapper"
+          :class="{ 'is-interactive': helpInteractive }"
+        >
           <div
             id="help-workspace"
             ref="helpPanelRef"
@@ -417,6 +406,7 @@ onUnmounted(() => {
             role="region"
             :aria-label="`${viewLabel}帮助中心`"
             @transitionend="onHelpTransitionEnd"
+            @transitioncancel="onHelpTransitionCancel"
           >
             <HelpPage :view-mode="viewMode" />
           </div>
@@ -502,6 +492,10 @@ onUnmounted(() => {
   inset: 0;
   overflow: hidden;
   border-radius: var(--window-radius);
+  pointer-events: none;
+}
+
+.month-help-wrapper.is-interactive {
   pointer-events: auto;
 }
 

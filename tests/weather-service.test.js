@@ -49,6 +49,27 @@ const tokyo = {
 }
 
 describe('WeatherService', () => {
+  it('uses the injected application version in request headers', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        timezone: 'Asia/Tokyo',
+        current: null,
+        daily: { time: ['2026-08-12'], weather_code: [0] }
+      })
+    )
+    const directory = await mkdtemp(join(tmpdir(), 'abandon-weather-agent-test-'))
+    temporaryDirectories.push(directory)
+    const service = new WeatherService({
+      cachePath: join(directory, 'weather.json'),
+      fetchImpl,
+      userAgent: 'Abandon-Note/1.0.0'
+    })
+
+    await service.getForecast(tokyo)
+
+    expect(fetchImpl.mock.calls[0][1].headers['User-Agent']).toBe('Abandon-Note/1.0.0')
+  })
+
   it('normalizes and caches the minimum daily forecast fields', async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({

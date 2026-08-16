@@ -14,7 +14,7 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
-constexpr float kRingRevolutionMs = 4200.0f;
+constexpr std::uint64_t kRingRevolutionMs = 4200;
 constexpr float kPi = 3.14159265358979323846f;
 constexpr int kTrailSegmentCount = 64;
 constexpr float kTrailSweepDegrees = 242.0f;
@@ -319,7 +319,7 @@ struct RevealHandleRenderer::Impl {
         return updated != FALSE;
     }
 
-    bool DrawFrame(int side, std::uint64_t animationStartedAt) {
+    bool DrawFrame(int side, std::uint64_t visibleElapsedMs) {
         RECT client{0, 0, static_cast<LONG>(surfaceWidth), static_cast<LONG>(surfaceHeight)};
         if (FAILED(target->BindDC(memoryDc, &client))) return false;
 
@@ -354,11 +354,9 @@ struct RevealHandleRenderer::Impl {
         const D2D1_RECT_F avatarRect = D2D1::RectF(
             avatarCenter.x - avatarRadius, avatarCenter.y - avatarRadius,
             avatarCenter.x + avatarRadius, avatarCenter.y + avatarRadius);
-        const std::uint64_t now = GetTickCount64();
-        const float elapsed = static_cast<float>(
-            now >= animationStartedAt ? now - animationStartedAt : 0);
+        const float elapsed = static_cast<float>(visibleElapsedMs % kRingRevolutionMs);
         const float headAngle = std::fmod(
-            elapsed * 360.0f / kRingRevolutionMs, 360.0f) - 90.0f;
+            elapsed * 360.0f / static_cast<float>(kRingRevolutionMs), 360.0f) - 90.0f;
 
         target->BeginDraw();
         target->SetTransform(D2D1::Matrix3x2F::Identity());
@@ -403,15 +401,15 @@ struct RevealHandleRenderer::Impl {
         return SUCCEEDED(result);
     }
 
-    bool Draw(HWND hwnd, int side, UINT dpi, std::uint64_t animationStartedAt) {
+    bool Draw(HWND hwnd, int side, UINT dpi, std::uint64_t visibleElapsedMs) {
         return EnsureTarget(hwnd, dpi) &&
-            DrawFrame(side, animationStartedAt) &&
+            DrawFrame(side, visibleElapsedMs) &&
             Present(hwnd);
     }
 
     bool Prewarm(UINT width, UINT height, int side, UINT dpi) {
         return EnsureTarget(width, height, dpi) &&
-            DrawFrame(side, GetTickCount64());
+            DrawFrame(side, 0);
     }
 };
 
@@ -452,8 +450,8 @@ bool RevealHandleRenderer::Initialize() {
 }
 
 bool RevealHandleRenderer::Paint(
-    HWND hwnd, int side, UINT dpi, std::uint64_t animationStartedAt) {
-    return impl_ && impl_->Draw(hwnd, side, std::max<UINT>(96, dpi), animationStartedAt);
+    HWND hwnd, int side, UINT dpi, std::uint64_t visibleElapsedMs) {
+    return impl_ && impl_->Draw(hwnd, side, std::max<UINT>(96, dpi), visibleElapsedMs);
 }
 
 bool RevealHandleRenderer::Prewarm(UINT width, UINT height, int side, UINT dpi) {

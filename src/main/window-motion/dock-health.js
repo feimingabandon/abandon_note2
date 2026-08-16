@@ -1,5 +1,5 @@
 /**
- * 检查贴边隐藏状态是否自洽。鼠标检测由 DLL 的 100ms 监视线程负责；这里是
+ * 检查贴边隐藏状态是否自洽。鼠标检测由 DLL 的 50ms 监视线程负责；这里是
  * 每分钟执行一次的结构检查，只报告问题，由调用者统一执行故障开放恢复。
  */
 export function inspectDockHealth(snapshot) {
@@ -62,13 +62,9 @@ export function inspectDockHealth(snapshot) {
       issues.push('原生边缘监视器的小黑条模式与贴边会话不一致')
     }
     if (snapshot.sessionRevealHandleEnabled === true) {
-      // 原生小黑条 HWND 按需创建；尚未首次触边时 hidden + windowAlive=false 是正常态。
-      if (
-        ['animating', 'appearing', 'ready', 'retreating'].includes(monitor.handleState) &&
-        monitor.handleWindowAlive !== true
-      ) {
-        issues.push('小黑条进入显示阶段但原生窗口未运行')
-      }
+      // 小黑条在整轮贴边会话中复用同一个屏外 HWND；普通退场和全屏保护
+      // 都只暂停并停放，只有会话结束或故障才允许销毁。
+      if (monitor.handleWindowAlive !== true) issues.push('小黑条原生窗口未持续运行')
       if (monitor.handleState === 'ready' && monitor.handleVisible !== true) {
         issues.push('小黑条已就绪但不可见')
       }

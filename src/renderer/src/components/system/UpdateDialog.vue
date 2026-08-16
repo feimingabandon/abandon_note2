@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import AppModalShell from '../ui/AppModalShell.vue'
 import BaseButton from '../ui/BaseButton.vue'
+import ConfirmDialog from '../ui/ConfirmDialog.vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -12,6 +13,8 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'retry'])
 
 const actionError = ref('')
+const confirmVisible = ref(false)
+const pendingTarget = ref(null)
 
 const manualLinks = computed(() => [
   {
@@ -30,6 +33,7 @@ const title = computed(() => {
   if (props.checking) return '正在检查更新'
   if (props.result?.status === 'available') return `发现新版本 v${props.result.latestVersion}`
   if (props.result?.status === 'current') return '已经是最新版本'
+  if (props.result?.status === 'downgrade') return '远程公开版本低于当前版本'
   if (props.result?.status === 'unpublished') return '尚未发布公开版本'
   if (props.result?.status === 'error') return '暂时无法连接更新服务'
   if (props.result?.status === 'unsupported') return '暂不提供更新下载'
@@ -44,7 +48,7 @@ const platformLabel = computed(() => {
 const hasRelease = computed(
   () =>
     Boolean(props.result?.latestVersion) &&
-    (props.result?.status === 'available' || props.result?.status === 'current')
+    ['available', 'current', 'downgrade'].includes(props.result?.status)
 )
 
 const statusSummary = computed(() => {
@@ -55,9 +59,35 @@ const statusSummary = computed(() => {
     )
   }
   if (props.result?.status === 'current') {
-    return `当前版本 v${props.result.currentVersion}，已经是最新版。你仍然可以重新下载 v${props.result.latestVersion} 安装包。`
+    return `当前版本与公开版本都是 v${props.result.currentVersion}。继续操作属于同版本重新下载，不是升级。`
+  }
+  if (props.result?.status === 'downgrade') {
+    return `当前版本 v${props.result.currentVersion} 高于公开版本 v${props.result.latestVersion}。继续安装会降级，旧版本可能无法识别新版本写入的数据，请先备份重要内容。`
   }
   return props.result?.error || '暂时无法获取公开版本信息。'
+})
+
+const primaryActionLabel = computed(() => {
+  if (props.result?.relation === 'same') return '重新下载安装包'
+  if (props.result?.relation === 'downgrade') return `下载旧版本 v${props.result.latestVersion}`
+  return '使用浏览器下载更新'
+})
+
+const confirmation = computed(() => {
+  if (props.result?.relation === 'downgrade') {
+    return {
+      title: '确认下载旧版本？',
+      message: `当前 v${props.result.currentVersion} → 目标 v${props.result.latestVersion}。\n\n这是降级操作，旧版本可能无法识别新版本写入的数据。请先备份重要内容，再决定是否继续。`,
+      confirmText: `仍要下载 v${props.result.latestVersion}`,
+      variant: 'danger'
+    }
+  }
+  return {
+    title: '确认重新下载安装包？',
+    message: `当前版本与目标版本都是 v${props.result?.latestVersion}。这不是升级，将重新打开同版本安装包或发布页面。`,
+    confirmText: '继续打开',
+    variant: 'default'
+  }
 })
 
 const contentKey = computed(() => {
@@ -66,24 +96,57 @@ const contentKey = computed(() => {
 })
 
 watch(
-  () => props.result?.latestVersion,
+  () => props.result?.checkId,
   () => {
     actionError.value = ''
+    confirmVisible.value = false
+    pendingTarget.value = null
+  }
+)
+
+watch(
+  () => props.visible,
+  (visible) => {
+    if (visible) return
+    confirmVisible.value = false
+    pendingTarget.value = null
   }
 )
 
 function close() {
+  confirmVisible.value = false
+  pendingTarget.value = null
   emit('update:visible', false)
 }
 
-async function openUpdateTarget(target, label) {
+async function openUpdateTargetNow(target, label) {
   try {
     actionError.value = ''
-    await window.api.openUpdateLink(target)
+    await window.api.openUpdateLink({
+      target,
+      checkId: props.result?.checkId,
+      targetVersion: props.result?.latestVersion,
+      relation: props.result?.relation
+    })
   } catch (error) {
     console.error(`[UpdateDialog] 打开${label}失败:`, error)
     actionError.value = `无法打开${label}：${error.message}`
   }
+}
+
+function requestOpenUpdateTarget(target, label) {
+  if (props.result?.relation === 'upgrade') {
+    void openUpdateTargetNow(target, label)
+    return
+  }
+  pendingTarget.value = { target, label }
+  confirmVisible.value = true
+}
+
+function confirmOpenUpdateTarget() {
+  const pending = pendingTarget.value
+  pendingTarget.value = null
+  if (pending) void openUpdateTargetNow(pending.target, pending.label)
 }
 </script>
 
@@ -106,16 +169,11 @@ async function openUpdateTarget(target, label) {
         </div>
 
         <template v-else-if="result">
-          <p v-if="result.status === 'available'" class="update-summary">
-            {{ statusSummary }}
-          </p>
-          <p v-else-if="result.status === 'current'" class="update-summary">
-            {{ statusSummary }}
-          </p>
           <p
-            v-else
             class="update-summary"
-            :class="{ 'update-summary--warning': result.status === 'error' }"
+            :class="{
+              'update-summary--warning': result.status === 'error' || result.status === 'downgrade'
+            }"
           >
             {{ statusSummary }}
           </p>
@@ -134,10 +192,10 @@ async function openUpdateTarget(target, label) {
                     ? `使用浏览器下载 ${result.artifactName}`
                     : 'GitCode 对应版本安装包尚未同步完成'
                 "
-                @click="openUpdateTarget('download', 'GitCode 安装包下载地址')"
+                @click="requestOpenUpdateTarget('download', 'GitCode 安装包下载地址')"
               >
                 <span class="browser-download-copy">
-                  <strong>使用浏览器下载</strong>
+                  <strong>{{ primaryActionLabel }}</strong>
                   <span>
                     {{
                       result.downloadAvailable
@@ -164,7 +222,7 @@ async function openUpdateTarget(target, label) {
                   :key="link.target"
                   class="manual-link"
                   :title="`在浏览器中打开 ${link.label} v${result.latestVersion} 发布页`"
-                  @click="openUpdateTarget(link.target, `${link.label} 发布页`)"
+                  @click="requestOpenUpdateTarget(link.target, `${link.label} 发布页`)"
                 >
                   <span class="manual-link-label">{{ link.label }}：</span>
                   <span class="manual-link-url">{{ link.url }}</span>
@@ -193,6 +251,15 @@ async function openUpdateTarget(target, label) {
       </div>
     </Transition>
   </AppModalShell>
+  <ConfirmDialog
+    v-model:visible="confirmVisible"
+    :title="confirmation.title"
+    :message="confirmation.message"
+    :confirm-text="confirmation.confirmText"
+    :variant="confirmation.variant"
+    @confirm="confirmOpenUpdateTarget"
+    @cancel="pendingTarget = null"
+  />
 </template>
 
 <style scoped>

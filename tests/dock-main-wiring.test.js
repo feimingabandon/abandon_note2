@@ -63,6 +63,8 @@ describe('dock main-process wiring', () => {
     expect(source).toContain('if (nativeEdgeCleanupPending)')
     expect(source).toContain("resetDockState({ source: 'view-switch' })")
     expect(source).toContain('本次视图切换已安全取消')
+    expect(source).toContain('const EDGE_TRIGGER_THICKNESS_DIP = 2')
+    expect(source).toContain('const EDGE_MONITOR_POLL_INTERVAL_MS = 50')
   })
 
   it('re-snaps an overshot window after native dragging ends without looping', () => {

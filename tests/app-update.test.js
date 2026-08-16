@@ -32,6 +32,15 @@ function windowsAsset(version, source, overrides = {}) {
   }
 }
 
+function linkRequest(result, target) {
+  return {
+    target,
+    checkId: result.checkId,
+    targetVersion: result.latestVersion,
+    relation: result.relation
+  }
+}
+
 describe('app update metadata', () => {
   it('accepts stable numeric versions only', () => {
     expect(normalizeVersion('v0.9.0')).toBe('0.9.0')
@@ -102,8 +111,10 @@ describe('app update metadata', () => {
       }
     })
 
-    await expect(service.check()).resolves.toMatchObject({
+    const result = await service.check()
+    expect(result).toMatchObject({
       status: 'current',
+      relation: 'same',
       currentVersion: '0.9.2',
       latestVersion: '0.9.2',
       artifactName: 'Abandon-Note-0.9.2-windows-x64-setup.exe',
@@ -115,11 +126,13 @@ describe('app update metadata', () => {
         github: 'https://github.com/feimingabandon/abandon_note2/releases/tag/v0.9.2'
       }
     })
-    expect(service.getExternalUrl('download')).toContain('/releases/download/v0.9.2/')
-    expect(service.getExternalUrl('gitcode')).toBe(
+    expect(service.getExternalUrl(linkRequest(result, 'download'))).toContain(
+      '/releases/download/v0.9.2/'
+    )
+    expect(service.getExternalUrl(linkRequest(result, 'gitcode'))).toBe(
       'https://gitcode.com/zou-feiming/abandon_note2/releases/tag/v0.9.2'
     )
-    expect(service.getExternalUrl('github')).toBe(
+    expect(service.getExternalUrl(linkRequest(result, 'github'))).toBe(
       'https://github.com/feimingabandon/abandon_note2/releases/tag/v0.9.2'
     )
     expect(requestedUrls).toHaveLength(2)
@@ -141,6 +154,7 @@ describe('app update metadata', () => {
 
     await expect(service.check()).resolves.toMatchObject({
       status: 'available',
+      relation: 'upgrade',
       latestVersion: '0.9.2',
       downloadAvailable: true,
       releaseLinks: {
@@ -161,7 +175,8 @@ describe('app update metadata', () => {
           : jsonResponse({ tag_name: 'v0.9.2', assets: [windowsAsset('0.9.2', 'github')] })
     })
 
-    await expect(service.check()).resolves.toMatchObject({
+    const result = await service.check()
+    expect(result).toMatchObject({
       status: 'available',
       latestVersion: '0.9.2',
       source: 'github',
@@ -172,7 +187,58 @@ describe('app update metadata', () => {
         github: 'https://github.com/feimingabandon/abandon_note2/releases/tag/v0.9.2'
       }
     })
-    expect(() => service.getExternalUrl('download')).toThrow('安装包暂不可用')
+    expect(() => service.getExternalUrl(linkRequest(result, 'download'))).toThrow('安装包暂不可用')
+  })
+
+  it('labels an older public release as a downgrade and binds links to that check', async () => {
+    const service = new AppUpdateService({
+      currentVersion: '1.0.0',
+      platform: 'win32',
+      arch: 'x64',
+      fetchImpl: async (url) => {
+        const source = url.includes('gitcode.com') ? 'gitcode' : 'github'
+        return jsonResponse({
+          tag_name: 'v0.9.2',
+          assets: [windowsAsset('0.9.2', source)]
+        })
+      }
+    })
+
+    const result = await service.check()
+    expect(result).toMatchObject({
+      status: 'downgrade',
+      relation: 'downgrade',
+      currentVersion: '1.0.0',
+      latestVersion: '0.9.2',
+      downloadAvailable: true
+    })
+    expect(service.getExternalUrl(linkRequest(result, 'download'))).toContain(
+      '/releases/download/v0.9.2/'
+    )
+    expect(() =>
+      service.getExternalUrl({ ...linkRequest(result, 'download'), relation: 'upgrade' })
+    ).toThrow('已经过期')
+  })
+
+  it('rejects links from a superseded update check', async () => {
+    const service = new AppUpdateService({
+      currentVersion: '0.9.1',
+      platform: 'win32',
+      arch: 'x64',
+      fetchImpl: async (url) => {
+        const source = url.includes('gitcode.com') ? 'gitcode' : 'github'
+        return jsonResponse({
+          tag_name: 'v0.9.2',
+          assets: [windowsAsset('0.9.2', source)]
+        })
+      }
+    })
+
+    const first = await service.check()
+    const second = await service.check()
+    expect(first.checkId).not.toBe(second.checkId)
+    expect(() => service.getExternalUrl(linkRequest(first, 'github'))).toThrow('已经过期')
+    expect(service.getExternalUrl(linkRequest(second, 'github'))).toContain('/tag/v0.9.2')
   })
 
   it('rejects an untrusted URL even when the GitCode asset name matches', async () => {

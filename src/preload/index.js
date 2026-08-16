@@ -105,7 +105,7 @@ const api = {
   // ---- 应用更新（浏览器直链下载 + 对应版本发布页） ----
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
   checkForUpdate: () => ipcRenderer.invoke('update:check'),
-  openUpdateLink: (target) => ipcRenderer.invoke('update:open-link', target),
+  openUpdateLink: (request) => ipcRenderer.invoke('update:open-link', request),
 
   // ---- 贴边隐藏 ----
   /** 通知主进程鼠标悬停状态（true=进入窗口, false=离开窗口） */

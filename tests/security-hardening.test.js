@@ -45,3 +45,11 @@ describe('macOS 保留构建配置', () => {
     expect(workflow).not.toContain('MAC_CSC_LINK')
   })
 })
+
+describe('应用与安装器身份', () => {
+  it('统一使用 com.abandon.note，并保留旧版 NSIS 升级身份', () => {
+    expect(read('src/main/index.js')).toContain("const APP_ID = 'com.abandon.note'")
+    expect(read('electron-builder.base.yml')).toContain('appId: com.abandon.note')
+    expect(read('electron-builder.win.yml')).toContain('guid: 41249b74-bbe0-5d8d-8a9d-7f1bd6f04a19')
+  })
+})

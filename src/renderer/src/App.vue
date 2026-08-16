@@ -32,6 +32,7 @@ import ActionBar from './components/list/ActionBar.vue'
 import TemplatePage from './components/template/TemplatePage.vue'
 import HelpPage from './components/help/HelpPage.vue'
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
+import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
 import { useTodayKey } from './composables/useTodayKey.js'
@@ -59,17 +60,28 @@ const pendingRemoteNotices = ref([])
 const updateChecking = ref(false)
 const updateResult = ref(null)
 const UPDATE_CHECKING_MIN_DURATION_MS = 500
-const templatesRendered = ref(false)
-const templatePanelActive = ref(false)
-const templateBlurActive = ref(false)
-const templatePhase = ref('closed') // closed | opening | open | closing
 const templatePanelRef = ref(null)
-// 帮助页复用与模版页完全一致的滑入状态机，二者互斥（同一时刻只开一个）。
-const helpRendered = ref(false)
-const helpPanelActive = ref(false)
-const helpBlurActive = ref(false)
-const helpPhase = ref('closed') // closed | opening | open | closing
 const helpPanelRef = ref(null)
+const templateWorkspace = useSlidingWorkspace({ getElement: () => templatePanelRef.value })
+const helpWorkspace = useSlidingWorkspace({ getElement: () => helpPanelRef.value })
+const {
+  rendered: templatesRendered,
+  active: templatePanelActive,
+  phase: templatePhase,
+  interactive: templateInteractive,
+  close: closeTemplateWorkspace,
+  onTransitionEnd: onTemplateTransitionEnd,
+  onTransitionCancel: onTemplateTransitionCancel
+} = templateWorkspace
+const {
+  rendered: helpRendered,
+  active: helpPanelActive,
+  phase: helpPhase,
+  interactive: helpInteractive,
+  close: closeHelpWorkspace,
+  onTransitionEnd: onHelpTransitionEnd,
+  onTransitionCancel: onHelpTransitionCancel
+} = helpWorkspace
 let releaseSettingsBackgroundBlur = null
 let releaseEditorBackgroundBlur = null
 
@@ -225,36 +237,13 @@ function openUpdateDialog() {
   checkForUpdates({ showResult: true })
 }
 
-async function openTemplates() {
-  if (templatePhase.value === 'opening' || templatePhase.value === 'open') return
+function openTemplates() {
   closeHelp()
-  templatePhase.value = 'opening'
-  templateBlurActive.value = true
-  if (!templatesRendered.value) {
-    templatesRendered.value = true
-    await nextTick()
-    // 明确提交面板的初始位置，避免浏览器把挂载和进入态合并为同一帧。
-    void templatePanelRef.value?.offsetWidth
-  }
-  if (templatePhase.value !== 'opening') return
-  templatePanelActive.value = true
+  void templateWorkspace.open()
 }
 
 function closeTemplates() {
-  if (templatePhase.value === 'closed' || templatePhase.value === 'closing') return
-  templatePhase.value = 'closing'
-  templatePanelActive.value = false
-  templateBlurActive.value = false
-}
-
-function onTemplateTransitionEnd(event) {
-  if (event.target !== templatePanelRef.value || event.propertyName !== 'transform') return
-  if (templatePhase.value === 'opening' && templatePanelActive.value) {
-    templatePhase.value = 'open'
-  } else if (templatePhase.value === 'closing' && !templatePanelActive.value) {
-    templatesRendered.value = false
-    templatePhase.value = 'closed'
-  }
+  closeTemplateWorkspace()
 }
 
 function toggleTemplates() {
@@ -262,41 +251,18 @@ function toggleTemplates() {
   else closeTemplates()
 }
 
-async function openHelp() {
-  if (helpPhase.value === 'opening' || helpPhase.value === 'open') return
+function openHelp() {
   closeTemplates()
-  helpPhase.value = 'opening'
-  helpBlurActive.value = true
-  if (!helpRendered.value) {
-    helpRendered.value = true
-    await nextTick()
-    // 明确提交面板初始位置，避免挂载与进入态被合并到同一帧。
-    void helpPanelRef.value?.offsetWidth
-  }
-  if (helpPhase.value !== 'opening') return
-  helpPanelActive.value = true
+  void helpWorkspace.open()
 }
 
 function closeHelp() {
-  if (helpPhase.value === 'closed' || helpPhase.value === 'closing') return
-  helpPhase.value = 'closing'
-  helpPanelActive.value = false
-  helpBlurActive.value = false
-}
-
-function onHelpTransitionEnd(event) {
-  if (event.target !== helpPanelRef.value || event.propertyName !== 'transform') return
-  if (helpPhase.value === 'opening' && helpPanelActive.value) {
-    helpPhase.value = 'open'
-  } else if (helpPhase.value === 'closing' && !helpPanelActive.value) {
-    helpRendered.value = false
-    helpPhase.value = 'closed'
-  }
+  closeHelpWorkspace()
 }
 
 function toggleHelp() {
   if (helpPhase.value === 'closed' || helpPhase.value === 'closing') openHelp()
-  else closeHelp()
+  else closeHelpWorkspace()
 }
 
 /** 当前选中的便签 */
@@ -641,8 +607,8 @@ onUnmounted(() => {
         <!-- 主内容区域，flex:1 占据导航栏下方空间。 -->
         <main
           class="content"
-          :class="{ 'is-ui-background-blurred': templateBlurActive || helpBlurActive }"
-          :inert="templatesRendered || helpRendered"
+          :class="{ 'is-ui-background-blurred': templateInteractive || helpInteractive }"
+          :inert="templateInteractive || helpInteractive"
         >
           <ActionBar
             ref="actionBarRef"
@@ -653,7 +619,11 @@ onUnmounted(() => {
           <NoteList ref="noteListRef" class="app-list" @edit="onEditNote" @create="onCreateNote" />
         </main>
 
-        <div v-if="templatesRendered" class="app-template-wrapper">
+        <div
+          v-if="templatesRendered"
+          class="app-template-wrapper"
+          :class="{ 'is-interactive': templateInteractive }"
+        >
           <div
             id="template-workspace"
             ref="templatePanelRef"
@@ -662,12 +632,17 @@ onUnmounted(() => {
             role="region"
             aria-label="循环便签模版设置"
             @transitionend="onTemplateTransitionEnd"
+            @transitioncancel="onTemplateTransitionCancel"
           >
             <TemplatePage />
           </div>
         </div>
 
-        <div v-if="helpRendered" class="app-help-wrapper">
+        <div
+          v-if="helpRendered"
+          class="app-help-wrapper"
+          :class="{ 'is-interactive': helpInteractive }"
+        >
           <div
             id="help-workspace"
             ref="helpPanelRef"
@@ -676,6 +651,7 @@ onUnmounted(() => {
             role="region"
             aria-label="帮助中心"
             @transitionend="onHelpTransitionEnd"
+            @transitioncancel="onHelpTransitionCancel"
           >
             <HelpPage />
           </div>
@@ -844,6 +820,9 @@ onUnmounted(() => {
   inset: 0;
   overflow: hidden;
   border-radius: var(--window-radius);
+  pointer-events: none;
+}
+.app-template-wrapper.is-interactive {
   pointer-events: auto;
 }
 .app-template-panel {
@@ -871,6 +850,9 @@ onUnmounted(() => {
   inset: 0;
   overflow: hidden;
   border-radius: var(--window-radius);
+  pointer-events: none;
+}
+.app-help-wrapper.is-interactive {
   pointer-events: auto;
 }
 .app-help-panel {

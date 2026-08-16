@@ -893,7 +893,7 @@ function restoreSuspendedWallpaper(suspended) {
 // ============================================================
 const SNAP_THRESHOLD = 20 // 贴边吸附阈值（px）
 const EDGE_TRIGGER_THICKNESS_DIP = 2
-const EDGE_MONITOR_POLL_INTERVAL_MS = 100
+const EDGE_MONITOR_POLL_INTERVAL_MS = 50
 const MAX_EDGE_MONITOR_POLL_AGE_MS = 1000
 const SLIDE_DURATION = 200 // 滑动动画总时长（ms）
 const SLIDE_INTERVAL = 16 // 滑动动画帧间隔（ms）≈60fps
@@ -2425,11 +2425,12 @@ app.whenReady().then(async () => {
     return { version: app.getVersion(), platform: process.platform, arch: process.arch }
   })
 
-  mainWindowIpc.handle('update:open-link', async (_event, target) => {
+  mainWindowIpc.handle('update:open-link', async (_event, request = {}) => {
+    const { target } = request
     if (!['download', 'gitcode', 'github'].includes(target)) {
       throw new Error('未知的更新入口')
     }
-    const url = appUpdateService.getExternalUrl(target)
+    const url = appUpdateService.getExternalUrl(request)
     await shell.openExternal(url)
     return true
   })
@@ -3050,6 +3051,7 @@ app.whenReady().then(async () => {
     ipcMain,
     shell,
     userDataPath,
+    appVersion: app.getVersion(),
     getMainWindow: () => mainWindow,
     getWeatherSettings: () => structuredClone(resolvedSettings.weather)
   })
