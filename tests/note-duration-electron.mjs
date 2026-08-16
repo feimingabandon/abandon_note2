@@ -104,6 +104,7 @@ function getListWindow() {
 
 const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-duration-e2e-'))
 let exitCode = 0
+let listWindow = null
 
 try {
   app.setPath('userData', testUserData)
@@ -133,6 +134,7 @@ try {
 async function runTests() {
   try {
     const window = await waitUntil(() => getListWindow(), '列表主窗口未启动', 10000)
+    listWindow = window
     await waitUntil(() => window.isVisible(), '列表主窗口未显示')
 
     await waitUntil(
@@ -447,6 +449,7 @@ async function runTests() {
     exitCode = 1
   } finally {
     process.exitCode = exitCode
+    if (listWindow && !listWindow.isDestroyed()) listWindow.destroy()
     app.releaseSingleInstanceLock()
     app.once('quit', () => {
       try {

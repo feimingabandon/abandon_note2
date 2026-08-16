@@ -160,6 +160,19 @@ async function runMonthViewTests() {
       expectedBounds,
       '月视图首次窗口必须为工作区 70% 并居中'
     )
+    const layoutTestBounds = {
+      x: workArea.x + Math.round((workArea.width - Math.min(expectedBounds.width, 720)) / 2),
+      y: workArea.y + Math.round((workArea.height - Math.min(expectedBounds.height, 540)) / 2),
+      width: Math.min(expectedBounds.width, 720),
+      height: Math.min(expectedBounds.height, 540)
+    }
+    monthWindow.setBounds(layoutTestBounds)
+    await waitUntil(
+      () =>
+        monthWindow.getBounds().width === layoutTestBounds.width &&
+        monthWindow.getBounds().height === layoutTestBounds.height,
+      '月视图没有进入可重复的小屏布局测试尺寸'
+    )
 
     const initialUi = await monthWindow.webContents.executeJavaScript(`(() => ({
     title: document.querySelector('.app-titlebar-title')?.textContent?.trim() || '',
@@ -885,31 +898,24 @@ async function runMonthViewTests() {
     })()`)
     assert.equal(sameWeekSpan.end, 'span 3', '同周横条必须连续跨过三个日期格及其间隙')
     const eventBarLayout = await monthWindow.webContents.executeJavaScript(`(() => {
-      let first = null
-      let second = null
-      for (const week of document.querySelectorAll('.month-week__events')) {
-        const bars = Array.from(week.querySelectorAll('.month-event-bar')).sort(
-          (left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top
-        )
-        for (let index = 1; index < bars.length; index += 1) {
-          if (bars[index].getBoundingClientRect().top > bars[index - 1].getBoundingClientRect().top) {
-            first = bars[index - 1]
-            second = bars[index]
-            break
-          }
-        }
-        if (first && second) break
-      }
+      const first = document.querySelector('.month-event-bar')
+      const currentLane = Number(first.style.getPropertyValue('--event-lane')) || 0
+      const second = first.cloneNode(true)
+      second.style.setProperty('--event-lane', String(currentLane + 1))
+      second.setAttribute('aria-hidden', 'true')
+      first.parentElement.append(second)
       const firstRect = first.getBoundingClientRect()
       const secondRect = second.getBoundingClientRect()
       const text = first.querySelector('.month-event-bar__text')
       const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
-      return {
+      const result = {
         gapInRem: (secondRect.top - firstRect.bottom) / rem,
         textAlign: getComputedStyle(text).textAlign,
         whiteSpace: getComputedStyle(text).whiteSpace,
         textOverflow: getComputedStyle(text).textOverflow
       }
+      second.remove()
+      return result
     })()`)
     assert.ok(
       eventBarLayout.gapInRem >= 2 && eventBarLayout.gapInRem <= 4,
@@ -1444,6 +1450,11 @@ async function runMonthViewTests() {
         ),
       '月视图设置面板没有完成关闭动画'
     )
+    monthWindow.setBounds(expectedBounds)
+    await waitUntil(() => {
+      const bounds = monthWindow.getBounds()
+      return bounds.width === expectedBounds.width && bounds.height === expectedBounds.height
+    }, '原生贴边测试前月视图没有恢复默认窗口尺寸')
 
     const user32 = koffi.load('user32.dll')
     const setCursorPos = user32.func('int SetCursorPos(int X, int Y)')
