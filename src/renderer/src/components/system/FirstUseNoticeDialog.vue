@@ -154,63 +154,42 @@ onBeforeUnmount(disconnectRevealObserver)
           </p>
 
           <p data-reveal>
-            那时，作者正处在失业的煎熬中，本想找一个免费的便签，写点规划。谁能想到，开源的风终究没有吹到便签这个赛道。于是作者一怒之下，决定自己写一个。
+            作者正处于失业的煎熬中，本想找个免费的便签，写点规划。谁能想到，如此简单的应用居然也能收费。于是作者一怒之下，决定自己写一个。
           </p>
 
-          <p class="voice-aside voice-aside--unreasonable" data-reveal>
-            毕竟，这么简单的东西居然收费，不可理喻！
-          </p>
-
-          <p data-reveal>
-            虽然后来发现，它好像也没有那么简单。但那些软件也确实有够丑的。都 2026
-            年了，怎么忍心把这些丑东西放在自己的电脑上？
-          </p>
-
-          <p data-reveal>
-            而且的而且，有些便签还要联网、多端互通。那我写下的小秘密，不就全交出去了吗？
-          </p>
-
-          <p class="voice-aside voice-aside--annoyed" data-reveal>可恶！</p>
-
-          <p data-reveal>于是，Abandon 便签 0.0.1 版本问世了。</p>
+          <p data-reveal>就这样，Abandon 便签 0.0.1 版本问世了。</p>
 
           <p class="broken-result" data-reveal>过程是坎坷的，<span>结果是稀碎的。</span></p>
 
           <p data-reveal>
-            第一次正儿八经开发软件的作者这才发现，要处理的问题远比想象中多。多屏幕、多尺寸、多缩放……一个个始料未及的问题扑面而来，以至于它看上去更像一个玩具，还是一碰就碎的那种。
+            第一次正儿八经开发软件，作者才发现需要处理的问题远比想象中多。多屏幕、多尺寸、多缩放……一个个始料未及的问题扑面而来，以至于最初的它看上去更像一个玩具，还是一碰就碎的那种。
           </p>
 
-          <p data-reveal>偏偏冥冥之中，似乎总有一种力量推着我继续前行。</p>
+          <p data-reveal>但是，冥冥之中似乎总有一种力量推着我继续前行。</p>
 
           <p data-reveal>
-            虽然软件稀碎，但自从发到小红书以后，却得到了很多人的喜欢。即使在 2026
-            年的今天，仍然时常有人点赞、收藏，也有很多同志认真地向我提出建议。
+            虽然软件稀碎，可自从发布到小红书以后，却得到了很多人的喜欢。即使到了 2026
+            年，仍然时常有人点赞、收藏，也有很多同学认真地向我提出建议。
           </p>
 
           <p class="quiet-confession" data-reveal>坦白讲，我受之有愧。</p>
 
           <p data-reveal>
-            从初版问世开始，我就一直琢磨着要重构它。但人性是丑陋的——我懒惰、拖延，只能一次次延期。也正因如此，很长一段时间里，我甚至不敢打开小红书，不敢面对你们的点赞和收藏。
+            从初版问世开始，我就一直琢磨着要重构它。但懒惰与拖延的诱惑，换来了一次又一次的延期。也正因如此，很长一段时间里，我甚至不敢打开小红书，不敢面对你们的点赞和收藏。
           </p>
 
           <p data-reveal>
-            但无可奈何的是，小红书的通知还是会时不时推送到我的手机上。每一次推送，每一个点赞、收藏和评论，都仿佛在告诉我：
+            但是没招，小红书的消息总会在不经意间出现在我的通知列表中。每一次推送，每一个点赞、收藏和评论，都像是一种特别的催稿。
           </p>
 
-          <p class="waiting-line" data-reveal>有很多人在等我。</p>
-
-          <p class="waiting-answer" data-reveal>
-            等我继续把它做下去，等我干翻现在这些丑陋的便签付费软件。
+          <p data-reveal>
+            人总会给自己附加上一些奇怪的使命感，仿佛自己就站在道德高地上，居高临下地怒斥这个不公、那个不对。对不对先不说，但确实挺中二的。
           </p>
 
-          <p data-reveal>人总会给自己附加一些奇怪的使命感，仿佛自己的出现，就是为了打败什么。</p>
-
-          <p class="quiet-confession" data-reveal>这固然很中二。</p>
-
-          <p data-reveal>所以，请允许我再说一句中二的话：</p>
+          <p data-reveal>这么看我好歹也整上一句：</p>
 
           <p class="mission-line" data-reveal>
-            当我敲下第一行属于 Abandon 便签的代码时，我就知道——它就是这个赛道的
+            当我敲下第一行属于 Abandon 便签的代码时，我便知道——它会是这个赛道的
             <strong>天下第一</strong>。
           </p>
 
@@ -224,31 +203,35 @@ onBeforeUnmount(disconnectRevealObserver)
 
           <div class="feature-run" data-reveal>
             <p class="feature-cloud">
-              <span>月视图</span><i>·</i><span>周视图</span><i>·</i><span>列表</span><i>·</i
-              ><span>标签分组</span><i>·</i><span>循环模板便签</span>
+              <span>什么月视图、周视图、列表、标签分组、循环模板便签，都是基础。</span>
             </p>
-            <p class="feature-dismissal">无需多言。</p>
           </div>
 
-          <p class="interaction-line" data-reveal>它最大的优点，是<span>交互</span><b>！</b></p>
+          <p class="interaction-line" data-reveal>
+            它最大的优点，是<span>UI</span>，也是<span>交互</span>。
+          </p>
 
           <div class="feature-ledger" aria-label="功能简介">
             <p data-reveal>
-              Windows 10 和 Windows 11 支持原生毛玻璃，可以自由调节毛玻璃样式。macOS
-              也支持系统原生的 Vibrancy。你喜欢的样子，它努力都有。
+              Windows 10 和 Windows 11
+              支持原生毛玻璃，可以自由调节毛玻璃样式。你喜欢的样子，它都有。
             </p>
-            <p data-reveal>支持贴边隐藏，就像 QQ 那样。如果你觉得容易误触，还可以开启小黑条。</p>
-            <p data-reveal>支持丰富的样式功能。设置页面，值得你亲自探索。</p>
-            <p data-reveal>支持丰富的交互动画，让每一次点击都尽量赏心悦目。</p>
             <p data-reveal>
-              默认采用苹果式 UI
-              风格，也可以在设置中切换标题栏样式。简约不等于简单，美好应该恰如其分。
+              支持贴边隐藏，就像 QQ 那样。如果你担心误触，还可以开启贴边隐藏小黑条。
             </p>
+            <p data-reveal>支持丰富的样式设置。设置页面，值得你亲自探索。</p>
+            <p data-reveal>支持丰富的交互动画。让每一次点击都尽量赏心悦目。</p>
+            <p data-reveal>默认采用苹果式 UI 风格，也可以切换标题栏样式。</p>
+            <p data-reveal>简约不等于简单，美好应该恰如其分。</p>
           </div>
 
           <p class="open-source-line" data-reveal>
             <span class="infinity-mark" aria-hidden="true">∞</span>
-            <strong>永久免费开源</strong>，作者只图名，不求利。
+            <strong>永久免费，始终开源。</strong>
+          </p>
+
+          <p class="support-confession" data-reveal>
+            当然，作者肯定也喜欢钱。只不过比起钱，更喜欢它真的被大家使用、分享和推荐。
           </p>
 
           <p class="recommend-line" data-reveal>你的推荐，我求之不得。</p>
@@ -452,59 +435,6 @@ onBeforeUnmount(disconnectRevealObserver)
   line-height: 1.4;
 }
 
-.voice-aside {
-  width: fit-content;
-  font-weight: 700;
-}
-
-.voice-aside--unreasonable {
-  margin-right: 5% !important;
-  text-align: right;
-  text-decoration-line: underline;
-  text-decoration-style: wavy;
-  text-decoration-color: var(--ui-warning);
-  text-decoration-thickness: 1px;
-  text-underline-offset: 6rem;
-  transform: rotate(-1deg);
-}
-
-.notice-story.is-reveal-ready .voice-aside--unreasonable {
-  transform: translateY(8rem) rotate(-1deg);
-}
-
-.notice-story.is-reveal-ready .voice-aside--unreasonable.is-visible {
-  transform: translateY(0) rotate(-1deg);
-}
-
-.voice-aside--annoyed {
-  position: relative;
-  margin-right: 8% !important;
-  padding: 3rem 12rem;
-  color: var(--ui-warning);
-  text-align: right;
-  letter-spacing: 0.08em;
-}
-
-.voice-aside--annoyed::before,
-.voice-aside--annoyed::after {
-  position: absolute;
-  top: -5rem;
-  width: 9rem;
-  height: 1px;
-  background: currentColor;
-  content: '';
-}
-
-.voice-aside--annoyed::before {
-  right: 2rem;
-  transform: rotate(55deg);
-}
-
-.voice-aside--annoyed::after {
-  right: 13rem;
-  transform: rotate(78deg);
-}
-
 .broken-result span {
   display: inline-block;
   margin-left: 4rem;
@@ -515,20 +445,6 @@ onBeforeUnmount(disconnectRevealObserver)
 .quiet-confession {
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
-  text-align: center;
-}
-
-.waiting-line {
-  padding: 44rem 0 12rem;
-  font-size: calc(var(--fs-title) * 1.28);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-align: center;
-}
-
-.waiting-answer {
-  padding-bottom: 38rem;
-  color: var(--text-color-secondary);
   text-align: center;
 }
 
@@ -581,29 +497,14 @@ onBeforeUnmount(disconnectRevealObserver)
 
 .feature-run {
   max-width: 650rem;
-  margin: 0 auto 34rem;
-  padding: 20rem 0;
+  margin: 0 auto 24rem;
+  padding: 10rem 0;
 }
 
 .feature-cloud {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 6rem 10rem;
-  margin-bottom: 8rem !important;
-  font-weight: 700;
-}
-
-.feature-cloud i {
-  color: var(--ui-accent);
-  font-style: normal;
-}
-
-.feature-dismissal {
   margin-bottom: 0 !important;
-  color: var(--text-color-secondary);
-  font-size: var(--fs-secondary);
-  text-align: right;
+  font-weight: 600;
+  text-align: center;
 }
 
 .interaction-line {
@@ -611,15 +512,15 @@ onBeforeUnmount(disconnectRevealObserver)
   align-items: baseline;
   justify-content: center;
   padding: 26rem 0 38rem;
-  font-size: calc(var(--fs-title) * 1.2);
+  font-size: calc(var(--fs-title) * 1.08);
   font-weight: 700;
 }
 
 .interaction-line span {
   position: relative;
-  margin-left: 8rem;
+  margin: 0 5rem;
   color: var(--ui-accent);
-  font-size: 1.65em;
+  font-size: 1.35em;
   letter-spacing: 0.08em;
 }
 
@@ -641,11 +542,6 @@ onBeforeUnmount(disconnectRevealObserver)
   transform: scaleX(1);
 }
 
-.interaction-line b {
-  color: var(--ui-warning);
-  font-size: 1.45em;
-}
-
 .feature-ledger {
   max-width: 650rem;
   margin: 0 auto 34rem;
@@ -654,12 +550,6 @@ onBeforeUnmount(disconnectRevealObserver)
 .feature-ledger p {
   position: relative;
   padding-left: 22rem;
-}
-
-.feature-ledger p:nth-child(even) {
-  padding-right: 22rem;
-  padding-left: 0;
-  text-align: right;
 }
 
 .feature-ledger p::before {
@@ -674,8 +564,6 @@ onBeforeUnmount(disconnectRevealObserver)
 }
 
 .feature-ledger p:nth-child(even)::before {
-  right: 2rem;
-  left: auto;
   background: var(--ui-warning);
 }
 
@@ -719,6 +607,12 @@ onBeforeUnmount(disconnectRevealObserver)
 .recommend-line {
   margin-top: 26rem;
   font-weight: 700;
+  text-align: center;
+}
+
+.support-confession {
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
   text-align: center;
 }
 
@@ -934,16 +828,10 @@ onBeforeUnmount(disconnectRevealObserver)
     padding-bottom: 0;
   }
 
-  .feature-ledger p,
-  .feature-ledger p:nth-child(even) {
+  .feature-ledger p {
     padding-right: 0;
     padding-left: 18rem;
     text-align: left;
-  }
-
-  .feature-ledger p:nth-child(even)::before {
-    right: auto;
-    left: 2rem;
   }
 
   .open-source-line {

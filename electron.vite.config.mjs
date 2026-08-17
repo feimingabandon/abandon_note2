@@ -24,6 +24,11 @@ export default defineConfig({
     }
   },
   renderer: {
+    server: {
+      fs: {
+        allow: [resolve('src'), resolve('node_modules/@zf-web-font/opposans')]
+      }
+    },
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src'),
