@@ -16,7 +16,7 @@ describe('NativeEdgeMonitor', () => {
       }
     )
 
-    const options = { pollIntervalMs: 50, revealHandleEnabled: true }
+    const options = { pollIntervalMs: 50, revealHandleMode: 'persistent' }
     expect(monitor.arm('top', 8, options)).toMatchObject({ success: true })
     expect(arm).toHaveBeenCalledWith({}, 'top', 8, options)
     expect(monitor.arm('top', 9)).toMatchObject({ success: false, code: -8 })
@@ -24,6 +24,27 @@ describe('NativeEdgeMonitor', () => {
     expect(monitor.disarm()).toBe(true)
     expect(disarm).toHaveBeenCalledWith(8)
     expect(monitor.activeGeneration).toBe(0)
+  })
+
+  it('activates a persistent handle only for the active generation', () => {
+    const showPersistentHandle = vi.fn(() => ({ success: true, code: 1, error: null }))
+    const monitor = new NativeEdgeMonitor(
+      {},
+      {
+        arm: () => ({ success: true, code: 1, error: null }),
+        disarm: () => true,
+        showPersistentHandle,
+        getStatus: () => ({ state: 'armed' }),
+        consumeEvent: () => null,
+        getMessageId: () => 0xc123
+      }
+    )
+
+    expect(monitor.arm('top', 21, { revealHandleMode: 'persistent' }).success).toBe(true)
+    expect(monitor.showPersistentHandle(20)).toMatchObject({ success: false, code: -11 })
+    expect(monitor.showPersistentHandle(21)).toMatchObject({ success: true })
+    expect(showPersistentHandle).toHaveBeenCalledOnce()
+    expect(showPersistentHandle).toHaveBeenCalledWith(21)
   })
 
   it('does not remember a generation when native arm fails', () => {

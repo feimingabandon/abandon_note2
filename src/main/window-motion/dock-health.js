@@ -43,7 +43,7 @@ export function inspectDockHealth(snapshot) {
     ) {
       issues.push('隐藏方向已不在当前启用的贴边范围内')
     }
-    if (snapshot.sessionRevealHandleEnabled !== snapshot.revealHandleEnabled) {
+    if (snapshot.sessionRevealHandleMode !== snapshot.revealHandleMode) {
       issues.push('隐藏会话的小黑条模式与当前配置不一致')
     }
     if (snapshot.mainAtHiddenTarget !== true) {
@@ -58,16 +58,22 @@ export function inspectDockHealth(snapshot) {
     if (monitor.side !== snapshot.dockSide) {
       issues.push('原生边缘监视器方向与贴边会话不一致')
     }
-    if (typeof monitor.mode === 'string' && monitor.mode !== snapshot.sessionMonitorMode) {
+    if (typeof monitor.mode === 'string' && monitor.mode !== snapshot.sessionRevealHandleMode) {
       issues.push('原生边缘监视器的小黑条模式与贴边会话不一致')
     }
-    if (snapshot.sessionRevealHandleEnabled === true) {
+    if (snapshot.sessionRevealHandleMode !== 'direct') {
       // 小黑条在整轮贴边会话中复用同一个屏外 HWND；普通退场和全屏保护
       // 都只暂停并停放，只有会话结束或故障才允许销毁。
       if (monitor.handleWindowAlive !== true) issues.push('小黑条原生窗口未持续运行')
       if (monitor.handleState === 'ready' && monitor.handleVisible !== true) {
         issues.push('小黑条已就绪但不可见')
       }
+    }
+    if (
+      snapshot.sessionRevealHandleMode === 'persistent' &&
+      monitor.persistentHandleActivated !== true
+    ) {
+      issues.push('常显小黑条尚未激活')
     }
     if (!['waiting-outside', 'armed', 'trigger-pending', 'degraded'].includes(monitor.state)) {
       issues.push(`原生边缘监视器状态异常：${monitor.state}`)

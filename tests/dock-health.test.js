@@ -10,9 +10,8 @@ function healthyHiddenSnapshot(overrides = {}) {
     sessionSide: 'left',
     sessionGeneration: 7,
     activeDockEdges: ['top', 'left', 'right'],
-    revealHandleEnabled: false,
-    sessionRevealHandleEnabled: false,
-    sessionMonitorMode: 'direct',
+    revealHandleMode: 'direct',
+    sessionRevealHandleMode: 'direct',
     mainAtHiddenTarget: true,
     isSliding: false,
     slideAgeMs: 0,
@@ -89,14 +88,13 @@ describe('dock health inspection', () => {
     expect(inspectDockHealth(snapshot)).toContain('原生边缘监视线程已 1500ms 未轮询')
   })
 
-  it('accepts a prewarmed off-screen click-handle window before the first edge touch', () => {
+  it('accepts a prewarmed off-screen on-touch handle before the first edge touch', () => {
     const snapshot = healthyHiddenSnapshot({
-      revealHandleEnabled: true,
-      sessionRevealHandleEnabled: true,
-      sessionMonitorMode: 'click-handle',
+      revealHandleMode: 'on-touch',
+      sessionRevealHandleMode: 'on-touch',
       edgeMonitor: {
         ...healthyHiddenSnapshot().edgeMonitor,
-        mode: 'click-handle',
+        mode: 'on-touch',
         handleState: 'hidden',
         handleVisible: false,
         handleWindowAlive: true
@@ -107,15 +105,14 @@ describe('dock health inspection', () => {
   })
 
   it.each(['animating', 'appearing', 'ready', 'retreating'])(
-    'accepts a live click-handle in the %s stage',
+    'accepts a live on-touch handle in the %s stage',
     (handleState) => {
       const snapshot = healthyHiddenSnapshot({
-        revealHandleEnabled: true,
-        sessionRevealHandleEnabled: true,
-        sessionMonitorMode: 'click-handle',
+        revealHandleMode: 'on-touch',
+        sessionRevealHandleMode: 'on-touch',
         edgeMonitor: {
           ...healthyHiddenSnapshot().edgeMonitor,
-          mode: 'click-handle',
+          mode: 'on-touch',
           handleState,
           handleVisible: true,
           handleWindowAlive: true
@@ -130,12 +127,11 @@ describe('dock health inspection', () => {
     'reports a missing native handle window in the %s stage',
     (handleState) => {
       const snapshot = healthyHiddenSnapshot({
-        revealHandleEnabled: true,
-        sessionRevealHandleEnabled: true,
-        sessionMonitorMode: 'click-handle',
+        revealHandleMode: 'on-touch',
+        sessionRevealHandleMode: 'on-touch',
         edgeMonitor: {
           ...healthyHiddenSnapshot().edgeMonitor,
-          mode: 'click-handle',
+          mode: 'on-touch',
           handleState,
           handleVisible: handleState !== 'ready',
           handleWindowAlive: false
@@ -152,9 +148,8 @@ describe('dock health inspection', () => {
   it('reports changed edge/mode config and an invalid ready handle', () => {
     const snapshot = healthyHiddenSnapshot({
       activeDockEdges: ['top', 'right'],
-      revealHandleEnabled: false,
-      sessionRevealHandleEnabled: true,
-      sessionMonitorMode: 'click-handle',
+      revealHandleMode: 'direct',
+      sessionRevealHandleMode: 'on-touch',
       edgeMonitor: {
         ...healthyHiddenSnapshot().edgeMonitor,
         mode: 'direct',
@@ -171,6 +166,29 @@ describe('dock health inspection', () => {
       '小黑条原生窗口未持续运行',
       '小黑条已就绪但不可见'
     ])
+  })
+
+  it('accepts an activated persistent handle and reports a missing activation', () => {
+    const persistent = healthyHiddenSnapshot({
+      revealHandleMode: 'persistent',
+      sessionRevealHandleMode: 'persistent',
+      edgeMonitor: {
+        ...healthyHiddenSnapshot().edgeMonitor,
+        mode: 'persistent',
+        persistentHandleActivated: true,
+        handleState: 'ready',
+        handleVisible: true,
+        handleWindowAlive: true
+      }
+    })
+
+    expect(inspectDockHealth(persistent)).toEqual([])
+    expect(
+      inspectDockHealth({
+        ...persistent,
+        edgeMonitor: { ...persistent.edgeMonitor, persistentHandleActivated: false }
+      })
+    ).toContain('常显小黑条尚未激活')
   })
 
   it('reports stale native resources after the window is restored', () => {

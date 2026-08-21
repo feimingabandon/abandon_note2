@@ -9,7 +9,13 @@
 
 const VALID_NOTE_STATUSES = new Set(['initialized', 'in_progress', 'completed'])
 export const DOCK_EDGES = Object.freeze(['top', 'left', 'right'])
+export const DOCK_REVEAL_HANDLE_MODES = Object.freeze({
+  DIRECT: 'direct',
+  ON_TOUCH: 'on-touch',
+  PERSISTENT: 'persistent'
+})
 const MAX_DOCK_EDGE_ENTRIES = 12
+const VALID_DOCK_REVEAL_HANDLE_MODES = new Set(Object.values(DOCK_REVEAL_HANDLE_MODES))
 
 const DEFAULT_LIST_FILTER = {
   listMode: 'timeline',
@@ -127,6 +133,17 @@ function parseBoolean(value, fallback) {
   if (value === true || value === 'true' || value === 1 || value === '1') return true
   if (value === false || value === 'false' || value === 0 || value === '0') return false
   return fallback
+}
+
+function parseDockRevealHandleMode(value, fallback) {
+  // 0.9.x 及更早版本持久化的是布尔开关；升级后无损映射到前两种模式。
+  if (value === true || value === 'true' || value === 1 || value === '1') {
+    return DOCK_REVEAL_HANDLE_MODES.ON_TOUCH
+  }
+  if (value === false || value === 'false' || value === 0 || value === '0') {
+    return DOCK_REVEAL_HANDLE_MODES.DIRECT
+  }
+  return VALID_DOCK_REVEAL_HANDLE_MODES.has(value) ? value : fallback
 }
 
 function parseDockEdges(value, fallback) {
@@ -371,13 +388,13 @@ const definitions = [
     remark: '窗口置顶状态'
   },
   {
-    id: 'dock.revealHandleEnabled',
-    path: ['dock', 'revealHandleEnabled'],
+    id: 'dock.revealHandleMode',
+    path: ['dock', 'revealHandleMode'],
     db: { type: 'dock', key: 'dock_reveal_handle_enabled' },
-    defaultValue: false,
-    parse: parseBoolean,
+    defaultValue: DOCK_REVEAL_HANDLE_MODES.DIRECT,
+    parse: parseDockRevealHandleMode,
     serialize: String,
-    remark: '贴边隐藏后是否先显示点击确认条'
+    remark: '贴边隐藏后的唤出方式（direct / on-touch / persistent）'
   },
   {
     id: 'dock.enabledEdges',

@@ -116,6 +116,7 @@ import {
 } from './logging/window-capture.js'
 import {
   DEFAULT_SETTINGS,
+  DOCK_REVEAL_HANDLE_MODES,
   createDefaultSettings,
   normalizeViewMode,
   resolveSettingsRows,
@@ -228,7 +229,7 @@ function getDockRuntimeConfig() {
   const supportedEdges = profile.supportedDockEdges || profile.dockEdges || []
   const configuredDock = resolvedSettings?.dock ||
     createDefaultSettings(activeViewMode).dock || {
-      revealHandleEnabled: false,
+      revealHandleMode: DOCK_REVEAL_HANDLE_MODES.DIRECT,
       enabledEdges: supportedEdges
     }
   return normalizeDockRuntimeConfig(configuredDock, supportedEdges)
@@ -239,11 +240,17 @@ function getDockRuntimeCapability() {
     return {
       supported: false,
       reason: '当前平台没有原生边缘监视器',
-      revealHandleSupported: false
+      revealHandleSupported: false,
+      persistentHandleSupported: false
     }
   }
   if (!windowMotionBackend) {
-    return { supported: true, reason: null, revealHandleSupported: true }
+    return {
+      supported: true,
+      reason: null,
+      revealHandleSupported: true,
+      persistentHandleSupported: true
+    }
   }
 
   try {
@@ -252,19 +259,22 @@ function getDockRuntimeCapability() {
       return {
         supported: false,
         reason: status.error || 'Windows 原生边缘监视器不可用',
-        revealHandleSupported: false
+        revealHandleSupported: false,
+        persistentHandleSupported: false
       }
     }
     return {
       supported: true,
       reason: null,
-      revealHandleSupported: status?.revealHandleSupported !== false
+      revealHandleSupported: status?.revealHandleSupported !== false,
+      persistentHandleSupported: status?.persistentHandleSupported === true
     }
   } catch (error) {
     return {
       supported: false,
       reason: error?.message || '读取 Windows 原生边缘监视器能力失败',
-      revealHandleSupported: false
+      revealHandleSupported: false,
+      persistentHandleSupported: false
     }
   }
 }
@@ -464,11 +474,12 @@ function getResolvedSettingsSnapshot() {
         supported: dockCapability.supported,
         reason: dockCapability.reason,
         revealHandleSupported: dockCapability.revealHandleSupported,
+        persistentHandleSupported: dockCapability.persistentHandleSupported,
         viewMode: activeViewMode,
         supportedEdges: dockRuntime.supportedEdges,
         enabledEdges: dockRuntime.enabledEdges,
         activeEdges: dockRuntime.activeEdges,
-        revealHandleEnabled: dockRuntime.revealHandleEnabled
+        revealHandleMode: dockRuntime.revealHandleMode
       },
       blur: {
         supported: blurCaps.supported,
@@ -1530,14 +1541,13 @@ function getDockDiagnosticSnapshot() {
     supportedDockEdges: dockConfig.supportedEdges,
     enabledDockEdges: dockConfig.enabledEdges,
     activeDockEdges: dockConfig.activeEdges,
-    revealHandleEnabled: dockConfig.revealHandleEnabled,
+    revealHandleMode: dockConfig.revealHandleMode,
     isDockHidden,
     dockSide,
     hasDockMotionSession: Boolean(dockMotionSession),
     sessionSide: dockMotionSession?.side || null,
     sessionGeneration: dockMotionSession?.generation || 0,
-    sessionRevealHandleEnabled: dockMotionSession?.revealHandleEnabled ?? null,
-    sessionMonitorMode: dockMotionSession?.monitorMode || null,
+    sessionRevealHandleMode: dockMotionSession?.revealHandleMode ?? null,
     mainMotionBounds,
     mainAtHiddenTarget,
     isSliding,
@@ -1975,8 +1985,7 @@ function doHide() {
   dockMotionSession = {
     generation,
     side: dockSide,
-    revealHandleEnabled: dockConfig.revealHandleEnabled,
-    monitorMode: dockConfig.revealHandleEnabled ? 'click-handle' : 'direct',
+    revealHandleMode: dockConfig.revealHandleMode,
     stableBounds,
     motionPlan,
     workArea: { ...cachedWorkArea }
@@ -1987,7 +1996,7 @@ function doHide() {
     armResult = windowMotionBackend.armEdgeMonitor(dockSide, generation, {
       thicknessDip: EDGE_TRIGGER_THICKNESS_DIP,
       pollIntervalMs: EDGE_MONITOR_POLL_INTERVAL_MS,
-      revealHandleEnabled: dockMotionSession.revealHandleEnabled
+      revealHandleMode: dockMotionSession.revealHandleMode
     })
   } catch (error) {
     logger.error('dock.native-edge-arm', error, { generation, side: dockSide })
@@ -2011,7 +2020,7 @@ function doHide() {
   logger.info('dock.lifecycle', '开始贴边隐藏', {
     generation,
     side: dockSide,
-    revealHandleEnabled: dockMotionSession.revealHandleEnabled,
+    revealHandleMode: dockMotionSession.revealHandleMode,
     stableBounds
   })
 
@@ -2039,7 +2048,31 @@ function doHide() {
       generation,
       side: dockSide
     })
-    if (dockTransitionState.consumeQueuedShow()) doShow('queued-during-hide')
+    if (dockTransitionState.consumeQueuedShow()) {
+      doShow('queued-during-hide')
+      return
+    }
+    if (
+      isDockHidden &&
+      dockMotionSession?.generation === generation &&
+      dockMotionSession.revealHandleMode === DOCK_REVEAL_HANDLE_MODES.PERSISTENT
+    ) {
+      let revealResult
+      try {
+        revealResult = windowMotionBackend.showPersistentHandle(generation)
+      } catch (error) {
+        emergencyRestoreDock('persistent-handle-show-failed', error)
+        return
+      }
+      if (!revealResult.success) {
+        emergencyRestoreDock(
+          'persistent-handle-show-failed',
+          new Error(revealResult.error || '常显小黑条激活失败')
+        )
+        return
+      }
+      logger.info('dock.lifecycle', '常显小黑条已在隐藏终点激活', { generation, side: dockSide })
+    }
   })
 }
 
@@ -2521,7 +2554,7 @@ app.whenReady().then(async () => {
   mainWindowIpc.handle('set-dock-config', (_event, config) => {
     const normalized = validateDockConfigPayload(config)
     return persistSettingValues([
-      { id: 'dock.revealHandleEnabled', value: normalized.revealHandleEnabled },
+      { id: 'dock.revealHandleMode', value: normalized.revealHandleMode },
       { id: 'dock.enabledEdges', value: normalized.enabledEdges }
     ])
   })

@@ -20,10 +20,10 @@ describe('dock main-process wiring', () => {
     expect(preload).toContain(
       "setDockConfig: (config) => ipcRenderer.invoke('set-dock-config', config)"
     )
-    expect(allowlist).not.toContain('dock.revealHandleEnabled')
+    expect(allowlist).not.toContain('dock.revealHandleMode')
     expect(allowlist).not.toContain('dock.enabledEdges')
     expect(handler).toContain('validateDockConfigPayload(config)')
-    expect(handler).toContain("id: 'dock.revealHandleEnabled'")
+    expect(handler).toContain("id: 'dock.revealHandleMode'")
     expect(handler).toContain("id: 'dock.enabledEdges'")
     expect(handler.match(/persistSettingValues\(/g)).toHaveLength(1)
   })
@@ -46,10 +46,13 @@ describe('dock main-process wiring', () => {
     expect(reconcile).toContain('cancelPendingDockHide')
     expect(reconcile).toContain('emergencyRestoreDock')
     expect(doHide).toContain('activeEdges.includes(dockSide)')
-    expect(doHide).toContain(
-      "monitorMode: dockConfig.revealHandleEnabled ? 'click-handle' : 'direct'"
+    expect(doHide).toContain('revealHandleMode: dockConfig.revealHandleMode')
+    expect(doHide).toContain('revealHandleMode: dockMotionSession.revealHandleMode')
+    expect(doHide).toContain('windowMotionBackend.showPersistentHandle(generation)')
+    expect(doHide).toContain("doShow('queued-during-hide')")
+    expect(doHide.indexOf("doShow('queued-during-hide')")).toBeLessThan(
+      doHide.indexOf('windowMotionBackend.showPersistentHandle(generation)')
     )
-    expect(doHide).toContain('revealHandleEnabled: dockMotionSession.revealHandleEnabled')
     expect(toggle).toContain("syncVisibleDockSide({ source: 'tray-toggle', snap: true })")
     expect(source).toContain("syncVisibleDockSide({ source: 'hover-hide-timer', snap: true })")
     expect(source).toContain("reconcileDockRuntimeConfig(previousDockConfig, 'reset-settings')")

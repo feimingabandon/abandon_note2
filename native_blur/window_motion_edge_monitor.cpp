@@ -59,6 +59,7 @@ struct Runtime {
     std::atomic<int> lastError{0};
     std::atomic<int> cursorFailureCount{0};
     std::atomic<unsigned int> fullscreenBlockCount{0};
+    std::atomic<bool> fullscreenActive{false};
     std::atomic<HandlePhase> handlePhase{HandlePhase::Hidden};
     std::atomic<HWND> handleWindow{nullptr};
     std::atomic<bool> handleEnteredOnce{false};
@@ -68,6 +69,7 @@ struct Runtime {
     std::atomic<bool> handleRendererPrewarmed{false};
     std::atomic<bool> handleEmbeddedFontReady{false};
     std::atomic<std::uint64_t> handleWindowCreateCount{0};
+    std::atomic<bool> persistentHandleActivated{false};
     std::atomic<int> workerStartupResult{static_cast<int>(Result::Ok)};
 
     HANDLE stopEvent = nullptr;
@@ -106,7 +108,13 @@ bool IsValidSide(int side) {
 
 bool IsValidRevealMode(int mode) {
     return mode == static_cast<int>(RevealMode::Direct) ||
-        mode == static_cast<int>(RevealMode::ClickHandle);
+        mode == static_cast<int>(RevealMode::ClickHandle) ||
+        mode == static_cast<int>(RevealMode::PersistentHandle);
+}
+
+bool UsesRevealHandle(const Runtime& runtime) {
+    return runtime.revealMode == static_cast<int>(RevealMode::ClickHandle) ||
+        runtime.revealMode == static_cast<int>(RevealMode::PersistentHandle);
 }
 
 bool IsInside(const POINT& point, const RECT& area) {
@@ -319,6 +327,11 @@ LRESULT CALLBACK HandleWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
         runtime->handleButtonDownInside = false;
         if (GetCapture() == hwnd) ReleaseCapture();
         if (completeClick) {
+            if (runtime->revealMode == static_cast<int>(RevealMode::PersistentHandle)) {
+                // 事件被主进程消费到 Disarm 之间存在极短窗口；先撤销常显意图，
+                // 防止 worker 在 pendingEvent 刚被消费时把确认条重新创建出来。
+                runtime->persistentHandleActivated.store(false);
+            }
             runtime->handlePhase.store(HandlePhase::Hidden);
             ShowWindow(hwnd, SW_HIDE);
             QueueEvent(*runtime, EventKind::Trigger, 0);
@@ -757,8 +770,8 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
     const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     const bool comInitialized = SUCCEEDED(comResult);
     // direct 模式永远不会创建小黑条，不能让其唤出能力依赖 WIC/Direct2D/字体初始化。
-    // 点击模式的渲染器仍在发布 ready 之前完成初始化；初始化失败会安全降级到 GDI。
-    if (runtime->revealMode == static_cast<int>(RevealMode::ClickHandle)) {
+    // 两种确认条模式的渲染器仍在发布 ready 之前完成初始化；失败会安全降级到 GDI。
+    if (UsesRevealHandle(*runtime)) {
         try {
             runtime->handleRenderer = std::make_unique<RevealHandleRenderer>();
             if (!runtime->handleRenderer->Initialize()) {
@@ -800,7 +813,7 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
 
     // 小黑条 HWND 与 layered surface 也必须在发布 ready 前完成一次屏外创建和
     // DWM 提交。否则第一次触边时现建现移，合成器可能只呈现接近终点的帧。
-    if (runtime->revealMode == static_cast<int>(RevealMode::ClickHandle) &&
+    if (UsesRevealHandle(*runtime) &&
         !PrimeHandleWindow(*runtime, GetDefaultHandleAnchor(*runtime))) {
         runtime->workerStartupResult.store(static_cast<int>(Result::HandleWindowCreateFailed));
         runtime->lastError.store(static_cast<int>(Result::HandleWindowCreateFailed));
@@ -869,7 +882,7 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
         }
         runtime->cursorFailureCount.store(0);
         const bool inside = IsInside(cursor, runtime->triggerArea);
-        if (runtime->revealMode == static_cast<int>(RevealMode::ClickHandle)) {
+        if (UsesRevealHandle(*runtime)) {
             const bool fullscreen = IsForegroundFullscreenOnTargetMonitor(*runtime);
             if (fullscreen) {
                 if (!fullscreenActive) {
@@ -884,27 +897,54 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
                     }
                 }
                 fullscreenActive = true;
+                runtime->fullscreenActive.store(true);
                 runtime->state.store(State::WaitingOutside);
                 previousInside = inside;
                 continue;
             }
             if (fullscreenActive) {
-                // 退出全屏不补发旧意图；仍在边缘时必须先离开再重新进入。
                 fullscreenActive = false;
-                if (!PrimeHandleWindow(*runtime, cursor)) {
-                    QueueEvent(*runtime, EventKind::Fault,
-                        static_cast<int>(Result::HandleWindowCreateFailed));
-                    previousInside = inside;
-                    continue;
+                runtime->fullscreenActive.store(false);
+                if (runtime->revealMode == static_cast<int>(RevealMode::PersistentHandle) &&
+                    runtime->persistentHandleActivated.load()) {
+                    if (!RevealPrimedHandle(*runtime, GetDefaultHandleAnchor(*runtime))) {
+                        QueueEvent(*runtime, EventKind::Fault,
+                            static_cast<int>(Result::HandleWindowCreateFailed));
+                    } else {
+                        runtime->state.store(State::Armed);
+                    }
+                } else {
+                    // 普通确认条退出全屏不补发旧意图；仍在边缘时必须先离开再进入。
+                    if (!PrimeHandleWindow(*runtime, cursor)) {
+                        QueueEvent(*runtime, EventKind::Fault,
+                            static_cast<int>(Result::HandleWindowCreateFailed));
+                        previousInside = inside;
+                        continue;
+                    }
+                    runtime->state.store(inside ? State::WaitingOutside : State::Armed);
                 }
-                runtime->state.store(inside ? State::WaitingOutside : State::Armed);
                 previousInside = inside;
                 continue;
             }
         }
 
+        if (runtime->revealMode == static_cast<int>(RevealMode::PersistentHandle) &&
+            runtime->persistentHandleActivated.load() &&
+            runtime->handlePhase.load() == HandlePhase::Hidden) {
+            if (!RevealPrimedHandle(*runtime, GetDefaultHandleAnchor(*runtime))) {
+                QueueEvent(*runtime, EventKind::Fault,
+                    static_cast<int>(Result::HandleWindowCreateFailed));
+            } else {
+                runtime->state.store(State::Armed);
+            }
+            previousInside = inside;
+            continue;
+        }
+
         if (runtime->handlePhase.load() != HandlePhase::Hidden) {
-            ManageVisibleHandle(*runtime, cursor, inside, now);
+            if (runtime->revealMode == static_cast<int>(RevealMode::ClickHandle)) {
+                ManageVisibleHandle(*runtime, cursor, inside, now);
+            }
             previousInside = inside;
             continue;
         }
@@ -928,7 +968,8 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
                 } else {
                     QueueEvent(*runtime, EventKind::Trigger, 0);
                 }
-            } else if (!RevealPrimedHandle(*runtime, cursor)) {
+            } else if (runtime->revealMode == static_cast<int>(RevealMode::ClickHandle) &&
+                !RevealPrimedHandle(*runtime, cursor)) {
                 QueueEvent(*runtime, EventKind::Fault,
                     static_cast<int>(Result::HandleWindowCreateFailed));
             }
@@ -989,6 +1030,8 @@ int StopLocked(Runtime& runtime, std::uint64_t generation) {
     runtime.state.store(State::Stopped);
     runtime.cursorFailureCount.store(0);
     runtime.fullscreenBlockCount.store(0);
+    runtime.fullscreenActive.store(false);
+    runtime.persistentHandleActivated.store(false);
     runtime.lastError.store(0);
     runtime.eventNotificationPosted = false;
     {
@@ -1092,6 +1135,7 @@ int ArmEx(
     runtime.lastError.store(0);
     runtime.cursorFailureCount.store(0);
     runtime.fullscreenBlockCount.store(0);
+    runtime.fullscreenActive.store(false);
     runtime.handlePhase.store(HandlePhase::Hidden);
     runtime.handleWindow.store(nullptr);
     runtime.handleEnteredOnce.store(false);
@@ -1107,6 +1151,7 @@ int ArmEx(
     runtime.handleRendererPrewarmed.store(false);
     runtime.handleEmbeddedFontReady.store(false);
     runtime.handleWindowCreateCount.store(0);
+    runtime.persistentHandleActivated.store(false);
     runtime.workerStartupResult.store(static_cast<int>(Result::Ok));
     runtime.eventNotificationPosted = false;
     runtime.state.store(IsInside(cursor, runtime.triggerArea) ? State::WaitingOutside : State::Armed);
@@ -1180,6 +1225,23 @@ int Disarm(std::uint64_t generation) {
     return StopLocked(g_runtime, generation);
 }
 
+int ShowPersistentHandle(std::uint64_t generation) {
+    std::lock_guard<std::mutex> lock(g_runtime.lifecycleMutex);
+    if (generation == 0 || g_runtime.generation.load() != generation) {
+        return static_cast<int>(Result::InvalidGeneration);
+    }
+    if (g_runtime.revealMode != static_cast<int>(RevealMode::PersistentHandle)) {
+        return static_cast<int>(Result::InvalidRevealMode);
+    }
+    if (!g_runtime.workerThread || !g_runtime.workerAlive.load() ||
+        g_runtime.state.load() == State::Failed) {
+        return static_cast<int>(Result::MonitorNotReady);
+    }
+    // 只发布原子意图；HWND 的定位、显示和动画仍全部由所属 worker 线程执行。
+    g_runtime.persistentHandleActivated.store(true);
+    return static_cast<int>(Result::Ok);
+}
+
 UINT GetMessageId() {
     static const UINT messageId = RegisterWindowMessageW(L"AbandonNote.WindowMotion.EdgeEvent.v1");
     return messageId;
@@ -1205,6 +1267,7 @@ const char* GetStatusJson() {
         json,
         "{\"state\":\"%s\",\"workerAlive\":%s,\"generation\":%llu,\"side\":%d,"
         "\"lastError\":%d,\"cursorFailureCount\":%d,\"fullscreenBlockCount\":%u,"
+        "\"fullscreenActive\":%s,\"persistentHandleActivated\":%s,"
         "\"lastPollAgeMs\":%llu,\"pollIntervalMs\":%d,"
         "\"triggerArea\":{\"left\":%ld,\"top\":%ld,\"right\":%ld,\"bottom\":%ld},"
         "\"pendingEvent\":\"%s\",\"mode\":\"%s\",\"handleState\":\"%s\","
@@ -1222,12 +1285,16 @@ const char* GetStatusJson() {
         g_runtime.lastError.load(),
         g_runtime.cursorFailureCount.load(),
         g_runtime.fullscreenBlockCount.load(),
+        g_runtime.fullscreenActive.load() ? "true" : "false",
+        g_runtime.persistentHandleActivated.load() ? "true" : "false",
         static_cast<unsigned long long>(pollAge),
         g_runtime.pollIntervalMs,
         trigger.left, trigger.top, trigger.right, trigger.bottom,
         EventName(event.kind),
-        g_runtime.revealMode == static_cast<int>(RevealMode::ClickHandle)
-            ? "click-handle" : "direct",
+        g_runtime.revealMode == static_cast<int>(RevealMode::PersistentHandle)
+            ? "persistent"
+            : g_runtime.revealMode == static_cast<int>(RevealMode::ClickHandle)
+                ? "on-touch" : "direct",
         HandlePhaseName(handlePhase),
         handleWindowAlive && handlePhase != HandlePhase::Hidden ? "true" : "false",
         handleWindowAlive ? "true" : "false",

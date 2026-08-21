@@ -12,7 +12,7 @@
     <span class="mdf-arrow">→</span>
     <div class="mdf-step">
       <div class="mdf-screen"><span class="mdf-handle"></span></div>
-      <strong>触边或点击小黑条</strong>
+      <strong>按所选模式唤出</strong>
     </div>
   </div>
 </template>

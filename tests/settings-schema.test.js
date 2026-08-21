@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_SETTINGS,
+  DOCK_REVEAL_HANDLE_MODES,
   createDefaultSettings,
   resolveSettingsRows,
   serializeSetting,
@@ -81,24 +82,26 @@ describe('view-specific defaults', () => {
 describe('dock settings', () => {
   it('preserves the legacy dock behavior as the default for each view', () => {
     expect(createDefaultSettings(VIEW_MODES.LIST).dock).toEqual({
-      revealHandleEnabled: false,
+      revealHandleMode: DOCK_REVEAL_HANDLE_MODES.DIRECT,
       enabledEdges: ['left', 'right']
     })
     expect(createDefaultSettings(VIEW_MODES.MONTH).dock).toEqual({
-      revealHandleEnabled: false,
+      revealHandleMode: DOCK_REVEAL_HANDLE_MODES.DIRECT,
       enabledEdges: ['top']
     })
     expect(createDefaultSettings(VIEW_MODES.WEEK).dock).toEqual({
-      revealHandleEnabled: false,
+      revealHandleMode: DOCK_REVEAL_HANDLE_MODES.DIRECT,
       enabledEdges: ['top']
     })
   })
 
-  it('serializes the confirmation handle and canonical dock edge order', () => {
-    expect(serializeSetting('dock.revealHandleEnabled', true)).toMatchObject({
+  it('serializes all reveal modes and the canonical dock edge order', () => {
+    expect(
+      serializeSetting('dock.revealHandleMode', DOCK_REVEAL_HANDLE_MODES.PERSISTENT)
+    ).toMatchObject({
       type: 'dock',
       key: 'dock_reveal_handle_enabled',
-      value: 'true'
+      value: 'persistent'
     })
     expect(serializeSetting('dock.enabledEdges', ['right', 'top', 'right', 'left'])).toMatchObject({
       type: 'dock',
@@ -137,7 +140,7 @@ describe('dock settings', () => {
     ).toEqual(['top'])
   })
 
-  it('restores valid persisted multi-select values and keeps an empty selection', () => {
+  it('migrates legacy booleans, restores all modes and keeps an empty selection', () => {
     expect(
       resolveSettingsRows(
         [
@@ -146,7 +149,22 @@ describe('dock settings', () => {
         ],
         VIEW_MODES.WEEK
       ).dock
-    ).toEqual({ revealHandleEnabled: true, enabledEdges: ['top', 'right'] })
+    ).toEqual({
+      revealHandleMode: DOCK_REVEAL_HANDLE_MODES.ON_TOUCH,
+      enabledEdges: ['top', 'right']
+    })
+    expect(
+      resolveSettingsRows(
+        [{ type: 'dock', key: 'dock_reveal_handle_enabled', value: 'false' }],
+        VIEW_MODES.LIST
+      ).dock.revealHandleMode
+    ).toBe(DOCK_REVEAL_HANDLE_MODES.DIRECT)
+    expect(
+      resolveSettingsRows(
+        [{ type: 'dock', key: 'dock_reveal_handle_enabled', value: 'persistent' }],
+        VIEW_MODES.MONTH
+      ).dock.revealHandleMode
+    ).toBe(DOCK_REVEAL_HANDLE_MODES.PERSISTENT)
     expect(
       resolveSettingsRows(
         [{ type: 'dock', key: 'dock_enabled_edges', value: '[]' }],

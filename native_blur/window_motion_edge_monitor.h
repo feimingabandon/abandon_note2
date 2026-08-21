@@ -24,6 +24,8 @@ enum class RevealMode : int {
     Direct = 0,
     // 首次触边仅显示原生小黑条，完整点击后才请求唤出主窗口。
     ClickHandle = 1,
+    // 主窗口完成隐藏后由主进程显式激活，小黑条持续显示直到被点击或会话结束。
+    PersistentHandle = 2,
 };
 
 enum class Result : int {
@@ -43,6 +45,7 @@ enum class Result : int {
     HandleClassRegistrationFailed = -13, // 小黑条窗口类注册失败
     HandleWindowCreateFailed = -14,      // 小黑条 HWND 创建或初始化失败
     WorkerStartTimedOut = -15,           // 监视线程未在有界时间内完成初始化
+    MonitorNotReady = -16,               // 目标代次没有可接收命令的活动监视线程
 };
 
 int Arm(
@@ -59,6 +62,7 @@ int ArmEx(
     std::uint64_t generation,
     int revealMode);
 int Disarm(std::uint64_t generation);
+int ShowPersistentHandle(std::uint64_t generation);
 UINT GetMessageId();
 const char* GetStatusJson();
 const char* ConsumeEventJson();

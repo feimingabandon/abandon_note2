@@ -45,6 +45,7 @@ async function runNativeEdgeMonitorTests() {
     'int'
   ])
   const disarm = dll.func('WindowMotion_DisarmEdgeMonitor', 'int', ['uint64_t'])
+  const showPersistentHandle = dll.func('WindowMotion_ShowPersistentHandle', 'int', ['uint64_t'])
   const getMessageId = dll.func('WindowMotion_GetEdgeMessageId', 'uint', [])
   const getStatusJson = dll.func('WindowMotion_GetEdgeMonitorStatusJson', 'str', [])
   const consumeEventJson = dll.func('WindowMotion_ConsumeEdgeEventJson', 'str', [])
@@ -369,7 +370,7 @@ async function runNativeEdgeMonitorTests() {
         true,
         `${side} 小黑条 ArmEx 返回前监视线程必须已经就绪`
       )
-      assert.equal(armedHandleStatus.mode, 'click-handle')
+      assert.equal(armedHandleStatus.mode, 'on-touch')
       assert.equal(armedHandleStatus.handleState, 'hidden')
       assert.equal(armedHandleStatus.handleWindowAlive, true)
       assert.equal(armedHandleStatus.handleVisible, false)
@@ -621,6 +622,106 @@ async function runNativeEdgeMonitorTests() {
     testWindow.destroy()
     testWindow = null
 
+    // 常显模式必须先完成屏外预热，只有主进程显式确认“主窗口已隐藏”后才出现；
+    // 出现后不因鼠标离开退场，外部全屏结束后还要自动恢复。
+    const persistentBounds = getBounds(-2, workArea)
+    testWindow = new BrowserWindow({
+      ...persistentBounds,
+      show: true,
+      frame: false,
+      thickFrame: false
+    })
+    const persistentOutside = getOutsidePoint(workArea)
+    await moveCursorAndConfirm(persistentOutside)
+    generation += 1
+    assert.equal(
+      armEx(getHandle(testWindow), -2, 2, POLL_INTERVAL_MS, generation, 2),
+      1,
+      '常显小黑条场景必须启动成功'
+    )
+    const persistentPrewarmed = await waitUntil(() => {
+      const status = getStatus()
+      return status.workerAlive && status.handleWindowAlive && status
+    }, '常显小黑条没有完成屏外预热')
+    assert.equal(persistentPrewarmed.mode, 'persistent')
+    assert.equal(persistentPrewarmed.persistentHandleActivated, false)
+    assert.equal(persistentPrewarmed.handleState, 'hidden')
+    assert.equal(persistentPrewarmed.handleVisible, false)
+    await wait(300)
+    assert.equal(getStatus().handleState, 'hidden', '未显式激活前常显小黑条不得提前出现')
+
+    assert.equal(showPersistentHandle(generation + 1), -11, '错误代次不得激活常显小黑条')
+    assert.equal(showPersistentHandle(generation), 1, '主窗口隐藏完成后必须能激活常显小黑条')
+    let sawPersistentIntermediate = false
+    const persistentReady = await waitUntil(() => {
+      const status = getStatus()
+      if (isPartiallyVisible(status, -2, workArea)) sawPersistentIntermediate = true
+      return status.handleState === 'ready' && status.handleVisible && status
+    }, '常显小黑条没有自动滑入')
+    assert.equal(sawPersistentIntermediate, true, '常显小黑条必须从屏外播放滑入动画')
+    assert.equal(persistentReady.persistentHandleActivated, true)
+    assertHandleSize(persistentReady, -2)
+
+    await moveCursorAndConfirm(persistentOutside)
+    await wait(700)
+    const persistentAfterLeave = getStatus()
+    assert.equal(persistentAfterLeave.handleState, 'ready', '常显小黑条不得因鼠标离开退场')
+    assert.equal(persistentAfterLeave.handleVisible, true)
+
+    foregroundHelper = await startForegroundHelper('fullscreen', primaryDisplay.bounds)
+    const persistentBlocked = await waitUntil(() => {
+      const status = getStatus()
+      return (
+        status.fullscreenActive &&
+        status.handleState === 'hidden' &&
+        status.handleWindowAlive &&
+        !status.handleVisible &&
+        status
+      )
+    }, '其他程序全屏后常显小黑条没有暂时停回屏外')
+    assert.equal(persistentBlocked.persistentHandleActivated, true)
+    await stopForegroundHelper(foregroundHelper)
+    foregroundHelper = null
+    const persistentRestored = await waitUntil(() => {
+      const status = getStatus()
+      return (
+        !status.fullscreenActive && status.handleState === 'ready' && status.handleVisible && status
+      )
+    }, '退出外部全屏后常显小黑条没有自动恢复')
+
+    let resolvePersistentEvent
+    const persistentEventPromise = new Promise((resolvePromise) => {
+      resolvePersistentEvent = resolvePromise
+    })
+    testWindow.hookWindowMessage(messageId, () => {
+      const event = JSON.parse(consumeEventJson())
+      if (event.kind !== 'none') resolvePersistentEvent(event)
+    })
+    await moveCursorAndConfirm({
+      x: Math.floor((persistentRestored.handleRect.left + persistentRestored.handleRect.right) / 2),
+      y: Math.floor((persistentRestored.handleRect.top + persistentRestored.handleRect.bottom) / 2)
+    })
+    mouseEvent(0x0002, 0, 0, 0, 0)
+    mouseEvent(0x0004, 0, 0, 0, 0)
+    const persistentEvent = await Promise.race([
+      persistentEventPromise,
+      wait(EVENT_TIMEOUT_MS).then(() => {
+        throw new Error('点击常显小黑条后没有收到 trigger')
+      })
+    ])
+    assert.deepEqual(
+      {
+        kind: persistentEvent.kind,
+        generation: persistentEvent.generation,
+        side: persistentEvent.side
+      },
+      { kind: 'trigger', generation, side: -2 }
+    )
+    assert.equal(getStatus().persistentHandleActivated, false, '点击后必须先撤销常显意图')
+    assert.equal(disarm(generation), 1)
+    testWindow.destroy()
+    testWindow = null
+
     // 启动时鼠标已经在触发区，必须先离开再进入，避免窗口隐藏后立即反弹。
     const topBounds = getBounds(-2, workArea)
     testWindow = new BrowserWindow({
@@ -756,7 +857,7 @@ async function runNativeEdgeMonitorTests() {
     assert.equal(getStatus().state, 'stopped', '压力循环后原生监视器必须完全停止')
 
     console.log(
-      'native edge monitor integration test passed: left/right/top polling, Windows message delivery, fullscreen suppression, maximized-window passthrough, generation isolation, initial-inside rearm and 100 lifecycle cycles'
+      'native edge monitor integration test passed: left/right/top polling, touch and persistent handles, fullscreen suppression and restore, maximized-window passthrough, generation isolation, initial-inside rearm and 100 lifecycle cycles'
     )
   } finally {
     disarm(0)

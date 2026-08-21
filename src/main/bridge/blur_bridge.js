@@ -42,7 +42,14 @@ const EDGE_MONITOR_RESULT_MESSAGES = Object.freeze({
   [-12]: '原生小黑条显示模式无效',
   [-13]: '注册原生小黑条窗口类失败',
   [-14]: '创建原生小黑条窗口失败',
-  [-15]: '原生边缘监视线程初始化超时'
+  [-15]: '原生边缘监视线程初始化超时',
+  [-16]: '原生边缘监视线程尚未准备好接收常显命令'
+})
+
+const NATIVE_REVEAL_HANDLE_MODES = Object.freeze({
+  direct: 0,
+  'on-touch': 1,
+  persistent: 2
 })
 
 function getNativeDockSide(side) {
@@ -174,6 +181,13 @@ function initNative() {
     } catch {
       lib.WindowMotion_ArmEdgeMonitorEx = null
     }
+    try {
+      lib.WindowMotion_ShowPersistentHandle = lib.func('WindowMotion_ShowPersistentHandle', 'int', [
+        'uint64_t'
+      ])
+    } catch {
+      lib.WindowMotion_ShowPersistentHandle = null
+    }
     lib.WindowMotion_DisarmEdgeMonitor = lib.func('WindowMotion_DisarmEdgeMonitor', 'int', [
       'uint64_t'
     ])
@@ -296,15 +310,22 @@ export function armWindowEdgeMonitor(
   window,
   side,
   generation,
-  { thicknessDip = 2, pollIntervalMs = 100, revealHandleEnabled = false } = {}
+  { thicknessDip = 2, pollIntervalMs = 100, revealHandleMode = 'direct' } = {}
 ) {
   if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
     return { success: false, code: null, error: 'Windows 原生边缘监视器不可用' }
   }
   const nativeSide = getNativeDockSide(side)
   if (!nativeSide) return { success: false, code: -2, error: EDGE_MONITOR_RESULT_MESSAGES[-2] }
-  if (revealHandleEnabled && !lib.WindowMotion_ArmEdgeMonitorEx) {
+  const nativeRevealMode = NATIVE_REVEAL_HANDLE_MODES[revealHandleMode]
+  if (!Number.isInteger(nativeRevealMode)) {
+    return { success: false, code: -12, error: EDGE_MONITOR_RESULT_MESSAGES[-12] }
+  }
+  if (nativeRevealMode !== 0 && !lib.WindowMotion_ArmEdgeMonitorEx) {
     return { success: false, code: null, error: '当前原生 DLL 不支持小黑条模式' }
+  }
+  if (nativeRevealMode === 2 && !lib.WindowMotion_ShowPersistentHandle) {
+    return { success: false, code: null, error: '当前原生 DLL 不支持小黑条常显模式' }
   }
   const args = [
     getWindowHandleValue(window),
@@ -313,16 +334,29 @@ export function armWindowEdgeMonitor(
     Math.max(25, Math.round(pollIntervalMs)),
     Number(generation)
   ]
-  // 关闭小黑条时继续调用旧导出，确保旧行为与 ABI 路径均保持不变。
-  const code = revealHandleEnabled
-    ? lib.WindowMotion_ArmEdgeMonitorEx(...args, 1)
-    : lib.WindowMotion_ArmEdgeMonitor(...args)
+  // 直接唤出模式继续调用旧导出，确保旧行为与 ABI 路径均保持不变。
+  const code =
+    nativeRevealMode !== 0
+      ? lib.WindowMotion_ArmEdgeMonitorEx(...args, nativeRevealMode)
+      : lib.WindowMotion_ArmEdgeMonitor(...args)
   return {
     success: code === 1,
     cleanupRequired: code === -15,
     code,
     error:
       code === 1 ? null : EDGE_MONITOR_RESULT_MESSAGES[code] || `原生边缘监视器启动失败 (${code})`
+  }
+}
+
+export function showWindowPersistentHandle(generation) {
+  if (process.platform !== 'win32' || !initNative() || !lib.WindowMotion_ShowPersistentHandle) {
+    return { success: false, code: null, error: '当前原生 DLL 不支持小黑条常显模式' }
+  }
+  const code = lib.WindowMotion_ShowPersistentHandle(Number(generation))
+  return {
+    success: code === 1,
+    code,
+    error: code === 1 ? null : EDGE_MONITOR_RESULT_MESSAGES[code] || `常显小黑条激活失败 (${code})`
   }
 }
 
@@ -342,6 +376,7 @@ export function getWindowEdgeMonitorStatus() {
     return {
       supported: false,
       revealHandleSupported: false,
+      persistentHandleSupported: false,
       state: 'unavailable',
       workerAlive: false,
       generation: 0,
@@ -351,8 +386,14 @@ export function getWindowEdgeMonitorStatus() {
   const status = JSON.parse(lib.WindowMotion_GetEdgeMonitorStatusJson())
   return {
     ...status,
+    // 上一版 DLL 的 mode 字段使用内部名称 click-handle；统一成设置枚举，
+    // 避免仅替换应用代码、尚未替换 DLL 时被健康检查误判为会话不一致。
+    mode: status.mode === 'click-handle' ? 'on-touch' : status.mode,
     supported: true,
     revealHandleSupported: Boolean(lib.WindowMotion_ArmEdgeMonitorEx),
+    persistentHandleSupported: Boolean(
+      lib.WindowMotion_ArmEdgeMonitorEx && lib.WindowMotion_ShowPersistentHandle
+    ),
     side: getDockSideName(status.side)
   }
 }

@@ -305,6 +305,10 @@ int WindowMotion_DisarmEdgeMonitor(unsigned long long generation) {
     return WindowMotionEdgeMonitor::Disarm(generation);
 }
 
+int WindowMotion_ShowPersistentHandle(unsigned long long generation) {
+    return WindowMotionEdgeMonitor::ShowPersistentHandle(generation);
+}
+
 unsigned int WindowMotion_GetEdgeMessageId(void) {
     return WindowMotionEdgeMonitor::GetMessageId();
 }

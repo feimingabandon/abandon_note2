@@ -1,4 +1,12 @@
+import { DOCK_REVEAL_HANDLE_MODES } from '../../shared/settings-schema.js'
+
 export const DOCK_EDGE_ORDER = Object.freeze(['top', 'left', 'right'])
+
+const VALID_REVEAL_HANDLE_MODES = new Set(Object.values(DOCK_REVEAL_HANDLE_MODES))
+
+function normalizeRevealHandleMode(value) {
+  return VALID_REVEAL_HANDLE_MODES.has(value) ? value : DOCK_REVEAL_HANDLE_MODES.DIRECT
+}
 
 function canonicalDockEdges(edges) {
   const requested = new Set(Array.isArray(edges) ? edges : [])
@@ -18,7 +26,7 @@ export function normalizeDockRuntimeConfig(config, supportedEdges) {
   const supported = canonicalDockEdges(supportedEdges)
   const enabledEdges = canonicalDockEdges(config?.enabledEdges)
   return {
-    revealHandleEnabled: config?.revealHandleEnabled === true,
+    revealHandleMode: normalizeRevealHandleMode(config?.revealHandleMode),
     supportedEdges,
     enabledEdges,
     activeEdges: resolveActiveDockEdges(supported, enabledEdges)
@@ -26,7 +34,12 @@ export function normalizeDockRuntimeConfig(config, supportedEdges) {
 }
 
 export function dockRuntimeConfigEqual(first, second) {
-  if (Boolean(first?.revealHandleEnabled) !== Boolean(second?.revealHandleEnabled)) return false
+  if (
+    normalizeRevealHandleMode(first?.revealHandleMode) !==
+    normalizeRevealHandleMode(second?.revealHandleMode)
+  ) {
+    return false
+  }
   const firstEdges = canonicalDockEdges(first?.enabledEdges)
   const secondEdges = canonicalDockEdges(second?.enabledEdges)
   return (
@@ -45,12 +58,12 @@ export function validateDockConfigPayload(payload) {
   const keys = Object.keys(payload)
   if (
     keys.length !== 2 ||
-    !keys.every((key) => key === 'revealHandleEnabled' || key === 'enabledEdges')
+    !keys.every((key) => key === 'revealHandleMode' || key === 'enabledEdges')
   ) {
-    throw new TypeError('贴边隐藏配置只能包含 revealHandleEnabled 和 enabledEdges')
+    throw new TypeError('贴边隐藏配置只能包含 revealHandleMode 和 enabledEdges')
   }
-  if (typeof payload.revealHandleEnabled !== 'boolean') {
-    throw new TypeError('小黑条开关必须是布尔值')
+  if (!VALID_REVEAL_HANDLE_MODES.has(payload.revealHandleMode)) {
+    throw new TypeError('小黑条模式只能是 direct、on-touch 或 persistent')
   }
   if (!Array.isArray(payload.enabledEdges)) {
     throw new TypeError('贴边方向必须是数组')
@@ -62,7 +75,7 @@ export function validateDockConfigPayload(payload) {
     throw new TypeError('贴边方向只能包含 top、left 或 right')
   }
   return {
-    revealHandleEnabled: payload.revealHandleEnabled,
+    revealHandleMode: payload.revealHandleMode,
     enabledEdges: canonicalDockEdges(payload.enabledEdges)
   }
 }

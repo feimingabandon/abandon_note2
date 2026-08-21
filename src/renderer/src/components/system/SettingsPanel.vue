@@ -36,6 +36,7 @@ import {
 import {
   DEFAULT_SETTINGS,
   DOCK_EDGES,
+  DOCK_REVEAL_HANDLE_MODES,
   createDefaultSettings,
   VIEW_MODES
 } from '../../../../shared/settings-schema.js'
@@ -95,6 +96,23 @@ const currentViewLabel = computed(() =>
 const viewDefaults = computed(() => createDefaultSettings(props.viewMode))
 const dockEdgeLabels = Object.freeze({ top: '上', left: '左', right: '右' })
 const dockEdgeOptions = DOCK_EDGES.map((value) => ({ value, label: dockEdgeLabels[value] }))
+const dockRevealModeOptions = Object.freeze([
+  {
+    value: DOCK_REVEAL_HANDLE_MODES.DIRECT,
+    label: '直接唤出',
+    title: '鼠标触碰隐藏边缘后直接展开窗口'
+  },
+  {
+    value: DOCK_REVEAL_HANDLE_MODES.ON_TOUCH,
+    label: '触边确认',
+    title: '触边时显示小黑条，鼠标离开后自动收回'
+  },
+  {
+    value: DOCK_REVEAL_HANDLE_MODES.PERSISTENT,
+    label: '常显确认',
+    title: '窗口隐藏完成后自动显示小黑条，并保持到点击展开窗口'
+  }
+])
 
 // ---- 面板动画控制 ----
 const rendered = ref(props.visible)
@@ -454,9 +472,14 @@ function commitStickyColor() {
 // ---- 窗口设置 ----
 const autoStart = ref(false)
 const autoStartError = ref(null) // 持久错误（null = 无错误），恒显示不自动消失
-const dockRevealHandleEnabled = ref(viewDefaults.value.dock.revealHandleEnabled)
+const dockRevealHandleMode = ref(viewDefaults.value.dock.revealHandleMode)
 const dockEnabledEdges = ref([...viewDefaults.value.dock.enabledEdges])
-const dockRuntime = ref({ supported: true, revealHandleSupported: true, reason: '' })
+const dockRuntime = ref({
+  supported: true,
+  revealHandleSupported: true,
+  persistentHandleSupported: true,
+  reason: ''
+})
 let _dockConfigRequestRevision = 0
 const inFlightDockConfigWrites = new Set()
 
@@ -466,7 +489,11 @@ function normalizeDockEdgesForUi(edges) {
 }
 
 function assignDockConfig(dock = viewDefaults.value.dock) {
-  dockRevealHandleEnabled.value = Boolean(dock?.revealHandleEnabled)
+  dockRevealHandleMode.value = Object.values(DOCK_REVEAL_HANDLE_MODES).includes(
+    dock?.revealHandleMode
+  )
+    ? dock.revealHandleMode
+    : DOCK_REVEAL_HANDLE_MODES.DIRECT
   dockEnabledEdges.value = normalizeDockEdgesForUi(dock?.enabledEdges)
 }
 
@@ -475,19 +502,22 @@ function assignDockRuntime(runtime) {
   dockRuntime.value = {
     supported: runtime.supported !== false,
     revealHandleSupported: runtime.revealHandleSupported !== false,
+    persistentHandleSupported: runtime.persistentHandleSupported === true,
     reason: runtime.reason || runtime.error || ''
   }
 }
 
-async function saveDockConfig({ revealHandleEnabled, enabledEdges }) {
+async function saveDockConfig({ revealHandleMode, enabledEdges }) {
   if (!_settingsSynced || isResetting.value) return
 
   const normalizedEdges = normalizeDockEdgesForUi(enabledEdges)
-  dockRevealHandleEnabled.value = Boolean(revealHandleEnabled)
+  dockRevealHandleMode.value = Object.values(DOCK_REVEAL_HANDLE_MODES).includes(revealHandleMode)
+    ? revealHandleMode
+    : DOCK_REVEAL_HANDLE_MODES.DIRECT
   dockEnabledEdges.value = normalizedEdges
   const requestRevision = ++_dockConfigRequestRevision
   const request = window.api.setDockConfig({
-    revealHandleEnabled: dockRevealHandleEnabled.value,
+    revealHandleMode: dockRevealHandleMode.value,
     enabledEdges: [...normalizedEdges]
   })
   inFlightDockConfigWrites.add(request)
@@ -513,11 +543,23 @@ async function saveDockConfig({ revealHandleEnabled, enabledEdges }) {
   }
 }
 
-function setDockRevealHandleEnabled(value) {
+function setDockRevealHandleMode(value) {
+  if (isDockRevealModeDisabled(value)) return
   void saveDockConfig({
-    revealHandleEnabled: value,
+    revealHandleMode: value,
     enabledEdges: dockEnabledEdges.value
   })
+}
+
+function isDockRevealModeDisabled(mode) {
+  if (!dockRuntime.value.supported) return true
+  if (mode === DOCK_REVEAL_HANDLE_MODES.ON_TOUCH) {
+    return !dockRuntime.value.revealHandleSupported
+  }
+  if (mode === DOCK_REVEAL_HANDLE_MODES.PERSISTENT) {
+    return !dockRuntime.value.persistentHandleSupported
+  }
+  return false
 }
 
 function toggleDockEdge(side) {
@@ -526,7 +568,7 @@ function toggleDockEdge(side) {
   if (selected.has(side)) selected.delete(side)
   else selected.add(side)
   void saveDockConfig({
-    revealHandleEnabled: dockRevealHandleEnabled.value,
+    revealHandleMode: dockRevealHandleMode.value,
     enabledEdges: [...selected]
   })
 }
@@ -1490,11 +1532,11 @@ const onConfirmResetSettings = async () => {
           <section class="settings-section">
             <h3 class="section-title">贴边隐藏</h3>
 
-            <div class="setting-item">
+            <div class="setting-item dock-reveal-setting">
               <div class="setting-left">
                 <span class="setting-label"
-                  >贴边隐藏小黑条<HelpButton
-                    text="开启后，鼠标触碰隐藏窗口所在边缘时会先出现小黑条，点击小黑条后才展开完整窗口；关闭后，鼠标触边会直接展开窗口。"
+                  >隐藏后的唤出方式<HelpButton
+                    text="直接唤出会在鼠标触边后立即展开窗口；触边确认会先显示小黑条，鼠标离开后自动收回；常显确认会在窗口隐藏完成后自动显示小黑条并保持，点击后才展开窗口。外部程序全屏时常显条会暂时收回，退出全屏后自动恢复。"
                 /></span>
                 <span class="setting-hint-caption">仅作用于当前{{ currentViewLabel }}</span>
                 <span v-if="!dockRuntime.supported" class="setting-hint-caption dock-runtime-hint">
@@ -1504,19 +1546,35 @@ const onConfirmResetSettings = async () => {
                   v-else-if="!dockRuntime.revealHandleSupported"
                   class="setting-hint-caption dock-runtime-hint"
                 >
-                  当前原生组件版本不支持小黑条模式
+                  当前原生组件版本仅支持直接唤出
+                </span>
+                <span
+                  v-else-if="!dockRuntime.persistentHandleSupported"
+                  class="setting-hint-caption dock-runtime-hint"
+                >
+                  当前原生组件版本不支持常显确认
                 </span>
               </div>
               <div class="setting-right">
-                <AppToggle
-                  :model-value="dockRevealHandleEnabled"
-                  :disabled="
-                    !dockRuntime.supported ||
-                    (!dockRuntime.revealHandleSupported && !dockRevealHandleEnabled)
-                  "
-                  aria-label="贴边隐藏小黑条"
-                  @update:model-value="setDockRevealHandleEnabled"
-                />
+                <div
+                  class="dock-reveal-mode-selector"
+                  role="radiogroup"
+                  aria-label="隐藏后的唤出方式"
+                >
+                  <button
+                    v-for="option in dockRevealModeOptions"
+                    :key="option.value"
+                    type="button"
+                    role="radio"
+                    :title="option.title"
+                    :aria-checked="dockRevealHandleMode === option.value"
+                    :disabled="isDockRevealModeDisabled(option.value)"
+                    :class="{ 'is-selected': dockRevealHandleMode === option.value }"
+                    @click="setDockRevealHandleMode(option.value)"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2229,6 +2287,7 @@ const onConfirmResetSettings = async () => {
 /* ---- 面板主体：设置页使用 1× 全局霜层基准 ---- */
 .settings-panel {
   position: absolute;
+  container-type: inline-size;
   left: 0;
   right: 0;
   bottom: 0;
@@ -2540,6 +2599,63 @@ const onConfirmResetSettings = async () => {
 .titlebar-style-selector button:focus-visible {
   outline: 2rem solid #0078d4;
   outline-offset: 1rem;
+}
+
+.dock-reveal-setting .setting-right {
+  width: 100%;
+  min-width: 0;
+  flex: 1 0 100%;
+}
+.dock-reveal-mode-selector {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2rem;
+  padding: 2rem;
+  border-radius: 8rem;
+  background: var(--ui-surface-subtle);
+}
+.dock-reveal-mode-selector button {
+  min-height: 30rem;
+  padding: 0 8rem;
+  border: 0;
+  border-radius: 6rem;
+  color: var(--text-color-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) ease,
+    background-color var(--motion-control) var(--ease-standard),
+    transform var(--motion-fast) ease;
+}
+.dock-reveal-mode-selector button:hover:not(:disabled, .is-selected) {
+  color: var(--text-color);
+  background: var(--ui-fill-hover);
+}
+.dock-reveal-mode-selector button.is-selected {
+  color: var(--text-color);
+  background: var(--ui-accent-subtle);
+}
+.dock-reveal-mode-selector button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.dock-reveal-mode-selector button:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 1px;
+}
+.dock-reveal-mode-selector button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+@container (max-width: 300px) {
+  .dock-reveal-mode-selector {
+    grid-template-columns: 1fr;
+  }
 }
 
 .dock-edge-selector {

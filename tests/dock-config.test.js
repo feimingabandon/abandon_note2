@@ -18,11 +18,11 @@ describe('dock runtime config', () => {
     ])
     expect(
       normalizeDockRuntimeConfig(
-        { revealHandleEnabled: true, enabledEdges: ['right', 'left', 'right'] },
+        { revealHandleMode: 'persistent', enabledEdges: ['right', 'left', 'right'] },
         ['top', 'left']
       )
     ).toEqual({
-      revealHandleEnabled: true,
+      revealHandleMode: 'persistent',
       supportedEdges: ['top', 'left'],
       enabledEdges: ['left', 'right'],
       activeEdges: ['left']
@@ -32,8 +32,8 @@ describe('dock runtime config', () => {
   it('treats equivalent edge sets as the same runtime config', () => {
     expect(
       dockRuntimeConfigEqual(
-        { revealHandleEnabled: false, enabledEdges: ['right', 'top'] },
-        { revealHandleEnabled: false, enabledEdges: ['top', 'right'] }
+        { revealHandleMode: 'on-touch', enabledEdges: ['right', 'top'] },
+        { revealHandleMode: 'on-touch', enabledEdges: ['top', 'right'] }
       )
     ).toBe(true)
   })
@@ -41,26 +41,29 @@ describe('dock runtime config', () => {
   it('strictly validates the atomic IPC payload and caps its shape', () => {
     expect(
       validateDockConfigPayload({
-        revealHandleEnabled: true,
+        revealHandleMode: 'persistent',
         enabledEdges: ['right', 'top']
       })
-    ).toEqual({ revealHandleEnabled: true, enabledEdges: ['top', 'right'] })
+    ).toEqual({ revealHandleMode: 'persistent', enabledEdges: ['top', 'right'] })
     expect(() =>
       validateDockConfigPayload({
-        revealHandleEnabled: true,
+        revealHandleMode: 'on-touch',
         enabledEdges: ['top'],
         unexpected: true
       })
     ).toThrow('只能包含')
     expect(() =>
       validateDockConfigPayload({
-        revealHandleEnabled: false,
+        revealHandleMode: 'direct',
         enabledEdges: Array(13).fill('top')
       })
     ).toThrow('最多包含十二项')
     expect(() =>
-      validateDockConfigPayload({ revealHandleEnabled: false, enabledEdges: ['bottom'] })
+      validateDockConfigPayload({ revealHandleMode: 'direct', enabledEdges: ['bottom'] })
     ).toThrow('只能包含 top、left 或 right')
+    expect(() =>
+      validateDockConfigPayload({ revealHandleMode: 'always', enabledEdges: ['top'] })
+    ).toThrow('只能是 direct、on-touch 或 persistent')
   })
 })
 
