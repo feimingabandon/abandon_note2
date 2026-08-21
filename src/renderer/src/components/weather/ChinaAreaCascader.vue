@@ -15,7 +15,6 @@ const panelRef = ref(null)
 const activeProvinceCode = ref('')
 const activeCityCode = ref('')
 const panelStyle = ref({})
-let completedCandidate = null
 
 const activeProvince = computed(
   () => props.options.find((item) => item.code === activeProvinceCode.value) || null
@@ -30,15 +29,29 @@ function updatePanelPosition() {
   if (!triggerRef.value) return
   const rect = triggerRef.value.getBoundingClientRect()
   const viewportPadding = 8
+  const panelGap = 4
   const preferredWidth = Math.max(rect.width, 450)
   const width = Math.min(preferredWidth, window.innerWidth - viewportPadding * 2)
   const left = Math.max(
     viewportPadding,
     Math.min(rect.left, window.innerWidth - width - viewportPadding)
   )
+  const panelHeight = panelRef.value?.getBoundingClientRect().height || 0
+  const belowTop = rect.bottom + panelGap
+  const aboveTop = rect.top - panelGap - panelHeight
+  const shouldOpenAbove =
+    panelHeight > 0 &&
+    belowTop + panelHeight > window.innerHeight - viewportPadding &&
+    aboveTop >= viewportPadding
+  const top = shouldOpenAbove
+    ? aboveTop
+    : Math.max(
+        viewportPadding,
+        Math.min(belowTop, window.innerHeight - panelHeight - viewportPadding)
+      )
   panelStyle.value = {
     position: 'fixed',
-    top: `${rect.bottom + 4}px`,
+    top: `${top}px`,
     left: `${left}px`,
     width: `${width}px`,
     zIndex: 'var(--z-global-popover)'
@@ -68,7 +81,20 @@ function chooseCity(city) {
 
 function complete(candidate) {
   if (!candidate) return
-  completedCandidate = candidate
+  // options 会被 Vue 深度响应式化，直接把其中的 Proxy 传给 contextBridge
+  // 会触发 Electron 的 "An object could not be cloned"。这里只传递字段均为
+  // 基础类型的普通对象，并在收起动画开始前提交，避免快速重开或卸载丢失选择。
+  emit('complete', {
+    id: candidate.id ?? null,
+    name: candidate.name || '',
+    admin1: candidate.admin1 || '',
+    admin2: candidate.admin2 || '',
+    country: candidate.country || '',
+    countryCode: candidate.countryCode || '',
+    latitude: candidate.latitude ?? null,
+    longitude: candidate.longitude ?? null,
+    timezone: candidate.timezone || 'auto'
+  })
   open.value = false
 }
 
@@ -77,24 +103,12 @@ function onEnter(element, done) {
 }
 
 function onLeave(element, done) {
-  leavePopover(
-    element,
-    () => {
-      done()
-      if (completedCandidate) {
-        const candidate = completedCandidate
-        completedCandidate = null
-        emit('complete', candidate)
-      }
-    },
-    'dropdown'
-  )
+  leavePopover(element, done, 'dropdown')
 }
 
 function onDocumentPointerDown(event) {
   if (!open.value) return
   if (triggerRef.value?.contains(event.target) || panelRef.value?.contains(event.target)) return
-  completedCandidate = null
   open.value = false
 }
 

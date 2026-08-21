@@ -24,6 +24,25 @@ function errorMessage(value, fallback) {
   )
 }
 
+/**
+ * contextBridge / ipcRenderer 只能传输可结构化克隆的数据。即使调用方以后再次
+ * 传入 Vue Proxy，也在 IPC 边界前收敛为固定字段的普通对象。
+ */
+function weatherLocationCandidatePayload(candidate) {
+  if (!candidate || typeof candidate !== 'object') return null
+  return {
+    id: candidate.id ?? null,
+    name: candidate.name || '',
+    admin1: candidate.admin1 || '',
+    admin2: candidate.admin2 || '',
+    country: candidate.country || '',
+    countryCode: candidate.countryCode || '',
+    latitude: candidate.latitude ?? null,
+    longitude: candidate.longitude ?? null,
+    timezone: candidate.timezone || 'auto'
+  }
+}
+
 async function load() {
   const [snapshot, areas] = await Promise.all([
     window.api.getSettingsSnapshot(),
@@ -69,21 +88,28 @@ async function persistEnabled(value) {
 }
 
 async function choose(candidate) {
-  if (candidate?.id && Number(candidate.id) === Number(location.value?.id)) return
-  let resolvedCandidate = candidate
+  const candidatePayload = weatherLocationCandidatePayload(candidate)
+  if (!candidatePayload) {
+    error.value = '无法保存该位置'
+    return
+  }
+  if (candidatePayload.id && Number(candidatePayload.id) === Number(location.value?.id)) return
+  let resolvedCandidate = candidatePayload
   const hasCoordinates =
-    candidate?.latitude !== null &&
-    candidate?.latitude !== undefined &&
-    candidate?.longitude !== null &&
-    candidate?.longitude !== undefined
-  if (!hasCoordinates && !candidate?.id) {
+    candidatePayload.latitude !== null &&
+    candidatePayload.latitude !== undefined &&
+    candidatePayload.longitude !== null &&
+    candidatePayload.longitude !== undefined
+  if (!hasCoordinates && !candidatePayload.id) {
     error.value = '无法保存该位置'
     return
   }
   busy.value = 'save'
   error.value = ''
   try {
-    if (!hasCoordinates) resolvedCandidate = await window.api.resolveWeatherLocation(candidate)
+    if (!hasCoordinates) {
+      resolvedCandidate = await window.api.resolveWeatherLocation(candidatePayload)
+    }
     const normalized = normalizeWeatherLocation(resolvedCandidate)
     if (!normalized) throw new Error('无法获得该地区的天气坐标')
     await window.api.setSettingValue('weather.location', normalized)
