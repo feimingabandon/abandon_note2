@@ -16,6 +16,7 @@ export function buildStickyTrayTemplate({
   const normalizedViewMode = normalizeViewMode(activeViewMode)
   const stickies = stickyService?.list() || []
   const count = stickies.length
+  const recoverableCount = stickyService?.getRecoverableCount?.() || 0
   const overview =
     count > 0
       ? stickies.map((sticky) => ({
@@ -50,10 +51,19 @@ export function buildStickyTrayTemplate({
       enabled: count > 0,
       click: () => stickyService.showAll()
     },
+    {
+      label: `恢复便利贴（${recoverableCount}）`,
+      enabled: recoverableCount > 0,
+      click: () => {
+        void stickyService.restoreMissing({ source: 'tray' }).then((restored) => {
+          if (restored > 0) stickyService.showAll()
+        })
+      }
+    },
     { label: `便利贴总览（${count}）`, submenu: overview },
     {
       label: '× 关闭全部便利贴',
-      enabled: count > 0,
+      enabled: count + recoverableCount > 0,
       click: () => stickyService.closeAll()
     },
     { type: 'separator' },

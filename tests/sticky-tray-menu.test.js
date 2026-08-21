@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildStickyTrayTemplate } from '../src/main/sticky/StickyTrayMenu.js'
 
-function createStickyService(stickies = []) {
+function createStickyService(stickies = [], recoverableCount = 0) {
   return {
     list: vi.fn(() => stickies),
+    getRecoverableCount: vi.fn(() => recoverableCount),
+    restoreMissing: vi.fn(async () => recoverableCount),
     focus: vi.fn(),
     close: vi.fn(),
     closeAll: vi.fn(),
@@ -48,6 +50,24 @@ describe('sticky tray menu', () => {
       quitApplication: vi.fn()
     })
     expect(emptyTemplate.find((item) => item.label === '× 关闭全部便利贴').enabled).toBe(false)
+  })
+
+  it('restores missing persisted stickies from the tray', async () => {
+    const stickyService = createStickyService([], 2)
+    const template = buildStickyTrayTemplate({
+      stickyService,
+      openMainWindow: vi.fn(),
+      quitApplication: vi.fn()
+    })
+    const restore = template.find((item) => item.label === '恢复便利贴（2）')
+
+    expect(restore.enabled).toBe(true)
+    restore.click()
+    await vi.waitFor(() =>
+      expect(stickyService.restoreMissing).toHaveBeenCalledWith({ source: 'tray' })
+    )
+    expect(stickyService.showAll).toHaveBeenCalledOnce()
+    expect(template.find((item) => item.label === '× 关闭全部便利贴').enabled).toBe(true)
   })
 
   it('marks the active main view and switches through the tray submenu', () => {

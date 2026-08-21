@@ -89,7 +89,8 @@ function sendToMainWindow(getMainWindow, channel, payload) {
 export function registerBusinessIpcHandlers({
   ipcMain: rawIpcMain,
   getMainWindow,
-  platform = process.platform
+  platform = process.platform,
+  onNotePurged = () => {}
 }) {
   const ipcMain = createMainWindowIpc(rawIpcMain, getMainWindow, '便签业务数据')
   const enforceNotificationPolicy = (payload) => enforceSystemNotificationPolicy(payload, platform)
@@ -322,6 +323,7 @@ export function registerBusinessIpcHandlers({
     const noteId = Number(id)
     const purged = await purgeNoteAndFiles(noteId)
     if (purged) {
+      onNotePurged(noteId)
       sendToMainWindow(getMainWindow, 'notes:changed', { reason: 'purge', id: noteId })
     }
     return purged

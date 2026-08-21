@@ -108,8 +108,8 @@ pinButton.addEventListener('click', async () => {
 
 closeButton.addEventListener('click', () => {
   window.stickyAPI.close().catch((error) => {
-    console.error('[Sticky] 请求主进程关闭失败，改用 renderer 关闭:', error)
-    window.close()
+    console.error('[Sticky] 请求主进程关闭失败:', error)
+    showError(error.message || '便利贴关闭失败，请重试')
   })
 })
 

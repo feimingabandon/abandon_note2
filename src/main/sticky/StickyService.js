@@ -19,6 +19,14 @@ export class StickyService {
     throw new Error('StickyService.showAll() must be implemented')
   }
 
+  restoreMissing() {
+    throw new Error('StickyService.restoreMissing() must be implemented')
+  }
+
+  getRecoverableCount() {
+    throw new Error('StickyService.getRecoverableCount() must be implemented')
+  }
+
   focus() {
     throw new Error('StickyService.focus() must be implemented')
   }

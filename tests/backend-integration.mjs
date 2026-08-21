@@ -54,6 +54,14 @@ import {
   listRemoteNotices
 } from '../src/main/db/db-remote-notices.js'
 import { runRecurringTemplates } from '../src/main/services/recurrence.js'
+import {
+  countDesktopStickyRecords,
+  deleteDesktopStickyRecord,
+  hasDesktopStickyRecord,
+  insertDesktopStickyRecord,
+  listDesktopStickyRecords,
+  updateDesktopStickyRecord
+} from '../src/main/db/db-desktop-stickies.js'
 
 function localTs(year, month, day, hour = 0, minute = 0, second = 0) {
   return new Date(year, month - 1, day, hour, minute, second, 0).getTime()
@@ -298,6 +306,22 @@ assert.deepEqual(
 )
 assert.deepEqual(tagOrderMigrationDb.pragma('foreign_key_check'), [])
 tagOrderMigrationDb.close()
+
+const versionSixDb = new Database(':memory:')
+versionSixDb.pragma('foreign_keys = ON')
+createDatabaseSchema(versionSixDb)
+versionSixDb.exec('DROP TABLE desktop_stickies; PRAGMA user_version = 6;')
+createDatabaseSchema(versionSixDb)
+assert.equal(versionSixDb.pragma('user_version', { simple: true }), DATABASE_SCHEMA_VERSION)
+assert.equal(
+  versionSixDb
+    .prepare(
+      "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'desktop_stickies'"
+    )
+    .get().count,
+  1
+)
+versionSixDb.close()
 
 const db = new Database(':memory:')
 db.pragma('foreign_keys = ON')
@@ -775,6 +799,41 @@ try {
   assert.equal(defaultDurationNote.duration_days, 1)
   assert.equal(multiDayNote.duration_days, 7)
   assert.throws(() => createNote({ content: '无效持续时间', durationDays: 366 }), /持续天数/)
+
+  const stickySource = createNote({ content: '便利贴持久化来源' })
+  const stickyRecord = {
+    id: 'sticky-integration-1',
+    noteId: stickySource.id,
+    content: stickySource.content,
+    bounds: { x: 100, y: 120, width: 280, height: 260 },
+    displayId: 'display-1',
+    workArea: { x: 0, y: 0, width: 1920, height: 1040 },
+    fontSize: 16,
+    backgroundColor: '#FFF2A8',
+    cornerRadius: 0,
+    pinned: false,
+    createdAt: localTs(2025, 7, 20, 10),
+    updatedAt: localTs(2025, 7, 20, 10)
+  }
+  insertDesktopStickyRecord(stickyRecord)
+  assert.equal(countDesktopStickyRecords(), 1)
+  assert.equal(hasDesktopStickyRecord(stickyRecord.id), true)
+  assert.deepEqual(listDesktopStickyRecords()[0].bounds, stickyRecord.bounds)
+  assert.equal(
+    updateDesktopStickyRecord(stickyRecord.id, {
+      boundsX: 160,
+      alwaysOnTop: true,
+      updatedAt: localTs(2025, 7, 20, 11)
+    }),
+    true
+  )
+  assert.equal(listDesktopStickyRecords()[0].bounds.x, 160)
+  assert.equal(listDesktopStickyRecords()[0].pinned, true)
+  assert.equal(deleteDesktopStickyRecord(stickyRecord.id), true)
+  assert.equal(hasDesktopStickyRecord(stickyRecord.id), false)
+  insertDesktopStickyRecord(stickyRecord)
+  db.prepare('DELETE FROM notes WHERE id = ?').run(stickySource.id)
+  assert.equal(countDesktopStickyRecords(), 0, '彻底删除来源便签必须级联删除便利贴记录')
 
   const literalPercentNote = createNote({ content: '进度 100% 已完成' })
   const literalUnderscoreNote = createNote({ content: '项目_alpha' })

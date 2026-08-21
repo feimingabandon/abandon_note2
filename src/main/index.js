@@ -46,6 +46,15 @@ import {
 
 import { createNote, getNoteById, activateNotes } from './db/db-notes.js'
 import {
+  countDesktopStickyRecords,
+  deleteAllDesktopStickyRecords,
+  deleteDesktopStickyRecord,
+  hasDesktopStickyRecord,
+  insertDesktopStickyRecord,
+  listDesktopStickyRecords,
+  updateDesktopStickyRecord
+} from './db/db-desktop-stickies.js'
+import {
   applyRemoteNoticeEvents,
   acknowledgeRemoteNotice,
   getRemoteNoticeSyncState,
@@ -2876,6 +2885,15 @@ app.whenReady().then(async () => {
       is.dev && process.env.ELECTRON_RENDERER_URL
         ? `${process.env.ELECTRON_RENDERER_URL}/sticky.html`
         : null,
+    stickyRepository: {
+      list: listDesktopStickyRecords,
+      count: countDesktopStickyRecords,
+      exists: hasDesktopStickyRecord,
+      insert: insertDesktopStickyRecord,
+      update: updateDesktopStickyRecord,
+      delete: deleteDesktopStickyRecord,
+      deleteAll: deleteAllDesktopStickyRecords
+    },
     isDevelopment: is.dev,
     onRegistryChanged: rebuildTrayMenu,
     onError: (text) => {
@@ -2884,6 +2902,7 @@ app.whenReady().then(async () => {
     }
   })
   stickyService.initialize()
+  void stickyService.restoreMissing({ source: 'startup' })
 
   // 初始化完整快照中的窗口运行状态（必须在 createWindow 之后）
   applyResolvedWindowRuntime()
@@ -3004,6 +3023,7 @@ app.whenReady().then(async () => {
   // 【清空便签数据】仅清理便签、模板、标签和附件，保留 app_settings。
   mainWindowIpc.handle('clear-note-data', async () => {
     await clearNoteData()
+    stickyService?.discardAllRuntime()
     mainWindow?.webContents.send('notes:changed', { reason: 'note-data-cleared' })
     return true
   })
@@ -3034,7 +3054,8 @@ app.whenReady().then(async () => {
   registerBusinessIpcHandlers({
     ipcMain,
     getMainWindow: () => mainWindow,
-    platform: process.platform
+    platform: process.platform,
+    onNotePurged: (noteId) => stickyService?.discardByNoteId(noteId)
   })
   registerCalendarIpcHandlers({
     ipcMain,

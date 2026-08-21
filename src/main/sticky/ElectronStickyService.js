@@ -1,4 +1,5 @@
 import { BrowserWindow, screen } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'url'
 import { ipcMain } from '../logging/ipc-main.js'
 import { setWindowLogContext } from '../logging/window-capture.js'
@@ -11,6 +12,7 @@ import {
   MIN_STICKY_HEIGHT,
   MIN_STICKY_WIDTH,
   STICKY_PALETTE,
+  STICKY_BOUNDS_PERSIST_DELAY_MS,
   STICKY_READY_TIMEOUT_MS,
   STICKY_TOOLBAR_HEIGHT
 } from './stickyConstants.js'
@@ -49,6 +51,7 @@ export class ElectronStickyService extends StickyService {
     preloadPath,
     rendererFile,
     rendererUrl,
+    stickyRepository,
     isDevelopment = false,
     onRegistryChanged,
     onError
@@ -60,14 +63,24 @@ export class ElectronStickyService extends StickyService {
     this.preloadPath = preloadPath
     this.rendererFile = rendererFile
     this.rendererUrl = rendererUrl
+    this.repository = stickyRepository || {
+      list: () => [],
+      count: () => 0,
+      exists: () => true,
+      insert: () => {},
+      update: () => true,
+      delete: () => true,
+      deleteAll: () => 0
+    }
     this.isDevelopment = isDevelopment
     this.onRegistryChanged = onRegistryChanged
     this.onError = onError
     this.registry = new Map()
     this.byWebContentsId = new Map()
-    this.sequence = 0
     this.initialized = false
     this.disposing = false
+    this.restorePromise = null
+    this.rendererRecoveryAttempts = new Map()
     this.displayManager = new StickyDisplayManager(screen, (change) =>
       this.handleDisplayTopologyChange(change)
     )
@@ -110,7 +123,7 @@ export class ElectronStickyService extends StickyService {
 
   async create({ noteId }) {
     if (!this.initialized || this.disposing) throw new StickyCreationError('便利贴服务尚未就绪')
-    if (this.registry.size >= MAX_STICKY_WINDOWS) {
+    if (Math.max(this.registry.size, this.repository.count()) >= MAX_STICKY_WINDOWS) {
       throw new StickyCreationError(
         `最多同时展示 ${MAX_STICKY_WINDOWS} 张便利贴，请先关闭部分便利贴`
       )
@@ -139,7 +152,37 @@ export class ElectronStickyService extends StickyService {
     )
     const cornerRadius = normalizeCornerRadius(defaultAppearance.cornerRadius ?? 0)
     const pinned = defaultAppearance.alwaysOnTop === true
-    const id = `sticky-${Date.now()}-${++this.sequence}`
+    const id = `sticky-${randomUUID()}`
+    return this.openEntry({
+      id,
+      noteId: normalizedNoteId,
+      content,
+      bounds,
+      displayId: display.id,
+      workArea: { ...display.workArea },
+      fontSize,
+      backgroundColor,
+      cornerRadius,
+      pinned,
+      createdAt: Date.now(),
+      persisted: false
+    })
+  }
+
+  async openEntry({
+    id,
+    noteId,
+    content,
+    bounds,
+    displayId,
+    workArea,
+    fontSize,
+    backgroundColor,
+    cornerRadius,
+    pinned,
+    createdAt,
+    persisted
+  }) {
     const win = new BrowserWindow({
       ...bounds,
       minWidth: MIN_STICKY_WIDTH,
@@ -170,17 +213,18 @@ export class ElectronStickyService extends StickyService {
         backgroundThrottling: true
       }
     })
-    setWindowLogContext(win, { role: 'sticky', stickyId: id, noteId: normalizedNoteId })
+    setWindowLogContext(win, { role: 'sticky', stickyId: id, noteId })
 
     const entry = {
       id,
-      noteId: normalizedNoteId,
+      noteId,
       content,
       preview: createStickyPreview(content, this.registry.size),
       window: win,
       webContentsId: win.webContents.id,
       bounds,
-      displayId: display.id,
+      displayId,
+      workArea,
       fontSize,
       backgroundColor,
       textColor: getContrastTextColor(backgroundColor),
@@ -190,8 +234,10 @@ export class ElectronStickyService extends StickyService {
       ready: false,
       finishReadyWait: null,
       readyTimer: null,
-      createdAt: Date.now(),
-      lastFocusedAt: Date.now()
+      boundsPersistTimer: null,
+      createdAt,
+      lastFocusedAt: Date.now(),
+      persisted
     }
     const readyPromise = new Promise((resolve) => {
       let settled = false
@@ -218,7 +264,16 @@ export class ElectronStickyService extends StickyService {
         await win.loadFile(this.rendererFile)
       }
     } catch (error) {
+      let restorationCancelled = false
+      if (persisted) {
+        try {
+          restorationCancelled = !this.repository.exists(id)
+        } catch {
+          // 继续记录原始页面加载错误。
+        }
+      }
       this.destroyEntry(entry)
+      if (restorationCancelled) throw new StickyCreationError('便利贴恢复已取消')
       console.error(`[sticky] 页面加载失败 (${this.rendererUrl || this.rendererFile}):`, error)
       throw new StickyCreationError('便利贴页面加载失败')
     }
@@ -261,6 +316,111 @@ export class ElectronStickyService extends StickyService {
     throw new StickyCreationError('主窗口外没有足够空间展示便利贴，请移动或缩小主窗口后重试')
   }
 
+  getRecoverableCount() {
+    if (!this.initialized || this.disposing) return 0
+    try {
+      return this.repository.list().filter((record) => !this.registry.has(record.id)).length
+    } catch (error) {
+      console.error('[sticky] 读取可恢复便利贴数量失败:', error)
+      return 0
+    }
+  }
+
+  restoreMissing({ source = 'manual' } = {}) {
+    if (!this.initialized || this.disposing) return Promise.resolve(0)
+    if (this.restorePromise) return this.restorePromise
+    this.restorePromise = this.restoreMissingInternal(source)
+      .catch((error) => {
+        console.error(`[sticky] 恢复便利贴失败 (source=${source}):`, error)
+        this.onError?.('恢复便利贴失败，请重试')
+        return 0
+      })
+      .finally(() => {
+        this.restorePromise = null
+        this.onRegistryChanged?.()
+      })
+    return this.restorePromise
+  }
+
+  async restoreMissingInternal(source) {
+    const records = this.repository.list()
+    let restored = 0
+    let failed = 0
+    for (const record of records) {
+      if (this.disposing || this.registry.size >= MAX_STICKY_WINDOWS) break
+      if (this.registry.has(record.id)) continue
+      const recordId = String(record.id)
+      try {
+        if (!this.repository.exists(recordId)) continue
+        const normalized = this.normalizeRestoredRecord(record)
+        await this.openEntry({ ...normalized, persisted: true })
+        const entry = this.registry.get(recordId)
+        if (!entry?.ready || entry.window.isDestroyed() || !this.repository.exists(recordId)) {
+          if (entry) this.destroyEntry(entry)
+          continue
+        }
+        restored += 1
+      } catch (error) {
+        const entry = this.registry.get(recordId)
+        if (entry) this.destroyEntry(entry)
+        try {
+          if (!this.repository.exists(recordId)) continue
+        } catch {
+          // 数据库读取失败仍按恢复失败报告，保留原始错误供日志定位。
+        }
+        failed += 1
+        console.error(`[sticky] 恢复便利贴失败 (${record.id}, source=${source}):`, error)
+      }
+    }
+    if (failed > 0) this.onError?.(`${failed} 张便利贴恢复失败，请稍后通过托盘重试`)
+    console.log(`[sticky] 恢复便利贴完成 (source=${source}, restored=${restored})`)
+    return restored
+  }
+
+  normalizeRestoredRecord(record) {
+    const displays = screen.getAllDisplays()
+    if (!displays.length) throw new Error('当前没有可用显示器')
+    const content = normalizeStickyContent(record.content)
+    const fontSize = normalizeFontSize(record.fontSize)
+    const backgroundColor = normalizeBackgroundColor(record.backgroundColor)
+    const cornerRadius = normalizeCornerRadius(record.cornerRadius)
+    const savedBounds = {
+      x: Math.round(Number(record.bounds?.x)),
+      y: Math.round(Number(record.bounds?.y)),
+      width: Math.max(MIN_STICKY_WIDTH, Math.round(Number(record.bounds?.width))),
+      height: Math.max(MIN_STICKY_HEIGHT, Math.round(Number(record.bounds?.height)))
+    }
+    if (Object.values(savedBounds).some((value) => !Number.isFinite(value))) {
+      throw new Error('便利贴位置记录无效')
+    }
+    const matchingDisplay = displays.find(
+      (display) => String(display.id) === String(record.displayId)
+    )
+    const center = {
+      x: savedBounds.x + Math.round(savedBounds.width / 2),
+      y: savedBounds.y + Math.round(savedBounds.height / 2)
+    }
+    const target =
+      matchingDisplay || screen.getDisplayNearestPoint(center) || screen.getPrimaryDisplay()
+    const bounds =
+      !matchingDisplay && record.workArea
+        ? mapBoundsBetweenWorkAreas(savedBounds, record.workArea, target.workArea)
+        : constrainBoundsToWorkArea(savedBounds, target.workArea)
+    return {
+      id: String(record.id),
+      noteId: normalizeNoteId(record.noteId),
+      content,
+      bounds,
+      displayId: target.id,
+      workArea: { ...target.workArea },
+      fontSize,
+      backgroundColor,
+      cornerRadius,
+      pinned: record.pinned === true,
+      createdAt: Number(record.createdAt) || Date.now()
+    }
+  }
+
   attachWindowListeners(entry) {
     const win = entry.window
     const expectedUrl = this.rendererUrl || pathToFileURL(this.rendererFile).toString()
@@ -271,7 +431,10 @@ export class ElectronStickyService extends StickyService {
         x: entry.bounds.x + Math.round(entry.bounds.width / 2),
         y: entry.bounds.y + Math.round(entry.bounds.height / 2)
       }
-      entry.displayId = screen.getDisplayNearestPoint(center).id
+      const display = screen.getDisplayNearestPoint(center)
+      entry.displayId = display.id
+      entry.workArea = { ...display.workArea }
+      this.scheduleBoundsPersistence(entry)
     }
 
     win.on('move', updateBounds)
@@ -290,7 +453,48 @@ export class ElectronStickyService extends StickyService {
         this.onError?.('一张便利贴异常关闭')
       }
       this.destroyEntry(entry)
+      if (details.reason !== 'clean-exit') this.scheduleRendererRecovery(entry.id)
     })
+  }
+
+  scheduleBoundsPersistence(entry) {
+    if (!entry.ready || !entry.persisted || this.disposing) return
+    if (entry.boundsPersistTimer) clearTimeout(entry.boundsPersistTimer)
+    entry.boundsPersistTimer = setTimeout(() => {
+      entry.boundsPersistTimer = null
+      this.persistBounds(entry)
+    }, STICKY_BOUNDS_PERSIST_DELAY_MS)
+    entry.boundsPersistTimer.unref?.()
+  }
+
+  persistBounds(entry) {
+    if (!entry?.persisted) return false
+    try {
+      return this.repository.update(entry.id, {
+        boundsX: entry.bounds.x,
+        boundsY: entry.bounds.y,
+        boundsWidth: entry.bounds.width,
+        boundsHeight: entry.bounds.height,
+        displayId: entry.displayId == null ? null : String(entry.displayId),
+        workAreaX: entry.workArea?.x ?? null,
+        workAreaY: entry.workArea?.y ?? null,
+        workAreaWidth: entry.workArea?.width ?? null,
+        workAreaHeight: entry.workArea?.height ?? null,
+        updatedAt: Date.now()
+      })
+    } catch (error) {
+      console.error(`[sticky] 保存便利贴位置失败 (${entry.id}):`, error)
+      return false
+    }
+  }
+
+  scheduleRendererRecovery(id) {
+    if (this.disposing || (this.rendererRecoveryAttempts.get(id) || 0) >= 1) return
+    this.rendererRecoveryAttempts.set(id, 1)
+    const timer = setTimeout(() => {
+      if (!this.disposing) void this.restoreMissing({ source: 'renderer-gone' })
+    }, 500)
+    timer.unref?.()
   }
 
   requireEntryForSender(webContentsId) {
@@ -308,7 +512,35 @@ export class ElectronStickyService extends StickyService {
   markReady(webContentsId) {
     const entry = this.requireEntryForSender(webContentsId)
     if (!entry.ready) {
+      if (entry.persisted) {
+        let recordExists
+        try {
+          recordExists = this.repository.exists(entry.id)
+        } catch (error) {
+          entry.finishReadyWait?.(false)
+          this.destroyEntry(entry)
+          console.error(`[sticky] 验证便利贴记录失败 (${entry.id}):`, error)
+          throw new Error('便利贴记录验证失败，已停止恢复')
+        }
+        if (!recordExists) {
+          entry.finishReadyWait?.(false)
+          this.destroyEntry(entry)
+          throw new Error('便利贴记录已被删除，已停止恢复')
+        }
+      } else {
+        try {
+          this.repository.insert(this.toPersistentRecord(entry))
+          entry.persisted = true
+          console.log(`[sticky] 便利贴已持久化 (${entry.id})`)
+        } catch (error) {
+          entry.finishReadyWait?.(false)
+          this.destroyEntry(entry)
+          console.error(`[sticky] 保存新便利贴失败 (${entry.id}):`, error)
+          throw new Error('便利贴保存失败，未显示到桌面')
+        }
+      }
       entry.ready = true
+      this.persistBounds(entry)
       entry.window.showInactive()
       const finishReadyWait = entry.finishReadyWait
       entry.finishReadyWait = null
@@ -320,14 +552,23 @@ export class ElectronStickyService extends StickyService {
 
   closeForSender(webContentsId) {
     const entry = this.requireEntryForSender(webContentsId)
-    this.destroyEntry(entry)
+    if (!this.close(entry.id)) throw new Error('便利贴关闭失败，请重试')
     return true
   }
 
   togglePinForSender(webContentsId) {
     const entry = this.requireEntryForSender(webContentsId)
-    entry.pinned = !entry.pinned
-    entry.window.setAlwaysOnTop(entry.pinned)
+    const pinned = !entry.pinned
+    if (
+      !this.repository.update(entry.id, {
+        alwaysOnTop: pinned,
+        updatedAt: Date.now()
+      })
+    ) {
+      throw new Error('便利贴记录不存在')
+    }
+    entry.pinned = pinned
+    entry.window.setAlwaysOnTop(pinned)
     return { pinned: entry.pinned }
   }
 
@@ -342,13 +583,40 @@ export class ElectronStickyService extends StickyService {
     ) {
       throw new Error('无效的便利贴外观设置')
     }
+    if (Object.keys(payload).length === 0) return this.serializeAppearance(entry)
 
-    if (payload.fontSize !== undefined) entry.fontSize = normalizeFontSize(payload.fontSize)
+    const nextFontSize =
+      payload.fontSize === undefined ? entry.fontSize : normalizeFontSize(payload.fontSize)
+    let nextBackgroundColor = entry.backgroundColor
     if (payload.backgroundColor !== undefined) {
-      entry.backgroundColor = normalizeBackgroundColor(payload.backgroundColor)
-      entry.textColor = getContrastTextColor(entry.backgroundColor)
+      nextBackgroundColor = normalizeBackgroundColor(payload.backgroundColor)
     }
+    const patch = { updatedAt: Date.now() }
+    if (payload.fontSize !== undefined) patch.fontSize = nextFontSize
+    if (payload.backgroundColor !== undefined) patch.backgroundColor = nextBackgroundColor
+    if (!this.repository.update(entry.id, patch)) throw new Error('便利贴记录不存在')
+    entry.fontSize = nextFontSize
+    entry.backgroundColor = nextBackgroundColor
+    entry.textColor = getContrastTextColor(entry.backgroundColor)
     return this.serializeAppearance(entry)
+  }
+
+  toPersistentRecord(entry) {
+    const timestamp = Date.now()
+    return {
+      id: entry.id,
+      noteId: entry.noteId,
+      content: entry.content,
+      bounds: { ...entry.bounds },
+      displayId: entry.displayId,
+      workArea: entry.workArea ? { ...entry.workArea } : null,
+      fontSize: entry.fontSize,
+      backgroundColor: entry.backgroundColor,
+      cornerRadius: entry.cornerRadius,
+      pinned: entry.pinned,
+      createdAt: entry.createdAt,
+      updatedAt: timestamp
+    }
   }
 
   serializeAppearance(entry) {
@@ -414,17 +682,76 @@ export class ElectronStickyService extends StickyService {
 
   close(id) {
     const entry = this.registry.get(id)
-    if (!entry) return false
-    this.destroyEntry(entry)
-    return true
+    if (!entry) {
+      try {
+        const deleted = this.repository.delete(id)
+        if (deleted) this.onRegistryChanged?.()
+        return deleted
+      } catch (error) {
+        console.error(`[sticky] 删除便利贴记录失败 (${id}):`, error)
+        return false
+      }
+    }
+    try {
+      this.destroyEntry(entry)
+      if (entry.persisted) this.repository.delete(id)
+      entry.persisted = false
+      this.onRegistryChanged?.()
+      console.log(`[sticky] 用户已关闭便利贴 (${id})`)
+      return true
+    } catch (error) {
+      console.error(`[sticky] 关闭便利贴失败 (${id}):`, error)
+      this.onError?.('便利贴关闭失败，请重试')
+      return false
+    }
   }
 
   closeAll() {
-    for (const entry of [...this.registry.values()]) this.destroyEntry(entry)
+    const entries = [...this.registry.values()]
+    try {
+      for (const entry of entries) this.destroyEntry(entry)
+      this.repository.deleteAll()
+      for (const entry of entries) entry.persisted = false
+      this.onRegistryChanged?.()
+      console.log('[sticky] 用户已关闭全部便利贴')
+      return true
+    } catch (error) {
+      console.error('[sticky] 关闭全部便利贴失败:', error)
+      this.onError?.('关闭全部便利贴失败，请重试')
+      return false
+    }
+  }
+
+  discardByNoteId(noteId) {
+    const parsedNoteId = Number(noteId)
+    for (const entry of [...this.registry.values()]) {
+      if (entry.noteId !== parsedNoteId) continue
+      try {
+        entry.persisted = false
+        this.destroyEntry(entry)
+      } catch (error) {
+        console.error(`[sticky] 彻底删除来源便签后关闭便利贴失败 (${entry.id}):`, error)
+      }
+    }
+  }
+
+  discardAllRuntime() {
+    for (const entry of [...this.registry.values()]) {
+      try {
+        entry.persisted = false
+        this.destroyEntry(entry)
+      } catch (error) {
+        console.error(`[sticky] 清空数据后关闭便利贴失败 (${entry.id}):`, error)
+      }
+    }
   }
 
   destroyEntry(entry) {
     if (!entry) return
+    if (entry.boundsPersistTimer) {
+      clearTimeout(entry.boundsPersistTimer)
+      entry.boundsPersistTimer = null
+    }
     if (!entry.window.isDestroyed()) {
       entry.window.destroy()
     } else {
@@ -434,6 +761,8 @@ export class ElectronStickyService extends StickyService {
 
   removeEntry(entry) {
     if (this.registry.get(entry.id) !== entry) return
+    if (entry.boundsPersistTimer) clearTimeout(entry.boundsPersistTimer)
+    entry.boundsPersistTimer = null
     entry.finishReadyWait?.(false)
     entry.finishReadyWait = null
     this.byWebContentsId.delete(entry.webContentsId)
@@ -458,6 +787,8 @@ export class ElectronStickyService extends StickyService {
         entry.window.setBounds(mapped)
         entry.bounds = mapped
         entry.displayId = target.id
+        entry.workArea = { ...target.workArea }
+        this.scheduleBoundsPersistence(entry)
         continue
       }
 
@@ -471,6 +802,8 @@ export class ElectronStickyService extends StickyService {
         entry.window.setBounds(bounded)
         entry.bounds = bounded
         entry.displayId = target.id
+        entry.workArea = { ...target.workArea }
+        this.scheduleBoundsPersistence(entry)
       }
     }
   }
@@ -478,7 +811,14 @@ export class ElectronStickyService extends StickyService {
   dispose() {
     if (!this.initialized) return
     this.disposing = true
-    this.closeAll()
+    for (const entry of [...this.registry.values()]) {
+      if (entry.boundsPersistTimer) {
+        clearTimeout(entry.boundsPersistTimer)
+        entry.boundsPersistTimer = null
+      }
+      this.persistBounds(entry)
+      this.destroyEntry(entry)
+    }
     this.displayManager.stop()
     for (const channel of IPC_CHANNELS) ipcMain.removeHandler(channel)
     this.initialized = false

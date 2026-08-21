@@ -1,5 +1,11 @@
 /** 数据库结构版本。公开版本只能通过显式迁移递增。 */
-export const DATABASE_SCHEMA_VERSION = 6
+export const DATABASE_SCHEMA_VERSION = 7
+
+function hasTable(db, tableName) {
+  return Boolean(
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName)
+  )
+}
 
 function hasColumn(db, tableName, columnName) {
   return db
@@ -185,6 +191,11 @@ function migrateToVersion6(db) {
   if (hasPinned) db.exec('ALTER TABLE tags DROP COLUMN is_pinned;')
 }
 
+/** V7 持久化仍由用户保留在桌面上的便利贴。 */
+function migrateToVersion7(db) {
+  createDesktopStickiesSchema(db)
+}
+
 function ensureTagRelationIndexes(db) {
   if (hasColumn(db, 'note_tags', 'tag_id')) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id ON note_tags(tag_id);')
@@ -199,6 +210,7 @@ function migrateDatabaseSchema(db, existingVersion) {
   const missingTagIds =
     !hasColumn(db, 'note_tags', 'tag_id') || !hasColumn(db, 'template_tags', 'tag_id')
   const missingTagSortOrder = !hasColumn(db, 'tags', 'sort_order')
+  const missingDesktopStickies = !hasTable(db, 'desktop_stickies')
   const hasObsoleteTagPinning =
     hasColumn(db, 'tags', 'is_pinned') || hasColumn(db, 'tags', 'pinned_at')
   const hasObsoleteSnoozeColumn = hasColumn(db, 'notes', 'remind_again_at')
@@ -208,7 +220,8 @@ function migrateDatabaseSchema(db, existingVersion) {
     !missingTagIds &&
     !missingTagSortOrder &&
     !hasObsoleteTagPinning &&
-    !hasObsoleteSnoozeColumn
+    !hasObsoleteSnoozeColumn &&
+    !missingDesktopStickies
   )
     return
   db.transaction(() => {
@@ -221,6 +234,7 @@ function migrateDatabaseSchema(db, existingVersion) {
     if (existingVersion < 6 || missingTagSortOrder || hasObsoleteTagPinning) {
       migrateToVersion6(db)
     }
+    if (existingVersion < 7 || missingDesktopStickies) migrateToVersion7(db)
     if (existingVersion < DATABASE_SCHEMA_VERSION) {
       db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
     }
@@ -422,5 +436,35 @@ export function createNotesSchema(db) {
       tag_id        INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
       PRIMARY KEY (template_id, tag_id)
     );
+  `)
+  createDesktopStickiesSchema(db)
+}
+
+function createDesktopStickiesSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS desktop_stickies (
+      id                 TEXT    PRIMARY KEY,
+      note_id            INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+      content_snapshot   TEXT    NOT NULL,
+      x                  INTEGER NOT NULL,
+      y                  INTEGER NOT NULL,
+      width              INTEGER NOT NULL CHECK(width > 0),
+      height             INTEGER NOT NULL CHECK(height > 0),
+      display_id         TEXT,
+      work_area_x        INTEGER,
+      work_area_y        INTEGER,
+      work_area_width    INTEGER CHECK(work_area_width IS NULL OR work_area_width > 0),
+      work_area_height   INTEGER CHECK(work_area_height IS NULL OR work_area_height > 0),
+      font_size          INTEGER NOT NULL CHECK(font_size BETWEEN 12 AND 32),
+      background_color   TEXT    NOT NULL,
+      corner_radius      INTEGER NOT NULL CHECK(corner_radius BETWEEN 0 AND 32),
+      always_on_top      INTEGER NOT NULL DEFAULT 0 CHECK(always_on_top IN (0, 1)),
+      created_at         INTEGER NOT NULL,
+      updated_at         INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_desktop_stickies_note_id
+      ON desktop_stickies(note_id);
+    CREATE INDEX IF NOT EXISTS idx_desktop_stickies_created_at
+      ON desktop_stickies(created_at);
   `)
 }

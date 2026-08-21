@@ -268,6 +268,7 @@ export async function clearNoteData() {
   try {
     // 显式清理关联表，保持操作顺序清晰，也避免把大量级联工作留到最后一步。
     db.transaction(() => {
+      db.prepare('DELETE FROM desktop_stickies').run()
       db.prepare('DELETE FROM template_tags').run()
       db.prepare('DELETE FROM note_tags').run()
       db.prepare('DELETE FROM note_attachments').run()
