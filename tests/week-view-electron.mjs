@@ -137,6 +137,7 @@ async function runWeekViewTests() {
       title: document.querySelector('.month-toolbar__title')?.textContent?.trim() || '',
       previousLabel: document.querySelector('.month-toolbar__navigation button:first-child')?.getAttribute('aria-label'),
       nextLabel: document.querySelector('.month-toolbar__navigation button:nth-of-type(3)')?.getAttribute('aria-label'),
+      templateButton: Boolean(document.querySelector('.month-titlebar-btn[aria-controls="template-workspace"]')),
       helpButton: Boolean(document.querySelector('.month-titlebar-btn[aria-controls="help-workspace"]')),
       microsoftTitlebar: document.querySelector('.app-titlebar')?.classList.contains('app-titlebar--microsoft'),
       today: (() => {
@@ -149,10 +150,40 @@ async function runWeekViewTests() {
     assert.equal(initial.label, '周历')
     assert.equal(initial.previousLabel, '上一周')
     assert.equal(initial.nextLabel, '下一周')
+    assert.equal(initial.templateButton, true, '周视图必须开放循环模板入口')
     assert.equal(initial.helpButton, true, '周视图必须开放帮助中心入口')
     assert.equal(initial.selected, initial.today, '周视图初始选中日期应为今天')
     assert.equal(initial.microsoftTitlebar, true, '周视图首次启动未继承月视图导航栏风格')
     assert.match(initial.title, /年.*月.*日—.*日/)
+
+    await weekWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-titlebar-btn[aria-controls="template-workspace"]').click()`
+    )
+    await waitUntil(
+      () =>
+        weekWindow.webContents.executeJavaScript(
+          `document.querySelector('.month-template-panel')?.classList.contains('active') && document.querySelector('.month-template-panel')?.textContent.includes('循环模板')`
+        ),
+      '周视图循环模板工作区没有完成打开'
+    )
+    await weekWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-template-panel .tcp-button').click()`
+    )
+    await waitUntil(
+      () =>
+        weekWindow.webContents.executeJavaScript(
+          `document.querySelector('.month-template-panel .tcp-content')?.classList.contains('visible')`
+        ),
+      '周视图循环模板新建表单没有完成展开'
+    )
+    await weekWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-titlebar-btn[aria-controls="template-workspace"]').click()`
+    )
+    await waitUntil(
+      () =>
+        weekWindow.webContents.executeJavaScript(`!document.querySelector('.month-template-wrapper')`),
+      '周视图循环模板工作区没有完成关闭'
+    )
 
     await weekWindow.webContents.executeJavaScript(
       `document.querySelector('.month-titlebar-btn[aria-controls="help-workspace"]').click()`

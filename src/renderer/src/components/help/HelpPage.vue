@@ -86,10 +86,11 @@ const calendarSections = [
   {
     id: 'calendar-tools',
     title: '常用工具',
-    hint: '日报 · 便利贴',
+    hint: '日报 · 便利贴 · 模板',
     items: [
       { id: 'calendar-report', title: '日报导出' },
-      { id: 'calendar-sticky', title: '贴到桌面' }
+      { id: 'calendar-sticky', title: '贴到桌面' },
+      { id: 'calendar-template', title: '循环模板' }
     ]
   }
 ]
@@ -438,8 +439,8 @@ onBeforeUnmount(() => {
               <li><strong>窗口置顶：</strong>默认开启；关闭后窗口回到普通系统层级。</li>
               <li><strong>锁定：</strong>禁止移动和缩放，并停用贴边自动隐藏。</li>
               <li>
-                <strong>业务按钮：</strong>日报、<template v-if="isListView">循环模板、</template
-                >设置和帮助；循环模板只出现在便签列表视图。
+                <strong>业务按钮：</strong
+                >日报、循环模板、设置和帮助；三个视图使用同一套循环模板数据。
               </li>
             </ul>
           </div>
@@ -643,7 +644,7 @@ onBeforeUnmount(() => {
           >
             <h3 class="help-anchor-title">循环模板</h3>
             <p class="help-anchor-desc">
-              循环模板按钮只出现在便签列表视图。模板不会反复修改同一条便签，而是在每个命中的时间点<strong>生成一条新的便签</strong>。
+              循环模板按钮位于便签列表、月视图和周视图导航栏。模板不会反复修改同一条便签，而是在每个命中的时间点<strong>生成一条新的便签</strong>。
             </p>
             <HelpMock caption="循环模板页示意；新建、规则预览和模板卡片集中在同一工作区">
               <MockTemplatePage />
@@ -812,7 +813,7 @@ onBeforeUnmount(() => {
             <div class="help-section-head">
               <h2>常用工具</h2>
               <p class="help-summary">
-                从导航栏导出日报，或从日期侧栏的便签卡片生成只读桌面便利贴。
+                从导航栏导出日报、管理循环模板，或从日期侧栏的便签卡片生成只读桌面便利贴。
               </p>
             </div>
 
@@ -841,6 +842,20 @@ onBeforeUnmount(() => {
               <p class="help-anchor-desc">
                 在日期侧栏的便签卡片上打开右键菜单并选择“贴到桌面”。便利贴只读展示来源正文，可临时调整字号、背景和置顶；关闭便利贴不会删除日历中的来源便签。
               </p>
+            </div>
+
+            <div
+              :ref="(el) => registerAnchor('calendar-template', el)"
+              data-anchor-id="calendar-template"
+              class="help-anchor"
+            >
+              <h3 class="help-anchor-title">循环模板</h3>
+              <p class="help-anchor-desc">
+                点击导航栏循环模板按钮可打开与便签列表相同的工作区，在任意视图中创建、编辑、暂停、恢复或删除循环模板；三个视图读取同一份模板数据。
+              </p>
+              <HelpMock caption="循环模板工作区；新建规则和模板管理在三个视图中保持一致">
+                <MockTemplatePage />
+              </HelpMock>
             </div>
           </section>
         </template>

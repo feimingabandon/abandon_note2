@@ -1354,7 +1354,7 @@ const onConfirmResetSettings = async () => {
                   >导航栏风格<HelpButton
                     :text="
                       isCalendarView
-                        ? `只切换${calendarViewLabel}导航栏的布局和按钮外观，不改变关闭、置顶、锁定、设置和帮助按钮。`
+                        ? `只切换${calendarViewLabel}导航栏的布局和按钮外观，不改变关闭、置顶、锁定、循环模板、设置和帮助按钮。`
                         : '只切换列表导航栏的布局和按钮外观，不改变关闭、置顶、锁定、循环模板、设置和帮助功能。'
                     "
                 /></span>

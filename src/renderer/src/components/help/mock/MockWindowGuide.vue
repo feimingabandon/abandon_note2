@@ -14,7 +14,7 @@ defineProps({
       </div>
       <div class="mwg-actions">
         <span>日报</span>
-        <span v-if="viewMode === 'list'">循环模板</span>
+        <span>循环模板</span>
         <span>设置</span>
         <span>帮助</span>
       </div>

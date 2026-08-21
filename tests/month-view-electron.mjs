@@ -210,10 +210,39 @@ async function runMonthViewTests() {
     assert.equal(initialUi.dayPanelVisible, false, '日期侧栏首次进入必须默认折叠')
     assert.equal(initialUi.settingsButton, true)
     assert.equal(initialUi.helpButton, true, '月视图必须开放帮助中心入口')
-    assert.equal(initialUi.templateButton, false, '月视图导航栏不应包含模板按钮')
+    assert.equal(initialUi.templateButton, true, '月视图必须开放循环模板入口')
     assert.equal(initialUi.controlCount, 3, '月视图应复用关闭、置顶、锁定三个窗口控制')
     assert.equal(initialUi.refreshButton, true, '今天按钮旁必须提供刷新按钮')
     assert.equal(initialUi.persistentJumpControls, false, '工具栏右侧不得常驻年月选择控件')
+
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-titlebar-btn[aria-controls="template-workspace"]').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `document.querySelector('.month-template-panel')?.classList.contains('active') && document.querySelector('.month-template-panel')?.textContent.includes('循环模板')`
+        ),
+      '月视图循环模板工作区没有完成打开'
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-template-panel .tcp-button').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `document.querySelector('.month-template-panel .tcp-content')?.classList.contains('visible')`
+        ),
+      '月视图循环模板新建表单没有完成展开'
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-titlebar-btn[aria-controls="template-workspace"]').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(`!document.querySelector('.month-template-wrapper')`),
+      '月视图循环模板工作区没有完成关闭'
+    )
 
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-titlebar-btn[aria-controls="help-workspace"]').click()`

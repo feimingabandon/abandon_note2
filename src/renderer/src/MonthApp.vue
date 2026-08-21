@@ -12,6 +12,7 @@ import FirstUseNoticeDialog from './components/system/FirstUseNoticeDialog.vue'
 import HolidayDataNoticeDialog from './components/system/HolidayDataNoticeDialog.vue'
 import DailyReportDialog from './components/report/DailyReportDialog.vue'
 import DailyReportButton from './components/report/DailyReportButton.vue'
+import TemplatePage from './components/template/TemplatePage.vue'
 import HelpPage from './components/help/HelpPage.vue'
 import { createMessageProvider } from './composables/useMessage.js'
 import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
@@ -44,8 +45,19 @@ const showRemoteNoticeDialog = ref(false)
 const showFirstUseNotice = ref(false)
 const showHolidayDataNoticeDialog = ref(false)
 const showDailyReportDialog = ref(false)
+const templatePanelRef = ref(null)
 const helpPanelRef = ref(null)
+const templateWorkspace = useSlidingWorkspace({ getElement: () => templatePanelRef.value })
 const helpWorkspace = useSlidingWorkspace({ getElement: () => helpPanelRef.value })
+const {
+  rendered: templatesRendered,
+  active: templatePanelActive,
+  phase: templatePhase,
+  interactive: templateInteractive,
+  close: closeTemplateWorkspace,
+  onTransitionEnd: onTemplateTransitionEnd,
+  onTransitionCancel: onTemplateTransitionCancel
+} = templateWorkspace
 const {
   rendered: helpRendered,
   active: helpPanelActive,
@@ -83,17 +95,34 @@ function onCalendarWorkspaceReady() {
 }
 
 function openSettings() {
+  closeTemplates()
   closeHelp()
   if (!releaseSettingsBackgroundBlur) releaseSettingsBackgroundBlur = retainModalBlur()
   showSettings.value = true
 }
 
 function openDailyReport() {
+  closeTemplates()
   closeHelp()
   showDailyReportDialog.value = true
 }
 
+function openTemplates() {
+  closeHelp()
+  void templateWorkspace.open()
+}
+
+function closeTemplates() {
+  closeTemplateWorkspace()
+}
+
+function toggleTemplates() {
+  if (templatePhase.value === 'closed' || templatePhase.value === 'closing') openTemplates()
+  else closeTemplates()
+}
+
 function openHelp() {
+  closeTemplates()
   void helpWorkspace.open()
 }
 
@@ -360,6 +389,16 @@ onUnmounted(() => {
         <TitlebarActions :style-variant="titlebarStyle">
           <DailyReportButton month-view @open="openDailyReport" />
           <button
+            class="titlebar-btn titlebar-btn-template month-titlebar-btn"
+            :class="{ 'is-active': templatePanelActive }"
+            :title="templatePanelActive ? '关闭循环模板' : '打开循环模板'"
+            aria-controls="template-workspace"
+            :aria-expanded="templatePanelActive"
+            @click="toggleTemplates"
+          >
+            <img class="btn-icon" src="@/resources/icons/recurrence.svg" alt="循环模板" />
+          </button>
+          <button
             class="titlebar-btn titlebar-btn-settings month-titlebar-btn"
             title="设置"
             @click="openSettings"
@@ -381,8 +420,8 @@ onUnmounted(() => {
       <div class="month-content-stage">
         <main
           class="month-content"
-          :class="{ 'is-ui-background-blurred': helpInteractive }"
-          :inert="helpInteractive"
+          :class="{ 'is-ui-background-blurred': templateInteractive || helpInteractive }"
+          :inert="templateInteractive || helpInteractive"
           :aria-label="`${viewLabel}内容区域`"
         >
           <MonthWorkspace
@@ -392,6 +431,25 @@ onUnmounted(() => {
             @ready="onCalendarWorkspaceReady"
           />
         </main>
+
+        <div
+          v-if="templatesRendered"
+          class="month-template-wrapper"
+          :class="{ 'is-interactive': templateInteractive }"
+        >
+          <div
+            id="template-workspace"
+            ref="templatePanelRef"
+            class="month-template-panel"
+            :class="{ active: templatePanelActive }"
+            role="region"
+            aria-label="循环便签模板设置"
+            @transitionend="onTemplateTransitionEnd"
+            @transitioncancel="onTemplateTransitionCancel"
+          >
+            <TemplatePage />
+          </div>
+        </div>
 
         <div
           v-if="helpRendered"
@@ -486,6 +544,7 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+.month-template-wrapper,
 .month-help-wrapper {
   position: absolute;
   z-index: var(--z-global-workspace);
@@ -495,10 +554,12 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
+.month-template-wrapper.is-interactive,
 .month-help-wrapper.is-interactive {
   pointer-events: auto;
 }
 
+.month-template-panel,
 .month-help-panel {
   position: absolute;
   inset: 0;
@@ -514,6 +575,7 @@ onUnmounted(() => {
   will-change: transform;
 }
 
+.month-template-panel.active,
 .month-help-panel.active {
   transform: translateX(0);
 }
