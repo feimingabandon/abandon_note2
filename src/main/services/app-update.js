@@ -268,6 +268,13 @@ export class AppUpdateService {
           candidate.source === 'gitcode' &&
           compareVersions(candidate.version, release.version) === 0
       )
+      const sameVersionReleases = releases.filter(
+        (candidate) => compareVersions(candidate.version, release.version) === 0
+      )
+      const notesRelease =
+        sameVersionReleases.find(
+          (candidate) => candidate.source === 'github' && candidate.notes.trim()
+        ) || sameVersionReleases.find((candidate) => candidate.notes.trim())
       const downloadUrl = getTrustedGitCodeDownloadUrl(gitcodeRelease, artifactName)
       const releaseLinks = buildReleaseLinks(release.version)
       this.externalSelection = Object.freeze({
@@ -294,7 +301,7 @@ export class AppUpdateService {
         releaseLinks,
         source: release.source,
         releaseTitle: release.title,
-        releaseNotes: release.notes,
+        releaseNotes: notesRelease?.notes || '',
         publishedAt: release.publishedAt
       }
       console.log(

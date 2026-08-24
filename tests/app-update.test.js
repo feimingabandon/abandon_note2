@@ -171,6 +171,7 @@ describe('app update metadata', () => {
         const source = url.includes('gitcode.com') ? 'gitcode' : 'github'
         return jsonResponse({
           tag_name: 'v0.9.2',
+          body: source === 'github' ? '- 新增桌面便利贴恢复\n- 新增循环模板入口' : '',
           assets: [windowsAsset('0.9.2', source)]
         })
       }
@@ -181,6 +182,7 @@ describe('app update metadata', () => {
       relation: 'upgrade',
       latestVersion: '0.9.2',
       downloadAvailable: true,
+      releaseNotes: '- 新增桌面便利贴恢复\n- 新增循环模板入口',
       releaseLinks: {
         gitcode: 'https://gitcode.com/zou-feiming/abandon_note2/releases/tag/v0.9.2',
         github: 'https://github.com/feimingabandon/abandon_note2/releases/tag/v0.9.2'

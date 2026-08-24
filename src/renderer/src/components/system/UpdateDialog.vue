@@ -51,6 +51,8 @@ const hasRelease = computed(
     ['available', 'current', 'downgrade'].includes(props.result?.status)
 )
 
+const releaseNotes = computed(() => String(props.result?.releaseNotes || '').trim())
+
 const statusSummary = computed(() => {
   if (props.result?.status === 'available') {
     return (
@@ -179,6 +181,15 @@ function confirmOpenUpdateTarget() {
           </p>
 
           <template v-if="hasRelease">
+            <section
+              v-if="releaseNotes"
+              class="release-notes"
+              aria-labelledby="release-notes-heading"
+            >
+              <strong id="release-notes-heading">本次更新</strong>
+              <p>{{ releaseNotes }}</p>
+            </section>
+
             <section class="download-section" aria-labelledby="browser-download-heading">
               <div class="section-heading">
                 <strong id="browser-download-heading">浏览器下载</strong>
@@ -308,6 +319,30 @@ function confirmOpenUpdateTarget() {
 .update-summary--warning,
 .action-error {
   color: color-mix(in srgb, #ff453a 78%, var(--text-color));
+}
+
+.release-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 7rem;
+  margin-bottom: 15rem;
+  padding: 12rem 14rem;
+  border: 1px solid var(--ui-border-divider);
+  border-radius: 10rem;
+  background: var(--ui-surface-subtle);
+}
+
+.release-notes strong {
+  font-size: var(--fs-body);
+}
+
+.release-notes p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
 
 .download-section,

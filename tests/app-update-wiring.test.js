@@ -21,4 +21,12 @@ describe('应用更新入口接线', () => {
     expect(preload).toContain("ipcRenderer.invoke('update:open-link', request)")
     expect(main).toContain('appUpdateService.getExternalUrl(request)')
   })
+
+  it('在更新弹窗中安全显示 Release 更新说明', () => {
+    const source = read('src/renderer/src/components/system/UpdateDialog.vue')
+    expect(source).toContain("String(props.result?.releaseNotes || '').trim()")
+    expect(source).toContain('本次更新')
+    expect(source).toContain('{{ releaseNotes }}')
+    expect(source).not.toContain('v-html')
+  })
 })
