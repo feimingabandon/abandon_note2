@@ -52,8 +52,10 @@ function seedWeekView(userDataPath) {
   // 周视图第一次启动应继承月视图的窗口、侧栏与外观设置。
   insert.run('month', 'geometry', 'pos_x', '110', now, now)
   insert.run('month', 'geometry', 'pos_y', '120', now, now)
-  insert.run('month', 'geometry', 'width', '1000', now, now)
-  insert.run('month', 'geometry', 'height', '700', now, now)
+  // GitHub Windows runner 的工作区约为 1024x720；尺寸过大时约束后的 y=20
+  // 会恰好命中贴边阈值，并在 show 时被正常吸附到 y=0，干扰本用例的继承断言。
+  insert.run('month', 'geometry', 'width', '900', now, now)
+  insert.run('month', 'geometry', 'height', '600', now, now)
   insert.run('month', 'ui', 'day_panel_size', '33', now, now)
   insert.run('month', 'appearance', 'titlebar_style', 'microsoft', now, now)
   insert.run('month', 'system', 'blur_enabled', 'false', now, now)
@@ -106,7 +108,7 @@ async function runWeekViewTests() {
     await waitUntil(() => weekWindow.isVisible(), '周视图渲染就绪后没有显示')
 
     const display = screen.getDisplayMatching(weekWindow.getBounds())
-    const expectedInherited = { x: 110, y: 120, width: 1000, height: 700 }
+    const expectedInherited = { x: 110, y: 120, width: 900, height: 600 }
     const constrainedExpected = {
       width: Math.min(expectedInherited.width, display.workArea.width),
       height: Math.min(expectedInherited.height, display.workArea.height),
