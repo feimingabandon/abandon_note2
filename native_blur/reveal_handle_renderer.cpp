@@ -319,7 +319,8 @@ struct RevealHandleRenderer::Impl {
         return updated != FALSE;
     }
 
-    bool DrawFrame(int side, std::uint64_t visibleElapsedMs) {
+    bool DrawFrame(
+        int side, std::uint64_t visibleElapsedMs, bool showActivityIndicator) {
         RECT client{0, 0, static_cast<LONG>(surfaceWidth), static_cast<LONG>(surfaceHeight)};
         if (FAILED(target->BindDC(memoryDc, &client))) return false;
 
@@ -381,7 +382,9 @@ struct RevealHandleRenderer::Impl {
         target->DrawEllipse(
             D2D1::Ellipse(avatarCenter, avatarRadius, avatarRadius),
             avatarOutlineBrush.Get(), 0.75f);
-        DrawLightTrail(avatarCenter, ringRadius, headAngle);
+        if (showActivityIndicator) {
+            DrawLightTrail(avatarCenter, ringRadius, headAngle);
+        }
 
         if (vertical) {
             const D2D1_RECT_F firstLine = D2D1::RectF(3.0f, 49.0f, size.width - 3.0f, 69.0f);
@@ -401,15 +404,21 @@ struct RevealHandleRenderer::Impl {
         return SUCCEEDED(result);
     }
 
-    bool Draw(HWND hwnd, int side, UINT dpi, std::uint64_t visibleElapsedMs) {
+    bool Draw(
+        HWND hwnd,
+        int side,
+        UINT dpi,
+        std::uint64_t visibleElapsedMs,
+        bool showActivityIndicator) {
         return EnsureTarget(hwnd, dpi) &&
-            DrawFrame(side, visibleElapsedMs) &&
+            DrawFrame(side, visibleElapsedMs, showActivityIndicator) &&
             Present(hwnd);
     }
 
-    bool Prewarm(UINT width, UINT height, int side, UINT dpi) {
+    bool Prewarm(
+        UINT width, UINT height, int side, UINT dpi, bool showActivityIndicator) {
         return EnsureTarget(width, height, dpi) &&
-            DrawFrame(side, 0);
+            DrawFrame(side, 0, showActivityIndicator);
     }
 };
 
@@ -450,13 +459,19 @@ bool RevealHandleRenderer::Initialize() {
 }
 
 bool RevealHandleRenderer::Paint(
-    HWND hwnd, int side, UINT dpi, std::uint64_t visibleElapsedMs) {
-    return impl_ && impl_->Draw(hwnd, side, std::max<UINT>(96, dpi), visibleElapsedMs);
+    HWND hwnd,
+    int side,
+    UINT dpi,
+    std::uint64_t visibleElapsedMs,
+    bool showActivityIndicator) {
+    return impl_ && impl_->Draw(
+        hwnd, side, std::max<UINT>(96, dpi), visibleElapsedMs, showActivityIndicator);
 }
 
-bool RevealHandleRenderer::Prewarm(UINT width, UINT height, int side, UINT dpi) {
+bool RevealHandleRenderer::Prewarm(
+    UINT width, UINT height, int side, UINT dpi, bool showActivityIndicator) {
     return impl_ && impl_->Prewarm(
-        width, height, side, std::max<UINT>(96, dpi));
+        width, height, side, std::max<UINT>(96, dpi), showActivityIndicator);
 }
 
 bool RevealHandleRenderer::UsesEmbeddedFont() const {

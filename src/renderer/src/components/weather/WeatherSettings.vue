@@ -16,6 +16,7 @@ const busy = ref('')
 const error = ref('')
 const locationLabel = computed(() => weatherLocationLabel(location.value))
 const REVERSE_GEOCODING_URL = 'https://api.bigdatacloud.net/data/reverse-geocode-client'
+let locationSavePromise = null
 
 function errorMessage(value, fallback) {
   return String(value?.message || fallback).replace(
@@ -87,7 +88,7 @@ async function persistEnabled(value) {
   }
 }
 
-async function choose(candidate) {
+async function saveLocationCandidate(candidate) {
   const candidatePayload = weatherLocationCandidatePayload(candidate)
   if (!candidatePayload) {
     error.value = '无法保存该位置'
@@ -123,6 +124,19 @@ async function choose(candidate) {
   } finally {
     busy.value = ''
   }
+}
+
+function choose(candidate) {
+  // Teleport 浮层在 leave 动画结束前仍保留 DOM。即使旧节点收到第二次点击，
+  // 同一时刻也只允许一条解析与设置写入链路，避免地区和天气开关重复提交。
+  if (locationSavePromise) return locationSavePromise
+  const request = saveLocationCandidate(candidate)
+  locationSavePromise = request
+  const clearRequest = () => {
+    if (locationSavePromise === request) locationSavePromise = null
+  }
+  request.then(clearRequest, clearRequest)
+  return request
 }
 
 function useDeviceLocation() {

@@ -85,4 +85,43 @@ describe('dock main-process wiring', () => {
     expect(snapToEdge).toContain('Math.abs(motionPlan.initial.x - motionPlan.visibleX) <= 1')
     expect(snapToEdge).toContain('if (alreadySnapped) return')
   })
+
+  it('keeps fullscreen display-metric recovery offscreen and generation-safe', () => {
+    const source = readFileSync(MAIN_PATH, 'utf8')
+    const rebuild = source.slice(
+      source.indexOf('function rebuildFullscreenDockSessionAfterDisplayChange'),
+      source.indexOf('function handleDockDisplayTopologyChange')
+    )
+    const topology = source.slice(
+      source.indexOf('function handleDockDisplayTopologyChange'),
+      source.indexOf('function attachDockPowerListeners')
+    )
+
+    expect(rebuild).toContain('monitorStatus?.fullscreenActive !== true')
+    expect(rebuild).toContain('stopEdgeMonitorForFullscreenRebuild({')
+    expect(rebuild).toContain('setDockPosition({ x: motionPlan.hiddenX, y: motionPlan.hiddenY }')
+    expect(rebuild).toContain('const generation = ++dockSessionSequence')
+    expect(rebuild).toContain('windowMotionBackend.armEdgeMonitor')
+    expect(rebuild).toContain('windowMotionBackend.showPersistentHandle(generation)')
+    expect(rebuild).toContain("emergencyRestoreDock('fullscreen-display-rebuild-failed'")
+    expect(topology).toContain("change?.eventName === 'display-metrics-changed'")
+    expect(topology).toContain('String(change.displayId) !== String(dockMotionSession.displayId)')
+    expect(topology).toContain('pendingDockDisplayChange')
+  })
+
+  it('persists native handle drag events without rebuilding the hidden session', () => {
+    const source = readFileSync(MAIN_PATH, 'utf8')
+    const handler = source.slice(
+      source.indexOf('function handleNativeEdgeMonitorMessage'),
+      source.indexOf('function attachNativeEdgeMonitorMessageHook')
+    )
+    const hide = source.slice(source.indexOf('function doHide'), source.indexOf('function doShow'))
+
+    expect(handler).toContain("event.kind === 'handle-moved'")
+    expect(handler).toContain("id: 'dock.revealHandlePositions'")
+    expect(handler).toContain('dockMotionSession.handlePositionPermille = positionPermille')
+    expect(handler).toContain('windowMotionBackend.setPersistentHandlePosition')
+    expect(hide).toContain('resolveDockRevealHandlePositionPermille')
+    expect(hide).toContain("applyDockPersistentHandlePosition(dockMotionSession, 'hide')")
+  })
 })

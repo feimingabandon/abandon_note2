@@ -7,6 +7,7 @@
     </div>
     <div class="mtm-divider"></div>
     <div class="mtm-item">显示全部便利贴（3）</div>
+    <div class="mtm-item">恢复便利贴（1）</div>
     <div class="mtm-item">
       <span>便利贴总览（3）</span>
       <b>›</b>

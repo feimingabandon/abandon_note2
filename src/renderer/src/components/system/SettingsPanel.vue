@@ -110,7 +110,7 @@ const dockRevealModeOptions = Object.freeze([
   {
     value: DOCK_REVEAL_HANDLE_MODES.PERSISTENT,
     label: '常显确认',
-    title: '窗口隐藏完成后自动显示小黑条，并保持到点击展开窗口'
+    title: '窗口隐藏后保持显示；长按拖动可调整沿屏幕边缘的位置'
   }
 ])
 
@@ -476,8 +476,6 @@ const dockRevealHandleMode = ref(viewDefaults.value.dock.revealHandleMode)
 const dockEnabledEdges = ref([...viewDefaults.value.dock.enabledEdges])
 const dockRuntime = ref({
   supported: true,
-  revealHandleSupported: true,
-  persistentHandleSupported: true,
   reason: ''
 })
 let _dockConfigRequestRevision = 0
@@ -501,8 +499,6 @@ function assignDockRuntime(runtime) {
   if (!runtime) return
   dockRuntime.value = {
     supported: runtime.supported !== false,
-    revealHandleSupported: runtime.revealHandleSupported !== false,
-    persistentHandleSupported: runtime.persistentHandleSupported === true,
     reason: runtime.reason || runtime.error || ''
   }
 }
@@ -552,14 +548,7 @@ function setDockRevealHandleMode(value) {
 }
 
 function isDockRevealModeDisabled(mode) {
-  if (!dockRuntime.value.supported) return true
-  if (mode === DOCK_REVEAL_HANDLE_MODES.ON_TOUCH) {
-    return !dockRuntime.value.revealHandleSupported
-  }
-  if (mode === DOCK_REVEAL_HANDLE_MODES.PERSISTENT) {
-    return !dockRuntime.value.persistentHandleSupported
-  }
-  return false
+  return !dockRuntime.value.supported || !Object.values(DOCK_REVEAL_HANDLE_MODES).includes(mode)
 }
 
 function toggleDockEdge(side) {
@@ -1536,23 +1525,11 @@ const onConfirmResetSettings = async () => {
               <div class="setting-left">
                 <span class="setting-label"
                   >隐藏后的唤出方式<HelpButton
-                    text="直接唤出会在鼠标触边后立即展开窗口；触边确认会先显示小黑条，鼠标离开后自动收回；常显确认会在窗口隐藏完成后自动显示小黑条并保持，点击后才展开窗口。外部程序全屏时常显条会暂时收回，退出全屏后自动恢复。"
+                    text="直接唤出会在鼠标触边后立即展开窗口；触边确认会先显示小黑条，鼠标离开后自动收回；常显确认会在窗口隐藏完成后自动显示小黑条并保持，点击后展开窗口，长按拖动可调整其沿屏幕边缘的位置。外部程序全屏时常显条会暂时收回，退出全屏后自动恢复。"
                 /></span>
                 <span class="setting-hint-caption">仅作用于当前{{ currentViewLabel }}</span>
                 <span v-if="!dockRuntime.supported" class="setting-hint-caption dock-runtime-hint">
                   {{ dockRuntime.reason || '当前平台暂不支持贴边隐藏' }}
-                </span>
-                <span
-                  v-else-if="!dockRuntime.revealHandleSupported"
-                  class="setting-hint-caption dock-runtime-hint"
-                >
-                  当前原生组件版本仅支持直接唤出
-                </span>
-                <span
-                  v-else-if="!dockRuntime.persistentHandleSupported"
-                  class="setting-hint-caption dock-runtime-hint"
-                >
-                  当前原生组件版本不支持常显确认
                 </span>
               </div>
               <div class="setting-right">
@@ -2407,7 +2384,7 @@ const onConfirmResetSettings = async () => {
   height: 28rem;
   border: none;
   border-radius: 50%;
-  background-color: var(--ui-surface-control);
+  background-color: transparent;
   color: var(--text-color);
   opacity: 0.6;
   cursor: pointer;

@@ -15,8 +15,13 @@ public:
     RevealHandleRenderer& operator=(const RevealHandleRenderer&) = delete;
 
     bool Initialize();
-    bool Prewarm(UINT width, UINT height, int side, UINT dpi);
-    bool Paint(HWND hwnd, int side, UINT dpi, std::uint64_t visibleElapsedMs);
+    bool Prewarm(UINT width, UINT height, int side, UINT dpi, bool showActivityIndicator);
+    bool Paint(
+        HWND hwnd,
+        int side,
+        UINT dpi,
+        std::uint64_t visibleElapsedMs,
+        bool showActivityIndicator);
     bool UsesEmbeddedFont() const;
     void DiscardWindowResources();
 

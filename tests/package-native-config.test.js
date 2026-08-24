@@ -2,8 +2,9 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Arch } from 'builder-util'
+import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
 
 const require = createRequire(import.meta.url)
 const { createPackageWithOptions } = require('@electron/asar')
@@ -92,7 +93,18 @@ describe('platform native module configuration', () => {
 
       it(`validates a complete ${platform}-${arch} package`, async () => {
         const context = await createPackagedFixture(platform, arch)
-        await expect(validatePackagedApp(context)).resolves.toBeUndefined()
+        const validateWindowsNativeAbi = vi.fn()
+        await expect(
+          validatePackagedApp(context, { validateWindowsNativeAbi })
+        ).resolves.toBeUndefined()
+        if (platform === 'win32') {
+          expect(validateWindowsNativeAbi).toHaveBeenCalledWith(
+            path.join(context.packager.getResourcesDir(), 'native_blur', 'blur_engine.dll'),
+            NATIVE_ABI_VERSION
+          )
+        } else {
+          expect(validateWindowsNativeAbi).not.toHaveBeenCalled()
+        }
       })
     }
   }
@@ -109,7 +121,9 @@ describe('platform native module configuration', () => {
 
   it('rejects an ASAR header that points to a missing unpacked file', async () => {
     const context = await createPackagedFixture('win32', 'x64', { breakAsar: true })
-    await expect(validatePackagedApp(context)).rejects.toThrow('Unable to extract some files')
+    await expect(
+      validatePackagedApp(context, { validateWindowsNativeAbi: vi.fn() })
+    ).rejects.toThrow('Unable to extract some files')
 
     await access(
       path.join(
@@ -125,8 +139,8 @@ describe('platform native module configuration', () => {
 
   it('rejects development source leaked into app.asar', async () => {
     const context = await createPackagedFixture('win32', 'x64', { leakSource: true })
-    await expect(validatePackagedApp(context)).rejects.toThrow(
-      'Development file leaked into app.asar: /src'
-    )
+    await expect(
+      validatePackagedApp(context, { validateWindowsNativeAbi: vi.fn() })
+    ).rejects.toThrow('Development file leaked into app.asar: /src')
   })
 })

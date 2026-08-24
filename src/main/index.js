@@ -32,14 +32,17 @@ import {
   updateGeometry as blurUpdateGeometry,
   destroy as blurDestroy,
   reSyncZOrder as blurReSyncZOrder,
-  getRuntimeHealth as getBlurRuntimeHealth
+  getRuntimeHealth as getBlurRuntimeHealth,
+  getNativeRuntimeCompatibility
 } from './bridge/blur_bridge.js'
 import { createWindowMotionBackend } from './window-motion/index.js'
 import { DockTransitionState } from './window-motion/dock-transition-state.js'
+import { stopEdgeMonitorForFullscreenRebuild } from './window-motion/dock-display-rebuild.js'
 import {
   dockRuntimeConfigEqual,
   isCurrentDockMonitorEvent,
   normalizeDockRuntimeConfig,
+  resolveDockRevealHandlePositionPermille,
   selectNearestDockSide,
   validateDockConfigPayload
 } from './window-motion/dock-config.js'
@@ -114,6 +117,7 @@ import {
   getWindowLogContext,
   setWindowLogContext
 } from './logging/window-capture.js'
+import { enforceNativeRuntimeCompatibility } from './native-runtime-gate.js'
 import {
   DEFAULT_SETTINGS,
   DOCK_REVEAL_HANDLE_MODES,
@@ -230,26 +234,27 @@ function getDockRuntimeConfig() {
   const configuredDock = resolvedSettings?.dock ||
     createDefaultSettings(activeViewMode).dock || {
       revealHandleMode: DOCK_REVEAL_HANDLE_MODES.DIRECT,
-      enabledEdges: supportedEdges
+      enabledEdges: supportedEdges,
+      revealHandlePositions: {}
     }
-  return normalizeDockRuntimeConfig(configuredDock, supportedEdges)
+  const normalized = normalizeDockRuntimeConfig(configuredDock, supportedEdges)
+  return {
+    ...normalized,
+    revealHandlePositions: { ...(configuredDock.revealHandlePositions || {}) }
+  }
 }
 
 function getDockRuntimeCapability() {
   if (process.platform !== 'win32') {
     return {
       supported: false,
-      reason: '当前平台没有原生边缘监视器',
-      revealHandleSupported: false,
-      persistentHandleSupported: false
+      reason: '当前平台没有原生边缘监视器'
     }
   }
   if (!windowMotionBackend) {
     return {
       supported: true,
-      reason: null,
-      revealHandleSupported: true,
-      persistentHandleSupported: true
+      reason: null
     }
   }
 
@@ -258,23 +263,17 @@ function getDockRuntimeCapability() {
     if (status?.supported === false) {
       return {
         supported: false,
-        reason: status.error || 'Windows 原生边缘监视器不可用',
-        revealHandleSupported: false,
-        persistentHandleSupported: false
+        reason: status.error || 'Windows 原生边缘监视器不可用'
       }
     }
     return {
       supported: true,
-      reason: null,
-      revealHandleSupported: status?.revealHandleSupported !== false,
-      persistentHandleSupported: status?.persistentHandleSupported === true
+      reason: null
     }
   } catch (error) {
     return {
       supported: false,
-      reason: error?.message || '读取 Windows 原生边缘监视器能力失败',
-      revealHandleSupported: false,
-      persistentHandleSupported: false
+      reason: error?.message || '读取 Windows 原生边缘监视器能力失败'
     }
   }
 }
@@ -388,6 +387,7 @@ let settingsRevision = 0
 let geometryTimer = null
 let dockGeometryReconcileTimer = null
 let dockDisplayChangeTimer = null
+const pendingDockDisplayChanges = []
 const dockDisplayListeners = []
 const dockPowerListeners = []
 
@@ -473,8 +473,6 @@ function getResolvedSettingsSnapshot() {
       dock: {
         supported: dockCapability.supported,
         reason: dockCapability.reason,
-        revealHandleSupported: dockCapability.revealHandleSupported,
-        persistentHandleSupported: dockCapability.persistentHandleSupported,
         viewMode: activeViewMode,
         supportedEdges: dockRuntime.supportedEdges,
         enabledEdges: dockRuntime.enabledEdges,
@@ -1090,6 +1088,33 @@ function handleNativeEdgeMonitorMessage(window) {
     }
     return
   }
+  if (event.kind === 'handle-moved') {
+    const positionPermille = Number(event.positionPermille)
+    if (
+      dockMotionSession?.revealHandleMode !== DOCK_REVEAL_HANDLE_MODES.PERSISTENT ||
+      !Number.isInteger(positionPermille) ||
+      positionPermille < 0 ||
+      positionPermille > 1000
+    ) {
+      logger.warn('dock.handle-position', '忽略无效的小黑条拖动位置事件', { event })
+      return
+    }
+    dockMotionSession.handlePositionPermille = positionPermille
+    const revealHandlePositions = {
+      ...(resolvedSettings?.dock?.revealHandlePositions || {}),
+      [event.side]: positionPermille / 1000
+    }
+    try {
+      persistSettingValues([{ id: 'dock.revealHandlePositions', value: revealHandlePositions }])
+      logger.info('dock.handle-position', '常显小黑条位置已保存', {
+        side: event.side,
+        positionPermille
+      })
+    } catch (error) {
+      logger.error('dock.handle-position', error, { event })
+    }
+    return
+  }
   if (event.kind === 'trigger') {
     if (isDockHidden) {
       try {
@@ -1101,6 +1126,21 @@ function handleNativeEdgeMonitorMessage(window) {
     return
   }
   emergencyRestoreDock('native-edge-fault', new Error(`原生边缘监视器故障：${event.error}`))
+}
+
+function applyDockPersistentHandlePosition(session, source) {
+  if (
+    session?.revealHandleMode !== DOCK_REVEAL_HANDLE_MODES.PERSISTENT ||
+    !Number.isInteger(session.handlePositionPermille)
+  ) {
+    return
+  }
+  const result = windowMotionBackend.setPersistentHandlePosition(
+    session.handlePositionPermille,
+    session.generation
+  )
+  if (result.success) return
+  throw new Error(`${result.error || '设置常显小黑条位置失败'}（${source}）`)
 }
 
 function attachNativeEdgeMonitorMessageHook(window) {
@@ -1694,10 +1734,132 @@ function emergencyRestoreDock(source, cause = null, { skipNativeDisarm = false }
 
 /**
  * 隐藏期间显示器被拔除、分辨率或 DPI 改变时，旧的工作区快照已经失效。
- * 立即取消隐藏并把主窗口约束到当前仍存在的最近显示器，避免窗口与触发条滞留屏外。
+ * 全屏中的参数变化优先在屏外重建；显示器移除或普通桌面变化仍恢复到可见区，
+ * 避免窗口与触发条滞留屏外。
  */
-function handleDockDisplayTopologyChange() {
+function rebuildFullscreenDockSessionAfterDisplayChange(change) {
+  const previousSession = dockMotionSession
+  if (
+    !mainWindow ||
+    mainWindow.isDestroyed() ||
+    !windowMotionBackend ||
+    !isDockHidden ||
+    isSliding ||
+    !previousSession
+  ) {
+    return false
+  }
+
+  let monitorStatus
+  try {
+    monitorStatus = windowMotionBackend.getEdgeMonitorStatus()
+  } catch (error) {
+    logger.warn('dock.display-rebuild', '读取全屏状态失败，改用安全可见恢复', {
+      change,
+      error: error?.message
+    })
+    return false
+  }
+  if (monitorStatus?.fullscreenActive !== true) return false
+
+  const center = {
+    x: previousSession.stableBounds.x + Math.round(previousSession.stableBounds.width / 2),
+    y: previousSession.stableBounds.y + Math.round(previousSession.stableBounds.height / 2)
+  }
+  const display = screen.getDisplayNearestPoint(center) || screen.getPrimaryDisplay()
+  if (
+    change?.displayId != null &&
+    previousSession.displayId != null &&
+    String(change.displayId) !== String(previousSession.displayId)
+  ) {
+    return false
+  }
+
+  if (
+    !stopEdgeMonitorForFullscreenRebuild({
+      backend: windowMotionBackend,
+      generation: previousSession.generation,
+      beginNativeEdgeCleanup,
+      emergencyRestoreDock
+    })
+  ) {
+    return true
+  }
+
+  try {
+    cachedWorkArea = { ...display.workArea }
+    const stableBounds = constrainMainWindowBounds(previousSession.stableBounds, display.workArea)
+    const motionPlan = windowMotionBackend.createDockPlan(previousSession.side, HIDE_OVERSHOOT)
+    const electronContentBounds = mainWindow.getContentBounds()
+    motionPlan.expectedElectronContentSize = {
+      width: electronContentBounds.width,
+      height: electronContentBounds.height
+    }
+    setDockPosition({ x: motionPlan.hiddenX, y: motionPlan.hiddenY }, motionPlan)
+    const terminal = windowMotionBackend.capture()
+    const rebuiltPlan = {
+      ...motionPlan,
+      initial: terminal,
+      expectedSize: { width: terminal.width, height: terminal.height }
+    }
+    const generation = ++dockSessionSequence
+    dockMotionSession = {
+      ...previousSession,
+      generation,
+      stableBounds,
+      motionPlan: rebuiltPlan,
+      workArea: { ...display.workArea },
+      displayId: display.id
+    }
+    lastVisibleMainWindowBounds = { ...stableBounds }
+
+    const armResult = windowMotionBackend.armEdgeMonitor(previousSession.side, generation, {
+      thicknessDip: EDGE_TRIGGER_THICKNESS_DIP,
+      pollIntervalMs: EDGE_MONITOR_POLL_INTERVAL_MS,
+      revealHandleMode: previousSession.revealHandleMode
+    })
+    if (!armResult.success) {
+      if (armResult.cleanupRequired) {
+        beginNativeEdgeCleanup(generation, windowMotionBackend, 'fullscreen-display-rebuild-arm')
+      }
+      throw new Error(armResult.error || '重新启动边缘监视器失败')
+    }
+    applyDockPersistentHandlePosition(dockMotionSession, 'fullscreen-display-rebuild')
+    if (previousSession.revealHandleMode === DOCK_REVEAL_HANDLE_MODES.PERSISTENT) {
+      const revealResult = windowMotionBackend.showPersistentHandle(generation)
+      if (!revealResult.success) throw new Error(revealResult.error || '恢复常显小黑条意图失败')
+    }
+    logger.info('dock.display-rebuild', '全屏显示参数变化后已在屏外重建贴边会话', {
+      change,
+      previousGeneration: previousSession.generation,
+      generation,
+      side: previousSession.side,
+      displayId: display.id
+    })
+    return true
+  } catch (error) {
+    emergencyRestoreDock('fullscreen-display-rebuild-failed', error)
+    return true
+  }
+}
+
+function handleDockDisplayTopologyChange(change = null) {
   if (!mainWindow || mainWindow.isDestroyed()) return
+  if (
+    isDockHidden &&
+    dockMotionSession &&
+    change?.displayId != null &&
+    dockMotionSession.displayId != null &&
+    String(change.displayId) !== String(dockMotionSession.displayId)
+  ) {
+    return
+  }
+  if (
+    change?.eventName === 'display-metrics-changed' &&
+    rebuildFullscreenDockSessionAfterDisplayChange(change)
+  ) {
+    return
+  }
   const sourceBounds =
     dockMotionSession?.stableBounds || lastVisibleMainWindowBounds || mainWindow.getBounds()
   const center = {
@@ -1740,11 +1902,30 @@ function handleDockDisplayTopologyChange() {
 function attachDockDisplayListeners() {
   if (dockDisplayListeners.length > 0) return
   for (const eventName of ['display-added', 'display-removed', 'display-metrics-changed']) {
-    const listener = () => {
+    const listener = (_event, display, changedMetrics = []) => {
+      pendingDockDisplayChanges.push({
+        eventName,
+        displayId: display?.id ?? null,
+        changedMetrics: Array.isArray(changedMetrics) ? [...changedMetrics] : []
+      })
       if (dockDisplayChangeTimer) clearTimeout(dockDisplayChangeTimer)
       dockDisplayChangeTimer = setTimeout(() => {
         dockDisplayChangeTimer = null
-        handleDockDisplayTopologyChange()
+        const changes = pendingDockDisplayChanges.splice(0)
+        const sessionDisplayId = dockMotionSession?.displayId
+        const relevantChanges = changes.filter(
+          (change) =>
+            sessionDisplayId == null ||
+            change.displayId == null ||
+            String(change.displayId) === String(sessionDisplayId)
+        )
+        const candidates = relevantChanges.length ? relevantChanges : changes
+        const change =
+          [...candidates].reverse().find((item) => item.eventName === 'display-removed') ||
+          [...candidates].reverse().find((item) => item.eventName === 'display-metrics-changed') ||
+          candidates.at(-1) ||
+          null
+        handleDockDisplayTopologyChange(change)
       }, 250)
       dockDisplayChangeTimer.unref?.()
     }
@@ -1758,6 +1939,7 @@ function detachDockDisplayListeners() {
     clearTimeout(dockDisplayChangeTimer)
     dockDisplayChangeTimer = null
   }
+  pendingDockDisplayChanges.length = 0
   for (const [eventName, listener] of dockDisplayListeners) {
     screen.removeListener(eventName, listener)
   }
@@ -1986,9 +2168,14 @@ function doHide() {
     generation,
     side: dockSide,
     revealHandleMode: dockConfig.revealHandleMode,
+    handlePositionPermille: resolveDockRevealHandlePositionPermille(
+      dockConfig.revealHandlePositions,
+      dockSide
+    ),
     stableBounds,
     motionPlan,
-    workArea: { ...cachedWorkArea }
+    workArea: { ...cachedWorkArea },
+    displayId: screen.getDisplayMatching(stableBounds)?.id ?? null
   }
   lastVisibleMainWindowBounds = { ...stableBounds }
   let armResult
@@ -2011,6 +2198,21 @@ function doHide() {
     })
     if (armResult.cleanupRequired) {
       beginNativeEdgeCleanup(generation, windowMotionBackend, 'native-edge-start-timeout')
+    }
+    dockMotionSession = null
+    return
+  }
+  try {
+    applyDockPersistentHandlePosition(dockMotionSession, 'hide')
+  } catch (error) {
+    logger.error('dock.handle-position', error, { generation, side: dockSide })
+    try {
+      if (!windowMotionBackend.disarmEdgeMonitor(generation)) {
+        beginNativeEdgeCleanup(generation, windowMotionBackend, 'handle-position-setup')
+      }
+    } catch (cleanupError) {
+      logger.error('dock.handle-position-cleanup', cleanupError, { generation, side: dockSide })
+      beginNativeEdgeCleanup(generation, windowMotionBackend, 'handle-position-setup')
     }
     dockMotionSession = null
     return
@@ -2379,6 +2581,18 @@ function rebuildTrayMenu() {
 // ============================================================
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return
+
+  if (
+    !enforceNativeRuntimeCompatibility({
+      getCompatibility: getNativeRuntimeCompatibility,
+      logger,
+      dialog,
+      flushLogs,
+      exit: (code) => app.exit(code)
+    })
+  ) {
+    return
+  }
 
   // 初始化数据库连接
   const { isNewDatabase } = initDatabase()

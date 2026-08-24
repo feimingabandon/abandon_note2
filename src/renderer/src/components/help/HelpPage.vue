@@ -6,7 +6,7 @@
  * 信息架构按用户任务组织：快速开始 → 窗口与托盘 → 创建与整理 → 常用工具 → 设置 → 数据与隐私。
  * 讲解范式：稳定结构使用 HTML 仿造图，状态变化使用连续帧图，危险操作使用完整结果链路。
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import HelpMock from './HelpMock.vue'
 import HelpFigureBlock from './HelpFigureBlock.vue'
 import MockNoteCard from './mock/MockNoteCard.vue'
@@ -33,6 +33,7 @@ const props = defineProps({
     validator: (value) => ['list', 'month', 'week'].includes(value)
   }
 })
+const emit = defineEmits(['close'])
 
 const isListView = computed(() => props.viewMode === 'list')
 const isWeekView = computed(() => props.viewMode === 'week')
@@ -176,8 +177,65 @@ const activeModule = computed(() => {
   return hit ? hit.moduleId : 'home'
 })
 const contentRef = ref(null)
+const showBackToTop = ref(false)
 const anchorEls = new Map()
 let observer = null
+let scrollSaveFrame = null
+let restoreFrame = null
+
+const HELP_SCROLL_STORAGE_PREFIX = 'abandon-note:help-scroll:'
+const scrollStorageKey = computed(() => `${HELP_SCROLL_STORAGE_PREFIX}${props.viewMode}`)
+
+function readSavedScrollTop() {
+  try {
+    const saved = Number.parseFloat(localStorage.getItem(scrollStorageKey.value) || '')
+    return Number.isFinite(saved) && saved > 0 ? saved : 0
+  } catch {
+    return 0
+  }
+}
+
+function saveScrollTop() {
+  const top = contentRef.value?.scrollTop ?? 0
+  try {
+    localStorage.setItem(scrollStorageKey.value, String(Math.round(top)))
+  } catch {
+    // 本地存储不可用时仅放弃跨次恢复，不影响帮助中心阅读。
+  }
+}
+
+function updateScrollState() {
+  showBackToTop.value = (contentRef.value?.scrollTop ?? 0) > 240
+}
+
+function onContentScroll() {
+  updateScrollState()
+  if (scrollSaveFrame !== null) return
+  scrollSaveFrame = requestAnimationFrame(() => {
+    scrollSaveFrame = null
+    saveScrollTop()
+  })
+}
+
+function scrollToTop() {
+  contentRef.value?.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+async function restoreScrollTop() {
+  const savedTop = readSavedScrollTop()
+  if (!savedTop) return
+  await nextTick()
+  restoreFrame = requestAnimationFrame(() => {
+    restoreFrame = null
+    const container = contentRef.value
+    if (!container) return
+    container.scrollTop = Math.min(
+      savedTop,
+      Math.max(0, container.scrollHeight - container.clientHeight)
+    )
+    updateScrollState()
+  })
+}
 
 function registerAnchor(id, el) {
   if (el) anchorEls.set(id, el)
@@ -208,9 +266,15 @@ onMounted(() => {
   )
   anchorEls.forEach((el) => observer.observe(el))
   document.addEventListener('click', onDocClick, true)
+  void restoreScrollTop()
 })
 
 onBeforeUnmount(() => {
+  saveScrollTop()
+  if (scrollSaveFrame !== null) cancelAnimationFrame(scrollSaveFrame)
+  if (restoreFrame !== null) cancelAnimationFrame(restoreFrame)
+  scrollSaveFrame = null
+  restoreFrame = null
   observer?.disconnect()
   observer = null
   document.removeEventListener('click', onDocClick, true)
@@ -219,7 +283,25 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="help-page">
-    <header class="help-page-header"><span>帮助中心</span></header>
+    <header class="help-page-header">
+      <span>帮助中心</span>
+      <button
+        type="button"
+        class="help-page-close"
+        title="关闭"
+        aria-label="关闭帮助中心"
+        @click="emit('close')"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path
+            d="M1 1L13 13M1 13L13 1"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          />
+        </svg>
+      </button>
+    </header>
 
     <div class="help-body">
       <!-- 悬浮多级目录：绝对定位，不占用文档流，可折叠收起 -->
@@ -290,7 +372,7 @@ onBeforeUnmount(() => {
       </button>
 
       <!-- 右侧滚动讲解区 -->
-      <div ref="contentRef" class="help-content scroll-y">
+      <div ref="contentRef" class="help-content scroll-y" @scroll.passive="onContentScroll">
         <!-- 首页：作者信息、支持入口与快速开始 -->
         <section
           :ref="(el) => registerAnchor('home', el)"
@@ -459,6 +541,10 @@ onBeforeUnmount(() => {
                 >在便签列表、月视图、周视图之间切换；切换时加载目标视图自己的设置。
               </li>
               <li><strong>显示全部便利贴：</strong>一次显示所有已创建的桌面便利贴。</li>
+              <li>
+                <strong>恢复便利贴：</strong
+                >软件异常结束或直接退出后，重新打开尚未手动关闭的便利贴；用户主动关闭的便利贴不会恢复。
+              </li>
               <li><strong>便利贴总览：</strong>选择某张便利贴后可显示并聚焦，也可只关闭这一张。</li>
               <li class="help-point-danger">
                 <strong>关闭全部便利贴：</strong>只结束桌面临时展示，不删除便签列表中的来源内容。
@@ -475,7 +561,7 @@ onBeforeUnmount(() => {
             <h3 class="help-anchor-title">贴边隐藏</h3>
             <div class="help-wide-figure"><MockDockFlow /></div>
             <p class="help-anchor-desc">
-              设置支持为列表、月和周视图分别多选上、左、右边缘。把窗口拖到当前视图已启用且真实可触达的屏幕边缘，鼠标离开后窗口会自动收起；未选择任何边缘时关闭该视图的贴边隐藏。“直接唤出”会在鼠标触边后立即展开窗口；“触边确认”会先显示小黑条，鼠标离开后自动收回，只有点击才展开；“常显确认”会在窗口收起完成后自动显示小黑条并保持，点击后展开窗口。其他程序全屏时常显条会暂时收回，退出全屏后自动恢复。锁定窗口时不会自动隐藏。
+              设置支持为列表、月和周视图分别多选上、左、右边缘。把窗口拖到当前视图已启用且真实可触达的屏幕边缘，鼠标离开后窗口会自动收起；未选择任何边缘时关闭该视图的贴边隐藏。“直接唤出”会在鼠标触边后立即展开窗口；“触边确认”会先显示小黑条，鼠标离开后自动收回，只有点击才展开；“常显确认”会在窗口收起完成后自动显示小黑条并保持，点击后展开窗口，长按拖动可调整它在当前屏幕边缘上的位置。其他程序全屏时常显条会暂时收回，退出全屏后自动恢复。锁定窗口时不会自动隐藏。
             </p>
           </div>
         </section>
@@ -1163,6 +1249,21 @@ onBeforeUnmount(() => {
           </div>
         </section>
       </div>
+
+      <Transition name="help-back-to-top">
+        <button
+          v-if="showBackToTop"
+          type="button"
+          class="help-back-to-top"
+          title="回到顶部"
+          aria-label="回到帮助中心顶部"
+          @click="scrollToTop"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="m5 11 5-5 5 5M10 6v9" />
+          </svg>
+        </button>
+      </Transition>
     </div>
   </section>
 </template>
@@ -1190,6 +1291,34 @@ onBeforeUnmount(() => {
   color: var(--text-color);
   font-size: var(--fs-body);
   font-weight: 600;
+}
+.help-page-close {
+  position: absolute;
+  right: 16rem;
+  display: flex;
+  width: 28rem;
+  height: 28rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background-color: transparent;
+  color: var(--text-color);
+  opacity: 0.6;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) ease,
+    opacity var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
+}
+.help-page-close:hover {
+  background-color: var(--ui-fill-hover);
+  opacity: 1;
+}
+.help-page-close:active {
+  transform: scale(0.98);
+  transition-duration: 70ms;
 }
 .help-body {
   position: relative;
@@ -1408,6 +1537,52 @@ onBeforeUnmount(() => {
   container-type: inline-size;
   /* 帮助中心为阅读页，正文可选中复制（覆盖全局 body 的 user-select:none）。 */
   user-select: text;
+}
+.help-back-to-top {
+  position: absolute;
+  z-index: var(--z-local-top);
+  right: 14rem;
+  bottom: 14rem;
+  display: grid;
+  width: 34rem;
+  height: 34rem;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--surface-float-border);
+  border-radius: 50%;
+  background: var(--surface-float);
+  box-shadow: 0 8rem 22rem rgb(0 0 0 / 0.14);
+  color: var(--text-color-secondary);
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
+}
+.help-back-to-top:hover {
+  color: var(--text-color);
+}
+.help-back-to-top:active {
+  transform: scale(0.98);
+}
+.help-back-to-top svg {
+  width: 18rem;
+  height: 18rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.help-back-to-top-enter-active,
+.help-back-to-top-leave-active {
+  transition:
+    opacity 160ms ease,
+    transform 200ms var(--ease-standard);
+}
+.help-back-to-top-enter-from,
+.help-back-to-top-leave-to {
+  opacity: 0;
+  transform: translateY(6rem) scale(0.96);
 }
 .help-section {
   scroll-margin-top: 8rem;

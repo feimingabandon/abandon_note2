@@ -240,7 +240,9 @@ async function runMonthViewTests() {
     )
     await waitUntil(
       () =>
-        monthWindow.webContents.executeJavaScript(`!document.querySelector('.month-template-wrapper')`),
+        monthWindow.webContents.executeJavaScript(
+          `!document.querySelector('.month-template-wrapper')`
+        ),
       '月视图循环模板工作区没有完成关闭'
     )
 
@@ -854,11 +856,10 @@ async function runMonthViewTests() {
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
-          `!document.querySelector('.month-toolbar__today')?.disabled`
+          `!document.querySelector('.month-toolbar__today')?.disabled && !document.querySelector('.month-toolbar').classList.contains('is-busy')`
         ),
       '月份切换动画结束后今天按钮仍不可用'
     )
-
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-toolbar__today').click()`
     )
@@ -891,20 +892,58 @@ async function runMonthViewTests() {
       '今天的日期数字不应继续使用蓝色圆形背景'
     )
 
-    // 同周连续、跨周拆段与每日便签总数。
+    // 同周连续、跨周拆段与每日便签总数。切到下个月后再造测试数据，
+    // 避免当前日期越过固定网格下标时把 09:00 误变成过去时间。
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `(() => { const now = new Date(); const title = document.querySelector('.month-toolbar__title').textContent; return title.includes(now.getFullYear() + '年' + (now.getMonth() + 1) + '月') && !document.querySelector('.month-toolbar').classList.contains('is-busy') })()`
+        ),
+      '今天按钮没有完成当前月份切换'
+    )
+    const calendarBeforeSeed = await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-toolbar__title').textContent`
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-toolbar__navigation button[aria-label="下个月"]').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `(() => { const title = document.querySelector('.month-toolbar__title').textContent; const match = title.match(/(\\d+)年(\\d+)月/); const firstActive = document.querySelector('.month-day-cell:not(.is-outside)')?.dataset.date; if (!match || !firstActive || title === ${JSON.stringify(calendarBeforeSeed)} || document.querySelector('.month-toolbar').classList.contains('is-busy')) return false; return firstActive.startsWith(match[1] + '-' + String(match[2]).padStart(2, '0')) })()`
+        ),
+      '月历测试数据没有切换到未来月份'
+    )
     const seededCalendar = await monthWindow.webContents.executeJavaScript(`(async () => {
-      const keys = Array.from(document.querySelectorAll('.month-day-cell'), (cell) => cell.dataset.date)
+      const cells = Array.from(document.querySelectorAll('.month-day-cell'))
+      const keys = cells.map((cell) => cell.dataset.date)
+      const isActive = (index) => Boolean(cells[index] && !cells[index].classList.contains('is-outside'))
+      const sameWeekIndex = cells.findIndex(
+        (_cell, index) => isActive(index) && index % 7 <= 4 && isActive(index + 2)
+      )
+      const crossWeekIndex = cells.findIndex(
+        (_cell, index) => isActive(index) && index % 7 >= 4 && isActive(index + 6)
+      )
+      const overflowIndex = crossWeekIndex + 5
+      if (sameWeekIndex < 0 || crossWeekIndex < 0 || !isActive(overflowIndex)) {
+        throw new Error('未来月份没有找到稳定的同周与跨周测试日期')
+      }
       const timestamp = (key) => new Date(key + 'T09:00:00').getTime()
       const create = (content, key, durationDays = 1) => window.api.createNoteWithAssets({
         options: { content, effectiveAt: timestamp(key), durationDays },
         images: [],
         tagIds: []
       })
-      await create('同周连续测试', keys[22], 3)
-      await create('跨周连续测试', keys[26], 7)
-      for (let index = 1; index <= 9; index += 1) await create('溢出测试-' + index, keys[31], 1)
-      document.querySelector('.month-toolbar__today').click()
-      return { sameWeekKey: keys[22], crossWeekKey: keys[26], overflowKey: keys[31] }
+      await create('同周连续测试', keys[sameWeekIndex], 3)
+      await create('跨周连续测试', keys[crossWeekIndex], 7)
+      for (let index = 1; index <= 9; index += 1) {
+        await create('溢出测试-' + index, keys[overflowIndex], 1)
+      }
+      return {
+        sameWeekKey: keys[sameWeekIndex],
+        crossWeekKey: keys[crossWeekIndex],
+        overflowKey: keys[overflowIndex]
+      }
     })()`)
     await waitUntil(
       () =>
@@ -1013,6 +1052,24 @@ async function runMonthViewTests() {
       ),
       false,
       '月视图不应再显示溢出下拉框'
+    )
+
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `!document.querySelector('.month-toolbar__today')?.disabled && !document.querySelector('.month-toolbar').classList.contains('is-busy')`
+        ),
+      '月历测试数据完成后今天按钮仍不可用'
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-toolbar__today').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `(() => { const now = new Date(); const title = document.querySelector('.month-toolbar__title').textContent; return title.includes(now.getFullYear() + '年' + (now.getMonth() + 1) + '月') && !document.querySelector('.month-toolbar').classList.contains('is-busy') })()`
+        ),
+      '月历测试数据断言后没有回到今天'
     )
 
     const pastCreateDisabled = await monthWindow.webContents.executeJavaScript(`(() => {

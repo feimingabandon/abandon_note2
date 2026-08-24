@@ -466,7 +466,7 @@ onUnmounted(() => {
             @transitionend="onHelpTransitionEnd"
             @transitioncancel="onHelpTransitionCancel"
           >
-            <HelpPage :view-mode="viewMode" />
+            <HelpPage :view-mode="viewMode" @close="closeHelp" />
           </div>
         </div>
       </div>

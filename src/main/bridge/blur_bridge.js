@@ -4,10 +4,14 @@
 
 import { join } from 'path'
 import { app } from 'electron'
+import { NATIVE_ABI_VERSION } from '../../shared/native-abi-version.js'
 
 let koffi = null
 let lib = null
 let initialized = false
+let nativeDllPath = null
+let nativeAbiVersion = null
+let nativeLoadError = null
 
 function getWindowHandleValue(window) {
   const hwndBuffer = window.getNativeWindowHandle()
@@ -43,7 +47,8 @@ const EDGE_MONITOR_RESULT_MESSAGES = Object.freeze({
   [-13]: '注册原生小黑条窗口类失败',
   [-14]: '创建原生小黑条窗口失败',
   [-15]: '原生边缘监视线程初始化超时',
-  [-16]: '原生边缘监视线程尚未准备好接收常显命令'
+  [-16]: '原生边缘监视线程尚未准备好接收常显命令',
+  [-17]: '常显小黑条位置无效'
 })
 
 const NATIVE_REVEAL_HANDLE_MODES = Object.freeze({
@@ -131,78 +136,123 @@ function getDllPath() {
 
 function initNative() {
   if (process.platform !== 'win32' || lib) return !!lib
-  const dllPath = getDllPath()
-  if (!dllPath) {
+  nativeDllPath = getDllPath()
+  nativeAbiVersion = null
+  nativeLoadError = null
+  if (!nativeDllPath) {
+    nativeLoadError = {
+      code: 'NATIVE_DLL_MISSING',
+      message: 'Windows 原生 DLL 未找到'
+    }
     console.warn('[blur] DLL 未找到')
     return false
   }
 
   try {
     koffi = require('koffi')
-    lib = koffi.load(dllPath)
-    lib.Blur_Init = lib.func('Blur_Init', 'int', ['intptr_t'])
-    lib.Blur_Destroy = lib.func('Blur_Destroy', 'void', [])
-    lib.Blur_ApplyConfig = lib.func('Blur_ApplyConfig', 'void', ['int', 'float', 'float', 'float'])
-    lib.Blur_UpdateGeometry = lib.func('Blur_UpdateGeometry', 'void', [])
-    lib.Blur_ReSyncOrder = lib.func('Blur_ReSyncOrder', 'void', [])
-    lib.Blur_IsInitialized = lib.func('Blur_IsInitialized', 'int', [])
-    lib.Blur_IsHealthy = lib.func('Blur_IsHealthy', 'int', [])
-    lib.Blur_IsZOrderSynchronized = lib.func('Blur_IsZOrderSynchronized', 'int', [])
-    lib.Blur_IsSupported = lib.func('Blur_IsSupported', 'int', [])
-    lib.Blur_GetLastErrorCode = lib.func('Blur_GetLastErrorCode', 'int', [])
-    lib.Blur_GetLastErrorMessage = lib.func('Blur_GetLastErrorMessage', 'str', [])
-    lib.WindowMotion_MoveWindow = lib.func('WindowMotion_MoveWindow', 'int', [
+    const loaded = koffi.load(nativeDllPath)
+    loaded.AbandonNative_GetAbiVersion = loaded.func('AbandonNative_GetAbiVersion', 'int', [])
+    nativeAbiVersion = Number(loaded.AbandonNative_GetAbiVersion())
+    if (nativeAbiVersion !== NATIVE_ABI_VERSION) {
+      const error = new Error(
+        `Windows 原生 DLL ABI 不匹配：expected=${NATIVE_ABI_VERSION}, actual=${nativeAbiVersion}`
+      )
+      error.code = 'NATIVE_ABI_MISMATCH'
+      throw error
+    }
+
+    loaded.Blur_Init = loaded.func('Blur_Init', 'int', ['intptr_t'])
+    loaded.Blur_Destroy = loaded.func('Blur_Destroy', 'void', [])
+    loaded.Blur_ApplyConfig = loaded.func('Blur_ApplyConfig', 'void', [
+      'int',
+      'float',
+      'float',
+      'float'
+    ])
+    loaded.Blur_UpdateGeometry = loaded.func('Blur_UpdateGeometry', 'void', [])
+    loaded.Blur_ReSyncOrder = loaded.func('Blur_ReSyncOrder', 'void', [])
+    loaded.Blur_IsInitialized = loaded.func('Blur_IsInitialized', 'int', [])
+    loaded.Blur_IsHealthy = loaded.func('Blur_IsHealthy', 'int', [])
+    loaded.Blur_IsZOrderSynchronized = loaded.func('Blur_IsZOrderSynchronized', 'int', [])
+    loaded.Blur_IsSupported = loaded.func('Blur_IsSupported', 'int', [])
+    loaded.Blur_GetLastErrorCode = loaded.func('Blur_GetLastErrorCode', 'int', [])
+    loaded.Blur_GetLastErrorMessage = loaded.func('Blur_GetLastErrorMessage', 'str', [])
+    loaded.WindowMotion_MoveWindow = loaded.func('WindowMotion_MoveWindow', 'int', [
       'intptr_t',
       'int',
       'int'
     ])
-    lib.WindowMotion_GetSnapshotJson = lib.func('WindowMotion_GetSnapshotJson', 'str', ['intptr_t'])
-    lib.WindowMotion_IsEdgeExposed = lib.func('WindowMotion_IsEdgeExposed', 'int', [
+    loaded.WindowMotion_GetSnapshotJson = loaded.func('WindowMotion_GetSnapshotJson', 'str', [
+      'intptr_t'
+    ])
+    loaded.WindowMotion_IsEdgeExposed = loaded.func('WindowMotion_IsEdgeExposed', 'int', [
       'intptr_t',
       'int'
     ])
-    lib.WindowMotion_ArmEdgeMonitor = lib.func('WindowMotion_ArmEdgeMonitor', 'int', [
+    loaded.WindowMotion_ArmEdgeMonitor = loaded.func('WindowMotion_ArmEdgeMonitor', 'int', [
       'intptr_t',
       'int',
       'int',
       'int',
       'uint64_t'
     ])
-    // Ex 是向后兼容的可选扩展；旧 DLL 仍可加载并继续使用触边即唤出的旧 ABI。
-    try {
-      lib.WindowMotion_ArmEdgeMonitorEx = lib.func('WindowMotion_ArmEdgeMonitorEx', 'int', [
-        'intptr_t',
-        'int',
-        'int',
-        'int',
-        'uint64_t',
-        'int'
-      ])
-    } catch {
-      lib.WindowMotion_ArmEdgeMonitorEx = null
-    }
-    try {
-      lib.WindowMotion_ShowPersistentHandle = lib.func('WindowMotion_ShowPersistentHandle', 'int', [
-        'uint64_t'
-      ])
-    } catch {
-      lib.WindowMotion_ShowPersistentHandle = null
-    }
-    lib.WindowMotion_DisarmEdgeMonitor = lib.func('WindowMotion_DisarmEdgeMonitor', 'int', [
+    loaded.WindowMotion_ArmEdgeMonitorEx = loaded.func('WindowMotion_ArmEdgeMonitorEx', 'int', [
+      'intptr_t',
+      'int',
+      'int',
+      'int',
+      'uint64_t',
+      'int'
+    ])
+    loaded.WindowMotion_SetPersistentHandlePosition = loaded.func(
+      'WindowMotion_SetPersistentHandlePosition',
+      'int',
+      ['uint64_t', 'int']
+    )
+    loaded.WindowMotion_ShowPersistentHandle = loaded.func(
+      'WindowMotion_ShowPersistentHandle',
+      'int',
+      ['uint64_t']
+    )
+    loaded.WindowMotion_DisarmEdgeMonitor = loaded.func('WindowMotion_DisarmEdgeMonitor', 'int', [
       'uint64_t'
     ])
-    lib.WindowMotion_GetEdgeMessageId = lib.func('WindowMotion_GetEdgeMessageId', 'uint', [])
-    lib.WindowMotion_GetEdgeMonitorStatusJson = lib.func(
+    loaded.WindowMotion_GetEdgeMessageId = loaded.func('WindowMotion_GetEdgeMessageId', 'uint', [])
+    loaded.WindowMotion_GetEdgeMonitorStatusJson = loaded.func(
       'WindowMotion_GetEdgeMonitorStatusJson',
       'str',
       []
     )
-    lib.WindowMotion_ConsumeEdgeEventJson = lib.func('WindowMotion_ConsumeEdgeEventJson', 'str', [])
+    loaded.WindowMotion_ConsumeEdgeEventJson = loaded.func(
+      'WindowMotion_ConsumeEdgeEventJson',
+      'str',
+      []
+    )
+    lib = loaded
     return true
   } catch (e) {
     console.warn('[blur] DLL 加载失败:', e)
+    nativeLoadError = {
+      code: e?.code || 'NATIVE_DLL_INCOMPATIBLE',
+      message: e?.message || 'Windows 原生 DLL 加载失败'
+    }
     lib = null
     return false
+  }
+}
+
+export function getNativeRuntimeCompatibility() {
+  if (process.platform !== 'win32') {
+    return { success: true, required: false, platform: process.platform }
+  }
+  const success = initNative()
+  return {
+    success,
+    required: true,
+    expectedAbiVersion: NATIVE_ABI_VERSION,
+    actualAbiVersion: nativeAbiVersion,
+    dllPath: nativeDllPath,
+    error: success ? null : nativeLoadError
   }
 }
 
@@ -321,12 +371,6 @@ export function armWindowEdgeMonitor(
   if (!Number.isInteger(nativeRevealMode)) {
     return { success: false, code: -12, error: EDGE_MONITOR_RESULT_MESSAGES[-12] }
   }
-  if (nativeRevealMode !== 0 && !lib.WindowMotion_ArmEdgeMonitorEx) {
-    return { success: false, code: null, error: '当前原生 DLL 不支持小黑条模式' }
-  }
-  if (nativeRevealMode === 2 && !lib.WindowMotion_ShowPersistentHandle) {
-    return { success: false, code: null, error: '当前原生 DLL 不支持小黑条常显模式' }
-  }
   const args = [
     getWindowHandleValue(window),
     nativeSide,
@@ -334,7 +378,7 @@ export function armWindowEdgeMonitor(
     Math.max(25, Math.round(pollIntervalMs)),
     Number(generation)
   ]
-  // 直接唤出模式继续调用旧导出，确保旧行为与 ABI 路径均保持不变。
+  // 直接唤出使用基础入口，其余模式通过带 revealMode 的当前 ABI 入口启动。
   const code =
     nativeRevealMode !== 0
       ? lib.WindowMotion_ArmEdgeMonitorEx(...args, nativeRevealMode)
@@ -349,14 +393,30 @@ export function armWindowEdgeMonitor(
 }
 
 export function showWindowPersistentHandle(generation) {
-  if (process.platform !== 'win32' || !initNative() || !lib.WindowMotion_ShowPersistentHandle) {
-    return { success: false, code: null, error: '当前原生 DLL 不支持小黑条常显模式' }
+  if (process.platform !== 'win32' || !initNative()) {
+    return { success: false, code: null, error: 'Windows 原生组件不可用' }
   }
   const code = lib.WindowMotion_ShowPersistentHandle(Number(generation))
   return {
     success: code === 1,
     code,
     error: code === 1 ? null : EDGE_MONITOR_RESULT_MESSAGES[code] || `常显小黑条激活失败 (${code})`
+  }
+}
+
+export function setWindowPersistentHandlePosition(generation, positionPermille) {
+  if (process.platform !== 'win32' || !initNative()) {
+    return { success: false, code: null, error: 'Windows 原生组件不可用' }
+  }
+  const normalized = Number(positionPermille)
+  if (!Number.isInteger(normalized) || normalized < -1 || normalized > 1000) {
+    return { success: false, code: -17, error: EDGE_MONITOR_RESULT_MESSAGES[-17] }
+  }
+  const code = lib.WindowMotion_SetPersistentHandlePosition(Number(generation), normalized)
+  return {
+    success: code === 1,
+    code,
+    error: code === 1 ? null : EDGE_MONITOR_RESULT_MESSAGES[code] || `设置小黑条位置失败 (${code})`
   }
 }
 
@@ -375,8 +435,6 @@ export function getWindowEdgeMonitorStatus() {
   if (process.platform !== 'win32' || !initNative()) {
     return {
       supported: false,
-      revealHandleSupported: false,
-      persistentHandleSupported: false,
       state: 'unavailable',
       workerAlive: false,
       generation: 0,
@@ -386,14 +444,7 @@ export function getWindowEdgeMonitorStatus() {
   const status = JSON.parse(lib.WindowMotion_GetEdgeMonitorStatusJson())
   return {
     ...status,
-    // 上一版 DLL 的 mode 字段使用内部名称 click-handle；统一成设置枚举，
-    // 避免仅替换应用代码、尚未替换 DLL 时被健康检查误判为会话不一致。
-    mode: status.mode === 'click-handle' ? 'on-touch' : status.mode,
     supported: true,
-    revealHandleSupported: Boolean(lib.WindowMotion_ArmEdgeMonitorEx),
-    persistentHandleSupported: Boolean(
-      lib.WindowMotion_ArmEdgeMonitorEx && lib.WindowMotion_ShowPersistentHandle
-    ),
     side: getDockSideName(status.side)
   }
 }

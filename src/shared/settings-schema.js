@@ -165,6 +165,32 @@ function parseDockEdges(value, fallback) {
   return DOCK_EDGES.filter((side) => selected.has(side))
 }
 
+function parseDockRevealHandlePositions(value, fallback) {
+  let candidate = value
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate)
+    } catch {
+      return cloneValue(fallback)
+    }
+  }
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    return cloneValue(fallback)
+  }
+  const keys = Object.keys(candidate)
+  if (keys.some((side) => !DOCK_EDGES.includes(side))) return cloneValue(fallback)
+  const normalized = {}
+  for (const side of DOCK_EDGES) {
+    if (!Object.hasOwn(candidate, side)) continue
+    const rawPosition = candidate[side]
+    if (rawPosition === null || rawPosition === '') return cloneValue(fallback)
+    const position = Number(rawPosition)
+    if (!Number.isFinite(position)) return cloneValue(fallback)
+    normalized[side] = Number(clamp(position, 0, 1).toFixed(3))
+  }
+  return normalized
+}
+
 function parseTitlebarStyle(value, fallback) {
   return value === 'microsoft' || value === 'apple' ? value : fallback
 }
@@ -406,6 +432,16 @@ const definitions = [
     parse: parseDockEdges,
     serialize: JSON.stringify,
     remark: '当前视图允许贴边隐藏的方向（top / left / right）'
+  },
+  {
+    id: 'dock.revealHandlePositions',
+    path: ['dock', 'revealHandlePositions'],
+    db: { type: 'dock', key: 'dock_reveal_handle_positions' },
+    // 缺少某条边表示继续沿用窗口边缘中点；只有用户完成拖动后才写入该边。
+    defaultValue: {},
+    parse: parseDockRevealHandlePositions,
+    serialize: JSON.stringify,
+    remark: '常显小黑条在各屏幕边缘的归一化位置（0~1）'
   },
   {
     id: 'sticky.fontSize',

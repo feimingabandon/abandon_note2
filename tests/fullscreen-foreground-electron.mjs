@@ -17,7 +17,7 @@ async function main() {
   await window.loadURL(
     `data:text/html;charset=utf-8,${encodeURIComponent('<title>Abandon Note dock foreground fixture</title>')}`
   )
-  if (mode === 'fullscreen') window.setFullScreen(true)
+  if (mode === 'fullscreen' || mode === 'fullscreen-pulse') window.setFullScreen(true)
   else if (mode === 'maximized') window.maximize()
   else throw new Error(`未知前台窗口测试模式：${mode}`)
   window.show()
@@ -33,6 +33,18 @@ async function main() {
   process.stdout.write(
     `FOREGROUND_READY:${mode}:${window.isFullScreen()}:${window.isMaximized()}\n`
   )
+  if (mode === 'fullscreen-pulse') {
+    setTimeout(() => {
+      window.setFullScreen(false)
+      setTimeout(() => {
+        window.setFullScreen(true)
+        window.show()
+        window.focus()
+        setForegroundWindow(hwnd)
+        process.stdout.write('FULLSCREEN_PULSE_DONE\n')
+      }, 100)
+    }, 350)
+  }
   process.stdin.setEncoding('utf8')
   process.stdin.on('data', (value) => {
     if (value.includes('quit')) app.quit()

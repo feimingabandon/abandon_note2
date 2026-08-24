@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import { app, BrowserWindow, screen } from 'electron'
 import koffi from 'koffi'
+import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
 
 const POLL_INTERVAL_MS = 50
 const EVENT_TIMEOUT_MS = 3000
@@ -29,6 +30,12 @@ async function runNativeEdgeMonitorTests() {
     process.env.ABANDON_INTEGRATION_NATIVE_DLL ||
       resolve('native_blur', 'build', 'bin', 'blur_engine.dll')
   )
+  const getAbiVersion = dll.func('AbandonNative_GetAbiVersion', 'int', [])
+  assert.equal(
+    getAbiVersion(),
+    NATIVE_ABI_VERSION,
+    'Electron 运行时加载的 Windows 原生 DLL ABI 必须与应用精确匹配'
+  )
   const arm = dll.func('WindowMotion_ArmEdgeMonitor', 'int', [
     'intptr_t',
     'int',
@@ -45,6 +52,10 @@ async function runNativeEdgeMonitorTests() {
     'int'
   ])
   const disarm = dll.func('WindowMotion_DisarmEdgeMonitor', 'int', ['uint64_t'])
+  const setPersistentHandlePosition = dll.func('WindowMotion_SetPersistentHandlePosition', 'int', [
+    'uint64_t',
+    'int'
+  ])
   const showPersistentHandle = dll.func('WindowMotion_ShowPersistentHandle', 'int', ['uint64_t'])
   const getMessageId = dll.func('WindowMotion_GetEdgeMessageId', 'uint', [])
   const getStatusJson = dll.func('WindowMotion_GetEdgeMonitorStatusJson', 'str', [])
@@ -465,7 +476,9 @@ async function runNativeEdgeMonitorTests() {
       const event = await Promise.race([
         eventPromise,
         wait(EVENT_TIMEOUT_MS).then(() => {
-          throw new Error(`${side} 完整点击小黑条后没有收到 trigger`)
+          throw new Error(
+            `${side} 完整点击小黑条后没有收到 trigger；状态=${JSON.stringify(getStatus())}`
+          )
         })
       ])
       assert.deepEqual(
@@ -589,7 +602,10 @@ async function runNativeEdgeMonitorTests() {
     assert.equal(handleBlockedStatus.pendingEvent, 'none')
     await stopForegroundHelper(foregroundHelper)
     foregroundHelper = null
-    await wait(250)
+    await waitUntil(() => {
+      const status = getStatus()
+      return !status.fullscreenActive && !status.fullscreenExitPending && status
+    }, '退出全屏后没有完成稳定恢复')
     const cursorAfterFullscreen = screen.getCursorScreenPoint()
     const statusAfterFullscreen = getStatus()
     const triggerAfterFullscreen = statusAfterFullscreen.triggerArea
@@ -651,6 +667,11 @@ async function runNativeEdgeMonitorTests() {
     assert.equal(getStatus().handleState, 'hidden', '未显式激活前常显小黑条不得提前出现')
 
     assert.equal(showPersistentHandle(generation + 1), -11, '错误代次不得激活常显小黑条')
+    assert.equal(
+      setPersistentHandlePosition(generation, 250),
+      1,
+      '常显小黑条必须接受归一化初始位置'
+    )
     assert.equal(showPersistentHandle(generation), 1, '主窗口隐藏完成后必须能激活常显小黑条')
     let sawPersistentIntermediate = false
     const persistentReady = await waitUntil(() => {
@@ -660,7 +681,21 @@ async function runNativeEdgeMonitorTests() {
     }, '常显小黑条没有自动滑入')
     assert.equal(sawPersistentIntermediate, true, '常显小黑条必须从屏外播放滑入动画')
     assert.equal(persistentReady.persistentHandleActivated, true)
+    assert.equal(persistentReady.handlePositionPermille, 250)
     assertHandleSize(persistentReady, -2)
+    const persistentStaticVisual = {
+      frame: persistentReady.handleVisualFrame,
+      elapsedMs: persistentReady.handleVisualElapsedMs
+    }
+    await wait(180)
+    assert.deepEqual(
+      {
+        frame: getStatus().handleVisualFrame,
+        elapsedMs: getStatus().handleVisualElapsedMs
+      },
+      persistentStaticVisual,
+      '常显小黑条不得调度绿色旋转圆环的重绘或计时'
+    )
 
     await moveCursorAndConfirm(persistentOutside)
     await wait(700)
@@ -668,18 +703,102 @@ async function runNativeEdgeMonitorTests() {
     assert.equal(persistentAfterLeave.handleState, 'ready', '常显小黑条不得因鼠标离开退场')
     assert.equal(persistentAfterLeave.handleVisible, true)
 
+    const persistentStartCenter = {
+      x: Math.floor(
+        (persistentAfterLeave.handleRect.left + persistentAfterLeave.handleRect.right) / 2
+      ),
+      y: Math.floor(
+        (persistentAfterLeave.handleRect.top + persistentAfterLeave.handleRect.bottom) / 2
+      )
+    }
+    await moveCursorAndConfirm(persistentStartCenter)
+    mouseEvent(0x0002, 0, 0, 0, 0)
+    await wait(380)
+    await moveCursorAndConfirm({
+      x: workArea.x + Math.floor(workArea.width * 0.76),
+      y: persistentStartCenter.y
+    })
+    const persistentDragging = await waitUntil(() => {
+      const status = getStatus()
+      return status.handleDragging && status.handleState === 'dragging' && status
+    }, '长按移动后常显小黑条没有进入拖动态')
+    assert.equal(
+      persistentDragging.handleRect.top,
+      persistentAfterLeave.handleRect.top,
+      '上边缘拖动只能改变 X，Y 必须锁定'
+    )
+    mouseEvent(0x0004, 0, 0, 0, 0)
+    await waitUntil(() => getStatus().pendingEvent === 'handle-moved', '拖动完成后没有发布位置事件')
+    const movedEvent = JSON.parse(consumeEventJson())
+    assert.equal(movedEvent.kind, 'handle-moved')
+    assert.equal(movedEvent.generation, generation)
+    assert.equal(movedEvent.side, -2)
+    assert.ok(
+      movedEvent.positionPermille >= 650 && movedEvent.positionPermille <= 850,
+      `拖动位置应落在目标区间，实际为 ${movedEvent.positionPermille}`
+    )
+    const committedPosition = movedEvent.positionPermille
+
+    const beforeFullscreenDrag = getStatus()
+    await moveCursorAndConfirm({
+      x: Math.floor(
+        (beforeFullscreenDrag.handleRect.left + beforeFullscreenDrag.handleRect.right) / 2
+      ),
+      y: Math.floor(
+        (beforeFullscreenDrag.handleRect.top + beforeFullscreenDrag.handleRect.bottom) / 2
+      )
+    })
+    mouseEvent(0x0002, 0, 0, 0, 0)
+    await wait(380)
+    await moveCursorAndConfirm({
+      x: Math.max(workArea.x + 12, beforeFullscreenDrag.handleRect.left - 60),
+      y: persistentStartCenter.y
+    })
+    await waitUntil(() => getStatus().handleDragging, '全屏中断场景没有先进入拖动态')
     foregroundHelper = await startForegroundHelper('fullscreen', primaryDisplay.bounds)
     const persistentBlocked = await waitUntil(() => {
       const status = getStatus()
       return (
         status.fullscreenActive &&
+        !status.handleDragging &&
         status.handleState === 'hidden' &&
         status.handleWindowAlive &&
         !status.handleVisible &&
         status
       )
     }, '其他程序全屏后常显小黑条没有暂时停回屏外')
+    mouseEvent(0x0004, 0, 0, 0, 0)
     assert.equal(persistentBlocked.persistentHandleActivated, true)
+
+    const stableFullscreenHelper = foregroundHelper
+    foregroundHelper = await startForegroundHelper('fullscreen-pulse', primaryDisplay.bounds)
+    let handleFlashedDuringFullscreenPulse = false
+    const pulseObserver = setInterval(() => {
+      if (getStatus().handleVisible) handleFlashedDuringFullscreenPulse = true
+    }, 10)
+    try {
+      await waitUntil(
+        () => foregroundHelper.output().includes('FULLSCREEN_PULSE_DONE'),
+        '全屏前台窗口没有完成短暂退出测试：stdout=' +
+          foregroundHelper.output() +
+          '；stderr=' +
+          foregroundHelper.errorOutput()
+      )
+      await waitUntil(() => {
+        const status = getStatus()
+        return status.fullscreenActive && !status.fullscreenExitPending && status
+      }, '短暂退出后没有重新稳定在全屏抑制状态')
+      await wait(100)
+    } finally {
+      clearInterval(pulseObserver)
+      await stopForegroundHelper(stableFullscreenHelper)
+    }
+    assert.equal(
+      handleFlashedDuringFullscreenPulse,
+      false,
+      '全屏切换中的短暂非全屏采样不得让常显小黑条闪现'
+    )
+
     await stopForegroundHelper(foregroundHelper)
     foregroundHelper = null
     const persistentRestored = await waitUntil(() => {
@@ -688,25 +807,82 @@ async function runNativeEdgeMonitorTests() {
         !status.fullscreenActive && status.handleState === 'ready' && status.handleVisible && status
       )
     }, '退出外部全屏后常显小黑条没有自动恢复')
+    assert.equal(
+      persistentRestored.handlePositionPermille,
+      committedPosition,
+      '全屏中断拖动后必须恢复最后一次已提交位置'
+    )
 
-    let resolvePersistentEvent
-    const persistentEventPromise = new Promise((resolvePromise) => {
-      resolvePersistentEvent = resolvePromise
+    let consumeQueuedEvents = false
+    let resolveRedeliveredEvent
+    const redeliveredEventPromise = new Promise((resolvePromise) => {
+      resolveRedeliveredEvent = resolvePromise
     })
     testWindow.hookWindowMessage(messageId, () => {
+      if (!consumeQueuedEvents) return
       const event = JSON.parse(consumeEventJson())
-      if (event.kind !== 'none') resolvePersistentEvent(event)
+      if (event.kind !== 'none') resolveRedeliveredEvent(event)
     })
+
+    async function dragPersistentHandleTo(targetProgress) {
+      const ready = getStatus()
+      const center = {
+        x: Math.floor((ready.handleRect.left + ready.handleRect.right) / 2),
+        y: Math.floor((ready.handleRect.top + ready.handleRect.bottom) / 2)
+      }
+      await moveCursorAndConfirm(center)
+      mouseEvent(0x0002, 0, 0, 0, 0)
+      await wait(380)
+      await moveCursorAndConfirm({
+        x: workArea.x + Math.floor(workArea.width * targetProgress),
+        y: center.y
+      })
+      await waitUntil(() => getStatus().handleDragging, '事件排队场景没有进入拖动态')
+      mouseEvent(0x0004, 0, 0, 0, 0)
+      return waitUntil(() => {
+        const status = getStatus()
+        return status.handleState === 'ready' && status.pendingEvent === 'handle-moved' && status
+      }, '事件排队场景没有发布位置事件')
+    }
+
+    await dragPersistentHandleTo(0.38)
+    assert.equal(getStatus().pendingEventCount, 1)
+    const latestDragStatus = await dragPersistentHandleTo(0.68)
+    assert.equal(latestDragStatus.pendingEventCount, 1, '多次拖动必须合并为一个最新位置事件')
+    const latestPositionPermille = latestDragStatus.handlePositionPermille
+
     await moveCursorAndConfirm({
-      x: Math.floor((persistentRestored.handleRect.left + persistentRestored.handleRect.right) / 2),
-      y: Math.floor((persistentRestored.handleRect.top + persistentRestored.handleRect.bottom) / 2)
+      x: Math.floor((latestDragStatus.handleRect.left + latestDragStatus.handleRect.right) / 2),
+      y: Math.floor((latestDragStatus.handleRect.top + latestDragStatus.handleRect.bottom) / 2)
     })
     mouseEvent(0x0002, 0, 0, 0, 0)
     mouseEvent(0x0004, 0, 0, 0, 0)
+    await waitUntil(
+      () => getStatus().pendingEventCount === 2,
+      '未消费位置事件时，随后的 trigger 没有进入有界队列'
+    )
+
+    consumeQueuedEvents = true
+    const movedBeforeTrigger = JSON.parse(consumeEventJson())
+    assert.deepEqual(
+      {
+        kind: movedBeforeTrigger.kind,
+        generation: movedBeforeTrigger.generation,
+        side: movedBeforeTrigger.side,
+        positionPermille: movedBeforeTrigger.positionPermille
+      },
+      {
+        kind: 'handle-moved',
+        generation,
+        side: -2,
+        positionPermille: latestPositionPermille
+      },
+      '队首必须保留最后一次拖动位置'
+    )
     const persistentEvent = await Promise.race([
-      persistentEventPromise,
+      redeliveredEventPromise,
       wait(EVENT_TIMEOUT_MS).then(() => {
-        throw new Error('点击常显小黑条后没有收到 trigger')
+        throw new Error('消费位置事件后没有重新通知排队的 trigger')
       })
     ])
     assert.deepEqual(
@@ -717,7 +893,66 @@ async function runNativeEdgeMonitorTests() {
       },
       { kind: 'trigger', generation, side: -2 }
     )
+    assert.equal(getStatus().pendingEventCount, 0)
     assert.equal(getStatus().persistentHandleActivated, false, '点击后必须先撤销常显意图')
+    assert.equal(disarm(generation), 1)
+    testWindow.destroy()
+    testWindow = null
+
+    // 左右边缘使用同一套长按状态机，但必须锁定 X、只允许改变 Y。
+    const verticalPersistentBounds = getBounds(-1, workArea)
+    testWindow = new BrowserWindow({
+      ...verticalPersistentBounds,
+      show: true,
+      frame: false,
+      thickFrame: false
+    })
+    await moveCursorAndConfirm(persistentOutside)
+    generation += 1
+    assert.equal(
+      armEx(getHandle(testWindow), -1, 2, POLL_INTERVAL_MS, generation, 2),
+      1,
+      '左边缘常显小黑条场景必须启动成功'
+    )
+    assert.equal(setPersistentHandlePosition(generation, 200), 1)
+    assert.equal(showPersistentHandle(generation), 1)
+    const verticalPersistentReady = await waitUntil(() => {
+      const status = getStatus()
+      return status.handleState === 'ready' && status.handleVisible && status
+    }, '左边缘常显小黑条没有就绪')
+    const verticalStartCenter = {
+      x: Math.floor(
+        (verticalPersistentReady.handleRect.left + verticalPersistentReady.handleRect.right) / 2
+      ),
+      y: Math.floor(
+        (verticalPersistentReady.handleRect.top + verticalPersistentReady.handleRect.bottom) / 2
+      )
+    }
+    await moveCursorAndConfirm(verticalStartCenter)
+    mouseEvent(0x0002, 0, 0, 0, 0)
+    await wait(40)
+    await moveCursorAndConfirm({
+      x: verticalStartCenter.x,
+      y: workArea.y + Math.floor(workArea.height * 0.72)
+    })
+    const verticalDragging = await waitUntil(() => {
+      const status = getStatus()
+      return status.handleDragging && status.handleState === 'dragging' && status
+    }, '左边缘长按移动后没有进入拖动态')
+    assert.equal(
+      verticalDragging.handleRect.left,
+      verticalPersistentReady.handleRect.left,
+      '左边缘拖动只能改变 Y，X 必须锁定'
+    )
+    mouseEvent(0x0004, 0, 0, 0, 0)
+    await waitUntil(
+      () => getStatus().pendingEvent === 'handle-moved',
+      '左边缘拖动完成后没有发布位置事件'
+    )
+    const verticalMovedEvent = JSON.parse(consumeEventJson())
+    assert.equal(verticalMovedEvent.kind, 'handle-moved')
+    assert.equal(verticalMovedEvent.side, -1)
+    assert.ok(verticalMovedEvent.positionPermille >= 600)
     assert.equal(disarm(generation), 1)
     testWindow.destroy()
     testWindow = null

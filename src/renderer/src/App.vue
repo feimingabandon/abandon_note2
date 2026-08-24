@@ -653,7 +653,7 @@ onUnmounted(() => {
             @transitionend="onHelpTransitionEnd"
             @transitioncancel="onHelpTransitionCancel"
           >
-            <HelpPage />
+            <HelpPage @close="closeHelp" />
           </div>
         </div>
       </div>

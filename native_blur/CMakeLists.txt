@@ -55,6 +55,7 @@ target_link_libraries(blur_engine PRIVATE
     ole32
     dxguid
     dwmapi
+    shell32
     user32
     gdi32
     WindowsApp   # Windows Runtime (UWP) umbrella library

@@ -54,6 +54,10 @@ class WindowsPhysicalMotionBackend {
     return this.edgeMonitor.showPersistentHandle(generation)
   }
 
+  setPersistentHandlePosition(positionPermille, generation) {
+    return this.edgeMonitor.setPersistentHandlePosition(positionPermille, generation)
+  }
+
   getEdgeMonitorStatus() {
     return this.edgeMonitor.getStatus()
   }
@@ -200,11 +204,13 @@ class ElectronPointMotionBackend {
     return { success: false, code: null, error: '当前平台没有常显小黑条' }
   }
 
+  setPersistentHandlePosition() {
+    return { success: false, unsupported: true, code: null, error: '当前平台不能拖动小黑条' }
+  }
+
   getEdgeMonitorStatus() {
     return {
       supported: false,
-      revealHandleSupported: false,
-      persistentHandleSupported: false,
       state: 'unavailable',
       workerAlive: false,
       generation: 0,

@@ -123,7 +123,7 @@ export class ElectronStickyService extends StickyService {
 
   async create({ noteId }) {
     if (!this.initialized || this.disposing) throw new StickyCreationError('便利贴服务尚未就绪')
-    if (Math.max(this.registry.size, this.repository.count()) >= MAX_STICKY_WINDOWS) {
+    if (this.getOccupiedSlotCount() >= MAX_STICKY_WINDOWS) {
       throw new StickyCreationError(
         `最多同时展示 ${MAX_STICKY_WINDOWS} 张便利贴，请先关闭部分便利贴`
       )
@@ -284,6 +284,17 @@ export class ElectronStickyService extends StickyService {
     }
 
     return { id, count: this.registry.size, limit: MAX_STICKY_WINDOWS }
+  }
+
+  /**
+   * 数据库记录包含已恢复窗口，registry 还包含尚未完成 ready、因而尚未写入
+   * 数据库的新窗口。按 ID 并集计数，既不重复计算已恢复记录，也不给并发创建
+   * 留出超过上限的空档。create() 在第一次 await 前会把新 ID 放入 registry。
+   */
+  getOccupiedSlotCount() {
+    const occupiedIds = new Set(this.registry.keys())
+    for (const record of this.repository.list()) occupiedIds.add(String(record.id))
+    return occupiedIds.size
   }
 
   choosePlacement(cursor) {

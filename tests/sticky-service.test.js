@@ -288,6 +288,28 @@ describe('ElectronStickyService creation lifecycle', () => {
     service.dispose()
   })
 
+  it('counts persisted records and initializing windows as one shared capacity', async () => {
+    const repository = createRepository(
+      Array.from({ length: 9 }, (_, index) =>
+        persistedRecord({ id: `sticky-persisted-${index + 1}` })
+      )
+    )
+    const { service } = createService(undefined, undefined, repository)
+    service.initialized = true
+
+    const firstCreation = service.create({ noteId: 1 })
+    await Promise.resolve()
+    await expect(service.create({ noteId: 1 })).rejects.toThrow('最多同时展示 10 张便利贴')
+
+    const [initializingEntry] = service.registry.values()
+    service.markReady(initializingEntry.webContentsId)
+    await firstCreation
+
+    expect(repository.records.size).toBe(10)
+    expect(service.registry.size).toBe(1)
+    service.dispose()
+  })
+
   it('destroys and unregisters a window that never completes the ready handshake', async () => {
     vi.useFakeTimers()
     const { service } = createService()

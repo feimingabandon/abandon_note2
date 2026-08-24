@@ -92,7 +92,7 @@ async function runWeatherSettingsTest() {
   try {
     const monthWindow = await waitUntil(getMonthWindow, '月视图主窗口未启动', 10000)
     await waitUntil(() => monthWindow.isVisible(), '月视图渲染就绪后没有显示')
-    monthWindow.setSize(900, 700)
+    monthWindow.setSize(900, 300)
 
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-titlebar-btn[title="设置"]').click()`
@@ -140,7 +140,13 @@ async function runWeatherSettingsTest() {
       await new Promise((resolve) => requestAnimationFrame(resolve))
       const city = clickNamed(1, '广州市')
       await new Promise((resolve) => requestAnimationFrame(resolve))
-      const district = clickNamed(2, '增城区')
+      const districtColumn = document.querySelectorAll('.china-area-cascader__column')[2]
+      const districtTarget = [...(districtColumn?.querySelectorAll('button') || [])].find(
+        (button) => button.textContent.trim().startsWith('增城区')
+      )
+      districtTarget?.click()
+      districtTarget?.click()
+      const district = Boolean(districtTarget)
       return {
         province,
         city,
@@ -149,7 +155,10 @@ async function runWeatherSettingsTest() {
           viewportHeight: innerHeight,
           triggerTop: triggerRect.top,
           panelTop: panelRect.top,
-          panelBottom: panelRect.bottom
+          panelBottom: panelRect.bottom,
+          panelHeight: panelRect.height,
+          scrollableColumns: [...document.querySelectorAll('.china-area-cascader__column')]
+            .filter((column) => column.scrollHeight > column.clientHeight + 1).length
         }
       }
     })()`)
@@ -164,6 +173,14 @@ async function runWeatherSettingsTest() {
     assert.ok(
       clicked.placement.panelBottom <= clicked.placement.viewportHeight - 7,
       `地区面板不得超出窗口底部: ${JSON.stringify(clicked.placement)}`
+    )
+    assert.ok(
+      clicked.placement.panelTop >= 7,
+      `低高度窗口中地区面板不得超出窗口顶部: ${JSON.stringify(clicked.placement)}`
+    )
+    assert.ok(
+      clicked.placement.scrollableColumns > 0,
+      `低高度窗口中地区列必须在面板内部滚动: ${JSON.stringify(clicked.placement)}`
     )
 
     const saved = await waitUntil(async () => {

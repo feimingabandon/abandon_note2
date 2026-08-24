@@ -10,6 +10,14 @@
 #include <cstdio>
 #include <winternl.h>
 
+namespace {
+constexpr int kNativeAbiVersion = 1;
+}
+
+int AbandonNative_GetAbiVersion(void) {
+    return kNativeAbiVersion;
+}
+
 int Blur_IsSupported(void) {
     using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
     const auto ntdll = GetModuleHandleW(L"ntdll.dll");
@@ -303,6 +311,12 @@ int WindowMotion_ArmEdgeMonitorEx(
 
 int WindowMotion_DisarmEdgeMonitor(unsigned long long generation) {
     return WindowMotionEdgeMonitor::Disarm(generation);
+}
+
+int WindowMotion_SetPersistentHandlePosition(
+    unsigned long long generation,
+    int positionPermille) {
+    return WindowMotionEdgeMonitor::SetPersistentHandlePosition(generation, positionPermille);
 }
 
 int WindowMotion_ShowPersistentHandle(unsigned long long generation) {

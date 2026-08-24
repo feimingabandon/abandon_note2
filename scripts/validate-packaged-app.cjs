@@ -1,8 +1,40 @@
 const { access, mkdtemp, rm } = require('node:fs/promises')
+const { execFileSync } = require('node:child_process')
 const { tmpdir } = require('node:os')
 const path = require('node:path')
+const { pathToFileURL } = require('node:url')
 const { extractAll, listPackage } = require('@electron/asar')
 const { resolveNativeTarget } = require('./package-native-plan.cjs')
+
+const projectRoot = path.resolve(__dirname, '..')
+
+async function getExpectedNativeAbiVersion() {
+  const moduleUrl = pathToFileURL(
+    path.join(projectRoot, 'src', 'shared', 'native-abi-version.js')
+  ).href
+  const { NATIVE_ABI_VERSION } = await import(moduleUrl)
+  return NATIVE_ABI_VERSION
+}
+
+function validateWindowsNativeAbi(dllPath, expectedAbiVersion) {
+  const checkScript = [
+    "const koffi = require('koffi')",
+    'const library = koffi.load(process.argv[1])',
+    "const getAbiVersion = library.func('AbandonNative_GetAbiVersion', 'int', [])",
+    'process.stdout.write(String(getAbiVersion()))'
+  ].join(';')
+  const output = execFileSync(process.execPath, ['-e', checkScript, dllPath], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    windowsHide: true
+  })
+  const actualAbiVersion = Number(output.trim())
+  if (!Number.isInteger(actualAbiVersion) || actualAbiVersion !== expectedAbiVersion) {
+    throw new Error(
+      `Windows blur DLL ABI mismatch: expected=${expectedAbiVersion}, actual=${output.trim() || 'invalid'}`
+    )
+  }
+}
 
 async function exists(target) {
   try {
@@ -14,7 +46,7 @@ async function exists(target) {
   }
 }
 
-async function validatePackagedApp(context) {
+async function validatePackagedApp(context, dependencies = {}) {
   const target = resolveNativeTarget(context)
   const resourcesDir = context.packager.getResourcesDir(context.appOutDir)
   const modulesDir = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules')
@@ -34,6 +66,9 @@ async function validatePackagedApp(context) {
   const windowsBlurPath = path.join(resourcesDir, 'native_blur', 'blur_engine.dll')
   if (target.requiresWindowsBlur) {
     await access(windowsBlurPath)
+    const expectedAbiVersion = await getExpectedNativeAbiVersion()
+    const validateAbi = dependencies.validateWindowsNativeAbi || validateWindowsNativeAbi
+    validateAbi(windowsBlurPath, expectedAbiVersion)
   } else if (await exists(windowsBlurPath)) {
     throw new Error(
       `Windows blur DLL must not be included in ${target.platform}-${target.arch} package`
@@ -77,3 +112,5 @@ async function validatePackagedApp(context) {
 
 exports.default = validatePackagedApp
 exports.exists = exists
+exports.getExpectedNativeAbiVersion = getExpectedNativeAbiVersion
+exports.validateWindowsNativeAbi = validateWindowsNativeAbi

@@ -4,6 +4,7 @@ import {
   disarmWindowEdgeMonitor,
   getWindowEdgeMonitorMessageId,
   getWindowEdgeMonitorStatus,
+  setWindowPersistentHandlePosition,
   showWindowPersistentHandle
 } from '../bridge/blur_bridge.js'
 
@@ -16,6 +17,7 @@ export class NativeEdgeMonitor {
       getStatus = getWindowEdgeMonitorStatus,
       consumeEvent = consumeWindowEdgeMonitorEvent,
       getMessageId = getWindowEdgeMonitorMessageId,
+      setPersistentHandlePosition = setWindowPersistentHandlePosition,
       showPersistentHandle = showWindowPersistentHandle
     } = {}
   ) {
@@ -25,6 +27,7 @@ export class NativeEdgeMonitor {
     this.getStatusNative = getStatus
     this.consumeEventNative = consumeEvent
     this.getMessageIdNative = getMessageId
+    this.setPersistentHandlePositionNative = setPersistentHandlePosition
     this.showPersistentHandleNative = showPersistentHandle
     this.activeGeneration = 0
   }
@@ -55,6 +58,13 @@ export class NativeEdgeMonitor {
       return { success: false, code: -11, error: '贴边会话代次无效' }
     }
     return this.showPersistentHandleNative(generation)
+  }
+
+  setPersistentHandlePosition(positionPermille, generation = this.activeGeneration) {
+    if (!generation || generation !== this.activeGeneration) {
+      return { success: false, code: -11, error: '贴边会话代次无效' }
+    }
+    return this.setPersistentHandlePositionNative(generation, positionPermille)
   }
 
   getStatus() {

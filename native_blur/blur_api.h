@@ -14,6 +14,10 @@
 extern "C" {
 #endif
 
+// ---- 应用 / DLL ABI 硬门槛 ----
+// 任何导出或运行语义变化都必须递增；主进程只接受精确匹配的版本。
+BLUR_API int AbandonNative_GetAbiVersion(void);
+
 // ---- 生命周期 ----
 BLUR_API int  Blur_Init(void* hwnd);
 BLUR_API void Blur_Destroy(void);
@@ -58,7 +62,7 @@ BLUR_API int WindowMotion_ArmEdgeMonitor(
     int pollIntervalMs,
     unsigned long long generation);
 // revealMode: 0=触边立即通知；1=触边显示确认条；2=由主进程在隐藏完成后激活常显确认条。
-// 旧 WindowMotion_ArmEdgeMonitor ABI 永远等价于 revealMode=0。
+// WindowMotion_ArmEdgeMonitor 是当前 ABI 的直接唤出入口。
 BLUR_API int WindowMotion_ArmEdgeMonitorEx(
     void* hwnd,
     int side,
@@ -67,6 +71,10 @@ BLUR_API int WindowMotion_ArmEdgeMonitorEx(
     unsigned long long generation,
     int revealMode);
 BLUR_API int WindowMotion_DisarmEdgeMonitor(unsigned long long generation);
+// positionPermille: -1=沿用窗口边缘中点；0~1000=当前显示器工作区上的归一化位置。
+BLUR_API int WindowMotion_SetPersistentHandlePosition(
+    unsigned long long generation,
+    int positionPermille);
 BLUR_API int WindowMotion_ShowPersistentHandle(unsigned long long generation);
 BLUR_API unsigned int WindowMotion_GetEdgeMessageId(void);
 BLUR_API const char* WindowMotion_GetEdgeMonitorStatusJson(void);

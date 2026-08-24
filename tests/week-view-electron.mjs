@@ -78,6 +78,12 @@ try {
   app.setPath('userData', testUserData)
   process.env.ABANDON_INTEGRATION_TEST = '1'
   process.env.ABANDON_INTEGRATION_APP_ROOT = process.cwd()
+  process.env.ABANDON_INTEGRATION_NATIVE_DLL = resolve(
+    'native_blur',
+    'build',
+    'bin',
+    'blur_engine.dll'
+  )
   seedWeekView(testUserData)
   report('seeded isolated database')
 

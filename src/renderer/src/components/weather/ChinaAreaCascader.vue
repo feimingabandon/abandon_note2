@@ -15,6 +15,7 @@ const panelRef = ref(null)
 const activeProvinceCode = ref('')
 const activeCityCode = ref('')
 const panelStyle = ref({})
+const selectionLocked = ref(false)
 
 const activeProvince = computed(
   () => props.options.find((item) => item.code === activeProvinceCode.value) || null
@@ -31,29 +32,28 @@ function updatePanelPosition() {
   const viewportPadding = 8
   const panelGap = 4
   const preferredWidth = Math.max(rect.width, 450)
-  const width = Math.min(preferredWidth, window.innerWidth - viewportPadding * 2)
+  const width = Math.min(preferredWidth, Math.max(0, window.innerWidth - viewportPadding * 2))
   const left = Math.max(
     viewportPadding,
     Math.min(rect.left, window.innerWidth - width - viewportPadding)
   )
-  const panelHeight = panelRef.value?.getBoundingClientRect().height || 0
+  const measuredPanelHeight = panelRef.value?.getBoundingClientRect().height || 0
+  const panelHeight = measuredPanelHeight || Math.min(294, window.innerHeight)
   const belowTop = rect.bottom + panelGap
-  const aboveTop = rect.top - panelGap - panelHeight
-  const shouldOpenAbove =
-    panelHeight > 0 &&
-    belowTop + panelHeight > window.innerHeight - viewportPadding &&
-    aboveTop >= viewportPadding
+  const availableBelow = Math.max(0, window.innerHeight - viewportPadding - belowTop)
+  const availableAbove = Math.max(0, rect.top - panelGap - viewportPadding)
+  const shouldOpenAbove = panelHeight > availableBelow && availableAbove > availableBelow
+  const availableHeight = shouldOpenAbove ? availableAbove : availableBelow
+  const renderedHeight = Math.min(panelHeight, availableHeight)
   const top = shouldOpenAbove
-    ? aboveTop
-    : Math.max(
-        viewportPadding,
-        Math.min(belowTop, window.innerHeight - panelHeight - viewportPadding)
-      )
+    ? Math.max(viewportPadding, rect.top - panelGap - renderedHeight)
+    : Math.min(belowTop, window.innerHeight - viewportPadding)
   panelStyle.value = {
     position: 'fixed',
     top: `${top}px`,
     left: `${left}px`,
     width: `${width}px`,
+    maxHeight: `${availableHeight}px`,
     zIndex: 'var(--z-global-popover)'
   }
 }
@@ -64,23 +64,27 @@ function toggle() {
     open.value = false
     return
   }
+  selectionLocked.value = false
   updatePanelPosition()
   open.value = true
 }
 
 function chooseProvince(province) {
+  if (selectionLocked.value || props.disabled) return
   activeProvinceCode.value = province.code
   activeCityCode.value = ''
   if (!province.children?.length) complete(province.candidate)
 }
 
 function chooseCity(city) {
+  if (selectionLocked.value || props.disabled) return
   activeCityCode.value = city.code
   if (!city.children?.length) complete(city.candidate)
 }
 
 function complete(candidate) {
-  if (!candidate) return
+  if (!candidate || selectionLocked.value || props.disabled) return
+  selectionLocked.value = true
   // options 会被 Vue 深度响应式化，直接把其中的 Proxy 传给 contextBridge
   // 会触发 Electron 的 "An object could not be cloned"。这里只传递字段均为
   // 基础类型的普通对象，并在收起动画开始前提交，避免快速重开或卸载丢失选择。
@@ -285,7 +289,9 @@ onBeforeUnmount(() => {
 }
 .china-area-cascader__column {
   min-width: 0;
-  max-height: 292rem;
+  min-height: 0;
+  max-height: inherit;
+  overflow-y: auto;
   padding: 5rem;
 }
 .china-area-cascader__column + .china-area-cascader__column {

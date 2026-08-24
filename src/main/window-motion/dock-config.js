@@ -33,7 +33,16 @@ export function normalizeDockRuntimeConfig(config, supportedEdges) {
   }
 }
 
+export function resolveDockRevealHandlePositionPermille(positions, side) {
+  if (!DOCK_EDGE_ORDER.includes(side)) return null
+  const position = Number(positions?.[side])
+  if (!Number.isFinite(position)) return null
+  return Math.round(Math.min(1, Math.max(0, position)) * 1000)
+}
+
 export function dockRuntimeConfigEqual(first, second) {
+  // 拖动位置属于当前原生会话可原地更新的展示状态；不能因为它持久化就把
+  // 已隐藏的主窗口强制恢复可见。这里只比较会改变贴边状态机语义的配置。
   if (
     normalizeRevealHandleMode(first?.revealHandleMode) !==
     normalizeRevealHandleMode(second?.revealHandleMode)

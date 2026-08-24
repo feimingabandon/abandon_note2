@@ -23,7 +23,7 @@ describe('便签列表高度动画结构', () => {
     expect(inner).toContain('padding: 7rem 0 2rem 18rem;')
   })
 
-  it('标签组标题不缩放，箭头只在向左和向下之间旋转', () => {
+  it('标签组标题不缩放，箭头位于标签文字后并在向右和向下之间旋转', () => {
     const source = readFileSync(NOTE_LIST_PATH, 'utf8')
     const header = styleDeclarations(source, '.nl-tag-group-header')
     const activeHeader = styleDeclarations(source, '.nl-tag-group-header:active')
@@ -32,7 +32,10 @@ describe('便签列表高度动画结构', () => {
 
     expect(header).not.toContain('transform var(--motion-control)')
     expect(activeHeader).toContain('transform: none;')
-    expect(chevron).toContain('transform: rotate(180deg);')
+    expect(source).toMatch(
+      /class="nl-tag-group-name">\{\{ group\.name \}\}<\/span>\s*<svg\s+v-if="!tagGroupSortMode"\s+class="nl-tag-group-chevron"/
+    )
+    expect(chevron).toContain('transform: rotate(0deg);')
     expect(openChevron).toContain('transform: rotate(90deg);')
   })
 

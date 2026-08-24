@@ -1723,8 +1723,15 @@ defineExpose({
                     class="nl-tag-group-row-grip-placeholder"
                     aria-hidden="true"
                   ></span>
+                  <span
+                    class="nl-tag-group-dot"
+                    :class="{ 'nl-tag-group-dot--untagged': group.untagged }"
+                    :style="group.color ? { backgroundColor: group.color } : null"
+                    aria-hidden="true"
+                  ></span>
+                  <span class="nl-tag-group-name">{{ group.name }}</span>
                   <svg
-                    v-else
+                    v-if="!tagGroupSortMode"
                     class="nl-tag-group-chevron"
                     :class="{ 'nl-tag-group-chevron--open': group.expanded || group.opening }"
                     width="14"
@@ -1741,13 +1748,6 @@ defineExpose({
                       stroke-linejoin="round"
                     />
                   </svg>
-                  <span
-                    class="nl-tag-group-dot"
-                    :class="{ 'nl-tag-group-dot--untagged': group.untagged }"
-                    :style="group.color ? { backgroundColor: group.color } : null"
-                    aria-hidden="true"
-                  ></span>
-                  <span class="nl-tag-group-name">{{ group.name }}</span>
                 </button>
                 <span class="nl-tag-group-count">{{ group.total }}</span>
               </div>
@@ -2328,7 +2328,7 @@ defineExpose({
 }
 .nl-tag-group-name {
   min-width: 0;
-  flex: 1;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2394,7 +2394,7 @@ defineExpose({
 .nl-tag-group-chevron {
   flex: 0 0 auto;
   opacity: 0.64;
-  transform: rotate(180deg);
+  transform: rotate(0deg);
   transition: transform var(--motion-control) var(--ease-standard);
 }
 .nl-tag-group-chevron--open {
