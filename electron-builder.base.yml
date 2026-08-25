@@ -9,8 +9,9 @@ afterPack: scripts/validate-packaged-app.cjs
 files:
   - '!**/.vscode/*'
   - '!src/*'
-  # 显式排除所有打包输出目录，防止切换 output 目录时旧产物被打进 asar
+  # 显式排除打包产物和本地生成素材，防止旧产物或宣传图被打进 app.asar。
   - '!dist*/**'
+  - '!output/**'
   # 防止手动拷贝到仓库根目录的旧安装产物被嵌套打进 app.asar。
   - '!Abandon-Note-*-setup.exe'
   - '!Abandon-Note-*-setup.exe.blockmap'

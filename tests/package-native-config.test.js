@@ -33,7 +33,7 @@ async function writeFixture(root, relativePath, content = 'fixture') {
 async function createPackagedFixture(
   platform,
   arch,
-  { breakAsar = false, leakSource = false } = {}
+  { breakAsar = false, leakOutput = false, leakSource = false } = {}
 ) {
   const root = await mkdtemp(path.join(tmpdir(), 'abandon-package-native-'))
   temporaryRoots.push(root)
@@ -48,6 +48,9 @@ async function createPackagedFixture(
   await writeFixture(appSource, path.join('resources', 'icon.png'))
   if (leakSource) {
     await writeFixture(appSource, path.join('src', 'main.js'), 'console.log("leaked")')
+  }
+  if (leakOutput) {
+    await writeFixture(appSource, path.join('output', 'marketing', 'promo.png'))
   }
   await mkdir(resourcesDir, { recursive: true })
   await createPackageWithOptions(appSource, path.join(resourcesDir, 'app.asar'), {
@@ -142,5 +145,12 @@ describe('platform native module configuration', () => {
     await expect(
       validatePackagedApp(context, { validateWindowsNativeAbi: vi.fn() })
     ).rejects.toThrow('Development file leaked into app.asar: /src')
+  })
+
+  it('rejects generated output leaked into app.asar', async () => {
+    const context = await createPackagedFixture('win32', 'x64', { leakOutput: true })
+    await expect(
+      validatePackagedApp(context, { validateWindowsNativeAbi: vi.fn() })
+    ).rejects.toThrow('Development file leaked into app.asar: /output')
   })
 })

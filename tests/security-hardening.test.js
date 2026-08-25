@@ -53,3 +53,9 @@ describe('应用与安装器身份', () => {
     expect(read('electron-builder.win.yml')).toContain('guid: 41249b74-bbe0-5d8d-8a9d-7f1bd6f04a19')
   })
 })
+
+describe('安装包内容边界', () => {
+  it('排除本地生成的 output 目录', () => {
+    expect(read('electron-builder.base.yml')).toContain("- '!output/**'")
+  })
+})

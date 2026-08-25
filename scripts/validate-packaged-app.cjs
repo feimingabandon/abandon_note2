@@ -82,6 +82,7 @@ async function validatePackagedApp(context, dependencies = {}) {
     '/build/',
     '/docs/',
     '/native_blur/',
+    '/output/',
     '/scripts/',
     '/src/',
     '/tests/'
