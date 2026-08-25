@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { stopEdgeMonitorForFullscreenRebuild } from '../src/main/window-motion/dock-display-rebuild.js'
+import {
+  resolveFullscreenRebuildHandlePosition,
+  stopEdgeMonitorForFullscreenRebuild
+} from '../src/main/window-motion/dock-display-rebuild.js'
 
 function createScenario(disarmEdgeMonitor) {
   const backend = { disarmEdgeMonitor }
@@ -9,6 +12,109 @@ function createScenario(disarmEdgeMonitor) {
 }
 
 describe('fullscreen dock display rebuild', () => {
+  it('adopts the current native committed drag before the old event queue is disarmed', () => {
+    const session = {
+      generation: 41,
+      side: 'top',
+      revealHandleMode: 'persistent',
+      handlePositionPermille: 250
+    }
+
+    expect(
+      resolveFullscreenRebuildHandlePosition(session, {
+        generation: 41,
+        side: 'top',
+        mode: 'persistent',
+        handlePositionPermille: 734
+      })
+    ).toBe(734)
+  })
+
+  it('does not let another generation, side or reveal mode contaminate the session', () => {
+    const persistent = {
+      generation: 41,
+      side: 'top',
+      revealHandleMode: 'persistent',
+      handlePositionPermille: 250
+    }
+    const currentStatus = {
+      generation: 41,
+      side: 'top',
+      mode: 'persistent',
+      handlePositionPermille: 734
+    }
+
+    expect(
+      resolveFullscreenRebuildHandlePosition(
+        { ...persistent, revealHandleMode: 'direct' },
+        currentStatus
+      )
+    ).toBeNull()
+    expect(
+      resolveFullscreenRebuildHandlePosition(
+        { ...persistent, revealHandleMode: 'on-touch' },
+        currentStatus
+      )
+    ).toBeNull()
+    expect(
+      resolveFullscreenRebuildHandlePosition(persistent, {
+        ...currentStatus,
+        generation: 40
+      })
+    ).toBe(250)
+    expect(
+      resolveFullscreenRebuildHandlePosition(persistent, {
+        ...currentStatus,
+        side: 'left'
+      })
+    ).toBe(250)
+    expect(
+      resolveFullscreenRebuildHandlePosition(persistent, {
+        ...currentStatus,
+        mode: 'on-touch'
+      })
+    ).toBe(250)
+    expect(
+      resolveFullscreenRebuildHandlePosition(persistent, {
+        ...currentStatus,
+        handlePositionPermille: 1001
+      })
+    ).toBe(250)
+  })
+
+  it('accepts both drag endpoints and keeps center unconfigured when no valid position exists', () => {
+    const session = {
+      generation: 41,
+      side: 'left',
+      revealHandleMode: 'persistent',
+      handlePositionPermille: null
+    }
+    const status = {
+      generation: 41,
+      side: 'left',
+      mode: 'persistent'
+    }
+
+    expect(
+      resolveFullscreenRebuildHandlePosition(session, {
+        ...status,
+        handlePositionPermille: 0
+      })
+    ).toBe(0)
+    expect(
+      resolveFullscreenRebuildHandlePosition(session, {
+        ...status,
+        handlePositionPermille: 1000
+      })
+    ).toBe(1000)
+    expect(
+      resolveFullscreenRebuildHandlePosition(session, {
+        ...status,
+        handlePositionPermille: -1
+      })
+    ).toBeNull()
+  })
+
   it('continues rebuilding only after the old native monitor stops', () => {
     const scenario = createScenario(vi.fn(() => true))
     expect(

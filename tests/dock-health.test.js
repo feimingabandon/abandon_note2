@@ -24,6 +24,7 @@ function healthyHiddenSnapshot(overrides = {}) {
       generation: 7,
       side: 'left',
       mode: 'direct',
+      handlePresented: false,
       lastPollAgeMs: 40
     },
     ...overrides
@@ -115,6 +116,7 @@ describe('dock health inspection', () => {
           mode: 'on-touch',
           handleState,
           handleVisible: true,
+          handlePresented: handleState === 'ready',
           handleWindowAlive: true
         }
       })
@@ -141,6 +143,7 @@ describe('dock health inspection', () => {
       expect(inspectDockHealth(snapshot)).toContain('小黑条原生窗口未持续运行')
       if (handleState === 'ready') {
         expect(inspectDockHealth(snapshot)).toContain('小黑条已就绪但不可见')
+        expect(inspectDockHealth(snapshot)).toContain('小黑条已就绪但画面未成功提交')
       }
     }
   )
@@ -164,7 +167,8 @@ describe('dock health inspection', () => {
       '隐藏会话的小黑条模式与当前配置不一致',
       '原生边缘监视器的小黑条模式与贴边会话不一致',
       '小黑条原生窗口未持续运行',
-      '小黑条已就绪但不可见'
+      '小黑条已就绪但不可见',
+      '小黑条已就绪但画面未成功提交'
     ])
   })
 
@@ -178,6 +182,7 @@ describe('dock health inspection', () => {
         persistentHandleActivated: true,
         handleState: 'ready',
         handleVisible: true,
+        handlePresented: true,
         handleWindowAlive: true
       }
     })
@@ -189,6 +194,36 @@ describe('dock health inspection', () => {
         edgeMonitor: { ...persistent.edgeMonitor, persistentHandleActivated: false }
       })
     ).toContain('常显小黑条尚未激活')
+    expect(
+      inspectDockHealth({
+        ...persistent,
+        edgeMonitor: { ...persistent.edgeMonitor, handlePresented: false }
+      })
+    ).toContain('小黑条已就绪但画面未成功提交')
+    expect(
+      inspectDockHealth({
+        ...persistent,
+        edgeMonitor: { ...persistent.edgeMonitor, handlePresented: null }
+      })
+    ).toContain('小黑条已就绪但画面未成功提交')
+  })
+
+  it('reports a ready handle when the native presentation status is missing', () => {
+    const persistent = healthyHiddenSnapshot({
+      revealHandleMode: 'persistent',
+      sessionRevealHandleMode: 'persistent',
+      edgeMonitor: {
+        ...healthyHiddenSnapshot().edgeMonitor,
+        mode: 'persistent',
+        persistentHandleActivated: true,
+        handleState: 'ready',
+        handleVisible: true,
+        handleWindowAlive: true
+      }
+    })
+    delete persistent.edgeMonitor.handlePresented
+
+    expect(inspectDockHealth(persistent)).toContain('小黑条已就绪但画面未成功提交')
   })
 
   it('reports stale native resources after the window is restored', () => {

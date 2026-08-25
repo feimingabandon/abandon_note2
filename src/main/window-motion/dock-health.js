@@ -68,6 +68,9 @@ export function inspectDockHealth(snapshot) {
       if (monitor.handleState === 'ready' && monitor.handleVisible !== true) {
         issues.push('小黑条已就绪但不可见')
       }
+      if (monitor.handleState === 'ready' && monitor.handlePresented !== true) {
+        issues.push('小黑条已就绪但画面未成功提交')
+      }
     }
     if (
       snapshot.sessionRevealHandleMode === 'persistent' &&

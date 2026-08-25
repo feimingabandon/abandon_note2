@@ -1,5 +1,5 @@
 /** 数据库结构版本。公开版本只能通过显式迁移递增。 */
-export const DATABASE_SCHEMA_VERSION = 7
+export const DATABASE_SCHEMA_VERSION = 8
 
 function hasTable(db, tableName) {
   return Boolean(
@@ -196,6 +196,13 @@ function migrateToVersion7(db) {
   createDesktopStickiesSchema(db)
 }
 
+/** V8 移除已经废弃的常显小黑条持久位置；拖动位置只属于当前隐藏会话。 */
+function migrateToVersion8(db) {
+  db.prepare(
+    "DELETE FROM app_settings WHERE type = 'dock' AND key = 'dock_reveal_handle_positions'"
+  ).run()
+}
+
 function ensureTagRelationIndexes(db) {
   if (hasColumn(db, 'note_tags', 'tag_id')) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id ON note_tags(tag_id);')
@@ -214,6 +221,13 @@ function migrateDatabaseSchema(db, existingVersion) {
   const hasObsoleteTagPinning =
     hasColumn(db, 'tags', 'is_pinned') || hasColumn(db, 'tags', 'pinned_at')
   const hasObsoleteSnoozeColumn = hasColumn(db, 'notes', 'remind_again_at')
+  const hasObsoleteDockRevealHandlePositions = Boolean(
+    db
+      .prepare(
+        "SELECT 1 FROM app_settings WHERE type = 'dock' AND key = 'dock_reveal_handle_positions' LIMIT 1"
+      )
+      .get()
+  )
   if (
     existingVersion >= DATABASE_SCHEMA_VERSION &&
     !missingDurationDays &&
@@ -221,7 +235,8 @@ function migrateDatabaseSchema(db, existingVersion) {
     !missingTagSortOrder &&
     !hasObsoleteTagPinning &&
     !hasObsoleteSnoozeColumn &&
-    !missingDesktopStickies
+    !missingDesktopStickies &&
+    !hasObsoleteDockRevealHandlePositions
   )
     return
   db.transaction(() => {
@@ -235,6 +250,7 @@ function migrateDatabaseSchema(db, existingVersion) {
       migrateToVersion6(db)
     }
     if (existingVersion < 7 || missingDesktopStickies) migrateToVersion7(db)
+    if (existingVersion < 8 || hasObsoleteDockRevealHandlePositions) migrateToVersion8(db)
     if (existingVersion < DATABASE_SCHEMA_VERSION) {
       db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
     }

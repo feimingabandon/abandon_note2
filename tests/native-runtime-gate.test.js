@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { enforceNativeRuntimeCompatibility } from '../src/main/native-runtime-gate.js'
+import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
 
 describe('Windows native runtime startup gate', () => {
   it('allows startup when the native runtime is compatible', () => {
@@ -36,7 +37,7 @@ describe('Windows native runtime startup gate', () => {
         getCompatibility: () => ({
           success: false,
           required: true,
-          expectedAbiVersion: 1,
+          expectedAbiVersion: NATIVE_ABI_VERSION,
           actualAbiVersion: 0,
           dllPath: 'C:\\broken\\blur_engine.dll',
           error: { code: 'NATIVE_ABI_MISMATCH', message: 'ABI 不匹配' }
@@ -50,7 +51,7 @@ describe('Windows native runtime startup gate', () => {
     expect(logger.fatal).toHaveBeenCalledWith(
       'startup.native-runtime',
       expect.objectContaining({ code: 'NATIVE_ABI_MISMATCH' }),
-      expect.objectContaining({ expectedAbiVersion: 1, actualAbiVersion: 0 })
+      expect.objectContaining({ expectedAbiVersion: NATIVE_ABI_VERSION, actualAbiVersion: 0 })
     )
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
       'Abandon Note 无法启动',
@@ -95,5 +96,10 @@ describe('Windows native runtime startup gate', () => {
     expect(readyBlock.indexOf('enforceNativeRuntimeCompatibility({')).toBeLessThan(
       readyBlock.indexOf('initDatabase()')
     )
+  })
+
+  it('keeps the JavaScript and C++ native ABI constants synchronized', () => {
+    const source = readFileSync(resolve('native_blur/blur_api.cpp'), 'utf8')
+    expect(source).toContain(`constexpr int kNativeAbiVersion = ${NATIVE_ABI_VERSION};`)
   })
 })

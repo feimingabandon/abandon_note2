@@ -18,7 +18,18 @@ function tableExists(connection, tableName) {
   )
 }
 
-/** 在会重建旧表的标签迁移前创建一次原库快照。 */
+function tableHasSetting(connection, type, key) {
+  return (
+    tableExists(connection, 'app_settings') &&
+    Boolean(
+      connection
+        .prepare('SELECT 1 FROM app_settings WHERE type = ? AND key = ? LIMIT 1')
+        .get(type, key)
+    )
+  )
+}
+
+/** 在会重建旧表或删除废弃持久数据的迁移前创建一次原库快照。 */
 export function createDatabaseMigrationBackup(connection, dbPath) {
   const version = Number(connection.pragma('user_version', { simple: true }) || 0)
   if (DATABASE_SCHEMA_VERSION < 3) return null
@@ -35,14 +46,19 @@ export function createDatabaseMigrationBackup(connection, dbPath) {
     (!tableHasColumn(connection, 'tags', 'sort_order') ||
       tableHasColumn(connection, 'tags', 'is_pinned') ||
       tableHasColumn(connection, 'tags', 'pinned_at'))
-  if (!hasLegacyTagRelations && !needsTagOrderMigration) return null
+  const needsDockHandlePositionCleanup =
+    DATABASE_SCHEMA_VERSION >= 8 &&
+    tableHasSetting(connection, 'dock', 'dock_reveal_handle_positions')
+  if (!hasLegacyTagRelations && !needsTagOrderMigration && !needsDockHandlePositionCleanup) {
+    return null
+  }
 
-  const targetVersion = hasLegacyTagRelations ? 3 : 6
+  const targetVersion = hasLegacyTagRelations ? 3 : needsTagOrderMigration ? 6 : 8
   const backupPath = join(dirname(dbPath), `app-v${version}-before-v${targetVersion}.db`)
   if (existsSync(backupPath)) return backupPath
   const escapedPath = backupPath.replaceAll("'", "''")
   connection.exec(`VACUUM INTO '${escapedPath}'`)
-  console.log(`[db] 已创建 V${targetVersion} 标签迁移前备份: ${backupPath}`)
+  console.log(`[db] 已创建 V${targetVersion} 数据库迁移前备份: ${backupPath}`)
   return backupPath
 }
 

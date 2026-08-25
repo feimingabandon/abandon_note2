@@ -19,7 +19,7 @@ async function waitUntil(predicate, message, timeoutMs = EVENT_TIMEOUT_MS) {
     if (value) return value
     await wait(20)
   }
-  throw new Error(message)
+  throw new Error(typeof message === 'function' ? message() : message)
 }
 
 app.commandLine.appendSwitch('disable-gpu')
@@ -128,6 +128,38 @@ async function runNativeEdgeMonitorTests() {
     assert.ok(
       Math.abs(width - expectedWidth) <= 1 && Math.abs(height - expectedHeight) <= 1,
       `${side} 小黑条尺寸应为 ${expectedWidth}×${expectedHeight}px，实际为 ${width}×${height}px`
+    )
+  }
+
+  function assertHandleCenteredOnTriggerEdge(status, side) {
+    const handleWidth = status.handleRect.right - status.handleRect.left
+    const handleHeight = status.handleRect.bottom - status.handleRect.top
+    const actualCenter = {
+      x: (status.handleRect.left + status.handleRect.right) / 2,
+      y: (status.handleRect.top + status.handleRect.bottom) / 2
+    }
+    const expectedCenter =
+      side === -1 || side === 1
+        ? {
+            x:
+              side === -1
+                ? status.triggerArea.left + handleWidth / 2
+                : status.triggerArea.right - handleWidth / 2,
+            y: (status.triggerArea.top + status.triggerArea.bottom) / 2
+          }
+        : {
+            x: (status.triggerArea.left + status.triggerArea.right) / 2,
+            y:
+              side === -2
+                ? status.triggerArea.top + handleHeight / 2
+                : status.triggerArea.bottom - handleHeight / 2
+          }
+    assert.ok(
+      Math.abs(actualCenter.x - expectedCenter.x) <= 1 &&
+        Math.abs(actualCenter.y - expectedCenter.y) <= 1,
+      `${side} 小黑条应回到主窗口对应触发边中心 ` +
+        `(${expectedCenter.x}, ${expectedCenter.y})，实际为 ` +
+        `(${actualCenter.x}, ${actualCenter.y})`
     )
   }
 
@@ -661,8 +693,10 @@ async function runNativeEdgeMonitorTests() {
     }, '常显小黑条没有完成屏外预热')
     assert.equal(persistentPrewarmed.mode, 'persistent')
     assert.equal(persistentPrewarmed.persistentHandleActivated, false)
+    assert.equal(persistentPrewarmed.handlePositionPermille, -1, '未配置位置时必须保留默认位置标记')
     assert.equal(persistentPrewarmed.handleState, 'hidden')
     assert.equal(persistentPrewarmed.handleVisible, false)
+    assert.equal(persistentPrewarmed.handlePresented, false)
     await wait(300)
     assert.equal(getStatus().handleState, 'hidden', '未显式激活前常显小黑条不得提前出现')
 
@@ -672,16 +706,25 @@ async function runNativeEdgeMonitorTests() {
       1,
       '常显小黑条必须接受归一化初始位置'
     )
+    const persistentPresentCountBeforeShow = getStatus().handlePresentCount
     assert.equal(showPersistentHandle(generation), 1, '主窗口隐藏完成后必须能激活常显小黑条')
     let sawPersistentIntermediate = false
-    const persistentReady = await waitUntil(() => {
-      const status = getStatus()
-      if (isPartiallyVisible(status, -2, workArea)) sawPersistentIntermediate = true
-      return status.handleState === 'ready' && status.handleVisible && status
-    }, '常显小黑条没有自动滑入')
+    const persistentReady = await waitUntil(
+      () => {
+        const status = getStatus()
+        if (isPartiallyVisible(status, -2, workArea)) sawPersistentIntermediate = true
+        return status.handleState === 'ready' && status.handleVisible && status
+      },
+      () => `常显小黑条没有自动滑入；状态=${JSON.stringify(getStatus())}`
+    )
     assert.equal(sawPersistentIntermediate, true, '常显小黑条必须从屏外播放滑入动画')
     assert.equal(persistentReady.persistentHandleActivated, true)
     assert.equal(persistentReady.handlePositionPermille, 250)
+    assert.equal(persistentReady.handlePresented, true)
+    assert.ok(
+      persistentReady.handlePresentCount >= persistentPresentCountBeforeShow + 2,
+      '常显小黑条显示后必须相对预热基线新增屏外起点和可见终点两次像素提交'
+    )
     assertHandleSize(persistentReady, -2)
     const persistentStaticVisual = {
       frame: persistentReady.handleVisualFrame,
@@ -764,6 +807,7 @@ async function runNativeEdgeMonitorTests() {
         status.handleState === 'hidden' &&
         status.handleWindowAlive &&
         !status.handleVisible &&
+        !status.handlePresented &&
         status
       )
     }, '其他程序全屏后常显小黑条没有暂时停回屏外')
@@ -799,6 +843,12 @@ async function runNativeEdgeMonitorTests() {
       '全屏切换中的短暂非全屏采样不得让常显小黑条闪现'
     )
 
+    const persistentBlockedBeforeRestore = getStatus()
+    assert.equal(
+      persistentBlockedBeforeRestore.handlePresented,
+      false,
+      '退出全屏前常显小黑条必须仍停放在屏外'
+    )
     await stopForegroundHelper(foregroundHelper)
     foregroundHelper = null
     const persistentRestored = await waitUntil(() => {
@@ -811,6 +861,12 @@ async function runNativeEdgeMonitorTests() {
       persistentRestored.handlePositionPermille,
       committedPosition,
       '全屏中断拖动后必须恢复最后一次已提交位置'
+    )
+    assert.equal(persistentRestored.handlePresented, true, '全屏恢复后必须重新提交静态画面')
+    assert.ok(
+      persistentRestored.handlePresentCount >=
+        persistentBlockedBeforeRestore.handlePresentCount + 2,
+      '全屏恢复后必须相对停放基线新增屏外起点和可见终点两次像素提交'
     )
 
     let consumeQueuedEvents = false
@@ -895,6 +951,43 @@ async function runNativeEdgeMonitorTests() {
     )
     assert.equal(getStatus().pendingEventCount, 0)
     assert.equal(getStatus().persistentHandleActivated, false, '点击后必须先撤销常显意图')
+    assert.equal(disarm(generation), 1)
+
+    // 同一条顶部边刚完成真实拖动并结束代次后，新代次不再注入位置；原生层必须
+    // 清除上一代位置并让小黑条回到当前主窗口顶部触发边的中心。
+    await moveCursorAndConfirm(persistentOutside)
+    generation += 1
+    assert.equal(
+      armEx(getHandle(testWindow), -2, 2, POLL_INTERVAL_MS, generation, 2),
+      1,
+      '常显小黑条居中复位场景必须启动成功'
+    )
+    const resetPositionPrewarmed = await waitUntil(() => {
+      const status = getStatus()
+      return status.workerAlive && status.handleWindowAlive && status
+    }, '常显小黑条居中复位场景没有完成屏外预热')
+    assert.equal(
+      resetPositionPrewarmed.handlePositionPermille,
+      -1,
+      '新常显会话必须清除上一代真实拖动位置'
+    )
+    const resetPositionPresentCountBeforeShow = getStatus().handlePresentCount
+    assert.equal(showPersistentHandle(generation), 1, '新常显会话必须能在默认位置显示')
+    const resetPositionReady = await waitUntil(
+      () => {
+        const status = getStatus()
+        return status.handleState === 'ready' && status.handleVisible && status
+      },
+      () => `新常显会话没有在默认位置就绪；状态=${JSON.stringify(getStatus())}`
+    )
+    assert.equal(resetPositionReady.handlePositionPermille, -1)
+    assert.equal(resetPositionReady.handlePresented, true)
+    assert.ok(
+      resetPositionReady.handlePresentCount >= resetPositionPresentCountBeforeShow + 2,
+      '新常显会话显示后必须完成屏外起点和可见终点两次像素提交'
+    )
+    assertHandleSize(resetPositionReady, -2)
+    assertHandleCenteredOnTriggerEdge(resetPositionReady, -2)
     assert.equal(disarm(generation), 1)
     testWindow.destroy()
     testWindow = null

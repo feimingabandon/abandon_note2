@@ -37,12 +37,14 @@ import {
 } from './bridge/blur_bridge.js'
 import { createWindowMotionBackend } from './window-motion/index.js'
 import { DockTransitionState } from './window-motion/dock-transition-state.js'
-import { stopEdgeMonitorForFullscreenRebuild } from './window-motion/dock-display-rebuild.js'
+import {
+  resolveFullscreenRebuildHandlePosition,
+  stopEdgeMonitorForFullscreenRebuild
+} from './window-motion/dock-display-rebuild.js'
 import {
   dockRuntimeConfigEqual,
   isCurrentDockMonitorEvent,
   normalizeDockRuntimeConfig,
-  resolveDockRevealHandlePositionPermille,
   selectNearestDockSide,
   validateDockConfigPayload
 } from './window-motion/dock-config.js'
@@ -234,14 +236,9 @@ function getDockRuntimeConfig() {
   const configuredDock = resolvedSettings?.dock ||
     createDefaultSettings(activeViewMode).dock || {
       revealHandleMode: DOCK_REVEAL_HANDLE_MODES.DIRECT,
-      enabledEdges: supportedEdges,
-      revealHandlePositions: {}
+      enabledEdges: supportedEdges
     }
-  const normalized = normalizeDockRuntimeConfig(configuredDock, supportedEdges)
-  return {
-    ...normalized,
-    revealHandlePositions: { ...(configuredDock.revealHandlePositions || {}) }
-  }
+  return normalizeDockRuntimeConfig(configuredDock, supportedEdges)
 }
 
 function getDockRuntimeCapability() {
@@ -1100,19 +1097,11 @@ function handleNativeEdgeMonitorMessage(window) {
       return
     }
     dockMotionSession.handlePositionPermille = positionPermille
-    const revealHandlePositions = {
-      ...(resolvedSettings?.dock?.revealHandlePositions || {}),
-      [event.side]: positionPermille / 1000
-    }
-    try {
-      persistSettingValues([{ id: 'dock.revealHandlePositions', value: revealHandlePositions }])
-      logger.info('dock.handle-position', '常显小黑条位置已保存', {
-        side: event.side,
-        positionPermille
-      })
-    } catch (error) {
-      logger.error('dock.handle-position', error, { event })
-    }
+    logger.info('dock.handle-position', '常显小黑条已在当前隐藏会话内移动', {
+      side: event.side,
+      positionPermille,
+      persisted: false
+    })
     return
   }
   if (event.kind === 'trigger') {
@@ -1762,6 +1751,13 @@ function rebuildFullscreenDockSessionAfterDisplayChange(change) {
   }
   if (monitorStatus?.fullscreenActive !== true) return false
 
+  // 原生线程在发布 handle-moved 前已经提交最终位置。这里必须在 disarm 清空
+  // 事件队列之前采纳同代次快照，避免显示参数重建抢先时丢失本次会话的拖动。
+  const handlePositionPermille = resolveFullscreenRebuildHandlePosition(
+    previousSession,
+    monitorStatus
+  )
+
   const center = {
     x: previousSession.stableBounds.x + Math.round(previousSession.stableBounds.width / 2),
     y: previousSession.stableBounds.y + Math.round(previousSession.stableBounds.height / 2)
@@ -1806,6 +1802,7 @@ function rebuildFullscreenDockSessionAfterDisplayChange(change) {
     dockMotionSession = {
       ...previousSession,
       generation,
+      handlePositionPermille,
       stableBounds,
       motionPlan: rebuiltPlan,
       workArea: { ...display.workArea },
@@ -1834,7 +1831,8 @@ function rebuildFullscreenDockSessionAfterDisplayChange(change) {
       previousGeneration: previousSession.generation,
       generation,
       side: previousSession.side,
-      displayId: display.id
+      displayId: display.id,
+      handlePositionPermille
     })
     return true
   } catch (error) {
@@ -2168,10 +2166,8 @@ function doHide() {
     generation,
     side: dockSide,
     revealHandleMode: dockConfig.revealHandleMode,
-    handlePositionPermille: resolveDockRevealHandlePositionPermille(
-      dockConfig.revealHandlePositions,
-      dockSide
-    ),
+    // 拖动只影响当前隐藏会话；每次重新贴边都从对应窗口边缘的中点开始。
+    handlePositionPermille: null,
     stableBounds,
     motionPlan,
     workArea: { ...cachedWorkArea },
@@ -2202,22 +2198,6 @@ function doHide() {
     dockMotionSession = null
     return
   }
-  try {
-    applyDockPersistentHandlePosition(dockMotionSession, 'hide')
-  } catch (error) {
-    logger.error('dock.handle-position', error, { generation, side: dockSide })
-    try {
-      if (!windowMotionBackend.disarmEdgeMonitor(generation)) {
-        beginNativeEdgeCleanup(generation, windowMotionBackend, 'handle-position-setup')
-      }
-    } catch (cleanupError) {
-      logger.error('dock.handle-position-cleanup', cleanupError, { generation, side: dockSide })
-      beginNativeEdgeCleanup(generation, windowMotionBackend, 'handle-position-setup')
-    }
-    dockMotionSession = null
-    return
-  }
-
   isDockHidden = true
   logger.info('dock.lifecycle', '开始贴边隐藏', {
     generation,

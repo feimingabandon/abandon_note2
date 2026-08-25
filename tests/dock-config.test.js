@@ -4,7 +4,6 @@ import {
   isCurrentDockMonitorEvent,
   normalizeDockRuntimeConfig,
   resolveActiveDockEdges,
-  resolveDockRevealHandlePositionPermille,
   selectNearestDockSide,
   validateDockConfigPayload
 } from '../src/main/window-motion/dock-config.js'
@@ -37,13 +36,6 @@ describe('dock runtime config', () => {
         { revealHandleMode: 'on-touch', enabledEdges: ['top', 'right'] }
       )
     ).toBe(true)
-  })
-
-  it('maps an optional per-edge handle position to native permille', () => {
-    expect(resolveDockRevealHandlePositionPermille({ right: 0.734 }, 'right')).toBe(734)
-    expect(resolveDockRevealHandlePositionPermille({ top: -2 }, 'top')).toBe(0)
-    expect(resolveDockRevealHandlePositionPermille({}, 'left')).toBeNull()
-    expect(resolveDockRevealHandlePositionPermille({ bottom: 0.5 }, 'bottom')).toBeNull()
   })
 
   it('strictly validates the atomic IPC payload and caps its shape', () => {

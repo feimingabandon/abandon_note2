@@ -35,6 +35,10 @@ const APPLICATION_SETTING_DB_KEYS = new Set([
   'onboarding:first_use_notice_version'
 ])
 
+// 1.1.0 曾把常显小黑条拖动位置写入各视图。位置现在仅属于一次隐藏会话，
+// 旧行由共享 schema 忽略，首次创建周视图时也不能把它继续复制到新作用域。
+const OBSOLETE_VIEW_SETTING_DB_KEYS = new Set(['dock:dock_reveal_handle_positions'])
+
 function rowMap(rows) {
   return new Map(rows.map((row) => [`${row.type}:${row.key}`, row.value]))
 }
@@ -95,9 +99,10 @@ export function ensureViewSettingsInitialized(viewMode) {
   const weekScope = VIEW_SETTINGS_SCOPES[VIEW_MODES.WEEK]
   const existingWeekRows = getAllSettings(weekScope)
   if (existingWeekRows.length === 0) {
-    const inheritedRows = getAllSettings(VIEW_SETTINGS_SCOPES[VIEW_MODES.MONTH]).filter(
-      (row) => !APPLICATION_SETTING_DB_KEYS.has(`${row.type}:${row.key}`)
-    )
+    const inheritedRows = getAllSettings(VIEW_SETTINGS_SCOPES[VIEW_MODES.MONTH]).filter((row) => {
+      const dbKey = `${row.type}:${row.key}`
+      return !APPLICATION_SETTING_DB_KEYS.has(dbKey) && !OBSOLETE_VIEW_SETTING_DB_KEYS.has(dbKey)
+    })
     if (inheritedRows.length > 0) setSettingsBatch(weekScope, inheritedRows)
   }
 

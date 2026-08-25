@@ -98,6 +98,10 @@ describe('dock main-process wiring', () => {
     )
 
     expect(rebuild).toContain('monitorStatus?.fullscreenActive !== true')
+    expect(rebuild).toContain('resolveFullscreenRebuildHandlePosition(')
+    expect(rebuild.indexOf('resolveFullscreenRebuildHandlePosition(')).toBeLessThan(
+      rebuild.indexOf('stopEdgeMonitorForFullscreenRebuild({')
+    )
     expect(rebuild).toContain('stopEdgeMonitorForFullscreenRebuild({')
     expect(rebuild).toContain('setDockPosition({ x: motionPlan.hiddenX, y: motionPlan.hiddenY }')
     expect(rebuild).toContain('const generation = ++dockSessionSequence')
@@ -109,7 +113,7 @@ describe('dock main-process wiring', () => {
     expect(topology).toContain('pendingDockDisplayChange')
   })
 
-  it('persists native handle drag events without rebuilding the hidden session', () => {
+  it('keeps native handle dragging session-local and resets every new hide to center', () => {
     const source = readFileSync(MAIN_PATH, 'utf8')
     const handler = source.slice(
       source.indexOf('function handleNativeEdgeMonitorMessage'),
@@ -118,10 +122,11 @@ describe('dock main-process wiring', () => {
     const hide = source.slice(source.indexOf('function doHide'), source.indexOf('function doShow'))
 
     expect(handler).toContain("event.kind === 'handle-moved'")
-    expect(handler).toContain("id: 'dock.revealHandlePositions'")
     expect(handler).toContain('dockMotionSession.handlePositionPermille = positionPermille')
     expect(handler).toContain('windowMotionBackend.setPersistentHandlePosition')
-    expect(hide).toContain('resolveDockRevealHandlePositionPermille')
-    expect(hide).toContain("applyDockPersistentHandlePosition(dockMotionSession, 'hide')")
+    expect(handler).toContain('persisted: false')
+    expect(handler).not.toContain('persistSettingValue')
+    expect(hide).toContain('handlePositionPermille: null')
+    expect(hide).not.toContain("applyDockPersistentHandlePosition(dockMotionSession, 'hide')")
   })
 })

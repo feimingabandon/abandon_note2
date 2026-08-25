@@ -136,6 +136,38 @@ try {
   rmSync(v5BackupRoot, { recursive: true, force: true })
 }
 
+const v7BackupRoot = mkdtempSync(join(tmpdir(), 'abandon-v7-backup-test-'))
+const v7BackupSourcePath = join(v7BackupRoot, 'app.db')
+const versionSevenBackupDb = new Database(v7BackupSourcePath)
+try {
+  versionSevenBackupDb.exec(`
+    CREATE TABLE app_settings (
+      window_name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT,
+      PRIMARY KEY (window_name, key)
+    );
+    INSERT INTO app_settings (window_name, type, key, value)
+      VALUES ('month', 'dock', 'dock_reveal_handle_positions', '{"right":0.8}');
+    PRAGMA user_version = 7;
+  `)
+  const backupPath = createDatabaseMigrationBackup(versionSevenBackupDb, v7BackupSourcePath)
+  assert.equal(backupPath, join(v7BackupRoot, 'app-v7-before-v8.db'))
+  assert.equal(existsSync(backupPath), true)
+  const backupDb = new Database(backupPath, { readonly: true })
+  assert.equal(
+    backupDb
+      .prepare("SELECT value FROM app_settings WHERE key = 'dock_reveal_handle_positions'")
+      .get().value,
+    '{"right":0.8}'
+  )
+  backupDb.close()
+} finally {
+  versionSevenBackupDb.close()
+  rmSync(v7BackupRoot, { recursive: true, force: true })
+}
+
 const legacyDb = new Database(':memory:')
 legacyDb.exec(`
   CREATE TABLE notes (
@@ -322,6 +354,44 @@ assert.equal(
   1
 )
 versionSixDb.close()
+
+const versionSevenDb = new Database(':memory:')
+versionSevenDb.pragma('foreign_keys = ON')
+createDatabaseSchema(versionSevenDb)
+versionSevenDb.exec(`
+  INSERT INTO app_settings (window_name, type, key, value)
+  VALUES
+    ('month', 'dock', 'dock_reveal_handle_positions', '{"right":0.8}'),
+    ('week', 'dock', 'dock_reveal_handle_positions', '{"top":0.2}'),
+    ('main', 'custom', 'dock_reveal_handle_positions', 'keep-me'),
+    ('month', 'dock', 'dock_reveal_handle_mode', 'persistent');
+  PRAGMA user_version = 7;
+`)
+createDatabaseSchema(versionSevenDb)
+assert.equal(versionSevenDb.pragma('user_version', { simple: true }), DATABASE_SCHEMA_VERSION)
+assert.equal(
+  versionSevenDb
+    .prepare(
+      "SELECT COUNT(*) AS count FROM app_settings WHERE type = 'dock' AND key = 'dock_reveal_handle_positions'"
+    )
+    .get().count,
+  0
+)
+assert.equal(
+  versionSevenDb
+    .prepare(
+      "SELECT value FROM app_settings WHERE type = 'custom' AND key = 'dock_reveal_handle_positions'"
+    )
+    .get().value,
+  'keep-me'
+)
+assert.equal(
+  versionSevenDb
+    .prepare("SELECT value FROM app_settings WHERE key = 'dock_reveal_handle_mode'")
+    .get().value,
+  'persistent'
+)
+versionSevenDb.close()
 
 const db = new Database(':memory:')
 db.pragma('foreign_keys = ON')

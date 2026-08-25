@@ -11,7 +11,7 @@
 #include <winternl.h>
 
 namespace {
-constexpr int kNativeAbiVersion = 1;
+constexpr int kNativeAbiVersion = 2;
 }
 
 int AbandonNative_GetAbiVersion(void) {

@@ -73,6 +73,12 @@ describe('application view settings', () => {
       { type: 'ui', key: 'day_panel_size', value: '31', remark: '日期侧栏宽度' },
       { type: 'wallpaper', key: 'active_wallpaper_id', value: '9', remark: '壁纸' },
       { type: 'appearance', key: 'titlebar_style', value: 'microsoft', remark: '导航栏' },
+      {
+        type: 'dock',
+        key: 'dock_reveal_handle_positions',
+        value: '{"top":0.8}',
+        remark: '废弃的小黑条位置'
+      },
       { type: 'weather', key: 'enabled', value: 'true', remark: '旧公共设置' }
     ])
 

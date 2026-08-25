@@ -83,18 +83,15 @@ describe('dock settings', () => {
   it('preserves the legacy dock behavior as the default for each view', () => {
     expect(createDefaultSettings(VIEW_MODES.LIST).dock).toEqual({
       revealHandleMode: DOCK_REVEAL_HANDLE_MODES.DIRECT,
-      enabledEdges: ['left', 'right'],
-      revealHandlePositions: {}
+      enabledEdges: ['left', 'right']
     })
     expect(createDefaultSettings(VIEW_MODES.MONTH).dock).toEqual({
       revealHandleMode: DOCK_REVEAL_HANDLE_MODES.DIRECT,
-      enabledEdges: ['top'],
-      revealHandlePositions: {}
+      enabledEdges: ['top']
     })
     expect(createDefaultSettings(VIEW_MODES.WEEK).dock).toEqual({
       revealHandleMode: DOCK_REVEAL_HANDLE_MODES.DIRECT,
-      enabledEdges: ['top'],
-      revealHandlePositions: {}
+      enabledEdges: ['top']
     })
   })
 
@@ -112,9 +109,6 @@ describe('dock settings', () => {
       value: JSON.stringify(['top', 'left', 'right'])
     })
     expect(serializeSetting('dock.enabledEdges', [])).toMatchObject({ value: '[]' })
-    expect(
-      serializeSetting('dock.revealHandlePositions', { right: 0.7344, top: -1 })
-    ).toMatchObject({ value: JSON.stringify({ top: 0, right: 0.734 }) })
   })
 
   it('rejects unsupported edges and uses the current view fallback for damaged rows', () => {
@@ -149,10 +143,10 @@ describe('dock settings', () => {
         {
           type: 'dock',
           key: 'dock_reveal_handle_positions',
-          value: '{"right":null}'
+          value: '{"right":0.9}'
         }
-      ]).dock.revealHandlePositions
-    ).toEqual({})
+      ]).dock
+    ).not.toHaveProperty('revealHandlePositions')
   })
 
   it('migrates legacy booleans, restores all modes and keeps an empty selection', () => {
@@ -166,8 +160,7 @@ describe('dock settings', () => {
       ).dock
     ).toEqual({
       revealHandleMode: DOCK_REVEAL_HANDLE_MODES.ON_TOUCH,
-      enabledEdges: ['top', 'right'],
-      revealHandlePositions: {}
+      enabledEdges: ['top', 'right']
     })
     expect(
       resolveSettingsRows(

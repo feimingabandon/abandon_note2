@@ -63,6 +63,7 @@ struct PendingEvent {
 struct Runtime {
     std::mutex lifecycleMutex;
     std::mutex eventMutex;
+    std::mutex handleStatusMutex;
     std::atomic<State> state{State::Stopped};
     std::atomic<bool> workerAlive{false};
     std::atomic<std::uint64_t> generation{0};
@@ -80,6 +81,8 @@ struct Runtime {
     std::atomic<bool> handleRendererReady{false};
     std::atomic<bool> handleRendererPrewarmed{false};
     std::atomic<bool> handleEmbeddedFontReady{false};
+    std::atomic<bool> handlePresented{false};
+    std::atomic<std::uint64_t> handlePresentCount{0};
     std::atomic<std::uint64_t> handleWindowCreateCount{0};
     std::atomic<bool> persistentHandleActivated{false};
     std::atomic<bool> handleDragging{false};
@@ -119,6 +122,53 @@ struct Runtime {
 Runtime g_runtime;
 std::mutex g_handleClassMutex;
 bool g_handleClassRegistered = false;
+
+struct HandleStatusSnapshot {
+    HandlePhase phase = HandlePhase::Hidden;
+    bool presented = false;
+};
+
+struct MonitorStatusSnapshot {
+    State state = State::Stopped;
+    bool fullscreenActive = false;
+    bool fullscreenExitPending = false;
+};
+
+void StoreHandlePhase(Runtime& runtime, HandlePhase phase) {
+    std::lock_guard<std::mutex> lock(runtime.handleStatusMutex);
+    runtime.handlePhase.store(phase);
+}
+
+void StoreHandlePresented(Runtime& runtime, bool presented) {
+    std::lock_guard<std::mutex> lock(runtime.handleStatusMutex);
+    runtime.handlePresented.store(presented);
+}
+
+void StoreHandleStatus(Runtime& runtime, HandlePhase phase, bool presented) {
+    std::lock_guard<std::mutex> lock(runtime.handleStatusMutex);
+    runtime.handlePhase.store(phase);
+    runtime.handlePresented.store(presented);
+}
+
+HandleStatusSnapshot ReadHandleStatus(Runtime& runtime) {
+    std::lock_guard<std::mutex> lock(runtime.handleStatusMutex);
+    return {runtime.handlePhase.load(), runtime.handlePresented.load()};
+}
+
+MonitorStatusSnapshot ReadMonitorStatus(Runtime& runtime) {
+    // fullscreenActive 是全屏进入/退出转换的最后发布点。双读保证状态查询不会
+    // 把转换前的 state 与转换后的标志拼成一个从未真实存在过的快照。
+    for (;;) {
+        const bool activeBefore = runtime.fullscreenActive.load();
+        const bool exitPendingBefore = runtime.fullscreenExitPending.load();
+        const State state = runtime.state.load();
+        const bool exitPendingAfter = runtime.fullscreenExitPending.load();
+        const bool activeAfter = runtime.fullscreenActive.load();
+        if (activeBefore == activeAfter && exitPendingBefore == exitPendingAfter) {
+            return {state, activeAfter, exitPendingAfter};
+        }
+    }
+}
 
 bool IsValidSide(int side) {
     return side == -2 || side == -1 || side == 1 || side == 2;
@@ -305,7 +355,7 @@ HFONT CreateHandleLabelFont(Runtime& runtime, int sizeDip, int weight) {
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
 }
 
-void PaintHandleText(
+bool PaintHandleText(
     HDC dc, Runtime& runtime, const wchar_t* text, RECT rect,
     int sizeDip, int weight, COLORREF color) {
     HFONT labelFont = CreateHandleLabelFont(runtime, sizeDip, weight);
@@ -313,48 +363,77 @@ void PaintHandleText(
         ? static_cast<HGDIOBJ>(labelFont)
         : GetStockObject(DEFAULT_GUI_FONT);
     HGDIOBJ previousFont = SelectObject(dc, labelFontToUse);
-    SetTextColor(dc, color);
-    DrawTextW(dc, text, -1, &rect,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    SelectObject(dc, previousFont);
-    if (labelFont) DeleteObject(labelFont);
+    const bool fontSelected = previousFont && previousFont != HGDI_ERROR;
+    COLORREF previousColor = CLR_INVALID;
+    int drawnHeight = 0;
+    bool colorRestored = false;
+    if (fontSelected) {
+        previousColor = SetTextColor(dc, color);
+        if (previousColor != CLR_INVALID) {
+            drawnHeight = DrawTextW(dc, text, -1, &rect,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            colorRestored = SetTextColor(dc, previousColor) != CLR_INVALID;
+        }
+    }
+    const bool fontRestored = !fontSelected ||
+        (SelectObject(dc, previousFont) != nullptr && GetCurrentObject(dc, OBJ_FONT) == previousFont);
+    const bool fontDeleted = !labelFont || DeleteObject(labelFont) != FALSE;
+    return fontSelected && previousColor != CLR_INVALID && drawnHeight > 0 && colorRestored &&
+        fontRestored && fontDeleted;
 }
 
-void PaintHandleLabel(HDC dc, Runtime& runtime, const RECT& client) {
+bool PaintHandleLabel(HDC dc, Runtime& runtime, const RECT& client) {
     if (runtime.side == -1 || runtime.side == 1) {
         const int width = client.right - client.left;
         RECT firstLine{0, ScaleDip(49, runtime.dpi), width, ScaleDip(69, runtime.dpi)};
         RECT secondLine{0, ScaleDip(68, runtime.dpi), width, ScaleDip(88, runtime.dpi)};
-        PaintHandleText(dc, runtime, L"\x70b9\x51fb", firstLine,
+        const bool firstLinePainted = PaintHandleText(dc, runtime, L"\x70b9\x51fb", firstLine,
             11, FW_SEMIBOLD, RGB(243, 244, 246));
-        PaintHandleText(dc, runtime, L"\x5c55\x5f00", secondLine,
+        const bool secondLinePainted = PaintHandleText(dc, runtime, L"\x5c55\x5f00", secondLine,
             11, FW_SEMIBOLD, RGB(243, 244, 246));
+        return firstLinePainted && secondLinePainted;
     } else {
         RECT action{ScaleDip(45, runtime.dpi), 0,
             client.right - ScaleDip(10, runtime.dpi), client.bottom};
-        PaintHandleText(dc, runtime, L"\x70b9\x51fb\x5c55\x5f00", action,
+        return PaintHandleText(dc, runtime, L"\x70b9\x51fb\x5c55\x5f00", action,
             11, FW_SEMIBOLD, RGB(243, 244, 246));
     }
 }
 
-void PaintHandleFallback(HDC dc, Runtime& runtime, HWND hwnd) {
-    if (!dc) return;
+bool PaintHandleFallback(HDC dc, Runtime& runtime, HWND hwnd) {
+    if (!dc) return false;
     RECT client{};
-    GetClientRect(hwnd, &client);
-    HBRUSH background = CreateSolidBrush(RGB(18, 19, 21));
-    if (background) {
-        FillRect(dc, &client, background);
-        DeleteObject(background);
+    if (!GetClientRect(hwnd, &client) || client.right <= client.left ||
+        client.bottom <= client.top) {
+        return false;
     }
+    HBRUSH background = CreateSolidBrush(RGB(18, 19, 21));
+    if (!background) return false;
+    const bool backgroundPainted = FillRect(dc, &client, background) != 0;
+    const bool backgroundDeleted = DeleteObject(background) != FALSE;
 
-    SetBkMode(dc, TRANSPARENT);
-    PaintHandleLabel(dc, runtime, client);
+    const int previousBackgroundMode = SetBkMode(dc, TRANSPARENT);
+    const bool labelPainted = previousBackgroundMode != 0 &&
+        PaintHandleLabel(dc, runtime, client);
+    const bool backgroundModeRestored = previousBackgroundMode != 0 &&
+        SetBkMode(dc, previousBackgroundMode) != 0;
+    const bool flushed = GdiFlush() != FALSE;
+    return backgroundPainted && backgroundDeleted && labelPainted &&
+        backgroundModeRestored && flushed;
 }
 
 bool EnableHandleFallbackSurface(HWND hwnd) {
+    SetLastError(ERROR_SUCCESS);
     const LONG_PTR extendedStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, extendedStyle & ~WS_EX_LAYERED);
-    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, extendedStyle | WS_EX_LAYERED);
+    if (extendedStyle == 0 && GetLastError() != ERROR_SUCCESS) return false;
+    SetLastError(ERROR_SUCCESS);
+    const LONG_PTR previousWithoutLayered = SetWindowLongPtrW(
+        hwnd, GWL_EXSTYLE, extendedStyle & ~WS_EX_LAYERED);
+    if (previousWithoutLayered == 0 && GetLastError() != ERROR_SUCCESS) return false;
+    SetLastError(ERROR_SUCCESS);
+    const LONG_PTR previousWithLayered = SetWindowLongPtrW(
+        hwnd, GWL_EXSTYLE, extendedStyle | WS_EX_LAYERED);
+    if (previousWithLayered == 0 && GetLastError() != ERROR_SUCCESS) return false;
     return SetLayeredWindowAttributes(hwnd, 0, 244, LWA_ALPHA) != FALSE;
 }
 
@@ -377,18 +456,27 @@ LRESULT CALLBACK HandleWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
                 hwnd, runtime->side, runtime->dpi,
                 runtime->handleVisualElapsedMs.load(),
                 runtime->revealMode != static_cast<int>(RevealMode::PersistentHandle))) {
-            if (paintDc) EndPaint(hwnd, &paint);
+            const bool paintEnded = paintDc && EndPaint(hwnd, &paint) != FALSE;
+            StoreHandlePresented(*runtime, paintEnded);
+            if (paintEnded) runtime->handlePresentCount.fetch_add(1);
             return 0;
         }
+        bool fallbackSurfaceReady = true;
         if (runtime->handleRenderer) {
             runtime->handleRenderer.reset();
             runtime->handleRendererReady.store(false);
             runtime->handleRendererPrewarmed.store(false);
             runtime->handleEmbeddedFontReady.store(false);
-            EnableHandleFallbackSurface(hwnd);
+            fallbackSurfaceReady = EnableHandleFallbackSurface(hwnd);
         }
-        PaintHandleFallback(paintDc, *runtime, hwnd);
-        if (paintDc) EndPaint(hwnd, &paint);
+        const bool fallbackPainted = fallbackSurfaceReady && paintDc &&
+            PaintHandleFallback(paintDc, *runtime, hwnd);
+        const bool paintEnded = paintDc && EndPaint(hwnd, &paint) != FALSE;
+        const bool fallbackPresented = fallbackPainted && paintEnded;
+        StoreHandlePresented(*runtime, fallbackPresented);
+        if (fallbackPresented) {
+            runtime->handlePresentCount.fetch_add(1);
+        }
         return 0;
     }
     case WM_MOUSEACTIVATE:
@@ -424,7 +512,7 @@ LRESULT CALLBACK HandleWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
             if (!runtime->handleDragging.load() && runtime->handlePressMoved &&
                 heldFor >= kHandleLongPressDurationMs) {
                 runtime->handleDragging.store(true);
-                runtime->handlePhase.store(HandlePhase::Dragging);
+                StoreHandlePhase(*runtime, HandlePhase::Dragging);
                 KillTimer(hwnd, kHandleLongPressTimerId);
             }
             if (runtime->handleDragging.load() && !UpdatePersistentHandleDrag(*runtime, cursor)) {
@@ -439,7 +527,7 @@ LRESULT CALLBACK HandleWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
                 runtime->handleButtonDownInside && runtime->handlePressMoved &&
                 GetCapture() == hwnd) {
                 runtime->handleDragging.store(true);
-                runtime->handlePhase.store(HandlePhase::Dragging);
+                StoreHandlePhase(*runtime, HandlePhase::Dragging);
                 POINT cursor{};
                 if (!GetCursorPos(&cursor) || !UpdatePersistentHandleDrag(*runtime, cursor)) {
                     QueueEvent(*runtime, EventKind::Fault, static_cast<int>(GetLastError()));
@@ -468,7 +556,7 @@ LRESULT CALLBACK HandleWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
         if (wasDragging) {
             runtime->persistentHandlePositionPermille.store(movedPositionPermille);
         }
-        if (wasDragging) runtime->handlePhase.store(HandlePhase::Ready);
+        if (wasDragging) StoreHandlePhase(*runtime, HandlePhase::Ready);
         ResetHandlePress(*runtime);
         if (GetCapture() == hwnd) ReleaseCapture();
         if (wasDragging) {
@@ -479,7 +567,7 @@ LRESULT CALLBACK HandleWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
                 // 防止 worker 在 pendingEvent 刚被消费时把确认条重新创建出来。
                 runtime->persistentHandleActivated.store(false);
             }
-            runtime->handlePhase.store(HandlePhase::Hidden);
+            StoreHandleStatus(*runtime, HandlePhase::Hidden, false);
             ShowWindow(hwnd, SW_HIDE);
             QueueEvent(*runtime, EventKind::Trigger, 0);
             // 点击确认后主进程会立即结束本轮贴边会话；这里沿用已验证的关闭
@@ -490,7 +578,7 @@ LRESULT CALLBACK HandleWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
     }
     case WM_CAPTURECHANGED:
         if (runtime->handlePhase.load() == HandlePhase::Dragging) {
-            runtime->handlePhase.store(HandlePhase::Ready);
+            StoreHandlePhase(*runtime, HandlePhase::Ready);
         }
         ResetHandlePress(*runtime);
         return 0;
@@ -527,7 +615,7 @@ bool EnsureHandleWindowClass() {
 
 void DestroyHandleWindow(Runtime& runtime) {
     HWND hwnd = runtime.handleWindow.exchange(nullptr);
-    runtime.handlePhase.store(HandlePhase::Hidden);
+    StoreHandleStatus(runtime, HandlePhase::Hidden, false);
     runtime.handleEnteredOnce.store(false);
     runtime.handleAnimationStartedAt = 0;
     runtime.handleAnimationDurationMs = 0;
@@ -537,11 +625,12 @@ void DestroyHandleWindow(Runtime& runtime) {
     runtime.handleVisualLastTick = 0;
     runtime.handleVisualFrame.store(0);
     runtime.handleVisualElapsedMs.store(0);
+    runtime.handlePresentCount.store(0);
     if (hwnd && IsWindow(hwnd)) DestroyWindow(hwnd);
 }
 
 void ResetParkedHandleState(Runtime& runtime) {
-    runtime.handlePhase.store(HandlePhase::Hidden);
+    StoreHandleStatus(runtime, HandlePhase::Hidden, false);
     runtime.handleEnteredOnce.store(false);
     runtime.handleAnimationStartedAt = 0;
     runtime.handleAnimationDurationMs = 0;
@@ -721,7 +810,7 @@ void BeginHandleAnimation(
     runtime.handleAnimationStartedAt = now;
     runtime.handleAnimationDurationMs = ScaledAnimationDuration(
         start, finish, runtime.handleOffscreenRect, runtime.handleFinalRect, fullDuration);
-    runtime.handlePhase.store(phase);
+    StoreHandlePhase(runtime, phase);
     runtime.handleButtonDownInside = false;
 }
 
@@ -773,16 +862,56 @@ bool PrimeHandleWindow(Runtime& runtime, const POINT& touch) {
     return true;
 }
 
+bool PresentHandleWindow(Runtime& runtime, HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) return false;
+    StoreHandlePresented(runtime, false);
+    bool presented = false;
+    if (runtime.handleRenderer) {
+        presented = runtime.handleRenderer->Paint(
+            hwnd, runtime.side, runtime.dpi, runtime.handleVisualElapsedMs.load(), false);
+        if (!presented) {
+            runtime.handleRenderer.reset();
+            runtime.handleRendererReady.store(false);
+            runtime.handleRendererPrewarmed.store(false);
+            runtime.handleEmbeddedFontReady.store(false);
+        }
+    }
+    if (!presented) {
+        if (!EnableHandleFallbackSurface(hwnd)) return false;
+        HDC windowDc = GetDC(hwnd);
+        if (!windowDc) return false;
+        const bool painted = PaintHandleFallback(windowDc, runtime, hwnd);
+        const bool released = ReleaseDC(hwnd, windowDc) != 0;
+        presented = painted && released;
+    }
+    if (!presented) return false;
+    // 直接呈现后清掉可能残留的无效区域，避免常显模式随后收到一次无意义的
+    // WM_PAINT；静态模式只在状态切换时提交，不恢复周期重绘。
+    ValidateRect(hwnd, nullptr);
+    StoreHandlePresented(runtime, true);
+    runtime.handlePresentCount.fetch_add(1);
+    DwmFlush();
+    return true;
+}
+
 bool RevealPrimedHandle(Runtime& runtime, const POINT& touch) {
     if (!PrimeHandleWindow(runtime, touch)) return false;
     HWND hwnd = runtime.handleWindow.load();
-    if (!hwnd || !IsWindow(hwnd) ||
-        !RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW)) {
+    if (!hwnd || !IsWindow(hwnd)) {
         return false;
+    }
+    if (runtime.revealMode == static_cast<int>(RevealMode::PersistentHandle)) {
+        // 常显入口不再依靠绿色圆环的 33ms 重绘维持画面，因此每次从屏外恢复时
+        // 必须同步确认一次真正的像素提交。IsWindowVisible 只代表 HWND 样式可见，
+        // 不能证明 layered window 已经通过 UpdateLayeredWindow 呈现了内容。
+        if (!PresentHandleWindow(runtime, hwnd)) return false;
+    } else {
+        // 触边确认保留原有绘制语义；其绿色圆环会继续提供后续重绘。
+        if (!RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW)) return false;
+        DwmFlush();
     }
     // 先把同一个 HWND、鼠标对应的屏外坐标和当前画面提交给 DWM，
     // 再从下一次消息循环开始滑出，避免重定位与首个位移被合并成一次可见跳变。
-    DwmFlush();
     const RECT start = runtime.handleOffscreenRect;
     const ULONGLONG now = GetTickCount64();
     runtime.handleVisualLastTick = now;
@@ -837,7 +966,21 @@ void UpdateHandleAnimation(Runtime& runtime, ULONGLONG now) {
 
     if (progress >= 1.0) {
         if (phase == HandlePhase::Appearing) {
-            runtime.handlePhase.store(HandlePhase::Ready);
+            if (runtime.revealMode == static_cast<int>(RevealMode::PersistentHandle)) {
+                // layered surface 在屏外预热成功并不等于移动到最终屏幕位置后仍已
+                // 合成。常显模式没有周期重绘，在终点再做一次一次性提交；失败时
+                // 走故障恢复，不能留下一个“HWND 可见但像素透明”的假健康状态。
+                if (!PresentHandleWindow(runtime, hwnd)) {
+                    QueueEvent(runtime, EventKind::Fault,
+                        static_cast<int>(Result::HandleWindowCreateFailed));
+                    return;
+                }
+                StoreHandleStatus(runtime, HandlePhase::Ready, true);
+            } else {
+                // 触边确认模式沿用 WM_PAINT 的真实提交结果；绘制或 EndPaint 失败时
+                // presented 必须保持 false，交由健康检查执行故障开放恢复。
+                StoreHandlePhase(runtime, HandlePhase::Ready);
+            }
             runtime.handleReadyAt = now;
             runtime.handleLeaveStartedAt = 0;
             runtime.handleButtonDownInside = false;
@@ -1141,8 +1284,8 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
                     }
                 }
                 fullscreenActive = true;
-                runtime->fullscreenActive.store(true);
                 runtime->state.store(State::WaitingOutside);
+                runtime->fullscreenActive.store(true);
                 previousInside = inside;
                 continue;
             }
@@ -1157,8 +1300,6 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
                 }
                 fullscreenActive = false;
                 fullscreenExitCandidateAt = 0;
-                runtime->fullscreenActive.store(false);
-                runtime->fullscreenExitPending.store(false);
                 if (runtime->revealMode == static_cast<int>(RevealMode::PersistentHandle) &&
                     runtime->persistentHandleActivated.load()) {
                     if (!RevealPrimedHandle(*runtime, GetDefaultHandleAnchor(*runtime))) {
@@ -1172,11 +1313,14 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
                     if (!PrimeHandleWindow(*runtime, cursor)) {
                         QueueEvent(*runtime, EventKind::Fault,
                             static_cast<int>(Result::HandleWindowCreateFailed));
-                        previousInside = inside;
-                        continue;
+                    } else {
+                        runtime->state.store(inside ? State::WaitingOutside : State::Armed);
                     }
-                    runtime->state.store(inside ? State::WaitingOutside : State::Armed);
                 }
+                // fullscreenActive=false 是退出恢复完成的对外发布点；必须等 HWND
+                // 停放/恢复和监视状态全部写完，避免状态查询拼到上一阶段的 state。
+                runtime->fullscreenExitPending.store(false);
+                runtime->fullscreenActive.store(false);
                 previousInside = inside;
                 continue;
             }
@@ -1276,11 +1420,12 @@ int StopLocked(Runtime& runtime, std::uint64_t generation) {
     runtime.targetMonitor = nullptr;
     runtime.workerAlive.store(false);
     runtime.handleWindow.store(nullptr);
-    runtime.handlePhase.store(HandlePhase::Hidden);
+    StoreHandleStatus(runtime, HandlePhase::Hidden, false);
     runtime.handleEnteredOnce.store(false);
     runtime.handleVisualFrame.store(0);
     runtime.handleVisualElapsedMs.store(0);
     runtime.handleVisualLastTick = 0;
+    runtime.handlePresentCount.store(0);
     runtime.state.store(State::Stopped);
     runtime.cursorFailureCount.store(0);
     runtime.fullscreenBlockCount.store(0);
@@ -1396,7 +1541,7 @@ int ArmEx(
     runtime.fullscreenBlockCount.store(0);
     runtime.fullscreenActive.store(false);
     runtime.fullscreenExitPending.store(false);
-    runtime.handlePhase.store(HandlePhase::Hidden);
+    StoreHandleStatus(runtime, HandlePhase::Hidden, false);
     runtime.handleDragging.store(false);
     runtime.persistentHandlePositionPermille.store(-1);
     runtime.handleWindow.store(nullptr);
@@ -1412,6 +1557,7 @@ int ArmEx(
     runtime.handleRendererReady.store(false);
     runtime.handleRendererPrewarmed.store(false);
     runtime.handleEmbeddedFontReady.store(false);
+    runtime.handlePresentCount.store(0);
     runtime.handleWindowCreateCount.store(0);
     runtime.persistentHandleActivated.store(false);
     runtime.workerStartupResult.store(static_cast<int>(Result::Ok));
@@ -1452,7 +1598,7 @@ int ArmEx(
             runtime.readyEvent = nullptr;
             runtime.workerAlive.store(false);
             runtime.handleWindow.store(nullptr);
-            runtime.handlePhase.store(HandlePhase::Hidden);
+            StoreHandleStatus(runtime, HandlePhase::Hidden, false);
         }
         return static_cast<int>(Result::WorkerStartTimedOut);
     }
@@ -1530,7 +1676,7 @@ UINT GetMessageId() {
 }
 
 const char* GetStatusJson() {
-    thread_local char json[1792]{};
+    thread_local char json[1920]{};
     PendingEvent event{};
     std::size_t pendingEventCount = 0;
     {
@@ -1546,7 +1692,9 @@ const char* GetStatusJson() {
     const HWND handleWindow = g_runtime.handleWindow.load();
     const bool handleWindowAlive = handleWindow && IsWindow(handleWindow);
     if (handleWindowAlive) GetWindowRect(handleWindow, &handle);
-    const HandlePhase handlePhase = g_runtime.handlePhase.load();
+    const HandleStatusSnapshot handleStatus = ReadHandleStatus(g_runtime);
+    const HandlePhase handlePhase = handleStatus.phase;
+    const MonitorStatusSnapshot monitorStatus = ReadMonitorStatus(g_runtime);
     sprintf_s(
         json,
         "{\"state\":\"%s\",\"workerAlive\":%s,\"generation\":%llu,\"side\":%d,"
@@ -1560,20 +1708,21 @@ const char* GetStatusJson() {
         "\"mode\":\"%s\",\"handleState\":\"%s\","
         "\"handleVisible\":%s,\"handleWindowAlive\":%s,\"handleEnteredOnce\":%s,"
         "\"handleDpi\":%u,\"handleRenderer\":\"%s\",\"handlePrewarmed\":%s,"
-        "\"handleEmbeddedFont\":%s,"
+        "\"handleEmbeddedFont\":%s,\"handlePresented\":%s,"
+        "\"handlePresentCount\":%llu,"
         "\"handleVisualFrame\":%llu,\"handleVisualElapsedMs\":%llu,"
         "\"handleWindowCreateCount\":%llu,"
         "\"handleRect\":{\"left\":%ld,\"top\":%ld,"
         "\"right\":%ld,\"bottom\":%ld}}",
-        StateName(g_runtime.state.load()),
+        StateName(monitorStatus.state),
         g_runtime.workerAlive.load() ? "true" : "false",
         static_cast<unsigned long long>(g_runtime.generation.load()),
         g_runtime.side,
         g_runtime.lastError.load(),
         g_runtime.cursorFailureCount.load(),
         g_runtime.fullscreenBlockCount.load(),
-        g_runtime.fullscreenActive.load() ? "true" : "false",
-        g_runtime.fullscreenExitPending.load() ? "true" : "false",
+        monitorStatus.fullscreenActive ? "true" : "false",
+        monitorStatus.fullscreenExitPending ? "true" : "false",
         g_runtime.persistentHandleActivated.load() ? "true" : "false",
         g_runtime.handleDragging.load() ? "true" : "false",
         g_runtime.persistentHandlePositionPermille.load(),
@@ -1596,6 +1745,8 @@ const char* GetStatusJson() {
             : g_runtime.handleRendererReady.load() ? "direct2d" : "gdi-fallback",
         g_runtime.handleRendererPrewarmed.load() ? "true" : "false",
         g_runtime.handleEmbeddedFontReady.load() ? "true" : "false",
+        handleStatus.presented ? "true" : "false",
+        static_cast<unsigned long long>(g_runtime.handlePresentCount.load()),
         static_cast<unsigned long long>(g_runtime.handleVisualFrame.load()),
         static_cast<unsigned long long>(g_runtime.handleVisualElapsedMs.load()),
         static_cast<unsigned long long>(g_runtime.handleWindowCreateCount.load()),
