@@ -80,6 +80,12 @@ BLUR_API unsigned int WindowMotion_GetEdgeMessageId(void);
 BLUR_API const char* WindowMotion_GetEdgeMonitorStatusJson(void);
 BLUR_API const char* WindowMotion_ConsumeEdgeEventJson(void);
 
+// ---- Windows 主窗口始终置底 ----
+// 返回值：1=成功；负数为参数、线程、Subclass、WinEvent Hook 或应用失败。
+BLUR_API int WindowZOrder_SetBottom(void* hwnd, int enabled);
+BLUR_API int WindowZOrder_Reassert(void* hwnd);
+BLUR_API const char* WindowZOrder_GetStatusJson(void* hwnd);
+
 #ifdef __cplusplus
 }
 #endif

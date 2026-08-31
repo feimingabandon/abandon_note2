@@ -33,7 +33,9 @@ import {
   destroy as blurDestroy,
   reSyncZOrder as blurReSyncZOrder,
   getRuntimeHealth as getBlurRuntimeHealth,
-  getNativeRuntimeCompatibility
+  getNativeRuntimeCompatibility,
+  reassertWindowZOrder,
+  setWindowAlwaysOnBottom
 } from './bridge/blur_bridge.js'
 import { createWindowMotionBackend } from './window-motion/index.js'
 import { DockTransitionState } from './window-motion/dock-transition-state.js'
@@ -125,9 +127,11 @@ import {
   DOCK_REVEAL_HANDLE_MODES,
   createDefaultSettings,
   normalizeViewMode,
+  normalizeWindowZOrderMode,
   resolveSettingsRows,
   serializeSetting,
-  VIEW_MODES
+  VIEW_MODES,
+  WINDOW_Z_ORDER_MODES
 } from '../shared/settings-schema.js'
 import { getSystemNotificationCapability } from '../shared/notification-policy.js'
 import { weatherDailyRefreshKey } from '../shared/weather-rules.js'
@@ -137,6 +141,7 @@ import { registerDailyReportIpcHandlers } from './ipc/register-daily-report-ipc.
 import { registerWeatherIpcHandlers } from './ipc/register-weather-ipc.js'
 import { createMainWindowIpc } from './ipc/ipc-authorization.js'
 import {
+  ensureApplicationWindowSettingsInitialized,
   ensureViewSettingsInitialized,
   getViewSettingsScope,
   prepareViewSettingsForSwitch,
@@ -165,6 +170,7 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'css.popupOpacity',
   'css.bgBlur',
   'css.windowOpacity',
+  'css.windowBorder',
   'css.fontSizeBase',
   'css.textColor',
   'sticky.fontSize',
@@ -186,7 +192,9 @@ const APPLICATION_SETTING_IDS = new Set([
   'remote.uploadDeviceInfo',
   'weather.enabled',
   'weather.location',
-  'onboarding.noticeVersion'
+  'onboarding.noticeVersion',
+  'window.lockState',
+  'window.zOrderMode'
 ])
 const REMOTE_BASE_URL =
   process.env.ABANDON_REMOTE_BASE_URL || 'https://note.zhenshiyin.top/api/v1/client'
@@ -343,11 +351,22 @@ if (gotSingleInstanceLock) {
   })
 }
 
-/** 窗口置顶状态 */
-let alwaysOnTop = DEFAULT_SETTINGS.window.alwaysOnTop
+/** 主窗口层级状态（全视图共享） */
+let zOrderMode = DEFAULT_SETTINGS.window.zOrderMode
 
-/** 窗口锁定状态（禁止移动和缩放） */
+/** 窗口锁定状态（全视图共享，禁止移动和缩放） */
 let isLocked = DEFAULT_SETTINGS.window.lockState
+
+const WINDOW_CONTROL_GUARD_MS = 500
+const WINDOW_Z_ORDER_NOT_ENABLED_CODE = -6
+const BOTTOM_Z_ORDER_RETRY_DELAYS_MS = Object.freeze([160, 480, 1200])
+let lastLockToggleAt = 0
+let lockToggleInFlight = false
+let lastZOrderChangeAt = 0
+let zOrderChangeInFlight = false
+let bottomZOrderRetryTimer = null
+let bottomZOrderRetryAttempt = 0
+let bottomZOrderRetryExhaustedNotified = false
 
 /** 系统模糊能力信息（启动时检测） */
 const blurCaps = detectCapabilities()
@@ -430,6 +449,7 @@ function syncBlurConfigFromResolved() {
 function refreshResolvedSettings({ incrementRevision = false } = {}) {
   const applicationSettings = readApplicationSettings()
   const nextSettings = resolveSettingsRows(getAllSettings(getActiveWindowName()), activeViewMode)
+  nextSettings.window = { ...applicationSettings.window }
   nextSettings.remote = { ...applicationSettings.remote }
   nextSettings.weather = structuredClone(applicationSettings.weather)
   nextSettings.onboarding = { ...applicationSettings.onboarding }
@@ -597,6 +617,11 @@ function broadcastSettingsChanged(snapshot = getResolvedSettingsSnapshot()) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('settings:changed', snapshot)
   }
+}
+
+function sendAppMessage(type, text, duration = 2200) {
+  if (!mainWindow || mainWindow.isDestroyed() || !text) return
+  mainWindow.webContents.send('app:message', { type, text, duration })
 }
 
 function broadcastBlurDiagnosticChanged() {
@@ -803,13 +828,25 @@ function applyResolvedBlurRuntime() {
 
 function applyResolvedWindowRuntime() {
   isLocked = resolvedSettings.window.lockState
-  alwaysOnTop = resolvedSettings.window.alwaysOnTop
+  zOrderMode = resolvedSettings.window.zOrderMode
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.setMovable(!isLocked)
   // Windows 使用 thickFrame:false + renderer 自定义缩放手柄。调用
   // setResizable(true) 会重新引入系统 WS_THICKFRAME，破坏高 DPI 几何不变量。
   if (process.platform !== 'win32') mainWindow.setResizable(!isLocked)
-  applyAlwaysOnTop()
+  const result = applyWindowZOrder()
+  if (!result.success) {
+    logger.error('window.z-order', new Error(result.error), {
+      mode: zOrderMode,
+      code: result.code,
+      source: 'resolved-settings'
+    })
+    if (zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM) {
+      scheduleBottomWindowZOrderRetry('resolved-settings', result)
+    } else {
+      sendAppMessage('error', result.error)
+    }
+  }
 }
 
 /**
@@ -1447,12 +1484,14 @@ function createWindow({ preferredDisplay = null } = {}) {
   // 边缘位置，却不会产生可靠的用户 move 事件。显示后主动重建可见态贴边方向。
   mainWindow.on('show', () => {
     syncVisibleDockSide({ source: 'window-show', snap: true })
+    reassertBottomWindowZOrder('window-show')
   })
 
   // 窗口销毁时清除引用和贴边资源
   mainWindow.on('closed', () => {
     // 视图切换会紧接着创建新窗口；旧窗口的延迟 closed 事件不能清空新引用。
     if (mainWindow !== createdWindow) return
+    cancelBottomWindowZOrderRetry()
     resetDockState()
     detachNativeEdgeMonitorMessageHook(createdWindow)
     mainWindow = null
@@ -1635,7 +1674,7 @@ function resetDockState({ source = 'reset-dock-state', skipNativeDisarm = false 
   dockMotionSession = null
   // 显示动画会临时提升层级；动画被托盘隐藏等操作中断时也必须恢复用户设置。
   const { restoreAlwaysOnTop } = dockTransitionState.reset()
-  if (restoreAlwaysOnTop) applyAlwaysOnTop()
+  if (restoreAlwaysOnTop) applyWindowZOrder()
 }
 
 /**
@@ -1711,7 +1750,7 @@ function emergencyRestoreDock(source, cause = null, { skipNativeDisarm = false }
 
   resetDockState({ source, skipNativeDisarm })
   try {
-    applyAlwaysOnTop()
+    applyWindowZOrder()
     if (blurInitialized) {
       runBlurRuntimeOperation(blurUpdateGeometry, '贴边故障恢复毛玻璃位置')
       runBlurRuntimeOperation(blurReSyncZOrder, '贴边故障恢复毛玻璃层级')
@@ -1895,6 +1934,7 @@ function handleDockDisplayTopologyChange(change = null) {
   // resetDockState() 会清空 dockSide。窗口约束回可见工作区后，必须根据
   // 新显示器几何重建方向，否则解锁、DPI/分辨率变化后只能靠再次拖动恢复。
   syncVisibleDockSide({ source: 'display-topology-change', snap: true })
+  reassertBottomWindowZOrder('display-topology-change')
 }
 
 function attachDockDisplayListeners() {
@@ -2309,9 +2349,12 @@ function doShow(source = 'unknown') {
   const { stableBounds, motionPlan } = session
   const target = { x: motionPlan.visibleX, y: motionPlan.visibleY }
 
-  // 滑出时短暂提升置顶层，确保动画可见
-  dockTransitionState.beginTemporaryAlwaysOnTop()
-  mainWindow.setAlwaysOnTop(true, 'pop-up-menu')
+  // 始终置底模式不允许贴边动画临时越过其他应用；其他模式继续保持动画可见性。
+  const temporarilyRaiseWindow = zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM
+  if (temporarilyRaiseWindow) {
+    dockTransitionState.beginTemporaryAlwaysOnTop()
+    mainWindow.setAlwaysOnTop(true, 'pop-up-menu')
+  }
   slideTo(target, motionPlan, () => {
     try {
       suppressDockGeometryPersistence()
@@ -2337,8 +2380,8 @@ function doShow(source = 'unknown') {
       }
     } finally {
       // 动画完成或终点校验失败后都必须恢复用户设置的置顶状态。
-      dockTransitionState.finishTemporaryAlwaysOnTop()
-      applyAlwaysOnTop()
+      if (temporarilyRaiseWindow) dockTransitionState.finishTemporaryAlwaysOnTop()
+      applyWindowZOrder()
       logger.info('dock.lifecycle', '贴边显示动画完成', {
         source,
         side: session.side,
@@ -2349,14 +2392,175 @@ function doShow(source = 'unknown') {
 }
 
 // ============================================================
-// 窗口置顶控制
+// 主窗口层级控制
 // ============================================================
 
-/** 根据当前 alwaysOnTop 状态应用定级 */
-function applyAlwaysOnTop() {
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  mainWindow.setAlwaysOnTop(alwaysOnTop, 'pop-up-menu')
+function cancelBottomWindowZOrderRetry() {
+  if (bottomZOrderRetryTimer) clearTimeout(bottomZOrderRetryTimer)
+  bottomZOrderRetryTimer = null
+  bottomZOrderRetryAttempt = 0
+  bottomZOrderRetryExhaustedNotified = false
+}
+
+function scheduleBottomWindowZOrderRetry(source, failure = null) {
+  if (zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM || !mainWindow || mainWindow.isDestroyed()) {
+    cancelBottomWindowZOrderRetry()
+    return false
+  }
+  if (bottomZOrderRetryTimer) return true
+
+  if (bottomZOrderRetryAttempt >= BOTTOM_Z_ORDER_RETRY_DELAYS_MS.length) {
+    if (!bottomZOrderRetryExhaustedNotified) {
+      bottomZOrderRetryExhaustedNotified = true
+      const message = failure?.error || failure?.message || 'Windows 桌面层暂时不可用'
+      logger.error('window.z-order-retry-exhausted', new Error(message), {
+        source,
+        attempts: bottomZOrderRetryAttempt,
+        code: failure?.code ?? null
+      })
+      sendAppMessage('error', '始终置底暂时无法恢复，请稍后重新切换窗口层级')
+    }
+    return false
+  }
+
+  const targetWindow = mainWindow
+  const delay = BOTTOM_Z_ORDER_RETRY_DELAYS_MS[bottomZOrderRetryAttempt]
+  bottomZOrderRetryAttempt += 1
+  logger.warn('window.z-order-retry', '始终置底将在 Windows 桌面层就绪后重试', {
+    source,
+    attempt: bottomZOrderRetryAttempt,
+    delay,
+    code: failure?.code ?? null
+  })
+  bottomZOrderRetryTimer = setTimeout(() => {
+    bottomZOrderRetryTimer = null
+    if (
+      zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM ||
+      mainWindow !== targetWindow ||
+      targetWindow.isDestroyed()
+    ) {
+      cancelBottomWindowZOrderRetry()
+      return
+    }
+    reassertBottomWindowZOrder(`retry:${source}`)
+  }, delay)
+  bottomZOrderRetryTimer.unref?.()
+  return true
+}
+
+/**
+ * 将 top / normal / bottom 三态应用到当前主窗口。
+ * bottom 由 Windows 原生层持续约束；top / normal 继续使用 Electron 原生能力。
+ */
+function applyWindowZOrder(mode = zOrderMode) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return { success: false, code: null, error: '主窗口尚未创建' }
+  }
+  const normalized = normalizeWindowZOrderMode(mode)
+  if (normalized !== WINDOW_Z_ORDER_MODES.BOTTOM) cancelBottomWindowZOrderRetry()
+
+  try {
+    if (normalized === WINDOW_Z_ORDER_MODES.BOTTOM) {
+      mainWindow.setAlwaysOnTop(false)
+      const result = setWindowAlwaysOnBottom(mainWindow, true)
+      if (!result.success) return result
+      cancelBottomWindowZOrderRetry()
+    } else {
+      const result = setWindowAlwaysOnBottom(mainWindow, false)
+      if (!result.success) return result
+      mainWindow.setAlwaysOnTop(normalized === WINDOW_Z_ORDER_MODES.TOP, 'pop-up-menu')
+    }
+  } catch (error) {
+    return {
+      success: false,
+      code: error?.nativeCode ?? null,
+      error: error?.message || String(error)
+    }
+  }
+
   runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口层级')
+  return { success: true, code: 1, mode: normalized }
+}
+
+function reassertBottomWindowZOrder(source) {
+  if (zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM || !mainWindow || mainWindow.isDestroyed()) {
+    return true
+  }
+  try {
+    let result = reassertWindowZOrder(mainWindow)
+    // 启动或视图切换若正好撞上 Explorer 重建，首次安装可能尚未完成。
+    // 桌面宿主恢复后重新执行 SetBottom，而不只是反复 Reassert 一个空控制器。
+    if (
+      !result.success &&
+      (result.code === WINDOW_Z_ORDER_NOT_ENABLED_CODE || result.code == null)
+    ) {
+      result = setWindowAlwaysOnBottom(mainWindow, true)
+    }
+    if (!result.success) {
+      logger.error('window.z-order-reassert', new Error(result.error), {
+        source,
+        code: result.code
+      })
+      scheduleBottomWindowZOrderRetry(source, result)
+      return false
+    }
+  } catch (error) {
+    logger.error('window.z-order-reassert-exception', error, { source })
+    scheduleBottomWindowZOrderRetry(source, error)
+    return false
+  }
+  cancelBottomWindowZOrderRetry()
+  runBlurRuntimeOperation(blurReSyncZOrder, '重同步置底窗口毛玻璃层级')
+  return true
+}
+
+function persistWindowZOrderMode(mode) {
+  const normalized = normalizeWindowZOrderMode(mode)
+  const previousMode = zOrderMode
+  if (normalized === previousMode) {
+    return { mode: previousMode, changed: false, throttled: false }
+  }
+
+  let persistenceUpdated = false
+  try {
+    const runtimeResult = applyWindowZOrder(normalized)
+    if (!runtimeResult.success) {
+      const error = new Error(runtimeResult.error || '切换窗口层级失败')
+      error.code = 'WINDOW_Z_ORDER_APPLY_FAILED'
+      error.nativeCode = runtimeResult.code
+      throw error
+    }
+    writeApplicationSetting('window.zOrderMode', normalized)
+    persistenceUpdated = true
+    refreshResolvedSettings({ incrementRevision: true })
+    zOrderMode = resolvedSettings.window.zOrderMode
+    const snapshot = getResolvedSettingsSnapshot()
+    broadcastSettingsChanged(snapshot)
+    return { mode: zOrderMode, changed: true, throttled: false }
+  } catch (error) {
+    const rollbackResult = applyWindowZOrder(previousMode)
+    if (!rollbackResult.success) {
+      logger.error('window.z-order-rollback', new Error(rollbackResult.error), {
+        requestedMode: normalized,
+        previousMode,
+        code: rollbackResult.code
+      })
+    }
+    if (persistenceUpdated) {
+      try {
+        writeApplicationSetting('window.zOrderMode', previousMode)
+        refreshResolvedSettings({ incrementRevision: true })
+        zOrderMode = resolvedSettings.window.zOrderMode
+        broadcastSettingsChanged(getResolvedSettingsSnapshot())
+      } catch (persistenceRollbackError) {
+        logger.error('window.z-order-persistence-rollback', persistenceRollbackError, {
+          requestedMode: normalized,
+          previousMode
+        })
+      }
+    }
+    throw error
+  }
 }
 
 // ============================================================
@@ -2412,6 +2616,7 @@ function openMainWindow() {
     syncVisibleDockSide({ source: 'open-main-window', snap: true })
   }
   mainWindow.focus()
+  reassertBottomWindowZOrder('open-main-window')
 }
 
 /**
@@ -2419,6 +2624,7 @@ function openMainWindow() {
  * 调用者可以据此安全地为新窗口重新初始化；即使原生销毁抛错，状态清理也会完成。
  */
 function destroyBlurRuntimeForWindowReplacement() {
+  cancelBottomWindowZOrderRetry()
   try {
     blurDestroy()
   } finally {
@@ -2596,6 +2802,7 @@ app.whenReady().then(async () => {
   }
   activeViewMode = readApplicationSettings().activeView
   ensureViewSettingsInitialized(activeViewMode)
+  ensureApplicationWindowSettingsInitialized(activeViewMode)
   resolvedSettings = createDefaultSettings(activeViewMode)
   refreshResolvedSettings({ incrementRevision: true })
   handleProtocolArgs(process.argv)
@@ -2679,6 +2886,7 @@ app.whenReady().then(async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
       mainWindow.focus()
+      reassertBottomWindowZOrder('renderer-ready')
       sendPendingNotificationNote()
     }
   })
@@ -2691,14 +2899,55 @@ app.whenReady().then(async () => {
 
   // 【窗口锁定 - 切换锁定状态】
   mainWindowIpc.handle('toggle-lock', () => {
-    const snapshot = persistSettingValue('window.lockState', !isLocked)
-    return snapshot.values.window.lockState
+    const now = Date.now()
+    if (lockToggleInFlight || now - lastLockToggleAt < WINDOW_CONTROL_GUARD_MS) {
+      return { value: isLocked, changed: false, throttled: true }
+    }
+    lockToggleInFlight = true
+    try {
+      const snapshot = persistSettingValue('window.lockState', !isLocked)
+      const value = snapshot.values.window.lockState
+      sendAppMessage('success', value ? '主窗口已锁定' : '主窗口已解除锁定')
+      return { value, changed: true, throttled: false }
+    } catch (error) {
+      sendAppMessage('error', `切换窗口锁定失败：${error.message}`)
+      throw error
+    } finally {
+      lastLockToggleAt = Date.now()
+      lockToggleInFlight = false
+    }
   })
 
-  // 【窗口置顶 - 切换】
-  mainWindowIpc.handle('toggle-always-on-top', () => {
-    const snapshot = persistSettingValue('window.alwaysOnTop', !alwaysOnTop)
-    return snapshot.values.window.alwaysOnTop
+  // 【主窗口层级 - top / normal / bottom】
+  mainWindowIpc.handle('set-window-z-order-mode', (_event, requestedMode) => {
+    const requested = normalizeWindowZOrderMode(requestedMode, null)
+    if (!requested) throw new Error('无效的窗口层级')
+
+    const now = Date.now()
+    if (zOrderChangeInFlight || now - lastZOrderChangeAt < WINDOW_CONTROL_GUARD_MS) {
+      return { mode: zOrderMode, changed: false, throttled: true }
+    }
+    zOrderChangeInFlight = true
+    try {
+      const result = persistWindowZOrderMode(requested)
+      if (result.changed) {
+        const message =
+          result.mode === WINDOW_Z_ORDER_MODES.TOP
+            ? '主窗口已切换为始终置顶'
+            : result.mode === WINDOW_Z_ORDER_MODES.BOTTOM
+              ? '主窗口已切换为始终置底'
+              : '主窗口已切换为正常层级'
+        sendAppMessage('success', message)
+      }
+      return result
+    } catch (error) {
+      logger.error('window.z-order-change', error, { requestedMode: requested })
+      sendAppMessage('error', `切换窗口层级失败：${error.message}`)
+      throw error
+    } finally {
+      lastZOrderChangeAt = Date.now()
+      zOrderChangeInFlight = false
+    }
   })
 
   // 【缩放手柄 - 获取边界】返回当前窗口的位置和尺寸
@@ -3379,6 +3628,7 @@ app.on('before-quit', (event) => {
     clearTimeout(geometryTimer)
     geometryTimer = null
   }
+  cancelBottomWindowZOrderRetry()
   if (dockGeometryReconcileTimer) {
     clearTimeout(dockGeometryReconcileTimer)
     dockGeometryReconcileTimer = null

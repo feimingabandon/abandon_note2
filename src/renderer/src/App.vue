@@ -279,8 +279,8 @@ const actionBarRef = ref(null)
 /** 窗口锁定状态 */
 const locked = ref(DEFAULT_SETTINGS.window.lockState)
 
-/** 窗口置顶状态 */
-const alwaysOnTop = ref(DEFAULT_SETTINGS.window.alwaysOnTop)
+/** 全视图共享的主窗口层级 */
+const zOrderMode = ref(DEFAULT_SETTINGS.window.zOrderMode)
 
 /** 自定义导航栏视觉风格；窗口操作逻辑不随风格变化。 */
 const titlebarStyle = ref(DEFAULT_SETTINGS.appearance.titlebarStyle)
@@ -310,7 +310,7 @@ function applyAppSettingsSnapshot(snapshot) {
   const windowSettings = snapshot?.values?.window
   if (windowSettings) {
     locked.value = windowSettings.lockState
-    alwaysOnTop.value = windowSettings.alwaysOnTop
+    zOrderMode.value = windowSettings.zOrderMode
   }
   syncWallpaperFromSnapshot(snapshot)
 }
@@ -570,7 +570,7 @@ onUnmounted(() => {
       <!-- 同一套窗口功能通过 style 属性切换 Apple / Microsoft 视觉。 -->
       <AppTitlebar
         v-model:locked="locked"
-        v-model:always-on-top="alwaysOnTop"
+        v-model:z-order-mode="zOrderMode"
         :style-variant="titlebarStyle"
       >
         <!-- 设置和帮助按钮组 -->

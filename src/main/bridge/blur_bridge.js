@@ -51,6 +51,16 @@ const EDGE_MONITOR_RESULT_MESSAGES = Object.freeze({
   [-17]: '常显小黑条位置无效'
 })
 
+const WINDOW_Z_ORDER_RESULT_MESSAGES = Object.freeze({
+  1: '窗口层级已更新',
+  [-1]: '主窗口句柄无效',
+  [-2]: '窗口层级控制必须在主窗口线程启用',
+  [-3]: '安装窗口层级拦截器失败',
+  [-4]: '安装 Windows 层级事件监听失败',
+  [-5]: '应用 Windows 置底层级失败',
+  [-6]: '主窗口尚未启用始终置底'
+})
+
 const NATIVE_REVEAL_HANDLE_MODES = Object.freeze({
   direct: 0,
   'on-touch': 1,
@@ -228,6 +238,14 @@ function initNative() {
       'str',
       []
     )
+    loaded.WindowZOrder_SetBottom = loaded.func('WindowZOrder_SetBottom', 'int', [
+      'intptr_t',
+      'int'
+    ])
+    loaded.WindowZOrder_Reassert = loaded.func('WindowZOrder_Reassert', 'int', ['intptr_t'])
+    loaded.WindowZOrder_GetStatusJson = loaded.func('WindowZOrder_GetStatusJson', 'str', [
+      'intptr_t'
+    ])
     lib = loaded
     return true
   } catch (e) {
@@ -345,6 +363,59 @@ export function moveWindowPhysical(window, physicalX, physicalY) {
       Math.round(physicalY)
     )
   )
+}
+
+export function setWindowAlwaysOnBottom(window, enabled) {
+  if (process.platform !== 'win32') {
+    return enabled
+      ? { success: false, code: null, error: '始终置底目前仅支持 Windows 10/11' }
+      : { success: true, code: 1, error: null }
+  }
+  if (!window || window.isDestroyed() || !initNative()) {
+    return { success: false, code: null, error: 'Windows 原生窗口层级组件不可用' }
+  }
+  const code = lib.WindowZOrder_SetBottom(getWindowHandleValue(window), enabled ? 1 : 0)
+  return {
+    success: code === 1,
+    code,
+    error:
+      code === 1
+        ? null
+        : WINDOW_Z_ORDER_RESULT_MESSAGES[code] || `Windows 窗口层级更新失败 (${code})`
+  }
+}
+
+export function reassertWindowZOrder(window) {
+  if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
+    return { success: false, code: null, error: 'Windows 原生窗口层级组件不可用' }
+  }
+  const code = lib.WindowZOrder_Reassert(getWindowHandleValue(window))
+  return {
+    success: code === 1,
+    code,
+    error:
+      code === 1
+        ? null
+        : WINDOW_Z_ORDER_RESULT_MESSAGES[code] || `Windows 置底层级重同步失败 (${code})`
+  }
+}
+
+export function getWindowZOrderStatus(window) {
+  if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
+    return { supported: false, enabled: false, anchored: false }
+  }
+  try {
+    return {
+      supported: true,
+      ...JSON.parse(lib.WindowZOrder_GetStatusJson(getWindowHandleValue(window)))
+    }
+  } catch (error) {
+    const wrapped = new Error(`读取 Windows 窗口层级状态失败：${error?.message || String(error)}`, {
+      cause: error
+    })
+    wrapped.code = 'WINDOW_Z_ORDER_STATUS_FAILED'
+    throw wrapped
+  }
 }
 
 export function isWindowDockEdgeExposed(window, side) {

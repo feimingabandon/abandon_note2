@@ -101,6 +101,7 @@ html.month-view {
 
   /* 持久化 CSS 变量由 main.js 在挂载前从 shared/settings-schema.js 注入。 */
   --glass-opacity-base: var(--popup-opacity);
+  --window-border-width: 0px;
 
   /* ---- 中性材质层级 ----
    * 常态表面从背景色派生，避免文字色填充在壁纸上形成灰膜；中性边线从文字色派生，
@@ -108,6 +109,11 @@ html.month-view {
   --ui-border-divider: color-mix(in srgb, var(--text-color) 6%, transparent);
   --ui-border-control: color-mix(in srgb, var(--text-color) 12%, transparent);
   --ui-border-hover: color-mix(in srgb, var(--text-color) 16%, transparent);
+  /* 窗口轮廓与日历网格需要在复杂壁纸上保持稳定，但两者不能共用强度。
+   * 外框使用文字色主轮廓 + 背景色内缘；日历只使用单线分隔。 */
+  --window-border-outline: color-mix(in srgb, var(--text-color) 18%, transparent);
+  --window-border-inner-rim: rgb(var(--bg-color) / 0.22);
+  --calendar-grid-line: color-mix(in srgb, var(--text-color) 9%, transparent);
   --ui-surface-subtle: rgb(var(--bg-color) / 0.1);
   --ui-surface-control: rgb(var(--bg-color) / 0.18);
   --ui-surface-control-hover: rgb(var(--bg-color) / 0.26);
@@ -158,6 +164,14 @@ html.month-view {
   --ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* 原生毛玻璃已提供稳定表面时，窗口内缘和日历分隔线自动降一档，
+ * 避免与模糊后的背景同时突出。以实际运行状态而不是设置开关为准。 */
+:root.is-system-glass-active {
+  --window-border-outline: var(--ui-border-control);
+  --window-border-inner-rim: rgb(var(--bg-color) / 0.12);
+  --calendar-grid-line: var(--ui-border-divider);
+}
+
 /* ---- body 基础样式 ---- */
 body {
   font-family: var(--font-family-text), sans-serif; /* 使用正文字体变量 */
@@ -179,15 +193,26 @@ body {
   border: 0;
 }
 
-/* 历史版本使用两个伪元素叠加霜层；现在真实元素只渲染一次材质。 */
-.app-bg::before,
-.app-bg::after {
+/* 历史版本使用 ::before / ::after 叠加霜层；现在 ::before 保持禁用，
+ * ::after 只负责可选的窗口内侧边框，不参与背景材质。 */
+.app-bg::before {
   display: none;
 }
 
-/* 主窗口禁用 ::before / ::after 模糊层（由 OS 系统模糊接管） */
-.app-root::before,
-.app-root::after {
+.app-bg::after {
+  content: '';
+  position: absolute;
+  z-index: var(--z-local-top);
+  inset: 0;
+  display: block;
+  border: var(--window-border-width) solid var(--window-border-outline);
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 var(--window-border-width) var(--window-border-inner-rim);
+  pointer-events: none;
+}
+
+/* 主窗口的旧模糊伪层继续禁用；可选边框由 .app-bg::after 统一绘制。 */
+.app-root::before {
   display: none;
 }
 

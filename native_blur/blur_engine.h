@@ -105,6 +105,7 @@ public:
     BlurErrorCode GetLastError() const { return m_lastError.load(); }
     void SetLastError(BlurErrorCode error) { m_lastError.store(error); }
     HWND GetParentWindow() const { return m_parentHwnd; }
+    HWND GetOverlayWindow() const { return m_messageHwnd.load(); }
 
 private:
     Engine() = default;

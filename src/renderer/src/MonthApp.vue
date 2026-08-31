@@ -37,7 +37,7 @@ const viewLabel = computed(() => (isWeekView.value ? '周视图' : '月视图'))
 const defaults = createDefaultSettings(props.viewMode)
 const { showMessage } = createMessageProvider()
 const locked = ref(defaults.window.lockState)
-const alwaysOnTop = ref(defaults.window.alwaysOnTop)
+const zOrderMode = ref(defaults.window.zOrderMode)
 const titlebarStyle = ref(defaults.appearance.titlebarStyle)
 const showSettings = ref(false)
 const showUpdateDialog = ref(false)
@@ -176,7 +176,7 @@ function applySnapshot(snapshot) {
   titlebarStyle.value =
     snapshot?.values?.appearance?.titlebarStyle ?? defaults.appearance.titlebarStyle
   locked.value = snapshot?.values?.window?.lockState ?? defaults.window.lockState
-  alwaysOnTop.value = snapshot?.values?.window?.alwaysOnTop ?? defaults.window.alwaysOnTop
+  zOrderMode.value = snapshot?.values?.window?.zOrderMode ?? defaults.window.zOrderMode
   void syncWallpaper(snapshot)
 }
 
@@ -383,7 +383,7 @@ onUnmounted(() => {
       <ResizeHandles :locked="locked" />
       <AppTitlebar
         v-model:locked="locked"
-        v-model:always-on-top="alwaysOnTop"
+        v-model:z-order-mode="zOrderMode"
         :style-variant="titlebarStyle"
       >
         <TitlebarActions :style-variant="titlebarStyle">

@@ -21,6 +21,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(SOURCES
     blur_engine.cpp
     blur_api.cpp
+    window_z_order.cpp
     window_motion_edge_monitor.cpp
     reveal_handle_renderer.cpp
     reveal_handle_resources.rc
@@ -29,6 +30,7 @@ set(SOURCES
 set(HEADERS
     blur_engine.h
     blur_api.h
+    window_z_order.h
     blur_effects.h
     window_motion_edge_monitor.h
     reveal_handle_renderer.h
@@ -57,6 +59,7 @@ target_link_libraries(blur_engine PRIVATE
     dwmapi
     shell32
     user32
+    comctl32
     gdi32
     WindowsApp   # Windows Runtime (UWP) umbrella library
 )

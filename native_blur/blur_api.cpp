@@ -5,13 +5,14 @@
 #include "blur_api.h"
 #include "blur_engine.h"
 #include "window_motion_edge_monitor.h"
+#include "window_z_order.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
 #include <winternl.h>
 
 namespace {
-constexpr int kNativeAbiVersion = 2;
+constexpr int kNativeAbiVersion = 3;
 }
 
 int AbandonNative_GetAbiVersion(void) {
@@ -333,4 +334,16 @@ const char* WindowMotion_GetEdgeMonitorStatusJson(void) {
 
 const char* WindowMotion_ConsumeEdgeEventJson(void) {
     return WindowMotionEdgeMonitor::ConsumeEventJson();
+}
+
+int WindowZOrder_SetBottom(void* hwndValue, int enabled) {
+    return WindowZOrder::SetBottom(static_cast<HWND>(hwndValue), enabled != 0);
+}
+
+int WindowZOrder_Reassert(void* hwndValue) {
+    return WindowZOrder::Reassert(static_cast<HWND>(hwndValue));
+}
+
+const char* WindowZOrder_GetStatusJson(void* hwndValue) {
+    return WindowZOrder::GetStatusJson(static_cast<HWND>(hwndValue));
 }

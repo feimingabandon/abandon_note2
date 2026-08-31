@@ -4,7 +4,8 @@ import {
   normalizeViewMode,
   resolveSettingsRows,
   serializeSetting,
-  VIEW_MODES
+  VIEW_MODES,
+  WINDOW_Z_ORDER_MODES
 } from '../../shared/settings-schema.js'
 
 export const APPLICATION_SETTINGS_SCOPE = 'application'
@@ -66,6 +67,7 @@ export function readApplicationSettings() {
 
   return {
     activeView: normalizeViewMode(storedView),
+    window: { ...applicationResolved.window },
     weather: applicationResolved.weather,
     onboarding: applicationResolved.onboarding,
     remote: {
@@ -76,6 +78,42 @@ export function readApplicationSettings() {
       )
     }
   }
+}
+
+/**
+ * 导航栏的锁定与窗口层级从历史分视图状态收敛为应用级状态。
+ * 旧布尔置顶值天然映射为 top / normal；只在应用级记录缺失时读取一次当前视图，
+ * 不保留版本回退镜像或额外迁移标记。
+ */
+export function ensureApplicationWindowSettingsInitialized(viewMode) {
+  const normalizedViewMode = normalizeViewMode(viewMode)
+  const applicationRows = rowMap(getAllSettings(APPLICATION_SETTINGS_SCOPE))
+  const lockDbKey = 'system:lock_state'
+  const zOrderDbKey = 'system:z_order_mode'
+  const needsLockState = !applicationRows.has(lockDbKey)
+  const needsZOrderMode = !applicationRows.has(zOrderDbKey)
+  if (!needsLockState && !needsZOrderMode) return false
+
+  const legacyRows = getAllSettings(getViewSettingsScope(normalizedViewMode))
+  const legacyRowMap = rowMap(legacyRows)
+  const resolvedLegacy = resolveSettingsRows(legacyRows, normalizedViewMode)
+  const entries = []
+
+  if (needsLockState) {
+    entries.push(serializeSetting('window.lockState', resolvedLegacy.window.lockState))
+  }
+  if (needsZOrderMode) {
+    const legacyAlwaysOnTop = parseStoredBoolean(legacyRowMap.get('system:always_on_top'), true)
+    entries.push(
+      serializeSetting(
+        'window.zOrderMode',
+        legacyAlwaysOnTop ? WINDOW_Z_ORDER_MODES.TOP : WINDOW_Z_ORDER_MODES.NORMAL
+      )
+    )
+  }
+
+  setSettingsBatch(APPLICATION_SETTINGS_SCOPE, entries)
+  return true
 }
 
 export function writeActiveView(viewMode) {
@@ -154,7 +192,9 @@ export function writeApplicationSetting(id, value) {
     id !== 'remote.uploadDeviceInfo' &&
     id !== 'weather.enabled' &&
     id !== 'weather.location' &&
-    id !== 'onboarding.noticeVersion'
+    id !== 'onboarding.noticeVersion' &&
+    id !== 'window.lockState' &&
+    id !== 'window.zOrderMode'
   ) {
     throw new Error(`未知应用级设置项: ${id}`)
   }

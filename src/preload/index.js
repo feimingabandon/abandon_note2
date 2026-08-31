@@ -38,12 +38,12 @@ const api = {
   closeWindow: () => ipcRenderer.send('window-close'),
 
   // ---- 窗口锁定 ----
-  /** 切换窗口锁定状态（禁止/允许移动和缩放），返回新的锁定状态 */
+  /** 切换窗口锁定状态（禁止/允许移动和缩放），返回最终状态及节流结果。 */
   toggleLock: () => ipcRenderer.invoke('toggle-lock'),
 
-  // ---- 窗口置顶 ----
-  /** 切换窗口置顶状态，返回新的置顶状态 */
-  toggleAlwaysOnTop: () => ipcRenderer.invoke('toggle-always-on-top'),
+  // ---- 主窗口层级 ----
+  /** 设置 top / normal / bottom 三态窗口层级，返回最终生效状态。 */
+  setWindowZOrderMode: (mode) => ipcRenderer.invoke('set-window-z-order-mode', mode),
 
   // ---- 缩放手柄（窗口边界操作） ----
   /** 获取当前窗口的位置和尺寸（双向通信，返回 Promise） */

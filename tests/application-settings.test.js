@@ -17,6 +17,7 @@ vi.mock('../src/main/db/db.js', () => ({
 }))
 
 let ensureViewSettingsInitialized
+let ensureApplicationWindowSettingsInitialized
 let getViewSettingsScope
 let prepareViewSettingsForSwitch
 let readApplicationSettings
@@ -25,6 +26,7 @@ let writeApplicationSetting
 
 beforeAll(async () => {
   ;({
+    ensureApplicationWindowSettingsInitialized,
     ensureViewSettingsInitialized,
     getViewSettingsScope,
     prepareViewSettingsForSwitch,
@@ -41,6 +43,27 @@ beforeEach(() => {
 })
 
 describe('application view settings', () => {
+  it('initializes lock and z-order once from the active legacy view, then shares them globally', () => {
+    db.rowsByScope.set('main', [
+      { type: 'system', key: 'lock_state', value: 'true' },
+      { type: 'system', key: 'always_on_top', value: 'false' }
+    ])
+
+    expect(ensureApplicationWindowSettingsInitialized('list')).toBe(true)
+    expect(readApplicationSettings().window).toEqual({
+      lockState: true,
+      zOrderMode: 'normal'
+    })
+    expect(ensureApplicationWindowSettingsInitialized('month')).toBe(false)
+
+    writeApplicationSetting('window.zOrderMode', 'bottom')
+    writeApplicationSetting('window.lockState', false)
+    expect(readApplicationSettings().window).toEqual({
+      lockState: false,
+      zOrderMode: 'bottom'
+    })
+  })
+
   it('keeps the first-use notice version in the application scope', () => {
     expect(readApplicationSettings().onboarding.noticeVersion).toBe(0)
 

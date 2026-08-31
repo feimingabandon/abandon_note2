@@ -5,8 +5,10 @@ import {
   createDefaultSettings,
   resolveSettingsRows,
   serializeSetting,
-  VIEW_MODES
+  VIEW_MODES,
+  WINDOW_Z_ORDER_MODES
 } from '../src/shared/settings-schema.js'
+import { applySettingsSnapshot } from '../src/renderer/src/utils/applySettingsSnapshot.js'
 
 describe('titlebar appearance setting', () => {
   it('defaults to Apple and persists either supported visual style', () => {
@@ -24,6 +26,32 @@ describe('titlebar appearance setting', () => {
         { type: 'appearance', key: 'titlebar_style', value: 'unsupported-style' }
       ]).appearance.titlebarStyle
     ).toBe('apple')
+  })
+})
+
+describe('global main-window controls', () => {
+  it('uses a three-state z-order setting and normalizes the two legacy boolean values', () => {
+    expect(DEFAULT_SETTINGS.window).toEqual({
+      lockState: false,
+      zOrderMode: WINDOW_Z_ORDER_MODES.TOP
+    })
+    expect(serializeSetting('window.zOrderMode', WINDOW_Z_ORDER_MODES.BOTTOM)).toMatchObject({
+      type: 'system',
+      key: 'z_order_mode',
+      value: 'bottom'
+    })
+    expect(
+      resolveSettingsRows([{ type: 'system', key: 'z_order_mode', value: 'true' }]).window
+        .zOrderMode
+    ).toBe(WINDOW_Z_ORDER_MODES.TOP)
+    expect(
+      resolveSettingsRows([{ type: 'system', key: 'z_order_mode', value: 'false' }]).window
+        .zOrderMode
+    ).toBe(WINDOW_Z_ORDER_MODES.NORMAL)
+    expect(
+      resolveSettingsRows([{ type: 'system', key: 'z_order_mode', value: 'damaged' }]).window
+        .zOrderMode
+    ).toBe(WINDOW_Z_ORDER_MODES.TOP)
   })
 })
 
@@ -189,6 +217,52 @@ describe('CSS blur setting', () => {
 
     expect(resolved.css.bgBlur).toBe(5)
     expect(DEFAULT_SETTINGS.css.bgBlur).toBe(10)
+  })
+
+  it('keeps the optional window border off by default and persists the explicit choice', () => {
+    expect(DEFAULT_SETTINGS.css.windowBorder).toBe(false)
+    expect(serializeSetting('css.windowBorder', true)).toMatchObject({
+      type: 'css',
+      key: 'window_border_enabled',
+      value: '1'
+    })
+    expect(
+      resolveSettingsRows([{ type: 'css', key: 'window_border_enabled', value: '1' }]).css
+        .windowBorder
+    ).toBe(true)
+  })
+
+  it('maps the window border choice to a layout-neutral CSS width token', () => {
+    const values = createDefaultSettings(VIEW_MODES.MONTH)
+    const applied = new Map()
+    const classes = new Set()
+    const root = {
+      classList: {
+        toggle(name, force) {
+          if (force) classes.add(name)
+          else classes.delete(name)
+        }
+      },
+      style: {
+        setProperty(name, value) {
+          applied.set(name, value)
+        }
+      }
+    }
+
+    applySettingsSnapshot({ values }, root)
+    expect(applied.get('--window-border-width')).toBe('0px')
+    expect(classes.has('is-system-glass-active')).toBe(false)
+
+    applySettingsSnapshot(
+      {
+        values: { ...values, css: { ...values.css, windowBorder: true } },
+        runtime: { blur: { effectiveEnabled: true } }
+      },
+      root
+    )
+    expect(applied.get('--window-border-width')).toBe('1px')
+    expect(classes.has('is-system-glass-active')).toBe(true)
   })
 })
 

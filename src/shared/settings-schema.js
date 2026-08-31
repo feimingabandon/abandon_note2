@@ -28,14 +28,30 @@ export const VIEW_MODES = Object.freeze({
   MONTH: 'month',
   WEEK: 'week'
 })
+export const WINDOW_Z_ORDER_MODES = Object.freeze({
+  TOP: 'top',
+  NORMAL: 'normal',
+  BOTTOM: 'bottom'
+})
 
 /** 当前首次使用须知版本；以后正文发生重大变化时递增即可重新提示一次。 */
 export const FIRST_USE_NOTICE_VERSION = 1
 
 const VALID_VIEW_MODES = new Set(Object.values(VIEW_MODES))
+const VALID_WINDOW_Z_ORDER_MODES = new Set(Object.values(WINDOW_Z_ORDER_MODES))
 
 export function normalizeViewMode(value) {
   return VALID_VIEW_MODES.has(value) ? value : VIEW_MODES.LIST
+}
+
+export function normalizeWindowZOrderMode(value, fallback = WINDOW_Z_ORDER_MODES.TOP) {
+  if (value === true || value === 'true' || value === 1 || value === '1') {
+    return WINDOW_Z_ORDER_MODES.TOP
+  }
+  if (value === false || value === 'false' || value === 0 || value === '0') {
+    return WINDOW_Z_ORDER_MODES.NORMAL
+  }
+  return VALID_WINDOW_Z_ORDER_MODES.has(value) ? value : fallback
 }
 
 function cloneValue(value) {
@@ -271,6 +287,15 @@ const definitions = [
     remark: '窗口透明度（0~1 浮点数）'
   },
   {
+    id: 'css.windowBorder',
+    path: ['css', 'windowBorder'],
+    db: { type: 'css', key: 'window_border_enabled' },
+    defaultValue: false,
+    parse: parseBoolean,
+    serialize: (value) => (value ? '1' : '0'),
+    remark: '主窗口内侧边框开关（1=显示, 0=隐藏）'
+  },
+  {
     id: 'css.fontSizeBase',
     path: ['css', 'fontSizeBase'],
     db: { type: 'css', key: 'font_size_base' },
@@ -379,13 +404,13 @@ const definitions = [
     remark: '窗口锁定状态'
   },
   {
-    id: 'window.alwaysOnTop',
-    path: ['window', 'alwaysOnTop'],
-    db: { type: 'system', key: 'always_on_top' },
-    defaultValue: true,
-    parse: parseBoolean,
+    id: 'window.zOrderMode',
+    path: ['window', 'zOrderMode'],
+    db: { type: 'system', key: 'z_order_mode' },
+    defaultValue: WINDOW_Z_ORDER_MODES.TOP,
+    parse: normalizeWindowZOrderMode,
     serialize: String,
-    remark: '窗口置顶状态'
+    remark: '主窗口层级（top / normal / bottom）'
   },
   {
     id: 'dock.revealHandleMode',

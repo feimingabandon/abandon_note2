@@ -344,7 +344,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   overflow: hidden;
   padding: 5rem 7rem;
-  border: 1px solid var(--ui-border-divider);
+  border: 1px solid var(--calendar-grid-line);
   border-radius: 9rem;
   background: transparent;
   color: var(--text-color);
@@ -359,7 +359,7 @@ onBeforeUnmount(() => {
   border-color: var(--ui-border-control);
 }
 .month-day-cell.is-outside {
-  border-color: var(--ui-border-divider);
+  border-color: var(--calendar-grid-line);
   cursor: default;
   color: color-mix(in srgb, var(--text-color-secondary) 58%, transparent);
 }

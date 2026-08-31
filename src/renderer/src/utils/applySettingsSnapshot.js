@@ -37,9 +37,14 @@ export function applySettingsSnapshot(snapshot, root = document.documentElement)
   const css = snapshot?.values?.css
   if (!css) return
 
+  root.classList?.toggle(
+    'is-system-glass-active',
+    Boolean(snapshot?.runtime?.blur?.effectiveEnabled)
+  )
   root.style.setProperty('--bg-color', css.bgColor)
   applyGlassBaseSettings({ blur: css.bgBlur, opacity: css.popupOpacity }, root)
   root.style.setProperty('--window-opacity', String(css.windowOpacity))
+  root.style.setProperty('--window-border-width', css.windowBorder ? '1px' : '0px')
   root.style.setProperty('--font-size-base', `${css.fontSizeBase}rem`)
   root.style.setProperty('--text-color', css.textColor)
 

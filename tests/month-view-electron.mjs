@@ -211,9 +211,133 @@ async function runMonthViewTests() {
     assert.equal(initialUi.settingsButton, true)
     assert.equal(initialUi.helpButton, true, '月视图必须开放帮助中心入口')
     assert.equal(initialUi.templateButton, true, '月视图必须开放循环模板入口')
-    assert.equal(initialUi.controlCount, 3, '月视图应复用关闭、置顶、锁定三个窗口控制')
+    assert.equal(initialUi.controlCount, 3, '月视图应复用关闭、窗口层级、锁定三个窗口控制')
     assert.equal(initialUi.refreshButton, true, '今天按钮旁必须提供刷新按钮')
     assert.equal(initialUi.persistentJumpControls, false, '工具栏右侧不得常驻年月选择控件')
+
+    const zOrderMenuState = await monthWindow.webContents.executeJavaScript(`(async () => {
+      const trigger = document.querySelector('.traffic-lights .light-pin')
+      trigger.click()
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      return {
+        popup: trigger.getAttribute('aria-haspopup'),
+        expanded: trigger.getAttribute('aria-expanded'),
+        menuRect: (() => {
+          const rect = document.querySelector('.z-order-menu').getBoundingClientRect()
+          return { width: rect.width, height: rect.height }
+        })(),
+        animationFrames: (() => {
+          const animation = document.querySelector('.z-order-menu').getAnimations()[0]
+          return animation?.effect?.getKeyframes().map((frame) => ({
+            clipPath: frame.clipPath || '',
+            transform: frame.transform || '',
+            opacity: frame.opacity ?? ''
+          })) || []
+        })(),
+        descriptions: document.querySelectorAll('.z-order-option-description').length,
+        options: Array.from(document.querySelectorAll('.z-order-option'), (option) => ({
+          text: option.querySelector('.z-order-option-label')?.textContent.trim(),
+          role: option.getAttribute('role'),
+          checked: option.getAttribute('aria-checked'),
+          height: option.getBoundingClientRect().height,
+          checkLeft: option.querySelector('.z-order-option-check')?.getBoundingClientRect().left,
+          labelLeft: option.querySelector('.z-order-option-label')?.getBoundingClientRect().left
+        }))
+      }
+    })()`)
+    assert.equal(zOrderMenuState.popup, 'menu')
+    assert.equal(zOrderMenuState.expanded, 'true')
+    assert.deepEqual(
+      zOrderMenuState.options.map((option) => option.text),
+      ['始终置顶', '正常层级', '始终置底']
+    )
+    assert.equal(
+      zOrderMenuState.options.every((option) => option.role === 'menuitemradio'),
+      true,
+      '窗口层级菜单必须暴露互斥单选语义'
+    )
+    assert.equal(zOrderMenuState.options[0].checked, 'true')
+    assert.equal(zOrderMenuState.descriptions, 0, 'macOS 风格层级菜单不应保留双行说明文字')
+    assert.equal(zOrderMenuState.animationFrames.length, 2, '窗口层级菜单必须启动统一下拉动效')
+    assert.equal(
+      zOrderMenuState.animationFrames[0].clipPath.includes('100%'),
+      true,
+      '窗口层级菜单应从顶部向下裁剪展开'
+    )
+    assert.equal(
+      zOrderMenuState.animationFrames.some(
+        (frame) => Boolean(frame.transform) || frame.opacity !== ''
+      ),
+      false,
+      '窗口层级菜单不应继续使用位移、缩放或淡入动画'
+    )
+    assert.ok(zOrderMenuState.menuRect.width <= 200, '窗口层级菜单应保持 macOS 式紧凑宽度')
+    assert.ok(zOrderMenuState.menuRect.height <= 130, '窗口层级菜单不应继续使用三行大卡片布局')
+    assert.equal(
+      zOrderMenuState.options.every(
+        (option) => option.height <= 38 && option.checkLeft < option.labelLeft
+      ),
+      true,
+      '菜单项应使用左侧勾选槽和紧凑单行布局'
+    )
+
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.z-order-option[data-mode="normal"]').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `document.querySelector('.light-pin')?.title === '窗口层级：正常层级' && Array.from(document.querySelectorAll('.msg-text')).some((node) => node.textContent.includes('正常层级'))`
+        ),
+      '切换正常层级后没有同步按钮状态和成功消息'
+    )
+
+    await wait(550)
+    const rapidZOrderResults = await monthWindow.webContents.executeJavaScript(
+      `Promise.all([window.api.setWindowZOrderMode('bottom'), window.api.setWindowZOrderMode('top')])`
+    )
+    assert.equal(rapidZOrderResults[0].mode, 'bottom')
+    assert.equal(rapidZOrderResults[0].changed, true)
+    assert.equal(rapidZOrderResults[1].throttled, true, '主进程必须拦截快速重复层级切换')
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `document.querySelector('.light-pin')?.title === '窗口层级：始终置底' && Array.from(document.querySelectorAll('.msg-text')).some((node) => node.textContent.includes('始终置底'))`
+        ),
+      '始终置底没有广播到月视图导航栏或显示消息'
+    )
+    await wait(550)
+    await monthWindow.webContents.executeJavaScript(`window.api.setWindowZOrderMode('top')`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `document.querySelector('.light-pin')?.title === '窗口层级：始终置顶'`
+        ),
+      '测试结束前没有恢复始终置顶'
+    )
+
+    const rapidLockResults = await monthWindow.webContents.executeJavaScript(`(async () => {
+      const button = document.querySelector('.traffic-lights .light-lock')
+      button.click()
+      button.click()
+      await new Promise((resolve) => setTimeout(resolve, 80))
+      return {
+        title: button.title,
+        messages: Array.from(document.querySelectorAll('.msg-text'), (node) => node.textContent)
+      }
+    })()`)
+    assert.equal(rapidLockResults.title, '正在切换锁定状态')
+    assert.equal(
+      rapidLockResults.messages.some((message) => message.includes('主窗口已锁定')),
+      true,
+      '锁定成功后必须显示消息'
+    )
+    assert.equal(monthWindow.isMovable(), false, '快速双击锁定不能立即反向解锁')
+    await wait(550)
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.traffic-lights .light-lock').click()`
+    )
+    await waitUntil(() => monthWindow.isMovable(), '测试结束前没有解除全局窗口锁定')
 
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-titlebar-btn[aria-controls="template-workspace"]').click()`
@@ -1337,10 +1461,35 @@ async function runMonthViewTests() {
     )
 
     // 左侧当日列表新建未来便签，默认使用选中日期 + 当前时间。
-    const futureKey = await monthWindow.webContents.executeJavaScript(`(() => {
+    let futureKey = await monthWindow.webContents.executeJavaScript(`(() => {
       const today = '${todayKey}'
       return Array.from(document.querySelectorAll('.month-day-cell:not(.is-outside)')).find((cell) => cell.dataset.date > today)?.dataset.date
     })()`)
+    if (!futureKey) {
+      await waitUntil(
+        () =>
+          monthWindow.webContents.executeJavaScript(
+            `!document.querySelector('.month-toolbar').classList.contains('is-busy') && !document.querySelector('.month-toolbar__navigation button[aria-label="下个月"]').disabled`
+          ),
+        '月末测试切换前月份导航仍处于忙碌状态'
+      )
+      const monthBeforeFutureNavigation = await monthWindow.webContents.executeJavaScript(
+        `document.querySelector('.month-toolbar__title').textContent`
+      )
+      await monthWindow.webContents.executeJavaScript(
+        `document.querySelector('.month-toolbar__navigation button[aria-label="下个月"]').click()`
+      )
+      await waitUntil(
+        () =>
+          monthWindow.webContents.executeJavaScript(
+            `document.querySelector('.month-toolbar__title').textContent !== ${JSON.stringify(monthBeforeFutureNavigation)} && !document.querySelector('.month-toolbar').classList.contains('is-busy') && Array.from(document.querySelectorAll('.month-day-cell:not(.is-outside)')).some((cell) => cell.dataset.date > '${todayKey}')`
+          ),
+        '月末测试切换到下个月后没有可用的未来日期'
+      )
+      futureKey = await monthWindow.webContents.executeJavaScript(
+        `Array.from(document.querySelectorAll('.month-day-cell:not(.is-outside)')).find((cell) => cell.dataset.date > '${todayKey}')?.dataset.date`
+      )
+    }
     assert.ok(futureKey, '当前 42 格中应至少有一个未来日期')
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-day-cell[data-date="${futureKey}"]').click()`
@@ -1461,13 +1610,24 @@ async function runMonthViewTests() {
     )
 
     assert.equal(monthWindow.isAlwaysOnTop(), true, '月视图应恢复默认置顶状态')
-    await monthWindow.webContents.executeJavaScript(`document.querySelector('.light-pin').click()`)
-    await waitUntil(() => !monthWindow.isAlwaysOnTop(), '月视图取消置顶没有生效')
-    await monthWindow.webContents.executeJavaScript(`document.querySelector('.light-pin').click()`)
-    await waitUntil(() => monthWindow.isAlwaysOnTop(), '月视图置顶按钮没有作用于月视图窗口')
+    await monthWindow.webContents.executeJavaScript(`(async () => {
+      document.querySelector('.light-pin').click()
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      document.querySelector('.z-order-option[data-mode="normal"]').click()
+    })()`)
+    await waitUntil(() => !monthWindow.isAlwaysOnTop(), '月视图正常层级没有取消置顶')
+    await wait(550)
+    await monthWindow.webContents.executeJavaScript(`(async () => {
+      document.querySelector('.light-pin').click()
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      document.querySelector('.z-order-option[data-mode="top"]').click()
+    })()`)
+    await waitUntil(() => monthWindow.isAlwaysOnTop(), '月视图始终置顶没有作用于主窗口')
 
+    await wait(550)
     await monthWindow.webContents.executeJavaScript(`document.querySelector('.light-lock').click()`)
     await waitUntil(() => !monthWindow.isMovable(), '月视图锁定按钮没有禁用窗口移动')
+    await wait(550)
     await monthWindow.webContents.executeJavaScript(`document.querySelector('.light-lock').click()`)
     await waitUntil(() => monthWindow.isMovable(), '月视图解锁按钮没有恢复窗口移动')
 
@@ -1521,9 +1681,63 @@ async function runMonthViewTests() {
       '月视图设置不应显示列表便签外观'
     )
     assert.match(settingsUi.text, /设置主页面壁纸/, '月视图必须保留独立壁纸设置')
+    assert.match(settingsUi.text, /窗口边框/, '月视图必须提供当前视图的窗口边框开关')
     assert.match(settingsUi.text, /查看全部通知/)
     assert.match(settingsUi.text, /恢复默认设置/)
     assert.match(settingsUi.text, /清空便签数据/)
+
+    const borderToggleInitial = await monthWindow.webContents.executeJavaScript(`(() => {
+      const item = Array.from(document.querySelectorAll('.settings-panel--month .setting-item')).find(
+        (node) => node.querySelector('.setting-label')?.textContent.includes('窗口边框')
+      )
+      return {
+        found: Boolean(item),
+        enabled: item?.querySelector('.switch')?.classList.contains('on') ?? null,
+        cssWidth: getComputedStyle(document.documentElement).getPropertyValue('--window-border-width').trim(),
+        renderedWidth: getComputedStyle(document.querySelector('.month-root'), '::after').borderTopWidth
+      }
+    })()`)
+    assert.equal(borderToggleInitial.found, true)
+    assert.equal(borderToggleInitial.enabled, false, '窗口边框应默认关闭以保持当前外观')
+    assert.equal(borderToggleInitial.cssWidth, '0px')
+    assert.equal(borderToggleInitial.renderedWidth, '0px')
+
+    await monthWindow.webContents.executeJavaScript(`(() => {
+      const item = Array.from(document.querySelectorAll('.settings-panel--month .setting-item')).find(
+        (node) => node.querySelector('.setting-label')?.textContent.includes('窗口边框')
+      )
+      item.querySelector('.switch').click()
+    })()`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `getComputedStyle(document.querySelector('.month-root'), '::after').borderTopWidth === '1px'`
+        ),
+      '开启窗口边框后没有立即绘制 1px 内侧边线'
+    )
+    await wait(350)
+    assert.equal(
+      await monthWindow.webContents.executeJavaScript(
+        `window.api.getSettingsSnapshot().then((snapshot) => snapshot.values.css.windowBorder)`
+      ),
+      true,
+      '窗口边框设置没有持久化到当前月视图'
+    )
+
+    await monthWindow.webContents.executeJavaScript(`(() => {
+      const item = Array.from(document.querySelectorAll('.settings-panel--month .setting-item')).find(
+        (node) => node.querySelector('.setting-label')?.textContent.includes('窗口边框')
+      )
+      item.querySelector('.switch').click()
+    })()`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `getComputedStyle(document.querySelector('.month-root'), '::after').borderTopWidth === '0px'`
+        ),
+      '关闭窗口边框后没有移除内侧边线'
+    )
+    await wait(350)
 
     // 关闭设置，避免其全屏 Teleport 层影响后续窗口鼠标离开验证。
     await monthWindow.webContents.executeJavaScript(

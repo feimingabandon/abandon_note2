@@ -283,6 +283,7 @@ watch(
 // ---- 基础样式设置 ----
 const titlebarStyle = ref(DEFAULT_SETTINGS.appearance.titlebarStyle)
 const bgColor = ref(DEFAULT_SETTINGS.css.bgColor)
+const windowBorder = ref(DEFAULT_SETTINGS.css.windowBorder)
 const fontSizeBase = ref(DEFAULT_SETTINGS.css.fontSizeBase)
 const textColor = ref(DEFAULT_SETTINGS.css.textColor)
 const stickyFontSize = ref(DEFAULT_SETTINGS.sticky.fontSize)
@@ -921,6 +922,12 @@ watch(windowOpacity, (v) => {
   debouncedSave('css.windowOpacity', v)
 })
 
+// 窗口边框不改变 BrowserWindow 框架，只在根容器内侧绘制 1px 语义边线。
+watch(windowBorder, (v) => {
+  el.style.setProperty('--window-border-width', v ? '1px' : '0px')
+  debouncedSave('css.windowBorder', v)
+})
+
 // 字体大小 → CSS --font-size-base
 watch(fontSizeBase, (v) => {
   el.style.setProperty('--font-size-base', v + 'rem')
@@ -1078,6 +1085,7 @@ function assignSettingsSnapshot(snapshot) {
   cssOpacity.value = css.popupOpacity
   cssBlur.value = css.bgBlur
   windowOpacity.value = css.windowOpacity
+  windowBorder.value = css.windowBorder
   fontSizeBase.value = css.fontSizeBase
   textColor.value = css.textColor
   stickyFontSize.value = sticky.fontSize
@@ -1458,6 +1466,20 @@ const onConfirmResetSettings = async () => {
                     @keydown.enter="commitBgColor"
                   />
                 </div>
+              </div>
+            </div>
+
+            <!-- 主窗口内侧边框 -->
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >窗口边框<HelpButton
+                    text="在当前主视图窗口内侧显示 1px 边线。它不会启用 Windows 系统窗口框架，也不会影响圆角、自定义缩放、贴边隐藏或窗口层级。"
+                /></span>
+                <span class="setting-hint-caption">仅作用于当前{{ currentViewLabel }}</span>
+              </div>
+              <div class="setting-right">
+                <AppToggle v-model="windowBorder" />
               </div>
             </div>
 

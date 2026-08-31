@@ -3,7 +3,7 @@
  * AppTitlebar.vue — 可切换 Apple / Microsoft 视觉的自定义标题栏组件
  *
  * 职责：
- *   1. 提供关闭、置顶、锁定窗口控制，视觉风格不改变功能语义
+ *   1. 提供关闭、三态窗口层级、锁定窗口控制，视觉风格不改变功能语义
  *   2. 展示窗口标题文字
  *   3. 通过 slot 支持在标题栏右侧插入自定义操作按钮
  *   4. 整个标题栏区域可拖拽移动窗口（-webkit-app-region: drag）
@@ -11,12 +11,15 @@
  * Props:
  *   - title {String} 标题栏显示的文字，默认为空
  *   - locked {Boolean} 窗口锁定状态
- *   - alwaysOnTop {Boolean} 窗口置顶状态
+ *   - zOrderMode {'top'|'normal'|'bottom'} 主窗口层级
  *   - styleVariant {'apple'|'microsoft'} 标题栏视觉风格
  */
 
-// 定义组件接收的 props
-defineProps({
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { WINDOW_Z_ORDER_MODES } from '../../../../shared/settings-schema.js'
+import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
+
+const props = defineProps({
   title: {
     type: String,
     default: ''
@@ -25,9 +28,10 @@ defineProps({
     type: Boolean,
     required: true
   },
-  alwaysOnTop: {
-    type: Boolean,
-    required: true
+  zOrderMode: {
+    type: String,
+    required: true,
+    validator: (value) => Object.values(WINDOW_Z_ORDER_MODES).includes(value)
   },
   styleVariant: {
     type: String,
@@ -36,29 +40,173 @@ defineProps({
   }
 })
 
-const emit = defineEmits(['update:locked', 'update:alwaysOnTop'])
+const emit = defineEmits(['update:locked', 'update:zOrderMode'])
+
+const WINDOW_CONTROL_GUARD_MS = 500
+const Z_ORDER_OPTIONS = Object.freeze([
+  {
+    value: WINDOW_Z_ORDER_MODES.TOP,
+    label: '始终置顶',
+    description: '保持在普通窗口上方'
+  },
+  {
+    value: WINDOW_Z_ORDER_MODES.NORMAL,
+    label: '正常层级',
+    description: '跟随 Windows 窗口顺序'
+  },
+  {
+    value: WINDOW_Z_ORDER_MODES.BOTTOM,
+    label: '始终置底',
+    description: '保持在普通窗口下方'
+  }
+])
+
+const zOrderTriggerRef = ref(null)
+const zOrderMenuRef = ref(null)
+const zOrderMenuOpen = ref(false)
+const zOrderMenuStyle = ref({})
+const zOrderChanging = ref(false)
+const lockChanging = ref(false)
+let zOrderGuardTimer = null
+let lockGuardTimer = null
+
+const activeZOrderOption = computed(
+  () => Z_ORDER_OPTIONS.find((option) => option.value === props.zOrderMode) || Z_ORDER_OPTIONS[0]
+)
+const zOrderTitle = computed(() =>
+  zOrderChanging.value ? '正在切换窗口层级' : `窗口层级：${activeZOrderOption.value.label}`
+)
+
+function finishGuard(stateRef, timerName) {
+  const timer = setTimeout(() => {
+    stateRef.value = false
+    if (timerName === 'z-order') zOrderGuardTimer = null
+    else lockGuardTimer = null
+  }, WINDOW_CONTROL_GUARD_MS)
+  if (timerName === 'z-order') zOrderGuardTimer = timer
+  else lockGuardTimer = timer
+}
+
+function updateZOrderMenuPosition() {
+  const trigger = zOrderTriggerRef.value
+  if (!trigger) return
+  const rect = trigger.getBoundingClientRect()
+  const width = 188
+  const preferredLeft = props.styleVariant === 'microsoft' ? rect.right - width : rect.left
+  zOrderMenuStyle.value = {
+    top: `${rect.bottom + 7}px`,
+    left: `${Math.min(Math.max(8, preferredLeft), window.innerWidth - width - 8)}px`,
+    width: `${width}px`
+  }
+}
+
+async function focusActiveZOrderOption() {
+  await nextTick()
+  zOrderMenuRef.value
+    ?.querySelector(`[data-mode="${props.zOrderMode}"]`)
+    ?.focus({ preventScroll: true })
+}
+
+function toggleZOrderMenu() {
+  if (zOrderChanging.value) return
+  zOrderMenuOpen.value = !zOrderMenuOpen.value
+  if (zOrderMenuOpen.value) {
+    updateZOrderMenuPosition()
+    void focusActiveZOrderOption()
+  }
+}
+
+function closeZOrderMenu({ restoreFocus = false } = {}) {
+  if (!zOrderMenuOpen.value) return
+  zOrderMenuOpen.value = false
+  if (restoreFocus) nextTick(() => zOrderTriggerRef.value?.focus({ preventScroll: true }))
+}
+
+async function selectZOrderMode(mode) {
+  if (zOrderChanging.value) return
+  closeZOrderMenu({ restoreFocus: true })
+  if (mode === props.zOrderMode) return
+
+  zOrderChanging.value = true
+  try {
+    const result = await window.api.setWindowZOrderMode(mode)
+    if (result?.mode) emit('update:zOrderMode', result.mode)
+  } catch (error) {
+    console.warn('[AppTitlebar] 切换窗口层级失败:', error)
+  } finally {
+    finishGuard(zOrderChanging, 'z-order')
+  }
+}
+
+function onZOrderMenuKeydown(event) {
+  const items = [...(zOrderMenuRef.value?.querySelectorAll('[role="menuitemradio"]') || [])]
+  if (!items.length) return
+  const currentIndex = Math.max(0, items.indexOf(document.activeElement))
+  let targetIndex = null
+  if (event.key === 'ArrowDown') targetIndex = (currentIndex + 1) % items.length
+  if (event.key === 'ArrowUp') targetIndex = (currentIndex - 1 + items.length) % items.length
+  if (event.key === 'Home') targetIndex = 0
+  if (event.key === 'End') targetIndex = items.length - 1
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeZOrderMenu({ restoreFocus: true })
+    return
+  }
+  if (targetIndex === null) return
+  event.preventDefault()
+  items[targetIndex].focus({ preventScroll: true })
+}
+
+function onDocumentPointerDown(event) {
+  if (!zOrderMenuOpen.value) return
+  if (zOrderTriggerRef.value?.contains(event.target)) return
+  if (zOrderMenuRef.value?.contains(event.target)) return
+  closeZOrderMenu()
+}
+
+function onPopoverEnter(element, done) {
+  enterPopover(element, done, 'dropdown')
+}
+
+function onPopoverLeave(element, done) {
+  leavePopover(element, done, 'dropdown')
+}
 
 // ---- 窗口控制事件处理函数 ----
 /** 关闭窗口：通过 preload 暴露的 API 发送 IPC 消息到主进程 */
 const close = () => window.api.closeWindow()
-/** 切换置顶/取消置顶状态 */
-const toggleAlwaysOnTop = async () => {
-  try {
-    const newState = await window.api.toggleAlwaysOnTop()
-    emit('update:alwaysOnTop', newState)
-  } catch (e) {
-    console.warn('[AppTitlebar] 切换置顶失败:', e)
-  }
-}
 /** 切换锁定/解锁状态 */
 const toggleLock = async () => {
+  if (lockChanging.value) return
+  lockChanging.value = true
   try {
-    const newState = await window.api.toggleLock()
-    emit('update:locked', newState)
+    const result = await window.api.toggleLock()
+    if (typeof result?.value === 'boolean') emit('update:locked', result.value)
   } catch (e) {
     console.warn('[AppTitlebar] 切换锁定失败:', e)
+  } finally {
+    finishGuard(lockChanging, 'lock')
   }
 }
+
+watch(
+  () => props.styleVariant,
+  () => {
+    if (zOrderMenuOpen.value) nextTick(updateZOrderMenuPosition)
+  }
+)
+
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
+  window.addEventListener('resize', updateZOrderMenuPosition)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  window.removeEventListener('resize', updateZOrderMenuPosition)
+  if (zOrderGuardTimer) clearTimeout(zOrderGuardTimer)
+  if (lockGuardTimer) clearTimeout(lockGuardTimer)
+})
 </script>
 
 <template>
@@ -74,20 +222,35 @@ const toggleLock = async () => {
       <button class="light light-close" title="关闭" @click="close">
         <img class="light-icon" src="@/resources/icons/close.png" alt="关闭" />
       </button>
-      <!-- 置顶切换按钮(黄色=已置顶 / 灰色=未置顶) -->
+      <!-- 全视图共享的三态窗口层级入口 -->
       <button
+        ref="zOrderTriggerRef"
         class="light light-pin"
-        :class="{ pinned: alwaysOnTop }"
-        :title="alwaysOnTop ? '取消置顶' : '窗口置顶'"
-        @click="toggleAlwaysOnTop"
+        :class="{
+          pinned: zOrderMode === WINDOW_Z_ORDER_MODES.TOP,
+          bottomed: zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM,
+          'is-open': zOrderMenuOpen,
+          'is-changing': zOrderChanging
+        }"
+        :title="zOrderTitle"
+        aria-haspopup="menu"
+        :aria-expanded="zOrderMenuOpen"
+        :aria-disabled="zOrderChanging"
+        @click="toggleZOrderMenu"
       >
-        <img class="light-icon" src="@/resources/icons/pin.svg" alt="置顶" />
+        <img
+          class="light-icon layer-mode-icon"
+          :class="{ 'is-bottom': zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM }"
+          src="@/resources/icons/pin.svg"
+          alt=""
+        />
       </button>
       <!-- 锁定按钮（绿色=未锁 / 橙色=已锁） -->
       <button
         class="light light-lock"
-        :class="{ locked: locked }"
-        :title="locked ? '解锁' : '锁定'"
+        :class="{ locked: locked, 'is-changing': lockChanging }"
+        :title="lockChanging ? '正在切换锁定状态' : locked ? '解锁主窗口' : '锁定主窗口'"
+        :disabled="lockChanging"
         @click="toggleLock"
       >
         <img class="light-icon" src="@/resources/icons/lock.png" alt="锁定" />
@@ -100,6 +263,38 @@ const toggleLock = async () => {
       <slot />
     </div>
   </header>
+
+  <Teleport to="body">
+    <Transition :css="false" @enter="onPopoverEnter" @leave="onPopoverLeave">
+      <div
+        v-if="zOrderMenuOpen"
+        ref="zOrderMenuRef"
+        class="z-order-menu"
+        :style="zOrderMenuStyle"
+        role="menu"
+        aria-label="主窗口层级"
+        @click.stop
+        @keydown="onZOrderMenuKeydown"
+      >
+        <button
+          v-for="option in Z_ORDER_OPTIONS"
+          :key="option.value"
+          class="z-order-option"
+          :class="{ 'is-active': zOrderMode === option.value }"
+          type="button"
+          role="menuitemradio"
+          :aria-checked="zOrderMode === option.value"
+          :aria-label="`${option.label}，${option.description}`"
+          :title="option.description"
+          :data-mode="option.value"
+          @click="selectZOrderMode(option.value)"
+        >
+          <span class="z-order-option-check" aria-hidden="true">✓</span>
+          <span class="z-order-option-label">{{ option.label }}</span>
+        </button>
+      </div>
+    </Transition>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -145,7 +340,9 @@ const toggleLock = async () => {
   width: 14rem; /* 图标大小 */
   height: 14rem;
   opacity: 0; /* 默认隐藏图标 */
-  transition: opacity 120ms ease;
+  transition:
+    opacity 120ms ease,
+    transform var(--motion-control) var(--ease-standard);
   display: block; /* 确保正确居中 */
 }
 
@@ -153,9 +350,14 @@ const toggleLock = async () => {
 .traffic-lights:hover .light-icon {
   opacity: 1;
 }
-.light:active {
+.light:not(.light-pin):active:not(:disabled) {
   transform: scale(0.98);
   transition-duration: 70ms;
+}
+.light:disabled,
+.light[aria-disabled='true'] {
+  cursor: wait;
+  opacity: 0.58;
 }
 .light.pinned .light-icon,
 .light.locked .light-icon {
@@ -182,6 +384,12 @@ const toggleLock = async () => {
 .light-pin.pinned {
   background-color: #febc2e;
 } /* 黄色 - 已置顶（原最小化色） */
+.light-pin.bottomed {
+  background-color: var(--ui-accent);
+}
+.layer-mode-icon.is-bottom {
+  transform: rotate(180deg);
+}
 .light-lock {
   background-color: #28c840;
 } /* 绿色 - 未锁定 */
@@ -195,6 +403,10 @@ const toggleLock = async () => {
 }
 .light-pin.pinned:hover {
   background-color: #f5a623;
+}
+.light-pin.bottomed:hover,
+.light-pin.bottomed.is-open {
+  background-color: color-mix(in srgb, var(--ui-accent) 84%, var(--text-color) 16%);
 }
 .light-lock:hover {
   background-color: #1db954;
@@ -279,17 +491,93 @@ const toggleLock = async () => {
   opacity: 1;
 }
 .app-titlebar--microsoft .light-pin.pinned,
+.app-titlebar--microsoft .light-pin.bottomed,
 .app-titlebar--microsoft .light-lock.locked {
-  background-color: color-mix(in srgb, #0078d4 18%, transparent);
+  background-color: var(--ui-accent-subtle);
 }
 .app-titlebar--microsoft .light-pin.pinned:hover,
+.app-titlebar--microsoft .light-pin.bottomed:hover,
+.app-titlebar--microsoft .light-pin.is-open,
 .app-titlebar--microsoft .light-lock.locked:hover {
-  background-color: color-mix(in srgb, #0078d4 26%, transparent);
+  background-color: var(--ui-fill-pressed);
 }
 .app-titlebar--microsoft .light-close {
   order: 3;
 }
 .app-titlebar--microsoft .light-close:hover {
   background-color: #c42b1c;
+}
+
+/* Teleport 到 body 的窗口层级菜单：采用 macOS 菜单的紧凑勾选布局。 */
+.z-order-menu {
+  position: fixed;
+  z-index: var(--z-global-popover);
+  display: grid;
+  gap: 1rem;
+  padding: 5rem;
+  color: var(--text-color);
+  background: var(--surface-float);
+  border: 1px solid var(--surface-float-border);
+  border-radius: 12rem;
+  box-shadow:
+    0 12rem 32rem rgba(0, 0, 0, 0.18),
+    0 2rem 8rem rgba(0, 0, 0, 0.08);
+  transform-origin: top center;
+  will-change: clip-path;
+  -webkit-app-region: no-drag;
+}
+
+.z-order-option {
+  display: grid;
+  grid-template-columns: 18rem minmax(0, 1fr);
+  align-items: center;
+  gap: 6rem;
+  width: 100%;
+  min-height: 34rem;
+  padding: 5rem 8rem;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 7rem;
+  cursor: pointer;
+  outline: none;
+  transition:
+    color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease;
+}
+
+.z-order-option:hover,
+.z-order-option:focus-visible {
+  color: #fff;
+  background: var(--ui-accent);
+}
+
+.z-order-option-label {
+  font-size: var(--fs-body);
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.z-order-option.is-active .z-order-option-label {
+  font-weight: 600;
+}
+
+.z-order-option-check {
+  justify-self: start;
+  width: 14rem;
+  font-size: 13rem;
+  line-height: 1;
+  color: var(--ui-accent);
+  opacity: 0;
+}
+
+.z-order-option.is-active .z-order-option-check {
+  opacity: 1;
+}
+
+.z-order-option:hover .z-order-option-check,
+.z-order-option:focus-visible .z-order-option-check {
+  color: currentColor;
 }
 </style>
