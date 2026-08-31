@@ -28,15 +28,15 @@ function isActiveDay(day) {
   return day?.isActive ?? day?.inCurrentMonth
 }
 
-const currentDays = computed(() => props.days.filter(isActiveDay))
+const activeDays = computed(() => props.days.filter(isActiveDay))
 const segments = computed(() =>
   buildCalendarEventSegments(props.days, props.notes, {
-    activeStartKey: currentDays.value[0]?.key,
-    activeEndKey: currentDays.value.at(-1)?.key
+    activeStartKey: activeDays.value[0]?.key,
+    activeEndKey: activeDays.value.at(-1)?.key
   })
 )
 const noteById = computed(() => new Map(props.notes.map((note) => [Number(note.id), note])))
-const noteCounts = computed(() => noteCountsByDate(currentDays.value, props.notes))
+const noteCounts = computed(() => noteCountsByDate(activeDays.value, props.notes))
 const visibleNoteCounts = computed(() => {
   const counts = new Map()
   for (const segment of segments.value) {
@@ -176,7 +176,8 @@ onBeforeUnmount(() => {
             :ref="(element) => setDayCellRef(element, day.key)"
             class="month-day-cell"
             :class="{
-              'is-outside': !isActiveDay(day),
+              'is-outside': !day.inCurrentMonth,
+              'is-unavailable': !isActiveDay(day),
               'is-selected': isActiveDay(day) && day.key === selectedKey,
               'is-today': isActiveDay(day) && day.key === todayKey
             }"
@@ -355,13 +356,15 @@ onBeforeUnmount(() => {
     border-color 150ms ease,
     box-shadow 150ms ease;
 }
-.month-day-cell:not(.is-outside):not(.is-selected):hover {
+.month-day-cell:not(.is-unavailable):not(.is-selected):hover {
   border-color: var(--ui-border-control);
 }
 .month-day-cell.is-outside {
   border-color: var(--calendar-grid-line);
-  cursor: default;
   color: color-mix(in srgb, var(--text-color-secondary) 58%, transparent);
+}
+.month-day-cell.is-unavailable {
+  cursor: default;
 }
 .month-day-cell__header {
   display: grid;

@@ -215,6 +215,64 @@ async function runMonthViewTests() {
     assert.equal(initialUi.refreshButton, true, '今天按钮旁必须提供刷新按钮')
     assert.equal(initialUi.persistentJumpControls, false, '工具栏右侧不得常驻年月选择控件')
 
+    const adjacentMonthState = await monthWindow.webContents.executeJavaScript(`(() => {
+      const pad = (value) => String(value).padStart(2, '0')
+      const now = new Date()
+      const today = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate())
+      const cells = Array.from(document.querySelectorAll('.month-day-cell.is-outside'))
+      const target = cells.find((cell) => cell.dataset.date > today) || cells.at(-1)
+      return {
+        count: cells.length,
+        key: target?.dataset.date || '',
+        ariaDisabled: target?.getAttribute('aria-disabled'),
+        title: document.querySelector('.month-toolbar__title').textContent
+      }
+    })()`)
+    assert.ok(adjacentMonthState.count > 0, '月视图必须保留前后月份补位日期')
+    assert.ok(adjacentMonthState.key, '月视图没有找到可交互的相邻月份日期')
+    assert.equal(adjacentMonthState.ariaDisabled, 'false', '相邻月份日期不得继续使用禁用语义')
+
+    await monthWindow.webContents.executeJavaScript(`window.api.createNoteWithAssets({
+      options: {
+        content: '相邻月份数据测试',
+        effectiveAt: new Date('${adjacentMonthState.key}T09:00:00').getTime(),
+        durationDays: 1
+      },
+      images: [],
+      tagIds: []
+    })`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.month-event-bar[data-preview="相邻月份数据测试"]'))`
+        ),
+      '相邻月份日期没有加载并渲染真实便签数据'
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-day-cell[data-date="${adjacentMonthState.key}"]').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Array.from(document.querySelectorAll('.month-day-panel .nl-card-text')).some((node) => node.textContent === '相邻月份数据测试')`
+        ),
+      '点击相邻月份日期后侧栏没有显示当天数据'
+    )
+    const adjacentMonthSelected = await monthWindow.webContents.executeJavaScript(`(() => ({
+      title: document.querySelector('.month-toolbar__title').textContent,
+      selected: document.querySelector('.month-day-cell[data-date="${adjacentMonthState.key}"]')?.classList.contains('is-selected')
+    }))()`)
+    assert.equal(adjacentMonthSelected.title, adjacentMonthState.title, '点击补位日期不得自动切换月份')
+    assert.equal(adjacentMonthSelected.selected, true, '相邻月份日期必须支持正常选中状态')
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-day-cell[data-date="${adjacentMonthState.key}"]').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(`!document.querySelector('.month-day-panel')`),
+      '再次点击相邻月份日期后没有收起日期侧栏'
+    )
+
     const zOrderMenuState = await monthWindow.webContents.executeJavaScript(`(async () => {
       const trigger = document.querySelector('.traffic-lights .light-pin')
       trigger.click()
@@ -692,18 +750,34 @@ async function runMonthViewTests() {
 
     const outsideCell = await monthWindow.webContents.executeJavaScript(`(() => {
       const cell = document.querySelector('.month-day-cell.is-outside')
-      cell.click()
       return {
         tabIndex: cell.tabIndex,
         ariaDisabled: cell.getAttribute('aria-disabled'),
-        hasCreate: Boolean(cell.querySelector('.month-day-cell__create')),
-        panelVisible: Boolean(document.querySelector('.month-day-panel'))
+        hasCreate: Boolean(cell.querySelector('.month-day-cell__create'))
       }
     })()`)
     assert.deepEqual(
       outsideCell,
-      { tabIndex: -1, ariaDisabled: 'true', hasCreate: false, panelVisible: false },
-      '非当前月份日期格必须只作为装饰'
+      { tabIndex: -1, ariaDisabled: 'false', hasCreate: true },
+      '非当前月份日期格必须保留完整的点击和新建交互'
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-day-cell.is-outside').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.month-day-panel'))`
+        ),
+      '点击非当前月份日期格后没有打开日期侧栏'
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-day-cell.is-outside').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(`!document.querySelector('.month-day-panel')`),
+      '再次点击非当前月份日期格后没有收起日期侧栏'
     )
 
     // 日期侧栏点击展开、拖动调宽、持久化后重载仍恢复宽度；展开状态不持久化。

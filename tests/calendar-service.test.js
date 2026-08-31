@@ -68,20 +68,29 @@ describe('calendar service ranges', () => {
     expect(result.days.every((day) => day.metadata.displayLabel === `meta:${day.key}`)).toBe(true)
   })
 
-  it('preserves month data behavior while using the shared range query', () => {
-    mocks.queryCalendarNotes.mockReturnValue([])
+  it('loads metadata and notes for the complete 42-cell month grid', () => {
+    mocks.queryCalendarNotes.mockReturnValue([
+      candidate(10, '2026-07-27'),
+      candidate(11, '2026-09-06'),
+      candidate(12, '2026-07-26'),
+      candidate(13, '2026-09-07')
+    ])
 
     const result = getMonthCalendarData(2026, 8)
 
-    expect(mocks.buildCalendarDayMetadata).toHaveBeenCalledWith('2026-08-01', '2026-08-31')
+    expect(mocks.buildCalendarDayMetadata).toHaveBeenCalledWith('2026-07-27', '2026-09-06')
     expect(mocks.queryCalendarNotes).toHaveBeenCalledWith({
-      candidateFrom: localMidnightTimestamp(addCalendarDays('2026-08-01', -364)),
-      visibleEndExclusive: localMidnightTimestamp('2026-09-01')
+      candidateFrom: localMidnightTimestamp(addCalendarDays('2026-07-27', -364)),
+      visibleEndExclusive: localMidnightTimestamp('2026-09-07')
     })
+    expect(result.notes.map((note) => note.id)).toEqual([10, 11])
+    expect(result.days.every((day) => day.isActive)).toBe(true)
     expect(result.days.find((day) => day.key === '2026-08-01').metadata).toEqual({
       displayLabel: 'meta:2026-08-01'
     })
-    expect(result.days.find((day) => day.key === '2026-07-31').metadata).toEqual({})
+    expect(result.days.find((day) => day.key === '2026-07-31').metadata).toEqual({
+      displayLabel: 'meta:2026-07-31'
+    })
   })
 
   it('keeps every date usable in the final week beyond the lunar metadata range', () => {

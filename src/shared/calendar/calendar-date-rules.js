@@ -125,7 +125,9 @@ export function buildMonthGrid(year, month) {
       dayYear === normalized.year && dayMonth === normalized.month
   )
   days.forEach((day) => {
-    day.isActive = day.inCurrentMonth
+    // 月视图的 42 格都是当前可见范围。前后月份日期保留 inCurrentMonth=false
+    // 仅用于视觉区分，但数据、选择、键盘导航和新建能力与本月日期一致。
+    day.isActive = true
   })
   return {
     ...normalized,

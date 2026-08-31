@@ -65,7 +65,13 @@ function populateCalendarRange(
 
 export function getMonthCalendarData(year, month) {
   const grid = buildMonthGrid(year, month)
-  return populateCalendarRange(grid, grid.monthStart, grid.monthEnd, (day) => day.inCurrentMonth)
+  return populateCalendarRange(
+    grid,
+    grid.visibleStart,
+    grid.visibleEnd,
+    () => true,
+    emptyCalendarDayMetadata
+  )
 }
 
 export function getWeekCalendarData(anchorDate) {

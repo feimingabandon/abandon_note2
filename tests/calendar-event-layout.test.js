@@ -109,7 +109,7 @@ describe('month multi-day event layout', () => {
     expect(hasHiddenCalendarNotes(0, 0)).toBe(false)
   })
 
-  it('clips event bars to current-month cells while preserving the real continuation flags', () => {
+  it('can clip event bars to an explicitly requested active range', () => {
     const grid = buildMonthGrid(2026, 8)
     const segments = buildCalendarEventSegments(
       grid.days,
@@ -125,6 +125,25 @@ describe('month multi-day event layout', () => {
     expect(segments.filter((item) => item.noteId === 21).at(-1)).toMatchObject({
       endKey: '2026-08-31',
       continuesAfter: true
+    })
+  })
+
+  it('renders events across the complete visible month grid by default', () => {
+    const grid = buildMonthGrid(2026, 8)
+    const segments = buildCalendarEventSegments(grid.days, [
+      note(22, 2026, 7, 27, 3),
+      note(23, 2026, 9, 5, 2)
+    ])
+
+    expect(segments.find((item) => item.noteId === 22)).toMatchObject({
+      startKey: '2026-07-27',
+      endKey: '2026-07-29',
+      weekIndex: 0
+    })
+    expect(segments.find((item) => item.noteId === 23)).toMatchObject({
+      startKey: '2026-09-05',
+      endKey: '2026-09-06',
+      weekIndex: 5
     })
   })
 

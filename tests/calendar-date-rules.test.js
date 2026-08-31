@@ -57,6 +57,7 @@ describe('month calendar date rules', () => {
           currentDays.length !== expectedDayCount ||
           currentDays[0]?.day !== 1 ||
           currentDays.at(-1)?.day !== expectedDayCount ||
+          !grid.days.every((day) => day.isActive) ||
           !contiguous
         ) {
           failures.push({ year, month })
