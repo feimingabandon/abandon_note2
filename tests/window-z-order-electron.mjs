@@ -56,10 +56,14 @@ app.once('ready', async () => {
     const getStatusJson = native.func('WindowZOrder_GetStatusJson', 'str', ['intptr_t'])
     const blurInit = native.func('Blur_Init', 'int', ['intptr_t'])
     destroyBlur = native.func('Blur_Destroy', 'void', [])
-    const blurApplyConfig = native.func('Blur_ApplyConfig', 'void', [
+    const blurApplyConfig = native.func('Blur_ApplyConfig', 'int', [
       'int',
       'float',
       'float',
+      'float',
+      'int',
+      'int',
+      'int',
       'float'
     ])
 
@@ -125,7 +129,7 @@ app.once('ready', async () => {
 
     assert.equal(blurInit(mainHwnd), 1)
     blurInitialized = true
-    blurApplyConfig(1, 18, 1.5, 12)
+    assert.equal(blurApplyConfig(1, 18, 1.5, 12, 255, 255, 255, 0.3), 1)
     assert.equal(reassert(mainHwnd), 1)
     assert.equal(
       await waitUntil(() => {

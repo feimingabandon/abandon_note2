@@ -1116,12 +1116,24 @@ async function runMonthViewTests() {
       const cells = Array.from(document.querySelectorAll('.month-day-cell'))
       const keys = cells.map((cell) => cell.dataset.date)
       const isActive = (index) => Boolean(cells[index] && !cells[index].classList.contains('is-outside'))
-      const sameWeekIndex = cells.findIndex(
-        (_cell, index) => isActive(index) && index % 7 <= 4 && isActive(index + 2)
+      const sameWeekCandidates = cells.flatMap((_cell, index) =>
+        isActive(index) && index % 7 <= 4 && isActive(index + 2) ? [index] : []
       )
-      const crossWeekIndex = cells.findIndex(
-        (_cell, index) => isActive(index) && index % 7 >= 4 && isActive(index + 6)
+      const crossWeekCandidates = cells.flatMap((_cell, index) =>
+        isActive(index) && index % 7 >= 4 && isActive(index + 6) ? [index] : []
       )
+      let sameWeekIndex = -1
+      let crossWeekIndex = -1
+      for (const candidate of crossWeekCandidates) {
+        const nonOverlapping = sameWeekCandidates.find(
+          (index) => index > candidate + 6 || index + 2 < candidate
+        )
+        if (nonOverlapping >= 0) {
+          sameWeekIndex = nonOverlapping
+          crossWeekIndex = candidate
+          break
+        }
+      }
       const overflowIndex = crossWeekIndex + 5
       if (sameWeekIndex < 0 || crossWeekIndex < 0 || !isActive(overflowIndex)) {
         throw new Error('未来月份没有找到稳定的同周与跨周测试日期')

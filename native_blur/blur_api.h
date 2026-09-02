@@ -23,14 +23,23 @@ BLUR_API int  Blur_Init(void* hwnd);
 BLUR_API void Blur_Destroy(void);
 
 // ---- 参数 ----
-// 推荐入口：一次跨 FFI 调用完整更新，STA 线程只处理一次配置消息。
-BLUR_API void Blur_ApplyConfig(int enabled, float radiusDip, float saturation, float cornerRadiusDip);
+// 推荐入口：一次跨 FFI 调用完整更新，并在 STA/DWM 完成材质切换后返回。
+// 返回 1 表示 Renderer 可以安全切换 CSS 回退底色，0 表示配置未完成。
+BLUR_API int Blur_ApplyConfig(
+    int enabled,
+    float radiusDip,
+    float saturation,
+    float cornerRadiusDip,
+    int tintR,
+    int tintG,
+    int tintB,
+    float tintOpacity);
 BLUR_API void Blur_SetRadius(float radiusDip);        // 模糊半径 0~40
 BLUR_API void Blur_SetSaturation(float saturation);    // 饱和度 0~2
 BLUR_API void Blur_SetCornerRadius(float radiusDip);  // 圆角 0~30
 BLUR_API void Blur_SetEnabled(int enabled);            // 开关 0/1
 
-// 旧版 ABI 兼容：玻璃颜色/通透度已改由 Electron CSS 背景层负责，这两个调用不再改变画面。
+// 兼容独立调节入口；主应用优先使用 Blur_ApplyConfig 原子更新完整材质。
 BLUR_API void Blur_SetTint(int r, int g, int b);
 BLUR_API void Blur_SetOpacity(float opacity);
 
@@ -85,6 +94,21 @@ BLUR_API const char* WindowMotion_ConsumeEdgeEventJson(void);
 BLUR_API int WindowZOrder_SetBottom(void* hwnd, int enabled);
 BLUR_API int WindowZOrder_Reassert(void* hwnd);
 BLUR_API const char* WindowZOrder_GetStatusJson(void* hwnd);
+
+// ---- 主视图 / 胶囊原生过渡 ----
+// 同一个 Electron HWND 与持久 Blur Overlay 在每一帧通过一个
+// BeginDeferWindowPos 批次同步提交；目标边界使用物理屏幕坐标。
+BLUR_API int WindowTransition_Run(
+    void* hwnd,
+    int targetPhysicalX,
+    int targetPhysicalY,
+    int targetPhysicalWidth,
+    int targetPhysicalHeight,
+    int durationMs);
+BLUR_API int WindowTransition_IsRunning(void);
+BLUR_API const char* WindowTransition_GetLastErrorMessage(void);
+// 仅提供只读诊断数据，供 Windows 集成测试验证 parent/overlay 每帧零偏差。
+BLUR_API const char* WindowTransition_GetStatusJson(void* hwnd);
 
 #ifdef __cplusplus
 }

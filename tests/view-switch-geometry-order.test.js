@@ -7,8 +7,8 @@ describe('主视图切换几何收敛顺序', () => {
   it('persists pending source geometry before initializing target settings', () => {
     const source = readFileSync(MAIN_PROCESS_PATH, 'utf8')
     const geometryBlock = source.slice(
-      source.indexOf('const debouncedSaveGeometry = () => {'),
-      source.indexOf('// 监听窗口大小变化和移动事件')
+      source.indexOf('function debouncedSaveGeometry() {'),
+      source.indexOf('/** 恢复默认时忽略程序化缩放触发的 resize')
     )
     const switchBlock = source.slice(
       source.indexOf('function switchMainView(targetMode) {'),

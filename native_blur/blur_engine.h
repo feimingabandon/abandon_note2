@@ -6,7 +6,7 @@
  * 职责：
  *   1. 创建无边框透明 overlay 窗口，置于 Electron 主窗口后方
  *   2. 在 overlay 窗口上构造 Windows.UI.Composition effect graph
- *   3. 默认渲染：可调高斯模糊 + 饱和度；玻璃底色/通透度由 Electron CSS 叠加
+ *   3. 默认渲染：可调高斯模糊 + 饱和度 + 与窗口同步的原生底色
  *   4. 与 Electron 主窗口位置/尺寸保持同步（含 DPI 动态切换）
  *
  * 适用：Windows 10 1903 (Build 18362) 及以上
@@ -53,6 +53,18 @@ enum class BlurErrorCode : int {
     UnknownFailure = 9
 };
 
+enum class WindowTransitionGeometryError : int {
+    None = 0,
+    InvalidState = 1,
+    BeginBatchFailed = 2,
+    ParentBatchFailed = 3,
+    OverlayBatchFailed = 4,
+    CommitBatchFailed = 5,
+    ParentBoundsMismatch = 6,
+    OverlayBoundsMismatch = 7,
+    VisualSyncFailed = 8
+};
+
 // ============================================================
 // 模糊参数结构体
 // ============================================================
@@ -62,6 +74,10 @@ struct BlurConfig {
     float   radiusDip  = 15.0f;    // 模糊半径 (0=清晰, 越大越模糊, 0~40)
     float   saturation = 1.8f;     // 饱和度 (0=黑白, 1=正常, 1.8=苹果风格)
     float   cornerRadius = 12.0f;  // 窗口圆角 (0=直角, 12=默认, 0~30)
+    int     tintR = 255;
+    int     tintG = 255;
+    int     tintB = 255;
+    float   tintOpacity = 0.3f;
 };
 
 // ============================================================
@@ -77,9 +93,14 @@ public:
 
     // ---- 参数调整（线程安全，立即生效） ----
     void SetConfig(const BlurConfig& config);
+    // 主应用配置入口：等待 STA 完成 Effect、可见性、几何和 DWM 提交后返回，
+    // 防止 Renderer 在 Overlay 尚未切换时提前更换 CSS 回退底色。
+    bool ApplyConfigAndWait(const BlurConfig& config, DWORD syncTimeoutMs = 500);
     void SetRadius(float radiusDip);
     void SetSaturation(float saturation);
     void SetCornerRadius(float radiusDip);
+    void SetTint(int r, int g, int b);
+    void SetTintOpacity(float opacity);
     void SetEnabled(bool enabled);
     BlurConfig GetConfig() const;
 
@@ -89,6 +110,17 @@ public:
     // 验证两者物理边界一致。Composition 对象仍只由 STA 线程访问。
     bool MoveParentAndOverlay(HWND parentHwnd, int physicalX, int physicalY,
         DWORD syncTimeoutMs = 50);
+    // 主视图/胶囊过渡专用：保持同一个父 HWND、Overlay、STA 线程和
+    // Effect Graph；每帧在同一个 BeginDeferWindowPos 批次中提交两者几何。
+    bool BeginWindowTransition(int initialWidth, int initialHeight, DWORD syncTimeoutMs = 100);
+    bool SetWindowTransitionGeometry(
+        HWND parentHwnd, int physicalX, int physicalY, int width, int height);
+    bool EndWindowTransition(HWND parentHwnd, DWORD syncTimeoutMs = 100);
+    // 失败回滚专用：即使正常结束消息失败，也先把父窗口和 Overlay 一起恢复到
+    // 源边界，再无条件解除 transition 标志，禁止留下永久忽略 geometry update 的状态。
+    bool AbortWindowTransition(
+        HWND parentHwnd, int physicalX, int physicalY, int width, int height,
+        DWORD syncTimeoutMs = 100);
 
     // ---- Z-order 重同步（父窗口置顶层变化后调用） ----
     void ReSyncZOrder();
@@ -104,8 +136,14 @@ public:
     bool IsZOrderSynchronized() const { return IsZOrderAdjacent(); }
     BlurErrorCode GetLastError() const { return m_lastError.load(); }
     void SetLastError(BlurErrorCode error) { m_lastError.store(error); }
-    HWND GetParentWindow() const { return m_parentHwnd; }
+    HWND GetParentWindow() const { return m_parentHwnd.load(); }
     HWND GetOverlayWindow() const { return m_messageHwnd.load(); }
+    int GetVisualWidth() const { return m_visualWidth.load(); }
+    int GetVisualHeight() const { return m_visualHeight.load(); }
+    bool IsWindowTransitioning() const { return m_windowTransitioning.load(); }
+    WindowTransitionGeometryError GetLastWindowTransitionGeometryError() const {
+        return m_lastWindowTransitionGeometryError.load();
+    }
 
 private:
     Engine() = default;
@@ -126,6 +164,7 @@ private:
     bool BuildEffectGraph();
     bool UpdateEffectParameters();
     void UpdateVisualSize();  // 使用 Overlay 完整客户区更新 SpriteVisual 尺寸
+    void UpdateVisualSize(int width, int height);
     void ApplyClip();         // 应用/更新圆角裁剪
 
     // ---- DPI 动态切换 ----
@@ -156,6 +195,14 @@ private:
     std::atomic<bool> m_configUpdatePending{ false };
     std::atomic<bool> m_geometryUpdatePending{ false };
     std::atomic<bool> m_zOrderSyncPending{ false };
+    std::atomic<bool> m_windowTransitioning{ false };
+    // 只读诊断快照。Composition 对象仍只在 STA 线程访问；集成测试通过
+    // 原子尺寸确认重新启用毛玻璃后 Visual 已覆盖当前窗口客户区。
+    std::atomic<int> m_visualWidth{ 0 };
+    std::atomic<int> m_visualHeight{ 0 };
+    std::atomic<WindowTransitionGeometryError> m_lastWindowTransitionGeometryError{
+        WindowTransitionGeometryError::None
+    };
 
     std::mutex m_initMutex;
     std::condition_variable m_initCv;
@@ -164,7 +211,7 @@ private:
 
     // ---- 窗口句柄 ----
     HWND m_overlayHwnd = nullptr;
-    HWND m_parentHwnd = nullptr;
+    std::atomic<HWND> m_parentHwnd{ nullptr };
 
     HWINEVENTHOOK m_foregroundHook = nullptr;
     HWINEVENTHOOK m_reorderHook = nullptr;
@@ -173,7 +220,10 @@ private:
     winrt::Windows::System::DispatcherQueueController m_dispatcherQueueController{ nullptr };
     Compositor m_compositor{ nullptr };
     DesktopWindowTarget m_target{ nullptr };
+    ContainerVisual m_rootVisual{ nullptr };
     SpriteVisual m_blurVisual{ nullptr };
+    SpriteVisual m_tintVisual{ nullptr };
+    CompositionColorBrush m_tintBrush{ nullptr };
     CompositionEffectBrush m_effectBrush{ nullptr };
     CompositionRoundedRectangleGeometry m_clipGeometry{ nullptr };  // 圆角裁剪几何体
     CompositionGeometricClip m_clip{ nullptr };

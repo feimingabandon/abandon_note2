@@ -40,6 +40,7 @@ import {
   createDefaultSettings,
   VIEW_MODES
 } from '../../../../shared/settings-schema.js'
+import { COMPACT_WINDOW_LIMITS } from '../../../../shared/window-compact-geometry.js'
 
 // ---- 调度器健康数据 ----
 const schedulerHealth = ref(null)
@@ -473,6 +474,8 @@ function commitStickyColor() {
 // ---- 窗口设置 ----
 const autoStart = ref(false)
 const autoStartError = ref(null) // 持久错误（null = 无错误），恒显示不自动消失
+const compactWidth = ref(DEFAULT_SETTINGS.window.compact.width)
+const compactHeight = ref(DEFAULT_SETTINGS.window.compact.height)
 const dockRevealHandleMode = ref(viewDefaults.value.dock.revealHandleMode)
 const dockEnabledEdges = ref([...viewDefaults.value.dock.enabledEdges])
 const dockRuntime = ref({
@@ -956,6 +959,14 @@ watch(stickyAlwaysOnTop, (v) => {
   debouncedSave('sticky.alwaysOnTop', v)
 })
 
+watch(compactWidth, (v) => {
+  debouncedSave('window.compact.width', v)
+})
+
+watch(compactHeight, (v) => {
+  debouncedSave('window.compact.height', v)
+})
+
 // 同步文字颜色输入显示值
 watch(textColor, (v) => {
   textColorInput.value = v
@@ -1072,6 +1083,7 @@ function assignSettingsSnapshot(snapshot) {
   const blur = snapshot.values.blur
   const sticky = snapshot.values.sticky
   const remote = snapshot.values.remote || DEFAULT_SETTINGS.remote
+  const compact = snapshot.values.window?.compact || DEFAULT_SETTINGS.window.compact
   const runtimeBlur = snapshot.runtime?.blur
   const runtimeAutoStart = snapshot.runtime?.autoStart
   panelSize.value = Number(
@@ -1094,6 +1106,8 @@ function assignSettingsSnapshot(snapshot) {
   stickyAlwaysOnTop.value = sticky.alwaysOnTop
   receiveRemoteNotices.value = remote.receiveNotices
   uploadDeviceInfo.value = remote.uploadDeviceInfo
+  compactWidth.value = compact.width
+  compactHeight.value = compact.height
 
   // “用户希望开启”与“当前确实生效”分开：支持平台初始化失败时，开关必须
   // 显示为关闭，同时保留错误信息，让用户可以再次主动开启并触发重试。
@@ -1535,6 +1549,46 @@ const onConfirmResetSettings = async () => {
                     @keydown.enter="commitTextColor"
                   />
                 </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3 class="section-title">灵动岛</h3>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >宽度<HelpButton
+                    text="设置全视图共用的灵动岛宽度。最小宽度为 100 DIP；状态圆环始终位于正文左侧，正文在剩余空间内单行省略。"
+                /></span>
+              </div>
+              <div class="setting-right compact-size-control">
+                <AppSlider
+                  v-model="compactWidth"
+                  :min="COMPACT_WINDOW_LIMITS.minWidth"
+                  :max="COMPACT_WINDOW_LIMITS.maxWidth"
+                  :step="1"
+                />
+                <span class="setting-value">{{ compactWidth }} DIP</span>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >高度<HelpButton
+                    text="设置全视图共用的灵动岛高度。圆角继续使用窗口圆角设置，大小变化不会覆盖列表、月视图或周视图的正常窗口尺寸。"
+                /></span>
+              </div>
+              <div class="setting-right compact-size-control">
+                <AppSlider
+                  v-model="compactHeight"
+                  :min="COMPACT_WINDOW_LIMITS.minHeight"
+                  :max="COMPACT_WINDOW_LIMITS.maxHeight"
+                  :step="1"
+                />
+                <span class="setting-value">{{ compactHeight }} DIP</span>
               </div>
             </div>
           </section>
@@ -2556,6 +2610,20 @@ const onConfirmResetSettings = async () => {
   align-items: center;
   gap: 10rem;
   flex-shrink: 0;
+}
+
+.compact-size-control {
+  width: min(310rem, 58%);
+}
+
+.compact-size-control :deep(.app-slider) {
+  min-width: 150rem;
+  flex: 1;
+}
+
+.compact-size-control .setting-value {
+  min-width: 54rem;
+  text-align: right;
 }
 
 .titlebar-style-selector {

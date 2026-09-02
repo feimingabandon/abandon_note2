@@ -26,6 +26,58 @@ const originalConsole = {
   error: console.error.bind(console)
 }
 
+const guardedConsoleStreams = new WeakSet()
+const unavailableConsoleStreams = new WeakSet()
+let consoleStreamGuardsInstalled = false
+
+function isConsoleStreamAvailable(stream) {
+  return Boolean(
+    stream &&
+    !unavailableConsoleStreams.has(stream) &&
+    !stream.destroyed &&
+    !stream.writableEnded &&
+    stream.writable !== false
+  )
+}
+
+function markConsoleStreamUnavailable(stream) {
+  if (stream && (typeof stream === 'object' || typeof stream === 'function')) {
+    unavailableConsoleStreams.add(stream)
+  }
+}
+
+function installConsoleStreamGuard(stream) {
+  if (!stream || typeof stream.on !== 'function' || guardedConsoleStreams.has(stream)) return false
+  guardedConsoleStreams.add(stream)
+  stream.on('error', () => {
+    // Electron 由终端、测试宿主或更新器以 pipe 方式启动时，父进程可能先关闭
+    // stdout/stderr。控制台只是日志副本，管道断开不能升级成主进程未捕获异常；
+    // JSONL 文件日志仍照常保留。
+    markConsoleStreamUnavailable(stream)
+  })
+  return true
+}
+
+export function installConsoleStreamGuards() {
+  if (consoleStreamGuardsInstalled) return
+  consoleStreamGuardsInstalled = true
+  installConsoleStreamGuard(process.stdout)
+  installConsoleStreamGuard(process.stderr)
+}
+
+function safeForwardOriginalConsole(method, ...args) {
+  const stream = method === 'warn' || method === 'error' ? process.stderr : process.stdout
+  if (!isConsoleStreamAvailable(stream)) return false
+  try {
+    originalConsole[method](...args)
+    return true
+  } catch {
+    // 少数 Writable 实现会同步抛出 EPIPE；与异步 error 事件采用相同降级。
+    markConsoleStreamUnavailable(stream)
+    return false
+  }
+}
+
 let initialized = false
 let consoleInstalled = false
 let logDirectory = ''
@@ -107,7 +159,7 @@ function cleanupLogs() {
       try {
         unlinkSync(file.path)
       } catch (error) {
-        originalConsole.warn('[logging] 无法清理旧日志:', file.path, error)
+        safeForwardOriginalConsole('warn', '[logging] 无法清理旧日志:', file.path, error)
       }
     }
   }
@@ -241,7 +293,7 @@ export function flushLogs() {
     try {
       appendFileSync(path, lines.join(''), 'utf8')
     } catch (error) {
-      originalConsole.error('[logging] 批量写入日志失败:', path, error)
+      safeForwardOriginalConsole('error', '[logging] 批量写入日志失败:', path, error)
     }
   }
 }
@@ -325,7 +377,7 @@ export function writeLog({
     else scheduleFlush()
     return record.id
   } catch (writeError) {
-    originalConsole.error('[logging] 写入日志失败:', writeError)
+    safeForwardOriginalConsole('error', '[logging] 写入日志失败:', writeError)
     return null
   }
 }
@@ -358,6 +410,7 @@ export const logger = {
 
 export function installConsoleCapture() {
   if (consoleInstalled) return
+  installConsoleStreamGuards()
   consoleInstalled = true
   for (const [method, level] of [
     ['debug', 'debug'],
@@ -367,7 +420,7 @@ export function installConsoleCapture() {
     ['error', 'error']
   ]) {
     console[method] = (message, ...args) => {
-      originalConsole[method](message, ...args)
+      safeForwardOriginalConsole(method, message, ...args)
       writeLog({
         level,
         scope: 'console',
@@ -546,5 +599,7 @@ export const loggingInternals = {
   recordMatches,
   createBoundedLine,
   encodeCursor,
-  decodeCursor
+  decodeCursor,
+  installConsoleStreamGuard,
+  isConsoleStreamAvailable
 }

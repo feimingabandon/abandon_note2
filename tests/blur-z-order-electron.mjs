@@ -61,10 +61,14 @@ app.once('ready', async () => {
     const blurLibrary = koffi.load(blurDllPath)
     const blurInit = blurLibrary.func('Blur_Init', 'int', ['intptr_t'])
     destroyBlur = blurLibrary.func('Blur_Destroy', 'void', [])
-    const blurApplyConfig = blurLibrary.func('Blur_ApplyConfig', 'void', [
+    const blurApplyConfig = blurLibrary.func('Blur_ApplyConfig', 'int', [
       'int',
       'float',
       'float',
+      'float',
+      'int',
+      'int',
+      'int',
       'float'
     ])
     const blurReSyncOrder = blurLibrary.func('Blur_ReSyncOrder', 'void', [])
@@ -100,7 +104,7 @@ app.once('ready', async () => {
 
     assert.equal(blurInit(nativeHandle(mainWindow)), 1)
     blurInitialized = true
-    blurApplyConfig(1, 20, 1.8, 12)
+    assert.equal(blurApplyConfig(1, 20, 1.8, 12, 255, 255, 255, 0.3), 1)
 
     let overlayWindow = null
     let candidate = getWindow(nativeHandle(mainWindow), GW_HWNDFIRST)
@@ -132,7 +136,7 @@ app.once('ready', async () => {
     mainWindow.setAlwaysOnTop(true, 'pop-up-menu')
     blurReSyncOrder()
     mainWindow.show()
-    blurApplyConfig(1, 20, 1.8, 12)
+    assert.equal(blurApplyConfig(1, 20, 1.8, 12, 255, 255, 255, 0.3), 1)
     assert.equal(
       await waitUntil(
         () => isWindowVisible(overlayWindow) === 1 && blurIsZOrderSynchronized() === 1
@@ -173,7 +177,7 @@ app.once('ready', async () => {
 
     // 即使一个启用配置消息晚于 Electron.hide() 到达，也不能重新显示孤立背景层。
     mainWindow.hide()
-    blurApplyConfig(1, 20, 1.8, 12)
+    assert.equal(blurApplyConfig(1, 20, 1.8, 12, 255, 255, 255, 0.3), 1)
     assert.equal(
       await waitUntil(() => isWindowVisible(overlayWindow) === 0),
       true,
@@ -181,7 +185,7 @@ app.once('ready', async () => {
     )
 
     mainWindow.show()
-    blurApplyConfig(1, 20, 1.8, 12)
+    assert.equal(blurApplyConfig(1, 20, 1.8, 12, 255, 255, 255, 0.3), 1)
     assert.equal(
       await waitUntil(
         () => isWindowVisible(overlayWindow) === 1 && blurIsZOrderSynchronized() === 1

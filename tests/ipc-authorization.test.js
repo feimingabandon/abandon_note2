@@ -31,4 +31,18 @@ describe('主窗口 IPC 授权', () => {
     expect(handlers.get('example')({ sender: webContents }, 2)).toBe('ok')
     expect(handler).toHaveBeenCalledWith({ sender: webContents }, 2)
   })
+
+  it('允许显式只读请求把旧窗口 sender 转换为取消结果', () => {
+    const handlers = new Map()
+    const webContents = {}
+    const mainWindow = { isDestroyed: () => false, webContents }
+    createMainWindowIpc(
+      { handle: (channel, handler) => handlers.set(channel, handler) },
+      () => mainWindow,
+      '业务数据'
+    ).handle('read-only', () => 'current', { onStaleSender: () => null })
+
+    expect(handlers.get('read-only')({ sender: webContents })).toBe('current')
+    expect(handlers.get('read-only')({ sender: {} })).toBeNull()
+  })
 })

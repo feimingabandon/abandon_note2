@@ -35,7 +35,9 @@ import {
   getRuntimeHealth as getBlurRuntimeHealth,
   getNativeRuntimeCompatibility,
   reassertWindowZOrder,
-  setWindowAlwaysOnBottom
+  setWindowAlwaysOnBottom,
+  runWindowTransition,
+  setWindowBoundsSynchronized
 } from './bridge/blur_bridge.js'
 import { createWindowMotionBackend } from './window-motion/index.js'
 import { DockTransitionState } from './window-motion/dock-transition-state.js'
@@ -135,6 +137,14 @@ import {
 } from '../shared/settings-schema.js'
 import { getSystemNotificationCapability } from '../shared/notification-policy.js'
 import { weatherDailyRefreshKey } from '../shared/weather-rules.js'
+import {
+  boundsCenter,
+  COMPACT_WINDOW_LIMITS,
+  compactBoundsFromExpandedTop,
+  compactBoundsFromPosition,
+  expandedBoundsFromCompact,
+  mapCompactPositionToWorkArea
+} from '../shared/window-compact-geometry.js'
 import { registerBusinessIpcHandlers } from './ipc/register-business-ipc.js'
 import { registerCalendarIpcHandlers } from './ipc/register-calendar-ipc.js'
 import { registerDailyReportIpcHandlers } from './ipc/register-daily-report-ipc.js'
@@ -147,9 +157,15 @@ import {
   prepareViewSettingsForSwitch,
   readApplicationSettings,
   writeActiveView,
-  writeApplicationSetting
+  writeApplicationSetting,
+  writeApplicationSettings
 } from './settings/application-settings.js'
 import { getWindowProfile } from './windows/window-profiles.js'
+import {
+  CompactWindowController,
+  PRESENTATION_STAGES,
+  TRANSITION_STATUSES
+} from './windows/compact-window-controller.js'
 
 /** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
 const APP_ID = 'com.abandon.note'
@@ -185,6 +201,8 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'remote.receiveNotices',
   'remote.uploadDeviceInfo',
   'onboarding.noticeVersion',
+  'window.compact.width',
+  'window.compact.height',
   'listFilter'
 ])
 const APPLICATION_SETTING_IDS = new Set([
@@ -194,7 +212,9 @@ const APPLICATION_SETTING_IDS = new Set([
   'weather.location',
   'onboarding.noticeVersion',
   'window.lockState',
-  'window.zOrderMode'
+  'window.zOrderMode',
+  'window.compact.width',
+  'window.compact.height'
 ])
 const REMOTE_BASE_URL =
   process.env.ABANDON_REMOTE_BASE_URL || 'https://note.zhenshiyin.top/api/v1/client'
@@ -285,6 +305,15 @@ function getDockRuntimeCapability() {
 
 /** 主窗口实例引用 */
 let mainWindow = null
+let mainRendererReady = false
+
+function getActiveVisualWindow() {
+  return mainWindow
+}
+
+function getApplicationWindows() {
+  return mainWindow && !mainWindow.isDestroyed() ? [mainWindow] : []
+}
 
 /** 系统托盘实例 */
 let tray = null
@@ -294,11 +323,13 @@ let stickyService = null
 let isQuitting = false
 let remoteShutdownStarted = false
 let remoteShutdownFinished = false
+let compactShutdownWaitStarted = false
 let pendingNotificationNoteId = null
 
 function sendPendingNotificationNote() {
   if (
     !pendingNotificationNoteId ||
+    isCompactWindowActive() ||
     !mainWindow ||
     mainWindow.isDestroyed() ||
     mainWindow.webContents.isDestroyed() ||
@@ -315,8 +346,25 @@ function openNotificationNote(noteId) {
   const parsedNoteId = Number(noteId)
   if (!Number.isInteger(parsedNoteId) || parsedNoteId <= 0) return false
   pendingNotificationNoteId = parsedNoteId
+  if (!mainWindow || mainWindow.isDestroyed()) return true
   openMainWindow()
-  sendPendingNotificationNote()
+  revealPendingNotificationNote()
+  return true
+}
+
+function revealPendingNotificationNote() {
+  if (!pendingNotificationNoteId || !mainWindow || mainWindow.isDestroyed()) return false
+  const noteId = pendingNotificationNoteId
+  openMainWindow()
+  void expandCompactWindowForNotification()
+    .then(() => {
+      openMainWindow()
+      sendPendingNotificationNote()
+    })
+    .catch((error) => {
+      logger.error('compact-window.notification-expand', error, { noteId })
+      sendAppMessage('error', `无法从灵动岛打开通知便签：${error.message}`)
+    })
   return true
 }
 
@@ -357,6 +405,679 @@ let zOrderMode = DEFAULT_SETTINGS.window.zOrderMode
 /** 窗口锁定状态（全视图共享，禁止移动和缩放） */
 let isLocked = DEFAULT_SETTINGS.window.lockState
 
+const COMPACT_WINDOW_ANIMATION_MS = 440
+// 展开使用 ease-out cubic；时间进度到 65% 时，原生几何已完成约 96%。
+// 此时开始低透明度呈现主内容，可以缩短空白期，又避免在大幅 resize 阶段暴露响应式重排。
+const COMPACT_EXPAND_CONTENT_ENTER_PROGRESS = 0.65
+const COMPACT_EXPAND_CONTENT_ENTER_DELAY_MS = Math.round(
+  COMPACT_WINDOW_ANIMATION_MS * COMPACT_EXPAND_CONTENT_ENTER_PROGRESS
+)
+const EXPANDED_WINDOW_MIN_SIZE = 240
+let compactExpandedBounds = null
+let stableCompactBounds = null
+let compactDragSession = null
+let titlebarDragSession = null
+let compactDockSuspended = false
+let titlebarDockSuspended = false
+let compactSizeMutationQueue = Promise.resolve()
+let pendingCompactTopologyChange = null
+
+const rendererReadyWaiters = new Set()
+const compactTransitionReadyWaiters = new Map()
+
+const compactWindowController = new CompactWindowController({
+  onPhaseChanged: () => broadcastCompactWindowState(),
+  onError: (error, context) => logger.error('compact-window.controller', error, context)
+})
+
+function markRendererReady() {
+  mainRendererReady = true
+  for (const resolveReady of rendererReadyWaiters) resolveReady()
+  rendererReadyWaiters.clear()
+}
+
+function waitForWindowRendererReady() {
+  if (mainRendererReady) return Promise.resolve()
+  const window = mainWindow
+  if (!window || window.isDestroyed()) {
+    return Promise.reject(new Error('应用窗口尚未创建'))
+  }
+  return new Promise((resolveReady, rejectReady) => {
+    const fail = () => {
+      cleanup()
+      rejectReady(new Error('应用窗口渲染进程提前退出'))
+    }
+    const ready = () => {
+      cleanup()
+      resolveReady()
+    }
+    const cleanup = () => {
+      rendererReadyWaiters.delete(ready)
+      window.removeListener('closed', fail)
+      window.webContents.removeListener('render-process-gone', fail)
+      window.webContents.removeListener('did-fail-load', fail)
+    }
+    rendererReadyWaiters.add(ready)
+    window.once('closed', fail)
+    window.webContents.once('render-process-gone', fail)
+    window.webContents.once('did-fail-load', fail)
+  })
+}
+
+function compactTransitionReadyKey(generation, stage) {
+  return `${generation}:${stage}`
+}
+
+function waitForCompactRendererTransitionReady(generation, stage) {
+  if (!Number.isInteger(generation) || generation <= 0) {
+    return Promise.reject(new Error('无效的胶囊过渡代次'))
+  }
+  if (!Object.values(PRESENTATION_STAGES).includes(stage)) {
+    return Promise.reject(new Error('无效的胶囊呈现阶段'))
+  }
+  const key = compactTransitionReadyKey(generation, stage)
+  if (compactTransitionReadyWaiters.has(key)) {
+    return Promise.reject(new Error(`胶囊呈现阶段存在重复等待器：${stage}`))
+  }
+  return new Promise((resolveReady, rejectReady) => {
+    const timer = setTimeout(() => {
+      compactTransitionReadyWaiters.delete(key)
+      rejectReady(new Error(`Renderer 未及时完成胶囊呈现阶段：${stage}`))
+    }, 2_000)
+    compactTransitionReadyWaiters.set(key, {
+      generation,
+      stage,
+      timer,
+      resolveReady
+    })
+  })
+}
+
+function resolveCompactRendererTransitionReady(generation, stage) {
+  const key = compactTransitionReadyKey(generation, stage)
+  const waiter = compactTransitionReadyWaiters.get(key)
+  if (!waiter) return false
+  compactTransitionReadyWaiters.delete(key)
+  clearTimeout(waiter.timer)
+  waiter.resolveReady()
+  return true
+}
+
+function clearCompactRendererTransitionWaiters(generation) {
+  for (const [key, waiter] of compactTransitionReadyWaiters) {
+    if (waiter.generation !== generation) continue
+    compactTransitionReadyWaiters.delete(key)
+    clearTimeout(waiter.timer)
+    waiter.resolveReady()
+  }
+}
+
+function isCompactWindowSupported() {
+  return process.platform === 'win32'
+}
+
+function isCompactWindowActive() {
+  return compactWindowController.isActive()
+}
+
+function compactWindowStateSnapshot() {
+  const activeWindow = getActiveVisualWindow()
+  const bounds = activeWindow && !activeWindow.isDestroyed() ? activeWindow.getBounds() : null
+  return {
+    supported: isCompactWindowSupported(),
+    phase: compactWindowController.phase,
+    compact: isCompactWindowActive(),
+    transition: compactWindowController.transitionSnapshot(),
+    // renderer 只能使用 BrowserWindow 当前真实几何。设置宽高是用户输入，
+    // 不是运行时尺寸，不得再作为第二套渲染数据源。
+    bounds
+  }
+}
+
+function broadcastCompactWindowState() {
+  const snapshot = compactWindowStateSnapshot()
+  for (const window of getApplicationWindows()) {
+    if (!window.webContents.isDestroyed()) {
+      window.webContents.send('compact-window:state-changed', snapshot)
+    }
+  }
+}
+
+function getCompactDisplay(compact, fallbackDisplay) {
+  const displays = screen.getAllDisplays()
+  const savedDisplay = displays.find((display) => String(display.id) === String(compact.displayId))
+  if (savedDisplay) return { display: savedDisplay, restoredSavedDisplay: true }
+  if (Number.isFinite(compact.x) && Number.isFinite(compact.y)) {
+    return {
+      display: screen.getDisplayNearestPoint({ x: compact.x, y: compact.y }),
+      restoredSavedDisplay: false
+    }
+  }
+  return { display: fallbackDisplay || screen.getPrimaryDisplay(), restoredSavedDisplay: false }
+}
+
+function getStoredCompactBounds(fallbackBounds, fallbackDisplay = null) {
+  const compact = resolvedSettings.window.compact
+  const fallback = fallbackDisplay || screen.getDisplayMatching(fallbackBounds)
+  const selected = getCompactDisplay(compact, fallback)
+  const hasStoredPosition = Number.isFinite(compact.x) && Number.isFinite(compact.y)
+  const normalizedSize = {
+    width: compact.width,
+    height: compact.height
+  }
+  let position = hasStoredPosition
+    ? { x: compact.x, y: compact.y }
+    : {
+        x: boundsCenter(fallbackBounds).x - compact.width / 2,
+        y: boundsCenter(fallbackBounds).y - compact.height / 2
+      }
+  if (hasStoredPosition && !selected.restoredSavedDisplay && compact.previousWorkArea) {
+    position = mapCompactPositionToWorkArea({
+      position,
+      previousWorkArea: compact.previousWorkArea,
+      nextWorkArea: selected.display.workArea
+    })
+  }
+  return {
+    bounds: compactBoundsFromPosition({
+      position,
+      size: normalizedSize,
+      workArea: selected.display.workArea
+    }),
+    display: selected.display
+  }
+}
+
+function persistExpandedWindowBounds(bounds) {
+  if (!bounds) return
+  const normalized = Object.fromEntries(
+    Object.entries(bounds).map(([key, value]) => [key, Math.round(Number(value))])
+  )
+  setSettingsBatch(getActiveWindowName(), [
+    serializeSetting('geometry.posX', normalized.x),
+    serializeSetting('geometry.posY', normalized.y),
+    serializeSetting('geometry.width', normalized.width),
+    serializeSetting('geometry.height', normalized.height)
+  ])
+  compactExpandedBounds = normalized
+  lastVisibleMainWindowBounds = { ...normalized }
+  geometryDirty = false
+}
+
+function persistCompactWindowBounds(enabled, bounds) {
+  const display = screen.getDisplayMatching(bounds)
+  writeApplicationSettings([
+    { id: 'window.compact.enabled', value: Boolean(enabled) },
+    { id: 'window.compact.x', value: Math.round(bounds.x) },
+    { id: 'window.compact.y', value: Math.round(bounds.y) },
+    { id: 'window.compact.width', value: bounds.width },
+    { id: 'window.compact.height', value: bounds.height },
+    { id: 'window.compact.displayId', value: String(display.id) },
+    { id: 'window.compact.previousWorkArea', value: display.workArea }
+  ])
+  refreshResolvedSettings({ incrementRevision: true })
+}
+
+function syncCompactWindowRuntime(source) {
+  const visualWindow = getActiveVisualWindow()
+  if (!visualWindow || visualWindow.isDestroyed()) return
+  if (zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM) reassertBottomWindowZOrder(source)
+  else applyWindowZOrder()
+  if (blurInitialized) {
+    runBlurRuntimeOperation(blurUpdateGeometry, '同步灵动岛毛玻璃位置和尺寸')
+    runBlurRuntimeOperation(blurReSyncZOrder, '同步灵动岛毛玻璃层级')
+  }
+}
+
+function dipBoundsToPhysical(bounds) {
+  const topLeft = screen.dipToScreenPoint({ x: bounds.x, y: bounds.y })
+  const bottomRight = screen.dipToScreenPoint({
+    x: bounds.x + bounds.width,
+    y: bounds.y + bounds.height
+  })
+  return {
+    x: topLeft.x,
+    y: topLeft.y,
+    width: Math.max(1, bottomRight.x - topLeft.x),
+    height: Math.max(1, bottomRight.y - topLeft.y)
+  }
+}
+
+function ensureCompactNativeTransitionSucceeded(nativeResult) {
+  if (nativeResult.success) return nativeResult
+  const error = new Error(nativeResult.error || 'Windows 原生窗口过渡失败')
+  error.nativeCode = nativeResult.code
+  throw error
+}
+
+function waitForCompactExpandContentCue(nativeTransition) {
+  let timer = null
+  const contentCue = new Promise((resolveCue) => {
+    timer = setTimeout(resolveCue, COMPACT_EXPAND_CONTENT_ENTER_DELAY_MS)
+  })
+  // 原生层若提前完成，就直接进入内容；若提前失败，则在显示新内容前中止。
+  return Promise.race([nativeTransition, contentCue]).finally(() => {
+    if (timer !== null) clearTimeout(timer)
+  })
+}
+
+async function runCompactNativeTransition({ window, from, target, phase }) {
+  const operationWindow = window
+  let generation = null
+  try {
+    const result = await compactWindowController.run(
+      operationWindow,
+      { from, target, duration: COMPACT_WINDOW_ANIMATION_MS, phase },
+      async () => {
+        generation = compactWindowController.transitionSnapshot()?.generation
+        await waitForCompactRendererTransitionReady(generation, PRESENTATION_STAGES.CONTENT_EXIT)
+
+        if (
+          !compactWindowController.setTransitionStage(
+            operationWindow,
+            generation,
+            PRESENTATION_STAGES.SHELL_TRANSFORM
+          )
+        ) {
+          throw new Error('胶囊外壳变形阶段已经失效')
+        }
+        await waitForCompactRendererTransitionReady(generation, PRESENTATION_STAGES.SHELL_TRANSFORM)
+
+        const nativeTransition = runWindowTransition(operationWindow, dipBoundsToPhysical(target), {
+          duration: COMPACT_WINDOW_ANIMATION_MS
+        }).then(ensureCompactNativeTransitionSucceeded)
+
+        if (phase === 'expanding') {
+          await waitForCompactExpandContentCue(nativeTransition)
+        } else {
+          await nativeTransition
+        }
+
+        if (
+          !compactWindowController.setTransitionStage(
+            operationWindow,
+            generation,
+            PRESENTATION_STAGES.CONTENT_ENTER
+          )
+        ) {
+          throw new Error('胶囊新内容进入阶段已经失效')
+        }
+        const rendererContentEnter = waitForCompactRendererTransitionReady(
+          generation,
+          PRESENTATION_STAGES.CONTENT_ENTER
+        )
+        const [nativeResult] = await Promise.all([nativeTransition, rendererContentEnter])
+        return nativeResult
+      }
+    )
+    if (result.status !== TRANSITION_STATUSES.COMPLETED) {
+      throw result.error || new Error(`窗口过渡未完成：${result.status}`)
+    }
+    return result
+  } finally {
+    if (Number.isInteger(generation)) clearCompactRendererTransitionWaiters(generation)
+  }
+}
+
+function restoreCompactWindowBounds(window, bounds, source) {
+  if (!window || window.isDestroyed()) return false
+  const result = setWindowBoundsSynchronized(window, dipBoundsToPhysical(bounds))
+  if (result.success) return true
+
+  logger.error('compact-window.rollback-native', new Error(result.error || '原生边界恢复失败'), {
+    source,
+    code: result.code,
+    bounds
+  })
+  try {
+    window.setBounds(bounds, false)
+  } catch (fallbackError) {
+    logger.error('compact-window.rollback-fallback', fallbackError, { source, bounds })
+  }
+  return false
+}
+
+function flushPendingCompactTopologyChange() {
+  if (!pendingCompactTopologyChange || compactWindowController.activePromise()) return
+  const change = pendingCompactTopologyChange
+  pendingCompactTopologyChange = null
+  setImmediate(() => handleDockDisplayTopologyChange(change))
+}
+
+async function enterCompactWindow() {
+  if (!isCompactWindowSupported()) throw new Error('灵动岛当前仅支持 Windows 10/11')
+  if (compactWindowController.phase !== 'expanded' || !mainWindow || mainWindow.isDestroyed()) {
+    return { changed: false, state: compactWindowStateSnapshot() }
+  }
+  const operationWindow = mainWindow
+  await waitForWindowRendererReady()
+  if (compactWindowController.phase !== 'expanded' || operationWindow !== mainWindow) {
+    return { changed: false, state: compactWindowStateSnapshot() }
+  }
+  const expandedBounds = operationWindow.getBounds()
+  persistExpandedWindowBounds(expandedBounds)
+  if (!compactDockSuspended) {
+    beginDockInteractionSuspension('compact-window')
+    compactDockSuspended = true
+  }
+  const display = screen.getDisplayMatching(expandedBounds)
+  const target = compactBoundsFromExpandedTop({
+    expandedBounds,
+    // 展开后保留上一次稳定胶囊尺寸，不因主视图往返回落默认值。
+    size: stableCompactBounds || resolvedSettings.window.compact,
+    workArea: display.workArea
+  })
+  stableCompactBounds = target
+  suppressGeometryPersistenceUntil = Math.max(
+    suppressGeometryPersistenceUntil,
+    Date.now() + COMPACT_WINDOW_ANIMATION_MS + 900
+  )
+  try {
+    const transitionResult = await runCompactNativeTransition({
+      window: operationWindow,
+      from: expandedBounds,
+      target,
+      phase: 'collapsing'
+    })
+    if (!compactWindowController.complete(transitionResult, 'compact')) {
+      throw new Error('主视图已经替换，灵动岛收缩结果已失效')
+    }
+    persistCompactWindowBounds(true, stableCompactBounds)
+  } catch (error) {
+    restoreCompactWindowBounds(operationWindow, expandedBounds, 'enter')
+    compactWindowController.setPhase(operationWindow, 'expanded')
+    if (compactDockSuspended) {
+      compactDockSuspended = false
+      endDockInteractionSuspension('compact-window-failed')
+    }
+    applyResolvedWindowRuntime()
+    syncCompactWindowRuntime('compact-enter-rollback')
+    broadcastCompactWindowState()
+    throw error
+  } finally {
+    flushPendingCompactTopologyChange()
+  }
+  applyResolvedWindowRuntime()
+  syncCompactWindowRuntime('compact-enter')
+  broadcastSettingsChanged(getResolvedSettingsSnapshot())
+  broadcastCompactWindowState()
+  return { changed: true, state: compactWindowStateSnapshot() }
+}
+
+async function exitCompactWindow() {
+  if (compactWindowController.phase !== 'compact' || !mainWindow || mainWindow.isDestroyed()) {
+    return { changed: false, state: compactWindowStateSnapshot() }
+  }
+  const operationWindow = mainWindow
+  await waitForWindowRendererReady()
+  if (compactWindowController.phase !== 'compact' || operationWindow !== mainWindow) {
+    return { changed: false, state: compactWindowStateSnapshot() }
+  }
+  const currentBounds = stableCompactBounds || operationWindow.getBounds()
+  const display = screen.getDisplayMatching(currentBounds)
+  const compactBounds = compactBoundsFromPosition({
+    position: currentBounds,
+    // 以当前稳定胶囊的真实尺寸为准，避免过期设置快照在展开时覆盖宽高。
+    size: currentBounds,
+    workArea: display.workArea
+  })
+  stableCompactBounds = compactBounds
+  const expandedSize = compactExpandedBounds || {
+    width:
+      resolvedSettings.geometry.width ||
+      Math.round(display.workArea.width * resolvedSettings.geometry.widthRatio),
+    height:
+      resolvedSettings.geometry.height ||
+      Math.round(display.workArea.height * resolvedSettings.geometry.heightRatio)
+  }
+  const target = expandedBoundsFromCompact({
+    compactBounds,
+    expandedSize,
+    workArea: display.workArea
+  })
+  suppressGeometryPersistenceUntil = Math.max(
+    suppressGeometryPersistenceUntil,
+    Date.now() + COMPACT_WINDOW_ANIMATION_MS + 900
+  )
+  try {
+    const transitionResult = await runCompactNativeTransition({
+      window: operationWindow,
+      from: compactBounds,
+      target,
+      phase: 'expanding'
+    })
+    if (!compactWindowController.complete(transitionResult, 'expanded')) {
+      throw new Error('主视图已经替换，展开结果已失效')
+    }
+    persistExpandedWindowBounds(target)
+    persistCompactWindowBounds(false, compactBounds)
+  } catch (error) {
+    restoreCompactWindowBounds(operationWindow, compactBounds, 'exit')
+    compactWindowController.setPhase(operationWindow, 'compact')
+    syncCompactWindowRuntime('compact-exit-rollback')
+    broadcastCompactWindowState()
+    throw error
+  } finally {
+    flushPendingCompactTopologyChange()
+  }
+  if (compactDockSuspended) {
+    compactDockSuspended = false
+    endDockInteractionSuspension('compact-window')
+  }
+  applyResolvedWindowRuntime()
+  syncCompactWindowRuntime('compact-exit')
+  if (!operationWindow.isDestroyed()) operationWindow.focus()
+  broadcastSettingsChanged(getResolvedSettingsSnapshot())
+  broadcastCompactWindowState()
+  return { changed: true, state: compactWindowStateSnapshot() }
+}
+
+async function resizeCompactWindow(requestedSize) {
+  if (compactWindowController.phase !== 'compact' || !mainWindow || mainWindow.isDestroyed()) {
+    return { status: 'inactive', bounds: null }
+  }
+  const previousBounds = stableCompactBounds || mainWindow.getBounds()
+  const current = { ...previousBounds }
+  const display = screen.getDisplayMatching(current)
+  const target = compactBoundsFromPosition({
+    position: current,
+    size: requestedSize,
+    workArea: display.workArea
+  })
+  try {
+    mainWindow.setBounds(target, false)
+    stableCompactBounds = target
+    syncCompactWindowRuntime('compact-resize')
+    return { status: 'completed', bounds: target }
+  } catch (error) {
+    stableCompactBounds = previousBounds
+    if (!mainWindow.isDestroyed()) mainWindow.setBounds(previousBounds, false)
+    syncCompactWindowRuntime('compact-resize-rollback')
+    return { status: 'failed', bounds: previousBounds, error }
+  }
+}
+
+async function commitCompactSizeSetting(id, value, expectedWindow) {
+  if (expectedWindow !== mainWindow || compactWindowController.window !== expectedWindow) {
+    throw new Error('主视图已切换，旧窗口的尺寸请求已取消')
+  }
+  const transitionPromise = compactWindowController.activePromise()
+  if (transitionPromise) await transitionPromise
+  if (expectedWindow !== mainWindow || compactWindowController.window !== expectedWindow) {
+    throw new Error('主视图已切换，旧窗口的尺寸请求已取消')
+  }
+
+  if (compactWindowController.phase !== 'compact') {
+    persistSettingValue(id, value)
+    if (stableCompactBounds) {
+      stableCompactBounds = {
+        ...stableCompactBounds,
+        width: resolvedSettings.window.compact.width,
+        height: resolvedSettings.window.compact.height
+      }
+    }
+    return true
+  }
+
+  const key = id === 'window.compact.width' ? 'width' : 'height'
+  const requestedSize = { ...resolvedSettings.window.compact, [key]: value }
+  const result = await resizeCompactWindow(requestedSize)
+  if (result.status !== 'completed') {
+    throw result.error || new Error(`灵动岛尺寸调整失败：${result.status}`)
+  }
+
+  // BrowserWindow 已经接受目标尺寸后才提交设置；失败时数据库、稳定缓存和
+  // 真实窗口保持旧值，不会出现三套状态相互矛盾。
+  persistCompactWindowBounds(true, result.bounds)
+  syncCompactWindowRuntime('compact-resize')
+  broadcastSettingsChanged(getResolvedSettingsSnapshot())
+  broadcastCompactWindowState()
+  return true
+}
+
+function enqueueCompactSizeSetting(id, value, expectedWindow) {
+  const task = compactSizeMutationQueue
+    .catch(() => {})
+    .then(() => commitCompactSizeSetting(id, value, expectedWindow))
+  compactSizeMutationQueue = task
+  return task
+}
+
+function resolvedDragPoint(point) {
+  const x = Number(point?.x)
+  const y = Number(point?.y)
+  return Number.isFinite(x) && Number.isFinite(y)
+    ? { x: Math.round(x), y: Math.round(y) }
+    : screen.getCursorScreenPoint()
+}
+
+function beginCompactWindowDrag(pointerOrigin) {
+  if (compactWindowController.phase !== 'compact' || !mainWindow || mainWindow.isDestroyed()) {
+    return false
+  }
+  const physicalBounds = mainWindow.getBounds()
+  const display = screen.getDisplayMatching(physicalBounds)
+  const logicalBounds = compactBoundsFromPosition({
+    position: physicalBounds,
+    size: physicalBounds,
+    workArea: display.workArea
+  })
+  stableCompactBounds = logicalBounds
+  compactDragSession = {
+    cursor: resolvedDragPoint(pointerOrigin),
+    bounds: logicalBounds,
+    moved: false
+  }
+  compactWindowController.setPhase(mainWindow, 'dragging')
+  broadcastCompactWindowState()
+  return true
+}
+
+function updateCompactWindowDrag(pointerPosition) {
+  if (
+    compactWindowController.phase !== 'dragging' ||
+    !compactDragSession ||
+    !mainWindow ||
+    mainWindow.isDestroyed()
+  ) {
+    return false
+  }
+  const cursor = resolvedDragPoint(pointerPosition)
+  const position = {
+    x: compactDragSession.bounds.x + cursor.x - compactDragSession.cursor.x,
+    y: compactDragSession.bounds.y + cursor.y - compactDragSession.cursor.y
+  }
+  if (position.x === compactDragSession.bounds.x && position.y === compactDragSession.bounds.y) {
+    return false
+  }
+  const display = screen.getDisplayNearestPoint(cursor)
+  const target = compactBoundsFromPosition({
+    position,
+    size: compactDragSession.bounds,
+    workArea: display.workArea
+  })
+  stableCompactBounds = target
+  compactDragSession.moved = true
+  mainWindow.setPosition(target.x, target.y, false)
+  if (blurInitialized) runBlurRuntimeOperation(blurUpdateGeometry, '同步胶囊拖动毛玻璃位置')
+  return true
+}
+
+async function expandCompactWindowForNotification() {
+  const transitionPromise = compactWindowController.activePromise()
+  if (transitionPromise) {
+    try {
+      await transitionPromise
+    } catch {
+      // 后续按稳定 phase 再决定是否展开。
+    }
+  }
+  if (compactWindowController.phase === 'dragging') endCompactWindowDrag()
+  if (compactWindowController.phase === 'compact') await exitCompactWindow()
+  if (compactWindowController.phase !== 'expanded') throw new Error('窗口状态尚未稳定')
+  return true
+}
+
+function endCompactWindowDrag() {
+  if (compactWindowController.phase !== 'dragging' || !mainWindow || mainWindow.isDestroyed()) {
+    return false
+  }
+  const moved = compactDragSession.moved
+  compactDragSession = null
+  compactWindowController.setPhase(mainWindow, 'compact')
+  if (moved) {
+    persistCompactWindowBounds(true, stableCompactBounds || mainWindow.getBounds())
+    syncCompactWindowRuntime('compact-drag')
+    broadcastSettingsChanged(getResolvedSettingsSnapshot())
+  }
+  broadcastCompactWindowState()
+  return true
+}
+
+function beginTitlebarWindowDrag(pointerOrigin) {
+  if (
+    compactWindowController.phase !== 'expanded' ||
+    isLocked ||
+    !mainWindow ||
+    mainWindow.isDestroyed() ||
+    titlebarDragSession
+  ) {
+    return false
+  }
+  beginDockInteractionSuspension('titlebar-drag')
+  titlebarDockSuspended = true
+  titlebarDragSession = {
+    cursor: resolvedDragPoint(pointerOrigin),
+    bounds: mainWindow.getBounds(),
+    moved: false
+  }
+  return true
+}
+
+function updateTitlebarWindowDrag(pointerPosition) {
+  if (!titlebarDragSession || !mainWindow || mainWindow.isDestroyed()) return false
+  const cursor = resolvedDragPoint(pointerPosition)
+  const x = Math.round(titlebarDragSession.bounds.x + cursor.x - titlebarDragSession.cursor.x)
+  const y = Math.round(titlebarDragSession.bounds.y + cursor.y - titlebarDragSession.cursor.y)
+  if (x === titlebarDragSession.bounds.x && y === titlebarDragSession.bounds.y) return false
+  titlebarDragSession.moved = true
+  mainWindow.setPosition(x, y)
+  return true
+}
+
+function endTitlebarWindowDrag() {
+  const session = titlebarDragSession
+  if (!session && !titlebarDockSuspended) return false
+  titlebarDragSession = null
+  if (titlebarDockSuspended) {
+    titlebarDockSuspended = false
+    endDockInteractionSuspension('titlebar-drag')
+  }
+  if (session?.moved) debouncedSaveGeometry()
+  if (zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM) reassertBottomWindowZOrder('titlebar-drag-end')
+  return true
+}
+
 const WINDOW_CONTROL_GUARD_MS = 500
 const WINDOW_Z_ORDER_NOT_ENABLED_CODE = -6
 const BOTTOM_Z_ORDER_RETRY_DELAYS_MS = Object.freeze([160, 480, 1200])
@@ -376,7 +1097,7 @@ let blurInitialized = false
 let blurInitializationError = null
 let blurInitializationNativeError = null
 let blurRuntimeFailed = false
-let blurWindowSyncListenersAttached = false
+const blurSyncWindows = new WeakSet()
 let blurRuntimeFailureHandling = false
 let blurConfigRequestRevision = 0
 let wallpaperActivationRevision = 0
@@ -409,6 +1130,38 @@ const dockPowerListeners = []
 
 /** 窗口几何是否在最近一次成功持久化（或恢复默认）后发生过变化 */
 let geometryDirty = false
+
+/** 高频 resize/move 和自定义拖动结束统一经过此入口持久化主视图几何。 */
+function debouncedSaveGeometry() {
+  if (isCompactWindowActive()) return
+  if (switchingMainView) return
+  if (Date.now() < suppressGeometryPersistenceUntil) return
+  if (isDockGeometryPersistenceSuppressed()) return
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  lastVisibleMainWindowBounds = { ...mainWindow.getBounds() }
+  geometryDirty = true
+  if (geometryTimer) clearTimeout(geometryTimer)
+  geometryTimer = setTimeout(() => {
+    geometryTimer = null
+    if (Date.now() < suppressGeometryPersistenceUntil) return
+    if (isDockGeometryPersistenceSuppressed()) return
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const b =
+        dockMotionSession?.stableBounds || lastVisibleMainWindowBounds || mainWindow.getBounds()
+      try {
+        persistSettingValues([
+          { id: 'geometry.posX', value: b.x },
+          { id: 'geometry.posY', value: b.y },
+          { id: 'geometry.width', value: b.width },
+          { id: 'geometry.height', value: b.height }
+        ])
+        geometryDirty = false
+      } catch (error) {
+        console.warn('[settings] 保存窗口位置失败:', error)
+      }
+    }
+  }, 500)
+}
 
 /** 恢复默认时忽略程序化缩放触发的 resize，避免把默认边界重新写回设置表。 */
 let suppressGeometryPersistenceUntil = 0
@@ -443,6 +1196,8 @@ function syncBlurConfigFromResolved() {
   blurConfig.radius = next.radius
   blurConfig.saturation = next.saturation
   blurConfig.cornerRadius = next.cornerRadius
+  blurConfig.tint = resolvedSettings.css.bgColor
+  blurConfig.tintOpacity = resolvedSettings.css.windowOpacity
 }
 
 /** 从 DB 重新生成完整设置；读取本身不向 DB 回写默认值。 */
@@ -548,7 +1303,8 @@ function listWallpaperLibraryRecords() {
 /** 初始化或重试初始化系统模糊，并保留可传给 renderer 的结构化错误。 */
 function initializeBlurRuntime() {
   if (blurInitialized) return { success: true, strategy: blurCaps.strategy }
-  if (!blurCaps.supported || !mainWindow || mainWindow.isDestroyed()) {
+  const visualWindow = getActiveVisualWindow()
+  if (!blurCaps.supported || !visualWindow || visualWindow.isDestroyed()) {
     const error = blurCaps.reason || '主窗口尚未就绪'
     blurInitializationError = error
     blurInitializationNativeError = null
@@ -556,7 +1312,7 @@ function initializeBlurRuntime() {
   }
 
   try {
-    const result = blurInit(mainWindow)
+    const result = blurInit(visualWindow)
     if (!result.success) {
       blurRuntimeFailed = true
       blurInitializationError = result.error
@@ -573,7 +1329,7 @@ function initializeBlurRuntime() {
     blurInitializationError = null
     blurInitializationNativeError = null
     if (process.platform === 'win32') blurSetConfig(blurConfig)
-    if (process.platform === 'darwin' && !blurConfig.enabled) mainWindow.setVibrancy(null)
+    if (process.platform === 'darwin' && !blurConfig.enabled) visualWindow.setVibrancy(null)
     updateBlurDiagnostic(
       {
         status: blurConfig.enabled ? 'pending' : 'disabled',
@@ -614,8 +1370,8 @@ function initializeBlurRuntime() {
 }
 
 function broadcastSettingsChanged(snapshot = getResolvedSettingsSnapshot()) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('settings:changed', snapshot)
+  for (const window of getApplicationWindows()) {
+    if (!window.webContents.isDestroyed()) window.webContents.send('settings:changed', snapshot)
   }
 }
 
@@ -783,34 +1539,33 @@ function runBlurRuntimeOperation(operation, label) {
  * 监听只绑定一次，但初始化成功时都调用本函数。这样启动失败后由用户重试成功，
  * 也会补齐移动、缩放和置顶层同步，不再依赖创建窗口瞬间的初始化结果。
  */
-function attachBlurWindowSyncListeners() {
-  if (
-    process.platform !== 'win32' ||
-    !blurInitialized ||
-    blurWindowSyncListenersAttached ||
-    !mainWindow ||
-    mainWindow.isDestroyed()
-  ) {
-    return
+function attachBlurWindowSyncListeners(window = null) {
+  if (process.platform !== 'win32' || !blurInitialized) return
+  const windows = window ? [window] : getApplicationWindows()
+  for (const candidate of windows) {
+    if (!candidate || candidate.isDestroyed() || blurSyncWindows.has(candidate)) continue
+    blurSyncWindows.add(candidate)
+    candidate.on('resize', () => {
+      if (compactWindowController.activePromise() || candidate !== getActiveVisualWindow()) return
+      if (candidate === mainWindow && windowMotionBackend?.isMoving()) return
+      runBlurRuntimeOperation(blurUpdateGeometry, '同步毛玻璃窗口尺寸')
+    })
+    candidate.on('move', () => {
+      if (compactWindowController.activePromise() || candidate !== getActiveVisualWindow()) return
+      if (candidate === mainWindow && windowMotionBackend?.isMoving()) return
+      runBlurRuntimeOperation(blurUpdateGeometry, '同步毛玻璃窗口位置')
+    })
+    // WinEvent Hook 是主路径；Electron focus 是 Win10 漏报/过早上报重排事件时的
+    // 低频兜底。两条路径最终都进入 C++ 去重队列。
+    candidate.on('focus', () => {
+      if (compactWindowController.activePromise() || candidate !== getActiveVisualWindow()) return
+      runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口焦点层级')
+    })
+    candidate.on('always-on-top-changed', () => {
+      if (compactWindowController.activePromise() || candidate !== getActiveVisualWindow()) return
+      runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口层级')
+    })
   }
-
-  blurWindowSyncListenersAttached = true
-  mainWindow.on('resize', () => {
-    if (windowMotionBackend?.isMoving()) return
-    runBlurRuntimeOperation(blurUpdateGeometry, '同步毛玻璃窗口尺寸')
-  })
-  mainWindow.on('move', () => {
-    if (windowMotionBackend?.isMoving()) return
-    runBlurRuntimeOperation(blurUpdateGeometry, '同步毛玻璃窗口位置')
-  })
-  // WinEvent Hook 是主路径；Electron focus 是 Win10 漏报/过早上报重排事件时的
-  // 低频兜底。两条路径最终都进入 C++ 去重队列，且同步前会检查是否已经相邻。
-  mainWindow.on('focus', () => {
-    runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口焦点层级')
-  })
-  mainWindow.on('always-on-top-changed', () => {
-    runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口层级')
-  })
 }
 
 function applyResolvedBlurRuntime() {
@@ -826,11 +1581,34 @@ function applyResolvedBlurRuntime() {
   }
 }
 
+function restoreBlurForVisibleWindow(window, source) {
+  if (
+    !window ||
+    window.isDestroyed() ||
+    compactWindowController.activePromise() ||
+    window !== getActiveVisualWindow() ||
+    !blurConfig.enabled
+  ) {
+    return
+  }
+  if (!blurInitialized) {
+    const result = initializeBlurRuntime()
+    if (!result.success) {
+      broadcastSettingsChanged()
+      return
+    }
+  } else if (!runBlurRuntimeOperation(() => blurSetConfig(blurConfig), '恢复毛玻璃配置')) {
+    return
+  }
+  runBlurRuntimeOperation(blurReSyncZOrder, `${source} 重同步毛玻璃窗口层级`)
+}
+
 function applyResolvedWindowRuntime() {
   isLocked = resolvedSettings.window.lockState
   zOrderMode = resolvedSettings.window.zOrderMode
   if (!mainWindow || mainWindow.isDestroyed()) return
-  mainWindow.setMovable(!isLocked)
+  // 锁定只约束展开态；同一个 BrowserWindow 进入胶囊后始终允许拖动。
+  mainWindow.setMovable(isCompactWindowActive() || !isLocked)
   // Windows 使用 thickFrame:false + renderer 自定义缩放手柄。调用
   // setResizable(true) 会重新引入系统 WS_THICKFRAME，破坏高 DPI 几何不变量。
   if (process.platform !== 'win32') mainWindow.setResizable(!isLocked)
@@ -1187,6 +1965,7 @@ function suppressDockGeometryPersistence() {
 
 function isDockGeometryPersistenceSuppressed() {
   return (
+    isCompactWindowActive() ||
     isSliding ||
     isDockHidden ||
     Boolean(dockMotionSession) ||
@@ -1273,7 +2052,7 @@ function createStableDockBounds(bounds, side, workArea) {
  * - 窗口无边框 + 透明背景，用于实现自定义外观
  */
 function createWindow({ preferredDisplay = null } = {}) {
-  blurWindowSyncListenersAttached = false
+  mainRendererReady = false
   // 日历视图首次创建优先沿用列表所在显示器；已有几何信息时仍以持久化位置为准。
   const display = preferredDisplay || screen.getPrimaryDisplay()
   const screenW = display.workAreaSize.width // 可用工作区宽度（排除任务栏）
@@ -1310,11 +2089,21 @@ function createWindow({ preferredDisplay = null } = {}) {
     height: defaultH
   }
   const targetDisplay = saved ? screen.getDisplayMatching(saved) : display
-  const bounds = constrainMainWindowBounds(requestedBounds, targetDisplay.workArea)
+  const normalBounds = constrainMainWindowBounds(requestedBounds, targetDisplay.workArea)
+  const createCompact =
+    isCompactWindowSupported() && Boolean(resolvedSettings.window.compact.enabled)
+  compactExpandedBounds = normalBounds
+  stableCompactBounds = createCompact
+    ? getStoredCompactBounds(normalBounds, targetDisplay).bounds
+    : null
+  const bounds = createCompact ? stableCompactBounds : normalBounds
 
   // 创建主窗口实例（透明背景 + CSS 圆角）
   mainWindow = new BrowserWindow({
     ...bounds,
+    // 系统最小值必须容纳胶囊；展开态的 240×240 限制继续由自定义缩放入口校验。
+    minWidth: COMPACT_WINDOW_LIMITS.minWidth,
+    minHeight: COMPACT_WINDOW_LIMITS.minHeight,
     show: false,
     frame: false,
     transparent: true,
@@ -1324,16 +2113,20 @@ function createWindow({ preferredDisplay = null } = {}) {
     backgroundColor: '#00000000',
     autoHideMenuBar: true,
     skipTaskbar: true,
+    paintWhenInitiallyHidden: true,
     ...(process.platform === 'darwin' ? { vibrancy: 'under-window' } : {}),
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(PRELOAD_ROOT, 'index.js'),
       sandbox: true,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // 主视图与胶囊共用同一个 Renderer Surface；窗口缩放期间保持持续合成。
+      backgroundThrottling: false
     }
   })
   const createdWindow = mainWindow
+  compactWindowController.initializeForWindow(createdWindow, createCompact ? 'compact' : 'expanded')
   const mainSession = mainWindow.webContents.session
   const allowMainWindowGeolocation = (webContents, permission) =>
     permission === 'geolocation' && webContents === mainWindow?.webContents
@@ -1345,7 +2138,7 @@ function createWindow({ preferredDisplay = null } = {}) {
     callback(allowMainWindowGeolocation(webContents, permission))
   })
   setWindowLogContext(mainWindow, { role: getActiveWindowProfile().logRole })
-  lastVisibleMainWindowBounds = { ...mainWindow.getBounds() }
+  lastVisibleMainWindowBounds = { ...normalBounds }
   windowMotionBackend = createWindowMotionBackend(mainWindow, screen)
   attachNativeEdgeMonitorMessageHook(mainWindow)
   logger.info('startup', '主窗口已创建', {
@@ -1356,12 +2149,21 @@ function createWindow({ preferredDisplay = null } = {}) {
 
   // 固定缩放因子为 1.0，防止系统 DPI 缩放影响布局
   mainWindow.webContents.setZoomFactor(1.0)
+  mainWindow.webContents.on('did-start-loading', () => {
+    if (mainWindow === createdWindow) mainRendererReady = false
+  })
 
   // 从完整设置快照恢复锁定状态
   isLocked = resolvedSettings.window.lockState
   if (isLocked) {
     mainWindow.setMovable(false)
-    mainWindow.setResizable(false)
+    // Windows 的用户缩放已经由 thickFrame:false 和 renderer 自定义手柄控制；
+    // 不能再禁用 HWND 的程序化 resize，否则同一窗口无法执行胶囊几何动画。
+    if (process.platform !== 'win32') mainWindow.setResizable(false)
+  }
+  if (createCompact && !compactDockSuspended) {
+    beginDockInteractionSuspension('compact-window-startup')
+    compactDockSuspended = true
   }
 
   // ---- 初始化系统模糊 ----
@@ -1396,54 +2198,29 @@ function createWindow({ preferredDisplay = null } = {}) {
     openSafeExternal(url)
   })
 
-  /**
-   * 防抖保存窗口几何信息
-   * 窗口 resize/move 事件触发频繁，使用 500ms 防抖避免频繁写数据库
-   */
-  const debouncedSaveGeometry = () => {
-    if (switchingMainView) return
-    if (Date.now() < suppressGeometryPersistenceUntil) return
-    if (isDockGeometryPersistenceSuppressed()) return
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    lastVisibleMainWindowBounds = { ...mainWindow.getBounds() }
-    geometryDirty = true
-    if (geometryTimer) clearTimeout(geometryTimer)
-    geometryTimer = setTimeout(() => {
-      geometryTimer = null
-      if (Date.now() < suppressGeometryPersistenceUntil) return
-      if (isDockGeometryPersistenceSuppressed()) return
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        const b =
-          dockMotionSession?.stableBounds || lastVisibleMainWindowBounds || mainWindow.getBounds()
-        try {
-          persistSettingValues([
-            { id: 'geometry.posX', value: b.x },
-            { id: 'geometry.posY', value: b.y },
-            { id: 'geometry.width', value: b.width },
-            { id: 'geometry.height', value: b.height }
-          ])
-          geometryDirty = false
-        } catch (error) {
-          console.warn('[settings] 保存窗口位置失败:', error)
-        }
-      }
-    }, 500)
-  }
-
   // 监听窗口大小变化和移动事件，触发防抖保存
   mainWindow.on('resize', () => {
+    if (isCompactWindowActive()) {
+      // renderer 直接跟随真实 viewport；转换开始和结束才广播事务状态，避免
+      // resize 与逐帧 IPC 同时驱动 Vue，造成重复布局和一帧追赶。
+      return
+    }
     if (windowMotionBackend?.isMoving()) return
     debouncedSaveGeometry()
     syncVisibleDockSide({ source: 'window-resize' })
   })
   mainWindow.on('move', () => {
+    if (isCompactWindowActive()) return
     if (windowMotionBackend?.isMoving()) return
+    if (titlebarDragSession) return
     debouncedSaveGeometry()
   })
 
   // 【贴边隐藏 - 边缘检测】窗口移动时检测是否靠近屏幕左/右边缘
   mainWindow.on('move', () => {
+    if (isCompactWindowActive()) return
     if (windowMotionBackend?.isMoving()) return
+    if (titlebarDragSession) return
     syncVisibleDockSide({ source: 'window-move', snap: true })
   })
 
@@ -1451,7 +2228,9 @@ function createWindow({ preferredDisplay = null } = {}) {
   // 记录了 dockSide，但不能持续抢夺系统拖动。等用户松手后再做一次强制收口，
   // 即使方向未变化，也把窗口吸回精确边缘。
   mainWindow.on('moved', () => {
+    if (isCompactWindowActive()) return
     if (windowMotionBackend?.isMoving()) return
+    if (titlebarDragSession) return
     syncVisibleDockSide({ source: 'window-moved', snap: true, forceSnap: true })
   })
 
@@ -1465,25 +2244,14 @@ function createWindow({ preferredDisplay = null } = {}) {
 
   // 窗口显示时恢复模糊（从托盘恢复）
   mainWindow.on('show', () => {
-    if (!blurConfig.enabled) return
-
-    // 隐藏阶段若因原生异常销毁过 Overlay，恢复窗口时重新初始化。
-    if (!blurInitialized) {
-      const result = initializeBlurRuntime()
-      if (!result.success) {
-        broadcastSettingsChanged()
-        return
-      }
-    } else {
-      if (!runBlurRuntimeOperation(() => blurSetConfig(blurConfig), '恢复毛玻璃配置')) return
-    }
-    runBlurRuntimeOperation(blurReSyncZOrder, '恢复毛玻璃窗口层级')
+    restoreBlurForVisibleWindow(mainWindow, 'main-window-show')
   })
 
   // 启动恢复、托盘/通知唤醒和视图切换都可能直接把窗口放回已保存的
   // 边缘位置，却不会产生可靠的用户 move 事件。显示后主动重建可见态贴边方向。
   mainWindow.on('show', () => {
-    syncVisibleDockSide({ source: 'window-show', snap: true })
+    if (compactWindowController.activePromise() || mainWindow !== getActiveVisualWindow()) return
+    if (!isCompactWindowActive()) syncVisibleDockSide({ source: 'window-show', snap: true })
     reassertBottomWindowZOrder('window-show')
   })
 
@@ -1491,13 +2259,13 @@ function createWindow({ preferredDisplay = null } = {}) {
   mainWindow.on('closed', () => {
     // 视图切换会紧接着创建新窗口；旧窗口的延迟 closed 事件不能清空新引用。
     if (mainWindow !== createdWindow) return
+    compactWindowController.cancelForWindowReplacement(createdWindow)
     cancelBottomWindowZOrderRetry()
     resetDockState()
     detachNativeEdgeMonitorMessageHook(createdWindow)
     mainWindow = null
     windowMotionBackend = null
     lastVisibleMainWindowBounds = null
-    blurWindowSyncListenersAttached = false
   })
 
   // 根据环境加载页面：开发模式用 HMR URL，生产模式加载本地 HTML 文件
@@ -1519,9 +2287,15 @@ function createWindow({ preferredDisplay = null } = {}) {
 
 /** 窗口关闭/隐藏时统一执行：隐藏窗口 + 清理贴边 + 禁用系统模糊 */
 function hideToTray() {
-  if (!mainWindow || mainWindow.isDestroyed()) return
+  const transitionPromise = compactWindowController.activePromise()
+  if (transitionPromise) {
+    void transitionPromise.finally(() => hideToTray())
+    return
+  }
+  const visualWindow = getActiveVisualWindow()
+  if (!visualWindow || visualWindow.isDestroyed()) return
 
-  // Blur_ApplyConfig 要求完整的四项配置，不能只传 { enabled: false }。
+  // Blur_ApplyConfig 要求完整材质配置，不能只传 { enabled: false }。
   // 先隐藏 Overlay 再隐藏 Electron，避免异常中断后留下孤立模糊窗口。
   if (blurInitialized) {
     runBlurRuntimeOperation(
@@ -1530,9 +2304,11 @@ function hideToTray() {
     )
   }
 
-  mainWindow.hide()
-  restoreDockWindowToVisiblePosition()
-  resetDockState()
+  for (const window of getApplicationWindows()) window.hide()
+  if (!isCompactWindowActive()) {
+    restoreDockWindowToVisiblePosition()
+    resetDockState()
+  }
 }
 
 // ============================================================
@@ -1882,6 +2658,54 @@ function rebuildFullscreenDockSessionAfterDisplayChange(change) {
 
 function handleDockDisplayTopologyChange(change = null) {
   if (!mainWindow || mainWindow.isDestroyed()) return
+  if (compactWindowController.activePromise()) {
+    // 原生事务不可中途拆毁参与合成的 HWND。只保留最后一次显示参数变化，
+    // 在事务收口后的同一事件循环重新映射稳定窗口。
+    pendingCompactTopologyChange = change || { eventName: 'display-topology-change' }
+    return
+  }
+  if (isCompactWindowActive()) {
+    try {
+      if (compactWindowController.phase === 'dragging') endCompactWindowDrag()
+      const current = stableCompactBounds || mainWindow.getBounds()
+      const compact = resolvedSettings.window.compact
+      const displays = screen.getAllDisplays()
+      const savedDisplayExists = displays.some(
+        (item) => String(item.id) === String(compact.displayId)
+      )
+      const display =
+        screen.getDisplayNearestPoint(boundsCenter(current)) || screen.getPrimaryDisplay()
+      const position =
+        !savedDisplayExists && compact.previousWorkArea
+          ? mapCompactPositionToWorkArea({
+              position: current,
+              previousWorkArea: compact.previousWorkArea,
+              nextWorkArea: display.workArea
+            })
+          : current
+      const target = compactBoundsFromPosition({
+        position,
+        size: stableCompactBounds || current,
+        workArea: display.workArea
+      })
+      stableCompactBounds = target
+      mainWindow.setBounds(target, false)
+      mainWindow.setMovable(true)
+      compactWindowController.setPhase(mainWindow, 'compact')
+      compactDragSession = null
+      if (!compactDockSuspended) {
+        beginDockInteractionSuspension('compact-display-topology-change')
+        compactDockSuspended = true
+      }
+      persistCompactWindowBounds(true, target)
+      syncCompactWindowRuntime(`compact-${change?.eventName || 'display-topology-change'}`)
+      broadcastSettingsChanged(getResolvedSettingsSnapshot())
+      broadcastCompactWindowState()
+    } catch (error) {
+      logger.error('compact-window.display-topology-change', error, { change })
+    }
+    return
+  }
   if (
     isDockHidden &&
     dockMotionSession &&
@@ -2403,7 +3227,8 @@ function cancelBottomWindowZOrderRetry() {
 }
 
 function scheduleBottomWindowZOrderRetry(source, failure = null) {
-  if (zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM || !mainWindow || mainWindow.isDestroyed()) {
+  const visualWindow = getActiveVisualWindow()
+  if (zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM || !visualWindow || visualWindow.isDestroyed()) {
     cancelBottomWindowZOrderRetry()
     return false
   }
@@ -2423,7 +3248,7 @@ function scheduleBottomWindowZOrderRetry(source, failure = null) {
     return false
   }
 
-  const targetWindow = mainWindow
+  const targetWindow = visualWindow
   const delay = BOTTOM_Z_ORDER_RETRY_DELAYS_MS[bottomZOrderRetryAttempt]
   bottomZOrderRetryAttempt += 1
   logger.warn('window.z-order-retry', '始终置底将在 Windows 桌面层就绪后重试', {
@@ -2436,7 +3261,7 @@ function scheduleBottomWindowZOrderRetry(source, failure = null) {
     bottomZOrderRetryTimer = null
     if (
       zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM ||
-      mainWindow !== targetWindow ||
+      getActiveVisualWindow() !== targetWindow ||
       targetWindow.isDestroyed()
     ) {
       cancelBottomWindowZOrderRetry()
@@ -2453,22 +3278,28 @@ function scheduleBottomWindowZOrderRetry(source, failure = null) {
  * bottom 由 Windows 原生层持续约束；top / normal 继续使用 Electron 原生能力。
  */
 function applyWindowZOrder(mode = zOrderMode) {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return { success: false, code: null, error: '主窗口尚未创建' }
+  const visualWindow = getActiveVisualWindow()
+  if (!visualWindow || visualWindow.isDestroyed()) {
+    return { success: false, code: null, error: '应用窗口尚未创建' }
   }
   const normalized = normalizeWindowZOrderMode(mode)
   if (normalized !== WINDOW_Z_ORDER_MODES.BOTTOM) cancelBottomWindowZOrderRetry()
 
   try {
+    // 置底拦截器必须只绑定当前可视 HWND；两个稳定窗口不能同时占据桌面层。
+    for (const window of getApplicationWindows()) {
+      if (window === visualWindow) continue
+      window.setAlwaysOnTop(false)
+    }
     if (normalized === WINDOW_Z_ORDER_MODES.BOTTOM) {
-      mainWindow.setAlwaysOnTop(false)
-      const result = setWindowAlwaysOnBottom(mainWindow, true)
+      visualWindow.setAlwaysOnTop(false)
+      const result = setWindowAlwaysOnBottom(visualWindow, true)
       if (!result.success) return result
       cancelBottomWindowZOrderRetry()
     } else {
-      const result = setWindowAlwaysOnBottom(mainWindow, false)
+      const result = setWindowAlwaysOnBottom(visualWindow, false)
       if (!result.success) return result
-      mainWindow.setAlwaysOnTop(normalized === WINDOW_Z_ORDER_MODES.TOP, 'pop-up-menu')
+      visualWindow.setAlwaysOnTop(normalized === WINDOW_Z_ORDER_MODES.TOP, 'pop-up-menu')
     }
   } catch (error) {
     return {
@@ -2483,18 +3314,19 @@ function applyWindowZOrder(mode = zOrderMode) {
 }
 
 function reassertBottomWindowZOrder(source) {
-  if (zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM || !mainWindow || mainWindow.isDestroyed()) {
+  const visualWindow = getActiveVisualWindow()
+  if (zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM || !visualWindow || visualWindow.isDestroyed()) {
     return true
   }
   try {
-    let result = reassertWindowZOrder(mainWindow)
+    let result = reassertWindowZOrder(visualWindow)
     // 启动或视图切换若正好撞上 Explorer 重建，首次安装可能尚未完成。
     // 桌面宿主恢复后重新执行 SetBottom，而不只是反复 Reassert 一个空控制器。
     if (
       !result.success &&
       (result.code === WINDOW_Z_ORDER_NOT_ENABLED_CODE || result.code == null)
     ) {
-      result = setWindowAlwaysOnBottom(mainWindow, true)
+      result = setWindowAlwaysOnBottom(visualWindow, true)
     }
     if (!result.success) {
       logger.error('window.z-order-reassert', new Error(result.error), {
@@ -2574,8 +3406,20 @@ function persistWindowZOrderMode(mode) {
  * - 非贴边   → 显示/隐藏到托盘
  */
 function toggleWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (compactWindowController.activePromise()) return
+  const visualWindow = getActiveVisualWindow()
+  if (!visualWindow || visualWindow.isDestroyed()) return
   logger.info('dock.tray', '用户点击托盘图标', { snapshot: getDockDiagnosticSnapshot() })
+
+  if (isCompactWindowActive()) {
+    if (visualWindow.isVisible()) hideToTray()
+    else {
+      visualWindow.show()
+      visualWindow.focus()
+      syncCompactWindowRuntime('compact-tray-show')
+    }
+    return
+  }
 
   // 原生线程延迟清理期间不允许重新贴边，但托盘的基本显示/隐藏必须仍然可用。
   if (nativeEdgeCleanupPending) {
@@ -2608,7 +3452,19 @@ function toggleWindow() {
 }
 
 function openMainWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) return
+  const transitionPromise = compactWindowController.activePromise()
+  if (transitionPromise) {
+    void transitionPromise.finally(() => openMainWindow())
+    return
+  }
+  const visualWindow = getActiveVisualWindow()
+  if (!visualWindow || visualWindow.isDestroyed()) return
+  if (isCompactWindowActive()) {
+    visualWindow.show()
+    visualWindow.focus()
+    syncCompactWindowRuntime('compact-open-main-window')
+    return
+  }
   if (isDockHidden) {
     doShow('open-main-window')
   } else {
@@ -2632,7 +3488,20 @@ function destroyBlurRuntimeForWindowReplacement() {
     blurRuntimeFailed = false
     blurInitializationError = null
     blurInitializationNativeError = null
-    blurWindowSyncListenersAttached = false
+  }
+}
+
+function prepareCompactWindowForReplacement(window) {
+  if (!window) return
+  if (compactWindowController.phase === 'dragging' && stableCompactBounds) {
+    persistCompactWindowBounds(true, stableCompactBounds)
+  }
+  compactDragSession = null
+  endTitlebarWindowDrag()
+  compactWindowController.cancelForWindowReplacement(window)
+  if (!resolvedSettings.window.compact.enabled && compactDockSuspended) {
+    compactDockSuspended = false
+    endDockInteractionSuspension('compact-window-replaced')
   }
 }
 
@@ -2640,6 +3509,13 @@ function destroyBlurRuntimeForWindowReplacement() {
 function switchMainView(targetMode) {
   const normalized = normalizeViewMode(targetMode)
   if (switchingMainView) return false
+  if (compactWindowController.activePromise()) {
+    logger.warn('view.switch', '原生窗口过渡尚未结束，暂缓切换主视图', {
+      targetMode: normalized,
+      phase: compactWindowController.phase
+    })
+    return false
+  }
   if (nativeEdgeCleanupPending) {
     logger.warn('view.switch', '原生边缘监视器仍在清理，暂缓切换主视图', {
       targetMode: normalized,
@@ -2656,6 +3532,7 @@ function switchMainView(targetMode) {
   if (normalized === activeViewMode) return false
 
   const previousMode = activeViewMode
+  const preserveCompactRuntime = isCompactWindowActive()
   switchingMainView = true
   let sourceDisplay = null
   try {
@@ -2663,7 +3540,8 @@ function switchMainView(targetMode) {
       sourceDisplay = screen.getDisplayMatching(
         dockMotionSession?.stableBounds || lastVisibleMainWindowBounds || mainWindow.getBounds()
       )
-      restoreDockWindowToVisiblePosition()
+      prepareCompactWindowForReplacement(mainWindow)
+      if (!preserveCompactRuntime) restoreDockWindowToVisiblePosition()
       resetDockState({ source: 'view-switch' })
       if (nativeEdgeCleanupPending) {
         logger.warn('view.switch', '停止原生边缘监视器超时，本次视图切换已安全取消', {
@@ -2694,6 +3572,8 @@ function switchMainView(targetMode) {
     if (switchPreparation.geometryPersisted) geometryDirty = false
 
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide()
+    // 单窗口架构下胶囊本身也是 mainWindow；任何视图替换都必须解除旧 HWND 的
+    // Blur Overlay 绑定，再让新视图按原胶囊状态和边界重新初始化。
     destroyBlurRuntimeForWindowReplacement()
 
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2762,6 +3642,16 @@ function rebuildTrayMenu() {
   )
 }
 
+if (process.env.ABANDON_INTEGRATION_TEST === '1') {
+  globalThis.__ABANDON_COMPACT_TEST_HOOKS__ = Object.freeze({
+    switchMainView,
+    handleDisplayTopologyChange: handleDockDisplayTopologyChange,
+    enterCompactWindow,
+    exitCompactWindow,
+    getState: compactWindowStateSnapshot
+  })
+}
+
 // ============================================================
 // 应用就绪后的初始化逻辑
 // ============================================================
@@ -2815,6 +3705,11 @@ app.whenReady().then(async () => {
 
   // ---- IPC 通道注册 ----
   const mainWindowIpc = createMainWindowIpc(ipcMain, () => mainWindow)
+  const compactControlIpc = createMainWindowIpc(
+    ipcMain,
+    () => getApplicationWindows(),
+    '胶囊窗口控制'
+  )
 
   ipcMain.on('logs:write', (event, payload) => {
     const win = BrowserWindow.fromWebContents(event.sender)
@@ -2883,12 +3778,20 @@ app.whenReady().then(async () => {
   ipcMain.on('renderer-ready', (event) => {
     if (event.sender !== mainWindow?.webContents) return
     logger.info('startup', '渲染进程就绪')
+    markRendererReady()
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
       mainWindow.focus()
+      if (isCompactWindowActive()) syncCompactWindowRuntime('renderer-ready-compact')
       reassertBottomWindowZOrder('renderer-ready')
-      sendPendingNotificationNote()
+      broadcastCompactWindowState()
+      revealPendingNotificationNote()
     }
+  })
+
+  ipcMain.on('compact-window:transition-ready', (event, generation, stage) => {
+    if (event.sender !== mainWindow?.webContents) return
+    resolveCompactRendererTransitionReady(Number(generation), String(stage || ''))
   })
 
   // 【窗口控制 - 关闭】渲染进程请求关闭窗口 → 最小化到托盘
@@ -2956,6 +3859,50 @@ app.whenReady().then(async () => {
     return win ? win.getBounds() : null
   })
 
+  compactControlIpc.handle('compact-window:get-state', () => compactWindowStateSnapshot())
+  compactControlIpc.handle('compact-window:enter', () => enterCompactWindow())
+  compactControlIpc.handle('compact-window:exit', () => exitCompactWindow())
+  compactControlIpc.handle('compact-window:begin-drag', (_event, point) =>
+    beginCompactWindowDrag(point)
+  )
+  ipcMain.on('compact-window:update-drag', (event, point) => {
+    if (event.sender !== mainWindow?.webContents) return
+    updateCompactWindowDrag(point)
+  })
+  compactControlIpc.handle('compact-window:end-drag', () => endCompactWindowDrag())
+  mainWindowIpc.handle('titlebar-window:begin-drag', (_event, point) =>
+    beginTitlebarWindowDrag(point)
+  )
+  ipcMain.on('titlebar-window:update-drag', (event, point) => {
+    if (event.sender !== mainWindow?.webContents) return
+    updateTitlebarWindowDrag(point)
+  })
+  mainWindowIpc.handle('titlebar-window:end-drag', () => endTitlebarWindowDrag())
+  compactControlIpc.handle('compact-window:get-settings', () => getResolvedSettingsSnapshot())
+  compactControlIpc.handle('compact-window:show-context-menu', () => {
+    if (!isCompactWindowActive()) return false
+    const menu = Menu.buildFromTemplate([
+      {
+        label: '展开主视图',
+        click: () =>
+          void exitCompactWindow().catch((error) =>
+            logger.error('compact-window.context-expand', error)
+          )
+      },
+      { label: '隐藏到托盘', click: hideToTray },
+      { type: 'separator' },
+      {
+        label: '退出软件',
+        click: () => {
+          isQuitting = true
+          app.quit()
+        }
+      }
+    ])
+    menu.popup({ window: mainWindow })
+    return true
+  })
+
   // 【缩放手柄 - 设置边界】根据渲染进程传入的 bounds 调整窗口大小/位置
   ipcMain.on('window-set-bounds', (event, bounds) => {
     const win = BrowserWindow.fromWebContents(event.sender)
@@ -2963,11 +3910,12 @@ app.whenReady().then(async () => {
     if (
       win &&
       win === mainWindow &&
+      !isCompactWindowActive() &&
       !isLocked &&
       !isDockTransitionActive() &&
       values?.every(Number.isFinite) &&
-      values[2] >= 240 &&
-      values[3] >= 240 &&
+      values[2] >= EXPANDED_WINDOW_MIN_SIZE &&
+      values[3] >= EXPANDED_WINDOW_MIN_SIZE &&
       values[2] <= 16_384 &&
       values[3] <= 16_384
     ) {
@@ -2983,9 +3931,12 @@ app.whenReady().then(async () => {
 
   // ---- 设置 IPC ----
   // renderer 只提交 schema ID，数据库 type/key、校验、序列化均由共享 schema 决定。
-  mainWindowIpc.handle('set-setting-value', (_event, id, value) => {
+  mainWindowIpc.handle('set-setting-value', async (_event, id, value) => {
     if (!RENDERER_WRITABLE_SETTING_IDS.has(id))
       throw new Error(`renderer 无权直接写入设置项: ${id}`)
+    if (id === 'window.compact.width' || id === 'window.compact.height') {
+      return enqueueCompactSizeSetting(id, value, mainWindow)
+    }
     persistSettingValue(id, value)
     return true
   })
@@ -3058,6 +4009,7 @@ app.whenReady().then(async () => {
    * 当前窗口立即恢复默认宽高并保留当前位置，同时清除下次启动时的几何记录。
    */
   mainWindowIpc.handle('reset-settings', () => {
+    if (isCompactWindowActive()) throw new Error('请先展开主视图，再恢复默认设置')
     if (isDockTransitionActive()) {
       throw new Error('请先显示贴边窗口，再恢复默认设置')
     }
@@ -3162,6 +4114,16 @@ app.whenReady().then(async () => {
 
   /** 设置模糊配置（立即生效 + 持久化到数据库） */
   mainWindowIpc.handle('set-blur-config', async (_event, config) => {
+    if (compactWindowController.activePromise()) {
+      const snapshot = getResolvedSettingsSnapshot()
+      return {
+        success: false,
+        config: { ...blurConfig },
+        runtime: snapshot.runtime.blur,
+        error: '窗口形态切换期间暂不能修改毛玻璃设置',
+        nativeError: null
+      }
+    }
     blurSettingsRequestsInFlight += 1
     try {
       const requestRevision = ++blurConfigRequestRevision
@@ -3500,7 +4462,9 @@ app.whenReady().then(async () => {
   mainWindowIpc.handle('clear-note-data', async () => {
     await clearNoteData()
     stickyService?.discardAllRuntime()
-    mainWindow?.webContents.send('notes:changed', { reason: 'note-data-cleared' })
+    for (const window of getApplicationWindows()) {
+      window.webContents.send('notes:changed', { reason: 'note-data-cleared' })
+    }
     return true
   })
 
@@ -3530,6 +4494,8 @@ app.whenReady().then(async () => {
   registerBusinessIpcHandlers({
     ipcMain,
     getMainWindow: () => mainWindow,
+    getAuthorizedWindows: () => getApplicationWindows(),
+    getBroadcastWindows: () => getApplicationWindows(),
     platform: process.platform,
     onNotePurged: (noteId) => stickyService?.discardByNoteId(noteId)
   })
@@ -3624,9 +4590,24 @@ app.on('before-quit', (event) => {
     }
     return
   }
+  const compactTransitionPromise = compactWindowController.activePromise()
+  if (compactTransitionPromise) {
+    event.preventDefault()
+    if (!compactShutdownWaitStarted) {
+      compactShutdownWaitStarted = true
+      void compactTransitionPromise.finally(() => {
+        compactShutdownWaitStarted = false
+        app.quit()
+      })
+    }
+    return
+  }
   if (geometryTimer) {
     clearTimeout(geometryTimer)
     geometryTimer = null
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    prepareCompactWindowForReplacement(mainWindow)
   }
   cancelBottomWindowZOrderRetry()
   if (dockGeometryReconcileTimer) {

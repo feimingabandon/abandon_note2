@@ -7,6 +7,8 @@
  * autoStart 刻意不在这里：开机自启以操作系统真实状态为准，不写入 app_settings。
  */
 
+import { COMPACT_WINDOW_LIMITS } from './window-compact-geometry.js'
+
 const VALID_NOTE_STATUSES = new Set(['initialized', 'in_progress', 'completed'])
 export const DOCK_EDGES = Object.freeze(['top', 'left', 'right'])
 export const DOCK_REVEAL_HANDLE_MODES = Object.freeze({
@@ -39,6 +41,26 @@ export const FIRST_USE_NOTICE_VERSION = 1
 
 const VALID_VIEW_MODES = new Set(Object.values(VIEW_MODES))
 const VALID_WINDOW_Z_ORDER_MODES = new Set(Object.values(WINDOW_Z_ORDER_MODES))
+
+function parseCompactWorkArea(value, fallback = null) {
+  if (value === null || value === undefined || value === '') return fallback
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value
+    const normalized = {
+      x: Number(parsed?.x),
+      y: Number(parsed?.y),
+      width: Number(parsed?.width),
+      height: Number(parsed?.height)
+    }
+    if (!Object.values(normalized).every(Number.isFinite)) return fallback
+    if (normalized.width <= 0 || normalized.height <= 0) return fallback
+    return Object.fromEntries(
+      Object.entries(normalized).map(([key, child]) => [key, Math.round(child)])
+    )
+  } catch {
+    return fallback
+  }
+}
 
 export function normalizeViewMode(value) {
   return VALID_VIEW_MODES.has(value) ? value : VIEW_MODES.LIST
@@ -411,6 +433,80 @@ const definitions = [
     parse: normalizeWindowZOrderMode,
     serialize: String,
     remark: '主窗口层级（top / normal / bottom）'
+  },
+  {
+    id: 'window.compact.enabled',
+    path: ['window', 'compact', 'enabled'],
+    db: { type: 'compact', key: 'enabled' },
+    defaultValue: false,
+    parse: parseBoolean,
+    serialize: String,
+    remark: '主窗口是否处于灵动岛模式'
+  },
+  {
+    id: 'window.compact.x',
+    path: ['window', 'compact', 'x'],
+    db: { type: 'compact', key: 'x' },
+    defaultValue: null,
+    parse: parseNullableInteger,
+    serialize: String,
+    remark: '灵动岛左上角 X 坐标（DIP）'
+  },
+  {
+    id: 'window.compact.y',
+    path: ['window', 'compact', 'y'],
+    db: { type: 'compact', key: 'y' },
+    defaultValue: null,
+    parse: parseNullableInteger,
+    serialize: String,
+    remark: '灵动岛左上角 Y 坐标（DIP）'
+  },
+  {
+    id: 'window.compact.width',
+    path: ['window', 'compact', 'width'],
+    db: { type: 'compact', key: 'width' },
+    defaultValue: 360,
+    parse: (value, fallback) =>
+      parseNumber(value, fallback, {
+        min: COMPACT_WINDOW_LIMITS.minWidth,
+        max: COMPACT_WINDOW_LIMITS.maxWidth,
+        integer: true
+      }),
+    serialize: String,
+    remark: `灵动岛宽度（${COMPACT_WINDOW_LIMITS.minWidth}~${COMPACT_WINDOW_LIMITS.maxWidth} DIP）`
+  },
+  {
+    id: 'window.compact.height',
+    path: ['window', 'compact', 'height'],
+    db: { type: 'compact', key: 'height' },
+    defaultValue: 76,
+    parse: (value, fallback) =>
+      parseNumber(value, fallback, {
+        min: COMPACT_WINDOW_LIMITS.minHeight,
+        max: COMPACT_WINDOW_LIMITS.maxHeight,
+        integer: true
+      }),
+    serialize: String,
+    remark: `灵动岛高度（${COMPACT_WINDOW_LIMITS.minHeight}~${COMPACT_WINDOW_LIMITS.maxHeight} DIP）`
+  },
+  {
+    id: 'window.compact.displayId',
+    path: ['window', 'compact', 'displayId'],
+    db: { type: 'compact', key: 'display_id' },
+    defaultValue: null,
+    parse: (value, fallback) =>
+      value === null || value === undefined || value === '' ? fallback : String(value),
+    serialize: String,
+    remark: '灵动岛最后所在显示器 ID'
+  },
+  {
+    id: 'window.compact.previousWorkArea',
+    path: ['window', 'compact', 'previousWorkArea'],
+    db: { type: 'compact', key: 'previous_work_area' },
+    defaultValue: null,
+    parse: parseCompactWorkArea,
+    serialize: JSON.stringify,
+    remark: '灵动岛最后所在显示器工作区快照'
   },
   {
     id: 'dock.revealHandleMode',

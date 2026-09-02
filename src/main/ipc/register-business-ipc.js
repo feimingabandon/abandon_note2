@@ -8,6 +8,7 @@ import {
   normalizeNoteDurationDays,
   normalizeRequiredNoteContent,
   queryCustomNormal,
+  queryCompactNote,
   queryCustomPinned,
   queryEarlierNotes,
   queryPinnedNotes,
@@ -74,10 +75,13 @@ import {
 } from '../../shared/note-scheduling-rules.js'
 import { createMainWindowIpc } from './ipc-authorization.js'
 
-function sendToMainWindow(getMainWindow, channel, payload) {
-  const window = getMainWindow()
-  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return
-  window.webContents.send(channel, payload)
+function sendToWindows(getWindows, channel, payload) {
+  const resolved = getWindows()
+  const windows = Array.isArray(resolved) ? resolved : [resolved]
+  for (const window of new Set(windows.filter(Boolean))) {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) continue
+    window.webContents.send(channel, payload)
+  }
 }
 
 /**
@@ -89,10 +93,12 @@ function sendToMainWindow(getMainWindow, channel, payload) {
 export function registerBusinessIpcHandlers({
   ipcMain: rawIpcMain,
   getMainWindow,
+  getAuthorizedWindows = getMainWindow,
+  getBroadcastWindows = getMainWindow,
   platform = process.platform,
   onNotePurged = () => {}
 }) {
-  const ipcMain = createMainWindowIpc(rawIpcMain, getMainWindow, '便签业务数据')
+  const ipcMain = createMainWindowIpc(rawIpcMain, getAuthorizedWindows, '便签业务数据')
   const enforceNotificationPolicy = (payload) => enforceSystemNotificationPolicy(payload, platform)
   const normalizeUserCreateOptions = (payload) => {
     const options = enforceNotificationPolicy(payload)
@@ -108,7 +114,7 @@ export function registerBusinessIpcHandlers({
   const broadcastNoteChange = (reason, result, payload = {}) => {
     if (!result) return result
     const id = Number(result?.id ?? payload.id)
-    sendToMainWindow(getMainWindow, 'notes:changed', {
+    sendToWindows(getBroadcastWindows, 'notes:changed', {
       reason,
       ...(Number.isInteger(id) && id > 0 ? { id } : {}),
       ...payload
@@ -117,7 +123,7 @@ export function registerBusinessIpcHandlers({
   }
   const broadcastTagChange = (reason, result, payload = {}) => {
     if (!result) return result
-    sendToMainWindow(getMainWindow, 'tags:changed', { reason, ...payload })
+    sendToWindows(getBroadcastWindows, 'tags:changed', { reason, ...payload })
     return result
   }
 
@@ -315,7 +321,7 @@ export function registerBusinessIpcHandlers({
 
   ipcMain.handle('notes:delete', (_event, { id }) => {
     const deleted = deleteNote(id)
-    if (deleted) sendToMainWindow(getMainWindow, 'notes:changed', { reason: 'deletion', id })
+    if (deleted) sendToWindows(getBroadcastWindows, 'notes:changed', { reason: 'deletion', id })
     return deleted
   })
 
@@ -324,7 +330,7 @@ export function registerBusinessIpcHandlers({
     const purged = await purgeNoteAndFiles(noteId)
     if (purged) {
       onNotePurged(noteId)
-      sendToMainWindow(getMainWindow, 'notes:changed', { reason: 'purge', id: noteId })
+      sendToWindows(getBroadcastWindows, 'notes:changed', { reason: 'purge', id: noteId })
     }
     return purged
   })
@@ -332,6 +338,11 @@ export function registerBusinessIpcHandlers({
   ipcMain.handle('notes:get', (_event, { id }) => getNoteById(id))
   ipcMain.handle('notes:query-pinned', (_event, options) => queryPinnedNotes(options || {}))
   ipcMain.handle('notes:query-recent', (_event, options) => queryRecentNotes(options || {}))
+  // 视图替换时旧 renderer 可能已有一个只读查询在 IPC 队列中。此时返回空候选
+  // 即可，不能把正常的窗口销毁竞态记录为权限异常；所有写操作仍严格拒绝旧 sender。
+  ipcMain.handle('notes:query-compact', () => queryCompactNote(), {
+    onStaleSender: () => null
+  })
   ipcMain.handle('notes:query-earlier', (_event, options) => queryEarlierNotes(options || {}))
   ipcMain.handle('notes:query-custom-pinned', (_event, options) => queryCustomPinned(options || {}))
   ipcMain.handle('notes:query-custom-normal', (_event, options) => queryCustomNormal(options || {}))

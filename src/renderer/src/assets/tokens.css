@@ -193,6 +193,13 @@ body {
   border: 0;
 }
 
+/* Windows 原生玻璃启用时，背景色与模糊由同一个 DComp Overlay 合成。
+ * Renderer 只绘制内容和可选边框，窗口 resize 时不再出现两套可见底色追帧。 */
+html.is-system-glass-active .app-root.app-bg,
+html.is-system-glass-active .month-root.app-bg {
+  background-color: transparent;
+}
+
 /* 历史版本使用 ::before / ::after 叠加霜层；现在 ::before 保持禁用，
  * ::after 只负责可选的窗口内侧边框，不参与背景材质。 */
 .app-bg::before {
@@ -209,6 +216,56 @@ body {
   border-radius: inherit;
   box-shadow: inset 0 0 0 var(--window-border-width) var(--window-border-inner-rim);
   pointer-events: none;
+}
+
+/* 外壳变形前段由原生圆角材质独占呈现。Renderer 边框随内容退场；展开时
+ * 在几何接近完成后淡入，收起时仍在最终胶囊几何上淡入。 */
+.app-bg.is-compact-stage-content-exit::after {
+  opacity: 0;
+  transition: opacity 140ms var(--ease-standard);
+}
+
+.app-bg.is-compact-stage-shell-transform::after {
+  opacity: 0;
+}
+
+.app-bg.is-compact-expanding.is-compact-stage-content-enter::after {
+  opacity: 1;
+  transition: opacity 300ms var(--ease-standard);
+}
+
+.app-bg.is-compact-collapsing.is-compact-stage-content-enter::after {
+  opacity: 1;
+  transition: opacity 170ms var(--ease-standard);
+}
+
+.app-root.is-compact-stage-content-exit .app-wallpaper,
+.month-root.is-compact-stage-content-exit .month-wallpaper {
+  opacity: 0;
+  transition:
+    opacity 140ms var(--ease-standard),
+    transform 160ms var(--ease-standard);
+  transform: translateY(8px);
+}
+
+.app-root.is-compact-stage-shell-transform .app-wallpaper,
+.month-root.is-compact-stage-shell-transform .month-wallpaper {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.app-root.is-compact-expanding.is-compact-stage-content-enter .app-wallpaper,
+.month-root.is-compact-expanding.is-compact-stage-content-enter .month-wallpaper {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 300ms var(--ease-standard);
+}
+
+.app-root.is-compact-collapsing.is-compact-stage-content-enter .app-wallpaper,
+.month-root.is-compact-collapsing.is-compact-stage-content-enter .month-wallpaper {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 170ms var(--ease-standard);
 }
 
 /* 主窗口的旧模糊伪层继续禁用；可选边框由 .app-bg::after 统一绘制。 */

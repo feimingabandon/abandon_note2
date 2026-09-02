@@ -23,6 +23,7 @@ let prepareViewSettingsForSwitch
 let readApplicationSettings
 let writeActiveView
 let writeApplicationSetting
+let writeApplicationSettings
 
 beforeAll(async () => {
   ;({
@@ -32,7 +33,8 @@ beforeAll(async () => {
     prepareViewSettingsForSwitch,
     readApplicationSettings,
     writeActiveView,
-    writeApplicationSetting
+    writeApplicationSetting,
+    writeApplicationSettings
   } = await import('../src/main/settings/application-settings.js'))
 })
 
@@ -52,7 +54,8 @@ describe('application view settings', () => {
     expect(ensureApplicationWindowSettingsInitialized('list')).toBe(true)
     expect(readApplicationSettings().window).toEqual({
       lockState: true,
-      zOrderMode: 'normal'
+      zOrderMode: 'normal',
+      compact: expect.objectContaining({ enabled: false, width: 360, height: 76 })
     })
     expect(ensureApplicationWindowSettingsInitialized('month')).toBe(false)
 
@@ -60,7 +63,8 @@ describe('application view settings', () => {
     writeApplicationSetting('window.lockState', false)
     expect(readApplicationSettings().window).toEqual({
       lockState: false,
-      zOrderMode: 'bottom'
+      zOrderMode: 'bottom',
+      compact: expect.objectContaining({ enabled: false, width: 360, height: 76 })
     })
   })
 
@@ -79,6 +83,36 @@ describe('application view settings', () => {
         })
       ])
     )
+  })
+
+  it('writes compact geometry atomically and rejects unrelated batch entries', () => {
+    writeApplicationSettings([
+      { id: 'window.compact.enabled', value: true },
+      { id: 'window.compact.x', value: 440 },
+      { id: 'window.compact.y', value: 364 },
+      { id: 'window.compact.width', value: 420 },
+      { id: 'window.compact.height', value: 92 },
+      { id: 'window.compact.displayId', value: 'display-2' },
+      {
+        id: 'window.compact.previousWorkArea',
+        value: { x: 0, y: 0, width: 1920, height: 1040 }
+      }
+    ])
+
+    expect(db.setSettingsBatch).toHaveBeenCalledTimes(1)
+    expect(readApplicationSettings().window.compact).toEqual({
+      enabled: true,
+      x: 440,
+      y: 364,
+      width: 420,
+      height: 92,
+      displayId: 'display-2',
+      previousWorkArea: { x: 0, y: 0, width: 1920, height: 1040 }
+    })
+    expect(() => writeApplicationSettings([{ id: 'window.zOrderMode', value: 'normal' }])).toThrow(
+      /未授权/
+    )
+    expect(db.setSettingsBatch).toHaveBeenCalledTimes(1)
   })
 
   it('accepts week as the persisted active view and maps it to an independent scope', () => {

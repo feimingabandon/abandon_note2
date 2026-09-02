@@ -473,6 +473,19 @@ export function queryRecentNotes({ statuses, tagIds, search, cutoffTime } = {}) 
   return toNoteListItems(notes)
 }
 
+/** 灵动岛只读取最近进入进行中的一条便签；其他状态不参与候选。 */
+export function queryCompactNote() {
+  const note = getDb()
+    .prepare(
+      `SELECT n.* FROM notes n
+       WHERE n.is_deleted = 0 AND n.status = 'in_progress'
+       ORDER BY n.effective_at DESC, n.id DESC
+       LIMIT 1`
+    )
+    .get()
+  return note ? toNoteListItems([note])[0] : null
+}
+
 export function queryEarlierNotes({
   statuses,
   tagIds,

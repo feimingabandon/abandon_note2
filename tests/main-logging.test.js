@@ -153,6 +153,21 @@ describe('main-process logging', () => {
     expect(windowCapture.getWindowLogContext(win)).toEqual({ role: 'sticky', noteId: 42 })
   })
 
+  it('treats a closed console pipe as an unavailable optional log sink', () => {
+    const stream = new EventEmitter()
+    stream.writable = true
+    stream.writableEnded = false
+    stream.destroyed = false
+
+    expect(logging.loggingInternals.installConsoleStreamGuard(stream)).toBe(true)
+    expect(logging.loggingInternals.isConsoleStreamAvailable(stream)).toBe(true)
+    expect(() => {
+      stream.emit('error', Object.assign(new Error('broken pipe'), { code: 'EPIPE' }))
+    }).not.toThrow()
+    expect(logging.loggingInternals.isConsoleStreamAvailable(stream)).toBe(false)
+    expect(logging.loggingInternals.installConsoleStreamGuard(stream)).toBe(false)
+  })
+
   it('does not install an unhandledRejection listener that changes Node fatal behavior', async () => {
     const beforeUnhandled = process.listeners('unhandledRejection')
     const beforeMonitor = new Set(process.listeners('uncaughtExceptionMonitor'))

@@ -194,11 +194,34 @@ export function writeApplicationSetting(id, value) {
     id !== 'weather.location' &&
     id !== 'onboarding.noticeVersion' &&
     id !== 'window.lockState' &&
-    id !== 'window.zOrderMode'
+    id !== 'window.zOrderMode' &&
+    !id.startsWith('window.compact.')
   ) {
     throw new Error(`未知应用级设置项: ${id}`)
   }
   setSettingsBatch(APPLICATION_SETTINGS_SCOPE, [serializeSetting(id, value)])
+}
+
+export function writeApplicationSettings(entries) {
+  const normalized = Array.isArray(entries) ? entries : []
+  if (!normalized.length) return readApplicationSettings()
+  const allowed = new Set([
+    'window.compact.enabled',
+    'window.compact.x',
+    'window.compact.y',
+    'window.compact.width',
+    'window.compact.height',
+    'window.compact.displayId',
+    'window.compact.previousWorkArea'
+  ])
+  if (normalized.some((entry) => !allowed.has(entry?.id))) {
+    throw new Error('应用级批量设置包含未授权项目')
+  }
+  setSettingsBatch(
+    APPLICATION_SETTINGS_SCOPE,
+    normalized.map((entry) => serializeSetting(entry.id, entry.value))
+  )
+  return readApplicationSettings()
 }
 
 export function getViewSettingsScope(viewMode) {

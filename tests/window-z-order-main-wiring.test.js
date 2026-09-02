@@ -28,10 +28,11 @@ describe('main-window z-order transaction wiring', () => {
     )
 
     expect(apply).toContain('try {')
-    expect(apply).toContain('setWindowAlwaysOnBottom(mainWindow, true)')
-    expect(apply).toContain('setWindowAlwaysOnBottom(mainWindow, false)')
+    expect(apply).toContain('const visualWindow = getActiveVisualWindow()')
+    expect(apply).toContain('setWindowAlwaysOnBottom(visualWindow, true)')
+    expect(apply).toContain('setWindowAlwaysOnBottom(visualWindow, false)')
     expect(apply).toContain('success: false')
-    expect(apply).toContain("error: error?.message || String(error)")
+    expect(apply).toContain('error: error?.message || String(error)')
   })
 
   it('reinstalls a missing native controller with bounded retries and isolates async exceptions', () => {
@@ -41,10 +42,13 @@ describe('main-window z-order transaction wiring', () => {
       source.indexOf('function persistWindowZOrderMode(mode)')
     )
 
-    expect(source).toContain('const BOTTOM_Z_ORDER_RETRY_DELAYS_MS = Object.freeze([160, 480, 1200])')
+    expect(source).toContain(
+      'const BOTTOM_Z_ORDER_RETRY_DELAYS_MS = Object.freeze([160, 480, 1200])'
+    )
     expect(recovery).toContain('bottomZOrderRetryAttempt >= BOTTOM_Z_ORDER_RETRY_DELAYS_MS.length')
     expect(recovery).toContain('result.code === WINDOW_Z_ORDER_NOT_ENABLED_CODE')
-    expect(recovery).toContain('result = setWindowAlwaysOnBottom(mainWindow, true)')
+    expect(recovery).toContain('result = setWindowAlwaysOnBottom(visualWindow, true)')
+    expect(recovery).toContain('getActiveVisualWindow() !== targetWindow')
     expect(recovery).toContain("logger.error('window.z-order-reassert-exception'")
     expect(recovery).toContain("sendAppMessage('error', '始终置底暂时无法恢复")
     expect(recovery).toContain('cancelBottomWindowZOrderRetry()')

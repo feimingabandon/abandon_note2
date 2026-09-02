@@ -6,7 +6,7 @@
  *   1. 提供关闭、三态窗口层级、锁定窗口控制，视觉风格不改变功能语义
  *   2. 展示窗口标题文字
  *   3. 通过 slot 支持在标题栏右侧插入自定义操作按钮
- *   4. 整个标题栏区域可拖拽移动窗口（-webkit-app-region: drag）
+ *   4. 除窗口缩放带和交互控件外，整个标题栏通过统一指针事务支持拖动与双击
  *
  * Props:
  *   - title {String} 标题栏显示的文字，默认为空
@@ -40,7 +40,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:locked', 'update:zOrderMode'])
+const emit = defineEmits(['update:locked', 'update:zOrderMode', 'request:compact'])
 
 const WINDOW_CONTROL_GUARD_MS = 500
 const Z_ORDER_OPTIONS = Object.freeze([
@@ -69,6 +69,20 @@ const zOrderChanging = ref(false)
 const lockChanging = ref(false)
 let zOrderGuardTimer = null
 let lockGuardTimer = null
+let titlebarDragFrame = null
+let titlebarDragPointerId = null
+let titlebarDragLatestPoint = null
+let titlebarPointerMoved = false
+let titlebarDragStartPromise = null
+let titlebarDragging = false
+let titlebarDragGeneration = 0
+let lastTitlebarPress = null
+let suppressTitlebarDomDoubleClickUntil = 0
+
+const TITLEBAR_DOUBLE_CLICK_MS = 420
+const TITLEBAR_DOUBLE_CLICK_DISTANCE = 12
+const TITLEBAR_INTERACTIVE_SELECTOR =
+  'button, a, input, textarea, select, summary, [role="button"], [role="menu"], [contenteditable="true"], [data-no-compact]'
 
 const activeZOrderOption = computed(
   () => Z_ORDER_OPTIONS.find((option) => option.value === props.zOrderMode) || Z_ORDER_OPTIONS[0]
@@ -189,6 +203,109 @@ const toggleLock = async () => {
   }
 }
 
+function onTitlebarDoubleClick(event) {
+  if (Date.now() < suppressTitlebarDomDoubleClickUntil) return
+  const target = event.target
+  if (!(target instanceof Element)) return
+  if (target.closest(TITLEBAR_INTERACTIVE_SELECTOR)) return
+  emit('request:compact')
+}
+
+function requestTitlebarDragUpdate() {
+  if (titlebarDragFrame) return
+  titlebarDragFrame = requestAnimationFrame(() => {
+    titlebarDragFrame = null
+    window.api.updateTitlebarWindowDrag(titlebarDragLatestPoint)
+  })
+}
+
+function setTitlebarPointerCapture(target, pointerId) {
+  try {
+    target.setPointerCapture?.(pointerId)
+  } catch {
+    // 合成输入或窗口切换期间指针可能已失效；主进程拖动事务仍可按坐标完成。
+  }
+}
+
+function releaseTitlebarPointerCapture(target, pointerId) {
+  try {
+    target.releasePointerCapture?.(pointerId)
+  } catch {
+    // lostpointercapture 与 pointerup 可能竞争，释放操作保持幂等。
+  }
+}
+
+function onTitlebarPointerDown(event) {
+  if (event.button !== 0 || titlebarDragPointerId !== null) return
+  const target = event.target
+  if (!(target instanceof Element) || target.closest(TITLEBAR_INTERACTIVE_SELECTOR)) return
+  const now = Date.now()
+  const press = { at: now, x: event.screenX, y: event.screenY }
+  const isDoublePress =
+    lastTitlebarPress &&
+    now - lastTitlebarPress.at <= TITLEBAR_DOUBLE_CLICK_MS &&
+    Math.hypot(press.x - lastTitlebarPress.x, press.y - lastTitlebarPress.y) <=
+      TITLEBAR_DOUBLE_CLICK_DISTANCE
+  lastTitlebarPress = isDoublePress ? null : press
+  if (isDoublePress) {
+    suppressTitlebarDomDoubleClickUntil = now + 500
+    event.preventDefault()
+    titlebarDragGeneration += 1
+    titlebarDragging = false
+    void window.api
+      .endTitlebarWindowDrag()
+      .catch(() => false)
+      .finally(() => emit('request:compact'))
+    return
+  }
+  if (props.locked) return
+  const generation = ++titlebarDragGeneration
+  titlebarDragPointerId = event.pointerId
+  titlebarDragLatestPoint = { x: event.screenX, y: event.screenY }
+  titlebarPointerMoved = false
+  setTitlebarPointerCapture(event.currentTarget, event.pointerId)
+  const task = window.api.beginTitlebarWindowDrag(titlebarDragLatestPoint).catch(() => false)
+  titlebarDragStartPromise = task
+  void task.then(async (started) => {
+    if (titlebarDragStartPromise === task) titlebarDragStartPromise = null
+    if (generation !== titlebarDragGeneration || titlebarDragPointerId === null) {
+      if (started) {
+        if (titlebarPointerMoved && titlebarDragLatestPoint) {
+          window.api.updateTitlebarWindowDrag(titlebarDragLatestPoint)
+        }
+        await window.api.endTitlebarWindowDrag().catch(() => false)
+      }
+      return
+    }
+    titlebarDragging = Boolean(started)
+    if (titlebarDragging && titlebarPointerMoved) requestTitlebarDragUpdate()
+  })
+}
+
+function onTitlebarPointerMove(event) {
+  if (titlebarDragPointerId === null || titlebarDragPointerId !== event.pointerId) return
+  titlebarDragLatestPoint = { x: event.screenX, y: event.screenY }
+  titlebarPointerMoved = true
+  if (titlebarDragging) requestTitlebarDragUpdate()
+}
+
+async function finishTitlebarPointer(event) {
+  if (titlebarDragPointerId !== event.pointerId) return
+  titlebarDragPointerId = null
+  titlebarDragGeneration += 1
+  releaseTitlebarPointerCapture(event.currentTarget, event.pointerId)
+  if (titlebarDragStartPromise) await titlebarDragStartPromise.catch(() => false)
+  if (titlebarDragging) {
+    if (titlebarPointerMoved && titlebarDragLatestPoint) {
+      window.api.updateTitlebarWindowDrag(titlebarDragLatestPoint)
+    }
+    titlebarDragging = false
+    await window.api.endTitlebarWindowDrag().catch(() => false)
+  }
+  titlebarDragLatestPoint = null
+  titlebarPointerMoved = false
+}
+
 watch(
   () => props.styleVariant,
   () => {
@@ -204,17 +321,27 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
   window.removeEventListener('resize', updateZOrderMenuPosition)
+  if (titlebarDragFrame) cancelAnimationFrame(titlebarDragFrame)
+  if (titlebarDragging || titlebarDragStartPromise) {
+    void window.api.endTitlebarWindowDrag().catch(() => false)
+  }
   if (zOrderGuardTimer) clearTimeout(zOrderGuardTimer)
   if (lockGuardTimer) clearTimeout(lockGuardTimer)
 })
 </script>
 
 <template>
-  <!-- 标题栏容器：整体可拖拽（-webkit-app-region: drag），锁定后禁用拖拽 -->
+  <!-- 标题栏空白区统一由 JS 处理拖动和双击；按钮与最上沿缩放带保持独立。 -->
   <header
     class="app-titlebar"
     :class="[`app-titlebar--${styleVariant}`, { locked: locked }]"
     :data-style="styleVariant"
+    @dblclick="onTitlebarDoubleClick"
+    @pointerdown="onTitlebarPointerDown"
+    @pointermove="onTitlebarPointerMove"
+    @pointerup="finishTitlebarPointer"
+    @pointercancel="finishTitlebarPointer"
+    @lostpointercapture="finishTitlebarPointer"
   >
     <!-- 红绿灯按钮组：设置 no-drag 使按钮可点击 -->
     <div class="traffic-lights">
@@ -256,8 +383,10 @@ onBeforeUnmount(() => {
         <img class="light-icon" src="@/resources/icons/lock.png" alt="锁定" />
       </button>
     </div>
-    <!-- 标题文字，仅当 title prop 非空时显示 -->
-    <span v-if="title" class="app-titlebar-title">{{ title }}</span>
+    <!-- 中间弹性区只负责布局；指针事务由整个标题栏统一接管。 -->
+    <div class="app-titlebar-interaction-surface">
+      <span v-if="title" class="app-titlebar-title">{{ title }}</span>
+    </div>
     <!-- 右侧操作区域插槽，父组件可插入自定义按钮 -->
     <div class="app-titlebar-actions">
       <slot />
@@ -298,14 +427,14 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* 标题栏容器：flex 响应式三栏布局，支持拖拽移动窗口
+/* 标题栏容器：flex 响应式三栏布局，空白区域由统一 JS 指针事务拖动窗口
  * 左（红绿灯）· 中（标题 flex:1）· 右（操作按钮），随窗口宽度自适应 */
 .app-titlebar {
   position: relative;
   display: flex;
   align-items: center; /* 垂直居中对齐 */
   padding: 14px 16px; /* 内边距，总高 14+18+14+1(border)=47rem ≈ 48px Apple 导航标准 */
-  -webkit-app-region: drag; /* 允许通过此区域拖拽移动窗口 */
+  -webkit-app-region: no-drag; /* 保留完整 DOM 指针事件，拖动由主进程事务完成 */
   flex-shrink: 0; /* 禁止在 flex 布局中被压缩 */
   gap: 8px; /* 子元素间距 */
   border-bottom: 1px solid var(--ui-border-divider); /* 标题栏底部分割线 */
@@ -425,12 +554,23 @@ onBeforeUnmount(() => {
   -webkit-app-region: no-drag;
 }
 
-/* 标题文字：正文大小、居中、flex:1 占据中间剩余空间 */
+.app-titlebar-interaction-surface {
+  display: flex;
+  align-self: stretch;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-width: 12px;
+  cursor: default;
+  -webkit-app-region: no-drag;
+}
+
+/* 标题文字：正文大小、居中 */
 .app-titlebar-title {
   font-size: var(--fs-body); /* 正文字号（跟随 --font-size-base 响应式缩放） */
   font-weight: 600; /* OPPOSans Bold，更圆润 */
   color: var(--text-color); /* 使用全局文字颜色变量 */
-  flex: 1; /* 占据中间所有剩余空间，左右等宽按钮组自然居中 */
+  width: 100%;
   text-align: center; /* 文字在 flex 区域内居中 */
 }
 
@@ -452,6 +592,9 @@ onBeforeUnmount(() => {
   order: 3;
   gap: 2rem;
   margin-left: auto;
+}
+.app-titlebar--microsoft .app-titlebar-interaction-surface {
+  order: 2;
 }
 .app-titlebar--microsoft .app-titlebar-title {
   order: 2;

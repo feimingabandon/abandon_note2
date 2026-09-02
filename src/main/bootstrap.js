@@ -1,7 +1,13 @@
 import { app } from 'electron'
-import { initializeLogger, installConsoleCapture, logger } from './logging/logger.js'
+import {
+  initializeLogger,
+  installConsoleCapture,
+  installConsoleStreamGuards,
+  logger
+} from './logging/logger.js'
 import { installProcessCapture, startLocalCrashReporter } from './logging/process-capture.js'
 
+installConsoleStreamGuards()
 initializeLogger()
 installConsoleCapture()
 installProcessCapture()

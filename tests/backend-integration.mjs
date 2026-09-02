@@ -35,6 +35,7 @@ import {
   getNoteById,
   normalizeNoteDurationDays,
   normalizeRequiredNoteContent,
+  queryCompactNote,
   queryCustomNormal,
   queryEarlierNotes,
   queryPinnedNotes,
@@ -869,6 +870,30 @@ try {
   assert.equal(defaultDurationNote.duration_days, 1)
   assert.equal(multiDayNote.duration_days, 7)
   assert.throws(() => createNote({ content: '无效持续时间', durationDays: 366 }), /持续天数/)
+
+  db.prepare("UPDATE notes SET status = 'completed' WHERE is_deleted = 0").run()
+  const nextInitialized = createNote({ content: '灵动岛下一条待生效' })
+  const laterPinnedInitialized = createNote({ content: '灵动岛较晚置顶待生效' })
+  db.prepare(
+    "UPDATE notes SET status = 'initialized', effective_at = ?, is_pinned = 0 WHERE id = ?"
+  ).run(1_000, nextInitialized.id)
+  db.prepare(
+    "UPDATE notes SET status = 'initialized', effective_at = ?, is_pinned = 1 WHERE id = ?"
+  ).run(2_000, laterPinnedInitialized.id)
+  assert.equal(queryCompactNote(), null, '没有进行中便签时不应使用待生效便签作为候选')
+  const olderPinnedInProgress = createNote({ content: '灵动岛较早置顶进行中' })
+  const currentInProgress = createNote({ content: '灵动岛当前进行中' })
+  db.prepare(
+    "UPDATE notes SET status = 'in_progress', effective_at = ?, is_pinned = 1 WHERE id = ?"
+  ).run(3_000, olderPinnedInProgress.id)
+  db.prepare(
+    "UPDATE notes SET status = 'in_progress', effective_at = ?, is_pinned = 0 WHERE id = ?"
+  ).run(4_000, currentInProgress.id)
+  assert.equal(
+    queryCompactNote().id,
+    currentInProgress.id,
+    '进行中便签应优先于待生效便签，并选择最近进入进行中的一条'
+  )
 
   const stickySource = createNote({ content: '便利贴持久化来源' })
   const stickyRecord = {

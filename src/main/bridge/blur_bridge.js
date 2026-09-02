@@ -173,10 +173,14 @@ function initNative() {
 
     loaded.Blur_Init = loaded.func('Blur_Init', 'int', ['intptr_t'])
     loaded.Blur_Destroy = loaded.func('Blur_Destroy', 'void', [])
-    loaded.Blur_ApplyConfig = loaded.func('Blur_ApplyConfig', 'void', [
+    loaded.Blur_ApplyConfig = loaded.func('Blur_ApplyConfig', 'int', [
       'int',
       'float',
       'float',
+      'float',
+      'int',
+      'int',
+      'int',
       'float'
     ])
     loaded.Blur_UpdateGeometry = loaded.func('Blur_UpdateGeometry', 'void', [])
@@ -246,6 +250,23 @@ function initNative() {
     loaded.WindowZOrder_GetStatusJson = loaded.func('WindowZOrder_GetStatusJson', 'str', [
       'intptr_t'
     ])
+    loaded.WindowTransition_Run = loaded.func('WindowTransition_Run', 'int', [
+      'intptr_t',
+      'int',
+      'int',
+      'int',
+      'int',
+      'int'
+    ])
+    loaded.WindowTransition_IsRunning = loaded.func('WindowTransition_IsRunning', 'int', [])
+    loaded.WindowTransition_GetLastErrorMessage = loaded.func(
+      'WindowTransition_GetLastErrorMessage',
+      'str',
+      []
+    )
+    loaded.WindowTransition_GetStatusJson = loaded.func('WindowTransition_GetStatusJson', 'str', [
+      'intptr_t'
+    ])
     lib = loaded
     return true
   } catch (e) {
@@ -299,12 +320,27 @@ export function initialize(mainWindow) {
 
 export function setConfig(config) {
   if (!initialized) return false
-  lib.Blur_ApplyConfig(
+  const tint = String(config.tint || '255 255 255')
+    .trim()
+    .split(/\s+/)
+    .map((value) => Math.max(0, Math.min(255, Math.round(Number(value) || 0))))
+  const applied = lib.Blur_ApplyConfig(
     config.enabled ? 1 : 0,
     config.radius,
     config.saturation,
-    config.cornerRadius
+    config.cornerRadius,
+    tint[0] ?? 255,
+    tint[1] ?? 255,
+    tint[2] ?? 255,
+    Math.max(0, Math.min(1, Number(config.tintOpacity) || 0))
   )
+  if (applied !== 1) {
+    const nativeError = getNativeError('原生毛玻璃材质切换未完成')
+    const error = new Error(nativeError.message)
+    error.code = 'NATIVE_BLUR_CONFIG_APPLY_FAILED'
+    error.nativeError = nativeError
+    throw error
+  }
   return true
 }
 
@@ -416,6 +452,91 @@ export function getWindowZOrderStatus(window) {
     wrapped.code = 'WINDOW_Z_ORDER_STATUS_FAILED'
     throw wrapped
   }
+}
+
+export function runWindowTransition(window, targetPhysicalBounds, { duration }) {
+  if (
+    process.platform !== 'win32' ||
+    !window ||
+    window.isDestroyed() ||
+    !targetPhysicalBounds ||
+    !initNative()
+  ) {
+    return Promise.resolve({
+      success: false,
+      code: null,
+      error: 'Windows 原生窗口过渡组件不可用'
+    })
+  }
+  const hwnd = getWindowHandleValue(window)
+  return new Promise((resolve) => {
+    // Koffi worker 线程执行同步 Win32 事务，避免逐帧 SetWindowPos 阻塞
+    // Electron 主线程、IPC 和托盘消息泵。
+    lib.WindowTransition_Run.async(
+      hwnd,
+      Math.round(targetPhysicalBounds.x),
+      Math.round(targetPhysicalBounds.y),
+      Math.round(targetPhysicalBounds.width),
+      Math.round(targetPhysicalBounds.height),
+      Math.round(duration),
+      (error, code) => {
+        if (error) {
+          resolve({ success: false, code: null, error: error.message || String(error) })
+          return
+        }
+        resolve({
+          success: code === 1,
+          code,
+          error: code === 1 ? null : lib.WindowTransition_GetLastErrorMessage()
+        })
+      }
+    )
+  })
+}
+
+/**
+ * 异常回滚专用同步入口。duration=0 让 DLL 在一个 Win32 批次内立即恢复
+ * Electron HWND、Overlay 和 DComp Visual，避免 JS setBounds 先走一帧。
+ */
+export function setWindowBoundsSynchronized(window, targetPhysicalBounds) {
+  if (
+    process.platform !== 'win32' ||
+    !window ||
+    window.isDestroyed() ||
+    !targetPhysicalBounds ||
+    !initNative()
+  ) {
+    return {
+      success: false,
+      code: null,
+      error: 'Windows 原生窗口边界恢复组件不可用'
+    }
+  }
+  try {
+    const code = lib.WindowTransition_Run(
+      getWindowHandleValue(window),
+      Math.round(targetPhysicalBounds.x),
+      Math.round(targetPhysicalBounds.y),
+      Math.round(targetPhysicalBounds.width),
+      Math.round(targetPhysicalBounds.height),
+      0
+    )
+    return {
+      success: code === 1,
+      code,
+      error: code === 1 ? null : lib.WindowTransition_GetLastErrorMessage()
+    }
+  } catch (error) {
+    return {
+      success: false,
+      code: null,
+      error: error?.message || String(error)
+    }
+  }
+}
+
+export function isWindowTransitionRunning() {
+  return Boolean(process.platform === 'win32' && initNative() && lib.WindowTransition_IsRunning())
 }
 
 export function isWindowDockEdgeExposed(window, side) {

@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
+import CompactWindowScene from './components/system/CompactWindowScene.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue'
 import SettingsPanel from './components/system/SettingsPanel.vue'
 import MessageToast from './components/system/MessageToast.vue'
@@ -17,6 +18,7 @@ import HelpPage from './components/help/HelpPage.vue'
 import { createMessageProvider } from './composables/useMessage.js'
 import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
 import { useTodayKey } from './composables/useTodayKey.js'
+import { useCompactWindowMode } from './composables/useCompactWindowMode.js'
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
 import {
@@ -36,6 +38,7 @@ const isWeekView = computed(() => props.viewMode === VIEW_MODES.WEEK)
 const viewLabel = computed(() => (isWeekView.value ? '周视图' : '月视图'))
 const defaults = createDefaultSettings(props.viewMode)
 const { showMessage } = createMessageProvider()
+const compactWindow = useCompactWindowMode()
 const locked = ref(defaults.window.lockState)
 const zOrderMode = ref(defaults.window.zOrderMode)
 const titlebarStyle = ref(defaults.appearance.titlebarStyle)
@@ -88,6 +91,31 @@ let resolveCalendarWorkspaceReady = null
 const calendarWorkspaceReady = new Promise((resolve) => {
   resolveCalendarWorkspaceReady = resolve
 })
+
+const compactBlocked = computed(
+  () =>
+    showSettings.value ||
+    calendarBusinessModalOpen.value ||
+    showFirstUseNotice.value ||
+    showUpdateDialog.value ||
+    showRemoteNoticeDialog.value ||
+    showHolidayDataNoticeDialog.value ||
+    showDailyReportDialog.value ||
+    templateInteractive.value ||
+    helpInteractive.value
+)
+
+async function requestCompactWindow() {
+  if (compactBlocked.value) {
+    showMessage('warning', '请先完成或关闭当前操作，再收起为灵动岛')
+    return
+  }
+  try {
+    await compactWindow.enter()
+  } catch (error) {
+    showMessage('error', `开启灵动岛失败：${error.message}`)
+  }
+}
 
 function onCalendarWorkspaceReady() {
   resolveCalendarWorkspaceReady?.()
@@ -310,6 +338,7 @@ const onMouseEnter = () => window.api.windowHover(true)
 const onMouseLeave = () => window.api.windowHover(false)
 
 onMounted(async () => {
+  await compactWindow.start()
   try {
     const snapshot = await window.api.getSettingsSnapshot()
     applySnapshot(snapshot)
@@ -343,6 +372,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  compactWindow.stop()
   stopSettingsListener?.()
   stopAppMessageListener?.()
   stopRemoteNoticesListener?.()
@@ -354,7 +384,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="month-root app-bg" :class="{ 'is-week-view': isWeekView }">
+  <div
+    class="month-root app-bg"
+    :class="[
+      `is-compact-${compactWindow.phase.value}`,
+      `is-compact-stage-${compactWindow.stage.value}`,
+      { 'is-week-view': isWeekView }
+    ]"
+  >
     <Transition name="month-wallpaper">
       <div v-if="wallpaperVisible" :key="wallpaperRenderKey" class="month-wallpaper">
         <div
@@ -366,111 +403,129 @@ onUnmounted(() => {
         />
       </div>
     </Transition>
-
-    <div
-      class="month-scene"
-      :class="{ 'is-ui-background-blurred': showSettings || calendarBusinessModalOpen }"
-      :inert="
-        showSettings ||
-        calendarBusinessModalOpen ||
-        showFirstUseNotice ||
-        showUpdateDialog ||
-        showRemoteNoticeDialog ||
-        showHolidayDataNoticeDialog ||
-        showDailyReportDialog
-      "
+    <CompactWindowScene
+      :phase="compactWindow.phase.value"
+      :transition="compactWindow.transition.value"
     >
-      <ResizeHandles :locked="locked" />
-      <AppTitlebar
-        v-model:locked="locked"
-        v-model:z-order-mode="zOrderMode"
-        :style-variant="titlebarStyle"
+      <div
+        class="month-scene"
+        :class="{
+          'is-ui-background-blurred': showSettings || calendarBusinessModalOpen
+        }"
+        :inert="
+          compactWindow.phase.value !== 'expanded' ||
+          showSettings ||
+          calendarBusinessModalOpen ||
+          showFirstUseNotice ||
+          showUpdateDialog ||
+          showRemoteNoticeDialog ||
+          showHolidayDataNoticeDialog ||
+          showDailyReportDialog
+        "
       >
-        <TitlebarActions :style-variant="titlebarStyle">
-          <DailyReportButton month-view @open="openDailyReport" />
-          <button
-            class="titlebar-btn titlebar-btn-template month-titlebar-btn"
-            :class="{ 'is-active': templatePanelActive }"
-            :title="templatePanelActive ? '关闭循环模板' : '打开循环模板'"
-            aria-controls="template-workspace"
-            :aria-expanded="templatePanelActive"
-            @click="toggleTemplates"
-          >
-            <img class="btn-icon" src="@/resources/icons/recurrence.svg" alt="循环模板" />
-          </button>
-          <button
-            class="titlebar-btn titlebar-btn-settings month-titlebar-btn"
-            title="设置"
-            @click="openSettings"
-          >
-            <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
-          </button>
-          <button
-            class="titlebar-btn titlebar-btn-help month-titlebar-btn"
-            :class="{ 'is-active': helpPanelActive }"
-            :title="helpPanelActive ? '关闭帮助' : '帮助'"
-            aria-controls="help-workspace"
-            :aria-expanded="helpPanelActive"
-            @click="toggleHelp"
-          >
-            <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
-          </button>
-        </TitlebarActions>
-      </AppTitlebar>
-      <div class="month-content-stage">
-        <main
-          class="month-content"
-          :class="{ 'is-ui-background-blurred': templateInteractive || helpInteractive }"
-          :inert="templateInteractive || helpInteractive"
-          :aria-label="`${viewLabel}内容区域`"
+        <ResizeHandles :locked="locked" />
+        <AppTitlebar
+          v-model:locked="locked"
+          v-model:z-order-mode="zOrderMode"
+          :style-variant="titlebarStyle"
+          @request:compact="requestCompactWindow"
         >
-          <MonthWorkspace
-            ref="calendarWorkspaceRef"
-            :view-mode="viewMode"
-            @modal-state-change="calendarBusinessModalOpen = $event"
-            @ready="onCalendarWorkspaceReady"
-          />
-        </main>
+          <TitlebarActions :style-variant="titlebarStyle">
+            <button
+              v-if="compactWindow.supported.value"
+              class="titlebar-btn compact-mode-trigger month-titlebar-btn"
+              type="button"
+              title="收起为灵动岛"
+              aria-label="收起为灵动岛"
+              @click="requestCompactWindow"
+            >
+              <img class="btn-icon" src="@/resources/icons/compact.svg" alt="" />
+            </button>
+            <DailyReportButton month-view @open="openDailyReport" />
+            <button
+              class="titlebar-btn titlebar-btn-template month-titlebar-btn"
+              :class="{ 'is-active': templatePanelActive }"
+              :title="templatePanelActive ? '关闭循环模板' : '打开循环模板'"
+              aria-controls="template-workspace"
+              :aria-expanded="templatePanelActive"
+              @click="toggleTemplates"
+            >
+              <img class="btn-icon" src="@/resources/icons/recurrence.svg" alt="循环模板" />
+            </button>
+            <button
+              class="titlebar-btn titlebar-btn-settings month-titlebar-btn"
+              title="设置"
+              @click="openSettings"
+            >
+              <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
+            </button>
+            <button
+              class="titlebar-btn titlebar-btn-help month-titlebar-btn"
+              :class="{ 'is-active': helpPanelActive }"
+              :title="helpPanelActive ? '关闭帮助' : '帮助'"
+              aria-controls="help-workspace"
+              :aria-expanded="helpPanelActive"
+              @click="toggleHelp"
+            >
+              <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
+            </button>
+          </TitlebarActions>
+        </AppTitlebar>
+        <div class="month-content-stage">
+          <main
+            class="month-content"
+            :class="{ 'is-ui-background-blurred': templateInteractive || helpInteractive }"
+            :inert="templateInteractive || helpInteractive"
+            :aria-label="`${viewLabel}内容区域`"
+          >
+            <MonthWorkspace
+              ref="calendarWorkspaceRef"
+              :view-mode="viewMode"
+              @modal-state-change="calendarBusinessModalOpen = $event"
+              @ready="onCalendarWorkspaceReady"
+            />
+          </main>
 
-        <div
-          v-if="templatesRendered"
-          class="month-template-wrapper"
-          :class="{ 'is-interactive': templateInteractive }"
-        >
           <div
-            id="template-workspace"
-            ref="templatePanelRef"
-            class="month-template-panel"
-            :class="{ active: templatePanelActive }"
-            role="region"
-            aria-label="循环便签模板设置"
-            @transitionend="onTemplateTransitionEnd"
-            @transitioncancel="onTemplateTransitionCancel"
+            v-if="templatesRendered"
+            class="month-template-wrapper"
+            :class="{ 'is-interactive': templateInteractive }"
           >
-            <TemplatePage />
+            <div
+              id="template-workspace"
+              ref="templatePanelRef"
+              class="month-template-panel"
+              :class="{ active: templatePanelActive }"
+              role="region"
+              aria-label="循环便签模板设置"
+              @transitionend="onTemplateTransitionEnd"
+              @transitioncancel="onTemplateTransitionCancel"
+            >
+              <TemplatePage />
+            </div>
           </div>
-        </div>
 
-        <div
-          v-if="helpRendered"
-          class="month-help-wrapper"
-          :class="{ 'is-interactive': helpInteractive }"
-        >
           <div
-            id="help-workspace"
-            ref="helpPanelRef"
-            class="month-help-panel"
-            :class="{ active: helpPanelActive }"
-            role="region"
-            :aria-label="`${viewLabel}帮助中心`"
-            @transitionend="onHelpTransitionEnd"
-            @transitioncancel="onHelpTransitionCancel"
+            v-if="helpRendered"
+            class="month-help-wrapper"
+            :class="{ 'is-interactive': helpInteractive }"
           >
-            <HelpPage :view-mode="viewMode" @close="closeHelp" />
+            <div
+              id="help-workspace"
+              ref="helpPanelRef"
+              class="month-help-panel"
+              :class="{ active: helpPanelActive }"
+              role="region"
+              :aria-label="`${viewLabel}帮助中心`"
+              @transitionend="onHelpTransitionEnd"
+              @transitioncancel="onHelpTransitionCancel"
+            >
+              <HelpPage :view-mode="viewMode" @close="closeHelp" />
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </CompactWindowScene>
 
     <SettingsPanel
       v-if="showSettings"

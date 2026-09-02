@@ -4,6 +4,7 @@
 
 #include "blur_api.h"
 #include "blur_engine.h"
+#include "transition_engine.h"
 #include "window_motion_edge_monitor.h"
 #include "window_z_order.h"
 #include <algorithm>
@@ -12,7 +13,7 @@
 #include <winternl.h>
 
 namespace {
-constexpr int kNativeAbiVersion = 3;
+constexpr int kNativeAbiVersion = 9;
 }
 
 int AbandonNative_GetAbiVersion(void) {
@@ -52,13 +53,25 @@ int Blur_Init(void* hwnd) {
     return BlurEngine::Engine::Instance().Initialize(static_cast<HWND>(hwnd)) ? 1 : 0;
 }
 
-void Blur_ApplyConfig(int enabled, float radiusDip, float saturation, float cornerRadiusDip) {
+int Blur_ApplyConfig(
+    int enabled,
+    float radiusDip,
+    float saturation,
+    float cornerRadiusDip,
+    int tintR,
+    int tintG,
+    int tintB,
+    float tintOpacity) {
     BlurEngine::BlurConfig config;
     config.enabled = enabled != 0;
     config.radiusDip = radiusDip;
     config.saturation = saturation;
     config.cornerRadius = cornerRadiusDip;
-    BlurEngine::Engine::Instance().SetConfig(config);
+    config.tintR = tintR;
+    config.tintG = tintG;
+    config.tintB = tintB;
+    config.tintOpacity = tintOpacity;
+    return BlurEngine::Engine::Instance().ApplyConfigAndWait(config) ? 1 : 0;
 }
 
 void Blur_Destroy(void) {
@@ -71,9 +84,7 @@ void Blur_SetRadius(float radiusDip) {
 }
 
 void Blur_SetTint(int r, int g, int b) {
-    UNREFERENCED_PARAMETER(r);
-    UNREFERENCED_PARAMETER(g);
-    UNREFERENCED_PARAMETER(b);
+    BlurEngine::Engine::Instance().SetTint(r, g, b);
 }
 
 void Blur_SetEnabled(int enabled) {
@@ -85,7 +96,7 @@ void Blur_SetSaturation(float saturation) {
 }
 
 void Blur_SetOpacity(float opacity) {
-    UNREFERENCED_PARAMETER(opacity);
+    BlurEngine::Engine::Instance().SetTintOpacity(opacity);
 }
 
 void Blur_SetCornerRadius(float radiusDip) {
@@ -94,6 +105,34 @@ void Blur_SetCornerRadius(float radiusDip) {
 
 void Blur_UpdateGeometry(void) {
     BlurEngine::Engine::Instance().UpdateGeometry();
+}
+
+int WindowTransition_Run(
+    void* hwnd,
+    int targetPhysicalX,
+    int targetPhysicalY,
+    int targetPhysicalWidth,
+    int targetPhysicalHeight,
+    int durationMs) {
+    return WindowTransition::Engine::Instance().Run(
+        static_cast<HWND>(hwnd),
+        targetPhysicalX,
+        targetPhysicalY,
+        targetPhysicalWidth,
+        targetPhysicalHeight,
+        durationMs);
+}
+
+int WindowTransition_IsRunning(void) {
+    return WindowTransition::Engine::Instance().IsRunning() ? 1 : 0;
+}
+
+const char* WindowTransition_GetLastErrorMessage(void) {
+    return WindowTransition::Engine::Instance().GetLastErrorMessage();
+}
+
+const char* WindowTransition_GetStatusJson(void* hwnd) {
+    return WindowTransition::Engine::Instance().GetStatusJson(static_cast<HWND>(hwnd));
 }
 
 void Blur_ReSyncOrder(void) {

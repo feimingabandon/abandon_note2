@@ -13,9 +13,11 @@
 
 #include <windows.ui.composition.interop.h>
 #include <DispatcherQueue.h>
+#include <dwmapi.h>
 #include <shellscalingapi.h>
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "user32.lib")
@@ -33,6 +35,14 @@ namespace BlurEngine {
 #define WM_BLUR_HIDE             (WM_USER + 103)
 #define WM_BLUR_DESTROY          (WM_USER + 104)
 #define WM_BLUR_SYNC_ZORDER      (WM_USER + 105)
+#define WM_BLUR_BEGIN_TRANSITION (WM_USER + 106)
+#define WM_BLUR_END_TRANSITION   (WM_USER + 107)
+#define WM_BLUR_TRANSITION_VISUAL (WM_USER + 108)
+
+struct TransitionVisualSize {
+    int width;
+    int height;
+};
 
 // ---- 效果管线硬编码参数 ----
 // 模糊优化: Balanced；边框模式: Hard
@@ -46,6 +56,22 @@ Engine& Engine::Instance() {
 }
 
 bool Engine::s_classRegistered = false;
+
+namespace {
+
+BlurConfig NormalizeBlurConfig(const BlurConfig& config) {
+    BlurConfig normalized = config;
+    normalized.radiusDip = std::clamp(normalized.radiusDip, 0.0f, 40.0f);
+    normalized.saturation = std::clamp(normalized.saturation, 0.0f, 2.0f);
+    normalized.cornerRadius = std::clamp(normalized.cornerRadius, 0.0f, 30.0f);
+    normalized.tintR = std::clamp(normalized.tintR, 0, 255);
+    normalized.tintG = std::clamp(normalized.tintG, 0, 255);
+    normalized.tintB = std::clamp(normalized.tintB, 0, 255);
+    normalized.tintOpacity = std::clamp(normalized.tintOpacity, 0.0f, 1.0f);
+    return normalized;
+}
+
+} // namespace
 
 // ============================================================
 // 公共 API
@@ -74,7 +100,7 @@ bool Engine::Initialize(HWND parentHwnd) {
         m_initCompleted = false;
         m_initSuccess = false;
     }
-    m_parentHwnd = parentHwnd;
+    m_parentHwnd.store(parentHwnd);
     m_running.store(true);
     m_staThread = std::thread(&Engine::StaThreadProc, this, parentHwnd);
 
@@ -103,13 +129,7 @@ void Engine::Destroy() {
 }
 
 void Engine::SetConfig(const BlurConfig& config) {
-    BlurConfig normalized = config;
-    normalized.radiusDip = (normalized.radiusDip < 0.0f) ? 0.0f :
-        (normalized.radiusDip > 40.0f) ? 40.0f : normalized.radiusDip;
-    normalized.saturation = (normalized.saturation < 0.0f) ? 0.0f :
-        (normalized.saturation > 2.0f) ? 2.0f : normalized.saturation;
-    normalized.cornerRadius = (normalized.cornerRadius < 0.0f) ? 0.0f :
-        (normalized.cornerRadius > 30.0f) ? 30.0f : normalized.cornerRadius;
+    const BlurConfig normalized = NormalizeBlurConfig(config);
     {
         std::lock_guard<std::mutex> lock(m_configMutex);
         m_config = normalized;
@@ -126,6 +146,40 @@ void Engine::SetConfig(const BlurConfig& config) {
         m_lastError.store(BlurErrorCode::OverlayWindowFailed);
         m_runtimeHealthy.store(false);
     }
+}
+
+bool Engine::ApplyConfigAndWait(const BlurConfig& config, DWORD syncTimeoutMs) {
+    if (!m_initialized.load() || m_windowTransitioning.load()) {
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        return false;
+    }
+    const HWND overlayHwnd = m_messageHwnd.load();
+    if (!overlayHwnd || !IsWindow(overlayHwnd)) {
+        m_lastError.store(BlurErrorCode::OverlayWindowFailed);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
+
+    const BlurConfig normalized = NormalizeBlurConfig(config);
+    {
+        std::lock_guard<std::mutex> lock(m_configMutex);
+        m_config = normalized;
+    }
+
+    DWORD_PTR syncResult = 0;
+    if (!SendMessageTimeoutW(
+            overlayHwnd,
+            WM_BLUR_APPLY_CONFIG,
+            1,
+            0,
+            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+            std::max<DWORD>(1, syncTimeoutMs),
+            &syncResult)) {
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
+    return syncResult == 1;
 }
 
 void Engine::SetRadius(float radiusDip) {
@@ -152,12 +206,27 @@ void Engine::SetCornerRadius(float radiusDip) {
     SetConfig(cfg);
 }
 
+void Engine::SetTint(int r, int g, int b) {
+    BlurConfig cfg = GetConfig();
+    cfg.tintR = r;
+    cfg.tintG = g;
+    cfg.tintB = b;
+    SetConfig(cfg);
+}
+
+void Engine::SetTintOpacity(float opacity) {
+    BlurConfig cfg = GetConfig();
+    cfg.tintOpacity = opacity;
+    SetConfig(cfg);
+}
+
 BlurConfig Engine::GetConfig() const {
     std::lock_guard<std::mutex> lock(m_configMutex);
     return m_config;
 }
 
 void Engine::UpdateGeometry() {
+    if (m_windowTransitioning.load()) return;
     if (HWND hwnd = m_messageHwnd.load()) {
         if (!m_geometryUpdatePending.exchange(true)) {
             if (!PostMessage(hwnd, WM_BLUR_UPDATE_GEOMETRY, 0, 0)) {
@@ -178,7 +247,7 @@ bool Engine::MoveParentAndOverlay(
     int physicalY,
     DWORD syncTimeoutMs) {
     const HWND overlayHwnd = m_messageHwnd.load();
-    if (parentHwnd != m_parentHwnd ||
+    if (parentHwnd != m_parentHwnd.load() ||
         !parentHwnd || !IsWindow(parentHwnd) ||
         !overlayHwnd || !IsWindow(overlayHwnd)) {
         return false;
@@ -242,6 +311,162 @@ bool Engine::MoveParentAndOverlay(
     // 不因短暂的 Z-order 检查结果中止动画，交给既有去重队列自愈。
     if (!IsZOrderAdjacent()) QueueZOrderSync();
     return true;
+}
+
+bool Engine::BeginWindowTransition(int initialWidth, int initialHeight, DWORD syncTimeoutMs) {
+    const HWND overlayHwnd = m_messageHwnd.load();
+    if (!m_initialized.load() || !overlayHwnd || !IsWindow(overlayHwnd) ||
+        initialWidth <= 0 || initialHeight <= 0) {
+        return false;
+    }
+    m_windowTransitioning.store(true);
+    DWORD_PTR syncResult = 0;
+    if (!SendMessageTimeoutW(
+            overlayHwnd,
+            WM_BLUR_BEGIN_TRANSITION,
+            static_cast<WPARAM>(initialWidth),
+            static_cast<LPARAM>(initialHeight),
+            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+            std::max<DWORD>(1, syncTimeoutMs),
+            &syncResult) || syncResult != 1) {
+        m_windowTransitioning.store(false);
+        return false;
+    }
+    return true;
+}
+
+bool Engine::SetWindowTransitionGeometry(
+    HWND parentHwnd,
+    int physicalX,
+    int physicalY,
+    int width,
+    int height) {
+    const HWND overlayHwnd = m_messageHwnd.load();
+    if (!m_windowTransitioning.load() || !overlayHwnd || !IsWindow(overlayHwnd) ||
+        parentHwnd != m_parentHwnd.load() || !parentHwnd || !IsWindow(parentHwnd) ||
+        width <= 0 || height <= 0) {
+        m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::InvalidState);
+        return false;
+    }
+    m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::None);
+    const auto config = GetConfig();
+    const bool showOverlay = config.enabled;
+    HDWP deferred = BeginDeferWindowPos(showOverlay ? 2 : 1);
+    if (!deferred) {
+        m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::BeginBatchFailed);
+        return false;
+    }
+    deferred = DeferWindowPos(
+        deferred,
+        parentHwnd,
+        nullptr,
+        physicalX,
+        physicalY,
+        width,
+        height,
+        SWP_NOZORDER | SWP_NOACTIVATE);
+    if (!deferred) {
+        m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::ParentBatchFailed);
+        return false;
+    }
+    if (showOverlay) {
+        deferred = DeferWindowPos(
+            deferred,
+            overlayHwnd,
+            parentHwnd,
+            physicalX,
+            physicalY,
+            width,
+            height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        if (!deferred) {
+            m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::OverlayBatchFailed);
+            return false;
+        }
+    }
+    if (!EndDeferWindowPos(deferred)) {
+        m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::CommitBatchFailed);
+        return false;
+    }
+    if (!showOverlay) {
+        ShowWindow(overlayHwnd, SW_HIDE);
+    }
+
+    if (showOverlay) {
+        TransitionVisualSize visualSize{ width, height };
+        DWORD_PTR syncResult = 0;
+        if (!SendMessageTimeoutW(
+                overlayHwnd,
+                WM_BLUR_TRANSITION_VISUAL,
+                0,
+                reinterpret_cast<LPARAM>(&visualSize),
+                SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                100,
+                &syncResult) || syncResult != 1) {
+            m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::VisualSyncFailed);
+            return false;
+        }
+    }
+
+    RECT parentAfter{};
+    if (!GetWindowRect(parentHwnd, &parentAfter) ||
+        parentAfter.left != physicalX || parentAfter.top != physicalY ||
+        parentAfter.right - parentAfter.left != width ||
+        parentAfter.bottom - parentAfter.top != height) {
+        m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::ParentBoundsMismatch);
+        return false;
+    }
+    if (!showOverlay) return true;
+    RECT overlayAfter{};
+    const bool overlayMatches =
+        GetWindowRect(overlayHwnd, &overlayAfter) && EqualRect(&parentAfter, &overlayAfter);
+    if (!overlayMatches) {
+        m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::OverlayBoundsMismatch);
+    }
+    return overlayMatches;
+}
+
+bool Engine::EndWindowTransition(HWND parentHwnd, DWORD syncTimeoutMs) {
+    const HWND overlayHwnd = m_messageHwnd.load();
+    if (!m_initialized.load() || !overlayHwnd || !IsWindow(overlayHwnd) ||
+        !parentHwnd || !IsWindow(parentHwnd)) {
+        m_windowTransitioning.store(false);
+        return false;
+    }
+    DWORD_PTR syncResult = 0;
+    const bool success = SendMessageTimeoutW(
+        overlayHwnd,
+        WM_BLUR_END_TRANSITION,
+        0,
+        reinterpret_cast<LPARAM>(parentHwnd),
+        SMTO_ABORTIFHUNG | SMTO_BLOCK,
+        std::max<DWORD>(1, syncTimeoutMs),
+        &syncResult) && syncResult == 1;
+    if (!success) m_windowTransitioning.store(false);
+    return success;
+}
+
+bool Engine::AbortWindowTransition(
+    HWND parentHwnd,
+    int physicalX,
+    int physicalY,
+    int width,
+    int height,
+    DWORD syncTimeoutMs) {
+    // EndWindowTransition 的消息可能已经失败并清除了标志。回滚必须重新进入
+    // 受控状态，确保恢复几何仍通过同一个 parent/overlay 批次提交。
+    m_windowTransitioning.store(true);
+    const bool geometryRestored = SetWindowTransitionGeometry(
+        parentHwnd,
+        physicalX,
+        physicalY,
+        width,
+        height);
+    const bool finalized = EndWindowTransition(parentHwnd, syncTimeoutMs);
+    // SendMessageTimeout 失败、无效 HWND 等所有分支都必须解除标志。
+    m_windowTransitioning.store(false);
+    if (!finalized) UpdateGeometry();
+    return geometryRestored && finalized;
 }
 
 void Engine::ReSyncZOrder() {
@@ -364,6 +589,10 @@ void Engine::Cleanup() {
     m_configUpdatePending.store(false);
     m_geometryUpdatePending.store(false);
     m_zOrderSyncPending.store(false);
+    m_windowTransitioning.store(false);
+    m_visualWidth.store(0);
+    m_visualHeight.store(0);
+    m_parentHwnd.store(nullptr);
     if (m_foregroundHook) {
         UnhookWinEvent(m_foregroundHook);
         m_foregroundHook = nullptr;
@@ -373,12 +602,15 @@ void Engine::Cleanup() {
         m_reorderHook = nullptr;
     }
     try {
-        if (m_blurVisual && m_target) m_target.Root(nullptr);
+        if (m_rootVisual && m_target) m_target.Root(nullptr);
     }
     catch (...) {
         // 清理路径绝不能让 WinRT 异常越过 STA 线程入口。
     }
     m_blurVisual = nullptr;
+    m_tintVisual = nullptr;
+    m_tintBrush = nullptr;
+    m_rootVisual = nullptr;
     m_clipGeometry = nullptr;
     m_clip = nullptr;
     m_effectBrush = nullptr;
@@ -510,10 +742,22 @@ bool Engine::BuildEffectGraph() {
         auto backdropBrush = m_compositor.CreateBackdropBrush();
         m_effectBrush.SetSourceParameter(L"backdrop", backdropBrush);
 
-        // ---- 单层 SpriteVisual ----
+        // ---- 同一个 DComp 根容器统一合成模糊与窗口底色 ----
+        m_rootVisual = m_compositor.CreateContainerVisual();
         m_blurVisual = m_compositor.CreateSpriteVisual();
         m_blurVisual.Brush(m_effectBrush);
-        m_target.Root(m_blurVisual);
+        m_tintBrush = m_compositor.CreateColorBrush(winrt::Windows::UI::Color{
+            255,
+            static_cast<uint8_t>(cfg.tintR),
+            static_cast<uint8_t>(cfg.tintG),
+            static_cast<uint8_t>(cfg.tintB)
+        });
+        m_tintVisual = m_compositor.CreateSpriteVisual();
+        m_tintVisual.Brush(m_tintBrush);
+        m_tintVisual.Opacity(cfg.tintOpacity);
+        m_rootVisual.Children().InsertAtBottom(m_blurVisual);
+        m_rootVisual.Children().InsertAtTop(m_tintVisual);
+        m_target.Root(m_rootVisual);
 
         m_effectBrush.Properties().InsertScalar(L"Blur.BlurAmount", cfg.radiusDip);
         m_effectBrush.Properties().InsertScalar(L"Saturation.Saturation", cfg.saturation);
@@ -524,6 +768,9 @@ bool Engine::BuildEffectGraph() {
         return true;
     }
     catch (...) {
+        m_tintVisual = nullptr;
+        m_tintBrush = nullptr;
+        m_rootVisual = nullptr;
         m_blurVisual = nullptr;
         m_effectBrush = nullptr;
         return false;
@@ -535,7 +782,8 @@ bool Engine::BuildEffectGraph() {
 // ============================================================
 
 bool Engine::UpdateEffectParameters() {
-    if (!m_compositor || !m_blurVisual || !m_effectBrush) {
+    if (!m_compositor || !m_rootVisual || !m_blurVisual || !m_tintVisual ||
+        !m_tintBrush || !m_effectBrush) {
         m_lastError.store(BlurErrorCode::EffectGraphFailed);
         m_runtimeHealthy.store(false);
         return false;
@@ -548,6 +796,13 @@ bool Engine::UpdateEffectParameters() {
         m_effectBrush.Properties().InsertScalar(L"Blur.BlurAmount", cfg.radiusDip);
         m_effectBrush.Properties().InsertScalar(L"Saturation.Saturation", cfg.saturation);
         m_blurVisual.Opacity(1.0f);
+        m_tintBrush.Color(winrt::Windows::UI::Color{
+            255,
+            static_cast<uint8_t>(cfg.tintR),
+            static_cast<uint8_t>(cfg.tintG),
+            static_cast<uint8_t>(cfg.tintB)
+        });
+        m_tintVisual.Opacity(cfg.tintOpacity);
         ApplyClip();
         m_lastError.store(BlurErrorCode::None);
         m_runtimeHealthy.store(true);
@@ -565,24 +820,33 @@ bool Engine::UpdateEffectParameters() {
 // ============================================================
 
 void Engine::UpdateVisualSize() {
-    if (!m_blurVisual || !m_overlayHwnd) return;
+    if (!m_rootVisual || !m_blurVisual || !m_tintVisual || !m_overlayHwnd) return;
     RECT r;
     GetClientRect(m_overlayHwnd, &r);
     int pw = r.right - r.left, ph = r.bottom - r.top;
     if (pw <= 0 || ph <= 0) return;
+    UpdateVisualSize(pw, ph);
+}
+
+void Engine::UpdateVisualSize(int width, int height) {
+    if (!m_rootVisual || !m_blurVisual || !m_tintVisual || width <= 0 || height <= 0) return;
     // DesktopWindowTarget 的 Visual 与 Overlay 客户区使用同一像素空间。
     // Overlay HWND 已与 Electron HWND 等大，Visual 必须覆盖完整客户区；
     // 再除以 DPI 会在 125% 下只覆盖 80%。
     const winrt::Windows::Foundation::Numerics::float2 visualSize{
-        static_cast<float>(pw),
-        static_cast<float>(ph)
+        static_cast<float>(width),
+        static_cast<float>(height)
     };
+    m_rootVisual.Size(visualSize);
     m_blurVisual.Size(visualSize);
+    m_tintVisual.Size(visualSize);
     if (m_clipGeometry) m_clipGeometry.Size(visualSize);
+    m_visualWidth.store(width);
+    m_visualHeight.store(height);
 }
 
 void Engine::ApplyClip() {
-    if (!m_compositor || !m_blurVisual) return;
+    if (!m_compositor || !m_rootVisual || !m_blurVisual) return;
 
     BlurConfig cfg;
     { std::lock_guard<std::mutex> lock(m_configMutex); cfg = m_config; }
@@ -593,13 +857,13 @@ void Engine::ApplyClip() {
     }
     if (!m_clip) {
         m_clip = m_compositor.CreateGeometricClip(m_clipGeometry);
-        m_blurVisual.Clip(m_clip);
+        m_rootVisual.Clip(m_clip);
     }
 
     m_clipGeometry.CornerRadius({ cfg.cornerRadius, cfg.cornerRadius });
 
     // 同步几何体尺寸与视觉尺寸一致
-    auto visSize = m_blurVisual.Size();
+    auto visSize = m_rootVisual.Size();
     m_clipGeometry.Size(visSize);
 
 }
@@ -618,19 +882,20 @@ bool Engine::SyncGeometryFromParent() {
         m_runtimeHealthy.store(false);
         return false;
     }
-    if (!m_parentHwnd || !IsWindow(m_parentHwnd)) {
+    const HWND parentHwnd = m_parentHwnd.load();
+    if (!parentHwnd || !IsWindow(parentHwnd)) {
         m_lastError.store(BlurErrorCode::InvalidParentWindow);
         m_runtimeHealthy.store(false);
         return false;
     }
     RECT rect{};
-    if (!GetWindowRect(m_parentHwnd, &rect)) {
+    if (!GetWindowRect(parentHwnd, &rect)) {
         m_lastError.store(BlurErrorCode::UnknownFailure);
         m_runtimeHealthy.store(false);
         return false;
     }
 
-    if (!SetWindowPos(m_overlayHwnd, m_parentHwnd,
+    if (!SetWindowPos(m_overlayHwnd, parentHwnd,
         rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
         SWP_NOACTIVATE)) {
         m_lastError.store(BlurErrorCode::UnknownFailure);
@@ -655,7 +920,8 @@ bool Engine::SyncAndShow() {
         m_runtimeHealthy.store(false);
         return false;
     }
-    if (!m_parentHwnd || !IsWindow(m_parentHwnd)) {
+    const HWND parentHwnd = m_parentHwnd.load();
+    if (!parentHwnd || !IsWindow(parentHwnd)) {
         m_lastError.store(BlurErrorCode::InvalidParentWindow);
         m_runtimeHealthy.store(false);
         return false;
@@ -663,21 +929,21 @@ bool Engine::SyncAndShow() {
 
     // Effect Graph 可以在 Electron show:false 时提前初始化，但背景层绝不能
     // 脱离父窗口独立出现。首次 show、托盘恢复和视图切换都会再次提交配置。
-    if (!IsWindowVisible(m_parentHwnd)) {
+    if (!IsWindowVisible(parentHwnd)) {
         ShowWindow(m_overlayHwnd, SW_HIDE);
         if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
         return true;
     }
 
     RECT rect{};
-    if (!GetWindowRect(m_parentHwnd, &rect)) {
+    if (!GetWindowRect(parentHwnd, &rect)) {
         m_lastError.store(BlurErrorCode::UnknownFailure);
         m_runtimeHealthy.store(false);
         return false;
     }
 
     const bool parentTopmost =
-        (GetWindowLongPtrW(m_parentHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+        (GetWindowLongPtrW(parentHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
     const bool overlayTopmost =
         (GetWindowLongPtrW(m_overlayHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
 
@@ -694,7 +960,7 @@ bool Engine::SyncAndShow() {
         }
     }
 
-    if (!SetWindowPos(m_overlayHwnd, m_parentHwnd,
+    if (!SetWindowPos(m_overlayHwnd, parentHwnd,
         rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
         SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
         m_lastError.store(BlurErrorCode::UnknownFailure);
@@ -720,7 +986,8 @@ bool Engine::SyncZOrder() {
         m_runtimeHealthy.store(false);
         return false;
     }
-    if (!m_parentHwnd || !IsWindow(m_parentHwnd)) {
+    const HWND parentHwnd = m_parentHwnd.load();
+    if (!parentHwnd || !IsWindow(parentHwnd)) {
         m_lastError.store(BlurErrorCode::InvalidParentWindow);
         m_runtimeHealthy.store(false);
         return false;
@@ -728,14 +995,14 @@ bool Engine::SyncZOrder() {
 
     // 父窗口隐藏时维持“背景层也隐藏”的强不变量。Z-order 修复请求可以来自
     // 异步 WinEvent/焦点事件，不能让迟到的请求重新留下孤立 Overlay。
-    if (!IsWindowVisible(m_parentHwnd)) {
+    if (!IsWindowVisible(parentHwnd)) {
         ShowWindow(m_overlayHwnd, SW_HIDE);
         if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
         return true;
     }
 
     const bool parentTopmost =
-        (GetWindowLongPtrW(m_parentHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+        (GetWindowLongPtrW(parentHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
     const bool overlayTopmost =
         (GetWindowLongPtrW(m_overlayHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
 
@@ -757,7 +1024,7 @@ bool Engine::SyncZOrder() {
         }
     }
     // 焦点切换的常规路径只提交一次：紧贴在 Electron 正后方。
-    if (!SetWindowPos(m_overlayHwnd, m_parentHwnd,
+    if (!SetWindowPos(m_overlayHwnd, parentHwnd,
         0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) {
         m_lastError.store(BlurErrorCode::UnknownFailure);
         m_runtimeHealthy.store(false);
@@ -769,25 +1036,26 @@ bool Engine::SyncZOrder() {
 
 bool Engine::IsZOrderAdjacent() const {
     const HWND overlayHwnd = m_messageHwnd.load();
+    const HWND parentHwnd = m_parentHwnd.load();
     if (!overlayHwnd || !IsWindow(overlayHwnd) ||
-        !m_parentHwnd || !IsWindow(m_parentHwnd)) {
+        !parentHwnd || !IsWindow(parentHwnd)) {
         return false;
     }
 
     const bool parentTopmost =
-        (GetWindowLongPtrW(m_parentHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+        (GetWindowLongPtrW(parentHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
     const bool overlayTopmost =
         (GetWindowLongPtrW(overlayHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
 
     if (parentTopmost != overlayTopmost) return false;
 
     RECT parentRect{};
-    if (!GetWindowRect(m_parentHwnd, &parentRect)) return false;
+    if (!GetWindowRect(parentHwnd, &parentRect)) return false;
 
     // Electron 后方可能存在不可见的 IME/辅助 HWND，不能要求 GW_HWNDNEXT
     // 立即等于 Overlay。只有可见且与主窗口相交的窗口夹在中间时，才会覆盖
     // BlurOverlay 并造成“桌面模糊、其他程序清晰透出”。
-    HWND candidate = GetWindow(m_parentHwnd, GW_HWNDNEXT);
+    HWND candidate = GetWindow(parentHwnd, GW_HWNDNEXT);
     while (candidate) {
         if (candidate == overlayHwnd) return true;
 
@@ -805,6 +1073,7 @@ bool Engine::IsZOrderAdjacent() const {
 }
 
 void Engine::QueueZOrderSync() {
+    if (m_windowTransitioning.load()) return;
     if (HWND hwnd = m_messageHwnd.load()) {
         if (m_zOrderSyncPending.exchange(true)) return;
         if (!PostMessage(hwnd, WM_BLUR_SYNC_ZORDER, 0, 0)) {
@@ -844,6 +1113,7 @@ void CALLBACK Engine::WinEventProc(
 
     auto& engine = Engine::Instance();
     if (event != EVENT_SYSTEM_FOREGROUND && event != EVENT_OBJECT_REORDER) return;
+    if (engine.m_windowTransitioning.load()) return;
     if (event == EVENT_OBJECT_REORDER &&
         (objectId != OBJID_WINDOW || childId != CHILDID_SELF)) {
         return;
@@ -878,6 +1148,7 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         // 越过已 Post 但尚未取出的异步消息，因此不能提前清除
         // pending；真正的队列消息取出时再清除。
         if (wParam == 0) self->m_geometryUpdatePending.store(false);
+        if (self->m_windowTransitioning.load()) return 1;
         // 在 HWND 所属的 DPI-aware STA 线程直接读取物理坐标，避免 JS DIP 换算和跨线程数据竞争。
         if (!self->SyncGeometryFromParent()) {
             ShowWindow(hwnd, SW_HIDE);
@@ -895,19 +1166,28 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             ShowWindow(hwnd, SW_HIDE);
             return 0;
         }
+        if (self->m_windowTransitioning.load()) return 0;
         {
             auto cfg = self->GetConfig();
             if (cfg.enabled) {
                 if (!self->SyncAndShow()) {
                     ShowWindow(hwnd, SW_HIDE);
+                    return 0;
                 }
             } else {
                 ShowWindow(hwnd, SW_HIDE);
             }
         }
-        return 0;
+        if (FAILED(DwmFlush())) {
+            self->m_lastError.store(BlurErrorCode::UnknownFailure);
+            self->m_runtimeHealthy.store(false);
+            ShowWindow(hwnd, SW_HIDE);
+            return 0;
+        }
+        return 1;
 
     case WM_BLUR_SHOW:
+        if (self->m_windowTransitioning.load()) return 0;
         if (self->GetConfig().enabled) {
             if (!self->SyncAndShow()) {
                 ShowWindow(hwnd, SW_HIDE);
@@ -916,13 +1196,57 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         return 0;
 
     case WM_BLUR_HIDE:
+        if (self->m_windowTransitioning.load()) return 0;
         ShowWindow(hwnd, SW_HIDE);
         return 0;
 
     case WM_BLUR_SYNC_ZORDER:
         self->m_zOrderSyncPending.store(false);
+        if (self->m_windowTransitioning.load()) return 0;
         self->SyncZOrder();
         return 0;
+
+    case WM_BLUR_BEGIN_TRANSITION: {
+        const int initialWidth = static_cast<int>(wParam);
+        const int initialHeight = static_cast<int>(lParam);
+        if (initialWidth <= 0 || initialHeight <= 0 || !self->m_rootVisual) return 0;
+        try {
+            self->UpdateVisualSize(initialWidth, initialHeight);
+            return 1;
+        }
+        catch (...) {
+            self->m_lastError.store(BlurErrorCode::EffectGraphFailed);
+            self->m_runtimeHealthy.store(false);
+            return 0;
+        }
+    }
+
+    case WM_BLUR_TRANSITION_VISUAL: {
+        const auto* size = reinterpret_cast<const TransitionVisualSize*>(lParam);
+        if (!size || size->width <= 0 || size->height <= 0 || !self->m_rootVisual) return 0;
+        try {
+            self->UpdateVisualSize(size->width, size->height);
+            return 1;
+        }
+        catch (...) {
+            self->m_lastError.store(BlurErrorCode::EffectGraphFailed);
+            self->m_runtimeHealthy.store(false);
+            return 0;
+        }
+    }
+
+    case WM_BLUR_END_TRANSITION: {
+        const HWND parentHwnd = reinterpret_cast<HWND>(lParam);
+        if (!parentHwnd || !IsWindow(parentHwnd)) return 0;
+        self->m_parentHwnd.store(parentHwnd);
+        self->m_windowTransitioning.store(false);
+        const auto config = self->GetConfig();
+        if (!config.enabled) {
+            ShowWindow(hwnd, SW_HIDE);
+            return 1;
+        }
+        return self->SyncAndShow() ? 1 : 0;
+    }
 
     case WM_BLUR_DESTROY:
         self->m_running.store(false);
