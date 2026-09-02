@@ -89,6 +89,7 @@ function seedMonthView(userDataPath) {
   insert.run('application', 'remote', 'upload_device_info', 'false', now, now)
   insert.run('application', 'onboarding', 'first_use_notice_version', '1', now, now)
   insert.run('month', 'system', 'blur_enabled', 'false', now, now)
+  insert.run('month', 'ui', 'settings_panel_size', '57', now, now)
   db.close()
 }
 
@@ -262,7 +263,11 @@ async function runMonthViewTests() {
       title: document.querySelector('.month-toolbar__title').textContent,
       selected: document.querySelector('.month-day-cell[data-date="${adjacentMonthState.key}"]')?.classList.contains('is-selected')
     }))()`)
-    assert.equal(adjacentMonthSelected.title, adjacentMonthState.title, '点击补位日期不得自动切换月份')
+    assert.equal(
+      adjacentMonthSelected.title,
+      adjacentMonthState.title,
+      '点击补位日期不得自动切换月份'
+    )
     assert.equal(adjacentMonthSelected.selected, true, '相邻月份日期必须支持正常选中状态')
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-day-cell[data-date="${adjacentMonthState.key}"]').click()`
@@ -1720,12 +1725,19 @@ async function runMonthViewTests() {
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-titlebar-btn[title="设置"]').click()`
     )
-    await waitUntil(
-      () =>
-        monthWindow.webContents.executeJavaScript(
-          `Boolean(document.querySelector('.settings-panel--month.active'))`
-        ),
-      '月视图设置面板没有从右侧打开'
+    const openingSettingsWidthRatio = await waitUntil(async () => {
+      const state = await monthWindow.webContents.executeJavaScript(`(() => {
+          const panel = document.querySelector('.settings-panel--month')
+          return {
+            active: Boolean(panel?.classList.contains('active')),
+            widthRatio: panel ? panel.getBoundingClientRect().width / window.innerWidth : 0
+          }
+        })()`)
+      return state.active ? state.widthRatio : null
+    }, '月视图设置面板没有从右侧打开')
+    assert.ok(
+      Math.abs(openingSettingsWidthRatio - 0.57) < 0.01,
+      '月视图设置面板进场首帧没有使用保存宽度'
     )
     await wait(400)
     const settingsUi = await monthWindow.webContents.executeJavaScript(`(() => {
@@ -1743,7 +1755,7 @@ async function runMonthViewTests() {
       text: panel.textContent
     }
   })()`)
-    assert.ok(Math.abs(settingsUi.widthRatio - 0.4) < 0.01, '月视图设置面板默认宽度必须为 40%')
+    assert.ok(Math.abs(settingsUi.widthRatio - 0.57) < 0.01, '月视图设置面板没有保持保存宽度')
     assert.ok(Math.abs(settingsUi.rightGap) < 1, '月视图设置面板必须贴住窗口右边缘')
     assert.ok(Math.abs(settingsUi.heightRatio - 1) < 0.01, '月视图设置面板必须占满窗口高度')
     assert.equal(settingsUi.resizeCursor, 'ew-resize', '月视图设置面板左边缘必须支持横向调宽')
@@ -1765,6 +1777,11 @@ async function runMonthViewTests() {
       settingsUi.sectionTitles.includes('便利贴'),
       false,
       '月视图设置不应显示列表便签外观'
+    )
+    assert.equal(
+      settingsUi.sectionTitles.includes('灵动岛'),
+      false,
+      '设置页面不应提供灵动岛宽高设置'
     )
     assert.match(settingsUi.text, /设置主页面壁纸/, '月视图必须保留独立壁纸设置')
     assert.match(settingsUi.text, /窗口边框/, '月视图必须提供当前视图的窗口边框开关')

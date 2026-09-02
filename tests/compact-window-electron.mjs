@@ -90,6 +90,7 @@ function seedSettings(userDataPath) {
     ['application', 'compact', 'y', '140'],
     ['application', 'compact', 'width', '360'],
     ['application', 'compact', 'height', '76'],
+    [viewConfig.scope, 'ui', 'settings_panel_size', requestedView === 'list' ? '55' : '57'],
     [viewConfig.scope, 'css', 'bg_color', '32 33 36'],
     [viewConfig.scope, 'css', 'text_color', '#f1f3f4'],
     [viewConfig.scope, 'css', 'window_opacity', '0.72'],
@@ -601,6 +602,40 @@ async function assertCompactContent(window, expectedBounds, expectedFontSize = n
   return diagnostics
 }
 
+async function runSettingsPanelOpeningTest(window) {
+  const calendarView = requestedView !== 'list'
+  const expectedRatio = calendarView ? 0.57 : 0.55
+  await window.webContents.executeJavaScript(
+    `document.querySelector('.titlebar-btn-settings').click()`
+  )
+  const opening = await waitUntil(async () => {
+    const state = await window.webContents.executeJavaScript(`(() => {
+      const panel = document.querySelector('.settings-panel')
+      if (!panel?.classList.contains('active')) return null
+      const rect = panel.getBoundingClientRect()
+      return {
+        sizeRatio: ${calendarView} ? rect.width / window.innerWidth : rect.height / window.innerHeight,
+        sectionTitles: Array.from(panel.querySelectorAll('.section-title'), (node) =>
+          node.textContent.replace(/\\s+/g, ' ').trim()
+        )
+      }
+    })()`)
+    return state
+  }, `${requestedView} 设置面板没有打开`)
+  assert.ok(
+    Math.abs(opening.sizeRatio - expectedRatio) < 0.01,
+    `${requestedView} 设置面板进场首帧没有使用保存尺寸`
+  )
+  assert.equal(opening.sectionTitles.includes('灵动岛'), false, '设置页面仍显示灵动岛宽高设置')
+  await window.webContents.executeJavaScript(
+    `document.querySelector('.settings-panel .panel-close-btn').click()`
+  )
+  await waitUntil(
+    () => window.webContents.executeJavaScript(`!document.querySelector('.settings-panel')`),
+    `${requestedView} 设置面板没有完成关闭`
+  )
+}
+
 async function runRepeatedTransitionStress(window, cycles, expectOverlay) {
   const originalId = window.id
   for (let index = 0; index < cycles; index += 1) {
@@ -903,6 +938,7 @@ async function runCompactWindowTest() {
     assert.equal(mainWindow.isMovable(), false, '展开后没有恢复主窗口锁定')
     await assertZOrderMode(mainWindow, '主视图展开')
     assertBlurRuntimeHealthy('主视图展开')
+    await runSettingsPanelOpeningTest(mainWindow)
     await runBlurDisabledTransitionTest(mainWindow)
     const expandedBounds = mainWindow.getBounds()
 
