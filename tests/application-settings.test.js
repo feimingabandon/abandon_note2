@@ -85,6 +85,40 @@ describe('application view settings', () => {
     )
   })
 
+  it('keeps the titlebar icon scale in the application scope', () => {
+    expect(readApplicationSettings().appearance.titlebarIconScale).toBe(100)
+
+    writeApplicationSetting('appearance.titlebarIconScale', 145)
+
+    expect(readApplicationSettings().appearance.titlebarIconScale).toBe(145)
+    expect(db.rowsByScope.get('application')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'appearance',
+          key: 'titlebar_icon_scale',
+          value: '145'
+        })
+      ])
+    )
+  })
+
+  it('keeps the icon color in the application scope', () => {
+    expect(readApplicationSettings().appearance.iconColor).toBe('black')
+
+    writeApplicationSetting('appearance.iconColor', 'white')
+
+    expect(readApplicationSettings().appearance.iconColor).toBe('white')
+    expect(db.rowsByScope.get('application')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'appearance',
+          key: 'icon_color',
+          value: 'white'
+        })
+      ])
+    )
+  })
+
   it('writes compact geometry atomically and rejects unrelated batch entries', () => {
     writeApplicationSettings([
       { id: 'window.compact.enabled', value: true },
@@ -130,6 +164,12 @@ describe('application view settings', () => {
       { type: 'ui', key: 'day_panel_size', value: '31', remark: '日期侧栏宽度' },
       { type: 'wallpaper', key: 'active_wallpaper_id', value: '9', remark: '壁纸' },
       { type: 'appearance', key: 'titlebar_style', value: 'microsoft', remark: '导航栏' },
+      {
+        type: 'appearance',
+        key: 'titlebar_icon_scale',
+        value: '145',
+        remark: '旧错误作用域中的全局图标大小'
+      },
       {
         type: 'dock',
         key: 'dock_reveal_handle_positions',

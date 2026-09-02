@@ -1,4 +1,6 @@
 <script setup>
+import AppIcon from '../ui/AppIcon.vue'
+
 defineProps({
   monthView: { type: Boolean, default: false }
 })
@@ -14,6 +16,6 @@ const emit = defineEmits(['open'])
     aria-haspopup="dialog"
     @click="emit('open')"
   >
-    <img class="btn-icon" src="@/resources/icons/daily-report.svg" alt="导出日报" />
+    <AppIcon class="btn-icon" name="daily-report" alt="导出日报" />
   </button>
 </template>

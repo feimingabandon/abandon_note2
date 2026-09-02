@@ -27,7 +27,12 @@ import LogViewerDialog from './LogViewerDialog.vue'
 import RemoteNoticeHistoryDialog from './RemoteNoticeHistoryDialog.vue'
 import WeatherSettings from '../weather/WeatherSettings.vue'
 import { useMessage } from '../../composables/useMessage.js' // 消息弹窗
-import { applyGlassBaseSettings, applySettingsSnapshot } from '../../utils/applySettingsSnapshot.js'
+import {
+  applyGlassBaseSettings,
+  applyIconColor,
+  applySettingsSnapshot,
+  applyTitlebarIconScale
+} from '../../utils/applySettingsSnapshot.js'
 import {
   captureFocusedElement,
   restoreFocusedElement,
@@ -38,6 +43,8 @@ import {
   DOCK_EDGES,
   DOCK_REVEAL_HANDLE_MODES,
   createDefaultSettings,
+  ICON_COLORS,
+  TITLEBAR_ICON_SCALE_LIMITS,
   VIEW_MODES
 } from '../../../../shared/settings-schema.js'
 
@@ -282,6 +289,8 @@ watch(
 
 // ---- 基础样式设置 ----
 const titlebarStyle = ref(DEFAULT_SETTINGS.appearance.titlebarStyle)
+const titlebarIconScale = ref(DEFAULT_SETTINGS.appearance.titlebarIconScale)
+const iconColor = ref(DEFAULT_SETTINGS.appearance.iconColor)
 const bgColor = ref(DEFAULT_SETTINGS.css.bgColor)
 const windowBorder = ref(DEFAULT_SETTINGS.css.windowBorder)
 const fontSizeBase = ref(DEFAULT_SETTINGS.css.fontSizeBase)
@@ -885,6 +894,19 @@ watch(titlebarStyle, (v) => {
   )
 })
 
+watch(titlebarIconScale, (value) => {
+  applyTitlebarIconScale(value, el)
+  debouncedSave('appearance.titlebarIconScale', value)
+})
+
+watch(iconColor, (value) => {
+  applyIconColor(value, el)
+  if (!_settingsSynced || isResetting.value) return
+  persistSetting({ id: 'appearance.iconColor', value }).catch((error) =>
+    console.warn('[SettingsPanel] 保存图标颜色失败:', error)
+  )
+})
+
 watch(receiveRemoteNotices, (value) => {
   if (!_settingsSynced || isResetting.value) return
   persistSetting({ id: 'remote.receiveNotices', value }).catch((error) =>
@@ -1081,6 +1103,8 @@ function assignSettingsSnapshot(snapshot) {
   assignDockRuntime(snapshot.runtime?.dock)
 
   titlebarStyle.value = appearance.titlebarStyle
+  titlebarIconScale.value = appearance.titlebarIconScale
+  iconColor.value = appearance.iconColor
   bgColor.value = css.bgColor
   cssOpacity.value = css.popupOpacity
   cssBlur.value = css.bgBlur
@@ -1420,6 +1444,52 @@ const onConfirmResetSettings = async () => {
                   @click="titlebarStyle = 'microsoft'"
                 >
                   Microsoft
+                </button>
+              </div>
+            </div>
+
+            <div class="setting-item setting-item-slider">
+              <span class="setting-label"
+                >导航栏图标大小<HelpButton
+                  text="此设置由列表、月视图和周视图共同使用。Apple 风格会同步放大圆形按钮和内部图标；Microsoft 风格只放大图标，按钮大小保持不变。"
+              /></span>
+              <span class="range-label-start" aria-hidden="true"></span>
+              <AppSlider
+                v-model="titlebarIconScale"
+                :min="TITLEBAR_ICON_SCALE_LIMITS.min"
+                :max="TITLEBAR_ICON_SCALE_LIMITS.max"
+                :step="TITLEBAR_ICON_SCALE_LIMITS.step"
+                aria-label="导航栏图标大小"
+              />
+              <span class="range-label-end">放大</span>
+              <span class="setting-value">{{ titlebarIconScale }}%</span>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >图标颜色<HelpButton
+                    text="列表、月视图和周视图共同使用。控制顶部 8 个导航栏图标；列表视图还会同步控制标签、太极刷新和三叶草筛选图标。"
+                /></span>
+              </div>
+              <div class="titlebar-style-selector" role="radiogroup" aria-label="图标颜色">
+                <button
+                  type="button"
+                  role="radio"
+                  :aria-checked="iconColor === ICON_COLORS.BLACK"
+                  :class="{ active: iconColor === ICON_COLORS.BLACK }"
+                  @click="iconColor = ICON_COLORS.BLACK"
+                >
+                  黑色
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  :aria-checked="iconColor === ICON_COLORS.WHITE"
+                  :class="{ active: iconColor === ICON_COLORS.WHITE }"
+                  @click="iconColor = ICON_COLORS.WHITE"
+                >
+                  白色
                 </button>
               </div>
             </div>
@@ -2846,6 +2916,7 @@ const onConfirmResetSettings = async () => {
   color: var(--text-color-secondary);
   opacity: 0.55;
   user-select: none;
+  pointer-events: none;
   white-space: nowrap;
   overflow: hidden;
 }

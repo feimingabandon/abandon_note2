@@ -970,7 +970,7 @@ onBeforeUnmount(() => {
               </div>
               <div>
                 <span class="help-scope-chip help-scope-chip--shared">所有视图</span>
-                <p>开机自启、天气位置、节假日数据、远程通知与设备信息开关。</p>
+                <p>导航栏图标大小、开机自启、天气位置、节假日数据、远程通知与设备信息开关。</p>
               </div>
               <div v-if="isListView">
                 <span class="help-scope-chip help-scope-chip--list">仅便签列表</span>
@@ -996,6 +996,14 @@ onBeforeUnmount(() => {
             <div class="help-setting-table">
               <div>
                 <strong>导航栏风格</strong><span>切换 Apple / Windows 排布，不改变按钮功能。</span>
+              </div>
+              <div>
+                <strong>导航栏图标大小</strong
+                ><span>三视图共用；Apple 同步放大圆形按钮，Microsoft 保持按钮大小不变。</span>
+              </div>
+              <div>
+                <strong>图标颜色</strong
+                ><span>在黑色与白色图标之间切换；三视图共享，列表筛选图标同步变化。</span>
               </div>
               <div>
                 <strong>背景颜色</strong

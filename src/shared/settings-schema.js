@@ -35,12 +35,23 @@ export const WINDOW_Z_ORDER_MODES = Object.freeze({
   NORMAL: 'normal',
   BOTTOM: 'bottom'
 })
+export const TITLEBAR_ICON_SCALE_LIMITS = Object.freeze({
+  min: 100,
+  max: 150,
+  step: 5,
+  defaultValue: 100
+})
+export const ICON_COLORS = Object.freeze({
+  BLACK: 'black',
+  WHITE: 'white'
+})
 
 /** 当前首次使用须知版本；以后正文发生重大变化时递增即可重新提示一次。 */
 export const FIRST_USE_NOTICE_VERSION = 1
 
 const VALID_VIEW_MODES = new Set(Object.values(VIEW_MODES))
 const VALID_WINDOW_Z_ORDER_MODES = new Set(Object.values(WINDOW_Z_ORDER_MODES))
+const VALID_ICON_COLORS = new Set(Object.values(ICON_COLORS))
 
 function parseCompactWorkArea(value, fallback = null) {
   if (value === null || value === undefined || value === '') return fallback
@@ -207,6 +218,10 @@ function parseTitlebarStyle(value, fallback) {
   return value === 'microsoft' || value === 'apple' ? value : fallback
 }
 
+function parseIconColor(value, fallback) {
+  return VALID_ICON_COLORS.has(value) ? value : fallback
+}
+
 function parseRgbChannels(value, fallback) {
   const channels = String(value ?? '')
     .trim()
@@ -271,6 +286,29 @@ const definitions = [
     parse: parseTitlebarStyle,
     serialize: String,
     remark: '主窗口导航栏视觉风格（apple / microsoft）'
+  },
+  {
+    id: 'appearance.titlebarIconScale',
+    path: ['appearance', 'titlebarIconScale'],
+    db: { type: 'appearance', key: 'titlebar_icon_scale' },
+    defaultValue: TITLEBAR_ICON_SCALE_LIMITS.defaultValue,
+    parse: (value, fallback) =>
+      parseNumber(value, fallback, {
+        min: TITLEBAR_ICON_SCALE_LIMITS.min,
+        max: TITLEBAR_ICON_SCALE_LIMITS.max,
+        integer: true
+      }),
+    serialize: String,
+    remark: '全视图共享的导航栏图标缩放比例（100~150）'
+  },
+  {
+    id: 'appearance.iconColor',
+    path: ['appearance', 'iconColor'],
+    db: { type: 'appearance', key: 'icon_color' },
+    defaultValue: ICON_COLORS.BLACK,
+    parse: parseIconColor,
+    serialize: String,
+    remark: '全视图共享的 11 个主界面图标颜色（black / white）'
   },
   {
     id: 'css.bgColor',

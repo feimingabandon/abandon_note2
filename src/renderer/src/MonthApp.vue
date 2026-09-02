@@ -13,6 +13,7 @@ import FirstUseNoticeDialog from './components/system/FirstUseNoticeDialog.vue'
 import HolidayDataNoticeDialog from './components/system/HolidayDataNoticeDialog.vue'
 import DailyReportDialog from './components/report/DailyReportDialog.vue'
 import DailyReportButton from './components/report/DailyReportButton.vue'
+import AppIcon from './components/ui/AppIcon.vue'
 import TemplatePage from './components/template/TemplatePage.vue'
 import HelpPage from './components/help/HelpPage.vue'
 import { createMessageProvider } from './composables/useMessage.js'
@@ -439,7 +440,7 @@ onUnmounted(() => {
               aria-label="收起为灵动岛"
               @click="requestCompactWindow"
             >
-              <img class="btn-icon" src="@/resources/icons/compact.svg" alt="" />
+              <AppIcon class="btn-icon" name="compact" />
             </button>
             <DailyReportButton month-view @open="openDailyReport" />
             <button
@@ -450,14 +451,14 @@ onUnmounted(() => {
               :aria-expanded="templatePanelActive"
               @click="toggleTemplates"
             >
-              <img class="btn-icon" src="@/resources/icons/recurrence.svg" alt="循环模板" />
+              <AppIcon class="btn-icon" name="recurrence" alt="循环模板" />
             </button>
             <button
               class="titlebar-btn titlebar-btn-settings month-titlebar-btn"
               title="设置"
               @click="openSettings"
             >
-              <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
+              <AppIcon class="btn-icon" name="settings" alt="设置" />
             </button>
             <button
               class="titlebar-btn titlebar-btn-help month-titlebar-btn"
@@ -467,7 +468,7 @@ onUnmounted(() => {
               :aria-expanded="helpPanelActive"
               @click="toggleHelp"
             >
-              <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
+              <AppIcon class="btn-icon" name="help" alt="帮助" />
             </button>
           </TitlebarActions>
         </AppTitlebar>

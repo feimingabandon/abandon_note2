@@ -27,6 +27,7 @@ import FirstUseNoticeDialog from './components/system/FirstUseNoticeDialog.vue'
 import HolidayDataNoticeDialog from './components/system/HolidayDataNoticeDialog.vue'
 import DailyReportDialog from './components/report/DailyReportDialog.vue'
 import DailyReportButton from './components/report/DailyReportButton.vue'
+import AppIcon from './components/ui/AppIcon.vue'
 import NoteList from './components/list/NoteList.vue'
 import NoteEditor from './components/note/NoteEditor.vue'
 import ActionBar from './components/list/ActionBar.vue'
@@ -625,7 +626,7 @@ onUnmounted(() => {
               aria-label="收起为灵动岛"
               @click="requestCompactWindow"
             >
-              <img class="btn-icon" src="@/resources/icons/compact.svg" alt="" />
+              <AppIcon class="btn-icon" name="compact" />
             </button>
             <DailyReportButton @open="openDailyReport" />
             <button
@@ -636,11 +637,11 @@ onUnmounted(() => {
               :aria-expanded="templatePanelActive"
               @click="toggleTemplates"
             >
-              <img class="btn-icon" src="@/resources/icons/recurrence.svg" alt="循环模板" />
+              <AppIcon class="btn-icon" name="recurrence" alt="循环模板" />
             </button>
             <!-- 设置按钮 -->
             <button class="titlebar-btn titlebar-btn-settings" title="设置" @click="openSettings">
-              <img class="btn-icon" src="@/resources/icons/settings.png" alt="设置" />
+              <AppIcon class="btn-icon" name="settings" alt="设置" />
             </button>
             <!-- 帮助按钮：从右滑入帮助中心（与循环模版互斥） -->
             <button
@@ -651,7 +652,7 @@ onUnmounted(() => {
               :aria-expanded="helpPanelActive"
               @click="toggleHelp"
             >
-              <img class="btn-icon" src="@/resources/icons/help.svg" alt="帮助" />
+              <AppIcon class="btn-icon" name="help" alt="帮助" />
             </button>
           </TitlebarActions>
         </AppTitlebar>

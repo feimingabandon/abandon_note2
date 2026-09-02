@@ -182,6 +182,8 @@ const PRELOAD_ROOT = join(APP_ROOT, 'out', 'preload')
 const RENDERER_ROOT = join(APP_ROOT, 'out', 'renderer')
 const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'appearance.titlebarStyle',
+  'appearance.titlebarIconScale',
+  'appearance.iconColor',
   'css.bgColor',
   'css.popupOpacity',
   'css.bgBlur',
@@ -206,6 +208,8 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'listFilter'
 ])
 const APPLICATION_SETTING_IDS = new Set([
+  'appearance.titlebarIconScale',
+  'appearance.iconColor',
   'remote.receiveNotices',
   'remote.uploadDeviceInfo',
   'weather.enabled',
@@ -1204,6 +1208,8 @@ function syncBlurConfigFromResolved() {
 function refreshResolvedSettings({ incrementRevision = false } = {}) {
   const applicationSettings = readApplicationSettings()
   const nextSettings = resolveSettingsRows(getAllSettings(getActiveWindowName()), activeViewMode)
+  nextSettings.appearance.titlebarIconScale = applicationSettings.appearance.titlebarIconScale
+  nextSettings.appearance.iconColor = applicationSettings.appearance.iconColor
   nextSettings.window = { ...applicationSettings.window }
   nextSettings.remote = { ...applicationSettings.remote }
   nextSettings.weather = structuredClone(applicationSettings.weather)

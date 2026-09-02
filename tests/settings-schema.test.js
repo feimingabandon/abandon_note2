@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_SETTINGS,
   DOCK_REVEAL_HANDLE_MODES,
+  ICON_COLORS,
   createDefaultSettings,
   resolveSettingsRows,
   serializeSetting,
@@ -26,6 +27,52 @@ describe('titlebar appearance setting', () => {
         { type: 'appearance', key: 'titlebar_style', value: 'unsupported-style' }
       ]).appearance.titlebarStyle
     ).toBe('apple')
+  })
+
+  it('persists the shared titlebar icon scale and clamps it to the supported range', () => {
+    expect(DEFAULT_SETTINGS.appearance.titlebarIconScale).toBe(100)
+    expect(serializeSetting('appearance.titlebarIconScale', 175)).toMatchObject({
+      type: 'appearance',
+      key: 'titlebar_icon_scale',
+      value: '150'
+    })
+    expect(serializeSetting('appearance.titlebarIconScale', 80).value).toBe('100')
+    expect(
+      resolveSettingsRows([{ type: 'appearance', key: 'titlebar_icon_scale', value: '135' }])
+        .appearance.titlebarIconScale
+    ).toBe(135)
+  })
+
+  it('persists a shared black or white icon color and rejects unknown values', () => {
+    expect(DEFAULT_SETTINGS.appearance.iconColor).toBe(ICON_COLORS.BLACK)
+    expect(serializeSetting('appearance.iconColor', ICON_COLORS.WHITE)).toMatchObject({
+      type: 'appearance',
+      key: 'icon_color',
+      value: ICON_COLORS.WHITE
+    })
+    expect(
+      resolveSettingsRows([{ type: 'appearance', key: 'icon_color', value: 'unsupported' }])
+        .appearance.iconColor
+    ).toBe(ICON_COLORS.BLACK)
+  })
+
+  it('maps the titlebar scale to separate Apple and Microsoft size tokens', () => {
+    const values = createDefaultSettings()
+    values.appearance.titlebarIconScale = 150
+    const applied = new Map()
+    const attributes = new Map()
+    const root = {
+      classList: { toggle() {} },
+      setAttribute: (name, value) => attributes.set(name, value),
+      style: { setProperty: (name, value) => applied.set(name, value) }
+    }
+
+    applySettingsSnapshot({ values }, root)
+
+    expect(applied.get('--titlebar-apple-control-size')).toBe('27rem')
+    expect(applied.get('--titlebar-apple-icon-size')).toBe('21rem')
+    expect(applied.get('--titlebar-microsoft-icon-size')).toBe('22.5rem')
+    expect(attributes.get('data-icon-color')).toBe('black')
   })
 })
 

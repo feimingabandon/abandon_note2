@@ -18,6 +18,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { WINDOW_Z_ORDER_MODES } from '../../../../shared/settings-schema.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
+import AppIcon from '../ui/AppIcon.vue'
 
 const props = defineProps({
   title: {
@@ -347,7 +348,7 @@ onBeforeUnmount(() => {
     <div class="traffic-lights">
       <!-- 关闭按钮(红色) -->
       <button class="light light-close" title="关闭" @click="close">
-        <img class="light-icon" src="@/resources/icons/close.png" alt="关闭" />
+        <AppIcon class="light-icon" name="close" alt="关闭" />
       </button>
       <!-- 全视图共享的三态窗口层级入口 -->
       <button
@@ -365,11 +366,10 @@ onBeforeUnmount(() => {
         :aria-disabled="zOrderChanging"
         @click="toggleZOrderMenu"
       >
-        <img
+        <AppIcon
           class="light-icon layer-mode-icon"
           :class="{ 'is-bottom': zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM }"
-          src="@/resources/icons/pin.svg"
-          alt=""
+          name="pin"
         />
       </button>
       <!-- 锁定按钮（绿色=未锁 / 橙色=已锁） -->
@@ -380,7 +380,7 @@ onBeforeUnmount(() => {
         :disabled="lockChanging"
         @click="toggleLock"
       >
-        <img class="light-icon" src="@/resources/icons/lock.png" alt="锁定" />
+        <AppIcon class="light-icon" name="lock" alt="锁定" />
       </button>
     </div>
     <!-- 中间弹性区只负责布局；指针事务由整个标题栏统一接管。 -->
@@ -440,6 +440,12 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--ui-border-divider); /* 标题栏底部分割线 */
 }
 
+/* Apple 导航栏保持原有总高。按钮最多吃掉新增的上下留白，达到高度上限后不再增大。 */
+.app-titlebar--apple {
+  height: calc(18rem + 29px);
+  padding-block: 0;
+}
+
 /* 红绿灯按钮容器 */
 .traffic-lights {
   display: flex;
@@ -449,8 +455,8 @@ onBeforeUnmount(() => {
 
 /* 单个红绿灯按钮的基础样式 */
 .light {
-  width: 18rem; /* 按钮直径（响应式 rem 单位） */
-  height: 18rem;
+  width: min(var(--titlebar-apple-control-size, 18rem), calc(18rem + 12px));
+  height: min(var(--titlebar-apple-control-size, 18rem), calc(18rem + 12px));
   border-radius: 50%; /* 圆形 */
   border: none;
   padding: 0;
@@ -459,6 +465,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   transition:
+    width var(--motion-control) var(--ease-standard),
+    height var(--motion-control) var(--ease-standard),
     opacity var(--motion-fast) ease,
     background-color var(--motion-control) ease,
     transform var(--motion-control) var(--ease-standard); /* 悬停与状态过渡 */
@@ -466,10 +474,12 @@ onBeforeUnmount(() => {
 
 /* 按钮内的图标 */
 .light-icon {
-  width: 14rem; /* 图标大小 */
-  height: 14rem;
+  width: min(var(--titlebar-apple-icon-size, 14rem), calc(14rem + 9.333px));
+  height: min(var(--titlebar-apple-icon-size, 14rem), calc(14rem + 9.333px));
   opacity: 0; /* 默认隐藏图标 */
   transition:
+    width var(--motion-control) var(--ease-standard),
+    height var(--motion-control) var(--ease-standard),
     opacity 120ms ease,
     transform var(--motion-control) var(--ease-standard);
   display: block; /* 确保正确居中 */
@@ -620,8 +630,8 @@ onBeforeUnmount(() => {
   background-color: transparent;
 }
 .app-titlebar--microsoft .light-icon {
-  width: 15rem;
-  height: 15rem;
+  width: min(var(--titlebar-microsoft-icon-size, 15rem), 24rem);
+  height: min(var(--titlebar-microsoft-icon-size, 15rem), 24rem);
   opacity: 0.72;
 }
 .app-titlebar--microsoft .traffic-lights:hover .light-icon {

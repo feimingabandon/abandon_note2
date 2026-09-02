@@ -21,8 +21,8 @@ defineProps({
 }
 
 .titlebar-actions-group :deep(.titlebar-btn) {
-  width: 18rem;
-  height: 18rem;
+  width: min(var(--titlebar-apple-control-size, 18rem), calc(18rem + 12px));
+  height: min(var(--titlebar-apple-control-size, 18rem), calc(18rem + 12px));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -33,16 +33,21 @@ defineProps({
   background-color: #0071e3;
   cursor: pointer;
   transition:
+    width var(--motion-control) var(--ease-standard),
+    height var(--motion-control) var(--ease-standard),
     background-color var(--motion-fast) ease,
     transform var(--motion-control) var(--ease-standard);
 }
 
 .titlebar-actions-group :deep(.btn-icon) {
   display: block;
-  width: 14rem;
-  height: 14rem;
+  width: min(var(--titlebar-apple-icon-size, 14rem), calc(14rem + 9.333px));
+  height: min(var(--titlebar-apple-icon-size, 14rem), calc(14rem + 9.333px));
   opacity: 0;
-  transition: opacity 120ms ease;
+  transition:
+    width var(--motion-control) var(--ease-standard),
+    height var(--motion-control) var(--ease-standard),
+    opacity 120ms ease;
 }
 
 .titlebar-actions-group:hover :deep(.btn-icon) {
@@ -71,8 +76,8 @@ defineProps({
 }
 
 .titlebar-actions-group--microsoft :deep(.btn-icon) {
-  width: 15rem;
-  height: 15rem;
+  width: min(var(--titlebar-microsoft-icon-size, 15rem), 24rem);
+  height: min(var(--titlebar-microsoft-icon-size, 15rem), 24rem);
   opacity: 0.72;
 }
 

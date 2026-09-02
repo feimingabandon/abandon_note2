@@ -13,6 +13,17 @@ const GLASS_PRESETS = Object.freeze({
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 const roundToken = (value) => Math.round(value * 1000) / 1000
 
+export function applyTitlebarIconScale(value, root = document.documentElement) {
+  const scale = clamp(Number(value) || 100, 100, 150) / 100
+  root.style.setProperty('--titlebar-apple-control-size', `${roundToken(18 * scale)}rem`)
+  root.style.setProperty('--titlebar-apple-icon-size', `${roundToken(14 * scale)}rem`)
+  root.style.setProperty('--titlebar-microsoft-icon-size', `${roundToken(15 * scale)}rem`)
+}
+
+export function applyIconColor(value, root = document.documentElement) {
+  root.setAttribute?.('data-icon-color', value === 'white' ? 'white' : 'black')
+}
+
 /**
  * 由用户设置的两个全局基准值生成各类浮层的最终材质参数。
  * 比例在这里集中维护，避免组件各自写死数值；模糊基准最低为 5px，防止霜层裸透。
@@ -34,6 +45,10 @@ export function applyGlassBaseSettings({ blur, opacity }, root = document.docume
 }
 
 export function applySettingsSnapshot(snapshot, root = document.documentElement) {
+  const titlebarIconScale = snapshot?.values?.appearance?.titlebarIconScale
+  if (titlebarIconScale !== undefined) applyTitlebarIconScale(titlebarIconScale, root)
+  applyIconColor(snapshot?.values?.appearance?.iconColor, root)
+
   const css = snapshot?.values?.css
   if (!css) return
 
