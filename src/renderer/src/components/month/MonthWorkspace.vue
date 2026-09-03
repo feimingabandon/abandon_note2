@@ -73,6 +73,9 @@ const statusTransitions = reactive(new Map())
 const statusTransitionTimers = new Map()
 const earlyStartConfirmVisible = ref(false)
 const earlyStartNote = ref(null)
+const deleteConfirmVisible = ref(false)
+const deleteTargetNote = ref(null)
+const deletingNote = ref(false)
 let stopNotesListener = null
 let stopHolidayDataListener = null
 let stopWeatherSettingsListener = null
@@ -237,7 +240,7 @@ async function focusCalendarDate(dateKey) {
 
 function startRefreshContentAnimation(phase) {
   const elements = calendarSurfaceRef.value?.querySelectorAll(
-    '.month-week__events, .month-day-cell__count, .month-day-cell__overflow, .month-day-cell__lunar, .month-day-cell__holiday'
+    '.month-week__events, .month-day-cell__count, .month-day-cell__lunar, .month-day-cell__holiday'
   )
   return Array.from(elements || [], (element) => {
     const finalOpacity = Number.parseFloat(getComputedStyle(element).opacity) || 1
@@ -460,14 +463,16 @@ async function refreshCalendarContent({ manual = false } = {}) {
       ? await window.api.getWeekCalendarData(weekAnchorKey.value)
       : await window.api.getMonthCalendarData(viewYear.value, viewMonth.value)
     if (sequence !== loadSequence) return
-    const outgoing = startRefreshContentAnimation('out')
-    await waitForAnimations(outgoing)
+    const outgoing = manual ? startRefreshContentAnimation('out') : []
+    if (manual) await waitForAnimations(outgoing)
     calendarData.value = data
     await nextTick()
-    outgoing.forEach((animation) => animation.cancel())
-    const incoming = startRefreshContentAnimation('in')
-    await waitForAnimations(incoming)
-    incoming.forEach((animation) => animation.cancel())
+    if (manual) {
+      outgoing.forEach((animation) => animation.cancel())
+      const incoming = startRefreshContentAnimation('in')
+      await waitForAnimations(incoming)
+      incoming.forEach((animation) => animation.cancel())
+    }
   } catch (error) {
     if (sequence !== loadSequence) return
     console.error('[MonthWorkspace] 同步日历失败:', error)
@@ -546,6 +551,48 @@ function cancelEarlyStart() {
   earlyStartNote.value = null
 }
 
+function selectContextDate(day) {
+  if (!(day?.isActive ?? day?.inCurrentMonth)) return
+  selectedKey.value = day.key
+}
+
+function openPreviewDayPanel(day) {
+  if (!(day?.isActive ?? day?.inCurrentMonth)) return
+  selectedKey.value = day.key
+  panelOpen.value = true
+}
+
+function requestDeleteNote(note) {
+  if (!note?.id || deletingNote.value) return
+  deleteTargetNote.value = note
+  deleteConfirmVisible.value = true
+}
+
+function cancelDeleteNote() {
+  if (!deletingNote.value) deleteTargetNote.value = null
+}
+
+async function confirmDeleteNote() {
+  const note = deleteTargetNote.value
+  if (!note?.id || deletingNote.value) return
+  deletingNote.value = true
+  try {
+    const deleted = await window.api.deleteNote(note.id)
+    if (!deleted) throw new Error('便签不存在或已被删除')
+    calendarData.value = {
+      ...calendarData.value,
+      notes: calendarData.value.notes.filter((item) => Number(item.id) !== Number(note.id))
+    }
+    showMessage('success', '便签已删除')
+  } catch (error) {
+    console.error('[MonthWorkspace] 删除便签失败:', note.id, error)
+    showMessage('error', error.message || '删除失败，请重试')
+  } finally {
+    deletingNote.value = false
+    deleteTargetNote.value = null
+  }
+}
+
 async function executeCardStatusAction(note) {
   if (statusTransitions.has(note.id)) return
   const from = note.status
@@ -621,11 +668,23 @@ async function goToday() {
 
 async function selectDate(day) {
   if (!(day?.isActive ?? day?.inCurrentMonth)) return
-  if (panelOpen.value && selectedKey.value === day.key) {
+  selectedKey.value = day.key
+}
+
+function toggleDayPanel() {
+  if (panelOpen.value) {
     panelOpen.value = false
     return
   }
-  selectedKey.value = day.key
+  const visibleDays = calendarData.value.days || []
+  if (!visibleDays.length) return
+  const selectionVisible = visibleDays.some((day) => day.key === selectedKey.value)
+  if (!selectionVisible) {
+    selectedKey.value =
+      visibleDays.find((day) => day.key === todayKey.value)?.key ||
+      visibleDays.find((day) => day.inCurrentMonth)?.key ||
+      ''
+  }
   panelOpen.value = true
 }
 
@@ -636,6 +695,20 @@ function openCreator(dayOrKey) {
     return
   }
   creatorDate.value = dateKey
+}
+
+function onQuickCreateOpened(day) {
+  if (!(day?.isActive ?? day?.inCurrentMonth)) return
+  selectedKey.value = day.key
+}
+
+function onQuickCreated(created) {
+  if (!created?.id) return
+  if (calendarData.value.notes.some((note) => Number(note.id) === Number(created.id))) return
+  calendarData.value = {
+    ...calendarData.value,
+    notes: [...calendarData.value.notes, created]
+  }
 }
 
 function closeCreator() {
@@ -854,6 +927,7 @@ onBeforeUnmount(() => {
           :week-start="calendarData.weekStart || ''"
           :week-end="calendarData.weekEnd || ''"
           :selected-key="selectedKey || weekAnchorKey"
+          :day-panel-open="panelOpen"
           :refreshing="refreshing"
           :busy="transitioning"
           :weather-location-label="toolbarWeatherLocation"
@@ -864,6 +938,7 @@ onBeforeUnmount(() => {
           @jump="jumpTo"
           @jump-date="jumpToDate"
           @refresh="refreshCalendar"
+          @toggle-day-panel="toggleDayPanel"
         />
         <div ref="calendarSurfaceRef" class="month-workspace__calendar-body">
           <MonthCalendarGrid
@@ -874,7 +949,14 @@ onBeforeUnmount(() => {
             :today-key="todayKey"
             :weather-by-date="weatherByDate"
             @select-date="selectDate"
-            @create="openCreator"
+            @quick-create-opened="onQuickCreateOpened"
+            @quick-created="onQuickCreated"
+            @context-select-date="selectContextDate"
+            @context-create="openCreator"
+            @context-edit="openEditor"
+            @context-delete="requestDeleteNote"
+            @context-status-action="onCardStatusAction"
+            @preview-open-day-panel="openPreviewDayPanel"
           />
           <div v-if="loading && !calendarData.days.length" class="month-workspace__state">
             正在加载{{ isWeekView ? '周历' : '月历' }}…
@@ -947,6 +1029,16 @@ onBeforeUnmount(() => {
       cancel-text="取消"
       @confirm="confirmEarlyStart"
       @cancel="cancelEarlyStart"
+    />
+    <ConfirmDialog
+      v-model:visible="deleteConfirmVisible"
+      title="删除便签？"
+      message="便签会从列表、月视图和周视图中移除，但正文和图片仍会保留，可在搜索中启用“包含已删除”查看。"
+      confirm-text="删除"
+      cancel-text="取消"
+      variant="danger"
+      @confirm="confirmDeleteNote"
+      @cancel="cancelDeleteNote"
     />
   </div>
 </template>

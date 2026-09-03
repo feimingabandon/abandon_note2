@@ -62,6 +62,28 @@ async function chooseToolbarMonth(monthWindow, value) {
   )
 }
 
+async function setDayPanelOpen(monthWindow, open) {
+  await waitUntil(
+    () =>
+      monthWindow.webContents.executeJavaScript(
+        `document.querySelector('.month-toolbar__day-panel-toggle')?.disabled === false`
+      ),
+    '月视图工具栏日期列表开关长时间不可用'
+  )
+  await monthWindow.webContents.executeJavaScript(`(() => {
+    const toggle = document.querySelector('.month-toolbar__day-panel-toggle')
+    if (!toggle) throw new Error('月视图工具栏缺少日期列表开关')
+    if (toggle.getAttribute('aria-expanded') !== '${open}') toggle.click()
+  })()`)
+  await waitUntil(
+    () =>
+      monthWindow.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.month-day-panel')) === ${open} && document.querySelector('.month-toolbar__day-panel-toggle')?.getAttribute('aria-expanded') === '${open}'`
+      ),
+    open ? '工具栏按钮没有展开日期侧栏' : '工具栏按钮没有收起日期侧栏'
+  )
+}
+
 function seedMonthView(userDataPath) {
   mkdirSync(userDataPath, { recursive: true })
   const db = new Database(join(userDataPath, 'app.db'))
@@ -189,6 +211,28 @@ async function runMonthViewTests() {
       /模板|循环/.test(button.title || button.textContent || '')
     ),
     controlCount: document.querySelectorAll('.traffic-lights .light').length,
+    dayPanelToggle: document.querySelector('.month-toolbar__day-panel-toggle')?.getAttribute('aria-expanded'),
+    dayPanelToggleLayout: (() => {
+      const toggle = document.querySelector('.month-toolbar__day-panel-toggle')
+      const navigation = document.querySelector('.month-toolbar__navigation')
+      const today = document.querySelector('.month-toolbar__today')
+      const refresh = document.querySelector('.month-toolbar__refresh')
+      const weekdays = document.querySelector('.month-grid__weekdays')
+      if (!toggle || !navigation || !today || !refresh || !weekdays) return null
+      const toggleRect = toggle.getBoundingClientRect()
+      const navigationRect = navigation.getBoundingClientRect()
+      const todayRect = today.getBoundingClientRect()
+      const refreshRect = refresh.getBoundingClientRect()
+      const weekdaysRect = weekdays.getBoundingClientRect()
+      return {
+        text: toggle.textContent.trim(),
+        controls: toggle.getAttribute('aria-controls'),
+        actionsLeftOfNavigation:
+          todayRect.right <= navigationRect.left && refreshRect.right <= navigationRect.left,
+        rightOfNavigation: toggleRect.left >= navigationRect.right,
+        aboveGrid: toggleRect.bottom <= weekdaysRect.top
+      }
+    })(),
     refreshButton: Boolean(document.querySelector('.month-toolbar__refresh')),
     persistentJumpControls: Boolean(document.querySelector('.month-toolbar__jump'))
   }))()`)
@@ -213,8 +257,34 @@ async function runMonthViewTests() {
     assert.equal(initialUi.helpButton, true, '月视图必须开放帮助中心入口')
     assert.equal(initialUi.templateButton, true, '月视图必须开放循环模板入口')
     assert.equal(initialUi.controlCount, 3, '月视图应复用关闭、窗口层级、锁定三个窗口控制')
+    assert.equal(
+      initialUi.dayPanelToggle,
+      'false',
+      '月视图工具栏左侧必须提供收起状态的日期列表开关'
+    )
+    assert.deepEqual(
+      initialUi.dayPanelToggleLayout,
+      {
+        text: '日期列表',
+        controls: 'month-day-panel',
+        actionsLeftOfNavigation: true,
+        rightOfNavigation: true,
+        aboveGrid: true
+      },
+      '今天和刷新必须位于月份导航左侧，日期列表开关必须位于右侧、日期格上方'
+    )
     assert.equal(initialUi.refreshButton, true, '今天按钮旁必须提供刷新按钮')
     assert.equal(initialUi.persistentJumpControls, false, '工具栏右侧不得常驻年月选择控件')
+
+    await setDayPanelOpen(monthWindow, true)
+    assert.equal(
+      await monthWindow.webContents.executeJavaScript(
+        `document.querySelector('.month-day-cell.is-selected')?.classList.contains('is-today')`
+      ),
+      true,
+      '当前月未选择日期时从工具栏打开列表必须默认选中今天'
+    )
+    await setDayPanelOpen(monthWindow, false)
 
     const adjacentMonthState = await monthWindow.webContents.executeJavaScript(`(() => {
       const pad = (value) => String(value).padStart(2, '0')
@@ -252,12 +322,20 @@ async function runMonthViewTests() {
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-day-cell[data-date="${adjacentMonthState.key}"]').click()`
     )
+    assert.equal(
+      await monthWindow.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.month-day-panel'))`
+      ),
+      false,
+      '点击相邻月份日期不得隐式打开日期侧栏'
+    )
+    await setDayPanelOpen(monthWindow, true)
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
           `Array.from(document.querySelectorAll('.month-day-panel .nl-card-text')).some((node) => node.textContent === '相邻月份数据测试')`
         ),
-      '点击相邻月份日期后侧栏没有显示当天数据'
+      '工具栏展开日期侧栏后没有显示已选相邻月份日期的数据'
     )
     const adjacentMonthSelected = await monthWindow.webContents.executeJavaScript(`(() => ({
       title: document.querySelector('.month-toolbar__title').textContent,
@@ -272,11 +350,14 @@ async function runMonthViewTests() {
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-day-cell[data-date="${adjacentMonthState.key}"]').click()`
     )
-    await waitUntil(
-      () =>
-        monthWindow.webContents.executeJavaScript(`!document.querySelector('.month-day-panel')`),
-      '再次点击相邻月份日期后没有收起日期侧栏'
+    assert.equal(
+      await monthWindow.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.month-day-panel'))`
+      ),
+      true,
+      '重复点击相邻月份日期不得收起日期侧栏'
     )
+    await setDayPanelOpen(monthWindow, false)
 
     const zOrderMenuState = await monthWindow.webContents.executeJavaScript(`(async () => {
       const trigger = document.querySelector('.traffic-lights .light-pin')
@@ -758,7 +839,7 @@ async function runMonthViewTests() {
       return {
         tabIndex: cell.tabIndex,
         ariaDisabled: cell.getAttribute('aria-disabled'),
-        hasCreate: Boolean(cell.querySelector('.month-day-cell__create'))
+        hasCreate: Boolean(cell.querySelector('.month-day-cell__quick-activate'))
       }
     })()`)
     assert.deepEqual(
@@ -769,35 +850,33 @@ async function runMonthViewTests() {
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-day-cell.is-outside').click()`
     )
-    await waitUntil(
-      () =>
-        monthWindow.webContents.executeJavaScript(
-          `Boolean(document.querySelector('.month-day-panel'))`
-        ),
-      '点击非当前月份日期格后没有打开日期侧栏'
+    assert.equal(
+      await monthWindow.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.month-day-panel'))`
+      ),
+      false,
+      '点击非当前月份日期格不得打开日期侧栏'
     )
+    await setDayPanelOpen(monthWindow, true)
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-day-cell.is-outside').click()`
     )
-    await waitUntil(
-      () =>
-        monthWindow.webContents.executeJavaScript(`!document.querySelector('.month-day-panel')`),
-      '再次点击非当前月份日期格后没有收起日期侧栏'
+    assert.equal(
+      await monthWindow.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.month-day-panel'))`
+      ),
+      true,
+      '日期侧栏展开后点击非当前月份日期不得将其收起'
     )
+    await setDayPanelOpen(monthWindow, false)
 
-    // 日期侧栏点击展开、拖动调宽、持久化后重载仍恢复宽度；展开状态不持久化。
+    // 日期侧栏由工具栏展开，拖动调宽、持久化后重载仍恢复宽度；展开状态不持久化。
     const resizeDateKey = await monthWindow.webContents.executeJavaScript(`(() => {
       const cell = document.querySelectorAll('.month-day-cell')[8]
       cell.click()
       return cell.dataset.date
     })()`)
-    await waitUntil(
-      () =>
-        monthWindow.webContents.executeJavaScript(
-          `Boolean(document.querySelector('.month-day-panel'))`
-        ),
-      '点击日期后没有打开左侧日期便签面板'
-    )
+    await setDayPanelOpen(monthWindow, true)
     const initialPanelRatio = await waitUntil(async () => {
       const ratio = await monthWindow.webContents.executeJavaScript(`(() => {
           const panel = document.querySelector('.month-day-panel').getBoundingClientRect()
@@ -889,16 +968,7 @@ async function runMonthViewTests() {
       false,
       '日期侧栏展开状态不得跨重载记忆'
     )
-    await monthWindow.webContents.executeJavaScript(
-      `document.querySelector('.month-day-cell[data-date="${resizeDateKey}"]').click()`
-    )
-    await waitUntil(
-      () =>
-        monthWindow.webContents.executeJavaScript(
-          `Boolean(document.querySelector('.month-day-panel'))`
-        ),
-      '重载后无法重新打开日期侧栏'
-    )
+    await setDayPanelOpen(monthWindow, true)
     await wait(320)
     const restoredPanelRatio = await monthWindow.webContents.executeJavaScript(`(() => {
       const panel = document.querySelector('.month-day-panel').getBoundingClientRect()
@@ -956,21 +1026,25 @@ async function runMonthViewTests() {
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-day-cell[data-date="${resizeDateKey}"]').click()`
     )
-    await waitUntil(
-      () =>
-        monthWindow.webContents.executeJavaScript(`!document.querySelector('.month-day-panel')`),
-      '再次点击同一日期没有收起日期侧栏'
+    assert.equal(
+      await monthWindow.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.month-day-panel'))`
+      ),
+      true,
+      '重复点击同一日期不得收起日期侧栏'
     )
+    await setDayPanelOpen(monthWindow, false)
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-day-cell[data-date="${resizeDateKey}"]').click()`
     )
-    await waitUntil(
-      () =>
-        monthWindow.webContents.executeJavaScript(
-          `Boolean(document.querySelector('.month-day-panel'))`
-        ),
-      '侧栏收起后再次点击日期没有重新展开'
+    assert.equal(
+      await monthWindow.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.month-day-panel'))`
+      ),
+      false,
+      '日期侧栏收起后点击日期不得重新展开'
     )
+    await setDayPanelOpen(monthWindow, true)
 
     await openToolbarPicker(monthWindow)
     const jumpYear = await monthWindow.webContents.executeJavaScript(`(() => {
@@ -1231,22 +1305,24 @@ async function runMonthViewTests() {
     const countBadge = await monthWindow.webContents.executeJavaScript(`(() => {
       const cell = document.querySelector('.month-day-cell[data-date="${seededCalendar.overflowKey}"]')
       const badge = cell.querySelector('.month-day-cell__count')
-      const overflow = cell.querySelector('.month-day-cell__overflow')
+      const activate = cell.querySelector('.month-day-cell__quick-activate')
+      const quickCreate = cell.querySelector('.month-day-cell__quick-create')
       const cellRect = cell.getBoundingClientRect()
       const badgeRect = badge.getBoundingClientRect()
-      const overflowRect = overflow.getBoundingClientRect()
-      const createRect = cell.querySelector('.month-day-cell__create').getBoundingClientRect()
+      const activateRect = activate.getBoundingClientRect()
+      const quickCreateRect = quickCreate.getBoundingClientRect()
       return {
         text: badge.textContent.trim(),
         rightGap: cellRect.right - badgeRect.right,
         bottomGap: cellRect.bottom - badgeRect.bottom,
-        overflowDotCount: overflow.querySelectorAll('i').length,
-        overflowCenterDelta: Math.abs(
-          overflowRect.left + overflowRect.width / 2 - (cellRect.left + cellRect.width / 2)
-        ),
-        overflowPointerEvents: getComputedStyle(overflow).pointerEvents,
-        createLeftGap: createRect.left - cellRect.left,
-        createBottomGap: cellRect.bottom - createRect.bottom
+        hasOverflowDots: Boolean(cell.querySelector('.month-day-cell__overflow')),
+        activateCoversFooter:
+          activateRect.left <= quickCreateRect.left &&
+          activateRect.right >= badgeRect.right &&
+          Math.abs(activateRect.bottom - cellRect.bottom) <= 1,
+        createOpacity: getComputedStyle(quickCreate).opacity,
+        createLeftGap: quickCreateRect.left - cellRect.left,
+        createBottomGap: cellRect.bottom - quickCreateRect.bottom
       }
     })()`)
     assert.equal(countBadge.text, '10', '便签数量徽标必须只显示总数数字')
@@ -1254,12 +1330,16 @@ async function runMonthViewTests() {
       countBadge.rightGap > 0 && countBadge.bottomGap > 0,
       '便签数量徽标必须位于日期格右下角'
     )
-    assert.equal(countBadge.overflowDotCount, 3, '存在未显示便签时必须显示三个实心点')
-    assert.ok(countBadge.overflowCenterDelta < 1, '溢出三个点必须在日期格底部居中')
-    assert.equal(countBadge.overflowPointerEvents, 'none', '溢出三个点不得建立独立点击热区')
+    assert.equal(countBadge.hasOverflowDots, false, '日期格底部不得继续显示溢出三个点')
+    assert.equal(
+      countBadge.activateCoversFooter,
+      true,
+      '快速新建热区必须覆盖左侧加号、中间空白和右侧数量'
+    )
+    assert.equal(countBadge.createOpacity, '1', '日期格快速新建加号必须常显，不得依赖悬停')
     assert.ok(
       countBadge.createLeftGap > 0 && countBadge.createBottomGap > 0,
-      '日期格新建按钮必须位于左下角'
+      '快速新建变形轮廓必须从日期格左下角开始'
     )
     assert.equal(
       await monthWindow.webContents.executeJavaScript(
@@ -1291,27 +1371,29 @@ async function runMonthViewTests() {
       const today = new Date()
       const key = [today.getFullYear(), String(today.getMonth() + 1).padStart(2, '0'), String(today.getDate()).padStart(2, '0')].join('-')
       const past = Array.from(document.querySelectorAll('.month-day-cell:not(.is-outside)')).find((cell) => cell.dataset.date < key)
-      const create = past?.querySelector('.month-day-cell__create')
-      return create ? create.disabled : true
+      const create = past?.querySelector('.month-day-cell__quick-activate')
+      return create?.getAttribute('aria-disabled') === 'true'
     })()`)
     assert.equal(pastCreateDisabled, true, '过去日期必须禁止新建便签')
 
-    // 日期格新建：今天未改默认时间时立即生效；随后覆盖修改、完成和删除链路。
+    // 日期侧栏保留完整属性新建器；日期格底部改为不遮挡日历的快速创建器。
     const todayKey = await monthWindow.webContents.executeJavaScript(`(() => {
       const date = new Date()
       return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-')
     })()`)
-    await monthWindow.webContents.executeJavaScript(`(() => {
-      const trigger = document.querySelector('.month-day-cell[data-date="${todayKey}"] .month-day-cell__create')
-      trigger.focus()
-      trigger.click()
-    })()`)
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-day-cell[data-date="${todayKey}"]').click()`
+    )
+    await setDayPanelOpen(monthWindow, true)
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-day-panel__create').click()`
+    )
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
           `Boolean(document.querySelector('.month-creator'))`
         ),
-      '日期格新建按钮没有打开月视图新建器'
+      '日期侧栏新建按钮没有打开完整新建器'
     )
     await waitUntil(
       () =>
@@ -1381,48 +1463,158 @@ async function runMonthViewTests() {
       modal: Number.parseInt(getComputedStyle(document.querySelector('.month-modal-overlay')).zIndex, 10)
     }))()`)
     assert.ok(helpLayering.tooltip > helpLayering.modal, '帮助浮层必须显示在月视图新建面板之上')
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-creator > header button').click()`
+    )
+    await waitUntil(
+      () => monthWindow.webContents.executeJavaScript(`!document.querySelector('.month-creator')`),
+      '空白完整新建器没有关闭'
+    )
+    await setDayPanelOpen(monthWindow, false)
     await monthWindow.webContents.executeJavaScript(`(() => {
-      window.__broadcastContentMotionFrames = []
-      document.querySelectorAll('.month-week__events').forEach((element) => {
-        const nativeAnimate = element.animate.bind(element)
-        element.animate = (keyframes, options) => {
-          window.__broadcastContentMotionFrames.push({
+      window.__calendarEventPresenceFrames = []
+      const nativeAnimate = Element.prototype.animate
+      Element.prototype.animate = function (keyframes, options) {
+        if (this.matches?.('.month-event-bar, [data-calendar-presence-clone]')) {
+          window.__calendarEventPresenceFrames.push({
+            preview: this.dataset.preview || '',
+            clone: this.hasAttribute('data-calendar-presence-clone'),
             keyframes: keyframes.map((frame) => ({ ...frame })),
             options: { ...options }
           })
-          return nativeAnimate(keyframes, options)
         }
-      })
+        return nativeAnimate.call(this, keyframes, options)
+      }
     })()`)
-    await monthWindow.webContents.executeJavaScript(`(async () => {
-      const textarea = document.querySelector('.month-creator textarea')
-      textarea.value = '今天立即便签'
-      textarea.dispatchEvent(new Event('input', { bubbles: true }))
-      await new Promise(requestAnimationFrame)
-      document.querySelector('.month-creator footer .is-primary').click()
+    await monthWindow.webContents.executeJavaScript(`(() => {
+      const trigger = document.querySelector('.month-day-cell[data-date="${todayKey}"] .month-day-cell__quick-activate')
+      trigger.focus()
+      trigger.click()
     })()`)
     await waitUntil(
-      () => monthWindow.webContents.executeJavaScript(`!document.querySelector('.month-creator')`),
-      '今天便签创建后新建器没有关闭'
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `document.activeElement?.matches('.month-day-cell[data-date="${todayKey}"] .month-day-cell__quick-create input')`
+        ),
+      '快速新建器没有立即把焦点移入输入框'
+    )
+    await wait(320)
+    const quickCreatorState = await monthWindow.webContents.executeJavaScript(`(() => {
+      const cell = document.querySelector('.month-day-cell[data-date="${todayKey}"]')
+      const creator = cell.querySelector('.month-day-cell__quick-create')
+      const action = creator.querySelector('button')
+      const input = creator.querySelector('input')
+      const cellRect = cell.getBoundingClientRect()
+      const creatorRect = creator.getBoundingClientRect()
+      const actionRect = action.getBoundingClientRect()
+      return {
+        active: creator.classList.contains('is-active'),
+        ready: creator.classList.contains('is-ready'),
+        expanded: creatorRect.width > cellRect.width * 0.7,
+        actionAtRight: cellRect.right - actionRect.right < 10,
+        placeholder: input.placeholder,
+        modalVisible: Boolean(document.querySelector('.month-creator')),
+        backgroundBlurred: document.querySelector('.month-scene').classList.contains('is-ui-background-blurred')
+      }
+    })()`)
+    assert.deepEqual(
+      quickCreatorState,
+      {
+        active: true,
+        ready: true,
+        expanded: true,
+        actionAtRight: true,
+        placeholder: '新建便签',
+        modalVisible: false,
+        backgroundBlurred: false
+      },
+      '日期格快速新建器没有完成原位展开，或错误触发了模态遮罩'
+    )
+    await monthWindow.webContents.executeJavaScript(`(() => {
+      const button = document.querySelector('.month-day-cell[data-date="${todayKey}"] .month-day-cell__quick-create button')
+      button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }))
+      button.click()
+    })()`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Array.from(document.querySelectorAll('.msg-text')).some((node) => node.textContent === '请输入便签内容')`
+        ),
+      '快速新建空内容没有给出输入提示'
+    )
+    await monthWindow.webContents.executeJavaScript(`(async () => {
+      const input = document.querySelector('.month-day-cell[data-date="${todayKey}"] .month-day-cell__quick-create input')
+      input.value = '今天立即便签'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await new Promise(requestAnimationFrame)
+      const button = document.querySelector('.month-day-cell[data-date="${todayKey}"] .month-day-cell__quick-create button')
+      button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }))
+      button.click()
+    })()`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.month-event-bar[data-preview="今天立即便签"]'))`
+        ),
+      '快速创建成功后日期格没有立即增加便签横条'
     )
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
-          `window.__broadcastContentMotionFrames.length >= 12 && !document.querySelector('.month-toolbar').classList.contains('is-busy')`
+          `window.__calendarEventPresenceFrames.some((item) => item.preview === '今天立即便签' && item.keyframes[0]?.opacity === 0 && item.keyframes[0]?.translate === '0 4px')`
         ),
-      '便签广播同步没有复用日期格内部的柔和刷新动画'
+      '新增便签横条没有播放局部进入动画'
     )
-    assert.equal(
-      await monthWindow.webContents.executeJavaScript(
-        `document.activeElement?.matches('.month-day-cell[data-date="${todayKey}"] .month-day-cell__create')`
-      ),
-      true,
-      '月视图新建弹窗关闭后必须把焦点恢复到原新建按钮'
+    const quickCreateAfterSuccess = await monthWindow.webContents.executeJavaScript(`(() => ({
+      active: document.querySelector('.month-day-cell[data-date="${todayKey}"] .month-day-cell__quick-create')?.classList.contains('is-active'),
+      value: document.querySelector('.month-day-cell[data-date="${todayKey}"] .month-day-cell__quick-create input')?.value,
+      focused: document.activeElement?.matches('.month-day-cell[data-date="${todayKey}"] .month-day-cell__quick-create input')
+    }))()`)
+    assert.deepEqual(
+      quickCreateAfterSuccess,
+      { active: true, value: '', focused: true },
+      '快速创建成功后必须清空正文并保持展开和输入焦点'
+    )
+    const quickCreatorCloseMotion = await monthWindow.webContents.executeJavaScript(`(async () => {
+      const creator = document.querySelector('.month-day-cell[data-date="${todayKey}"] .month-day-cell__quick-create')
+      const action = creator.querySelector('button')
+      const toolbar = document.querySelector('.month-toolbar')
+      const startLeft = action.getBoundingClientRect().left
+      toolbar.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+      toolbar.click()
+      await new Promise(requestAnimationFrame)
+      const animations = creator.getAnimations()
+      await new Promise((resolve) => setTimeout(resolve, 140))
+      const middleLeft = action.getBoundingClientRect().left
+      await Promise.allSettled(animations.map((animation) => animation.finished))
+      const endLeft = action.getBoundingClientRect().left
+      return {
+        animationCount: animations.length,
+        startLeft,
+        middleLeft,
+        endLeft,
+        active: creator.classList.contains('is-active')
+      }
+    })()`)
+    assert.ok(quickCreatorCloseMotion.animationCount > 0, '快速新建器失焦收起时没有启动反向动画')
+    assert.ok(
+      quickCreatorCloseMotion.middleLeft < quickCreatorCloseMotion.startLeft &&
+        quickCreatorCloseMotion.middleLeft > quickCreatorCloseMotion.endLeft,
+      '快速新建器收起过程中，新建按钮没有从右向左移动'
+    )
+    assert.equal(quickCreatorCloseMotion.active, false, '反向动画结束后快速新建器仍处于展开状态')
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `!document.querySelector('.month-day-cell[data-date="${todayKey}"] .month-day-cell__quick-create.is-active')`
+        ),
+      '快速新建器在点击外部后没有收起'
     )
     await monthWindow.webContents.executeJavaScript(`(() => {
       const cell = document.querySelector('.month-day-cell[data-date="${todayKey}"]')
-      if (!document.querySelector('.month-day-panel') || !cell.classList.contains('is-selected')) {
-        cell.click()
+      if (!cell.classList.contains('is-selected')) cell.click()
+      if (!document.querySelector('.month-day-panel')) {
+        document.querySelector('.month-toolbar__day-panel-toggle').click()
       }
     })()`)
     await waitUntil(
@@ -1549,6 +1741,13 @@ async function runMonthViewTests() {
           `!Array.from(document.querySelectorAll('.month-day-panel .nl-card-text')).some((node) => node.textContent === '今天立即便签-已修改')`
         ),
       '删除后便签仍留在月视图日期侧栏'
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `!document.querySelector('.month-event-bar[data-preview="今天立即便签-已修改"]') && window.__calendarEventPresenceFrames.some((item) => item.clone && item.preview === '今天立即便签-已修改' && item.keyframes.at(-1)?.opacity === 0)`
+        ),
+      '删除便签后日期格横条没有播放局部退出动画'
     )
 
     // 左侧当日列表新建未来便签，默认使用选中日期 + 当前时间。

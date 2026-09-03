@@ -2,6 +2,7 @@ export const FREQUENCY_OPTIONS = [
   { value: 'daily', label: '天' },
   { value: 'weekly', label: '周' },
   { value: 'monthly', label: '月' },
+  { value: 'quarterly', label: '季' },
   { value: 'yearly', label: '年' }
 ]
 export const MAX_DAILY_INTERVAL = 3650
@@ -42,6 +43,11 @@ export function formatRuleSummary(value) {
   }
   if (rule.frequency === 'monthly')
     return `每月 ${(rule.days_of_month || []).join('、')} 日 · ${time}`
+  if (rule.frequency === 'quarterly') {
+    const quarterMonth = ['首月', '次月', '末月'][Number(rule.month_of_quarter) - 1]
+    if (!quarterMonth) return '生成规则不可用'
+    return `每季度${quarterMonth} ${(rule.days_of_month || []).join('、')} 日 · ${time}`
+  }
   if (rule.frequency === 'yearly') {
     const dates = (rule.dates_of_year || []).map(({ month, day }) => `${month}月${day}日`)
     return `每年 ${dates.join('、')} · ${time}`

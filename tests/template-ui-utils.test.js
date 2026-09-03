@@ -22,6 +22,15 @@ describe('template UI rule formatting', () => {
       '每月 15、31 日 · 09:00'
     ],
     [
+      {
+        frequency: 'quarterly',
+        month_of_quarter: 3,
+        days_of_month: [15, 31],
+        time_of_day: '09:00'
+      },
+      '每季度末月 15、31 日 · 09:00'
+    ],
+    [
       { frequency: 'yearly', dates_of_year: [{ month: 2, day: 29 }], time_of_day: '09:00' },
       '每年 2月29日 · 09:00'
     ]
@@ -133,6 +142,22 @@ describe('template UI state and filtering', () => {
       sort: 'next'
     })
     expect(result.map((row) => row.id)).toEqual([1, 2])
+  })
+
+  it('filters natural-quarter templates independently', () => {
+    const quarterly = {
+      id: 4,
+      content: '季度复盘',
+      recurrence_rule: JSON.stringify({ frequency: 'quarterly' }),
+      next_run_at: 400,
+      tags: []
+    }
+    const result = filterAndSortTemplates([...rows, quarterly], {
+      frequency: 'quarterly',
+      tags: [],
+      sort: 'next'
+    })
+    expect(result.map((row) => row.id)).toEqual([4])
   })
 })
 

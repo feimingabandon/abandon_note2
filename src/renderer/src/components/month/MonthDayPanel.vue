@@ -133,7 +133,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <aside class="month-day-panel" :class="'is-day-' + dayDirection" aria-label="所选日期便签">
+  <aside
+    id="month-day-panel"
+    class="month-day-panel"
+    :class="'is-day-' + dayDirection"
+    aria-label="所选日期便签"
+  >
     <header class="month-day-panel__header">
       <div class="month-day-panel__identity-clip">
         <Transition name="month-day-identity">

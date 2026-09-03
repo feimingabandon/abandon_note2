@@ -5,7 +5,7 @@ import BaseButton from '../ui/BaseButton.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import DatePicker from '../ui/DatePicker.vue'
 import { useMessage } from '../../composables/useMessage.js'
-import { localDateKey } from '../../../../shared/calendar/calendar-date-rules.js'
+import { dateOrdinal, localDateKey } from '../../../../shared/calendar/calendar-date-rules.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false }
@@ -19,15 +19,23 @@ const STATUS_OPTIONS = [
   { value: 'completed', label: '已完成', color: '#30d158' }
 ]
 const STATUS_BY_VALUE = new Map(STATUS_OPTIONS.map((status) => [status.value, status]))
+const EXPORT_FORMAT_OPTIONS = [
+  { value: 'txt', label: 'TXT' },
+  { value: 'xlsx', label: 'Excel' }
+]
+const MAX_RANGE_DAYS = 366
 
-const dateKey = ref(localDateKey())
+const startDateKey = ref(localDateKey())
+const endDateKey = ref(localDateKey())
 const statuses = ref(STATUS_OPTIONS.map((status) => status.value))
+const exportFormat = ref('txt')
 const notes = ref([])
 const selectedIds = ref(new Set())
 const loading = ref(false)
 const exporting = ref(false)
 const exportSuccessVisible = ref(false)
 const exportedFileName = ref('')
+const exportSuccessMessage = ref('')
 const loadError = ref('')
 let loadSequence = 0
 let stopNotesListener = null
@@ -35,6 +43,15 @@ let stopNotesListener = null
 const selectedCount = computed(() => selectedIds.value.size)
 const allSelected = computed(
   () => notes.value.length > 0 && selectedIds.value.size === notes.value.length
+)
+const rangeValidationMessage = computed(() => {
+  const dayCount = dateOrdinal(endDateKey.value) - dateOrdinal(startDateKey.value) + 1
+  if (dayCount <= 0) return '结束日期不能早于开始日期'
+  if (dayCount > MAX_RANGE_DAYS) return `单次导出范围不能超过 ${MAX_RANGE_DAYS} 天`
+  return ''
+})
+const exportButtonLabel = computed(() =>
+  exporting.value ? '正在导出…' : exportFormat.value === 'xlsx' ? '导出 Excel' : '导出 TXT'
 )
 
 function statusDetails(status) {
@@ -45,7 +62,7 @@ function formatTime(timestamp) {
   const date = new Date(Number(timestamp))
   if (Number.isNaN(date.getTime())) return '未记录'
   const pad = (value) => String(value).padStart(2, '0')
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 function noteTime(note) {
@@ -56,11 +73,19 @@ function noteTime(note) {
 
 async function loadPreview() {
   const sequence = ++loadSequence
+  if (rangeValidationMessage.value) {
+    notes.value = []
+    selectedIds.value = new Set()
+    loading.value = false
+    loadError.value = ''
+    return
+  }
   loading.value = true
   loadError.value = ''
   try {
     const result = await window.api.previewDailyReport({
-      dateKey: dateKey.value,
+      startDateKey: startDateKey.value,
+      endDateKey: endDateKey.value,
       // Electron IPC 不能克隆 Vue 的响应式代理；跨进程前转成普通数组。
       statuses: [...statuses.value]
     })
@@ -71,7 +96,7 @@ async function loadPreview() {
     if (sequence !== loadSequence) return
     notes.value = []
     selectedIds.value = new Set()
-    loadError.value = error?.message || '日报内容加载失败'
+    loadError.value = error?.message || '报表内容加载失败'
   } finally {
     if (sequence === loadSequence) loading.value = false
   }
@@ -107,21 +132,32 @@ function close() {
 }
 
 async function exportReport() {
-  if (selectedIds.value.size === 0 || exporting.value) return
+  if (selectedIds.value.size === 0 || exporting.value || rangeValidationMessage.value) return
   exporting.value = true
   try {
     const result = await window.api.exportDailyReport({
-      dateKey: dateKey.value,
+      startDateKey: startDateKey.value,
+      endDateKey: endDateKey.value,
       statuses: [...statuses.value],
-      noteIds: [...selectedIds.value]
+      noteIds: [...selectedIds.value],
+      format: exportFormat.value
     })
     if (result?.canceled) return
-    exportedFileName.value = result?.fileName || `Abandon日报-${dateKey.value}.txt`
+    const rangeLabel =
+      startDateKey.value === endDateKey.value
+        ? startDateKey.value
+        : `${startDateKey.value}至${endDateKey.value}`
+    const extension = exportFormat.value === 'xlsx' ? 'xlsx' : 'txt'
+    exportedFileName.value = result?.fileName || `Abandon报表-${rangeLabel}.${extension}`
+    const truncatedNotice = result?.truncatedCount
+      ? `\n其中 ${result.truncatedCount} 条超长便签内容已按 Excel 单元格限制截断。`
+      : ''
+    exportSuccessMessage.value = `便签报表已成功导出：\n${exportedFileName.value}${truncatedNotice}`
     emit('update:visible', false)
     await nextTick()
     exportSuccessVisible.value = true
   } catch (error) {
-    showMessage('error', error?.message || '日报导出失败')
+    showMessage('error', error?.message || '报表导出失败')
     await loadPreview()
   } finally {
     exporting.value = false
@@ -148,12 +184,14 @@ watch(
       loadSequence += 1
       return
     }
-    dateKey.value = localDateKey()
+    startDateKey.value = localDateKey()
+    endDateKey.value = localDateKey()
     statuses.value = STATUS_OPTIONS.map((status) => status.value)
+    exportFormat.value = 'txt'
   }
 )
 
-watch([dateKey, statuses], () => {
+watch([startDateKey, endDateKey, statuses], () => {
   if (props.visible) void loadPreview()
 })
 
@@ -170,8 +208,8 @@ onBeforeUnmount(() => {
 <template>
   <AppModalShell
     :visible="visible"
-    title="日报导出"
-    subtitle="选择日期和状态，并确认本次要导出的便签"
+    title="便签报表"
+    subtitle="选择最长 366 天的日期范围、状态和导出格式"
     width="min(700rem, calc(100vw - 32rem))"
     height="min(680rem, calc(100vh - 32rem))"
     :close-disabled="exporting"
@@ -179,10 +217,17 @@ onBeforeUnmount(() => {
     @update:visible="close"
   >
     <div class="daily-report">
-      <section class="daily-report__filters" aria-label="日报筛选条件">
+      <section class="daily-report__filters" aria-label="便签报表筛选条件">
         <div class="daily-report__filter-row">
-          <span class="daily-report__filter-label">日期</span>
-          <DatePicker v-model="dateKey" aria-label="选择日报日期" />
+          <span class="daily-report__filter-label">日期范围</span>
+          <div class="daily-report__date-range">
+            <DatePicker v-model="startDateKey" aria-label="选择报表开始日期" />
+            <span class="daily-report__date-separator">至</span>
+            <DatePicker v-model="endDateKey" aria-label="选择报表结束日期" />
+            <span v-if="rangeValidationMessage" class="daily-report__range-error" role="alert">
+              {{ rangeValidationMessage }}
+            </span>
+          </div>
         </div>
         <div class="daily-report__filter-row">
           <span class="daily-report__filter-label">状态</span>
@@ -207,6 +252,23 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
+        <div class="daily-report__filter-row">
+          <span class="daily-report__filter-label">导出格式</span>
+          <div class="daily-report__formats" role="radiogroup" aria-label="报表导出格式">
+            <button
+              v-for="format in EXPORT_FORMAT_OPTIONS"
+              :key="format.value"
+              type="button"
+              class="daily-report__format"
+              :class="{ 'is-selected': exportFormat === format.value }"
+              role="radio"
+              :aria-checked="exportFormat === format.value"
+              @click="exportFormat = format.value"
+            >
+              {{ format.label }}
+            </button>
+          </div>
+        </div>
       </section>
 
       <section class="daily-report__preview" aria-label="待导出的便签">
@@ -225,7 +287,7 @@ onBeforeUnmount(() => {
         <div class="daily-report__list scroll-y" :aria-busy="loading">
           <div v-if="loading" class="daily-report__state">
             <span class="daily-report__spinner" aria-hidden="true" />
-            正在读取日报内容…
+            正在读取报表内容…
           </div>
           <div v-else-if="loadError" class="daily-report__state is-error">
             <span>{{ loadError }}</span>
@@ -234,8 +296,11 @@ onBeforeUnmount(() => {
           <div v-else-if="statuses.length === 0" class="daily-report__state">
             请至少选择一个便签状态
           </div>
+          <div v-else-if="rangeValidationMessage" class="daily-report__state is-error">
+            {{ rangeValidationMessage }}
+          </div>
           <div v-else-if="notes.length === 0" class="daily-report__state">
-            当天没有符合状态条件的便签
+            所选日期范围内没有符合状态条件的便签
           </div>
           <template v-else>
             <label
@@ -280,10 +345,10 @@ onBeforeUnmount(() => {
       <BaseButton :disabled="exporting" @click="close">取消</BaseButton>
       <BaseButton
         variant="primary"
-        :disabled="selectedCount === 0 || loading || exporting"
+        :disabled="selectedCount === 0 || loading || exporting || !!rangeValidationMessage"
         @click="exportReport"
       >
-        {{ exporting ? '正在导出…' : '导出 TXT' }}
+        {{ exportButtonLabel }}
       </BaseButton>
     </template>
   </AppModalShell>
@@ -291,7 +356,7 @@ onBeforeUnmount(() => {
   <ConfirmDialog
     v-model:visible="exportSuccessVisible"
     title="导出成功"
-    :message="`日报已成功导出：\n${exportedFileName}`"
+    :message="exportSuccessMessage"
     confirm-text="打开文件夹"
     cancel-text="关闭"
     @confirm="openExportFolder"
@@ -315,7 +380,7 @@ onBeforeUnmount(() => {
 .daily-report__filter-row {
   display: grid;
   min-width: 0;
-  grid-template-columns: 52rem minmax(0, 1fr);
+  grid-template-columns: 72rem minmax(0, 1fr);
   align-items: center;
 }
 .daily-report__filter-label {
@@ -323,13 +388,63 @@ onBeforeUnmount(() => {
   font-size: var(--fs-secondary);
 }
 .daily-report__filter-row :deep(.date-picker) {
-  width: min(260rem, 100%);
+  width: 100%;
+}
+.daily-report__date-range {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 20rem minmax(0, 1fr);
+  align-items: center;
+  gap: 7rem;
+}
+.daily-report__date-separator {
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  text-align: center;
+}
+.daily-report__range-error {
+  grid-column: 1 / -1;
+  color: var(--ui-warning);
+  font-size: var(--fs-secondary);
 }
 .daily-report__statuses {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
   gap: 7rem;
+}
+.daily-report__formats {
+  display: inline-flex;
+  width: fit-content;
+  padding: 3rem;
+  border-radius: 9rem;
+  background: var(--ui-surface-subtle);
+}
+.daily-report__format {
+  min-width: 72rem;
+  min-height: 30rem;
+  padding: 0 11rem;
+  border: 0;
+  border-radius: 7rem;
+  background: transparent;
+  color: var(--text-color-secondary);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) ease,
+    color var(--motion-fast) ease,
+    transform var(--motion-control) var(--ease-standard);
+}
+.daily-report__format:hover {
+  background: var(--ui-fill-hover);
+}
+.daily-report__format:active {
+  transform: scale(0.98);
+}
+.daily-report__format.is-selected {
+  background: var(--ui-accent-subtle);
+  color: var(--ui-accent);
 }
 .daily-report__status {
   display: inline-flex;
@@ -573,7 +688,7 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 520px) {
   .daily-report__filter-row {
-    grid-template-columns: 42rem minmax(0, 1fr);
+    grid-template-columns: 62rem minmax(0, 1fr);
   }
   .daily-report-note__duration {
     display: none;

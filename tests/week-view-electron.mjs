@@ -147,6 +147,18 @@ async function runWeekViewTests() {
       nextLabel: document.querySelector('.month-toolbar__navigation button:nth-of-type(3)')?.getAttribute('aria-label'),
       templateButton: Boolean(document.querySelector('.month-titlebar-btn[aria-controls="template-workspace"]')),
       helpButton: Boolean(document.querySelector('.month-titlebar-btn[aria-controls="help-workspace"]')),
+      dayPanelToggle: document.querySelector('.month-toolbar__day-panel-toggle')?.getAttribute('aria-expanded'),
+      toolbarLayout: (() => {
+        const navigation = document.querySelector('.month-toolbar__navigation').getBoundingClientRect()
+        const today = document.querySelector('.month-toolbar__today').getBoundingClientRect()
+        const refresh = document.querySelector('.month-toolbar__refresh').getBoundingClientRect()
+        const toggle = document.querySelector('.month-toolbar__day-panel-toggle').getBoundingClientRect()
+        return {
+          actionsLeftOfNavigation:
+            today.right <= navigation.left && refresh.right <= navigation.left,
+          toggleRightOfNavigation: toggle.left >= navigation.right
+        }
+      })(),
       microsoftTitlebar: document.querySelector('.app-titlebar')?.classList.contains('app-titlebar--microsoft'),
       today: (() => {
         const now = new Date()
@@ -160,9 +172,60 @@ async function runWeekViewTests() {
     assert.equal(initial.nextLabel, '下一周')
     assert.equal(initial.templateButton, true, '周视图必须开放循环模板入口')
     assert.equal(initial.helpButton, true, '周视图必须开放帮助中心入口')
+    assert.equal(initial.dayPanelToggle, 'false', '周视图必须提供收起状态的日期列表开关')
+    assert.deepEqual(
+      initial.toolbarLayout,
+      { actionsLeftOfNavigation: true, toggleRightOfNavigation: true },
+      '周视图今天和刷新必须位于周导航左侧，日期列表开关必须位于右侧'
+    )
     assert.equal(initial.selected, initial.today, '周视图初始选中日期应为今天')
     assert.equal(initial.microsoftTitlebar, true, '周视图首次启动未继承月视图导航栏风格')
     assert.match(initial.title, /年.*月.*日—.*日/)
+
+    await weekWindow.webContents.executeJavaScript(`(() => {
+      const trigger = document.querySelector('.month-day-cell[data-date="${initial.today}"] .month-day-cell__quick-activate')
+      trigger.click()
+    })()`)
+    await waitUntil(
+      () =>
+        weekWindow.webContents.executeJavaScript(
+          `document.activeElement?.matches('.month-day-cell[data-date="${initial.today}"] .month-day-cell__quick-create input')`
+        ),
+      '周视图日期格底部没有打开快速新建输入框'
+    )
+    assert.equal(
+      await weekWindow.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.month-day-panel, .month-creator'))`
+      ),
+      false,
+      '周视图快速新建不得顺带打开日期侧栏或完整新建器'
+    )
+    await weekWindow.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('.month-day-cell[data-date="${initial.today}"] .month-day-cell__quick-create input')
+      input.value = '周视图未提交草稿'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      document.querySelector('.month-toolbar').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+    })()`)
+    await waitUntil(
+      () =>
+        weekWindow.webContents.executeJavaScript(
+          `!document.querySelector('.month-day-cell__quick-create.is-active')`
+        ),
+      '周视图快速新建器点击外部后没有收起'
+    )
+    await weekWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-day-cell[data-date="${initial.today}"] .month-day-cell__quick-activate').click()`
+    )
+    await waitUntil(
+      () =>
+        weekWindow.webContents.executeJavaScript(
+          `document.querySelector('.month-day-cell[data-date="${initial.today}"] .month-day-cell__quick-create input')?.value === '周视图未提交草稿'`
+        ),
+      '周视图快速新建器没有按日期保留未提交草稿'
+    )
+    await weekWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-toolbar').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`
+    )
 
     await weekWindow.webContents.executeJavaScript(
       `document.querySelector('.month-titlebar-btn[aria-controls="template-workspace"]').click()`
@@ -189,7 +252,9 @@ async function runWeekViewTests() {
     )
     await waitUntil(
       () =>
-        weekWindow.webContents.executeJavaScript(`!document.querySelector('.month-template-wrapper')`),
+        weekWindow.webContents.executeJavaScript(
+          `!document.querySelector('.month-template-wrapper')`
+        ),
       '周视图循环模板工作区没有完成关闭'
     )
 
@@ -282,17 +347,37 @@ async function runWeekViewTests() {
       )
     }
 
-    // 展开侧栏后切换下一周，选中的星期与侧栏展开状态都必须保留。
+    // 日期格只负责选择；工具栏展开侧栏后切换下一周，选中的星期与侧栏状态必须保留。
     const sourceKey = initial.cells[2]
     await weekWindow.webContents.executeJavaScript(
       `document.querySelector('.month-day-cell[data-date="${sourceKey}"]').click()`
+    )
+    assert.equal(
+      await weekWindow.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.month-day-panel'))`
+      ),
+      false,
+      '周视图点击日期不得隐式展开日期侧栏'
+    )
+    await weekWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-toolbar__day-panel-toggle').click()`
     )
     await waitUntil(
       () =>
         weekWindow.webContents.executeJavaScript(
           `Boolean(document.querySelector('.month-day-panel'))`
         ),
-      '点击日期后未展开日期侧栏'
+      '周视图工具栏按钮没有展开日期侧栏'
+    )
+    await weekWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-day-cell[data-date="${sourceKey}"]').click()`
+    )
+    assert.equal(
+      await weekWindow.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.month-day-panel'))`
+      ),
+      true,
+      '周视图重复点击日期不得收起日期侧栏'
     )
     await weekWindow.webContents.executeJavaScript(`(() => {
       const body = document.querySelector('.month-workspace__calendar-body')

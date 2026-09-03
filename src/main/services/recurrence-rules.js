@@ -1,6 +1,6 @@
 /** 纯函数循环规则计算器；全部按系统本地日历计算，不依赖数据库或 Electron。 */
 
-const FREQUENCIES = new Set(['daily', 'weekly', 'monthly', 'yearly'])
+const FREQUENCIES = new Set(['daily', 'weekly', 'monthly', 'quarterly', 'yearly'])
 const DAY_MS = 86_400_000
 export const MAX_DAILY_INTERVAL = 3650
 
@@ -42,7 +42,7 @@ export function normalizeRecurrenceRule(input) {
   }
   assertObject(rule, 'recurrenceRule 必须是对象')
   if (!FREQUENCIES.has(rule.frequency))
-    throw new Error('frequency 必须是 daily、weekly、monthly 或 yearly')
+    throw new Error('frequency 必须是 daily、weekly、monthly、quarterly 或 yearly')
 
   const time = parseTimeOfDay(rule.time_of_day)
   const normalized = {
@@ -50,6 +50,7 @@ export function normalizeRecurrenceRule(input) {
     interval: 1,
     days_of_week: [],
     days_of_month: [],
+    month_of_quarter: null,
     dates_of_year: [],
     time_of_day: time.value
   }
@@ -63,6 +64,13 @@ export function normalizeRecurrenceRule(input) {
   } else if (rule.frequency === 'weekly') {
     normalized.days_of_week = normalizeIntegerArray(rule.days_of_week, 1, 7, 'days_of_week')
   } else if (rule.frequency === 'monthly') {
+    normalized.days_of_month = normalizeIntegerArray(rule.days_of_month, 1, 31, 'days_of_month')
+  } else if (rule.frequency === 'quarterly') {
+    const monthOfQuarter = Number(rule.month_of_quarter)
+    if (!Number.isInteger(monthOfQuarter) || monthOfQuarter < 1 || monthOfQuarter > 3) {
+      throw new Error('month_of_quarter 必须是 1、2 或 3')
+    }
+    normalized.month_of_quarter = monthOfQuarter
     normalized.days_of_month = normalizeIntegerArray(rule.days_of_month, 1, 31, 'days_of_month')
   } else {
     if (!Array.isArray(rule.dates_of_year) || rule.dates_of_year.length === 0) {
@@ -173,6 +181,30 @@ function monthlyNext(rule, after, hour, minute) {
   throw new Error('无法计算下一次每月生成时间')
 }
 
+function quarterlyNext(rule, after, hour, minute) {
+  const currentQuarterStartMonth = Math.floor(after.getMonth() / 3) * 3
+  for (let quarterOffset = 0; quarterOffset <= 16; quarterOffset += 1) {
+    const monthBase = new Date(
+      after.getFullYear(),
+      currentQuarterStartMonth + quarterOffset * 3 + rule.month_of_quarter - 1,
+      1
+    )
+    const year = monthBase.getFullYear()
+    const month = monthBase.getMonth() + 1
+    const maxDay = daysInMonth(year, month)
+    const candidates = new Set(
+      rule.days_of_month.map((configuredDay) =>
+        atLocalTime(year, month, Math.min(configuredDay, maxDay), hour, minute)
+      )
+    )
+    const next = [...candidates]
+      .sort((a, b) => a - b)
+      .find((candidate) => candidate > after.getTime())
+    if (next !== undefined) return next
+  }
+  throw new Error('无法计算下一次每季度生成时间')
+}
+
 function yearlyNext(rule, after, hour, minute) {
   for (let yearOffset = 0; yearOffset <= 12; yearOffset += 1) {
     const year = after.getFullYear() + yearOffset
@@ -204,5 +236,6 @@ export function calculateNextRun(ruleInput, afterTimestamp, anchorTimestamp = af
   if (rule.frequency === 'daily') return dailyNext(rule, after, anchor, hour, minute)
   if (rule.frequency === 'weekly') return weeklyNext(rule, after, hour, minute)
   if (rule.frequency === 'monthly') return monthlyNext(rule, after, hour, minute)
+  if (rule.frequency === 'quarterly') return quarterlyNext(rule, after, hour, minute)
   return yearlyNext(rule, after, hour, minute)
 }

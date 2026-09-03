@@ -213,11 +213,11 @@ const api = {
   completeNote: (id) => ipcRenderer.invoke('notes:complete', { id }),
   /** 将已完成便签重新恢复为进行中 */
   reopenNote: (id) => ipcRenderer.invoke('notes:reopen', { id }),
-  /** 查询指定日期和多选状态下的日报便签预览。 */
+  /** 查询指定日期范围和多选状态下的便签报表预览。 */
   previewDailyReport: (options) => ipcRenderer.invoke('daily-report:preview', options),
-  /** 由系统保存对话框导出选中的日报便签为 TXT。 */
+  /** 由系统保存对话框将选中的便签导出为 TXT 或 XLSX。 */
   exportDailyReport: (options) => ipcRenderer.invoke('daily-report:export', options),
-  /** 打开最近一次成功导出的日报所在文件夹。 */
+  /** 打开最近一次成功导出的便签报表所在文件夹。 */
   openDailyReportExportFolder: () => ipcRenderer.invoke('daily-report:open-export-folder'),
   /** 监听调度器等主进程来源的便签变化；返回取消监听函数。 */
   onNotesChanged: (callback) => {

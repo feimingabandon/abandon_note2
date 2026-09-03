@@ -80,6 +80,7 @@ const frequencyOptions = [
   { value: 'daily', label: '每天' },
   { value: 'weekly', label: '每周' },
   { value: 'monthly', label: '每月' },
+  { value: 'quarterly', label: '每季度' },
   { value: 'yearly', label: '每年' }
 ]
 const sortOptions = [

@@ -53,12 +53,39 @@ describe('rule validation', () => {
     ).toEqual([1, 3, 5])
   })
 
+  it('normalizes natural-quarter month and dates', () => {
+    const rule = normalizeRecurrenceRule({
+      frequency: 'quarterly',
+      month_of_quarter: 3,
+      days_of_month: [31, 15, 31],
+      time_of_day: '09:00'
+    })
+    expect(rule.month_of_quarter).toBe(3)
+    expect(rule.days_of_month).toEqual([15, 31])
+  })
+
   it.each([
     [{ frequency: 'every_other_day', interval: 2, time_of_day: '08:00' }],
     [{ frequency: 'daily', interval: 0, time_of_day: '08:00' }],
     [{ frequency: 'daily', interval: MAX_DAILY_INTERVAL + 1, time_of_day: '08:00' }],
     [{ frequency: 'weekly', days_of_week: [], time_of_day: '08:00' }],
     [{ frequency: 'monthly', days_of_month: [32], time_of_day: '08:00' }],
+    [
+      {
+        frequency: 'quarterly',
+        month_of_quarter: 0,
+        days_of_month: [31],
+        time_of_day: '08:00'
+      }
+    ],
+    [
+      {
+        frequency: 'quarterly',
+        month_of_quarter: 3,
+        days_of_month: [],
+        time_of_day: '08:00'
+      }
+    ],
     [{ frequency: 'yearly', dates_of_year: [{ month: 13, day: 1 }], time_of_day: '08:00' }],
     [{ frequency: 'yearly', dates_of_year: [{ month: 4, day: 31 }], time_of_day: '08:00' }],
     [{ frequency: 'daily', interval: 1, time_of_day: '8:00' }],
@@ -149,6 +176,40 @@ describe('next run calculation', () => {
       localTs(2024, 2, 1)
     )
     expect(parts(next)).toEqual([2024, 2, 29, 9, 0])
+  })
+
+  it('uses fixed natural-quarter months instead of the activation month', () => {
+    const rule = {
+      frequency: 'quarterly',
+      month_of_quarter: 3,
+      days_of_month: [31],
+      time_of_day: '09:00'
+    }
+    const march = calculateNextRun(rule, localTs(2025, 2, 10))
+    const june = calculateNextRun(rule, march)
+    const september = calculateNextRun(rule, june)
+    const december = calculateNextRun(rule, september)
+    const nextMarch = calculateNextRun(rule, december)
+
+    expect(parts(march)).toEqual([2025, 3, 31, 9, 0])
+    expect(parts(june)).toEqual([2025, 6, 30, 9, 0])
+    expect(parts(september)).toEqual([2025, 9, 30, 9, 0])
+    expect(parts(december)).toEqual([2025, 12, 31, 9, 0])
+    expect(parts(nextMarch)).toEqual([2026, 3, 31, 9, 0])
+  })
+
+  it('clamps a second-quarter-month date through leap-year February', () => {
+    const rule = {
+      frequency: 'quarterly',
+      month_of_quarter: 2,
+      days_of_month: [31],
+      time_of_day: '09:00'
+    }
+    const february = calculateNextRun(rule, localTs(2024, 1, 1))
+    const may = calculateNextRun(rule, february)
+
+    expect(parts(february)).toEqual([2024, 2, 29, 9, 0])
+    expect(parts(may)).toEqual([2024, 5, 31, 9, 0])
   })
 
   it('clamps a yearly February 29 rule in common years', () => {

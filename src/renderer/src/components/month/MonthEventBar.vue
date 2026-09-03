@@ -5,6 +5,7 @@ const props = defineProps({
   segment: { type: Object, required: true },
   note: { type: Object, required: true }
 })
+const emit = defineEmits(['open-context-menu'])
 const accent = computed(() => {
   if (props.note.status === 'completed') return '#8e8e93'
   const tagColor = props.note.tags?.[0]?.color
@@ -90,6 +91,11 @@ function closeTooltip() {
   tooltipVisible.value = false
 }
 
+function openContextMenu(event) {
+  closeTooltip()
+  emit('open-context-menu', { event, note: props.note })
+}
+
 function onDocumentPointerDown(event) {
   if (!tooltipVisible.value) return
   if (barRef.value?.contains(event.target) || tooltipRef.value?.contains(event.target)) return
@@ -130,9 +136,12 @@ onBeforeUnmount(() => {
       gridColumn: `${segment.columnStart} / span ${segment.columnSpan}`
     }"
     :data-preview="previewText"
+    :data-note-id="note.id"
+    :data-segment-key="`${note.id}:${segment.weekIndex}`"
     :aria-label="fullTitle"
     :aria-expanded="tooltipVisible"
     @click.stop="toggleTooltip"
+    @contextmenu.prevent.stop="openContextMenu"
   >
     <span v-if="!segment.continuesBefore" class="month-event-bar__dot" aria-hidden="true" />
     <span class="month-event-bar__text">{{ previewText }}</span>
@@ -182,9 +191,7 @@ onBeforeUnmount(() => {
   line-height: 1;
   pointer-events: auto;
   transform: translateY(calc(var(--event-lane) * 22rem));
-  transition:
-    filter 140ms ease,
-    transform 140ms ease;
+  transition: filter 140ms ease;
 }
 .month-event-bar:hover {
   filter: brightness(1.08);

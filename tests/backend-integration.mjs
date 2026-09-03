@@ -572,17 +572,94 @@ try {
   const missedAnchor = localTs(2025, 7, 20, 8)
   const missedTemplate = createTemplate(
     {
-      content: '错过节点不补偿',
+      content: '当天错过节点补生成',
       recurrenceRule: { frequency: 'daily', interval: 1, time_of_day: '09:00' },
       tagIds: [dailyTag.id]
     },
     missedAnchor
   )
   const startup = runRecurringTemplates({ now: localTs(2025, 7, 20, 10), reason: 'startup' })
-  assert.equal(startup.count, 0)
-  assert.equal(startup.skipped, 1)
-  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM notes').get().count, 0)
+  assert.equal(startup.count, 1)
+  assert.equal(startup.skipped, 0)
+  const startupNoteId = getTemplateById(missedTemplate.id).last_generated_note_id
+  const startupNote = getNoteById(startupNoteId)
+  assert.equal(startupNote.effective_at, localTs(2025, 7, 20, 9))
+  assert.equal(startupNote.status, 'in_progress')
   assert.equal(getTemplateById(missedTemplate.id).next_run_at, localTs(2025, 7, 21, 9))
+  const repeatedStartup = runRecurringTemplates({
+    now: localTs(2025, 7, 20, 10, 1),
+    reason: 'startup'
+  })
+  assert.equal(repeatedStartup.count, 0)
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM notes').get().count, 1)
+  db.prepare('DELETE FROM notes WHERE id = ?').run(startupNoteId)
+  pauseTemplate(missedTemplate.id, localTs(2025, 7, 20, 10, 2))
+
+  const historicalTemplate = createTemplate(
+    {
+      content: '昨天节点不补生成',
+      recurrenceRule: { frequency: 'weekly', days_of_week: [7], time_of_day: '09:00' }
+    },
+    localTs(2025, 7, 20, 8)
+  )
+  const historicalStartup = runRecurringTemplates({
+    now: localTs(2025, 7, 21, 10),
+    reason: 'startup'
+  })
+  assert.equal(historicalStartup.count, 0)
+  assert.equal(historicalStartup.skipped, 1)
+  assert.equal(getTemplateById(historicalTemplate.id).last_generated_note_id, null)
+  assert.equal(getTemplateById(historicalTemplate.id).next_run_at, localTs(2025, 7, 27, 9))
+  deleteTemplate(historicalTemplate.id, localTs(2025, 7, 21, 10, 1))
+  assert.equal(purgeTemplate(historicalTemplate.id), true)
+
+  const consecutiveTemplate = createTemplate(
+    {
+      content: '跨日积压只补今天',
+      recurrenceRule: { frequency: 'weekly', days_of_week: [1, 7], time_of_day: '09:00' }
+    },
+    localTs(2025, 7, 20, 8)
+  )
+  const consecutiveStartup = runRecurringTemplates({
+    now: localTs(2025, 7, 21, 10),
+    reason: 'startup'
+  })
+  assert.equal(consecutiveStartup.count, 1)
+  assert.equal(consecutiveStartup.skipped, 0)
+  const consecutiveNoteId = getTemplateById(consecutiveTemplate.id).last_generated_note_id
+  assert.equal(getNoteById(consecutiveNoteId).effective_at, localTs(2025, 7, 21, 9))
+  assert.equal(getTemplateById(consecutiveTemplate.id).next_run_at, localTs(2025, 7, 27, 9))
+  deleteTemplate(consecutiveTemplate.id, localTs(2025, 7, 21, 10, 1))
+  assert.equal(purgeTemplate(consecutiveTemplate.id), true)
+  db.prepare('DELETE FROM notes WHERE id = ?').run(consecutiveNoteId)
+
+  const quarterlyTemplate = createTemplate(
+    {
+      content: '自然季度末复盘',
+      recurrenceRule: {
+        frequency: 'quarterly',
+        month_of_quarter: 3,
+        days_of_month: [31],
+        time_of_day: '09:00'
+      }
+    },
+    localTs(2025, 2, 10, 8)
+  )
+  assert.equal(quarterlyTemplate.next_run_at, localTs(2025, 3, 31, 9))
+  const quarterlyStartup = runRecurringTemplates({
+    now: localTs(2025, 3, 31, 10),
+    reason: 'startup'
+  })
+  assert.equal(quarterlyStartup.count, 1)
+  const quarterlyNoteId = getTemplateById(quarterlyTemplate.id).last_generated_note_id
+  assert.equal(getNoteById(quarterlyNoteId).effective_at, localTs(2025, 3, 31, 9))
+  assert.equal(getTemplateById(quarterlyTemplate.id).next_run_at, localTs(2025, 6, 30, 9))
+  deleteTemplate(quarterlyTemplate.id, localTs(2025, 3, 31, 10, 1))
+  assert.equal(purgeTemplate(quarterlyTemplate.id), true)
+  db.prepare('DELETE FROM notes WHERE id = ?').run(quarterlyNoteId)
+
+  const resumedMissedTemplate = resumeTemplate(missedTemplate.id, localTs(2025, 7, 20, 10, 3))
+  assert.equal(resumedMissedTemplate.next_run_at, localTs(2025, 7, 21, 9))
 
   const activeAnchor = localTs(2025, 7, 20, 8)
   const activeTemplate = createTemplate(
@@ -636,7 +713,7 @@ try {
     true
   )
   assert.equal(
-    generatedCalendar.notes.some((note) => note.content === '错过节点不补偿'),
+    generatedCalendar.notes.some((note) => note.content === '当天错过节点补生成'),
     false,
     '月视图不得虚拟展开尚未生成的循环模板'
   )
@@ -765,6 +842,10 @@ try {
     },
     localTs(2025, 8, 1, 8)
   )
+  // 隔离失败重试用例；新策略会补生成其他模板在 8 月 1 日当天已经到时的节点。
+  pauseTemplate(missedTemplate.id, localTs(2025, 8, 1, 8, 30))
+  pauseTemplate(activeTemplate.id, localTs(2025, 8, 1, 8, 30))
+  pauseTemplate(intervalTemplate.id, localTs(2025, 8, 1, 8, 30))
   db.prepare("UPDATE note_templates SET recurrence_rule = '{bad json' WHERE id = ?").run(
     failingTemplate.id
   )
@@ -814,10 +895,6 @@ try {
     },
     localTs(2025, 8, 2, 8)
   )
-  // 隔离本用例，避免其他正常模板在同一时间节点生成便签并进入结果计数。
-  pauseTemplate(missedTemplate.id, localTs(2025, 8, 2, 8, 30))
-  pauseTemplate(activeTemplate.id, localTs(2025, 8, 2, 8, 30))
-  pauseTemplate(intervalTemplate.id, localTs(2025, 8, 2, 8, 30))
   db.pragma('foreign_keys = OFF')
   db.prepare('INSERT INTO template_tags (template_id, tag_id) VALUES (?, ?)').run(
     commitFailureTemplate.id,
@@ -1073,6 +1150,24 @@ try {
     ['月历跨月便签']
   )
   assert.deepEqual(queryDailyReportNotes({ dateKey: '2026-08-01', statuses: ['in_progress'] }), [])
+  assert.deepEqual(
+    queryDailyReportNotes({
+      startDateKey: '2026-07-31',
+      endDateKey: '2026-08-03',
+      statuses: ['completed']
+    }).map((note) => note.content),
+    ['月历跨月便签'],
+    '跨日便签与报表范围相交时只返回一次'
+  )
+  assert.deepEqual(
+    queryDailyReportNotes({
+      startDateKey: '2026-08-04',
+      endDateKey: '2026-08-05',
+      statuses: ['completed']
+    }),
+    [],
+    '报表范围不得包含已经结束的便签'
+  )
 
   console.log('backend integration tests passed')
 } finally {

@@ -19,12 +19,21 @@ const props = defineProps({
   weekStart: { type: String, default: '' },
   weekEnd: { type: String, default: '' },
   selectedKey: { type: String, default: '' },
+  dayPanelOpen: { type: Boolean, default: false },
   refreshing: { type: Boolean, default: false },
   busy: { type: Boolean, default: false },
   weatherLocationLabel: { type: String, default: '' },
   weatherSourceLabel: { type: String, default: '' }
 })
-const emit = defineEmits(['previous', 'next', 'today', 'jump', 'jump-date', 'refresh'])
+const emit = defineEmits([
+  'previous',
+  'next',
+  'today',
+  'jump',
+  'jump-date',
+  'refresh',
+  'toggle-day-panel'
+])
 const isWeekView = computed(() => props.viewMode === 'week')
 const pickerOpen = ref(false)
 const pickerGuardVisible = ref(false)
@@ -257,18 +266,39 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 
 <template>
   <header class="month-toolbar" :class="{ 'is-busy': busy }">
-    <button
-      v-if="weatherLocationLabel"
-      type="button"
-      class="month-toolbar__weather-meta"
-      title="查看天气数据来源"
-      @click="window.api.openWeatherSource()"
-    >
-      <span>{{ weatherLocationLabel }}</span>
-      <i aria-hidden="true">·</i>
-      <small>{{ weatherSourceLabel }}</small>
-    </button>
-    <div v-else aria-hidden="true"></div>
+    <div class="month-toolbar__leading">
+      <button type="button" class="month-toolbar__today" :disabled="busy" @click="goToday">
+        今天
+      </button>
+      <button
+        type="button"
+        class="month-toolbar__refresh"
+        :disabled="busy || refreshing || refreshSpinActive"
+        title="刷新"
+        :aria-label="isWeekView ? '刷新周视图' : '刷新月视图'"
+        @click="emit('refresh')"
+      >
+        <svg
+          :class="{ 'is-spinning': refreshSpinActive }"
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+          @animationend="finishRefreshSpin"
+        >
+          <path d="M16 7a7 7 0 1 0 .4 5M16 3v4h-4" />
+        </svg>
+      </button>
+      <button
+        v-if="weatherLocationLabel"
+        type="button"
+        class="month-toolbar__weather-meta"
+        title="查看天气数据来源"
+        @click="window.api.openWeatherSource()"
+      >
+        <span>{{ weatherLocationLabel }}</span>
+        <i aria-hidden="true">·</i>
+        <small>{{ weatherSourceLabel }}</small>
+      </button>
+    </div>
 
     <div class="month-toolbar__navigation" :aria-label="isWeekView ? '周导航' : '月份导航'">
       <button
@@ -471,26 +501,22 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
       </Transition>
     </div>
 
-    <div class="month-toolbar__actions">
-      <button type="button" class="month-toolbar__today" :disabled="busy" @click="goToday">
-        今天
-      </button>
+    <div class="month-toolbar__trailing">
       <button
         type="button"
-        class="month-toolbar__refresh"
-        :disabled="busy || refreshing || refreshSpinActive"
-        title="刷新"
-        :aria-label="isWeekView ? '刷新周视图' : '刷新月视图'"
-        @click="emit('refresh')"
+        class="month-toolbar__day-panel-toggle"
+        :class="{ 'is-open': dayPanelOpen }"
+        :disabled="busy"
+        :aria-label="dayPanelOpen ? '收起日期列表' : '展开日期列表'"
+        aria-controls="month-day-panel"
+        :aria-expanded="dayPanelOpen"
+        :title="dayPanelOpen ? '收起日期列表' : '展开日期列表'"
+        @click="emit('toggle-day-panel')"
       >
-        <svg
-          :class="{ 'is-spinning': refreshSpinActive }"
-          viewBox="0 0 20 20"
-          aria-hidden="true"
-          @animationend="finishRefreshSpin"
-        >
-          <path d="M16 7a7 7 0 1 0 .4 5M16 3v4h-4" />
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M3 4.5h14v11H3zM7.5 4.5v11" />
         </svg>
+        <span>日期列表</span>
       </button>
     </div>
   </header>
@@ -506,10 +532,18 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   padding: 0 4rem;
 }
 .month-toolbar__navigation,
-.month-toolbar__actions {
+.month-toolbar__leading,
+.month-toolbar__trailing {
   display: flex;
   align-items: center;
   gap: 5rem;
+}
+.month-toolbar__leading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5rem;
+  justify-self: start;
 }
 .month-toolbar__navigation {
   position: relative;
@@ -517,8 +551,30 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   justify-self: center;
   gap: 9rem;
 }
-.month-toolbar__actions {
+.month-toolbar__trailing {
   justify-self: end;
+}
+.month-toolbar__day-panel-toggle {
+  display: inline-flex !important;
+  width: auto;
+  flex: 0 0 auto;
+  gap: 6rem;
+  padding: 0 9rem;
+  color: var(--text-color-secondary) !important;
+  font-size: var(--fs-secondary) !important;
+}
+.month-toolbar__day-panel-toggle.is-open {
+  background: var(--ui-fill-pressed);
+  color: var(--ui-accent) !important;
+}
+.month-toolbar__day-panel-toggle svg {
+  width: 17rem;
+  height: 17rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
 }
 .month-toolbar__weather-meta {
   display: flex !important;
@@ -945,6 +1001,38 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   }
   .month-toolbar__title {
     min-width: 0 !important;
+  }
+}
+@media (max-width: 520px) {
+  .month-toolbar__weather-meta {
+    display: none !important;
+  }
+  .month-toolbar__day-panel-toggle {
+    width: 30rem;
+    padding: 0;
+  }
+  .month-toolbar__day-panel-toggle span {
+    display: none;
+  }
+}
+@media (max-width: 420px) {
+  .month-toolbar {
+    min-height: 76rem;
+    grid-template-areas:
+      'leading trailing'
+      'navigation navigation';
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 30rem 36rem;
+    row-gap: 4rem;
+  }
+  .month-toolbar__leading {
+    grid-area: leading;
+  }
+  .month-toolbar__navigation {
+    grid-area: navigation;
+  }
+  .month-toolbar__trailing {
+    grid-area: trailing;
   }
 }
 </style>

@@ -67,6 +67,10 @@ async function toggle() {
   }
 }
 
+function openFromCollapsedBox() {
+  if (phase.value === 'collapsed') void toggle()
+}
+
 let dragging = false
 let dragStartY = 0
 let dragStartHeight = 0
@@ -103,9 +107,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="tcp-root" :class="{ 'is-expanded': expandedGeometry }">
-    <div ref="boxRef" class="tcp-box" :style="panelStyle">
+  <div
+    class="tcp-root"
+    :class="{ 'is-expanded': expandedGeometry, 'is-collapsed': phase === 'collapsed' }"
+  >
+    <div ref="boxRef" class="tcp-box" :style="panelStyle" @click="openFromCollapsedBox">
       <button
+        type="button"
         class="tcp-button"
         :title="expandedGeometry ? '折叠' : '新建循环模板'"
         @click.stop="toggle"
@@ -115,10 +123,11 @@ onBeforeUnmount(() => {
         </svg>
       </button>
       <button
+        type="button"
         class="tcp-hint"
+        aria-label="展开新建循环模板面板"
         :aria-hidden="expandedGeometry"
         :tabindex="expandedGeometry ? -1 : 0"
-        @click.stop="toggle"
       >
         <span>请新建循环模板内容…</span>
       </button>
@@ -161,6 +170,9 @@ onBeforeUnmount(() => {
   border-radius: 10rem;
   overflow: hidden;
   background: transparent;
+}
+.tcp-root.is-collapsed .tcp-box {
+  cursor: pointer;
 }
 .tcp-button {
   position: absolute;

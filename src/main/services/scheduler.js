@@ -104,7 +104,7 @@ export class Scheduler {
     if (this._mainTimerId || this._watchdogId) return
     this.lastTickAt = Date.now() // 初始化，防止首次 tick 失败导致看门狗永不触发
 
-    // 启动时仍执行一轮任务，但把来源交给各任务决定是否补偿；循环模板会跳过旧节点。
+    // 启动时仍执行一轮任务；循环模板会跳过历史节点，但补生成当天已经到时的节点。
     this.tick({ reason: 'startup' })
 
     // === 主线：递归 setTimeout 精确到整分 ===

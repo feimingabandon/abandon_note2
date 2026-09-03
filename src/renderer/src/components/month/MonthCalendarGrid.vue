@@ -1,15 +1,19 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import MonthEventBar from './MonthEventBar.vue'
 import {
   buildCalendarEventSegments,
   hasHiddenCalendarNotes,
-  noteCountsByDate
+  noteCountsByDate,
+  notesCoveringDate
 } from '../../../../shared/calendar/calendar-event-layout.js'
 import {
   calendarGridNavigationTarget,
   calendarGridTabKey
 } from '../../utils/calendar-grid-navigation.js'
+import { useMessage } from '../../composables/useMessage.js'
+import { combineLocalDateAndTime } from '../../../../shared/calendar/calendar-date-rules.js'
+import { defaultMonthNoteEffectiveTime } from '../../../../shared/note-scheduling-rules.js'
 
 const props = defineProps({
   viewMode: { type: String, default: 'month' },
@@ -19,11 +23,42 @@ const props = defineProps({
   todayKey: { type: String, required: true },
   weatherByDate: { type: Map, default: () => new Map() }
 })
-const emit = defineEmits(['select-date', 'create'])
+const emit = defineEmits([
+  'select-date',
+  'quick-create-opened',
+  'quick-created',
+  'context-select-date',
+  'context-create',
+  'context-edit',
+  'context-delete',
+  'context-status-action',
+  'preview-open-day-panel'
+])
+const { showMessage } = useMessage()
+const gridRef = ref(null)
 const weekRefs = ref([])
 const dayCellRefs = new Map()
+const quickCreatorRefs = new Map()
+const quickInputRefs = new Map()
+const contextMenuRef = ref(null)
+const dayPreviewRef = ref(null)
+const quickDrafts = reactive(new Map())
+const quickSavingKeys = reactive(new Set())
+const activeQuickCreateKey = ref('')
+const quickCreateReady = ref(false)
+const contextMenuVisible = ref(false)
+const contextMenuTarget = ref(null)
+const contextMenuStyle = reactive({ left: '-9999px', top: '-9999px' })
+const dayPreviewVisible = ref(false)
+const dayPreviewKey = ref('')
+const dayPreviewPlacement = ref('right')
+const dayPreviewStyle = reactive({ left: '-9999px', top: '-9999px' })
+const detachedEventBars = new Set()
 const rowCount = computed(() => (props.viewMode === 'week' ? 1 : 6))
 const capacityByWeek = ref(Array.from({ length: rowCount.value }, () => 0))
+const EVENT_MOTION_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)'
+let quickCreateReadyTimer = null
+let contextMenuTrigger = null
 function isActiveDay(day) {
   return day?.isActive ?? day?.inCurrentMonth
 }
@@ -37,6 +72,13 @@ const segments = computed(() =>
 )
 const noteById = computed(() => new Map(props.notes.map((note) => [Number(note.id), note])))
 const noteCounts = computed(() => noteCountsByDate(activeDays.value, props.notes))
+const dayPreviewNotes = computed(() =>
+  dayPreviewKey.value ? notesCoveringDate(props.notes, dayPreviewKey.value) : []
+)
+const contextMenuNote = computed(() => {
+  if (contextMenuTarget.value?.type !== 'note') return null
+  return noteById.value.get(Number(contextMenuTarget.value.noteId)) || null
+})
 const visibleNoteCounts = computed(() => {
   const counts = new Map()
   for (const segment of segments.value) {
@@ -61,8 +103,31 @@ function setDayCellRef(element, key) {
   else dayCellRefs.delete(key)
 }
 
+function setQuickCreatorRef(element, key) {
+  if (element) quickCreatorRefs.set(key, element)
+  else quickCreatorRefs.delete(key)
+}
+
+function setQuickInputRef(element, key) {
+  if (element) quickInputRefs.set(key, element)
+  else quickInputRefs.delete(key)
+}
+
 function segmentIsVisible(segment) {
   return segment.lane < (capacityByWeek.value[segment.weekIndex] || 0)
+}
+
+function visibleEventLayoutSignature(notes) {
+  return buildCalendarEventSegments(props.days, notes, {
+    activeStartKey: activeDays.value[0]?.key,
+    activeEndKey: activeDays.value.at(-1)?.key
+  })
+    .filter(segmentIsVisible)
+    .map(
+      (segment) =>
+        `${segment.noteId}:${segment.weekIndex}:${segment.lane}:${segment.columnStart}:${segment.columnSpan}`
+    )
+    .join('|')
 }
 
 function dayHasHiddenNotes(day) {
@@ -115,8 +180,391 @@ async function handleDayKeydown(event, day) {
   dayCellRefs.get(target.key)?.focus()
 }
 
-function createForDay(day) {
-  if (isActiveDay(day)) emit('create', day)
+function quickDraft(key) {
+  return quickDrafts.get(key) || ''
+}
+
+function updateQuickDraft(key, value) {
+  quickDrafts.set(key, value)
+}
+
+function clearQuickCreateReadyTimer() {
+  if (quickCreateReadyTimer !== null) clearTimeout(quickCreateReadyTimer)
+  quickCreateReadyTimer = null
+}
+
+async function focusQuickCreator(key) {
+  await nextTick()
+  const input = quickInputRefs.get(key)
+  if (!input || activeQuickCreateKey.value !== key) return
+  input.focus()
+  const end = input.value.length
+  input.setSelectionRange?.(end, end)
+}
+
+function closeQuickCreator({ restoreFocus = false } = {}) {
+  const key = activeQuickCreateKey.value
+  if (!key) return
+  clearQuickCreateReadyTimer()
+  quickCreateReady.value = false
+  activeQuickCreateKey.value = ''
+  if (restoreFocus) {
+    void nextTick(() =>
+      dayCellRefs.get(key)?.querySelector('.month-day-cell__quick-activate')?.focus()
+    )
+  }
+}
+
+function closeContextMenu({ restoreFocus = false } = {}) {
+  if (!contextMenuVisible.value) return
+  contextMenuVisible.value = false
+  contextMenuTarget.value = null
+  if (restoreFocus) contextMenuTrigger?.focus?.()
+  contextMenuTrigger = null
+}
+
+function closeDayPreview({ restoreFocus = false } = {}) {
+  if (!dayPreviewVisible.value) return
+  const trigger = dayCellRefs.get(dayPreviewKey.value)
+  dayPreviewVisible.value = false
+  dayPreviewKey.value = ''
+  if (restoreFocus) trigger?.focus()
+}
+
+function previewNoteText(note) {
+  const content = String(note?.content || '').trim()
+  if (content) return content
+  return Number(note?.attachment_count) > 0 ? '图片便签' : '空便签'
+}
+
+function previewNoteAccent(note) {
+  if (note?.status === 'completed') return '#8e8e93'
+  if (note?.status === 'in_progress') return '#ff9f0a'
+  return '#0a84ff'
+}
+
+async function positionDayPreview() {
+  if (!dayPreviewVisible.value || !dayPreviewKey.value) return
+  await nextTick()
+  const anchor = dayCellRefs.get(dayPreviewKey.value)?.getBoundingClientRect()
+  const preview = dayPreviewRef.value?.getBoundingClientRect()
+  if (!anchor || !preview) return
+
+  const gap = 10
+  const viewportGap = 8
+  const rightLeft = anchor.right + gap
+  const leftLeft = anchor.left - preview.width - gap
+  let left = rightLeft
+  let placement = 'right'
+  if (rightLeft + preview.width > window.innerWidth - viewportGap) {
+    left = leftLeft
+    placement = 'left'
+  }
+  dayPreviewPlacement.value = placement
+  dayPreviewStyle.left = `${Math.max(viewportGap, Math.min(left, window.innerWidth - preview.width - viewportGap))}px`
+  dayPreviewStyle.top = `${Math.max(viewportGap, Math.min(anchor.top, window.innerHeight - preview.height - viewportGap))}px`
+}
+
+async function openDayPreview(day) {
+  if (!isActiveDay(day)) return
+  closeContextMenu()
+  dayPreviewKey.value = day.key
+  dayPreviewVisible.value = true
+  await positionDayPreview()
+  dayPreviewRef.value?.querySelector('button')?.focus()
+}
+
+function openPreviewDayPanel() {
+  const day = props.days.find((item) => item.key === dayPreviewKey.value)
+  if (!day) return
+  closeDayPreview({ restoreFocus: true })
+  emit('preview-open-day-panel', day)
+}
+
+function onDayPreviewKeydown(event) {
+  if (event.key !== 'Escape') return
+  event.preventDefault()
+  closeDayPreview({ restoreFocus: true })
+}
+
+function contextStatusLabel(note) {
+  if (note?.status === 'initialized') return '切换为进行中'
+  if (note?.status === 'in_progress') return '切换为已完成'
+  if (note?.status === 'completed') return '重新进行'
+  return ''
+}
+
+async function openContextMenu(event, target) {
+  event.preventDefault()
+  event.stopPropagation()
+  closeDayPreview()
+  closeContextMenu()
+  contextMenuTrigger = event.currentTarget
+  contextMenuTarget.value = target
+  contextMenuStyle.left = `${event.clientX}px`
+  contextMenuStyle.top = `${event.clientY}px`
+  contextMenuVisible.value = true
+  await nextTick()
+
+  const menu = contextMenuRef.value
+  const rect = menu?.getBoundingClientRect()
+  if (!menu || !rect) return
+  const gap = 8
+  contextMenuStyle.left = `${Math.max(gap, Math.min(event.clientX, window.innerWidth - rect.width - gap))}px`
+  contextMenuStyle.top = `${Math.max(gap, Math.min(event.clientY, window.innerHeight - rect.height - gap))}px`
+  const firstAction = menu.querySelector('button:not(:disabled)')
+  if (firstAction) firstAction.focus()
+  else menu.focus()
+}
+
+function openDayContextMenu(event, day) {
+  if (!isActiveDay(day)) return
+  if (event.target.closest?.('.month-day-cell__quick-create input')) return
+  if (activeQuickCreateKey.value) closeQuickCreator()
+  emit('context-select-date', day)
+  void openContextMenu(event, { type: 'day', day })
+}
+
+function openNoteContextMenu({ event, note }) {
+  if (!event || !note) return
+  if (activeQuickCreateKey.value) closeQuickCreator()
+  void openContextMenu(event, { type: 'note', noteId: Number(note.id) })
+}
+
+function runContextMenuAction(action) {
+  const target = contextMenuTarget.value
+  if (!target) return
+  const note = target.type === 'note' ? contextMenuNote.value : null
+  closeContextMenu({ restoreFocus: action !== 'preview' })
+  if (action === 'create' && target.type === 'day') {
+    if (target.day.key < props.todayKey) return
+    emit('context-create', target.day)
+    return
+  }
+  if (action === 'preview' && target.type === 'day') {
+    void openDayPreview(target.day)
+    return
+  }
+  if (target.type !== 'note' || !note) return
+  if (action === 'status') emit('context-status-action', note)
+  else if (action === 'edit') emit('context-edit', note)
+  else if (action === 'delete') emit('context-delete', note)
+}
+
+function onContextMenuKeydown(event) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeContextMenu({ restoreFocus: true })
+    return
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  const buttons = [...(contextMenuRef.value?.querySelectorAll('button:not(:disabled)') || [])]
+  if (!buttons.length) return
+  event.preventDefault()
+  const current = buttons.indexOf(document.activeElement)
+  let targetIndex = 0
+  if (event.key === 'End') targetIndex = buttons.length - 1
+  else if (event.key === 'ArrowDown') targetIndex = current < 0 ? 0 : (current + 1) % buttons.length
+  else if (event.key === 'ArrowUp') {
+    targetIndex = current < 0 ? buttons.length - 1 : (current - 1 + buttons.length) % buttons.length
+  }
+  buttons[targetIndex]?.focus()
+}
+
+async function openQuickCreator(day) {
+  if (!isActiveDay(day)) return
+  if (day.key < props.todayKey) {
+    showMessage('warning', '不能为过去日期新建便签')
+    return
+  }
+  clearQuickCreateReadyTimer()
+  activeQuickCreateKey.value = day.key
+  quickCreateReady.value = false
+  emit('quick-create-opened', day)
+  await focusQuickCreator(day.key)
+  quickCreateReadyTimer = setTimeout(() => {
+    quickCreateReadyTimer = null
+    if (activeQuickCreateKey.value === day.key) quickCreateReady.value = true
+  }, 260)
+}
+
+function onQuickCreatorFocusOut(day, event) {
+  const creator = event.currentTarget
+  setTimeout(() => {
+    if (activeQuickCreateKey.value !== day.key) return
+    if (quickSavingKeys.has(day.key)) return
+    if (!creator.contains(document.activeElement)) closeQuickCreator()
+  }, 0)
+}
+
+function onQuickInputKeydown(event, day) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeQuickCreator({ restoreFocus: true })
+    return
+  }
+  if (event.key === 'Enter' && !event.isComposing) {
+    event.preventDefault()
+    void submitQuickNote(day)
+  }
+}
+
+async function submitQuickNote(day) {
+  if (quickSavingKeys.has(day.key)) return
+  const content = quickDraft(day.key)
+  if (!content.trim()) {
+    showMessage('warning', '请输入便签内容')
+    await focusQuickCreator(day.key)
+    return
+  }
+  if (day.key < props.todayKey) {
+    showMessage('warning', '不能为过去日期新建便签')
+    return
+  }
+
+  const options = { content, durationDays: 1 }
+  if (day.key > props.todayKey) {
+    const time = defaultMonthNoteEffectiveTime(day.key, props.todayKey, new Date())
+    options.effectiveAt = combineLocalDateAndTime(day.key, time)
+  }
+
+  quickSavingKeys.add(day.key)
+  try {
+    const created = await window.api.createNote(options)
+    if (!created?.id) throw new Error('创建接口未返回便签')
+    quickDrafts.set(day.key, '')
+    emit('quick-created', created)
+    showMessage('success', '便签创建成功')
+    if (activeQuickCreateKey.value === day.key) await focusQuickCreator(day.key)
+  } catch (error) {
+    console.error('[MonthCalendarGrid] 快速创建失败:', error)
+    showMessage('error', error.message || '创建失败，请重试')
+    if (activeQuickCreateKey.value === day.key) await focusQuickCreator(day.key)
+  } finally {
+    quickSavingKeys.delete(day.key)
+  }
+}
+
+function onDocumentPointerDown(event) {
+  if (contextMenuVisible.value && !contextMenuRef.value?.contains(event.target)) closeContextMenu()
+  if (dayPreviewVisible.value && !dayPreviewRef.value?.contains(event.target)) closeDayPreview()
+  if (!activeQuickCreateKey.value) return
+  const creator = quickCreatorRefs.get(activeQuickCreateKey.value)
+  if (creator?.contains(event.target)) return
+  closeQuickCreator()
+}
+
+function onWindowScroll(event) {
+  if (dayPreviewRef.value?.contains(event.target)) return
+  closeDayPreview()
+}
+
+function captureVisibleEventBars() {
+  return new Map(
+    [...(gridRef.value?.querySelectorAll('.month-event-bar[data-segment-key]') || [])].map(
+      (element) => [
+        element.dataset.segmentKey,
+        {
+          element,
+          opacity: getComputedStyle(element).opacity,
+          rect: element.getBoundingClientRect()
+        }
+      ]
+    )
+  )
+}
+
+function removeDetachedEventBar(clone) {
+  detachedEventBars.delete(clone)
+  clone.remove()
+}
+
+function animateRemovedEventBar({ element, opacity, rect }, order) {
+  const clone = element.cloneNode(true)
+  clone.removeAttribute('tabindex')
+  clone.removeAttribute('aria-expanded')
+  clone.setAttribute('aria-hidden', 'true')
+  clone.setAttribute('data-calendar-presence-clone', '')
+  Object.assign(clone.style, {
+    position: 'fixed',
+    zIndex: 'var(--z-global-presence)',
+    left: `${rect.left}px`,
+    top: `${rect.top}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`,
+    margin: '0',
+    boxSizing: 'border-box',
+    pointerEvents: 'none',
+    transform: 'none',
+    transition: 'none'
+  })
+  document.body.appendChild(clone)
+  detachedEventBars.add(clone)
+  const animation = clone.animate(
+    [
+      { opacity, translate: '0 0', scale: '1 1' },
+      { opacity: 0, translate: '0 -3px', scale: '0.985 0.88' }
+    ],
+    {
+      duration: 220,
+      delay: Math.min(order, 5) * 18,
+      easing: EVENT_MOTION_EASING,
+      fill: 'both'
+    }
+  )
+  animation.finished.then(
+    () => removeDetachedEventBar(clone),
+    () => removeDetachedEventBar(clone)
+  )
+}
+
+function animateEventBarChanges(before) {
+  const after = captureVisibleEventBars()
+  let removedIndex = 0
+  for (const [key, snapshot] of before) {
+    const current = after.get(key)
+    if (!current) {
+      animateRemovedEventBar(snapshot, removedIndex++)
+      continue
+    }
+    const deltaX = snapshot.rect.left - current.rect.left
+    const deltaY = snapshot.rect.top - current.rect.top
+    if (Math.abs(deltaX) >= 0.5 || Math.abs(deltaY) >= 0.5) {
+      current.element.animate([{ translate: `${deltaX}px ${deltaY}px` }, { translate: '0 0' }], {
+        duration: 300,
+        easing: EVENT_MOTION_EASING
+      })
+    }
+  }
+
+  let addedIndex = 0
+  for (const [key, current] of after) {
+    if (before.has(key)) continue
+    const targetOpacity = getComputedStyle(current.element).opacity
+    current.element.animate(
+      [
+        { opacity: 0, translate: '0 4px', scale: '0.985 0.88' },
+        { opacity: targetOpacity, translate: '0 0', scale: '1 1' }
+      ],
+      {
+        duration: 260,
+        delay: Math.min(addedIndex++, 5) * 22,
+        easing: EVENT_MOTION_EASING,
+        fill: 'backwards'
+      }
+    )
+  }
+}
+
+function cancelEventBarMotion() {
+  for (const element of gridRef.value?.querySelectorAll('.month-event-bar') || []) {
+    for (const animation of element.getAnimations()) animation.cancel()
+  }
+  for (const clone of detachedEventBars) {
+    for (const animation of clone.getAnimations()) animation.cancel()
+    clone.remove()
+  }
+  detachedEventBars.clear()
 }
 
 function weatherPrecipitationLabel(weather) {
@@ -136,20 +584,77 @@ watch([segments, () => props.days], async () => {
   queueCapacityCalculation()
 })
 
+watch(
+  [() => props.notes, () => props.days.map((day) => day.key).join('|')],
+  async ([nextNotes, nextDayRange], [previousNotes, previousDayRange]) => {
+    if (nextNotes === previousNotes) return
+    if (nextDayRange !== previousDayRange) {
+      cancelEventBarMotion()
+      return
+    }
+    if (visibleEventLayoutSignature(nextNotes) === visibleEventLayoutSignature(previousNotes))
+      return
+    cancelEventBarMotion()
+    const before = captureVisibleEventBars()
+    await nextTick()
+    animateEventBarChanges(before)
+  },
+  { flush: 'pre' }
+)
+
+watch(contextMenuNote, (note) => {
+  if (contextMenuVisible.value && contextMenuTarget.value?.type === 'note' && !note) {
+    closeContextMenu()
+  }
+})
+
+watch(
+  () => props.days.map((day) => day.key),
+  (keys) => {
+    if (activeQuickCreateKey.value && !keys.includes(activeQuickCreateKey.value)) {
+      closeQuickCreator()
+    }
+    if (dayPreviewKey.value && !keys.includes(dayPreviewKey.value)) closeDayPreview()
+  }
+)
+
+watch(
+  () =>
+    dayPreviewNotes.value.map((note) => `${note.id}:${note.status}:${note.updated_at}`).join('|'),
+  () => {
+    if (dayPreviewVisible.value) void positionDayPreview()
+  }
+)
+
 onMounted(() => {
   observer = new ResizeObserver(queueCapacityCalculation)
   weekRefs.value.forEach((element) => element && observer.observe(element))
   queueCapacityCalculation()
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
+  window.addEventListener('resize', closeContextMenu)
+  window.addEventListener('resize', positionDayPreview)
+  window.addEventListener('scroll', closeContextMenu, true)
+  window.addEventListener('scroll', onWindowScroll, true)
 })
 
 onBeforeUnmount(() => {
   observer?.disconnect()
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
+  clearQuickCreateReadyTimer()
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  window.removeEventListener('resize', closeContextMenu)
+  window.removeEventListener('resize', positionDayPreview)
+  window.removeEventListener('scroll', closeContextMenu, true)
+  window.removeEventListener('scroll', onWindowScroll, true)
+  closeContextMenu()
+  closeDayPreview()
+  cancelEventBarMotion()
 })
 </script>
 
 <template>
   <section
+    ref="gridRef"
     class="month-grid"
     :class="{ 'is-week-view': viewMode === 'week' }"
     role="grid"
@@ -189,6 +694,7 @@ onBeforeUnmount(() => {
             :aria-current="isActiveDay(day) && day.key === todayKey ? 'date' : undefined"
             :tabindex="isActiveDay(day) && day.key === tabStopKey ? 0 : -1"
             @click="selectDay(day)"
+            @contextmenu="openDayContextMenu($event, day)"
             @keydown="handleDayKeydown($event, day)"
           >
             <div class="month-day-cell__header">
@@ -240,23 +746,66 @@ onBeforeUnmount(() => {
               </span>
             </div>
             <button
-              v-if="isActiveDay(day)"
+              v-if="isActiveDay(day) && activeQuickCreateKey !== day.key"
               type="button"
-              class="month-day-cell__create"
+              class="month-day-cell__quick-activate"
+              :class="{ 'is-disabled': day.key < todayKey }"
               :tabindex="day.key === tabStopKey && day.key >= todayKey ? 0 : -1"
-              :disabled="day.key < todayKey"
-              :title="day.key < todayKey ? '不能为过去日期新建便签' : '在这一天新建便签'"
-              :aria-label="`在 ${day.key} 新建便签`"
-              @click.stop="createForDay(day)"
+              :aria-disabled="day.key < todayKey"
+              :title="day.key < todayKey ? '不能为过去日期新建便签' : '在这一天快速新建便签'"
+              :aria-label="`在 ${day.key} 快速新建便签${noteCounts.get(day.key) ? `，当前 ${noteCounts.get(day.key)} 条` : ''}`"
+              @click.stop="openQuickCreator(day)"
+            />
+            <form
+              v-if="isActiveDay(day)"
+              :ref="(element) => setQuickCreatorRef(element, day.key)"
+              class="month-day-cell__quick-create"
+              :class="{
+                'is-active': activeQuickCreateKey === day.key,
+                'is-ready': activeQuickCreateKey === day.key && quickCreateReady,
+                'is-saving': quickSavingKeys.has(day.key),
+                'is-disabled': day.key < todayKey
+              }"
+              :aria-hidden="activeQuickCreateKey !== day.key"
+              @click.stop
+              @submit.prevent="submitQuickNote(day)"
+              @focusout="onQuickCreatorFocusOut(day, $event)"
             >
-              +
-            </button>
+              <input
+                v-if="activeQuickCreateKey === day.key"
+                :ref="(element) => setQuickInputRef(element, day.key)"
+                :value="quickDraft(day.key)"
+                type="text"
+                autocomplete="off"
+                :readonly="quickSavingKeys.has(day.key)"
+                placeholder="新建便签"
+                :aria-label="`在 ${day.key} 输入新便签`"
+                @input="updateQuickDraft(day.key, $event.target.value)"
+                @contextmenu.stop
+                @keydown="onQuickInputKeydown($event, day)"
+              />
+              <button
+                type="submit"
+                :tabindex="activeQuickCreateKey === day.key ? 0 : -1"
+                :disabled="quickSavingKeys.has(day.key)"
+                :aria-label="quickSavingKeys.has(day.key) ? '正在创建便签' : '创建便签'"
+                title="创建便签"
+                @pointerdown.prevent.stop
+              >
+                <span class="month-day-cell__quick-plus" aria-hidden="true">+</span>
+                <svg class="month-day-cell__quick-submit" viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M8 12.5v-9M4.5 7 8 3.5 11.5 7" />
+                </svg>
+                <span class="month-day-cell__quick-spinner" aria-hidden="true" />
+              </button>
+            </form>
             <span
               v-if="isActiveDay(day) && noteCounts.get(day.key)"
               class="month-day-cell__count"
+              :class="{ 'is-hidden': activeQuickCreateKey === day.key }"
               :title="
                 dayHasHiddenNotes(day)
-                  ? `共 ${noteCounts.get(day.key)} 条便签，部分未显示；点击日期查看全部`
+                  ? `共 ${noteCounts.get(day.key)} 条便签，部分未显示；右键此日期可预览全部`
                   : `共 ${noteCounts.get(day.key)} 条便签`
               "
               :aria-label="
@@ -266,13 +815,6 @@ onBeforeUnmount(() => {
               "
             >
               {{ noteCounts.get(day.key) }}
-            </span>
-            <span
-              v-if="isActiveDay(day) && dayHasHiddenNotes(day)"
-              class="month-day-cell__overflow"
-              aria-label="还有便签未显示，点击日期查看全部"
-            >
-              <i v-for="index in 3" :key="index" aria-hidden="true" />
             </span>
           </div>
         </div>
@@ -285,10 +827,113 @@ onBeforeUnmount(() => {
             :key="`${segment.noteId}-${segment.weekIndex}`"
             :segment="segment"
             :note="noteById.get(Number(segment.noteId))"
+            @open-context-menu="openNoteContextMenu"
           />
         </div>
       </div>
     </div>
+
+    <Teleport to="body">
+      <Transition name="month-cell-context-menu">
+        <div
+          v-if="contextMenuVisible"
+          ref="contextMenuRef"
+          class="month-cell-context-menu-shell"
+          :style="contextMenuStyle"
+          role="menu"
+          tabindex="-1"
+          :aria-label="contextMenuTarget?.type === 'note' ? '便签操作' : '日期操作'"
+          @click.stop
+          @contextmenu.prevent
+          @keydown="onContextMenuKeydown"
+        >
+          <div class="month-cell-context-menu">
+            <template v-if="contextMenuTarget?.type === 'note'">
+              <button role="menuitem" type="button" @click="runContextMenuAction('status')">
+                {{ contextStatusLabel(contextMenuNote) }}
+              </button>
+              <button role="menuitem" type="button" @click="runContextMenuAction('edit')">
+                修改便签
+              </button>
+              <div class="month-cell-context-menu__divider" role="separator" />
+              <button
+                class="month-cell-context-menu__delete"
+                role="menuitem"
+                type="button"
+                @click="runContextMenuAction('delete')"
+              >
+                删除便签
+              </button>
+            </template>
+            <template v-else>
+              <button
+                role="menuitem"
+                type="button"
+                :disabled="contextMenuTarget?.day?.key < todayKey"
+                :title="contextMenuTarget?.day?.key < todayKey ? '不能为过去日期新建便签' : ''"
+                @click="runContextMenuAction('create')"
+              >
+                新建便签…
+              </button>
+              <button role="menuitem" type="button" @click="runContextMenuAction('preview')">
+                预览当日全部便签
+              </button>
+            </template>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <Teleport to="body">
+      <Transition name="month-day-preview">
+        <aside
+          v-if="dayPreviewVisible"
+          ref="dayPreviewRef"
+          class="month-day-preview"
+          :class="`is-${dayPreviewPlacement}`"
+          :style="dayPreviewStyle"
+          :aria-label="`${dayPreviewKey} 全部便签预览`"
+          @click.stop
+          @keydown="onDayPreviewKeydown"
+        >
+          <header class="month-day-preview__header">
+            <button
+              type="button"
+              title="展开左侧操作列表"
+              aria-label="展开左侧操作列表"
+              @click="openPreviewDayPanel"
+            >
+              <svg viewBox="0 0 18 18" aria-hidden="true">
+                <rect x="2.5" y="3" width="13" height="12" rx="2" />
+                <path d="M6.5 3v12M10 9h3M11.5 7.5 13 9l-1.5 1.5" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              title="关闭预览"
+              aria-label="关闭预览"
+              @click="closeDayPreview({ restoreFocus: true })"
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="m3.5 3.5 9 9m0-9-9 9" />
+              </svg>
+            </button>
+          </header>
+          <div class="month-day-preview__list scroll-y">
+            <article
+              v-for="note in dayPreviewNotes"
+              :key="note.id"
+              class="month-day-preview__note"
+              :style="{ '--preview-note-accent': previewNoteAccent(note) }"
+            >
+              <span aria-hidden="true" />
+              <p>{{ previewNoteText(note) }}</p>
+            </article>
+            <p v-if="!dayPreviewNotes.length" class="month-day-preview__empty">这一天还没有便签</p>
+          </div>
+        </aside>
+      </Transition>
+    </Teleport>
   </section>
 </template>
 
@@ -414,6 +1059,7 @@ onBeforeUnmount(() => {
 }
 .month-day-cell__count {
   position: absolute;
+  z-index: var(--z-local-raised);
   right: 6rem;
   bottom: 4rem;
   display: inline-grid;
@@ -428,7 +1074,14 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
   line-height: 1;
   pointer-events: none;
+  transition:
+    opacity 140ms ease,
+    transform 220ms var(--ease-standard);
   white-space: nowrap;
+}
+.month-day-cell__count.is-hidden {
+  opacity: 0;
+  transform: translateX(4rem) scale(0.92);
 }
 .month-day-cell__holiday {
   display: inline-grid;
@@ -488,76 +1141,166 @@ onBeforeUnmount(() => {
   color: #34c759;
   opacity: 1;
 }
-.month-day-cell__overflow {
+.month-day-cell__quick-activate {
   position: absolute;
-  bottom: 4rem;
-  left: 50%;
-  display: flex;
-  height: 16rem;
-  align-items: center;
-  gap: 3rem;
-  color: var(--text-color-secondary);
-  opacity: 0.82;
-  pointer-events: none;
-  transform: translateX(-50%);
-  transition:
-    color 210ms ease,
-    opacity 210ms ease,
-    transform 260ms var(--ease-standard);
-  white-space: nowrap;
+  z-index: var(--z-local-raised);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 28rem;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  cursor: pointer;
 }
-.month-day-cell__overflow i {
-  width: 3.5rem;
-  height: 3.5rem;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 0 0 currentColor;
-  transition: box-shadow 240ms ease;
+.month-day-cell__quick-activate.is-disabled {
+  cursor: not-allowed;
 }
-.month-day-cell:hover .month-day-cell__overflow {
-  color: var(--text-color);
-  opacity: 1;
-  transform: translateX(-50%) scale(1.12);
+.month-day-cell__quick-activate:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--ui-accent) 72%, transparent);
+  outline-offset: -3rem;
+  border-radius: 7rem;
 }
-.month-day-cell:hover .month-day-cell__overflow i {
-  box-shadow: 0 0 0 0.6rem currentColor;
-}
-.month-day-cell__create {
+.month-day-cell__quick-create {
   position: absolute;
   z-index: var(--z-local-top);
   bottom: 3rem;
   left: 6rem;
   width: 22rem;
   height: 22rem;
+  box-sizing: border-box;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 6rem;
+  background: transparent;
+  color: var(--text-color-secondary);
+  pointer-events: none;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    width 280ms var(--ease-standard),
+    border-color 180ms ease,
+    background-color 180ms ease,
+    opacity 210ms ease,
+    transform 260ms var(--ease-standard);
+}
+.month-day-cell__quick-create.is-disabled {
+  opacity: 0.28;
+}
+.month-day-cell__quick-create.is-active {
+  width: calc(100% - 12rem);
+  border-color: var(--ui-border-control);
+  background: var(--ui-surface-control);
+  pointer-events: auto;
+}
+.month-day-cell__quick-create.is-active:focus-within {
+  border-color: var(--ui-accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 16%, transparent);
+}
+.month-day-cell__quick-create input {
+  position: absolute;
+  inset: 0 23rem 0 0;
+  width: calc(100% - 23rem);
+  min-width: 0;
+  padding: 0 6rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-color);
+  font: inherit;
+  font-size: calc(var(--fs-secondary) * 0.82);
+  line-height: 20rem;
+}
+.month-day-cell__quick-create input::placeholder {
+  color: transparent;
+  transition: color 130ms ease;
+}
+.month-day-cell__quick-create.is-ready input::placeholder {
+  color: var(--text-color-secondary);
+}
+.month-day-cell__quick-create > button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  width: 21rem;
+  height: 20rem;
+  place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 6rem;
+  border-left: 1px solid transparent;
   background: transparent;
   color: var(--text-color-secondary);
   cursor: pointer;
   font: inherit;
   font-size: 18rem;
-  opacity: 0;
-  transform: translateY(4rem) scale(0.9);
   transition:
-    opacity 210ms ease,
-    background-color 150ms ease,
-    color 150ms ease,
-    transform 260ms var(--ease-standard);
+    border-color 160ms ease,
+    color 160ms ease;
 }
-.month-day-cell:hover .month-day-cell__create,
-.month-day-cell__create:focus-visible {
+.month-day-cell__quick-create.is-active > button {
+  border-left-color: var(--ui-border-divider);
+}
+.month-day-cell__quick-create > button:hover:not(:disabled) {
+  color: var(--ui-accent);
+}
+.month-day-cell__quick-create > button:disabled {
+  cursor: wait;
+}
+.month-day-cell__quick-plus,
+.month-day-cell__quick-submit,
+.month-day-cell__quick-spinner {
+  position: absolute;
+  transition:
+    opacity 130ms ease,
+    transform 180ms var(--ease-standard);
+}
+.month-day-cell__quick-plus {
+  opacity: 1;
+  transform: rotate(0deg) scale(1);
+}
+.month-day-cell__quick-submit {
+  width: 14rem;
+  height: 14rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+  opacity: 0;
+  transform: translateY(3rem) scale(0.84);
+}
+.month-day-cell__quick-create.is-ready .month-day-cell__quick-plus {
+  opacity: 0;
+  transform: rotate(45deg) scale(0.82);
+}
+.month-day-cell__quick-create.is-ready .month-day-cell__quick-submit {
   opacity: 1;
   transform: translateY(0) scale(1);
 }
-.month-day-cell__create:hover:not(:disabled) {
-  background: var(--ui-fill-hover);
-  color: #0a84ff;
-}
-.month-day-cell__create:disabled {
-  cursor: not-allowed;
+.month-day-cell__quick-spinner {
+  width: 11rem;
+  height: 11rem;
+  box-sizing: border-box;
+  border: 1.5px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
   opacity: 0;
+}
+.month-day-cell__quick-create.is-saving .month-day-cell__quick-plus,
+.month-day-cell__quick-create.is-saving .month-day-cell__quick-submit {
+  opacity: 0;
+}
+.month-day-cell__quick-create.is-saving .month-day-cell__quick-spinner {
+  animation: month-quick-create-spin 700ms linear infinite;
+  opacity: 1;
+}
+@keyframes month-quick-create-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @container (max-width: 90rem) {
@@ -603,5 +1346,178 @@ onBeforeUnmount(() => {
   .month-day-cell__badges {
     grid-column: 3;
   }
+}
+</style>
+
+<style>
+.month-cell-context-menu-shell {
+  position: fixed;
+  z-index: var(--z-global-popover);
+  width: 176rem;
+  overflow: hidden;
+  border-radius: 10rem;
+  box-shadow: 0 12rem 34rem rgba(0, 0, 0, 0.22);
+  outline: none;
+}
+.month-cell-context-menu {
+  display: grid;
+  gap: 1rem;
+  padding: 5rem;
+  border: 1px solid var(--surface-float-border);
+  border-radius: inherit;
+  background: var(--surface-float);
+}
+.month-cell-context-menu button {
+  width: 100%;
+  padding: 7rem 9rem;
+  border: 0;
+  border-radius: 6rem;
+  background: transparent;
+  color: var(--text-color);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-secondary);
+  text-align: left;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+.month-cell-context-menu button:hover:not(:disabled),
+.month-cell-context-menu button:focus-visible:not(:disabled) {
+  outline: none;
+  background: var(--ui-fill-hover);
+}
+.month-cell-context-menu button:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+.month-cell-context-menu__divider {
+  height: 1px;
+  margin: 3rem 4rem;
+  background: color-mix(in srgb, var(--text-color) 10%, transparent);
+}
+.month-cell-context-menu .month-cell-context-menu__delete {
+  color: #ff453a;
+}
+.month-cell-context-menu .month-cell-context-menu__delete:hover,
+.month-cell-context-menu .month-cell-context-menu__delete:focus-visible {
+  background: color-mix(in srgb, #ff453a 11%, transparent);
+}
+.month-cell-context-menu-enter-active,
+.month-cell-context-menu-leave-active {
+  transition:
+    opacity 130ms ease,
+    transform 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.month-cell-context-menu-enter-from,
+.month-cell-context-menu-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+}
+
+.month-day-preview {
+  position: fixed;
+  z-index: var(--z-global-popover);
+  display: flex;
+  width: min(340rem, calc(100vw - 16px));
+  max-height: min(480rem, calc(100vh - 16px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--surface-float-border);
+  border-radius: 12rem;
+  background: var(--surface-float);
+  box-shadow: 0 16rem 42rem rgba(0, 0, 0, 0.24);
+  color: var(--text-color);
+}
+.month-day-preview__header {
+  display: flex;
+  min-height: 38rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4rem 6rem;
+  border-bottom: 1px solid var(--ui-border-divider);
+}
+.month-day-preview__header button {
+  display: grid;
+  width: 28rem;
+  height: 28rem;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7rem;
+  background: transparent;
+  color: var(--text-color-secondary);
+  cursor: pointer;
+}
+.month-day-preview__header button:hover,
+.month-day-preview__header button:focus-visible {
+  outline: none;
+  background: var(--ui-fill-hover);
+  color: var(--text-color);
+}
+.month-day-preview__header svg {
+  width: 16rem;
+  height: 16rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+}
+.month-day-preview__list {
+  min-height: 0;
+  padding: 8rem;
+  overflow-y: auto;
+}
+.month-day-preview__note {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  align-items: start;
+  gap: 8rem;
+  padding: 9rem 8rem;
+  border-radius: 8rem;
+}
+.month-day-preview__note + .month-day-preview__note {
+  margin-top: 3rem;
+}
+.month-day-preview__note > span {
+  width: 5rem;
+  height: 5rem;
+  margin-top: 6rem;
+  border-radius: 50%;
+  background: var(--preview-note-accent);
+}
+.month-day-preview__note p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-secondary);
+  line-height: 1.48;
+  white-space: pre-wrap;
+}
+.month-day-preview__empty {
+  margin: 0;
+  padding: 26rem 12rem;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  text-align: center;
+}
+.month-day-preview-enter-active,
+.month-day-preview-leave-active {
+  transition:
+    opacity 150ms ease,
+    transform 190ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.month-day-preview-enter-from,
+.month-day-preview-leave-to {
+  opacity: 0;
+}
+.month-day-preview.is-right.month-day-preview-enter-from,
+.month-day-preview.is-right.month-day-preview-leave-to {
+  transform: translateX(-6rem) scale(0.985);
+}
+.month-day-preview.is-left.month-day-preview-enter-from,
+.month-day-preview.is-left.month-day-preview-leave-to {
+  transform: translateX(6rem) scale(0.985);
 }
 </style>

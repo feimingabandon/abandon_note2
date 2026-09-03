@@ -9,6 +9,8 @@ const props = defineProps({
   interval: { type: Number, default: 1 },
   weekdays: { type: Array, default: () => [1] },
   monthDays: { type: Array, default: () => [1] },
+  quarterMonth: { type: Number, default: 3 },
+  quarterDays: { type: Array, default: () => [31] },
   yearDates: { type: Array, default: () => [{ month: 1, day: 1 }] }
 })
 
@@ -17,8 +19,16 @@ const emit = defineEmits([
   'update:interval',
   'update:weekdays',
   'update:monthDays',
+  'update:quarterMonth',
+  'update:quarterDays',
   'update:yearDates'
 ])
+
+const QUARTER_MONTH_OPTIONS = [
+  { value: 1, label: '第 1 月' },
+  { value: 2, label: '第 2 月' },
+  { value: 3, label: '第 3 月' }
+]
 
 const panelRef = ref(null)
 const panelHeight = ref(0)
@@ -136,6 +146,41 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
             <small>若当月没有所选日期，将在该月最后一天生成。</small>
           </div>
 
+          <div v-else-if="frequency === 'quarterly'" class="tfs-field">
+            <span class="tfs-quarter-label">季度内月份</span>
+            <div
+              class="tfs-choice-grid tfs-quarter-months"
+              role="radiogroup"
+              aria-label="选择季度内月份"
+            >
+              <button
+                v-for="item in QUARTER_MONTH_OPTIONS"
+                :key="item.value"
+                type="button"
+                role="radio"
+                :class="{ active: quarterMonth === item.value }"
+                :aria-checked="quarterMonth === item.value"
+                @click="emit('update:quarterMonth', item.value)"
+              >
+                {{ item.label }}
+              </button>
+            </div>
+            <small>第 1 月为 1/4/7/10 月，第 3 月为 3/6/9/12 月。</small>
+            <div class="tfs-choice-grid tfs-monthdays">
+              <button
+                v-for="day in 31"
+                :key="day"
+                type="button"
+                :class="{ active: quarterDays.includes(day) }"
+                :aria-pressed="quarterDays.includes(day)"
+                @click="toggleNumber(quarterDays, day, 'update:quarterDays')"
+              >
+                {{ day }}
+              </button>
+            </div>
+            <small>若对应月份没有所选日期，将在该月最后一天生成。</small>
+          </div>
+
           <div v-else class="tfs-field">
             <MonthDayPicker
               :model-value="yearDates"
@@ -166,7 +211,7 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
 .tfs-segments {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   padding: 2rem;
   border: 1px solid var(--ui-border-control);
   border-radius: 10rem;
@@ -179,7 +224,7 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
   top: 2rem;
   bottom: 2rem;
   left: 2rem;
-  width: calc((100% - 4rem) / 4);
+  width: calc((100% - 4rem) / 5);
   border-radius: 7rem;
   background: #0071e3;
   box-shadow: 0 2rem 8rem rgba(0, 113, 227, 0.22);
@@ -263,6 +308,14 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
   grid-template-columns: repeat(7, 1fr);
   align-items: center;
   min-height: 34rem;
+}
+.tfs-quarter-months {
+  grid-template-columns: repeat(3, 1fr);
+}
+.tfs-quarter-label {
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  font-weight: 500;
 }
 .tfs-monthdays {
   grid-template-columns: repeat(8, 1fr);

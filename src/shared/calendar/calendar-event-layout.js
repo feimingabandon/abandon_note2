@@ -1,6 +1,9 @@
 import { dateKeyFromOrdinal, dateOrdinal, noteDateRange } from './calendar-date-rules.js'
 
 function compareNotes(left, right) {
+  const completionDifference =
+    Number(left.status === 'completed') - Number(right.status === 'completed')
+  if (completionDifference) return completionDifference
   const leftRange = noteDateRange(left)
   const rightRange = noteDateRange(right)
   if (leftRange.durationDays !== rightRange.durationDays) {

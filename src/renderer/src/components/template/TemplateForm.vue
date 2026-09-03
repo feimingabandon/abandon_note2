@@ -43,6 +43,8 @@ const frequency = ref('daily')
 const interval = ref(1)
 const weekdays = ref([1])
 const monthDays = ref([1])
+const quarterMonth = ref(3)
+const quarterDays = ref([31])
 const yearDates = ref([{ month: 1, day: 1 }])
 const timeOfDay = ref(currentTimeOfDay())
 const notifyEnabled = ref(systemNotificationsSupported)
@@ -135,7 +137,14 @@ function loadInitial(template) {
   frequency.value = rule?.frequency || 'daily'
   interval.value = Number(rule?.interval) || 1
   weekdays.value = rule?.days_of_week?.length ? [...rule.days_of_week] : [1]
-  monthDays.value = rule?.days_of_month?.length ? [...rule.days_of_month] : [1]
+  monthDays.value =
+    rule?.frequency === 'monthly' && rule?.days_of_month?.length ? [...rule.days_of_month] : [1]
+  quarterMonth.value =
+    rule?.frequency === 'quarterly' && [1, 2, 3].includes(Number(rule.month_of_quarter))
+      ? Number(rule.month_of_quarter)
+      : 3
+  quarterDays.value =
+    rule?.frequency === 'quarterly' && rule?.days_of_month?.length ? [...rule.days_of_month] : [31]
   const normalizedYearDates = normalizeYearDates(rule?.dates_of_year)
   yearDates.value = normalizedYearDates.length ? normalizedYearDates : [{ month: 1, day: 1 }]
   timeOfDay.value = rule?.time_of_day || currentTimeOfDay()
@@ -152,7 +161,13 @@ const recurrenceRule = computed(() => ({
       ? Math.min(MAX_DAILY_INTERVAL, Math.max(1, Math.trunc(Number(interval.value)) || 1))
       : 1,
   days_of_week: frequency.value === 'weekly' ? [...weekdays.value].sort((a, b) => a - b) : [],
-  days_of_month: frequency.value === 'monthly' ? [...monthDays.value].sort((a, b) => a - b) : [],
+  days_of_month:
+    frequency.value === 'monthly'
+      ? [...monthDays.value].sort((a, b) => a - b)
+      : frequency.value === 'quarterly'
+        ? [...quarterDays.value].sort((a, b) => a - b)
+        : [],
+  month_of_quarter: frequency.value === 'quarterly' ? Number(quarterMonth.value) : null,
   dates_of_year: frequency.value === 'yearly' ? normalizeYearDates(yearDates.value) : [],
   time_of_day: timeOfDay.value
 }))
@@ -184,6 +199,9 @@ const ruleComplete = computed(() => {
   if (!/^\d{2}:\d{2}$/.test(timeOfDay.value)) return false
   if (frequency.value === 'weekly') return weekdays.value.length > 0
   if (frequency.value === 'monthly') return monthDays.value.length > 0
+  if (frequency.value === 'quarterly') {
+    return [1, 2, 3].includes(Number(quarterMonth.value)) && quarterDays.value.length > 0
+  }
   if (frequency.value === 'yearly') return normalizeYearDates(yearDates.value).length > 0
   return (
     Number.isInteger(Number(interval.value)) &&
@@ -276,6 +294,8 @@ onBeforeUnmount(() => {
         v-model:interval="interval"
         v-model:weekdays="weekdays"
         v-model:month-days="monthDays"
+        v-model:quarter-month="quarterMonth"
+        v-model:quarter-days="quarterDays"
         v-model:year-dates="yearDates"
       />
 

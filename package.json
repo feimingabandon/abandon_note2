@@ -19,9 +19,11 @@
     "test": "vitest run && npm run test:db && npm run test:wallpaper-storage && npm run test:attachment-storage",
     "test:unit": "vitest run",
     "test:db": "node scripts/run-electron-node-tests.cjs",
+    "test:daily-report:win": "npm run build && electron tests/daily-report-electron.mjs",
     "test:wallpaper-storage": "node scripts/run-electron-wallpaper-tests.cjs",
     "test:attachment-storage": "node scripts/run-electron-attachment-tests.cjs",
-    "test:window-frame:win": "npm run build:native:win && npm run build && electron tests/window-frame-electron.mjs && electron tests/dock-trigger-electron.mjs && electron tests/blur-z-order-electron.mjs && electron tests/window-z-order-electron.mjs && electron tests/window-border-electron.mjs && electron tests/note-duration-electron.mjs && electron tests/month-view-electron.mjs && electron tests/week-view-electron.mjs && electron tests/weather-settings-electron.mjs && electron tests/sticky-persistence-electron.mjs",
+    "test:window-frame:win": "npm run build:native:win && npm run build && electron tests/window-frame-electron.mjs && electron tests/dock-trigger-electron.mjs && electron tests/blur-z-order-electron.mjs && electron tests/window-z-order-electron.mjs && electron tests/window-border-electron.mjs && electron tests/note-duration-electron.mjs && electron tests/template-quarterly-electron.mjs && electron tests/month-view-electron.mjs && electron tests/week-view-electron.mjs && electron tests/weather-settings-electron.mjs && electron tests/sticky-persistence-electron.mjs",
+    "test:template-quarterly:win": "npm run build && electron tests/template-quarterly-electron.mjs",
     "test:window-z-order:win": "npm run build:native:win && electron tests/window-z-order-electron.mjs",
     "test:window-border:win": "npm run build && electron tests/window-border-electron.mjs",
     "test:titlebar-icon-scale:win": "npm run build && electron tests/titlebar-icon-scale-electron.mjs",
@@ -48,6 +50,7 @@
     "@electron-toolkit/utils": "^4.0.0",
     "better-sqlite3": "13.0.1",
     "chinese-days": "1.5.9",
+    "exceljs": "^4.4.0",
     "koffi": "2.16.2"
   },
   "devDependencies": {
@@ -69,6 +72,11 @@
     "vue": "^3.5.25",
     "vue-eslint-parser": "^10.2.0",
     "vuedraggable": "^4.1.0"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
   },
   "volta": {
     "node": "22.22.3"

@@ -103,6 +103,28 @@ describe('month multi-day event layout', () => {
     ])
   })
 
+  it('places completed notes after unfinished notes before applying the existing priorities', () => {
+    const unfinishedShort = note(22, 2026, 8, 12, 1)
+    const completedLongPinned = note(23, 2026, 8, 12, 5, {
+      is_pinned: 1,
+      status: 'completed'
+    })
+    const completedShort = note(24, 2026, 8, 12, 1, { status: 'completed' })
+
+    expect(
+      notesCoveringDate([completedShort, completedLongPinned, unfinishedShort], '2026-08-12').map(
+        (item) => item.id
+      )
+    ).toEqual([22, 23, 24])
+
+    const segments = buildCalendarEventSegments(days, [
+      completedShort,
+      completedLongPinned,
+      unfinishedShort
+    ])
+    expect(segments.find((item) => item.noteId === 22).lane).toBe(0)
+  })
+
   it('reports overflow even when no event lane fits in the date cell', () => {
     expect(hasHiddenCalendarNotes(4, 0)).toBe(true)
     expect(hasHiddenCalendarNotes(4, 4)).toBe(false)
