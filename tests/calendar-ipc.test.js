@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   getMonthCalendarData: vi.fn(),
-  getWeekCalendarData: vi.fn()
+  getWeekCalendarData: vi.fn(),
+  getMissingHolidayDataNotice: vi.fn()
 }))
 
 vi.mock('../src/main/calendar/calendar-service.js', () => ({
@@ -14,7 +15,7 @@ vi.mock('../src/main/calendar/holiday-data-service.js', () => ({
   dismissMissingHolidayDataNotice: vi.fn(),
   downloadHolidayData: vi.fn(),
   getHolidayDataStatus: vi.fn(),
-  getMissingHolidayDataNotice: vi.fn(),
+  getMissingHolidayDataNotice: mocks.getMissingHolidayDataNotice,
   importHolidayDataFile: vi.fn()
 }))
 
@@ -39,6 +40,7 @@ function createHarness() {
 beforeEach(() => {
   mocks.getMonthCalendarData.mockReset()
   mocks.getWeekCalendarData.mockReset()
+  mocks.getMissingHolidayDataNotice.mockReset()
 })
 
 describe('calendar IPC', () => {
@@ -60,5 +62,15 @@ describe('calendar IPC', () => {
       harness.handlers.get('calendar:get-week')({ sender: {} }, { anchorDate: '2026-08-12' })
     ).toThrow(/无权访问日历数据/)
     expect(mocks.getWeekCalendarData).not.toHaveBeenCalled()
+  })
+
+  it('silently cancels a stale read-only holiday notice request during view replacement', () => {
+    const harness = createHarness()
+    const notice = { required: true, year: 2026 }
+    mocks.getMissingHolidayDataNotice.mockReturnValue(notice)
+
+    expect(harness.handlers.get('calendar:holiday-data-notice')(harness.event)).toBe(notice)
+    expect(harness.handlers.get('calendar:holiday-data-notice')({ sender: {} })).toBeNull()
+    expect(mocks.getMissingHolidayDataNotice).toHaveBeenCalledTimes(1)
   })
 })

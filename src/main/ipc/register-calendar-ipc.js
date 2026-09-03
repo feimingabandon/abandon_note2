@@ -7,10 +7,11 @@ import {
   importHolidayDataFile
 } from '../calendar/holiday-data-service.js'
 import { holidayDataDownloadUrl } from '../../shared/calendar/holiday-data-rules.js'
-import { assertMainWindowSender } from './ipc-authorization.js'
+import { assertMainWindowSender, createMainWindowIpc } from './ipc-authorization.js'
 
 export function registerCalendarIpcHandlers({ ipcMain, dialog, shell, getMainWindow }) {
   const assertAuthorized = (event) => assertMainWindowSender(event, getMainWindow, '日历数据')
+  const mainWindowIpc = createMainWindowIpc(ipcMain, getMainWindow, '日历数据')
   const broadcastChanged = (payload) => {
     const window = getMainWindow()
     if (window && !window.isDestroyed())
@@ -53,9 +54,10 @@ export function registerCalendarIpcHandlers({ ipcMain, dialog, shell, getMainWin
     await shell.openExternal(holidayDataDownloadUrl(year))
     return true
   })
-  ipcMain.handle('calendar:holiday-data-notice', (event) => {
-    assertAuthorized(event)
-    return getMissingHolidayDataNotice()
+  // 视图替换期间旧 renderer 可能已发出这项只读启动请求。sender 过期时返回空结果，
+  // 避免把正常的窗口销毁竞态记录成权限错误；其他日历读写接口仍严格拒绝旧 sender。
+  mainWindowIpc.handle('calendar:holiday-data-notice', () => getMissingHolidayDataNotice(), {
+    onStaleSender: () => null
   })
   ipcMain.handle('calendar:holiday-data-dismiss-notice', async (event, { year } = {}) => {
     assertAuthorized(event)
