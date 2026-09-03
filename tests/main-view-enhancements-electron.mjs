@@ -203,6 +203,38 @@ async function runMainViewEnhancementsTest() {
     assert.equal(listTitlebarState.whiteColor, 'rgb(255, 255, 255)')
     assert.equal(listTitlebarState.blackColor, 'rgb(0, 0, 0)')
 
+    const triggerHoverTarget = await listWindow.webContents.executeJavaScript(`(() => {
+      const trigger = document.querySelector('.view-switcher__trigger')
+      const label = document.querySelector('.view-switcher__trigger-label')
+      const rect = trigger.getBoundingClientRect()
+      const microsoft = document
+        .querySelector('.titlebar-actions-group')
+        .classList.contains('titlebar-actions-group--microsoft')
+      return {
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+        initialOpacity: getComputedStyle(label).opacity,
+        expectedInitialOpacity: microsoft ? '0.72' : '0'
+      }
+    })()`)
+    assert.equal(
+      triggerHoverTarget.initialOpacity,
+      triggerHoverTarget.expectedInitialOpacity,
+      '视图文字常态应与其他标题栏图标保持相同透明度'
+    )
+    listWindow.webContents.sendInputEvent({
+      type: 'mouseMove',
+      x: triggerHoverTarget.x,
+      y: triggerHoverTarget.y
+    })
+    await waitUntil(
+      () =>
+        listWindow.webContents.executeJavaScript(
+          `getComputedStyle(document.querySelector('.view-switcher__trigger-label')).opacity === '1'`
+        ),
+      '鼠标悬停标题栏按钮组时没有显示视图文字'
+    )
+
     const listWindowId = listWindow.id
     await chooseView(listWindow, 'list')
     assert.equal(getViewWindow('list')?.id, listWindowId, '重复选择当前视图不应重建窗口')

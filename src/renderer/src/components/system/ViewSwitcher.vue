@@ -145,7 +145,7 @@ onBeforeUnmount(() => {
       :disabled="switching"
       @click="toggleMenu"
     >
-      <span class="view-switcher__trigger-label" aria-hidden="true">{{
+      <span class="btn-icon view-switcher__trigger-label" aria-hidden="true">{{
         activeOption.shortLabel
       }}</span>
     </button>
@@ -201,8 +201,6 @@ onBeforeUnmount(() => {
 
 .view-switcher__trigger-label {
   color: #000;
-  opacity: 0.82;
-  transition: opacity var(--motion-fast) ease;
 }
 
 :global(html[data-icon-color='white'] .view-switcher__trigger-label) {
@@ -211,11 +209,6 @@ onBeforeUnmount(() => {
 
 :global(html[data-icon-color='black'] .view-switcher__trigger-label) {
   color: #000;
-}
-
-.view-switcher__trigger:hover .view-switcher__trigger-label,
-.view-switcher__trigger.is-open .view-switcher__trigger-label {
-  opacity: 1;
 }
 
 .view-switcher__menu {
