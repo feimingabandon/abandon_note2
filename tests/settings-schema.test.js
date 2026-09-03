@@ -77,6 +77,20 @@ describe('titlebar appearance setting', () => {
 })
 
 describe('global main-window controls', () => {
+  it('persists the shared view visibility shortcut in a dedicated application key', () => {
+    expect(DEFAULT_SETTINGS.shortcuts.viewVisibility).toBe('')
+    expect(serializeSetting('shortcuts.viewVisibility', 'alt+control+n')).toMatchObject({
+      type: 'shortcuts',
+      key: 'view_visibility',
+      value: 'Control+Alt+N'
+    })
+    expect(
+      resolveSettingsRows([
+        { type: 'shortcuts', key: 'view_visibility', value: 'Control+Shift+F11' }
+      ]).shortcuts.viewVisibility
+    ).toBe('Control+Shift+F11')
+  })
+
   it('uses a three-state z-order setting and normalizes the two legacy boolean values', () => {
     expect(DEFAULT_SETTINGS.window).toEqual({
       lockState: false,

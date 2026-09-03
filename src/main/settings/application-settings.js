@@ -30,6 +30,8 @@ const WEEK_SETTINGS_INITIALIZED_ROW = Object.freeze({
 
 const APPLICATION_SETTING_DB_KEYS = new Set([
   'appearance:titlebar_icon_scale',
+  'appearance:icon_color',
+  'shortcuts:view_visibility',
   'remote:receive_notices',
   'remote:upload_device_info',
   'weather:enabled',
@@ -72,6 +74,7 @@ export function readApplicationSettings() {
       titlebarIconScale: applicationResolved.appearance.titlebarIconScale,
       iconColor: applicationResolved.appearance.iconColor
     },
+    shortcuts: { ...applicationResolved.shortcuts },
     window: { ...applicationResolved.window },
     weather: applicationResolved.weather,
     onboarding: applicationResolved.onboarding,
@@ -200,6 +203,7 @@ export function writeApplicationSetting(id, value) {
     id !== 'onboarding.noticeVersion' &&
     id !== 'appearance.titlebarIconScale' &&
     id !== 'appearance.iconColor' &&
+    id !== 'shortcuts.viewVisibility' &&
     id !== 'window.lockState' &&
     id !== 'window.zOrderMode' &&
     !id.startsWith('window.compact.')

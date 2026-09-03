@@ -970,7 +970,9 @@ onBeforeUnmount(() => {
               </div>
               <div>
                 <span class="help-scope-chip help-scope-chip--shared">所有视图</span>
-                <p>导航栏图标大小、开机自启、天气位置、节假日数据、远程通知与设备信息开关。</p>
+                <p>
+                  导航栏图标大小、视图显示快捷键、开机自启、天气位置、节假日数据、远程通知与设备信息开关。
+                </p>
               </div>
               <div v-if="isListView">
                 <span class="help-scope-chip help-scope-chip--list">仅便签列表</span>
@@ -1068,6 +1070,12 @@ onBeforeUnmount(() => {
             <div class="help-setting-table">
               <div>
                 <strong>开机自启</strong><span>直接读写操作系统登录项，不保存在便签数据库中。</span>
+              </div>
+              <div>
+                <strong>视图显示快捷键</strong
+                ><span
+                  >列表、月视图和周视图共用。点击录制后直接按下组合键即可自动保存，用于显示或隐藏当前视图；窗口隐藏到托盘后仍然有效。</span
+                >
               </div>
               <div>
                 <strong>天气</strong

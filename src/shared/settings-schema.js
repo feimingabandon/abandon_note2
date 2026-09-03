@@ -8,6 +8,10 @@
  */
 
 import { COMPACT_WINDOW_LIMITS } from './window-compact-geometry.js'
+import {
+  normalizeViewVisibilityShortcut,
+  VIEW_VISIBILITY_SHORTCUT_DEFAULT
+} from './view-visibility-shortcut.js'
 
 const VALID_NOTE_STATUSES = new Set(['initialized', 'in_progress', 'completed'])
 export const DOCK_EDGES = Object.freeze(['top', 'left', 'right'])
@@ -309,6 +313,15 @@ const definitions = [
     parse: parseIconColor,
     serialize: String,
     remark: '全视图共享的 11 个主界面图标颜色（black / white）'
+  },
+  {
+    id: 'shortcuts.viewVisibility',
+    path: ['shortcuts', 'viewVisibility'],
+    db: { type: 'shortcuts', key: 'view_visibility' },
+    defaultValue: VIEW_VISIBILITY_SHORTCUT_DEFAULT,
+    parse: normalizeViewVisibilityShortcut,
+    serialize: String,
+    remark: '全视图共享的显示或隐藏当前视图快捷键'
   },
   {
     id: 'css.bgColor',

@@ -10,7 +10,8 @@
  */
 
 import * as Electron from 'electron'
-const { app, shell, BrowserWindow, screen, powerMonitor, Tray, Menu, dialog } = Electron
+const { app, shell, BrowserWindow, screen, powerMonitor, Tray, Menu, dialog, globalShortcut } =
+  Electron
 
 import { join, resolve } from 'path'
 import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
@@ -100,6 +101,7 @@ import { inspectDockHealth } from './window-motion/dock-health.js'
 import { AppUpdateService } from './services/app-update.js'
 import { NotificationService } from './services/NotificationService.js'
 import { ScreenshotService } from './services/ScreenshotService.js'
+import { ViewVisibilityShortcutService } from './services/view-visibility-shortcut.js'
 import { ElectronStickyService } from './sticky/ElectronStickyService.js'
 import { buildStickyTrayTemplate } from './sticky/StickyTrayMenu.js'
 import {
@@ -210,6 +212,7 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
 const APPLICATION_SETTING_IDS = new Set([
   'appearance.titlebarIconScale',
   'appearance.iconColor',
+  'shortcuts.viewVisibility',
   'remote.receiveNotices',
   'remote.uploadDeviceInfo',
   'weather.enabled',
@@ -322,6 +325,9 @@ function getApplicationWindows() {
 /** 系统托盘实例 */
 let tray = null
 let stickyService = null
+let viewVisibilityShortcutService = null
+const viewVisibilityShortcutCaptureSenders = new WeakSet()
+let screenshotCaptureActive = false
 
 /** 是否正在执行退出流程（托盘菜单「退出」触发） */
 let isQuitting = false
@@ -1210,6 +1216,7 @@ function refreshResolvedSettings({ incrementRevision = false } = {}) {
   const nextSettings = resolveSettingsRows(getAllSettings(getActiveWindowName()), activeViewMode)
   nextSettings.appearance.titlebarIconScale = applicationSettings.appearance.titlebarIconScale
   nextSettings.appearance.iconColor = applicationSettings.appearance.iconColor
+  nextSettings.shortcuts = { ...applicationSettings.shortcuts }
   nextSettings.window = { ...applicationSettings.window }
   nextSettings.remote = { ...applicationSettings.remote }
   nextSettings.weather = structuredClone(applicationSettings.weather)
@@ -1248,6 +1255,14 @@ function getResolvedSettingsSnapshot() {
     },
     runtime: {
       autoStart,
+      shortcuts: {
+        viewVisibility: viewVisibilityShortcutService?.snapshot() || {
+          configured: resolvedSettings.shortcuts?.viewVisibility || '',
+          registered: false,
+          capturing: false,
+          error: null
+        }
+      },
       dock: {
         supported: dockCapability.supported,
         reason: dockCapability.reason,
@@ -3457,6 +3472,11 @@ function toggleWindow() {
   }
 }
 
+function handleViewVisibilityShortcut() {
+  if (isQuitting || switchingMainView || screenshotCaptureActive) return
+  toggleWindow()
+}
+
 function openMainWindow() {
   const transitionPromise = compactWindowController.activePromise()
   if (transitionPromise) {
@@ -3654,7 +3674,8 @@ if (process.env.ABANDON_INTEGRATION_TEST === '1') {
     handleDisplayTopologyChange: handleDockDisplayTopologyChange,
     enterCompactWindow,
     exitCompactWindow,
-    getState: compactWindowStateSnapshot
+    getState: compactWindowStateSnapshot,
+    triggerViewVisibilityShortcut: () => viewVisibilityShortcutService?.handleTrigger()
   })
 }
 
@@ -3701,6 +3722,12 @@ app.whenReady().then(async () => {
   ensureApplicationWindowSettingsInitialized(activeViewMode)
   resolvedSettings = createDefaultSettings(activeViewMode)
   refreshResolvedSettings({ incrementRevision: true })
+  viewVisibilityShortcutService = new ViewVisibilityShortcutService({
+    globalShortcut,
+    onTrigger: handleViewVisibilityShortcut,
+    logger
+  })
+  viewVisibilityShortcutService.initialize(resolvedSettings.shortcuts.viewVisibility)
   handleProtocolArgs(process.argv)
 
   // 监听新窗口创建事件，自动注册快捷键优化器
@@ -3945,6 +3972,32 @@ app.whenReady().then(async () => {
     }
     persistSettingValue(id, value)
     return true
+  })
+
+  mainWindowIpc.handle('shortcut:view-visibility-capture-start', (event) => {
+    const ownerId = event.sender.id
+    if (!viewVisibilityShortcutCaptureSenders.has(event.sender)) {
+      viewVisibilityShortcutCaptureSenders.add(event.sender)
+      event.sender.once('destroyed', () => viewVisibilityShortcutService?.endCapture(ownerId))
+    }
+    return viewVisibilityShortcutService.beginCapture(ownerId)
+  })
+
+  mainWindowIpc.handle('shortcut:view-visibility-capture-end', (event) =>
+    viewVisibilityShortcutService.endCapture(event.sender.id)
+  )
+
+  mainWindowIpc.handle('shortcut:view-visibility-set', (event, accelerator) => {
+    const result = viewVisibilityShortcutService.update(accelerator, {
+      ownerId: event.sender.id,
+      persist: (next) => writeApplicationSetting('shortcuts.viewVisibility', next)
+    })
+    if (!['saved', 'cleared'].includes(result.status)) return result
+
+    refreshResolvedSettings({ incrementRevision: true })
+    const snapshot = getResolvedSettingsSnapshot()
+    broadcastSettingsChanged(snapshot)
+    return { ...result, runtime: snapshot.runtime.shortcuts.viewVisibility }
   })
 
   /**
@@ -4550,8 +4603,14 @@ app.whenReady().then(async () => {
     ipcMain,
     preloadPath: join(PRELOAD_ROOT, 'screenshot.js'),
     getMainWindow: () => mainWindow,
-    onCaptureStart: () => beginDockInteractionSuspension('screenshot'),
-    onCaptureEnd: () => endDockInteractionSuspension('screenshot')
+    onCaptureStart: () => {
+      screenshotCaptureActive = true
+      beginDockInteractionSuspension('screenshot')
+    },
+    onCaptureEnd: () => {
+      screenshotCaptureActive = false
+      endDockInteractionSuspension('screenshot')
+    }
   })
   screenshotService.initialize()
 
@@ -4645,6 +4704,8 @@ app.on('before-quit', (event) => {
     }
   }
   scheduler.stop()
+  viewVisibilityShortcutService?.dispose()
+  viewVisibilityShortcutService = null
   notificationService = null
   screenshotService?.dispose()
   screenshotService = null

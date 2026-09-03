@@ -20,6 +20,7 @@ import AppToggle from '../ui/AppToggle.vue'
 import BaseButton from '../ui/BaseButton.vue'
 import FontSizeInput from '../ui/FontSizeInput.vue'
 import AppSlider from '../ui/AppSlider.vue'
+import ShortcutRecorder from '../ui/ShortcutRecorder.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import WallpaperSettings from '../wallpaper/WallpaperSettings.vue'
@@ -291,6 +292,13 @@ watch(
 const titlebarStyle = ref(DEFAULT_SETTINGS.appearance.titlebarStyle)
 const titlebarIconScale = ref(DEFAULT_SETTINGS.appearance.titlebarIconScale)
 const iconColor = ref(DEFAULT_SETTINGS.appearance.iconColor)
+const viewVisibilityShortcut = ref(DEFAULT_SETTINGS.shortcuts.viewVisibility)
+const viewVisibilityShortcutRuntime = ref({
+  configured: DEFAULT_SETTINGS.shortcuts.viewVisibility,
+  registered: false,
+  capturing: false,
+  error: null
+})
 const bgColor = ref(DEFAULT_SETTINGS.css.bgColor)
 const windowBorder = ref(DEFAULT_SETTINGS.css.windowBorder)
 const fontSizeBase = ref(DEFAULT_SETTINGS.css.fontSizeBase)
@@ -1094,6 +1102,7 @@ function assignSettingsSnapshot(snapshot) {
   const blur = snapshot.values.blur
   const sticky = snapshot.values.sticky
   const remote = snapshot.values.remote || DEFAULT_SETTINGS.remote
+  const shortcuts = snapshot.values.shortcuts || DEFAULT_SETTINGS.shortcuts
   const runtimeBlur = snapshot.runtime?.blur
   const runtimeAutoStart = snapshot.runtime?.autoStart
   panelSize.value = Number(
@@ -1105,6 +1114,10 @@ function assignSettingsSnapshot(snapshot) {
   titlebarStyle.value = appearance.titlebarStyle
   titlebarIconScale.value = appearance.titlebarIconScale
   iconColor.value = appearance.iconColor
+  viewVisibilityShortcut.value = shortcuts.viewVisibility
+  if (snapshot.runtime?.shortcuts?.viewVisibility) {
+    viewVisibilityShortcutRuntime.value = snapshot.runtime.shortcuts.viewVisibility
+  }
   bgColor.value = css.bgColor
   cssOpacity.value = css.popupOpacity
   cssBlur.value = css.bgBlur
@@ -1207,6 +1220,12 @@ onMounted(async () => {
   if (componentUnmounted) return
 
   stopBlurRuntimeListener = window.api.onSettingsChanged?.((snapshot) => {
+    if (snapshot?.values?.shortcuts && !viewVisibilityShortcutRuntime.value.capturing) {
+      viewVisibilityShortcut.value = snapshot.values.shortcuts.viewVisibility
+    }
+    if (snapshot?.runtime?.shortcuts?.viewVisibility) {
+      viewVisibilityShortcutRuntime.value = snapshot.runtime.shortcuts.viewVisibility
+    }
     const runtimeBlur = snapshot?.runtime?.blur
     const configuredEnabled = Boolean(snapshot?.values?.blur?.enabled)
     if (snapshot?.values?.dock && inFlightDockConfigWrites.size === 0) {
@@ -1963,6 +1982,25 @@ const onConfirmResetSettings = async () => {
                 <AppToggle v-model="autoStart" />
               </div>
             </div>
+
+            <div class="setting-item has-hint shortcut-setting">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >视图显示快捷键<HelpButton
+                    text="点击录制后直接按下组合键，无需输入或再次保存。用于显示或隐藏当前视图，窗口隐藏到托盘后仍可使用。"
+                /></span>
+                <span class="setting-hint-caption">列表、月视图和周视图共用</span>
+              </div>
+              <div class="setting-right">
+                <ShortcutRecorder
+                  v-model="viewVisibilityShortcut"
+                  :runtime="viewVisibilityShortcutRuntime"
+                  :disabled="isResetting"
+                  @update:runtime="viewVisibilityShortcutRuntime = $event"
+                  @feedback="showMessage($event.type, $event.message, $event.duration)"
+                />
+              </div>
+            </div>
           </section>
 
           <!-- ========== 天气 ========== -->
@@ -2319,7 +2357,7 @@ const onConfirmResetSettings = async () => {
     <ConfirmDialog
       v-model:visible="showResetSettingsDialog"
       title="恢复默认设置"
-      message="此操作会恢复当前视图的独立设置，并将全局首次使用须知恢复为未阅读。另一个视图、远程与隐私开关、开机自启及便签数据均不受影响。"
+      message="此操作会恢复当前视图的独立设置，并将全局首次使用须知恢复为未阅读。另一个视图、视图显示快捷键、远程与隐私开关、开机自启及便签数据均不受影响。"
       confirm-text="恢复"
       cancel-text="取消"
       variant="default"
@@ -2630,6 +2668,12 @@ const onConfirmResetSettings = async () => {
   align-items: center;
   gap: 10rem;
   flex-shrink: 0;
+}
+
+.shortcut-setting .setting-right {
+  min-width: 0;
+  flex: 1 1 360rem;
+  justify-content: flex-end;
 }
 
 .titlebar-style-selector {

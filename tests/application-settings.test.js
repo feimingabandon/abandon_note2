@@ -119,6 +119,23 @@ describe('application view settings', () => {
     )
   })
 
+  it('keeps the view visibility shortcut in the application scope', () => {
+    expect(readApplicationSettings().shortcuts.viewVisibility).toBe('')
+
+    writeApplicationSetting('shortcuts.viewVisibility', 'Control+Alt+N')
+
+    expect(readApplicationSettings().shortcuts.viewVisibility).toBe('Control+Alt+N')
+    expect(db.rowsByScope.get('application')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'shortcuts',
+          key: 'view_visibility',
+          value: 'Control+Alt+N'
+        })
+      ])
+    )
+  })
+
   it('writes compact geometry atomically and rejects unrelated batch entries', () => {
     writeApplicationSettings([
       { id: 'window.compact.enabled', value: true },
@@ -169,6 +186,12 @@ describe('application view settings', () => {
         key: 'titlebar_icon_scale',
         value: '145',
         remark: '旧错误作用域中的全局图标大小'
+      },
+      {
+        type: 'shortcuts',
+        key: 'view_visibility',
+        value: 'Control+Alt+N',
+        remark: '错误作用域中的全局快捷键'
       },
       {
         type: 'dock',

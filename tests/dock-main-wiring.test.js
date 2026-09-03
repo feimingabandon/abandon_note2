@@ -60,8 +60,10 @@ describe('dock main-process wiring', () => {
       "beginNativeEdgeCleanup(generation, windowMotionBackend, 'native-edge-start-timeout')"
     )
     expect(source).toContain('Boolean(nativeEdgeCleanupPending)')
-    expect(source).toContain("onCaptureStart: () => beginDockInteractionSuspension('screenshot')")
-    expect(source).toContain("onCaptureEnd: () => endDockInteractionSuspension('screenshot')")
+    expect(source).toContain('screenshotCaptureActive = true')
+    expect(source).toContain("beginDockInteractionSuspension('screenshot')")
+    expect(source).toContain('screenshotCaptureActive = false')
+    expect(source).toContain("endDockInteractionSuspension('screenshot')")
     expect(source).toContain('dockInteractionSuspendCount > 0')
     expect(source).toContain('if (nativeEdgeCleanupPending)')
     expect(source).toContain("resetDockState({ source: 'view-switch' })")
