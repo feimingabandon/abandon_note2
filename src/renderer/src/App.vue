@@ -17,6 +17,7 @@
 import { computed, nextTick, ref, onMounted, onUnmounted, watch } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
+import ViewSwitcher from './components/system/ViewSwitcher.vue'
 import CompactWindowScene from './components/system/CompactWindowScene.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue' // 自定义窗口缩放手柄
 import SettingsPanel from './components/system/SettingsPanel.vue' // 底部弹出式设置面板
@@ -45,7 +46,11 @@ import {
   restoreFocusedElement,
   trapModalTab
 } from './utils/modalFocus.js'
-import { DEFAULT_SETTINGS, FIRST_USE_NOTICE_VERSION } from '../../shared/settings-schema.js'
+import {
+  DEFAULT_SETTINGS,
+  FIRST_USE_NOTICE_VERSION,
+  VIEW_MODES
+} from '../../shared/settings-schema.js'
 
 // 注册全局应用内消息通知能力（子孙组件通过 useMessage() 获取）
 const { showMessage } = createMessageProvider()
@@ -618,16 +623,7 @@ onUnmounted(() => {
         >
           <!-- 设置和帮助按钮组 -->
           <TitlebarActions :style-variant="titlebarStyle">
-            <button
-              v-if="compactWindow.supported.value"
-              class="titlebar-btn compact-mode-trigger"
-              type="button"
-              title="收起为灵动岛"
-              aria-label="收起为灵动岛"
-              @click="requestCompactWindow"
-            >
-              <AppIcon class="btn-icon" name="compact" />
-            </button>
+            <ViewSwitcher :active-view="VIEW_MODES.LIST" :style-variant="titlebarStyle" />
             <DailyReportButton @open="openDailyReport" />
             <button
               class="titlebar-btn titlebar-btn-template"

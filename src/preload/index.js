@@ -36,6 +36,8 @@ const api = {
   // ---- 窗口控制（单向通信，无需返回值） ----
   /** 关闭当前窗口 */
   closeWindow: () => ipcRenderer.send('window-close'),
+  /** 将当前唯一主窗口切换到列表 / 月 / 周视图。 */
+  switchMainView: (mode) => ipcRenderer.invoke('view:switch', { mode }),
 
   // ---- 窗口锁定 ----
   /** 切换窗口锁定状态（禁止/允许移动和缩放），返回最终状态及节流结果。 */

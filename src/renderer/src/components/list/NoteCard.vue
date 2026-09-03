@@ -15,6 +15,7 @@ import { getNoteTextColor } from '../../utils/noteAppearance.js'
 
 const props = defineProps({
   note: { type: Object, required: true },
+  weather: { type: Object, default: null },
   draggable: { type: Boolean, default: false },
   muted: { type: Boolean, default: false },
   colorByTag: { type: Boolean, default: true },
@@ -221,6 +222,14 @@ const timingTitle = computed(() => {
   }
   return parts.join(' · ')
 })
+const weatherSummary = computed(() => {
+  const weather = props.weather
+  if (!weather) return ''
+  return `${weather.label} ${weather.temperatureMin}°～${weather.temperatureMax}°`
+})
+const weatherTitle = computed(() =>
+  weatherSummary.value ? `${weatherSummary.value} · 便签生效日天气` : ''
+)
 
 function handleStatusAction() {
   if (canChangeStatus.value) emit('status-action', props.note)
@@ -451,6 +460,13 @@ async function toggleTags() {
               >
             </template>
           </span>
+          <template v-if="weatherSummary">
+            <span class="nl-card-separator" aria-hidden="true">·</span>
+            <span class="nl-card-weather" :title="weatherTitle" :aria-label="weatherTitle">
+              <span class="nl-card-weather-icon" aria-hidden="true">{{ weather.icon }}</span>
+              <span class="nl-card-weather-text">{{ weatherSummary }}</span>
+            </span>
+          </template>
         </div>
 
         <div
@@ -994,6 +1010,27 @@ async function toggleTags() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.nl-card-weather {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 128rem;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 3rem;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--text-color) 68%, transparent);
+  white-space: nowrap;
+}
+.nl-card-weather-icon {
+  flex: 0 0 auto;
+  font-size: 1.08em;
+  line-height: 1;
+}
+.nl-card-weather-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .nl-card-time {
   white-space: nowrap;

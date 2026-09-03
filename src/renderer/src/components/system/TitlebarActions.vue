@@ -59,6 +59,11 @@ defineProps({
   transition-duration: 70ms;
 }
 
+.titlebar-actions-group :deep(.titlebar-btn[aria-haspopup]:active) {
+  transform: none;
+  transition-duration: var(--motion-control);
+}
+
 .titlebar-actions-group :deep(.titlebar-btn-template.is-active),
 .titlebar-actions-group :deep(.titlebar-btn-help.is-active) {
   background-color: #34c759;

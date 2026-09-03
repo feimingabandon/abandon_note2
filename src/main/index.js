@@ -3833,6 +3833,17 @@ app.whenReady().then(async () => {
     hideToTray()
   })
 
+  // 主视图切换会销毁当前 sender；先回复渲染进程，再在下一轮事件循环替换窗口。
+  mainWindowIpc.handle('view:switch', (_event, { mode } = {}) => {
+    if (!Object.values(VIEW_MODES).includes(mode)) throw new Error('无效的主视图')
+    if (mode === activeViewMode) return false
+    if (switchingMainView || compactWindowController.activePromise() || nativeEdgeCleanupPending) {
+      return false
+    }
+    setImmediate(() => switchMainView(mode))
+    return true
+  })
+
   // 【窗口锁定 - 切换锁定状态】
   mainWindowIpc.handle('toggle-lock', () => {
     const now = Date.now()

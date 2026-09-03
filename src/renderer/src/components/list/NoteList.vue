@@ -16,6 +16,8 @@ import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 import { useMessage } from '../../composables/useMessage.js'
+import { weatherLocationKey } from '../../../../shared/weather-rules.js'
+import { buildDisplayableWeatherByDate, getWeatherForNote } from '../../utils/noteWeather.js'
 
 const emit = defineEmits(['edit'])
 const { showMessage } = useMessage()
@@ -125,6 +127,11 @@ function staggerDelay(index) {
 /** 加载状态 */
 const loading = ref(false)
 const loadError = ref(null)
+const weatherEnabled = ref(false)
+const weatherForecast = ref(null)
+const weatherSettingsKey = ref('')
+let weatherLoadSequence = 0
+const weatherByDate = computed(() => buildDisplayableWeatherByDate(weatherForecast.value))
 /** 全部未删除便签总数，不受当前标签/状态筛选影响。 */
 const allNoteTotal = ref(0)
 const lastRefreshedAt = ref(null)
@@ -145,6 +152,37 @@ function formatRefreshTime(timestamp) {
   return [date.getHours(), date.getMinutes(), date.getSeconds()]
     .map((value) => String(value).padStart(2, '0'))
     .join(':')
+}
+
+function weatherForNote(note) {
+  return getWeatherForNote(note, weatherByDate.value)
+}
+
+async function loadWeatherForecast() {
+  const sequence = ++weatherLoadSequence
+  try {
+    const forecast = await window.api.getWeatherForecast()
+    if (sequence !== weatherLoadSequence || !weatherEnabled.value) return
+    weatherForecast.value = forecast
+  } catch (error) {
+    if (sequence !== weatherLoadSequence) return
+    weatherForecast.value = null
+    console.warn('[NoteList] 加载便签天气失败:', error)
+  }
+}
+
+function applyWeatherSettings(snapshot, { load = true } = {}) {
+  const weather = snapshot?.values?.weather
+  const nextKey = weather?.enabled ? weatherLocationKey(weather.location) : ''
+  const changed = nextKey !== weatherSettingsKey.value
+  weatherSettingsKey.value = nextKey
+  weatherEnabled.value = Boolean(nextKey)
+  if (!nextKey) {
+    weatherLoadSequence += 1
+    weatherForecast.value = null
+    return
+  }
+  if (load && changed) void loadWeatherForecast()
 }
 
 /** 标签筛选 ID 列表 */
@@ -1284,10 +1322,12 @@ async function loadFilterState() {
     sortMode.value = state.listMode
     tagFilterIds.value = [...state.tagIds]
     statusFilter.value = [...state.statusFilter]
+    applyWeatherSettings(snapshot, { load: false })
   } catch (e) {
     sortMode.value = DEFAULT_SETTINGS.listFilter.listMode
     tagFilterIds.value = [...DEFAULT_SETTINGS.listFilter.tagIds]
     statusFilter.value = [...DEFAULT_SETTINGS.listFilter.statusFilter]
+    applyWeatherSettings(null, { load: false })
     console.warn('[NoteList] 恢复筛选状态失败，使用共享默认值:', e)
   } finally {
     // 等响应式 flush 完成后再解除抑制，防止恢复赋值触发重复加载
@@ -1300,6 +1340,7 @@ onMounted(async () => {
   document.addEventListener('pointerdown', onModeMenuOutside)
   document.addEventListener('keydown', onModeMenuKeydown)
   await loadFilterState()
+  if (weatherEnabled.value) void loadWeatherForecast()
   // 统一入口：根据当前模式加载（时间线 / 自定义 / 标签分组）
   await switchMode(sortMode.value)
 })
@@ -1318,8 +1359,18 @@ const stopNotesChanged = window.api.onNotesChanged?.(() => {
 })
 
 const stopSettingsChanged = window.api.onSettingsChanged?.(async (snapshot) => {
+  applyWeatherSettings(snapshot)
   const changed = await applyFilterState(snapshot?.values?.listFilter)
   if (changed) await switchMode(sortMode.value)
+})
+const stopWeatherForecastUpdated = window.api.onWeatherForecastUpdated?.((forecast) => {
+  if (
+    !weatherEnabled.value ||
+    weatherLocationKey(forecast?.location) !== weatherSettingsKey.value
+  ) {
+    return
+  }
+  weatherForecast.value = forecast
 })
 
 let tagsChangedTimer = null
@@ -1346,7 +1397,9 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onModeMenuKeydown)
   stopNotesChanged?.()
   stopSettingsChanged?.()
+  stopWeatherForecastUpdated?.()
   stopTagsChanged?.()
+  weatherLoadSequence += 1
   closeTagGroupContextMenu()
   earlierRequestSeq++
   customMoreRequestSeq++
@@ -1630,6 +1683,7 @@ defineExpose({
                 v-for="note in g.items"
                 :key="note.id"
                 :note="note"
+                :weather="weatherForNote(note)"
                 :status-transition="statusTransitionFor(note.id)"
                 @edit="emit('edit', $event)"
                 @status-action="onCardStatusAction"
@@ -1766,6 +1820,7 @@ defineExpose({
                         v-for="note in group.notes"
                         :key="note.id"
                         :note="note"
+                        :weather="weatherForNote(note)"
                         :color-by-tag="false"
                         allow-create-tag
                         :status-transition="statusTransitionFor(note.id)"
@@ -1851,6 +1906,7 @@ defineExpose({
               <template #item="{ element: note }">
                 <NoteCard
                   :note="note"
+                  :weather="weatherForNote(note)"
                   draggable
                   :status-transition="statusTransitionFor(note.id)"
                   @edit="emit('edit', $event)"
@@ -1882,6 +1938,7 @@ defineExpose({
               <template #item="{ element: note }">
                 <NoteCard
                   :note="note"
+                  :weather="weatherForNote(note)"
                   draggable
                   :status-transition="statusTransitionFor(note.id)"
                   @edit="emit('edit', $event)"

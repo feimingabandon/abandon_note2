@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
+import ViewSwitcher from './components/system/ViewSwitcher.vue'
 import CompactWindowScene from './components/system/CompactWindowScene.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue'
 import SettingsPanel from './components/system/SettingsPanel.vue'
@@ -432,6 +433,7 @@ onUnmounted(() => {
           @request:compact="requestCompactWindow"
         >
           <TitlebarActions :style-variant="titlebarStyle">
+            <ViewSwitcher :active-view="viewMode" :style-variant="titlebarStyle" />
             <button
               v-if="compactWindow.supported.value"
               class="titlebar-btn compact-mode-trigger month-titlebar-btn"
