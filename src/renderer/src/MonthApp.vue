@@ -21,6 +21,7 @@ import { createMessageProvider } from './composables/useMessage.js'
 import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
 import { useTodayKey } from './composables/useTodayKey.js'
 import { useCompactWindowMode } from './composables/useCompactWindowMode.js'
+import { createQuickNoteEditSettingProvider } from './composables/useQuickNoteEditSetting.js'
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
 import {
@@ -40,6 +41,7 @@ const isWeekView = computed(() => props.viewMode === VIEW_MODES.WEEK)
 const viewLabel = computed(() => (isWeekView.value ? '周视图' : '月视图'))
 const defaults = createDefaultSettings(props.viewMode)
 const { showMessage } = createMessageProvider()
+const quickNoteEditSetting = createQuickNoteEditSettingProvider()
 const compactWindow = useCompactWindowMode()
 const locked = ref(defaults.window.lockState)
 const zOrderMode = ref(defaults.window.zOrderMode)
@@ -203,6 +205,7 @@ async function syncWallpaper(snapshot) {
 
 function applySnapshot(snapshot) {
   applySettingsSnapshot(snapshot)
+  quickNoteEditSetting.applySnapshot(snapshot)
   titlebarStyle.value =
     snapshot?.values?.appearance?.titlebarStyle ?? defaults.appearance.titlebarStyle
   locked.value = snapshot?.values?.window?.lockState ?? defaults.window.lockState

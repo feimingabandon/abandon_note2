@@ -236,12 +236,36 @@ input {
   height: 0;
 }
 
-.sticky-error {
+.sticky-message {
   position: absolute;
-  inset: var(--sticky-toolbar-height) 0 0;
+  z-index: var(--z-local-top);
+  top: calc(var(--sticky-toolbar-height) + 8px);
+  left: 50%;
+  max-width: calc(100% - 24px);
   margin: 0;
-  padding: 16px;
-  background: var(--sticky-background);
-  color: var(--sticky-text);
-  font-size: 13px;
+  padding: 7px 11px;
+  border: 1px solid color-mix(in srgb, var(--sticky-text) 14%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--sticky-text) 88%, transparent);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--sticky-text) 22%, transparent);
+  color: var(--sticky-background);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.sticky-message[data-type='success']::before {
+  margin-right: 6px;
+  color: #30d158;
+  content: '✓';
+  font-weight: 700;
+}
+
+.sticky-message[data-type='error']::before {
+  margin-right: 6px;
+  color: #ff453a;
+  content: '×';
+  font-weight: 700;
 }

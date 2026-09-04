@@ -666,6 +666,11 @@ async function goToday() {
   })
 }
 
+async function onHistoricalNotesMoved() {
+  await goToday()
+  await refreshCalendarContent()
+}
+
 async function selectDate(day) {
   if (!(day?.isActive ?? day?.inCurrentMonth)) return
   selectedKey.value = day.key
@@ -935,6 +940,7 @@ onBeforeUnmount(() => {
           @jump-date="jumpToDate"
           @refresh="refreshCalendar"
           @toggle-day-panel="toggleDayPanel"
+          @historical-notes-moved="onHistoricalNotesMoved"
         />
         <div ref="calendarSurfaceRef" class="month-workspace__calendar-body">
           <MonthCalendarGrid

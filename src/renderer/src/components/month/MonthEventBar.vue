@@ -1,11 +1,14 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import QuickNoteContentEditor from '../note/QuickNoteContentEditor.vue'
+import { useQuickNoteEditSetting } from '../../composables/useQuickNoteEditSetting.js'
 
 const props = defineProps({
   segment: { type: Object, required: true },
   note: { type: Object, required: true }
 })
 const emit = defineEmits(['open-context-menu'])
+const { enabled: doubleClickQuickEditEnabled } = useQuickNoteEditSetting()
 const accent = computed(() => {
   if (props.note.status === 'completed') return '#8e8e93'
   const tagColor = props.note.tags?.[0]?.color
@@ -23,9 +26,13 @@ const tooltipRef = ref(null)
 const tooltipVisible = ref(false)
 const tooltipPlacement = ref('bottom')
 const tooltipStyle = reactive({ top: '-9999px', left: '-9999px' })
+const quickEditorVisible = ref(false)
+const quickEditorAnchor = ref(null)
 const TOOLTIP_GAP = 8
 const VIEWPORT_PADDING = 8
 const PLACEMENTS = ['bottom', 'top', 'right', 'left']
+const SINGLE_CLICK_DELAY_MS = 220
+let singleClickTimer = null
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value))
@@ -87,7 +94,49 @@ async function toggleTooltip() {
   tooltipStyle.left = `${position.left}px`
 }
 
+function scheduleTooltipToggle(event) {
+  clearScheduledTooltipToggle()
+  if (!doubleClickQuickEditEnabled.value || event.detail === 0) {
+    void toggleTooltip()
+    return
+  }
+  singleClickTimer = setTimeout(() => {
+    singleClickTimer = null
+    void toggleTooltip()
+  }, SINGLE_CLICK_DELAY_MS)
+}
+
+function clearScheduledTooltipToggle() {
+  if (singleClickTimer === null) return
+  clearTimeout(singleClickTimer)
+  singleClickTimer = null
+}
+
+function openQuickEditor(event) {
+  if (!doubleClickQuickEditEnabled.value || quickEditorVisible.value) return
+  clearScheduledTooltipToggle()
+  event.preventDefault()
+  event.stopPropagation()
+  closeTooltip()
+  const rect = barRef.value.getBoundingClientRect()
+  quickEditorAnchor.value = {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height
+  }
+  quickEditorVisible.value = true
+}
+
+function closeQuickEditor() {
+  quickEditorVisible.value = false
+  quickEditorAnchor.value = null
+}
+
 function closeTooltip() {
+  clearScheduledTooltipToggle()
   tooltipVisible.value = false
 }
 
@@ -97,8 +146,8 @@ function openContextMenu(event) {
 }
 
 function onDocumentPointerDown(event) {
-  if (!tooltipVisible.value) return
   if (barRef.value?.contains(event.target) || tooltipRef.value?.contains(event.target)) return
+  if (!tooltipVisible.value && singleClickTimer === null) return
   closeTooltip()
 }
 
@@ -114,6 +163,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearScheduledTooltipToggle()
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
   document.removeEventListener('keydown', onKeydown)
   window.removeEventListener('resize', closeTooltip)
@@ -140,7 +190,8 @@ onBeforeUnmount(() => {
     :data-segment-key="`${note.id}:${segment.weekIndex}`"
     :aria-label="fullTitle"
     :aria-expanded="tooltipVisible"
-    @click.stop="toggleTooltip"
+    @click.stop="scheduleTooltipToggle"
+    @dblclick="openQuickEditor"
     @contextmenu.prevent.stop="openContextMenu"
   >
     <span v-if="!segment.continuesBefore" class="month-event-bar__dot" aria-hidden="true" />
@@ -149,6 +200,13 @@ onBeforeUnmount(() => {
       >›</span
     >
   </button>
+
+  <QuickNoteContentEditor
+    v-if="quickEditorVisible && quickEditorAnchor"
+    :note="note"
+    :anchor-rect="quickEditorAnchor"
+    @close="closeQuickEditor"
+  />
 
   <Teleport to="body">
     <Transition name="month-event-tooltip">

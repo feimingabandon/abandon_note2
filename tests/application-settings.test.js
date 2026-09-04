@@ -136,6 +136,23 @@ describe('application view settings', () => {
     )
   })
 
+  it('keeps double-click quick edit in the application scope', () => {
+    expect(readApplicationSettings().interaction.doubleClickQuickEdit).toBe(true)
+
+    writeApplicationSetting('interaction.doubleClickQuickEdit', false)
+
+    expect(readApplicationSettings().interaction.doubleClickQuickEdit).toBe(false)
+    expect(db.rowsByScope.get('application')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'interaction',
+          key: 'double_click_quick_edit',
+          value: '0'
+        })
+      ])
+    )
+  })
+
   it('writes compact geometry atomically and rejects unrelated batch entries', () => {
     writeApplicationSettings([
       { id: 'window.compact.enabled', value: true },

@@ -181,6 +181,13 @@ async function runTests() {
       '双击编辑没有同步到来源便签'
     )
     assert.equal(
+      await entry.window.webContents.executeJavaScript(
+        `document.querySelector('[data-message][data-type="success"]')?.textContent`
+      ),
+      '便签已保存',
+      '双击编辑保存后没有显示成功提醒'
+    )
+    assert.equal(
       listDesktopStickyRecords()[0].content,
       '双击编辑并失焦保存后的正文',
       '双击编辑没有更新便利贴快照'
@@ -204,7 +211,7 @@ async function runTests() {
     await waitUntil(
       () =>
         entry.window.webContents
-          .executeJavaScript(`document.querySelector('[data-error]')?.hidden === false`)
+          .executeJavaScript(`document.querySelector('[data-message]')?.hidden === false`)
           .catch(() => false),
       '保存失败时没有显示错误并阻止关闭'
     )

@@ -307,6 +307,7 @@ const stickyFontSize = ref(DEFAULT_SETTINGS.sticky.fontSize)
 const stickyBackgroundColor = ref(DEFAULT_SETTINGS.sticky.backgroundColor)
 const stickyCornerRadius = ref(DEFAULT_SETTINGS.sticky.cornerRadius)
 const stickyAlwaysOnTop = ref(DEFAULT_SETTINGS.sticky.alwaysOnTop)
+const doubleClickQuickEdit = ref(DEFAULT_SETTINGS.interaction.doubleClickQuickEdit)
 const receiveRemoteNotices = ref(DEFAULT_SETTINGS.remote.receiveNotices)
 const uploadDeviceInfo = ref(DEFAULT_SETTINGS.remote.uploadDeviceInfo)
 const remoteHealthStatus = ref('checking')
@@ -986,6 +987,10 @@ watch(stickyAlwaysOnTop, (v) => {
   debouncedSave('sticky.alwaysOnTop', v)
 })
 
+watch(doubleClickQuickEdit, (v) => {
+  debouncedSave('interaction.doubleClickQuickEdit', v)
+})
+
 // 同步文字颜色输入显示值
 watch(textColor, (v) => {
   textColorInput.value = v
@@ -1129,6 +1134,9 @@ function assignSettingsSnapshot(snapshot) {
   stickyBackgroundColor.value = sticky.backgroundColor
   stickyCornerRadius.value = sticky.cornerRadius
   stickyAlwaysOnTop.value = sticky.alwaysOnTop
+  doubleClickQuickEdit.value =
+    snapshot.values.interaction?.doubleClickQuickEdit ??
+    DEFAULT_SETTINGS.interaction.doubleClickQuickEdit
   receiveRemoteNotices.value = remote.receiveNotices
   uploadDeviceInfo.value = remote.uploadDeviceInfo
 
@@ -1944,6 +1952,24 @@ const onConfirmResetSettings = async () => {
               <AppSlider v-model="cssOpacity" :min="0" :max="1" :step="0.01" />
               <span class="range-label-end">不透</span>
               <span class="setting-value">{{ Math.round(cssOpacity * 100) }}%</span>
+            </div>
+          </section>
+
+          <!-- ========== 便签交互 ========== -->
+          <section class="settings-section">
+            <h3 class="section-title">便签交互</h3>
+
+            <div class="setting-item has-hint">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >双击快速编辑正文<HelpButton
+                    text="双击便签卡片或日历便签横条，只快速修改正文；失去焦点后自动保存。右键“修改”仍可打开完整编辑器。"
+                /></span>
+                <span class="setting-hint-caption">列表、月视图和周视图共用</span>
+              </div>
+              <div class="setting-right">
+                <AppToggle v-model="doubleClickQuickEdit" />
+              </div>
             </div>
           </section>
 

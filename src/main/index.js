@@ -200,6 +200,7 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'wallpaper.blurRadius',
   'ui.settingsPanelSize',
   'ui.dayPanelSize',
+  'interaction.doubleClickQuickEdit',
   'weather.enabled',
   'weather.location',
   'remote.receiveNotices',
@@ -213,6 +214,7 @@ const APPLICATION_SETTING_IDS = new Set([
   'appearance.titlebarIconScale',
   'appearance.iconColor',
   'shortcuts.viewVisibility',
+  'interaction.doubleClickQuickEdit',
   'remote.receiveNotices',
   'remote.uploadDeviceInfo',
   'weather.enabled',
@@ -1218,6 +1220,7 @@ function refreshResolvedSettings({ incrementRevision = false } = {}) {
   nextSettings.appearance.titlebarIconScale = applicationSettings.appearance.titlebarIconScale
   nextSettings.appearance.iconColor = applicationSettings.appearance.iconColor
   nextSettings.shortcuts = { ...applicationSettings.shortcuts }
+  nextSettings.interaction = { ...applicationSettings.interaction }
   nextSettings.window = { ...applicationSettings.window }
   nextSettings.remote = { ...applicationSettings.remote }
   nextSettings.weather = structuredClone(applicationSettings.weather)

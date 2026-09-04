@@ -40,6 +40,7 @@ import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
 import { useTodayKey } from './composables/useTodayKey.js'
 import { useCompactWindowMode } from './composables/useCompactWindowMode.js'
+import { createQuickNoteEditSettingProvider } from './composables/useQuickNoteEditSetting.js'
 import {
   captureFocusedElement,
   focusModal,
@@ -54,6 +55,7 @@ import {
 
 // 注册全局应用内消息通知能力（子孙组件通过 useMessage() 获取）
 const { showMessage } = createMessageProvider()
+const quickNoteEditSetting = createQuickNoteEditSettingProvider()
 const compactWindow = useCompactWindowMode()
 
 /** 设置面板显隐状态 */
@@ -339,6 +341,7 @@ let startupUpdateTimer = null
 
 function applyAppSettingsSnapshot(snapshot) {
   applySettingsSnapshot(snapshot)
+  quickNoteEditSetting.applySnapshot(snapshot)
   titlebarStyle.value =
     snapshot?.values?.appearance?.titlebarStyle ?? DEFAULT_SETTINGS.appearance.titlebarStyle
   const windowSettings = snapshot?.values?.window

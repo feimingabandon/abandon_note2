@@ -4,7 +4,14 @@ import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 
 const props = defineProps({
   start: { type: String, default: '' },
-  end: { type: String, default: '' }
+  end: { type: String, default: '' },
+  minDate: { type: String, default: '' },
+  maxDate: { type: String, default: '' },
+  valueTransitionDirection: {
+    type: String,
+    default: '',
+    validator: (value) => ['', 'forward', 'backward'].includes(value)
+  }
 })
 
 const emit = defineEmits(['update:start', 'update:end', 'change'])
@@ -48,8 +55,30 @@ const displayValue = computed(() => {
   return '选择自定义日期范围'
 })
 const hasAppliedRange = computed(() => Boolean(props.start && props.end))
+const valueTransitionName = computed(() =>
+  props.valueTransitionDirection ? `drp-value-${props.valueTransitionDirection}` : ''
+)
 
 const monthLabel = computed(() => `${viewYear.value}年 ${viewMonth.value + 1}月`)
+const previousMonthDisabled = computed(() => {
+  if (!props.minDate) return false
+  const previousMonthEnd = new Date(viewYear.value, viewMonth.value, 0)
+  return (
+    dateKey(
+      previousMonthEnd.getFullYear(),
+      previousMonthEnd.getMonth(),
+      previousMonthEnd.getDate()
+    ) < props.minDate
+  )
+})
+const nextMonthDisabled = computed(() => {
+  if (!props.maxDate) return false
+  const nextMonthStart = new Date(viewYear.value, viewMonth.value + 1, 1)
+  return (
+    dateKey(nextMonthStart.getFullYear(), nextMonthStart.getMonth(), nextMonthStart.getDate()) >
+    props.maxDate
+  )
+})
 
 const calendarCells = computed(() => {
   const firstDay = new Date(viewYear.value, viewMonth.value, 1).getDay()
@@ -70,6 +99,9 @@ const calendarCells = computed(() => {
       today: key === todayKey,
       start: key === draftStart.value,
       end: key === draftEnd.value,
+      disabled: Boolean(
+        (props.minDate && key < props.minDate) || (props.maxDate && key > props.maxDate)
+      ),
       inRange: Boolean(
         draftStart.value && draftEnd.value && key > draftStart.value && key < draftEnd.value
       )
@@ -119,6 +151,9 @@ function togglePanel() {
 }
 
 function moveMonth(delta) {
+  if ((delta < 0 && previousMonthDisabled.value) || (delta > 0 && nextMonthDisabled.value)) {
+    return
+  }
   monthDirection.value = delta > 0 ? 'next' : 'prev'
   const next = new Date(viewYear.value, viewMonth.value + delta, 1)
   viewYear.value = next.getFullYear()
@@ -126,6 +161,7 @@ function moveMonth(delta) {
 }
 
 function selectDate(cell) {
+  if (cell.disabled) return
   if (!draftStart.value || draftEnd.value) {
     draftStart.value = cell.key
     draftEnd.value = ''
@@ -191,7 +227,13 @@ onBeforeUnmount(() => {
       :aria-expanded="open"
       @click="togglePanel"
     >
-      <span>{{ displayValue }}</span>
+      <span class="drp-trigger-value-viewport">
+        <Transition :name="valueTransitionName">
+          <span :key="displayValue" class="drp-trigger-value" data-date-range-value>
+            {{ displayValue }}
+          </span>
+        </Transition>
+      </span>
       <svg
         v-if="!hasAppliedRange"
         class="drp-trigger-arrow"
@@ -217,8 +259,8 @@ onBeforeUnmount(() => {
   <Teleport to="body">
     <Transition
       :css="false"
-      @enter="(element, done) => enterPopover(element, done)"
-      @leave="(element, done) => leavePopover(element, done)"
+      @enter="(element, done) => enterPopover(element, done, 'dropdown')"
+      @leave="(element, done) => leavePopover(element, done, 'dropdown')"
     >
       <section
         v-if="open"
@@ -229,11 +271,21 @@ onBeforeUnmount(() => {
         aria-label="选择日期范围"
       >
         <header class="drp-header">
-          <button type="button" aria-label="上个月" @click="moveMonth(-1)">
+          <button
+            type="button"
+            aria-label="上个月"
+            :disabled="previousMonthDisabled"
+            @click="moveMonth(-1)"
+          >
             <svg viewBox="0 0 16 16"><path d="M10 3L5 8l5 5" /></svg>
           </button>
           <strong>{{ monthLabel }}</strong>
-          <button type="button" aria-label="下个月" @click="moveMonth(1)">
+          <button
+            type="button"
+            aria-label="下个月"
+            :disabled="nextMonthDisabled"
+            @click="moveMonth(1)"
+          >
             <svg viewBox="0 0 16 16"><path d="M6 3l5 5-5 5" /></svg>
           </button>
         </header>
@@ -254,8 +306,12 @@ onBeforeUnmount(() => {
                 'is-today': cell.today,
                 'is-start': cell.start,
                 'is-end': cell.end,
-                'is-range': cell.inRange
+                'is-range': cell.inRange,
+                'is-disabled': cell.disabled
               }"
+              :disabled="cell.disabled"
+              :aria-disabled="cell.disabled"
+              :aria-label="cell.key"
               @click="selectDate(cell)"
             >
               <span>{{ cell.day }}</span>
@@ -306,8 +362,37 @@ onBeforeUnmount(() => {
   text-align: left;
   cursor: pointer;
 }
-.drp-trigger span {
+.drp-trigger-value-viewport {
+  position: relative;
+  display: grid;
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.drp-trigger-value {
+  grid-area: 1 / 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drp-value-forward-enter-active,
+.drp-value-forward-leave-active,
+.drp-value-backward-enter-active,
+.drp-value-backward-leave-active {
+  transition:
+    opacity 140ms ease,
+    transform 200ms var(--ease-standard);
+}
+.drp-value-forward-enter-from,
+.drp-value-backward-leave-to {
+  opacity: 0;
+  transform: translateX(10rem);
+}
+.drp-value-forward-leave-to,
+.drp-value-backward-enter-from {
+  opacity: 0;
+  transform: translateX(-10rem);
 }
 .drp-trigger svg,
 .drp-header svg {
@@ -406,6 +491,10 @@ onBeforeUnmount(() => {
   background: var(--ui-fill-hover);
   color: var(--text-color);
 }
+.drp-header button:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
 .drp-header button:active {
   transform: scale(0.98);
 }
@@ -456,11 +545,15 @@ onBeforeUnmount(() => {
     color var(--motion-fast) ease,
     transform var(--motion-fast) ease;
 }
-.drp-day:hover span {
+.drp-day:hover:not(:disabled) span {
   background: var(--ui-fill-hover);
 }
-.drp-day:active span {
+.drp-day:active:not(:disabled) span {
   transform: scale(0.98);
+}
+.drp-day.is-disabled {
+  cursor: default;
+  opacity: 0.24;
 }
 .drp-day.is-other {
   color: color-mix(in srgb, var(--text-color) 28%, transparent);

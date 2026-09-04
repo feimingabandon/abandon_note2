@@ -9,7 +9,9 @@ import { computed, ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import ImagePicker from '../note/ImagePicker.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import StatusRing from './StatusRing.vue'
+import QuickNoteContentEditor from '../note/QuickNoteContentEditor.vue'
 import { useMessage } from '../../composables/useMessage.js'
+import { useQuickNoteEditSetting } from '../../composables/useQuickNoteEditSetting.js'
 import { useSharedMinuteClock } from '../../composables/useSharedMinuteClock.js'
 import { getNoteTextColor } from '../../utils/noteAppearance.js'
 
@@ -25,6 +27,7 @@ const props = defineProps({
 
 const emit = defineEmits(['status-action', 'edit', 'create-tag'])
 const { showMessage } = useMessage()
+const { enabled: doubleClickQuickEditEnabled } = useQuickNoteEditSetting()
 const sharedNow = useSharedMinuteClock()
 const systemNotificationsSupported =
   window.api.runtimeCapabilities?.systemNotifications?.supported ?? true
@@ -77,6 +80,38 @@ const CONTENT_PREVIEW_LINES = 3
 const CONTENT_ANIMATION_DURATION = 280
 let contentResizeObserver = null
 let contentAnimation = null
+const quickEditorVisible = ref(false)
+const quickEditorAnchor = ref(null)
+
+function openQuickEditor(event) {
+  if (!doubleClickQuickEditEnabled.value || quickEditorVisible.value) return
+  if (
+    event.target.closest?.(
+      'button, input, textarea, select, a, [contenteditable], [role="button"], .nl-drag-handle, .nl-image-panel-shell'
+    )
+  ) {
+    return
+  }
+  event.preventDefault()
+  event.stopPropagation()
+  const rect = event.currentTarget.getBoundingClientRect()
+  quickEditorAnchor.value = {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height
+  }
+  closeTags()
+  closeContextMenu()
+  quickEditorVisible.value = true
+}
+
+function closeQuickEditor() {
+  quickEditorVisible.value = false
+  quickEditorAnchor.value = null
+}
 
 onMounted(async () => {
   await nextTick()
@@ -416,6 +451,7 @@ async function toggleTags() {
     :data-note-id="note.id"
     :aria-label="`${status.label}：${displayContent}`"
     @contextmenu="openContextMenu"
+    @dblclick="openQuickEditor"
   >
     <span v-if="draggable" class="nl-drag-handle" title="拖动排序" aria-hidden="true" @click.stop>
       <svg viewBox="0 0 12 18">
@@ -684,6 +720,13 @@ async function toggleTags() {
         </div>
       </div>
     </div>
+
+    <QuickNoteContentEditor
+      v-if="quickEditorVisible && quickEditorAnchor"
+      :note="note"
+      :anchor-rect="quickEditorAnchor"
+      @close="closeQuickEditor"
+    />
   </article>
 </template>
 

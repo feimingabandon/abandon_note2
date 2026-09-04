@@ -468,6 +468,15 @@ const definitions = [
     remark: '日历视图日期侧栏宽度百分比（25~50）'
   },
   {
+    id: 'interaction.doubleClickQuickEdit',
+    path: ['interaction', 'doubleClickQuickEdit'],
+    db: { type: 'interaction', key: 'double_click_quick_edit' },
+    defaultValue: true,
+    parse: parseBoolean,
+    serialize: (value) => (value ? '1' : '0'),
+    remark: '列表、月视图和周视图双击便签快速编辑正文'
+  },
+  {
     id: 'window.lockState',
     path: ['window', 'lockState'],
     db: { type: 'system', key: 'lock_state' },

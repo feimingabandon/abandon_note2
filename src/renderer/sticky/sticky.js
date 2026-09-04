@@ -6,7 +6,7 @@ installBrowserErrorCapture(window.stickyAPI, {
 })
 
 const contentElement = document.querySelector('[data-content]')
-const errorElement = document.querySelector('[data-error]')
+const messageElement = document.querySelector('[data-message]')
 const fontDownButton = document.querySelector('[data-action="font-down"]')
 const fontUpButton = document.querySelector('[data-action="font-up"]')
 const colorButton = document.querySelector('[data-action="color"]')
@@ -29,7 +29,7 @@ let savingContent = false
 let pendingContentSave = null
 let pinning = false
 let closing = false
-let errorTimer = null
+let messageTimer = null
 
 function applyAppearance(nextAppearance) {
   appearance = { ...appearance, ...nextAppearance }
@@ -60,24 +60,33 @@ async function updateAppearance(payload) {
   }
 }
 
-function showError(message, { persistent = false } = {}) {
-  if (errorTimer) clearTimeout(errorTimer)
-  errorElement.textContent = message
-  errorElement.hidden = false
+function showMessage(type, message, { persistent = false } = {}) {
+  if (messageTimer) clearTimeout(messageTimer)
+  messageElement.textContent = message
+  messageElement.dataset.type = type
+  messageElement.setAttribute('role', type === 'error' ? 'alert' : 'status')
+  messageElement.hidden = false
   if (persistent) {
-    errorTimer = null
+    messageTimer = null
     return
   }
-  errorTimer = setTimeout(() => {
-    errorElement.hidden = true
-    errorTimer = null
-  }, 4_000)
+  messageTimer = setTimeout(
+    () => {
+      messageElement.hidden = true
+      messageTimer = null
+    },
+    type === 'error' ? 4_000 : 2_500
+  )
 }
 
-function clearError() {
-  if (errorTimer) clearTimeout(errorTimer)
-  errorTimer = null
-  errorElement.hidden = true
+function showError(message, options) {
+  showMessage('error', message, options)
+}
+
+function clearMessage() {
+  if (messageTimer) clearTimeout(messageTimer)
+  messageTimer = null
+  messageElement.hidden = true
 }
 
 function setEditing(nextEditing) {
@@ -101,7 +110,7 @@ function readEditorText() {
 
 function beginEditing() {
   if (editing || savingContent) return
-  clearError()
+  clearMessage()
   committedContent = contentElement.textContent
   setEditing(true)
   contentElement.focus({ preventScroll: true })
@@ -121,7 +130,7 @@ function finishEditing({ save = true } = {}) {
     .then((result) => {
       committedContent = result.content
       contentElement.textContent = committedContent
-      clearError()
+      showMessage('success', '便签已保存')
       return true
     })
     .catch((error) => {

@@ -419,6 +419,21 @@ describe('sticky default settings schema', () => {
   })
 })
 
+describe('quick note edit settings schema', () => {
+  it('defaults to enabled and serializes as a stable setting row', () => {
+    expect(DEFAULT_SETTINGS.interaction.doubleClickQuickEdit).toBe(true)
+    expect(serializeSetting('interaction.doubleClickQuickEdit', false)).toMatchObject({
+      type: 'interaction',
+      key: 'double_click_quick_edit',
+      value: '0'
+    })
+    expect(
+      resolveSettingsRows([{ type: 'interaction', key: 'double_click_quick_edit', value: 'false' }])
+        .interaction.doubleClickQuickEdit
+    ).toBe(false)
+  })
+})
+
 describe('list filter setting', () => {
   it('persists the tag-group list mode and falls back for unknown modes', () => {
     expect(

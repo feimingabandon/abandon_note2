@@ -4,7 +4,13 @@
  * 状态模型：initialized → in_progress ⇄ completed
  */
 import { getDb } from './db-connection.js'
+import { localDateKey } from '../../shared/calendar/calendar-date-rules.js'
 import { normalizeAssignedTagIds } from '../../shared/tag-rules.js'
+import {
+  HISTORICAL_NOTE_MOVE_SCOPES,
+  normalizeHistoricalNoteMoveIds,
+  normalizeHistoricalNoteMoveSelection
+} from '../../shared/historical-note-move-rules.js'
 
 const now = () => Date.now()
 export const MIN_NOTE_DURATION_DAYS = 1
@@ -295,6 +301,87 @@ export function activateNotes() {
       notified: due
         .filter((note) => note.notify_enabled === 1)
         .map(({ id, content }) => ({ id, content }))
+    }
+  })()
+}
+
+function historicalInProgressWhere(selection) {
+  if (selection.scope === HISTORICAL_NOTE_MOVE_SCOPES.ALL) {
+    return {
+      clause: "status = 'in_progress' AND is_deleted = 0 AND effective_at < ?",
+      params: [selection.todayStart]
+    }
+  }
+  return {
+    clause: "status = 'in_progress' AND is_deleted = 0 AND effective_at >= ? AND effective_at < ?",
+    params: [selection.rangeStart, selection.rangeEndExclusive]
+  }
+}
+
+/** 统计所选历史自然日中仍处于进行中的便签。 */
+export function previewHistoricalInProgressMove(selection = {}, currentTime = Date.now()) {
+  const normalized = normalizeHistoricalNoteMoveSelection(selection, currentTime)
+  const where = historicalInProgressWhere(normalized)
+  const notes = getDb()
+    .prepare(
+      `SELECT id, content, effective_at
+       FROM notes
+       WHERE ${where.clause}
+       ORDER BY effective_at DESC, id DESC`
+    )
+    .all(...where.params)
+    .map((note) => ({
+      id: Number(note.id),
+      content: String(note.content || ''),
+      dateKey: localDateKey(note.effective_at)
+    }))
+  return {
+    count: notes.length,
+    notes,
+    scope: normalized.scope,
+    startDateKey: normalized.startDateKey,
+    endDateKey: normalized.endDateKey,
+    targetDateKey: normalized.todayDateKey
+  }
+}
+
+/**
+ * 将所选历史自然日中的进行中便签原子移动到操作发生时刻。
+ * created_at、finished_at、持续天数及其他业务字段保持不变。
+ */
+export function moveHistoricalInProgressNotesToToday(selection = {}, currentTime = Date.now()) {
+  const timestamp = Number(currentTime)
+  const normalized = normalizeHistoricalNoteMoveSelection(selection, timestamp)
+  const selectedNoteIds = normalizeHistoricalNoteMoveIds(selection?.noteIds)
+  const where = historicalInProgressWhere(normalized)
+  const db = getDb()
+  return db.transaction(() => {
+    let changes = 0
+    if (selectedNoteIds === null) {
+      changes = db
+        .prepare(
+          `UPDATE notes
+           SET effective_at = ?, notify_enabled = 0, updated_at = ?
+           WHERE ${where.clause}`
+        )
+        .run(timestamp, timestamp, ...where.params).changes
+    } else if (selectedNoteIds.length > 0) {
+      const updateSelected = db.prepare(
+        `UPDATE notes
+         SET effective_at = ?, notify_enabled = 0, updated_at = ?
+         WHERE ${where.clause} AND id = ?`
+      )
+      for (const noteId of selectedNoteIds) {
+        changes += updateSelected.run(timestamp, timestamp, ...where.params, noteId).changes
+      }
+    }
+    return {
+      count: changes,
+      scope: normalized.scope,
+      startDateKey: normalized.startDateKey,
+      endDateKey: normalized.endDateKey,
+      targetDateKey: normalized.todayDateKey,
+      movedAt: timestamp
     }
   })()
 }

@@ -36,6 +36,7 @@ const APPLICATION_SETTING_DB_KEYS = new Set([
   'remote:upload_device_info',
   'weather:enabled',
   'weather:location',
+  'interaction:double_click_quick_edit',
   'onboarding:first_use_notice_version'
 ])
 
@@ -75,6 +76,7 @@ export function readApplicationSettings() {
       iconColor: applicationResolved.appearance.iconColor
     },
     shortcuts: { ...applicationResolved.shortcuts },
+    interaction: { ...applicationResolved.interaction },
     window: { ...applicationResolved.window },
     weather: applicationResolved.weather,
     onboarding: applicationResolved.onboarding,
@@ -204,6 +206,7 @@ export function writeApplicationSetting(id, value) {
     id !== 'appearance.titlebarIconScale' &&
     id !== 'appearance.iconColor' &&
     id !== 'shortcuts.viewVisibility' &&
+    id !== 'interaction.doubleClickQuickEdit' &&
     id !== 'window.lockState' &&
     id !== 'window.zOrderMode' &&
     !id.startsWith('window.compact.')

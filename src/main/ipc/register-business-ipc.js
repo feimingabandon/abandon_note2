@@ -7,6 +7,8 @@ import {
   getNoteById,
   normalizeNoteDurationDays,
   normalizeRequiredNoteContent,
+  moveHistoricalInProgressNotesToToday,
+  previewHistoricalInProgressMove,
   queryCustomNormal,
   queryCompactNote,
   queryCustomPinned,
@@ -346,6 +348,20 @@ export function registerBusinessIpcHandlers({
   ipcMain.handle('notes:query-tag-group', (_event, options) => queryTagGroupNotes(options || {}))
   ipcMain.handle('notes:search', (_event, options) => searchNotes(options || {}))
   ipcMain.handle('notes:count-active', () => countActiveNotes())
+  ipcMain.handle('notes:preview-historical-move', (_event, selection) =>
+    previewHistoricalInProgressMove(selection || {})
+  )
+  ipcMain.handle('notes:move-historical-to-today', (_event, selection) => {
+    const result = moveHistoricalInProgressNotesToToday(selection || {})
+    if (result.count > 0) {
+      sendToWindows(getBroadcastWindows, 'notes:changed', {
+        reason: 'historical-move',
+        count: result.count,
+        targetDateKey: result.targetDateKey
+      })
+    }
+    return result
+  })
   ipcMain.handle('notes:reorder-custom', () => reorderCustomSortOrder())
   ipcMain.handle('notes:update-custom-order', (_event, { items }) => updateCustomSortOrders(items))
   ipcMain.handle('notes:start-progress', (_event, { id }) =>

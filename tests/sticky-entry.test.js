@@ -62,6 +62,8 @@ describe('sticky renderer entry', () => {
     expect(script).toContain("contentElement.addEventListener('dblclick', beginEditing)")
     expect(script).toContain("contentElement.addEventListener('blur'")
     expect(script).toContain('.updateContent(nextContent)')
+    expect(script).toContain("showMessage('success', '便签已保存')")
+    expect(html).toContain('data-message')
     expect(script).toContain('if (!(await finishEditing())) return')
     expect(script).toContain("showError(error.message || '便利贴初始化失败', { persistent: true })")
     expect(script).not.toContain('window.api.updateNote')

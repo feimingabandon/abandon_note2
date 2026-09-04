@@ -215,6 +215,12 @@ const api = {
   completeNote: (id) => ipcRenderer.invoke('notes:complete', { id }),
   /** 将已完成便签重新恢复为进行中 */
   reopenNote: (id) => ipcRenderer.invoke('notes:reopen', { id }),
+  /** 统计所选历史日期范围中仍处于进行中的便签。 */
+  previewHistoricalNoteMove: (selection) =>
+    ipcRenderer.invoke('notes:preview-historical-move', selection),
+  /** 原子地将所选历史日期范围中的进行中便签移动到今天。 */
+  moveHistoricalNotesToToday: (selection) =>
+    ipcRenderer.invoke('notes:move-historical-to-today', selection),
   /** 查询指定日期范围和多选状态下的便签报表预览。 */
   previewDailyReport: (options) => ipcRenderer.invoke('daily-report:preview', options),
   /** 由系统保存对话框将选中的便签导出为 TXT 或 XLSX。 */
