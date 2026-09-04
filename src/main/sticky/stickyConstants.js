@@ -16,6 +16,7 @@ export const DEFAULT_STICKY_BACKGROUND = '#FFF2A8'
 export const DISPLAY_CHANGE_DEBOUNCE_MS = 250
 export const STICKY_READY_TIMEOUT_MS = 5_000
 export const STICKY_BOUNDS_PERSIST_DELAY_MS = 300
+export const STICKY_ALWAYS_ON_TOP_LEVEL = 'pop-up-menu'
 
 export const STICKY_PALETTE = [
   '#FFF2A8',

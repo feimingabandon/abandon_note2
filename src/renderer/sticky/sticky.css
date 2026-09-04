@@ -225,6 +225,11 @@ input {
   outline-offset: -2px;
 }
 
+.sticky-content-scroll[data-editing='true'] {
+  outline: 1px solid color-mix(in srgb, var(--sticky-text) 42%, transparent);
+  outline-offset: -2px;
+}
+
 .sticky-content-scroll::-webkit-scrollbar {
   display: none;
   width: 0;

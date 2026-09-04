@@ -23,6 +23,13 @@ let appearance = {
   cornerRadius: 0,
   pinned: false
 }
+let committedContent = ''
+let editing = false
+let savingContent = false
+let pendingContentSave = null
+let pinning = false
+let closing = false
+let errorTimer = null
 
 function applyAppearance(nextAppearance) {
   appearance = { ...appearance, ...nextAppearance }
@@ -53,9 +60,83 @@ async function updateAppearance(payload) {
   }
 }
 
-function showError(message) {
+function showError(message, { persistent = false } = {}) {
+  if (errorTimer) clearTimeout(errorTimer)
   errorElement.textContent = message
   errorElement.hidden = false
+  if (persistent) {
+    errorTimer = null
+    return
+  }
+  errorTimer = setTimeout(() => {
+    errorElement.hidden = true
+    errorTimer = null
+  }, 4_000)
+}
+
+function clearError() {
+  if (errorTimer) clearTimeout(errorTimer)
+  errorTimer = null
+  errorElement.hidden = true
+}
+
+function setEditing(nextEditing) {
+  editing = nextEditing
+  if (editing) {
+    contentElement.setAttribute('contenteditable', 'plaintext-only')
+    contentElement.setAttribute('aria-readonly', 'false')
+    contentElement.dataset.editing = 'true'
+    contentElement.spellcheck = true
+    return
+  }
+  contentElement.removeAttribute('contenteditable')
+  contentElement.setAttribute('aria-readonly', 'true')
+  delete contentElement.dataset.editing
+  contentElement.spellcheck = false
+}
+
+function readEditorText() {
+  return contentElement.innerText.replace(/\r\n?/g, '\n')
+}
+
+function beginEditing() {
+  if (editing || savingContent) return
+  clearError()
+  committedContent = contentElement.textContent
+  setEditing(true)
+  contentElement.focus({ preventScroll: true })
+}
+
+function finishEditing({ save = true } = {}) {
+  if (!editing) return pendingContentSave || Promise.resolve(true)
+  const nextContent = readEditorText()
+  setEditing(false)
+  contentElement.textContent = save ? nextContent : committedContent
+  if (!save || nextContent === committedContent) return Promise.resolve(true)
+
+  savingContent = true
+  contentElement.dataset.saving = 'true'
+  const request = window.stickyAPI
+    .updateContent(nextContent)
+    .then((result) => {
+      committedContent = result.content
+      contentElement.textContent = committedContent
+      clearError()
+      return true
+    })
+    .catch((error) => {
+      contentElement.textContent = committedContent
+      console.error('[Sticky] 保存便利贴正文失败:', error)
+      showError(error.message || '便利贴正文保存失败，请重试')
+      return false
+    })
+    .finally(() => {
+      savingContent = false
+      delete contentElement.dataset.saving
+      if (pendingContentSave === request) pendingContentSave = null
+    })
+  pendingContentSave = request
+  return request
 }
 
 function setPaletteOpen(open) {
@@ -98,25 +179,58 @@ colorInput.addEventListener('change', () => {
 })
 
 pinButton.addEventListener('click', async () => {
+  if (pinning) return
+  pinning = true
+  pinButton.disabled = true
   try {
     applyAppearance(await window.stickyAPI.togglePin())
   } catch (error) {
     console.error('[Sticky] 修改便利贴置顶状态失败:', error)
     showError(error.message || '无法修改置顶状态')
+  } finally {
+    pinning = false
+    pinButton.disabled = false
   }
 })
 
-closeButton.addEventListener('click', () => {
-  window.stickyAPI.close().catch((error) => {
+contentElement.addEventListener('dblclick', beginEditing)
+
+contentElement.addEventListener('blur', () => {
+  void finishEditing()
+})
+
+contentElement.addEventListener('keydown', (event) => {
+  if (!editing || event.key !== 'Escape') return
+  event.preventDefault()
+  void finishEditing({ save: false })
+  contentElement.blur()
+})
+
+closeButton.addEventListener('click', async () => {
+  if (closing) return
+  closing = true
+  closeButton.disabled = true
+  try {
+    if (!(await finishEditing())) return
+    await window.stickyAPI.close()
+  } catch (error) {
     console.error('[Sticky] 请求主进程关闭失败:', error)
     showError(error.message || '便利贴关闭失败，请重试')
-  })
+  } finally {
+    closing = false
+    closeButton.disabled = false
+  }
 })
 
 document.addEventListener('pointerdown', (event) => {
+  if (editing && !contentElement.contains(event.target)) contentElement.blur()
   if (!paletteElement.hidden && !event.target.closest('.sticky-color-control')) {
     setPaletteOpen(false)
   }
+})
+
+window.addEventListener('blur', () => {
+  if (editing) contentElement.blur()
 })
 
 document.addEventListener('keydown', (event) => {
@@ -126,13 +240,14 @@ document.addEventListener('keydown', (event) => {
 async function initialize() {
   try {
     const state = await window.stickyAPI.getState()
+    committedContent = state.content
     contentElement.textContent = state.content
     createPalette(Array.isArray(state.palette) ? state.palette : [])
     applyAppearance(state)
     await window.stickyAPI.ready()
   } catch (error) {
     console.error('[Sticky] 初始化失败:', error)
-    showError(error.message || '便利贴初始化失败')
+    showError(error.message || '便利贴初始化失败', { persistent: true })
   }
 }
 

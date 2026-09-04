@@ -464,7 +464,7 @@ onBeforeUnmount(() => {
               <div><strong>点击＋</strong><small>输入正文并创建</small></div>
               <div><strong>推进状态</strong><small>点击左侧状态圆环</small></div>
               <div><strong>整理便签</strong><small>筛选、排序或分组</small></div>
-              <div><strong>贴到桌面</strong><small>生成只读便利贴</small></div>
+              <div><strong>贴到桌面</strong><small>生成可编辑便利贴</small></div>
             </template>
             <template v-else>
               <div>
@@ -701,7 +701,10 @@ onBeforeUnmount(() => {
             <h3 class="help-anchor-title">贴到桌面</h3>
             <div class="help-wide-figure help-sticky-preview"><MockStickyWindow /></div>
             <ul class="help-points">
-              <li>桌面便利贴是<strong>只读临时展示</strong>，不在其中编辑或删除来源便签。</li>
+              <li>
+                双击便利贴正文可进入<strong>纯文本编辑</strong>；点击正文外部或切换到其他窗口时自动保存并退出编辑，修改会同步回来源便签。
+              </li>
+              <li>便利贴编辑仅开放正文，不提供状态、时间、提醒、标签或附件设置。</li>
               <li>便利贴可临时调整背景、字号和窗口置顶，这些展示设置不会写回来源便签。</li>
               <li>关闭一张或全部便利贴，只结束桌面展示；来源便签仍保留在列表中。</li>
               <li>可从托盘的“便利贴总览”重新显示并聚焦指定便利贴。</li>
@@ -899,7 +902,7 @@ onBeforeUnmount(() => {
             <div class="help-section-head">
               <h2>常用工具</h2>
               <p class="help-summary">
-                从导航栏导出日报、管理循环模板，或从日期侧栏的便签卡片生成只读桌面便利贴。
+                从导航栏导出日报、管理循环模板，或从日期侧栏的便签卡片生成桌面便利贴。
               </p>
             </div>
 
@@ -926,7 +929,7 @@ onBeforeUnmount(() => {
               <h3 class="help-anchor-title">贴到桌面</h3>
               <div class="help-wide-figure help-sticky-preview"><MockStickyWindow /></div>
               <p class="help-anchor-desc">
-                在日期侧栏的便签卡片上打开右键菜单并选择“贴到桌面”。便利贴只读展示来源正文，可临时调整字号、背景和置顶；关闭便利贴不会删除日历中的来源便签。
+                在日期侧栏的便签卡片上打开右键菜单并选择“贴到桌面”。双击便利贴正文可纯文本编辑并同步回来源便签，也可临时调整字号、背景和置顶；关闭便利贴不会删除日历中的来源便签。
               </p>
             </div>
 

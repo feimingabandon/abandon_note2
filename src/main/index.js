@@ -54,7 +54,7 @@ import {
   validateDockConfigPayload
 } from './window-motion/dock-config.js'
 
-import { createNote, getNoteById, activateNotes } from './db/db-notes.js'
+import { createNote, getNoteById, activateNotes, updateNote } from './db/db-notes.js'
 import {
   countDesktopStickyRecords,
   deleteAllDesktopStickyRecords,
@@ -312,6 +312,7 @@ function getDockRuntimeCapability() {
 
 /** 主窗口实例引用 */
 let mainWindow = null
+let geolocationConfigurationWarningLogged = false
 let mainRendererReady = false
 
 function getActiveVisualWindow() {
@@ -2150,14 +2151,33 @@ function createWindow({ preferredDisplay = null } = {}) {
   compactWindowController.initializeForWindow(createdWindow, createCompact ? 'compact' : 'expanded')
   const mainSession = mainWindow.webContents.session
   const allowMainWindowGeolocation = (webContents, permission) =>
-    permission === 'geolocation' && webContents === mainWindow?.webContents
+    (permission === 'geolocation' || permission === 'geolocation-approximate') &&
+    webContents === mainWindow?.webContents
   // 只放行当前本地主窗口的设备定位；其他 Web API 权限一律拒绝。
   mainSession.setPermissionCheckHandler((webContents, permission) =>
     allowMainWindowGeolocation(webContents, permission)
   )
   mainSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    callback(allowMainWindowGeolocation(webContents, permission))
+    const allowed = allowMainWindowGeolocation(webContents, permission)
+    if (permission === 'geolocation' || permission === 'geolocation-approximate') {
+      logger.info(
+        'weather.location-permission',
+        allowed ? '已允许设备定位权限' : '已拒绝设备定位权限',
+        {
+          permission,
+          allowed
+        }
+      )
+    }
+    callback(allowed)
   })
+  if (!process.env.GOOGLE_API_KEY && !geolocationConfigurationWarningLogged) {
+    geolocationConfigurationWarningLogged = true
+    logger.warn(
+      'weather.device-location',
+      '未配置 GOOGLE_API_KEY，Electron 系统定位在部分设备上可能不可用；失败时将尝试网络大致地区'
+    )
+  }
   setWindowLogContext(mainWindow, { role: getActiveWindowProfile().logRole })
   lastVisibleMainWindowBounds = { ...normalBounds }
   windowMotionBackend = createWindowMotionBackend(mainWindow, screen)
@@ -4402,8 +4422,22 @@ app.whenReady().then(async () => {
       delete: deleteDesktopStickyRecord,
       deleteAll: deleteAllDesktopStickyRecords
     },
+    saveContent: ({ stickyId, noteId, content, updatedAt }) =>
+      getDb().transaction(() => {
+        const updatedNote = updateNote(noteId, { content })
+        if (!updatedNote) throw new Error('来源便签不存在或已被删除')
+        if (!updateDesktopStickyRecord(stickyId, { content, updatedAt })) {
+          throw new Error('便利贴记录不存在')
+        }
+        return updatedNote
+      })(),
     isDevelopment: is.dev,
     onRegistryChanged: rebuildTrayMenu,
+    onNoteChanged: (note) => {
+      for (const window of getApplicationWindows()) {
+        window.webContents.send('notes:changed', { reason: 'update', id: note.id })
+      }
+    },
     onError: (text) => {
       if (!mainWindow || mainWindow.isDestroyed()) return
       mainWindow.webContents.send('app:message', { type: 'error', text })

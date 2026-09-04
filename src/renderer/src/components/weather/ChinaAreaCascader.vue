@@ -12,6 +12,8 @@ const emit = defineEmits(['complete'])
 const open = ref(false)
 const triggerRef = ref(null)
 const panelRef = ref(null)
+const cityColumnRef = ref(null)
+const districtColumnRef = ref(null)
 const activeProvinceCode = ref('')
 const activeCityCode = ref('')
 const panelStyle = ref({})
@@ -31,29 +33,37 @@ function updatePanelPosition() {
   const rect = triggerRef.value.getBoundingClientRect()
   const viewportPadding = 8
   const panelGap = 4
+  const rootRem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
+  const maximumPanelHeight = 294 * rootRem
+  const titlebarBottom =
+    document.querySelector('.app-titlebar')?.getBoundingClientRect().bottom || viewportPadding
+  // 无边框窗口的顶部标题栏在部分 Windows 设备上会参与原生命中测试。
+  // Teleport 浮层必须避开这一区域，否则第一行可见却收不到 hover/click。
+  const safeViewportTop = Math.max(viewportPadding, titlebarBottom + panelGap)
   const preferredWidth = Math.max(rect.width, 450)
   const width = Math.min(preferredWidth, Math.max(0, window.innerWidth - viewportPadding * 2))
   const left = Math.max(
     viewportPadding,
     Math.min(rect.left, window.innerWidth - width - viewportPadding)
   )
-  const measuredPanelHeight = panelRef.value?.getBoundingClientRect().height || 0
-  const panelHeight = measuredPanelHeight || Math.min(294, window.innerHeight)
+  const panelHeight = Math.min(maximumPanelHeight, window.innerHeight)
   const belowTop = rect.bottom + panelGap
   const availableBelow = Math.max(0, window.innerHeight - viewportPadding - belowTop)
-  const availableAbove = Math.max(0, rect.top - panelGap - viewportPadding)
+  const availableAbove = Math.max(0, rect.top - panelGap - safeViewportTop)
   const shouldOpenAbove = panelHeight > availableBelow && availableAbove > availableBelow
   const availableHeight = shouldOpenAbove ? availableAbove : availableBelow
   const renderedHeight = Math.min(panelHeight, availableHeight)
   const top = shouldOpenAbove
-    ? Math.max(viewportPadding, rect.top - panelGap - renderedHeight)
-    : Math.min(belowTop, window.innerHeight - viewportPadding)
+    ? Math.max(safeViewportTop, rect.top - panelGap - renderedHeight)
+    : Math.max(safeViewportTop, Math.min(belowTop, window.innerHeight - viewportPadding))
   panelStyle.value = {
     position: 'fixed',
     top: `${top}px`,
     left: `${left}px`,
     width: `${width}px`,
-    maxHeight: `${availableHeight}px`,
+    // 写入实际可渲染高度，不能写 availableHeight。后者会以内联样式覆盖
+    // CSS 的 294rem 上限，并在二次测量时把面板错误放大到整个上方空间。
+    maxHeight: `${renderedHeight}px`,
     zIndex: 'var(--z-global-popover)'
   }
 }
@@ -73,12 +83,22 @@ function chooseProvince(province) {
   if (selectionLocked.value || props.disabled) return
   activeProvinceCode.value = province.code
   activeCityCode.value = ''
+  // 列容器会被 Vue 复用；切换省份时必须清除上一省份留下的滚动位置，
+  // 否则新城市列表的第一项可能仍在可视区域上方，看起来像无法选中。
+  nextTick(() => {
+    if (cityColumnRef.value) cityColumnRef.value.scrollTop = 0
+    if (districtColumnRef.value) districtColumnRef.value.scrollTop = 0
+  })
   if (!province.children?.length) complete(province.candidate)
 }
 
 function chooseCity(city) {
   if (selectionLocked.value || props.disabled) return
   activeCityCode.value = city.code
+  // 区县列同样是稳定 DOM，切换城市后从第一项开始展示。
+  nextTick(() => {
+    if (districtColumnRef.value) districtColumnRef.value.scrollTop = 0
+  })
   if (!city.children?.length) complete(city.candidate)
 }
 
@@ -191,7 +211,12 @@ onBeforeUnmount(() => {
               ><span v-if="province.children?.length">›</span>
             </button>
           </div>
-          <div class="china-area-cascader__column scroll-y" role="listbox" aria-label="市级地区">
+          <div
+            ref="cityColumnRef"
+            class="china-area-cascader__column scroll-y"
+            role="listbox"
+            aria-label="市级地区"
+          >
             <p v-if="!activeProvince">请选择省级地区</p>
             <template v-else>
               <button
@@ -206,7 +231,12 @@ onBeforeUnmount(() => {
               </button>
             </template>
           </div>
-          <div class="china-area-cascader__column scroll-y" role="listbox" aria-label="区县级地区">
+          <div
+            ref="districtColumnRef"
+            class="china-area-cascader__column scroll-y"
+            role="listbox"
+            aria-label="区县级地区"
+          >
             <p v-if="!activeCity">请选择市级地区</p>
             <template v-else>
               <button

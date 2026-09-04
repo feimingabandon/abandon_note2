@@ -312,7 +312,7 @@ const definitions = [
     defaultValue: ICON_COLORS.BLACK,
     parse: parseIconColor,
     serialize: String,
-    remark: '全视图共享的 11 个主界面图标颜色（black / white）'
+    remark: '全视图共享的主界面图标颜色（black / white）'
   },
   {
     id: 'shortcuts.viewVisibility',
@@ -610,7 +610,7 @@ const definitions = [
     id: 'sticky.alwaysOnTop',
     path: ['sticky', 'alwaysOnTop'],
     db: { type: 'sticky', key: 'sticky_always_on_top' },
-    defaultValue: false,
+    defaultValue: true,
     parse: parseBoolean,
     serialize: String,
     remark: '新建便利贴默认置顶状态'

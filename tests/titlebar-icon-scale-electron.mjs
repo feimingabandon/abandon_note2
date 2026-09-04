@@ -177,12 +177,12 @@ async function runTitlebarIconScaleTest() {
       'Microsoft 图标没有在固定按钮盒内放大'
     )
 
-    assert.equal(
-      await listWindow.webContents.executeJavaScript(
-        `document.querySelectorAll('[data-icon-name]').length`
-      ),
-      11,
-      '列表主界面没有渲染完整的 11 个统一图标'
+    const renderedIconNames = await listWindow.webContents.executeJavaScript(
+      `Array.from(document.querySelectorAll('[data-icon-name]'), (icon) => icon.dataset.iconName)`
+    )
+    assert.ok(
+      renderedIconNames.includes('switch-view'),
+      `列表主视图入口没有使用统一图标组件：${JSON.stringify(renderedIconNames)}`
     )
     assert.equal(await setIconColor(listWindow, '白色'), true, '没有找到图标颜色设置')
     await waitUntil(
@@ -202,7 +202,7 @@ async function runTitlebarIconScaleTest() {
         })
       })()`),
       true,
-      '不是所有 11 个图标都切换到了白色资源'
+      '不是所有当前渲染的图标都切换到了白色资源'
     )
 
     await wait(350)

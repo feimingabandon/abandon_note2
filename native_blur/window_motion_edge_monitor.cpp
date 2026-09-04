@@ -24,7 +24,6 @@ constexpr DWORD kStopTimeoutMs = 2000;
 constexpr DWORD kStopRetryTimeoutMs = 50;
 constexpr DWORD kWorkerStartTimeoutMs = 2000;
 constexpr DWORD kWorkerStartAbortGraceMs = 100;
-constexpr int kCursorFailureLimit = 10;
 constexpr int kHandleHorizontalWidthDip = 146;
 constexpr int kHandleHorizontalHeightDip = 40;
 constexpr int kHandleVerticalWidthDip = 50;
@@ -51,6 +50,10 @@ enum class HandlePhase : int {
     Retreating = 3,
     Dragging = 4,
 };
+
+bool IsHandleClickablePhase(HandlePhase phase) {
+    return phase == HandlePhase::Appearing || phase == HandlePhase::Ready;
+}
 
 struct PendingEvent {
     EventKind kind = EventKind::None;
@@ -484,8 +487,9 @@ LRESULT CALLBACK HandleWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
     case WM_NCHITTEST:
         return HTCLIENT;
     case WM_LBUTTONDOWN:
-        // 按住时完成动画不算一次点击；必须在 Ready 后发生新的完整按下/释放。
-        if (runtime->handlePhase.load() == HandlePhase::Ready && IsInsideClient(hwnd, lParam)) {
+        // HWND 只有真正滑入屏幕的部分才能收到这次按下。出场动画期间也应
+        // 记住这个真实点击，否则用户必须等动画结束后再点一次，会形成 220ms 死区。
+        if (IsHandleClickablePhase(runtime->handlePhase.load()) && IsInsideClient(hwnd, lParam)) {
             runtime->handleButtonDownInside = true;
             runtime->handlePressStartedAt = GetTickCount64();
             runtime->handlePressMoved = false;
@@ -547,7 +551,7 @@ LRESULT CALLBACK HandleWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
             QueueEvent(*runtime, EventKind::Fault, static_cast<int>(GetLastError()));
         }
         const bool completeClick =
-            runtime->handlePhase.load() == HandlePhase::Ready &&
+            IsHandleClickablePhase(runtime->handlePhase.load()) &&
             runtime->handleButtonDownInside && !runtime->handlePressMoved &&
             heldFor < kHandleLongPressDurationMs && IsInsideClient(hwnd, lParam);
         const int movedPositionPermille = wasDragging
@@ -983,7 +987,8 @@ void UpdateHandleAnimation(Runtime& runtime, ULONGLONG now) {
             }
             runtime.handleReadyAt = now;
             runtime.handleLeaveStartedAt = 0;
-            runtime.handleButtonDownInside = false;
+            // 若用户在出场动画中已经按下，要保留按压会话直到 WM_LBUTTONUP。
+            // BeginHandleAnimation 已在每次新动画开始时清理上一次的按下标记。
         } else {
             if (!ParkHandleWindow(runtime)) {
                 QueueEvent(runtime, EventKind::Fault,
@@ -1256,17 +1261,23 @@ unsigned __stdcall WorkerThreadProc(void* parameter) noexcept {
         runtime->lastPollTick.store(now);
 
         if (!GetCursorPos(&cursor)) {
-            const int failures = runtime->cursorFailureCount.fetch_add(1) + 1;
+            runtime->cursorFailureCount.fetch_add(1);
+            runtime->lastError.store(static_cast<int>(Result::CursorUnavailable));
             runtime->state.store(State::Degraded);
-            if (failures >= kCursorFailureLimit) {
-                DestroyHandleWindow(*runtime);
-                QueueEvent(*runtime, EventKind::Fault,
-                    static_cast<int>(Result::CursorUnavailable));
-            }
+            // 锁屏、UAC 安全桌面、远程会话或输入桌面切换时，GetCursorPos 可以
+            // 连续失败。这是可恢复的环境状态，不是边缘监视线程故障；若上报
+            // Fault，主进程会执行故障开放恢复，导致隐藏窗口无操作弹回屏幕。
             continue;
         }
-        runtime->cursorFailureCount.store(0);
         const bool inside = IsInside(cursor, runtime->triggerArea);
+        const int recoveredFailures = runtime->cursorFailureCount.exchange(0);
+        if (recoveredFailures > 0) {
+            runtime->lastError.store(0);
+            // 恢复后以当前光标位置重新布防，不把输入桌面切换期间的
+            // 位置跨越当成一次真实触边，避免解锁后立即触发。
+            runtime->state.store(inside ? State::WaitingOutside : State::Armed);
+            previousInside = inside;
+        }
         if (UsesRevealHandle(*runtime)) {
             const bool fullscreen = IsForegroundFullscreenOnTargetMonitor(*runtime);
             if (fullscreen) {

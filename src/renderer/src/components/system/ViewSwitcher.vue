@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { VIEW_MODES } from '../../../../shared/settings-schema.js'
 import { useMessage } from '../../composables/useMessage.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
+import AppIcon from '../ui/AppIcon.vue'
 
 const props = defineProps({
   activeView: {
@@ -137,6 +138,7 @@ onBeforeUnmount(() => {
       type="button"
       class="titlebar-btn view-switcher__trigger"
       :class="{ 'is-open': menuOpen, 'is-switching': switching }"
+      :data-active-view="activeView"
       :title="`当前视图：${activeOption.label}`"
       :aria-label="`切换主视图，当前为${activeOption.label}`"
       aria-haspopup="menu"
@@ -145,9 +147,7 @@ onBeforeUnmount(() => {
       :disabled="switching"
       @click="toggleMenu"
     >
-      <span class="btn-icon view-switcher__trigger-label" aria-hidden="true">{{
-        activeOption.shortLabel
-      }}</span>
+      <AppIcon class="btn-icon view-switcher__trigger-icon" name="switch-view" />
     </button>
 
     <Teleport to="body">
@@ -193,22 +193,7 @@ onBeforeUnmount(() => {
 }
 
 .view-switcher__trigger {
-  font: inherit;
-  font-size: var(--fs-secondary);
-  font-weight: 650;
-  line-height: 1;
-}
-
-.view-switcher__trigger-label {
-  color: #000;
-}
-
-:global(html[data-icon-color='white'] .view-switcher__trigger-label) {
-  color: #fff;
-}
-
-:global(html[data-icon-color='black'] .view-switcher__trigger-label) {
-  color: #000;
+  line-height: 0;
 }
 
 .view-switcher__menu {

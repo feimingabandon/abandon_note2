@@ -35,9 +35,10 @@ describe('titlebar icon scale UI wiring', () => {
     expect(actions).toContain('var(--titlebar-microsoft-icon-size, 15rem)')
   })
 
-  it('uses one themed component with black and white SVG files for all 11 icons', () => {
+  it('uses one themed component with black and white SVG files for all 12 icon types', () => {
     const appIcon = read('src/renderer/src/components/ui/AppIcon.vue')
     const filterTabs = read('src/renderer/src/components/ui/FilterTabs.vue')
+    const viewSwitcher = read('src/renderer/src/components/system/ViewSwitcher.vue')
     const names = [
       'compact',
       'daily-report',
@@ -49,13 +50,17 @@ describe('titlebar icon scale UI wiring', () => {
       'close',
       'tag',
       'taiji',
-      'clover'
+      'clover',
+      'switch-view'
     ]
 
     expect(appIcon).toContain("html[data-icon-color='white']")
     expect(filterTabs).toContain("'tag'")
     expect(filterTabs).toContain("'taiji'")
     expect(filterTabs).toContain("'clover'")
+    expect(viewSwitcher).toContain('<AppIcon class="btn-icon view-switcher__trigger-icon"')
+    expect(viewSwitcher).toContain('name="switch-view"')
+    expect(viewSwitcher).not.toContain('view-switcher__trigger-label')
 
     for (const name of names) {
       expect(appIcon).toContain(`/icons/${name}.svg`)

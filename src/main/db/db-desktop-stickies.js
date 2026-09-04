@@ -1,6 +1,7 @@
 import { getDb } from './db-connection.js'
 
 const UPDATE_COLUMNS = Object.freeze({
+  content: 'content_snapshot',
   boundsX: 'x',
   boundsY: 'y',
   boundsWidth: 'width',

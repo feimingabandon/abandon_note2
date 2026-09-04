@@ -107,11 +107,10 @@ function getViewWindow(mode) {
 
 async function waitForView(mode) {
   const window = await waitUntil(() => getViewWindow(mode), `${mode} 主视图没有创建`)
-  const shortLabel = { list: '列', month: '月', week: '周' }[mode]
   await waitUntil(
     () =>
       window.webContents.executeJavaScript(
-        `document.querySelector('.view-switcher__trigger-label')?.textContent?.trim() === '${shortLabel}'`
+        `document.querySelector('.view-switcher__trigger[data-active-view="${mode}"] .view-switcher__trigger-icon')?.dataset.iconName === 'switch-view'`
       ),
     `${mode} 主视图切换入口没有显示当前视图`
   )
@@ -187,25 +186,46 @@ async function runMainViewEnhancementsTest() {
     assert.equal(weatherState.tomorrowHasWeather, false, '无预报日期不得显示天气占位')
 
     const listTitlebarState = await listWindow.webContents.executeJavaScript(`(() => {
-      const triggerLabel = document.querySelector('.view-switcher__trigger-label')
+      const trigger = document.querySelector('.view-switcher__trigger')
+      const triggerIcon = document.querySelector('.view-switcher__trigger-icon')
+      const blackAsset = triggerIcon.querySelector('.app-icon__asset--black')
+      const whiteAsset = triggerIcon.querySelector('.app-icon__asset--white')
+      const triggerRect = trigger.getBoundingClientRect()
+      const iconRect = triggerIcon.getBoundingClientRect()
       const root = document.documentElement
       root.setAttribute('data-icon-color', 'white')
-      const whiteColor = getComputedStyle(triggerLabel).color
+      const whiteAssetVisible = getComputedStyle(whiteAsset).display !== 'none'
+      const blackAssetHidden = getComputedStyle(blackAsset).display === 'none'
       root.setAttribute('data-icon-color', 'black')
-      const blackColor = getComputedStyle(triggerLabel).color
+      const blackAssetVisible = getComputedStyle(blackAsset).display !== 'none'
+      const whiteAssetHidden = getComputedStyle(whiteAsset).display === 'none'
       return {
         hasCompactTrigger: Boolean(document.querySelector('.compact-mode-trigger')),
-        whiteColor,
-        blackColor
+        whiteAssetVisible,
+        blackAssetHidden,
+        blackAssetVisible,
+        whiteAssetHidden,
+        centerOffsetX: Math.abs(
+          triggerRect.left + triggerRect.width / 2 - (iconRect.left + iconRect.width / 2)
+        ),
+        centerOffsetY: Math.abs(
+          triggerRect.top + triggerRect.height / 2 - (iconRect.top + iconRect.height / 2)
+        )
       }
     })()`)
     assert.equal(listTitlebarState.hasCompactTrigger, false, '便签列表不应显示灵动岛入口')
-    assert.equal(listTitlebarState.whiteColor, 'rgb(255, 255, 255)')
-    assert.equal(listTitlebarState.blackColor, 'rgb(0, 0, 0)')
+    assert.equal(listTitlebarState.whiteAssetVisible, true, '视图图标没有切换到白色资源')
+    assert.equal(listTitlebarState.blackAssetHidden, true, '白色模式仍显示黑色视图图标')
+    assert.equal(listTitlebarState.blackAssetVisible, true, '视图图标没有切换到黑色资源')
+    assert.equal(listTitlebarState.whiteAssetHidden, true, '黑色模式仍显示白色视图图标')
+    assert.ok(
+      listTitlebarState.centerOffsetX < 0.1 && listTitlebarState.centerOffsetY < 0.1,
+      `视图图标没有在按钮中居中：${JSON.stringify(listTitlebarState)}`
+    )
 
     const triggerHoverTarget = await listWindow.webContents.executeJavaScript(`(() => {
       const trigger = document.querySelector('.view-switcher__trigger')
-      const label = document.querySelector('.view-switcher__trigger-label')
+      const icon = document.querySelector('.view-switcher__trigger-icon')
       const rect = trigger.getBoundingClientRect()
       const microsoft = document
         .querySelector('.titlebar-actions-group')
@@ -213,7 +233,7 @@ async function runMainViewEnhancementsTest() {
       return {
         x: Math.round(rect.left + rect.width / 2),
         y: Math.round(rect.top + rect.height / 2),
-        initialOpacity: getComputedStyle(label).opacity,
+        initialOpacity: getComputedStyle(icon).opacity,
         expectedInitialOpacity: microsoft ? '0.72' : '0'
       }
     })()`)
@@ -230,9 +250,9 @@ async function runMainViewEnhancementsTest() {
     await waitUntil(
       () =>
         listWindow.webContents.executeJavaScript(
-          `getComputedStyle(document.querySelector('.view-switcher__trigger-label')).opacity === '1'`
+          `getComputedStyle(document.querySelector('.view-switcher__trigger-icon')).opacity === '1'`
         ),
-      '鼠标悬停标题栏按钮组时没有显示视图文字'
+      '鼠标悬停标题栏按钮组时没有显示视图图标'
     )
 
     const listWindowId = listWindow.id

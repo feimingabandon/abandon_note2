@@ -54,6 +54,15 @@ describe('应用与安装器身份', () => {
   })
 })
 
+describe('设备定位权限边界', () => {
+  it('只对主窗口放行精确或近似定位权限', () => {
+    const main = read('src/main/index.js')
+    expect(main).toContain("permission === 'geolocation'")
+    expect(main).toContain("permission === 'geolocation-approximate'")
+    expect(main).toContain('webContents === mainWindow?.webContents')
+  })
+})
+
 describe('安装包内容边界', () => {
   it('排除本地生成的 output 目录', () => {
     expect(read('electron-builder.base.yml')).toContain("- '!output/**'")

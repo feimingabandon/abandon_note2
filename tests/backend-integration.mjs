@@ -993,6 +993,7 @@ try {
   assert.deepEqual(listDesktopStickyRecords()[0].bounds, stickyRecord.bounds)
   assert.equal(
     updateDesktopStickyRecord(stickyRecord.id, {
+      content: '便利贴编辑后的正文',
       boundsX: 160,
       alwaysOnTop: true,
       updatedAt: localTs(2025, 7, 20, 11)
@@ -1000,6 +1001,7 @@ try {
     true
   )
   assert.equal(listDesktopStickyRecords()[0].bounds.x, 160)
+  assert.equal(listDesktopStickyRecords()[0].content, '便利贴编辑后的正文')
   assert.equal(listDesktopStickyRecords()[0].pinned, true)
   assert.equal(deleteDesktopStickyRecord(stickyRecord.id), true)
   assert.equal(hasDesktopStickyRecord(stickyRecord.id), false)

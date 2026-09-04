@@ -21,6 +21,8 @@ import taijiBlack from '@/resources/icons/taiji.svg'
 import taijiWhite from '@/resources/icons/taiji-white.svg'
 import cloverBlack from '@/resources/icons/clover.svg'
 import cloverWhite from '@/resources/icons/clover-white.svg'
+import switchViewBlack from '@/resources/icons/switch-view.svg'
+import switchViewWhite from '@/resources/icons/switch-view-white.svg'
 
 const ICON_SOURCES = Object.freeze({
   compact: { black: compactBlack, white: compactWhite },
@@ -33,7 +35,8 @@ const ICON_SOURCES = Object.freeze({
   close: { black: closeBlack, white: closeWhite },
   tag: { black: tagBlack, white: tagWhite },
   taiji: { black: taijiBlack, white: taijiWhite },
-  clover: { black: cloverBlack, white: cloverWhite }
+  clover: { black: cloverBlack, white: cloverWhite },
+  'switch-view': { black: switchViewBlack, white: switchViewWhite }
 })
 
 defineProps({
@@ -52,7 +55,8 @@ defineProps({
         'close',
         'tag',
         'taiji',
-        'clover'
+        'clover',
+        'switch-view'
       ].includes(value)
   },
   alt: { type: String, default: '' }

@@ -308,6 +308,23 @@ async function runNativeEdgeMonitorTests() {
     }
   }
 
+  function getVisibleHandlePoint(status, workArea) {
+    const visible = {
+      left: Math.max(status.handleRect.left, workArea.x),
+      top: Math.max(status.handleRect.top, workArea.y),
+      right: Math.min(status.handleRect.right, workArea.x + workArea.width),
+      bottom: Math.min(status.handleRect.bottom, workArea.y + workArea.height)
+    }
+    assert.ok(
+      visible.right > visible.left && visible.bottom > visible.top,
+      `小黑条出场阶段必须已有可点击的屏内区域；状态=${JSON.stringify(status)}`
+    )
+    return {
+      x: Math.floor((visible.left + visible.right - 1) / 2),
+      y: Math.floor((visible.top + visible.bottom - 1) / 2)
+    }
+  }
+
   let testWindow = null
   let originalCursor = null
   let generation = 0
@@ -381,7 +398,61 @@ async function runNativeEdgeMonitorTests() {
       testWindow = null
     }
 
-    // 点击小黑条模式：首次触边只揭示原生小黑条；动画完成后一次新的完整点击才发 trigger。
+    // 用户看到小黑条已经部分滑入时就应能点击，不得吞掉出场动画期间的完整点击。
+    {
+      const side = -2
+      const bounds = getBounds(side, workArea)
+      testWindow = new BrowserWindow({
+        ...bounds,
+        show: true,
+        frame: false,
+        transparent: false,
+        thickFrame: false
+      })
+      const outside = getOutsidePoint(workArea)
+      await moveCursorAndConfirm(outside)
+      generation += 1
+      let resolveEvent
+      const eventPromise = new Promise((resolvePromise) => {
+        resolveEvent = resolvePromise
+      })
+      testWindow.hookWindowMessage(messageId, () => {
+        const event = JSON.parse(consumeEventJson())
+        if (event.kind !== 'none') resolveEvent(event)
+      })
+      assert.equal(
+        armEx(getHandle(testWindow), side, 2, POLL_INTERVAL_MS, generation, 1),
+        1,
+        '出场期点击场景的小黑条监视器必须启动成功'
+      )
+      await moveCursorAndConfirm(outside)
+      await waitUntil(() => getStatus().state === 'armed', '出场期点击场景未完成离边布防')
+      const appearingHandle = await moveCursorAndWaitForStatus(
+        getInsidePoint(side, bounds, workArea),
+        (status) => isPartiallyVisible(status, side, workArea) && status,
+        '首次触边后未捕获到小黑条的出场阶段'
+      )
+      const clickPoint = getVisibleHandlePoint(appearingHandle, workArea)
+      assert.equal(setCursorPos(clickPoint.x, clickPoint.y), 1)
+      assert.equal(getStatus().handleState, 'appearing', '测试点击前小黑条已经意外完成出场')
+      mouseEvent(0x0002, 0, 0, 0, 0) // MOUSEEVENTF_LEFTDOWN
+      mouseEvent(0x0004, 0, 0, 0, 0) // MOUSEEVENTF_LEFTUP
+      const event = await Promise.race([
+        eventPromise,
+        wait(EVENT_TIMEOUT_MS).then(() => {
+          throw new Error(`出场动画期间的完整点击没有触发唤出；状态=${JSON.stringify(getStatus())}`)
+        })
+      ])
+      assert.deepEqual(
+        { kind: event.kind, generation: event.generation, side: event.side },
+        { kind: 'trigger', generation, side }
+      )
+      assert.equal(disarm(generation), 1)
+      testWindow.destroy()
+      testWindow = null
+    }
+
+    // 点击小黑条模式：首次触边只揭示原生小黑条；完整点击后才发 trigger。
     for (const side of [-1, 1, -2]) {
       const bounds = getBounds(side, workArea)
       testWindow = new BrowserWindow({

@@ -6,5 +6,6 @@ contextBridge.exposeInMainWorld('stickyAPI', {
   ready: () => ipcRenderer.invoke('sticky:ready'),
   close: () => ipcRenderer.invoke('sticky:close'),
   togglePin: () => ipcRenderer.invoke('sticky:toggle-pin'),
+  updateContent: (content) => ipcRenderer.invoke('sticky:update-content', content),
   updateAppearance: (state) => ipcRenderer.invoke('sticky:update-appearance', state)
 })

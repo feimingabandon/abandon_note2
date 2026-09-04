@@ -19,6 +19,8 @@ vi.mock('electron', () => {
     constructor(options) {
       this.options = options
       this.destroyed = false
+      this.alwaysOnTop = Boolean(options.alwaysOnTop)
+      this.alwaysOnTopLevel = null
       this.listeners = new Map()
       this.webContentsListeners = new Map()
       this.webContents = {
@@ -65,6 +67,15 @@ vi.mock('electron', () => {
     moveTop() {}
 
     focus() {}
+
+    setAlwaysOnTop(flag, level) {
+      this.alwaysOnTop = flag
+      this.alwaysOnTopLevel = level
+    }
+
+    isAlwaysOnTop() {
+      return this.alwaysOnTop
+    }
   }
 
   return {
@@ -89,7 +100,8 @@ import { ElectronStickyService } from '../src/main/sticky/ElectronStickyService.
 function createService(
   mainBounds = { x: 1440, y: 25, width: 480, height: 930 },
   defaultAppearance,
-  stickyRepository
+  stickyRepository,
+  overrides = {}
 ) {
   const mainWindow = {
     webContents: { id: 1 },
@@ -105,7 +117,8 @@ function createService(
       getDefaultAppearance: () => defaultAppearance,
       stickyRepository,
       preloadPath: 'sticky-preload.js',
-      rendererFile: 'sticky.html'
+      rendererFile: 'sticky.html',
+      ...overrides
     })
   }
 }
@@ -118,7 +131,12 @@ function createRepository(initialRecords = []) {
     count: vi.fn(() => records.size),
     exists: vi.fn((id) => records.has(id)),
     insert: vi.fn((record) => records.set(record.id, structuredClone(record))),
-    update: vi.fn((id) => records.has(id)),
+    update: vi.fn((id, patch) => {
+      const record = records.get(id)
+      if (!record) return false
+      records.set(id, { ...record, ...structuredClone(patch) })
+      return true
+    }),
     delete: vi.fn((id) => records.delete(id)),
     deleteAll: vi.fn(() => {
       const count = records.size
@@ -415,6 +433,8 @@ describe('ElectronStickyService creation lifecycle', () => {
       alwaysOnTop: true,
       backgroundColor: '#00000000'
     })
+    expect(entry.window.alwaysOnTop).toBe(true)
+    expect(entry.window.alwaysOnTopLevel).toBe('pop-up-menu')
     expect(service.serializeAppearance(entry)).toEqual({
       fontSize: 23,
       backgroundColor: '#D4EAFF',
@@ -422,6 +442,68 @@ describe('ElectronStickyService creation lifecycle', () => {
       cornerRadius: 18,
       pinned: true
     })
+    service.dispose()
+  })
+
+  it('keeps the window, persisted record, and renderer pin state synchronized', async () => {
+    const repository = createRepository()
+    const { service } = createService(undefined, undefined, repository)
+    service.initialized = true
+    const { entry } = await completeCreation(service)
+
+    expect(service.togglePinForSender(entry.webContentsId)).toEqual({ pinned: true })
+    expect(entry.window.isAlwaysOnTop()).toBe(true)
+    expect(entry.window.alwaysOnTopLevel).toBe('pop-up-menu')
+    expect(repository.records.get(entry.id).alwaysOnTop).toBe(true)
+
+    expect(service.togglePinForSender(entry.webContentsId)).toEqual({ pinned: false })
+    expect(entry.window.isAlwaysOnTop()).toBe(false)
+    expect(repository.records.get(entry.id).alwaysOnTop).toBe(false)
+    service.dispose()
+  })
+
+  it('rolls the native pin state back when persistence fails', async () => {
+    const repository = createRepository()
+    const { service } = createService(undefined, undefined, repository)
+    service.initialized = true
+    const { entry } = await completeCreation(service)
+    repository.update.mockReturnValueOnce(false)
+
+    expect(() => service.togglePinForSender(entry.webContentsId)).toThrow('便利贴记录不存在')
+    expect(entry.pinned).toBe(false)
+    expect(entry.window.isAlwaysOnTop()).toBe(false)
+    service.dispose()
+  })
+
+  it('saves only normalized text content and refreshes the sticky preview', async () => {
+    const repository = createRepository()
+    const saveContent = vi.fn(({ noteId, content }) => ({ id: noteId, content }))
+    const onNoteChanged = vi.fn()
+    const { service } = createService(undefined, undefined, repository, {
+      saveContent,
+      onNoteChanged
+    })
+    service.initialized = true
+    const { entry } = await completeCreation(service)
+
+    expect(service.updateContentForSender(entry.webContentsId, '修改后的正文\n第二行')).toEqual({
+      content: '修改后的正文\n第二行'
+    })
+    expect(saveContent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stickyId: entry.id,
+        noteId: entry.noteId,
+        content: '修改后的正文\n第二行'
+      })
+    )
+    expect(entry.preview).toBe('修改后的正文')
+    expect(onNoteChanged).toHaveBeenCalledWith({
+      id: entry.noteId,
+      content: '修改后的正文\n第二行'
+    })
+    expect(() => service.updateContentForSender(entry.webContentsId, ' \n ')).toThrow(
+      '便签内容为空'
+    )
     service.dispose()
   })
 

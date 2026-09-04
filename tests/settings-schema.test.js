@@ -375,7 +375,7 @@ describe('sticky default settings schema', () => {
       fontSize: 16,
       backgroundColor: '#fff2a8',
       cornerRadius: 0,
-      alwaysOnTop: false
+      alwaysOnTop: true
     })
   })
 

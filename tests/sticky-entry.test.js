@@ -51,4 +51,20 @@ describe('sticky renderer entry', () => {
     expect(css).toContain('.sticky-content-scroll')
     expect(css).toContain('height: 100%')
   })
+
+  it('edits only plain text on double click and saves when focus leaves the content', () => {
+    const html = readFileSync(stickyHtmlPath, 'utf8')
+    const css = readFileSync(resolve(rendererRoot, 'sticky/sticky.css'), 'utf8')
+    const script = readFileSync(resolve(rendererRoot, 'sticky/sticky.js'), 'utf8')
+
+    expect(html).toContain('aria-label="便利贴正文，双击编辑"')
+    expect(script).toContain("setAttribute('contenteditable', 'plaintext-only')")
+    expect(script).toContain("contentElement.addEventListener('dblclick', beginEditing)")
+    expect(script).toContain("contentElement.addEventListener('blur'")
+    expect(script).toContain('.updateContent(nextContent)')
+    expect(script).toContain('if (!(await finishEditing())) return')
+    expect(script).toContain("showError(error.message || '便利贴初始化失败', { persistent: true })")
+    expect(script).not.toContain('window.api.updateNote')
+    expect(css).toContain(".sticky-content-scroll[data-editing='true']")
+  })
 })

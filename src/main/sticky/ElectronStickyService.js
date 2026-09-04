@@ -11,6 +11,7 @@ import {
   MAX_STICKY_WINDOWS,
   MIN_STICKY_HEIGHT,
   MIN_STICKY_WIDTH,
+  STICKY_ALWAYS_ON_TOP_LEVEL,
   STICKY_PALETTE,
   STICKY_BOUNDS_PERSIST_DELAY_MS,
   STICKY_READY_TIMEOUT_MS,
@@ -38,6 +39,7 @@ const IPC_CHANNELS = [
   'sticky:get-state',
   'sticky:close',
   'sticky:toggle-pin',
+  'sticky:update-content',
   'sticky:update-appearance'
 ]
 
@@ -52,8 +54,10 @@ export class ElectronStickyService extends StickyService {
     rendererFile,
     rendererUrl,
     stickyRepository,
+    saveContent,
     isDevelopment = false,
     onRegistryChanged,
+    onNoteChanged,
     onError
   }) {
     super()
@@ -74,6 +78,8 @@ export class ElectronStickyService extends StickyService {
     }
     this.isDevelopment = isDevelopment
     this.onRegistryChanged = onRegistryChanged
+    this.saveContent = saveContent
+    this.onNoteChanged = onNoteChanged
     this.onError = onError
     this.registry = new Map()
     this.byWebContentsId = new Map()
@@ -116,6 +122,9 @@ export class ElectronStickyService extends StickyService {
     ipcMain.handle('sticky:ready', (event) => this.markReady(event.sender.id))
     ipcMain.handle('sticky:close', (event) => this.closeForSender(event.sender.id))
     ipcMain.handle('sticky:toggle-pin', (event) => this.togglePinForSender(event.sender.id))
+    ipcMain.handle('sticky:update-content', (event, content) =>
+      this.updateContentForSender(event.sender.id, content)
+    )
     ipcMain.handle('sticky:update-appearance', (event, payload) =>
       this.updateAppearanceForSender(event.sender.id, payload)
     )
@@ -213,6 +222,12 @@ export class ElectronStickyService extends StickyService {
         backgroundThrottling: true
       }
     })
+    try {
+      if (pinned) this.applyAlwaysOnTop(win, true)
+    } catch (error) {
+      win.destroy()
+      throw new StickyCreationError(error.message || '便利贴置顶初始化失败')
+    }
     setWindowLogContext(win, { role: 'sticky', stickyId: id, noteId })
 
     const entry = {
@@ -570,17 +585,60 @@ export class ElectronStickyService extends StickyService {
   togglePinForSender(webContentsId) {
     const entry = this.requireEntryForSender(webContentsId)
     const pinned = !entry.pinned
-    if (
-      !this.repository.update(entry.id, {
-        alwaysOnTop: pinned,
-        updatedAt: Date.now()
-      })
-    ) {
-      throw new Error('便利贴记录不存在')
+    this.applyAlwaysOnTop(entry.window, pinned)
+    try {
+      if (
+        !this.repository.update(entry.id, {
+          alwaysOnTop: pinned,
+          updatedAt: Date.now()
+        })
+      ) {
+        throw new Error('便利贴记录不存在')
+      }
+    } catch (error) {
+      try {
+        this.applyAlwaysOnTop(entry.window, entry.pinned)
+      } catch (rollbackError) {
+        console.error(`[sticky] 回滚便利贴置顶层级失败 (${entry.id}):`, rollbackError)
+      }
+      throw error
     }
     entry.pinned = pinned
-    entry.window.setAlwaysOnTop(pinned)
     return { pinned: entry.pinned }
+  }
+
+  applyAlwaysOnTop(window, pinned) {
+    window.setAlwaysOnTop(pinned, STICKY_ALWAYS_ON_TOP_LEVEL)
+    if (window.isAlwaysOnTop() !== pinned) throw new Error('便利贴窗口层级切换失败')
+  }
+
+  updateContentForSender(webContentsId, value) {
+    const entry = this.requireEntryForSender(webContentsId)
+    const content = normalizeStickyContent(value)
+    if (content === entry.content) return { content: entry.content }
+    if (typeof this.saveContent !== 'function') throw new Error('便利贴编辑服务尚未就绪')
+    const updatedAt = Date.now()
+    const updatedNote = this.saveContent({
+      stickyId: entry.id,
+      noteId: entry.noteId,
+      content,
+      updatedAt
+    })
+    if (!updatedNote) throw new Error('来源便签不存在或已被删除')
+    entry.content = content
+    entry.preview = createStickyPreview(content, this.registry.size)
+    try {
+      this.onRegistryChanged?.()
+    } catch (error) {
+      console.error(`[sticky] 刷新便利贴托盘预览失败 (${entry.id}):`, error)
+    }
+    try {
+      this.onNoteChanged?.(updatedNote)
+    } catch (error) {
+      console.error(`[sticky] 广播来源便签更新失败 (${entry.id}):`, error)
+    }
+    console.log(`[sticky] 便利贴正文已保存 (${entry.id}, noteId=${entry.noteId})`)
+    return { content: entry.content }
   }
 
   updateAppearanceForSender(webContentsId, payload = {}) {

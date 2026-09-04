@@ -16,7 +16,29 @@ const busy = ref('')
 const error = ref('')
 const locationLabel = computed(() => weatherLocationLabel(location.value))
 const REVERSE_GEOCODING_URL = 'https://api.bigdatacloud.net/data/reverse-geocode-client'
+const DEVICE_LOCATION_TIMEOUT_MS = 20_000
+const REVERSE_GEOCODING_TIMEOUT_MS = 10_000
 let locationSavePromise = null
+
+function reportWeatherLocation(level, message, metadata) {
+  try {
+    window.api.reportLog?.({
+      level,
+      scope: 'weather.location',
+      message,
+      metadata
+    })
+  } catch {
+    // 诊断日志失败不能影响定位或覆盖用户可见的错误。
+  }
+}
+
+function deviceLocationErrorMessage(code) {
+  if (Number(code) === 1) return '定位权限已被拒绝，请在系统设置中允许桌面应用访问位置'
+  if (Number(code) === 2) return '系统暂时无法确定位置，请检查系统定位服务和网络后重试'
+  if (Number(code) === 3) return '获取设备位置超时，请检查系统定位服务和网络后重试'
+  return '无法获取设备位置，可以改用地区选择'
+}
 
 function errorMessage(value, fallback) {
   return String(value?.message || fallback).replace(
@@ -92,9 +114,9 @@ async function saveLocationCandidate(candidate) {
   const candidatePayload = weatherLocationCandidatePayload(candidate)
   if (!candidatePayload) {
     error.value = '无法保存该位置'
-    return
+    return false
   }
-  if (candidatePayload.id && Number(candidatePayload.id) === Number(location.value?.id)) return
+  if (candidatePayload.id && Number(candidatePayload.id) === Number(location.value?.id)) return true
   let resolvedCandidate = candidatePayload
   const hasCoordinates =
     candidatePayload.latitude !== null &&
@@ -103,7 +125,7 @@ async function saveLocationCandidate(candidate) {
     candidatePayload.longitude !== undefined
   if (!hasCoordinates && !candidatePayload.id) {
     error.value = '无法保存该位置'
-    return
+    return false
   }
   busy.value = 'save'
   error.value = ''
@@ -119,8 +141,13 @@ async function saveLocationCandidate(candidate) {
       enabled.value = true
       await window.api.setSettingValue('weather.enabled', true)
     }
+    return true
   } catch (saveError) {
     error.value = errorMessage(saveError, '保存地区失败')
+    reportWeatherLocation('error', '天气地区保存失败', {
+      reason: errorMessage(saveError, '保存地区失败')
+    })
+    return false
   } finally {
     busy.value = ''
   }
@@ -141,25 +168,86 @@ function choose(candidate) {
 
 function useDeviceLocation() {
   if (busy.value) return
-  if (!navigator.geolocation) {
-    error.value = '当前系统不支持设备定位'
-    return
-  }
+  const startedAt = Date.now()
   busy.value = 'locate'
   error.value = ''
+  reportWeatherLocation('info', '用户请求设备位置', {
+    timeoutMs: DEVICE_LOCATION_TIMEOUT_MS,
+    highAccuracy: false
+  })
+  if (!navigator.geolocation) {
+    reportWeatherLocation('warn', '当前运行环境不支持 Geolocation API')
+    void handleDeviceLocationFailure({ code: 0 }, startedAt)
+    return
+  }
   navigator.geolocation.getCurrentPosition(
     ({ coords }) => {
+      reportWeatherLocation('info', '系统已返回设备位置', {
+        elapsedMs: Date.now() - startedAt,
+        accuracyAvailable: Number.isFinite(Number(coords?.accuracy))
+      })
       void chooseDeviceLocation(coords)
     },
     (locationError) => {
-      busy.value = ''
-      error.value =
-        locationError.code === locationError.PERMISSION_DENIED
-          ? '定位权限已被拒绝，可以改用地区选择'
-          : '无法获取设备位置，可以改用地区选择'
+      void handleDeviceLocationFailure(locationError, startedAt)
     },
-    { enableHighAccuracy: false, timeout: 10_000, maximumAge: 3_600_000 }
+    { enableHighAccuracy: false, timeout: DEVICE_LOCATION_TIMEOUT_MS, maximumAge: 3_600_000 }
   )
+}
+
+async function reverseGeocodeNetworkLocation() {
+  const url = new URL(REVERSE_GEOCODING_URL)
+  url.searchParams.set('localityLanguage', 'zh')
+  const response = await fetch(url, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(REVERSE_GEOCODING_TIMEOUT_MS)
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok || !data) throw new Error(data?.message || `地名服务返回 ${response.status}`)
+  const coordinates = {
+    latitude: Number(data.latitude),
+    longitude: Number(data.longitude)
+  }
+  if (!Number.isFinite(coordinates.latitude) || !Number.isFinite(coordinates.longitude)) {
+    throw new Error('网络位置没有返回有效坐标')
+  }
+  const location = weatherLocationFromReverseGeocode(
+    data,
+    coordinates,
+    Intl.DateTimeFormat().resolvedOptions().timeZone || 'auto'
+  )
+  if (!location) throw new Error('网络位置没有返回有效城市')
+  return location
+}
+
+async function handleDeviceLocationFailure(locationError, startedAt) {
+  const code = Number(locationError?.code) || 0
+  const failureMessage = deviceLocationErrorMessage(code)
+  reportWeatherLocation('warn', '设备位置请求失败', {
+    code,
+    elapsedMs: Date.now() - startedAt,
+    timeoutMs: DEVICE_LOCATION_TIMEOUT_MS
+  })
+  if (code === 1) {
+    busy.value = ''
+    error.value = failureMessage
+    return
+  }
+
+  error.value = `${failureMessage}，正在尝试网络大致地区…`
+  reportWeatherLocation('info', '开始使用网络大致地区作为定位降级')
+  try {
+    const saved = await choose(await reverseGeocodeNetworkLocation())
+    if (!saved) return
+    error.value = `${failureMessage}，已使用网络大致地区；可手动选择地区修正`
+    reportWeatherLocation('info', '网络大致地区已保存')
+  } catch (networkError) {
+    busy.value = ''
+    error.value = `${failureMessage}；网络大致地区也不可用，可以改用地区选择`
+    reportWeatherLocation('warn', '网络大致地区定位失败', {
+      reason: String(networkError?.message || '网络定位失败')
+    })
+  }
 }
 
 async function reverseGeocodeDeviceLocation(coords) {
@@ -167,7 +255,10 @@ async function reverseGeocodeDeviceLocation(coords) {
   url.searchParams.set('latitude', String(coords.latitude))
   url.searchParams.set('longitude', String(coords.longitude))
   url.searchParams.set('localityLanguage', 'zh')
-  const response = await fetch(url, { headers: { Accept: 'application/json' } })
+  const response = await fetch(url, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(REVERSE_GEOCODING_TIMEOUT_MS)
+  })
   const data = await response.json().catch(() => null)
   if (!response.ok || !data) throw new Error(data?.message || `地名服务返回 ${response.status}`)
   const location = weatherLocationFromReverseGeocode(
@@ -183,9 +274,13 @@ async function chooseDeviceLocation(coords) {
   busy.value = 'locate'
   error.value = ''
   try {
-    await choose(await reverseGeocodeDeviceLocation(coords))
+    const saved = await choose(await reverseGeocodeDeviceLocation(coords))
+    if (saved) reportWeatherLocation('info', '设备位置已解析并保存')
   } catch (reverseError) {
-    await choose({
+    reportWeatherLocation('warn', '设备位置地名解析失败，尝试只保存坐标', {
+      reason: String(reverseError?.message || '无法解析城市')
+    })
+    const saved = await choose({
       name: '设备位置',
       admin1: '',
       admin2: '',
@@ -195,7 +290,10 @@ async function chooseDeviceLocation(coords) {
       longitude: coords.longitude,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'auto'
     })
-    error.value = `${reverseError?.message || '无法解析城市'}，已保存坐标；可手动选择地区修正`
+    if (saved) {
+      error.value = `${reverseError?.message || '无法解析城市'}，已保存坐标；可手动选择地区修正`
+      reportWeatherLocation('info', '设备位置坐标已保存，未取得城市名称')
+    }
   }
 }
 
@@ -248,8 +346,9 @@ onMounted(() =>
     <p v-if="error" class="weather-settings__message is-error">{{ error }}</p>
     <p class="weather-settings__message">
       “设备位置”只在点击后请求系统权限，并将当前坐标发送给 BigDataCloud
-      转换为中文城市名；手动地区使用本地中国行政区划数据，不保存位置轨迹。中国地区天气由 Open-Meteo
-      提供 CMA GRAPES 模型数据。
+      转换为中文城市名；系统定位不可用时，会由 BigDataCloud
+      根据网络地址返回大致地区。手动地区使用本地中国行政区划数据，不保存位置轨迹。中国地区天气由
+      Open-Meteo 提供 CMA GRAPES 模型数据。
     </p>
   </div>
 </template>
