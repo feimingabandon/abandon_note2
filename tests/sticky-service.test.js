@@ -25,6 +25,8 @@ vi.mock('electron', () => {
       this.webContentsListeners = new Map()
       this.webContents = {
         id: ++electronState.nextWebContentsId,
+        isDestroyed: () => this.destroyed,
+        send: vi.fn(),
         setWindowOpenHandler: vi.fn(),
         on: vi.fn((eventName, listener) => this.webContentsListeners.set(eventName, listener))
       }
@@ -487,13 +489,15 @@ describe('ElectronStickyService creation lifecycle', () => {
     const { entry } = await completeCreation(service)
 
     expect(service.updateContentForSender(entry.webContentsId, '修改后的正文\n第二行')).toEqual({
-      content: '修改后的正文\n第二行'
+      content: '修改后的正文\n第二行',
+      conflict: false
     })
     expect(saveContent).toHaveBeenCalledWith(
       expect.objectContaining({
         stickyId: entry.id,
         noteId: entry.noteId,
-        content: '修改后的正文\n第二行'
+        content: '修改后的正文\n第二行',
+        expectedContent: '测试便利贴正文'
       })
     )
     expect(entry.preview).toBe('修改后的正文')
@@ -503,6 +507,52 @@ describe('ElectronStickyService creation lifecycle', () => {
     })
     expect(() => service.updateContentForSender(entry.webContentsId, ' \n ')).toThrow(
       '便签内容为空'
+    )
+    service.dispose()
+  })
+
+  it('synchronizes duplicate writable stickies and rejects an obsolete write', async () => {
+    const repository = createRepository()
+    let sourceContent = '测试便利贴正文'
+    const saveContent = vi.fn(({ noteId, content, expectedContent }) => {
+      if (expectedContent !== sourceContent) return { conflict: true, content: sourceContent }
+      sourceContent = content
+      return { conflict: false, note: { id: noteId, content } }
+    })
+    const logger = { warn: vi.fn() }
+    const { service } = createService(undefined, undefined, repository, { saveContent, logger })
+    service.initialized = true
+    const first = (await completeCreation(service)).entry
+    const second = (await completeCreation(service)).entry
+
+    expect(service.updateContentForSender(first.webContentsId, '第一张保存的新正文')).toEqual({
+      content: '第一张保存的新正文',
+      conflict: false
+    })
+    expect(second.content).toBe('第一张保存的新正文')
+    expect(second.window.webContents.send).toHaveBeenCalledWith('sticky:content-changed', {
+      content: '第一张保存的新正文'
+    })
+
+    expect(
+      service.updateContentForSender(second.webContentsId, {
+        content: '第二张基于旧正文的修改',
+        expectedContent: '测试便利贴正文'
+      })
+    ).toEqual({ content: '第一张保存的新正文', conflict: true })
+    expect(sourceContent).toBe('第一张保存的新正文')
+    expect(logger.warn).toHaveBeenCalledWith(
+      'sticky.content-conflict',
+      '便利贴正文写入因版本冲突被拒绝',
+      expect.objectContaining({
+        stickyId: second.id,
+        noteId: second.noteId,
+        expectedLength: '测试便利贴正文'.length,
+        currentLength: '第一张保存的新正文'.length,
+        submittedLength: '第二张基于旧正文的修改'.length,
+        synchronizedOtherStickies: true,
+        otherOpenStickyCount: 1
+      })
     )
     service.dispose()
   })

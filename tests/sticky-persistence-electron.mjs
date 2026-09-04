@@ -15,6 +15,7 @@ import {
   hasDesktopStickyRecord,
   insertDesktopStickyRecord,
   listDesktopStickyRecords,
+  updateDesktopStickyContentsByNoteId,
   updateDesktopStickyRecord
 } from '../src/main/db/db-desktop-stickies.js'
 import { ElectronStickyService } from '../src/main/sticky/ElectronStickyService.js'
@@ -94,8 +95,7 @@ async function runTests() {
     const createService = () =>
       new ElectronStickyService({
         getMainWindow: () => null,
-        getNoteById: (id) =>
-          id === noteId ? { id, content: '真实 Electron 便利贴恢复测试' } : null,
+        getNoteById: (id) => (id === noteId ? getNoteById(id) : null),
         getDefaultAppearance: () => ({
           fontSize: 16,
           backgroundColor: '#FFF2A8',
@@ -103,14 +103,20 @@ async function runTests() {
           alwaysOnTop: true
         }),
         stickyRepository: repository,
-        saveContent: ({ stickyId, noteId: sourceNoteId, content, updatedAt }) =>
+        saveContent: ({ noteId: sourceNoteId, content, expectedContent, updatedAt }) =>
           database.transaction(() => {
+            const currentNote = getNoteById(sourceNoteId)
+            if (!currentNote) throw new Error('来源便签不存在或已被删除')
+            if (currentNote.content !== expectedContent) {
+              updateDesktopStickyContentsByNoteId(sourceNoteId, currentNote.content, updatedAt)
+              return { conflict: true, content: currentNote.content }
+            }
             const updatedNote = updateNote(sourceNoteId, { content })
             if (!updatedNote) throw new Error('来源便签不存在或已被删除')
-            if (!updateDesktopStickyRecord(stickyId, { content, updatedAt })) {
+            if (updateDesktopStickyContentsByNoteId(sourceNoteId, content, updatedAt) < 1) {
               throw new Error('便利贴记录不存在')
             }
-            return updatedNote
+            return { conflict: false, note: updatedNote }
           })(),
         preloadPath: join(workspaceRoot, 'out', 'preload', 'sticky.js'),
         rendererFile: join(workspaceRoot, 'out', 'renderer', 'sticky.html')
@@ -242,8 +248,101 @@ async function runTests() {
     assert.equal(service.close(created.id), true)
     assert.equal(countDesktopStickyRecords(), 0, '用户明确关闭后必须删除便利贴记录')
 
-    await service.create({ noteId })
-    await service.create({ noteId })
+    const firstDuplicate = await service.create({ noteId })
+    const secondDuplicate = await service.create({ noteId })
+    const firstDuplicateEntry = service.registry.get(firstDuplicate.id)
+    const secondDuplicateEntry = service.registry.get(secondDuplicate.id)
+    const duplicateOriginalContent = getNoteById(noteId).content
+    secondDuplicateEntry.window.show()
+    secondDuplicateEntry.window.focus()
+    await wait(100)
+    await secondDuplicateEntry.window.webContents.executeJavaScript(`(() => {
+      const content = document.querySelector('[data-content]')
+      content.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+      content.textContent = '第二张尚未保存的草稿'
+    })()`)
+    const duplicateUpdate = service.updateContentForSender(firstDuplicateEntry.webContentsId, {
+      content: '同源便利贴同步后的正文',
+      expectedContent: duplicateOriginalContent
+    })
+    assert.deepEqual(duplicateUpdate, {
+      content: '同源便利贴同步后的正文',
+      conflict: false
+    })
+    await wait(50)
+    assert.equal(
+      await secondDuplicateEntry.window.webContents.executeJavaScript(
+        `document.querySelector('[data-content]').textContent`
+      ),
+      '第二张尚未保存的草稿',
+      '同源同步不应覆盖正在编辑的草稿'
+    )
+    await secondDuplicateEntry.window.webContents.executeJavaScript(`(() => {
+      const content = document.querySelector('[data-content]')
+      content.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })()`)
+    await waitUntil(
+      () =>
+        secondDuplicateEntry.window.webContents.executeJavaScript(
+          `document.querySelector('[data-content]').textContent === '同源便利贴同步后的正文'`
+        ),
+      '取消草稿后没有显示同源便利贴的最新正文'
+    )
+
+    await secondDuplicateEntry.window.webContents.executeJavaScript(`(() => {
+      const content = document.querySelector('[data-content]')
+      content.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+      content.textContent = '第二张发生冲突的草稿'
+    })()`)
+    assert.deepEqual(
+      service.updateContentForSender(firstDuplicateEntry.webContentsId, {
+        content: '第一张再次更新后的正文',
+        expectedContent: '同源便利贴同步后的正文'
+      }),
+      { content: '第一张再次更新后的正文', conflict: false }
+    )
+    await wait(50)
+    await secondDuplicateEntry.window.webContents.executeJavaScript(
+      `document.querySelector('[data-content]').dispatchEvent(new FocusEvent('blur'))`
+    )
+    await waitUntil(
+      () =>
+        secondDuplicateEntry.window.webContents.executeJavaScript(`(() => {
+          const content = document.querySelector('[data-content]')
+          return content.dataset.editing === 'true' &&
+            content.textContent === '第二张发生冲突的草稿' &&
+            document.querySelector('[data-message]').textContent.includes('尚未保存')
+        })()`),
+      '过期编辑被拒绝后没有保留草稿并重新进入编辑状态'
+    )
+    assert.equal(
+      getNoteById(noteId).content,
+      '第一张再次更新后的正文',
+      '过期编辑覆盖了来源便签的新正文'
+    )
+    await secondDuplicateEntry.window.webContents.executeJavaScript(
+      `document.querySelector('[data-content]').dispatchEvent(new FocusEvent('blur'))`
+    )
+    await waitUntil(
+      () => getNoteById(noteId).content === '第二张发生冲突的草稿',
+      '用户重新确认后没有保存保留的草稿'
+    )
+    assert.ok(
+      listDesktopStickyRecords().every((record) => record.content === '第二张发生冲突的草稿'),
+      '同源便利贴的持久化快照没有原子同步'
+    )
+    assert.deepEqual(
+      service.updateContentForSender(secondDuplicateEntry.webContentsId, {
+        content: '基于过期正文的覆盖',
+        expectedContent: duplicateOriginalContent
+      }),
+      { content: '第二张发生冲突的草稿', conflict: true }
+    )
+    assert.equal(
+      getNoteById(noteId).content,
+      '第二张发生冲突的草稿',
+      '过期便利贴覆盖了来源便签的新正文'
+    )
     service.dispose()
     assert.equal(countDesktopStickyRecords(), 2)
 

@@ -12,8 +12,9 @@ function createHarness({ rejected = [] } = {}) {
     unregister: vi.fn((accelerator) => callbacks.delete(accelerator))
   }
   const onTrigger = vi.fn()
-  const service = new ViewVisibilityShortcutService({ globalShortcut, onTrigger })
-  return { callbacks, globalShortcut, onTrigger, service }
+  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+  const service = new ViewVisibilityShortcutService({ globalShortcut, onTrigger, logger })
+  return { callbacks, globalShortcut, logger, onTrigger, service }
 }
 
 describe('ViewVisibilityShortcutService', () => {
@@ -37,6 +38,21 @@ describe('ViewVisibilityShortcutService', () => {
     expect(callbacks.has('Control+Alt+N')).toBe(false)
     expect(service.endCapture(7)).toMatchObject({ registered: true, capturing: false })
     expect(globalShortcut.register).toHaveBeenLastCalledWith('Control+Alt+N', expect.any(Function))
+  })
+
+  it('records a stale trigger callback that arrives while shortcut capture is active', () => {
+    const { logger, onTrigger, service } = createHarness()
+    service.initialize('Control+Alt+N')
+    service.beginCapture(7)
+
+    service.handleTrigger()
+
+    expect(onTrigger).not.toHaveBeenCalled()
+    expect(logger.info).toHaveBeenCalledWith(
+      'shortcut.view-visibility-trigger',
+      '显示/隐藏快捷键触发被忽略',
+      { action: 'ignored', reason: 'capture' }
+    )
   })
 
   it('keeps recording and preserves the old value when a candidate conflicts', () => {

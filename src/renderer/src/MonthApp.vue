@@ -77,7 +77,6 @@ const {
 const pendingHolidayDataNotice = ref(null)
 const holidayNoticeTodayKey = useTodayKey()
 const calendarBusinessModalOpen = ref(false)
-const calendarWorkspaceRef = ref(null)
 const pendingRemoteNotices = ref([])
 const updateChecking = ref(false)
 const updateResult = ref(null)
@@ -90,7 +89,6 @@ let releaseSettingsBackgroundBlur = null
 let stopSettingsListener = null
 let stopAppMessageListener = null
 let stopRemoteNoticesListener = null
-let stopNotificationOpenListener = null
 let resolveCalendarWorkspaceReady = null
 const calendarWorkspaceReady = new Promise((resolve) => {
   resolveCalendarWorkspaceReady = resolve
@@ -306,20 +304,6 @@ function onFirstUseCompleted({ route } = {}) {
   setTimeout(showNextStartupNotice, 240)
 }
 
-async function openNoteFromNotification(payload) {
-  if (showFirstUseNotice.value) return
-  const noteId = Number(payload?.id)
-  if (!Number.isInteger(noteId) || noteId <= 0) return
-  const closingModal = showSettings.value || showUpdateDialog.value || showRemoteNoticeDialog.value
-  showSettings.value = false
-  releaseSettingsBlur()
-  showUpdateDialog.value = false
-  showRemoteNoticeDialog.value = false
-  await new Promise((resolve) => requestAnimationFrame(resolve))
-  if (closingModal) await new Promise((resolve) => setTimeout(resolve, 240))
-  await calendarWorkspaceRef.value?.openNote?.(noteId)
-}
-
 async function checkForUpdates() {
   if (updateChecking.value) return
   updateChecking.value = true
@@ -365,9 +349,6 @@ onMounted(async () => {
   stopRemoteNoticesListener = window.api.onRemoteNoticesChanged?.(() => {
     void loadPendingRemoteNotices({ show: true })
   })
-  stopNotificationOpenListener = window.api.onNotificationOpenNote?.((payload) => {
-    void openNoteFromNotification(payload)
-  })
   document.addEventListener('mouseenter', onMouseEnter)
   document.addEventListener('mouseleave', onMouseLeave)
   await loadPendingRemoteNotices({ show: true })
@@ -381,7 +362,6 @@ onUnmounted(() => {
   stopSettingsListener?.()
   stopAppMessageListener?.()
   stopRemoteNoticesListener?.()
-  stopNotificationOpenListener?.()
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
   releaseSettingsBlur()
@@ -485,7 +465,6 @@ onUnmounted(() => {
             :aria-label="`${viewLabel}内容区域`"
           >
             <MonthWorkspace
-              ref="calendarWorkspaceRef"
               :view-mode="viewMode"
               @modal-state-change="calendarBusinessModalOpen = $event"
               @ready="onCalendarWorkspaceReady"

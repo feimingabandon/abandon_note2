@@ -52,7 +52,7 @@ describe('UI interaction standard', () => {
 
     expect(markup).toContain('<svg')
     expect(markup).not.toContain('+ 新建')
-    expect(markup).toContain(':aria-label=')
+    expect(markup).toContain('aria-label=')
     expect(baseStyle).toContain('background: transparent')
     expect(baseStyle).toContain('color: var(--text-color-secondary)')
     expect(baseStyle).not.toContain('#0a84ff')
@@ -142,7 +142,7 @@ describe('UI interaction standard', () => {
     expect(grid).toContain('placeholder="新建便签"')
     expect(grid).toContain('window.api.createNote(options)')
     expect(grid).toContain("showMessage('warning', '请输入便签内容')")
-    expect(grid).toContain("showMessage('success', '便签创建成功')")
+    expect(grid).toContain("day.key < props.todayKey ? '历史便签补录成功' : '便签创建成功'")
     expect(grid).toContain("emit('quick-created', created)")
     expect(grid).toContain('@pointerdown.prevent.stop')
     expect(grid).not.toContain('resettingQuickCreateKey')

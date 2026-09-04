@@ -12,6 +12,20 @@ export const HISTORICAL_NOTE_MOVE_SCOPES = Object.freeze({
   ALL: 'all'
 })
 
+export const HISTORICAL_NOTE_MOVE_PREVIEW_PAGE_SIZE = 100
+export const HISTORICAL_NOTE_MOVE_PREVIEW_MAX_CONTENT_LENGTH = 500
+
+export function normalizeHistoricalNoteMovePreviewPage(value = {}) {
+  const parsedLimit = Math.trunc(Number(value?.limit))
+  const parsedOffset = Math.trunc(Number(value?.offset))
+  return {
+    limit: Number.isFinite(parsedLimit)
+      ? Math.min(HISTORICAL_NOTE_MOVE_PREVIEW_PAGE_SIZE, Math.max(1, parsedLimit))
+      : HISTORICAL_NOTE_MOVE_PREVIEW_PAGE_SIZE,
+    offset: Number.isSafeInteger(parsedOffset) ? Math.max(0, parsedOffset) : 0
+  }
+}
+
 /**
  * 未传 noteIds 时保留原有的整批移动语义；显式传入数组时只接受去重后的正整数 ID。
  */

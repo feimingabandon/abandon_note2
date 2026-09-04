@@ -7,7 +7,10 @@ import {
   addCalendarDays,
   localDateKey
 } from '../../../../shared/calendar/calendar-date-rules.js'
-import { HISTORICAL_NOTE_MOVE_SCOPES } from '../../../../shared/historical-note-move-rules.js'
+import {
+  HISTORICAL_NOTE_MOVE_PREVIEW_PAGE_SIZE,
+  HISTORICAL_NOTE_MOVE_SCOPES
+} from '../../../../shared/historical-note-move-rules.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 
 const props = defineProps({
@@ -32,7 +35,11 @@ const previewContentHeight = ref(0)
 const previewCount = ref(0)
 const previewNotes = ref([])
 const selectedNoteIds = ref(new Set())
+const deselectedNoteIds = ref(new Set())
+const allMatchingSelected = ref(true)
+const previewHasMore = ref(false)
 const previewLoading = ref(false)
+const previewLoadingMore = ref(false)
 const previewError = ref('')
 const moving = ref(false)
 let previewSequence = 0
@@ -55,9 +62,13 @@ const selectionTransitionName = computed(() => `historical-note-move-${selection
 const selectionReady = computed(
   () => selectedPreset.value === 'all' || Boolean(startDateKey.value && endDateKey.value)
 )
-const selectedCount = computed(() => selectedNoteIds.value.size)
+const selectedCount = computed(() =>
+  allMatchingSelected.value
+    ? Math.max(0, previewCount.value - deselectedNoteIds.value.size)
+    : selectedNoteIds.value.size
+)
 const allNotesSelected = computed(
-  () => previewNotes.value.length > 0 && selectedCount.value === previewNotes.value.length
+  () => previewCount.value > 0 && allMatchingSelected.value && deselectedNoteIds.value.size === 0
 )
 const previewGroups = computed(() => {
   const groups = []
@@ -111,6 +122,9 @@ function resetDefaultSelection() {
   previewCount.value = 0
   previewNotes.value = []
   selectedNoteIds.value = new Set()
+  deselectedNoteIds.value = new Set()
+  allMatchingSelected.value = true
+  previewHasMore.value = false
   previewError.value = ''
 }
 
@@ -125,33 +139,57 @@ function selectionPayload() {
   }
 }
 
-async function loadPreview() {
-  const sequence = ++previewSequence
-  previewError.value = ''
+async function loadPreview({ append = false } = {}) {
+  const sequence = append ? previewSequence : ++previewSequence
+  if (!append) previewError.value = ''
   if (!selectionReady.value) {
     previewCount.value = 0
     previewNotes.value = []
     selectedNoteIds.value = new Set()
+    deselectedNoteIds.value = new Set()
+    allMatchingSelected.value = true
+    previewHasMore.value = false
     previewLoading.value = false
+    previewLoadingMore.value = false
     return
   }
-  previewLoading.value = true
-  previewNotes.value = []
-  selectedNoteIds.value = new Set()
-  try {
-    const result = await window.api.previewHistoricalNoteMove(selectionPayload())
-    if (sequence !== previewSequence || !props.open) return
-    previewCount.value = Math.max(0, Number(result?.count) || 0)
-    previewNotes.value = Array.isArray(result?.notes) ? result.notes : []
-    selectedNoteIds.value = new Set(previewNotes.value.map((note) => Number(note.id)))
-  } catch (error) {
-    if (sequence !== previewSequence || !props.open) return
-    previewCount.value = 0
+  if (append) previewLoadingMore.value = true
+  else {
+    previewLoading.value = true
     previewNotes.value = []
     selectedNoteIds.value = new Set()
-    previewError.value = error?.message || '无法统计未完成便签'
+    deselectedNoteIds.value = new Set()
+    allMatchingSelected.value = true
+    previewHasMore.value = false
+  }
+  try {
+    const result = await window.api.previewHistoricalNoteMove({
+      ...selectionPayload(),
+      limit: HISTORICAL_NOTE_MOVE_PREVIEW_PAGE_SIZE,
+      offset: append ? previewNotes.value.length : 0
+    })
+    if (sequence !== previewSequence || !props.open) return
+    previewCount.value = Math.max(0, Number(result?.count) || 0)
+    const notes = Array.isArray(result?.notes) ? result.notes : []
+    previewNotes.value = append ? [...previewNotes.value, ...notes] : notes
+    previewHasMore.value = Boolean(result?.hasMore)
+  } catch (error) {
+    if (sequence !== previewSequence || !props.open) return
+    if (append) {
+      showMessage('error', error?.message || '无法继续加载未完成便签')
+    } else {
+      previewCount.value = 0
+      previewNotes.value = []
+      selectedNoteIds.value = new Set()
+      deselectedNoteIds.value = new Set()
+      previewHasMore.value = false
+      previewError.value = error?.message || '无法统计未完成便签'
+    }
   } finally {
-    if (sequence === previewSequence) previewLoading.value = false
+    if (sequence === previewSequence) {
+      previewLoading.value = false
+      previewLoadingMore.value = false
+    }
   }
 }
 
@@ -189,20 +227,43 @@ function applyCustomRange(range) {
 function toggleNoteSelection(noteId) {
   if (moving.value) return
   const id = Number(noteId)
-  const next = new Set(selectedNoteIds.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  selectedNoteIds.value = next
+  if (allMatchingSelected.value) {
+    const next = new Set(deselectedNoteIds.value)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    deselectedNoteIds.value = next
+    return
+  }
+  const nextSelected = new Set(selectedNoteIds.value)
+  if (nextSelected.has(id)) nextSelected.delete(id)
+  else nextSelected.add(id)
+  selectedNoteIds.value = nextSelected
+}
+
+function noteIsSelected(noteId) {
+  const id = Number(noteId)
+  return allMatchingSelected.value
+    ? !deselectedNoteIds.value.has(id)
+    : selectedNoteIds.value.has(id)
 }
 
 function selectAllNotes() {
   if (moving.value) return
-  selectedNoteIds.value = new Set(previewNotes.value.map((note) => Number(note.id)))
+  allMatchingSelected.value = true
+  selectedNoteIds.value = new Set()
+  deselectedNoteIds.value = new Set()
 }
 
 function clearNoteSelection() {
   if (moving.value) return
+  allMatchingSelected.value = false
   selectedNoteIds.value = new Set()
+  deselectedNoteIds.value = new Set()
+}
+
+function loadMorePreview() {
+  if (previewLoading.value || previewLoadingMore.value || !previewHasMore.value) return
+  void loadPreview({ append: true })
 }
 
 function updatePosition() {
@@ -264,13 +325,17 @@ async function executeMove() {
   try {
     const result = await window.api.moveHistoricalNotesToToday({
       ...selectionPayload(),
-      noteIds: [...selectedNoteIds.value]
+      ...(allMatchingSelected.value
+        ? { excludedNoteIds: [...deselectedNoteIds.value] }
+        : { noteIds: [...selectedNoteIds.value] })
     })
     const count = Math.max(0, Number(result?.count) || 0)
     if (count === 0) {
       previewCount.value = 0
       previewNotes.value = []
       selectedNoteIds.value = new Set()
+      deselectedNoteIds.value = new Set()
+      previewHasMore.value = false
       showMessage('warning', '所选日期范围内已没有可移动的未完成便签')
       return
     }
@@ -441,8 +506,13 @@ onBeforeUnmount(() => {
                     aria-label="将被移动的便签"
                   >
                     <header class="historical-note-move__selection-bar">
-                      <span data-move-selection-count>
-                        已选 {{ selectedCount }} / {{ previewCount }} 条
+                      <span class="historical-note-move__selection-summary">
+                        <span data-move-selection-count>
+                          已选 {{ selectedCount }} / {{ previewCount }} 条
+                        </span>
+                        <small v-if="previewNotes.length < previewCount">
+                          已显示 {{ previewNotes.length }} 条
+                        </small>
                       </span>
                       <span class="historical-note-move__selection-actions">
                         <button
@@ -476,12 +546,12 @@ onBeforeUnmount(() => {
                         <li v-for="note in group.notes" :key="note.id">
                           <label
                             class="historical-note-move__note-option"
-                            :class="{ 'is-selected': selectedNoteIds.has(note.id) }"
+                            :class="{ 'is-selected': noteIsSelected(note.id) }"
                             :data-note-id="note.id"
                           >
                             <input
                               type="checkbox"
-                              :checked="selectedNoteIds.has(note.id)"
+                              :checked="noteIsSelected(note.id)"
                               :disabled="moving"
                               @change="toggleNoteSelection(note.id)"
                             />
@@ -493,6 +563,16 @@ onBeforeUnmount(() => {
                         </li>
                       </ul>
                     </section>
+                    <button
+                      v-if="previewHasMore"
+                      type="button"
+                      class="historical-note-move__load-more"
+                      :disabled="previewLoadingMore || moving"
+                      data-move-load-more
+                      @click="loadMorePreview"
+                    >
+                      {{ previewLoadingMore ? '正在加载…' : '继续显示更多便签' }}
+                    </button>
                   </div>
                 </div>
               </Transition>
@@ -749,6 +829,16 @@ onBeforeUnmount(() => {
   font-size: var(--fs-secondary);
 }
 
+.historical-note-move__selection-summary {
+  display: grid;
+  gap: 1rem;
+}
+
+.historical-note-move__selection-bar small {
+  font-size: calc(var(--fs-secondary) * 0.88);
+  opacity: 0.72;
+}
+
 .historical-note-move__selection-actions {
   display: flex;
   flex: 0 0 auto;
@@ -888,6 +978,28 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.historical-note-move__load-more {
+  width: calc(100% - 20rem);
+  min-height: 30rem;
+  margin: 2rem 10rem 9rem;
+  border: 0;
+  border-radius: 7rem;
+  background: transparent;
+  color: var(--ui-accent);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  cursor: pointer;
+}
+
+.historical-note-move__load-more:hover:not(:disabled) {
+  background: var(--ui-fill-hover);
+}
+
+.historical-note-move__load-more:disabled {
+  cursor: default;
+  opacity: 0.38;
 }
 
 .historical-note-move__execute {

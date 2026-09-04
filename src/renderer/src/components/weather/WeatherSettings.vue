@@ -173,7 +173,8 @@ function useDeviceLocation() {
   error.value = ''
   reportWeatherLocation('info', '用户请求设备位置', {
     timeoutMs: DEVICE_LOCATION_TIMEOUT_MS,
-    highAccuracy: false
+    highAccuracy: false,
+    maximumAgeMs: 3_600_000
   })
   if (!navigator.geolocation) {
     reportWeatherLocation('warn', '当前运行环境不支持 Geolocation API')
@@ -184,7 +185,9 @@ function useDeviceLocation() {
     ({ coords }) => {
       reportWeatherLocation('info', '系统已返回设备位置', {
         elapsedMs: Date.now() - startedAt,
-        accuracyAvailable: Number.isFinite(Number(coords?.accuracy))
+        latitude: Number(coords?.latitude),
+        longitude: Number(coords?.longitude),
+        accuracyMeters: Number.isFinite(Number(coords?.accuracy)) ? Number(coords.accuracy) : null
       })
       void chooseDeviceLocation(coords)
     },
@@ -225,6 +228,7 @@ async function handleDeviceLocationFailure(locationError, startedAt) {
   const failureMessage = deviceLocationErrorMessage(code)
   reportWeatherLocation('warn', '设备位置请求失败', {
     code,
+    reason: String(locationError?.message || failureMessage),
     elapsedMs: Date.now() - startedAt,
     timeoutMs: DEVICE_LOCATION_TIMEOUT_MS
   })
@@ -240,7 +244,12 @@ async function handleDeviceLocationFailure(locationError, startedAt) {
     const saved = await choose(await reverseGeocodeNetworkLocation())
     if (!saved) return
     error.value = `${failureMessage}，已使用网络大致地区；可手动选择地区修正`
-    reportWeatherLocation('info', '网络大致地区已保存')
+    reportWeatherLocation('info', '网络大致地区已保存', {
+      name: location.value?.name || '',
+      admin1: location.value?.admin1 || '',
+      admin2: location.value?.admin2 || '',
+      countryCode: location.value?.countryCode || ''
+    })
   } catch (networkError) {
     busy.value = ''
     error.value = `${failureMessage}；网络大致地区也不可用，可以改用地区选择`
@@ -275,7 +284,14 @@ async function chooseDeviceLocation(coords) {
   error.value = ''
   try {
     const saved = await choose(await reverseGeocodeDeviceLocation(coords))
-    if (saved) reportWeatherLocation('info', '设备位置已解析并保存')
+    if (saved) {
+      reportWeatherLocation('info', '设备位置已解析并保存', {
+        name: location.value?.name || '',
+        admin1: location.value?.admin1 || '',
+        admin2: location.value?.admin2 || '',
+        countryCode: location.value?.countryCode || ''
+      })
+    }
   } catch (reverseError) {
     reportWeatherLocation('warn', '设备位置地名解析失败，尝试只保存坐标', {
       reason: String(reverseError?.message || '无法解析城市')
@@ -292,7 +308,10 @@ async function chooseDeviceLocation(coords) {
     })
     if (saved) {
       error.value = `${reverseError?.message || '无法解析城市'}，已保存坐标；可手动选择地区修正`
-      reportWeatherLocation('info', '设备位置坐标已保存，未取得城市名称')
+      reportWeatherLocation('info', '设备位置坐标已保存，未取得城市名称', {
+        latitude: Number(coords.latitude),
+        longitude: Number(coords.longitude)
+      })
     }
   }
 }

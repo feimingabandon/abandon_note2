@@ -6,7 +6,7 @@ import { app, nativeImage } from 'electron'
 import { createHash, randomUUID } from 'crypto'
 import { existsSync, mkdirSync, renameSync, rmSync } from 'fs'
 import { readFile, readdir, rm, writeFile } from 'fs/promises'
-import { dirname, extname, join, resolve, sep } from 'path'
+import { basename, dirname, extname, join, resolve, sep } from 'path'
 import { getDb } from './db-connection.js'
 
 const WALLPAPER_ROOT = 'wallpapers'
@@ -113,12 +113,14 @@ async function writeOperationManifest(directory, manifest) {
 }
 
 function removeFileQuietly(path) {
-  if (!path) return
+  if (!path || !existsSync(path)) return false
   try {
     rmSync(path, { force: true })
+    return true
   } catch (error) {
     // 下次启动会继续清理 .staging。
     console.warn('[wallpaper] 删除暂存文件失败，将在下次启动重试:', error, { path })
+    return false
   }
 }
 
@@ -140,20 +142,23 @@ function isReferencedPath(table, column, relativePath) {
 }
 
 function restoreQuarantinedFile(stagedPath, relativePath) {
-  if (!stagedPath || !existsSync(stagedPath)) return
+  if (!stagedPath || !existsSync(stagedPath)) return false
   const finalPath = resolveWallpaperPath(relativePath)
   if (existsSync(finalPath)) {
     removeFileQuietly(stagedPath)
-    return
+    return false
   }
   mkdirSync(dirname(finalPath), { recursive: true })
   renameSync(stagedPath, finalPath)
+  return true
 }
 
-async function recoverWallpaperOperation(directory, manifest) {
+async function recoverWallpaperOperation(directory, manifest, onRecovery = () => {}) {
   const db = getDb()
+  const operationId = basename(directory)
   if (manifest?.version !== 1 || !['save', 'delete'].includes(manifest?.type)) {
     await removeOperationDirectory(directory)
+    onRecovery({ operationId, operationType: 'unknown', action: 'cleanup-invalid-manifest' })
     return
   }
 
@@ -161,18 +166,25 @@ async function recoverWallpaperOperation(directory, manifest) {
     const committed = Boolean(
       db.prepare('SELECT 1 FROM wallpapers WHERE cropped_path = ?').get(manifest.cropPath)
     )
+    let deletedFiles = 0
     if (!committed) {
       if (!isReferencedPath('wallpapers', 'cropped_path', manifest.cropPath)) {
-        removeFileQuietly(resolveWallpaperPath(manifest.cropPath))
+        if (removeFileQuietly(resolveWallpaperPath(manifest.cropPath))) deletedFiles += 1
       }
       if (
         manifest.originalPath &&
         !isReferencedPath('wallpaper_sources', 'original_path', manifest.originalPath)
       ) {
-        removeFileQuietly(resolveWallpaperPath(manifest.originalPath))
+        if (removeFileQuietly(resolveWallpaperPath(manifest.originalPath))) deletedFiles += 1
       }
     }
     await removeOperationDirectory(directory)
+    onRecovery({
+      operationId,
+      operationType: 'save',
+      action: committed ? 'committed-cleanup' : 'rolled-back',
+      deletedFiles
+    })
     return
   }
 
@@ -180,10 +192,27 @@ async function recoverWallpaperOperation(directory, manifest) {
     .prepare('SELECT 1 FROM wallpapers WHERE id = ?')
     .get(manifest.wallpaperId)
   if (!deleteCommitted) {
-    restoreQuarantinedFile(join(directory, manifest.cropQuarantine), manifest.cropPath)
+    let recoveredFiles = restoreQuarantinedFile(
+      join(directory, manifest.cropQuarantine),
+      manifest.cropPath
+    )
+      ? 1
+      : 0
     if (manifest.originalPath && manifest.originalQuarantine) {
-      restoreQuarantinedFile(join(directory, manifest.originalQuarantine), manifest.originalPath)
+      if (
+        restoreQuarantinedFile(join(directory, manifest.originalQuarantine), manifest.originalPath)
+      ) {
+        recoveredFiles += 1
+      }
     }
+    onRecovery({
+      operationId,
+      operationType: 'delete',
+      action: 'rolled-back',
+      recoveredFiles
+    })
+  } else {
+    onRecovery({ operationId, operationType: 'delete', action: 'committed-cleanup' })
   }
   await removeOperationDirectory(directory)
 }
@@ -546,24 +575,34 @@ export function deleteWallpaperVersion(id, options = {}) {
   return operation
 }
 
-export async function cleanupPendingWallpaperFiles() {
+export async function cleanupPendingWallpaperFiles({ onRecovery = () => {} } = {}) {
   const staging = getStagingRoot()
   const entries = await readdir(staging, { withFileTypes: true })
   for (const entry of entries) {
     const path = join(staging, entry.name)
     if (!entry.isDirectory()) {
       await rm(path, { force: true })
+      onRecovery({
+        operationId: entry.name,
+        operationType: 'staging-file',
+        action: 'cleanup'
+      })
       continue
     }
     try {
       const manifest = JSON.parse(await readFile(join(path, OPERATION_MANIFEST), 'utf8'))
-      await recoverWallpaperOperation(path, manifest)
+      await recoverWallpaperOperation(path, manifest, onRecovery)
     } catch (error) {
       // 只有完整清单写入后才会移动正式文件；无清单目录可直接视为未开始事务。
       console.warn('[wallpaper] 暂存操作清单缺失或损坏，清理未开始的事务目录:', error, {
         path
       })
       await removeOperationDirectory(path)
+      onRecovery({
+        operationId: entry.name,
+        operationType: 'unknown',
+        action: 'cleanup-invalid-manifest'
+      })
     }
   }
 
@@ -579,10 +618,17 @@ export async function cleanupPendingWallpaperFiles() {
     const directory = join(getRoot(), directoryName)
     mkdirSync(directory, { recursive: true })
     const files = await readdir(directory, { withFileTypes: true })
-    await Promise.all(
-      files
-        .filter((entry) => entry.isFile() && !referenced.has(join(directory, entry.name)))
-        .map((entry) => rm(join(directory, entry.name), { force: true }))
+    const orphanFiles = files.filter(
+      (entry) => entry.isFile() && !referenced.has(join(directory, entry.name))
     )
+    await Promise.all(orphanFiles.map((entry) => rm(join(directory, entry.name), { force: true })))
+    if (orphanFiles.length > 0) {
+      onRecovery({
+        operationId: directoryName,
+        operationType: 'orphan-cleanup',
+        action: 'cleanup',
+        deletedFiles: orphanFiles.length
+      })
+    }
   }
 }

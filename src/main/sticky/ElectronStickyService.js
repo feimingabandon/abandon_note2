@@ -55,6 +55,7 @@ export class ElectronStickyService extends StickyService {
     rendererUrl,
     stickyRepository,
     saveContent,
+    logger = null,
     isDevelopment = false,
     onRegistryChanged,
     onNoteChanged,
@@ -79,6 +80,7 @@ export class ElectronStickyService extends StickyService {
     this.isDevelopment = isDevelopment
     this.onRegistryChanged = onRegistryChanged
     this.saveContent = saveContent
+    this.logger = logger
     this.onNoteChanged = onNoteChanged
     this.onError = onError
     this.registry = new Map()
@@ -614,19 +616,51 @@ export class ElectronStickyService extends StickyService {
 
   updateContentForSender(webContentsId, value) {
     const entry = this.requireEntryForSender(webContentsId)
-    const content = normalizeStickyContent(value)
-    if (content === entry.content) return { content: entry.content }
+    const payload = value && typeof value === 'object' ? value : { content: value }
+    const content = normalizeStickyContent(payload.content)
+    const expectedContent =
+      payload.expectedContent === undefined ? entry.content : String(payload.expectedContent)
+    if (content === expectedContent && expectedContent === entry.content) {
+      return { content: entry.content, conflict: false }
+    }
     if (typeof this.saveContent !== 'function') throw new Error('便利贴编辑服务尚未就绪')
     const updatedAt = Date.now()
-    const updatedNote = this.saveContent({
+    const saveResult = this.saveContent({
       stickyId: entry.id,
       noteId: entry.noteId,
       content,
+      expectedContent,
       updatedAt
     })
+    if (saveResult?.conflict) {
+      const currentContent = String(saveResult.content ?? entry.content)
+      const otherOpenStickyCount = [...this.registry.values()].filter(
+        (candidate) => candidate.noteId === entry.noteId && candidate.id !== entry.id
+      ).length
+      this.logger?.warn?.('sticky.content-conflict', '便利贴正文写入因版本冲突被拒绝', {
+        stickyId: entry.id,
+        noteId: entry.noteId,
+        expectedLength: expectedContent.length,
+        currentLength: currentContent.length,
+        submittedLength: content.length,
+        updatedAt,
+        synchronizedOtherStickies: otherOpenStickyCount > 0,
+        otherOpenStickyCount
+      })
+      this.syncOpenStickyContents(entry.noteId, currentContent, entry.id)
+      try {
+        this.onRegistryChanged?.()
+      } catch (error) {
+        console.error(`[sticky] 刷新便利贴托盘预览失败 (${entry.id}):`, error)
+      }
+      return {
+        content: currentContent,
+        conflict: true
+      }
+    }
+    const updatedNote = saveResult?.note || saveResult
     if (!updatedNote) throw new Error('来源便签不存在或已被删除')
-    entry.content = content
-    entry.preview = createStickyPreview(content, this.registry.size)
+    this.syncOpenStickyContents(entry.noteId, content, entry.id)
     try {
       this.onRegistryChanged?.()
     } catch (error) {
@@ -638,7 +672,23 @@ export class ElectronStickyService extends StickyService {
       console.error(`[sticky] 广播来源便签更新失败 (${entry.id}):`, error)
     }
     console.log(`[sticky] 便利贴正文已保存 (${entry.id}, noteId=${entry.noteId})`)
-    return { content: entry.content }
+    return { content, conflict: false }
+  }
+
+  syncOpenStickyContents(noteId, content, sourceStickyId) {
+    for (const entry of this.registry.values()) {
+      if (entry.noteId !== noteId) continue
+      entry.content = content
+      entry.preview = createStickyPreview(content, this.registry.size)
+      if (
+        entry.id !== sourceStickyId &&
+        entry.ready &&
+        !entry.window.isDestroyed() &&
+        !entry.window.webContents.isDestroyed()
+      ) {
+        entry.window.webContents.send('sticky:content-changed', { content })
+      }
+    }
   }
 
   updateAppearanceForSender(webContentsId, payload = {}) {

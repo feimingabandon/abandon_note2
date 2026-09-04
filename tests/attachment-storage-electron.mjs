@@ -60,6 +60,7 @@ app.once('ready', async () => {
     db.pragma('foreign_keys = ON')
     createNotesSchema(db)
     setDb(db)
+    const recoveryEvents = []
 
     const noteId = insertNote(db, '附件恢复测试')
     const relativePath = join('attachments', 'images', String(noteId), 'recover.png')
@@ -68,8 +69,19 @@ app.once('ready', async () => {
 
     stageImageDeletion(relativePath)
     assert.equal(existsSync(originalPath), false)
-    await cleanupPendingAttachmentDirs()
+    await cleanupPendingAttachmentDirs({
+      onRecovery: (event) => recoveryEvents.push(event)
+    })
     assert.equal(existsSync(originalPath), true)
+    assert.equal(
+      recoveryEvents.some(
+        (event) =>
+          event.operationType === 'image-delete' &&
+          event.action === 'rolled-back' &&
+          event.recoveredFiles === 1
+      ),
+      true
+    )
     assert.equal(
       db.prepare('SELECT COUNT(*) AS count FROM note_attachments WHERE id = ?').get(attachmentId)
         .count,

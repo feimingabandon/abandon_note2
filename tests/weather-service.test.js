@@ -12,11 +12,11 @@ afterEach(async () => {
   )
 })
 
-async function createService(fetchImpl) {
+async function createService(fetchImpl, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'abandon-weather-test-'))
   temporaryDirectories.push(directory)
   const cachePath = join(directory, 'weather.json')
-  return { service: new WeatherService({ cachePath, fetchImpl }), cachePath }
+  return { service: new WeatherService({ cachePath, fetchImpl, ...options }), cachePath }
 }
 
 function jsonResponse(body, status = 200) {
@@ -192,13 +192,60 @@ describe('WeatherService', () => {
       .mockResolvedValueOnce(jsonResponse(response))
       .mockRejectedValueOnce(new Error('断网'))
       .mockRejectedValueOnce(new Error('断网'))
-    const { service } = await createService(fetchImpl)
+    const diagnosticLog = vi.fn()
+    const { service } = await createService(fetchImpl, { diagnosticLog })
     await service.getForecast(beijing)
 
     const fallback = await service.getForecast(beijing, { refresh: true })
 
     expect(fallback.cache).toMatchObject({ hit: true, stale: true })
     expect(fallback.warning).toBe('断网')
+    expect(diagnosticLog).toHaveBeenCalledWith(
+      'warn',
+      'weather.stale-cache',
+      '天气更新失败，已返回旧缓存',
+      expect.objectContaining({ reason: '断网' })
+    )
+  })
+
+  it('records provider fallback and the actual model used by a network refresh', async () => {
+    const diagnosticLog = vi.fn()
+    const fetchImpl = vi.fn(async (requestUrl) => {
+      const model = new URL(requestUrl).searchParams.get('models')
+      if (model === 'cma_grapes_global') throw new Error('CMA unavailable')
+      return jsonResponse({
+        timezone: 'Asia/Shanghai',
+        current: null,
+        daily: {
+          time: ['2026-08-12'],
+          weather_code: [0],
+          temperature_2m_max: [30],
+          temperature_2m_min: [20]
+        }
+      })
+    })
+    const { service } = await createService(fetchImpl, { diagnosticLog })
+
+    const forecast = await service.getForecast(beijing, { trigger: 'test-refresh' })
+
+    expect(forecast.source.model.id).toBe('auto')
+    expect(diagnosticLog).toHaveBeenCalledWith(
+      'warn',
+      'weather.provider-fallback',
+      '中国气象局天气模型失败，已使用自动模型',
+      expect.objectContaining({
+        trigger: 'test-refresh',
+        failedModel: 'cma_grapes_global',
+        actualModel: 'auto',
+        reason: 'CMA unavailable'
+      })
+    )
+    expect(diagnosticLog).toHaveBeenCalledWith(
+      'info',
+      'weather.network-refresh',
+      '天气网络更新完成',
+      expect.objectContaining({ trigger: 'test-refresh', actualModel: 'auto', dayCount: 1 })
+    )
   })
 
   it('matches a Chinese district locally before resolving its district center', async () => {

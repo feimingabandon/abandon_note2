@@ -877,10 +877,6 @@ watch(
   }
 )
 
-defineExpose({
-  openNote: (noteId) => openEditor({ id: Number(noteId) })
-})
-
 onBeforeUnmount(() => {
   stopNotesListener?.()
   stopHolidayDataListener?.()

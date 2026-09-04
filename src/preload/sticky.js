@@ -6,6 +6,11 @@ contextBridge.exposeInMainWorld('stickyAPI', {
   ready: () => ipcRenderer.invoke('sticky:ready'),
   close: () => ipcRenderer.invoke('sticky:close'),
   togglePin: () => ipcRenderer.invoke('sticky:toggle-pin'),
-  updateContent: (content) => ipcRenderer.invoke('sticky:update-content', content),
+  updateContent: (payload) => ipcRenderer.invoke('sticky:update-content', payload),
+  onContentChanged: (callback) => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('sticky:content-changed', listener)
+    return () => ipcRenderer.removeListener('sticky:content-changed', listener)
+  },
   updateAppearance: (state) => ipcRenderer.invoke('sticky:update-appearance', state)
 })

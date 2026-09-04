@@ -62,6 +62,7 @@ import {
   hasDesktopStickyRecord,
   insertDesktopStickyRecord,
   listDesktopStickyRecords,
+  updateDesktopStickyContentsByNoteId,
   updateDesktopStickyRecord
 } from './db/db-desktop-stickies.js'
 import {
@@ -122,9 +123,11 @@ import {
 } from './logging/logger.js'
 import {
   attachWindowLogging,
+  getWindowDiagnosticContext,
   getWindowLogContext,
   setWindowLogContext
 } from './logging/window-capture.js'
+import { getRecentCrashDumps } from './logging/process-capture.js'
 import { enforceNativeRuntimeCompatibility } from './native-runtime-gate.js'
 import {
   DEFAULT_SETTINGS,
@@ -314,7 +317,6 @@ function getDockRuntimeCapability() {
 
 /** 主窗口实例引用 */
 let mainWindow = null
-let geolocationConfigurationWarningLogged = false
 let mainRendererReady = false
 
 function getActiveVisualWindow() {
@@ -337,12 +339,46 @@ let isQuitting = false
 let remoteShutdownStarted = false
 let remoteShutdownFinished = false
 let compactShutdownWaitStarted = false
-let pendingNotificationNoteId = null
+let pendingNotificationReveal = false
+let pendingNotificationRevealContext = null
+let shutdownStartedAt = null
+let shutdownTrigger = null
+let shutdownCompletedLogged = false
 
-function sendPendingNotificationNote() {
+function notificationWindowSnapshot() {
+  return {
+    windowExists: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    loading: Boolean(
+      mainWindow &&
+      !mainWindow.isDestroyed() &&
+      !mainWindow.webContents.isDestroyed() &&
+      mainWindow.webContents.isLoadingMainFrame()
+    ),
+    visible: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+    compactPhase: compactWindowController.phase,
+    pending: pendingNotificationReveal
+  }
+}
+
+function revealApplicationFromNotification(context = {}) {
+  pendingNotificationReveal = true
+  pendingNotificationRevealContext = {
+    source: context.source || 'notification-click',
+    hadLegacyNoteId: Boolean(context.hadLegacyNoteId),
+    requestedAt: Date.now()
+  }
+  logger.info('notification.reveal-request', '收到系统通知唤醒请求', {
+    ...pendingNotificationRevealContext,
+    ...notificationWindowSnapshot()
+  })
+  if (!mainWindow || mainWindow.isDestroyed()) return true
+  revealPendingNotificationApplication()
+  return true
+}
+
+function revealPendingNotificationApplication() {
   if (
-    !pendingNotificationNoteId ||
-    isCompactWindowActive() ||
+    !pendingNotificationReveal ||
     !mainWindow ||
     mainWindow.isDestroyed() ||
     mainWindow.webContents.isDestroyed() ||
@@ -350,64 +386,71 @@ function sendPendingNotificationNote() {
   ) {
     return false
   }
-  mainWindow.webContents.send('notification:open-note', { id: pendingNotificationNoteId })
-  pendingNotificationNoteId = null
-  return true
-}
-
-function openNotificationNote(noteId) {
-  const parsedNoteId = Number(noteId)
-  if (!Number.isInteger(parsedNoteId) || parsedNoteId <= 0) return false
-  pendingNotificationNoteId = parsedNoteId
-  if (!mainWindow || mainWindow.isDestroyed()) return true
-  openMainWindow()
-  revealPendingNotificationNote()
-  return true
-}
-
-function revealPendingNotificationNote() {
-  if (!pendingNotificationNoteId || !mainWindow || mainWindow.isDestroyed()) return false
-  const noteId = pendingNotificationNoteId
+  const revealContext = pendingNotificationRevealContext || {
+    source: 'unknown',
+    hadLegacyNoteId: false,
+    requestedAt: null
+  }
+  pendingNotificationReveal = false
+  pendingNotificationRevealContext = null
+  logger.info('notification.reveal', '开始显示通知对应的应用主视图', {
+    ...revealContext,
+    queuedMs: revealContext.requestedAt ? Date.now() - revealContext.requestedAt : null,
+    ...notificationWindowSnapshot()
+  })
   openMainWindow()
   void expandCompactWindowForNotification()
     .then(() => {
       openMainWindow()
-      sendPendingNotificationNote()
+      logger.info('notification.reveal', '通知唤醒与主视图展开完成', {
+        ...revealContext,
+        result: 'shown',
+        ...notificationWindowSnapshot()
+      })
     })
     .catch((error) => {
-      logger.error('compact-window.notification-expand', error, { noteId })
-      sendAppMessage('error', `无法从灵动岛打开通知便签：${error.message}`)
+      logger.error('compact-window.notification-expand', error, {
+        ...revealContext,
+        result: 'fallback-show',
+        ...notificationWindowSnapshot()
+      })
+      openMainWindow()
     })
   return true
 }
 
 /** 处理 Windows 富通知通过自定义协议回传的操作。 */
-function handleNotificationProtocol(rawUrl) {
+function handleNotificationProtocol(rawUrl, source = 'protocol') {
   try {
     const url = new URL(rawUrl)
     if (url.protocol !== `${APP_PROTOCOL}:` || url.hostname !== 'notification') return false
 
-    const noteId = Number(url.searchParams.get('id'))
-    if (!Number.isInteger(noteId) || noteId <= 0) return true
-
     if (url.pathname === '/open') {
-      openNotificationNote(noteId)
+      // 旧版本通知可能仍携带 id；这里只保留唤醒语义，不再定位或打开便签。
+      const hadLegacyNoteId = url.searchParams.has('id')
+      logger.info('notification.protocol', '已接收系统通知协议', {
+        source,
+        action: 'open',
+        hadLegacyNoteId,
+        ...notificationWindowSnapshot()
+      })
+      revealApplicationFromNotification({ source, hadLegacyNoteId })
       return true
     }
   } catch (error) {
-    console.error('[notification] 无法解析通知操作:', error)
+    logger.error('notification.protocol', error, { source })
   }
   return false
 }
 
-function handleProtocolArgs(argv) {
+function handleProtocolArgs(argv, source = 'startup') {
   const protocolUrl = argv.find((arg) => arg.startsWith(`${APP_PROTOCOL}://`))
-  return protocolUrl ? handleNotificationProtocol(protocolUrl) : false
+  return protocolUrl ? handleNotificationProtocol(protocolUrl, source) : false
 }
 
 if (gotSingleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
-    if (handleProtocolArgs(argv)) return
+    if (handleProtocolArgs(argv, 'second-instance')) return
     openMainWindow()
   })
 }
@@ -642,18 +685,11 @@ function syncCompactWindowRuntime(source) {
   }
 }
 
-function dipBoundsToPhysical(bounds) {
-  const topLeft = screen.dipToScreenPoint({ x: bounds.x, y: bounds.y })
-  const bottomRight = screen.dipToScreenPoint({
-    x: bounds.x + bounds.width,
-    y: bounds.y + bounds.height
-  })
-  return {
-    x: topLeft.x,
-    y: topLeft.y,
-    width: Math.max(1, bottomRight.x - topLeft.x),
-    height: Math.max(1, bottomRight.y - topLeft.y)
-  }
+function dipBoundsToPhysical(window, bounds) {
+  // A rectangle touching a mixed-DPI display boundary must use one display's
+  // scale for all four edges. Converting two independent points can select two
+  // displays and distort the native transition width or height.
+  return screen.dipToScreenRect(window, bounds)
 }
 
 function ensureCompactNativeTransitionSucceeded(nativeResult) {
@@ -696,9 +732,11 @@ async function runCompactNativeTransition({ window, from, target, phase }) {
         }
         await waitForCompactRendererTransitionReady(generation, PRESENTATION_STAGES.SHELL_TRANSFORM)
 
-        const nativeTransition = runWindowTransition(operationWindow, dipBoundsToPhysical(target), {
-          duration: COMPACT_WINDOW_ANIMATION_MS
-        }).then(ensureCompactNativeTransitionSucceeded)
+        const nativeTransition = runWindowTransition(
+          operationWindow,
+          dipBoundsToPhysical(operationWindow, target),
+          { duration: COMPACT_WINDOW_ANIMATION_MS }
+        ).then(ensureCompactNativeTransitionSucceeded)
 
         if (phase === 'expanding') {
           await waitForCompactExpandContentCue(nativeTransition)
@@ -734,7 +772,7 @@ async function runCompactNativeTransition({ window, from, target, phase }) {
 
 function restoreCompactWindowBounds(window, bounds, source) {
   if (!window || window.isDestroyed()) return false
-  const result = setWindowBoundsSynchronized(window, dipBoundsToPhysical(bounds))
+  const result = setWindowBoundsSynchronized(window, dipBoundsToPhysical(window, bounds))
   if (result.success) return true
 
   logger.error('compact-window.rollback-native', new Error(result.error || '原生边界恢复失败'), {
@@ -1765,6 +1803,7 @@ let isDockHidden = false // 窗口是否处于贴边隐藏状态
 let cachedWorkArea = null // 缓存显示器工作区，避免隐藏后 getDisplayMatching 返回过期对象
 let slideAnimTimer = null // 滑动动画定时器
 let hideTimer = null // 隐藏延迟定时器
+let pendingDockHideRequestedAt = null // 鼠标离开到实际开始隐藏的耗时起点
 let isSliding = false // 滑动动画进行中标志
 let dockSlideStartedAt = null // 当前动画开始时间；健康任务用于识别卡死动画
 let pendingSlideCallback = null // 动画中断时待执行的完成回调
@@ -1871,9 +1910,11 @@ function endDockInteractionSuspension(source) {
 
 function cancelPendingDockHide(source = 'unknown') {
   if (!hideTimer) return false
+  const elapsedMs = pendingDockHideRequestedAt ? Date.now() - pendingDockHideRequestedAt : null
   clearTimeout(hideTimer)
   hideTimer = null
-  logger.info('dock.hide-timer', '已取消待执行的贴边隐藏', { source })
+  pendingDockHideRequestedAt = null
+  logger.info('dock.hide-timer', '已取消待执行的贴边隐藏', { source, elapsedMs })
   return true
 }
 
@@ -1907,13 +1948,16 @@ function handleNativeEdgeMonitorMessage(window) {
 
   const currentGeneration = dockMotionSession?.generation || 0
   const accepted = isCurrentDockMonitorEvent(event, dockMotionSession)
-  logger.info('dock.native-edge-event', '收到 Windows 原生边缘监视事件', {
-    event,
-    accepted,
-    currentGeneration,
-    isDockHidden,
-    isSliding
-  })
+  if (event.kind !== 'handle-moved') {
+    logger.info('dock.native-edge-event', '收到 Windows 原生边缘监视事件', {
+      event,
+      accepted,
+      currentGeneration,
+      isDockHidden,
+      isSliding,
+      edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor
+    })
+  }
   if (!accepted) {
     try {
       if (!windowMotionBackend.disarmEdgeMonitor(event.generation)) {
@@ -2174,13 +2218,6 @@ function createWindow({ preferredDisplay = null } = {}) {
     }
     callback(allowed)
   })
-  if (!process.env.GOOGLE_API_KEY && !geolocationConfigurationWarningLogged) {
-    geolocationConfigurationWarningLogged = true
-    logger.warn(
-      'weather.device-location',
-      '未配置 GOOGLE_API_KEY，Electron 系统定位在部分设备上可能不可用；失败时将尝试网络大致地区'
-    )
-  }
   setWindowLogContext(mainWindow, { role: getActiveWindowProfile().logRole })
   lastVisibleMainWindowBounds = { ...normalBounds }
   windowMotionBackend = createWindowMotionBackend(mainWindow, screen)
@@ -3034,6 +3071,9 @@ function slideTo(target, motionPlan, onFinish) {
 function doHide() {
   if (!mainWindow || mainWindow.isDestroyed() || isDockHidden || !dockSide) return
   if (isSliding || nativeEdgeCleanupPending || dockInteractionSuspendCount > 0) return
+  const hideRequestedAt = pendingDockHideRequestedAt
+  pendingDockHideRequestedAt = null
+  const hideStartedAt = Date.now()
 
   const dockConfig = getDockRuntimeConfig()
   if (!dockConfig.activeEdges.includes(dockSide)) {
@@ -3111,10 +3151,13 @@ function doHide() {
     generation,
     side: dockSide,
     revealHandleMode: dockMotionSession.revealHandleMode,
-    stableBounds
+    stableBounds,
+    requestDelayMs: hideRequestedAt ? hideStartedAt - hideRequestedAt : null,
+    preparationMs: Date.now() - hideStartedAt
   })
 
   const target = { x: motionPlan.hiddenX, y: motionPlan.hiddenY }
+  const hideAnimationStartedAt = Date.now()
 
   slideTo(target, motionPlan, () => {
     try {
@@ -3136,7 +3179,12 @@ function doHide() {
     }
     logger.info('dock.lifecycle', '贴边隐藏动画完成', {
       generation,
-      side: dockSide
+      side: dockSide,
+      animationMs: Date.now() - hideAnimationStartedAt,
+      totalElapsedMs: Date.now() - (hideRequestedAt || hideStartedAt),
+      persistentHandlePending:
+        dockMotionSession?.revealHandleMode === DOCK_REVEAL_HANDLE_MODES.PERSISTENT,
+      edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor
     })
     if (dockTransitionState.consumeQueuedShow()) {
       doShow('queued-during-hide')
@@ -3161,7 +3209,11 @@ function doHide() {
         )
         return
       }
-      logger.info('dock.lifecycle', '常显小黑条已在隐藏终点激活', { generation, side: dockSide })
+      logger.info('dock.lifecycle', '常显小黑条已在隐藏终点激活', {
+        generation,
+        side: dockSide,
+        edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor
+      })
     }
   })
 }
@@ -3171,6 +3223,7 @@ function doHide() {
  * 前置条件：isDockHidden === true
  */
 function doShow(source = 'unknown') {
+  const showStartedAt = Date.now()
   if (!mainWindow || mainWindow.isDestroyed()) {
     logger.warn('dock.show', '显示请求被拒绝：主窗口不存在', { source })
     return
@@ -3182,7 +3235,8 @@ function doShow(source = 'unknown') {
     isDockHidden,
     isSliding,
     hasDockMotionSession: Boolean(dockMotionSession),
-    generation: dockMotionSession?.generation || 0
+    generation: dockMotionSession?.generation || 0,
+    edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor
   })
   if (showAction !== 'start') return
 
@@ -3199,6 +3253,7 @@ function doShow(source = 'unknown') {
   isDockHidden = false
 
   let monitorStopped = false
+  const monitorStopStartedAt = Date.now()
   try {
     monitorStopped = windowMotionBackend.disarmEdgeMonitor(session.generation)
   } catch (error) {
@@ -3213,6 +3268,7 @@ function doShow(source = 'unknown') {
     })
     return
   }
+  const monitorStopMs = Date.now() - monitorStopStartedAt
 
   const { stableBounds, motionPlan } = session
   const target = { x: motionPlan.visibleX, y: motionPlan.visibleY }
@@ -3223,6 +3279,7 @@ function doShow(source = 'unknown') {
     dockTransitionState.beginTemporaryAlwaysOnTop()
     mainWindow.setAlwaysOnTop(true, 'pop-up-menu')
   }
+  const showAnimationStartedAt = Date.now()
   slideTo(target, motionPlan, () => {
     try {
       suppressDockGeometryPersistence()
@@ -3253,7 +3310,10 @@ function doShow(source = 'unknown') {
       logger.info('dock.lifecycle', '贴边显示动画完成', {
         source,
         side: session.side,
-        generation: session.generation
+        generation: session.generation,
+        monitorStopMs,
+        animationMs: Date.now() - showAnimationStartedAt,
+        totalElapsedMs: Date.now() - showStartedAt
       })
     }
   })
@@ -3483,6 +3543,7 @@ function toggleWindow() {
   }
   // 锁定时禁用贴边滑入：托盘点击退回普通“隐藏到托盘”行为，不再滑向屏幕边缘。
   if (dockSide && !isLocked) {
+    cancelPendingDockHide('tray-hide')
     doHide()
     return
   }
@@ -3496,7 +3557,25 @@ function toggleWindow() {
 }
 
 function handleViewVisibilityShortcut() {
-  if (isQuitting || switchingMainView || screenshotCaptureActive) return
+  const reason = isQuitting
+    ? 'quitting'
+    : switchingMainView
+      ? 'switching-view'
+      : screenshotCaptureActive
+        ? 'screenshot'
+        : null
+  const metadata = {
+    action: reason ? 'ignored' : 'toggle',
+    reason,
+    visible: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+    dockHidden: isDockHidden,
+    compactPhase: compactWindowController.phase
+  }
+  if (reason) {
+    logger.info('shortcut.view-visibility-trigger', '显示/隐藏快捷键触发被忽略', metadata)
+    return
+  }
+  logger.info('shortcut.view-visibility-trigger', '显示/隐藏快捷键已触发', metadata)
   toggleWindow()
 }
 
@@ -3589,7 +3668,6 @@ function switchMainView(targetMode) {
       sourceDisplay = screen.getDisplayMatching(
         dockMotionSession?.stableBounds || lastVisibleMainWindowBounds || mainWindow.getBounds()
       )
-      prepareCompactWindowForReplacement(mainWindow)
       if (!preserveCompactRuntime) restoreDockWindowToVisiblePosition()
       resetDockState({ source: 'view-switch' })
       if (nativeEdgeCleanupPending) {
@@ -3599,6 +3677,10 @@ function switchMainView(targetMode) {
         })
         return false
       }
+      // Only detach the compact controller after every precondition for
+      // destroying this HWND has succeeded. A timed-out native monitor cleanup
+      // leaves the current window alive and it must remain controller-owned.
+      prepareCompactWindowForReplacement(mainWindow)
     }
 
     if (geometryTimer) {
@@ -3683,6 +3765,7 @@ function rebuildTrayMenu() {
         activeViewMode,
         switchMainView,
         quitApplication: () => {
+          shutdownTrigger = 'tray-menu'
           isQuitting = true
           app.quit()
         }
@@ -3736,7 +3819,16 @@ app.whenReady().then(async () => {
     checkEnabled: process.env.ABANDON_INTEGRATION_TEST !== '1'
   })
   try {
-    await Promise.all([cleanupPendingAttachmentDirs(), cleanupPendingWallpaperFiles()])
+    await Promise.all([
+      cleanupPendingAttachmentDirs({
+        onRecovery: (metadata) =>
+          logger.info('storage.attachment-recovery', '附件存储恢复补偿已执行', metadata)
+      }),
+      cleanupPendingWallpaperFiles({
+        onRecovery: (metadata) =>
+          logger.info('storage.wallpaper-recovery', '壁纸存储恢复补偿已执行', metadata)
+      })
+    ])
   } catch (error) {
     console.warn('[storage] 恢复未完成的存储操作失败:', error)
   }
@@ -3774,7 +3866,11 @@ app.whenReady().then(async () => {
     writeLog({
       ...normalized,
       windowRole: windowContext.role,
-      webContentsId: event.sender.id
+      webContentsId: event.sender.id,
+      metadata: {
+        ...(normalized.metadata || {}),
+        ...getWindowDiagnosticContext(win, event.sender)
+      }
     })
   })
 
@@ -3804,7 +3900,8 @@ app.whenReady().then(async () => {
     if (result.canceled || !result.filePath) return { canceled: true }
     await exportLogs(result.filePath, {
       logDirectory: getLogDirectory(),
-      crashDumpsPath: app.getPath('crashDumps')
+      crashDumpsPath: app.getPath('crashDumps'),
+      recentCrashDumps: getRecentCrashDumps()
     })
     logger.info('logs.export', '诊断日志已导出', { targetPath: result.filePath })
     return { canceled: false, filePath: result.filePath }
@@ -3841,7 +3938,7 @@ app.whenReady().then(async () => {
       if (isCompactWindowActive()) syncCompactWindowRuntime('renderer-ready-compact')
       reassertBottomWindowZOrder('renderer-ready')
       broadcastCompactWindowState()
-      revealPendingNotificationNote()
+      revealPendingNotificationApplication()
     }
   })
 
@@ -3961,6 +4058,7 @@ app.whenReady().then(async () => {
       {
         label: '退出软件',
         click: () => {
+          shutdownTrigger = 'window-context-menu'
           isQuitting = true
           app.quit()
         }
@@ -4121,7 +4219,8 @@ app.whenReady().then(async () => {
     writeApplicationSetting('weather.location', resolvedSettings.weather.location)
     writeApplicationSetting('onboarding.noticeVersion', DEFAULT_SETTINGS.onboarding.noticeVersion)
     const previousDockConfig = getDockRuntimeConfig()
-    clearSettings(getActiveWindowName())
+    const resetViewScope = getActiveWindowName()
+    const clearedSettingCount = clearSettings(resetViewScope)
     refreshResolvedSettings({ incrementRevision: true })
     applyResolvedWindowRuntime()
     applyResolvedBlurRuntime()
@@ -4142,6 +4241,11 @@ app.whenReady().then(async () => {
 
     const snapshot = getResolvedSettingsSnapshot()
     broadcastSettingsChanged(snapshot)
+    logger.info('settings.reset', '当前视图设置已恢复默认值', {
+      viewMode: activeViewMode,
+      viewScope: resetViewScope,
+      clearedSettingCount
+    })
     return snapshot
   })
 
@@ -4169,7 +4273,9 @@ app.whenReady().then(async () => {
         !nativeEdgeCleanupPending
       ) {
         if (hideTimer) clearTimeout(hideTimer)
+        pendingDockHideRequestedAt = Date.now()
         hideTimer = setTimeout(() => {
+          const hideRequestedAt = pendingDockHideRequestedAt
           hideTimer = null
           // 计时期间窗口、显示器或设置都可能变化；执行前重新计算能力交集与
           // 最近边，绝不依赖 200ms 前捕获的 dockSide。
@@ -4182,6 +4288,16 @@ app.whenReady().then(async () => {
             dockInteractionSuspendCount > 0 ||
             nativeEdgeCleanupPending
           ) {
+            pendingDockHideRequestedAt = null
+            logger.debug('dock.hide-request', '贴边隐藏请求在延迟结束后被状态变化取消', {
+              elapsedMs: hideRequestedAt ? Date.now() - hideRequestedAt : null,
+              dockSide,
+              isDockHidden,
+              isSliding,
+              isLocked,
+              dockInteractionSuspendCount,
+              nativeEdgeCleanupPending: Boolean(nativeEdgeCleanupPending)
+            })
             return
           }
           // 透明窗口圆角区域会误触发 mouseleave，此处用光标位置二次确认
@@ -4194,6 +4310,11 @@ app.whenReady().then(async () => {
               cursor.y >= b.y &&
               cursor.y <= b.y + b.height
             ) {
+              pendingDockHideRequestedAt = null
+              logger.debug('dock.hide-request', '忽略透明圆角造成的鼠标离开事件', {
+                elapsedMs: hideRequestedAt ? Date.now() - hideRequestedAt : null,
+                dockSide
+              })
               return // 光标仍在窗口矩形内 → 误触发，不隐藏
             }
           }
@@ -4425,14 +4546,23 @@ app.whenReady().then(async () => {
       delete: deleteDesktopStickyRecord,
       deleteAll: deleteAllDesktopStickyRecords
     },
-    saveContent: ({ stickyId, noteId, content, updatedAt }) =>
+    logger,
+    saveContent: ({ noteId, content, expectedContent, updatedAt }) =>
       getDb().transaction(() => {
+        const currentNote = getNoteById(noteId)
+        if (!currentNote) throw new Error('来源便签不存在或已被删除')
+        if (currentNote.content !== expectedContent) {
+          if (updateDesktopStickyContentsByNoteId(noteId, currentNote.content, updatedAt) < 1) {
+            throw new Error('便利贴记录不存在')
+          }
+          return { conflict: true, content: currentNote.content }
+        }
         const updatedNote = updateNote(noteId, { content })
         if (!updatedNote) throw new Error('来源便签不存在或已被删除')
-        if (!updateDesktopStickyRecord(stickyId, { content, updatedAt })) {
+        if (updateDesktopStickyContentsByNoteId(noteId, content, updatedAt) < 1) {
           throw new Error('便利贴记录不存在')
         }
-        return updatedNote
+        return { conflict: false, note: updatedNote }
       })(),
     isDevelopment: is.dev,
     onRegistryChanged: rebuildTrayMenu,
@@ -4462,20 +4592,28 @@ app.whenReady().then(async () => {
     getMainWindow: () => mainWindow,
     icon,
     platform: process.platform,
-    openNote: openNotificationNote
+    revealApplication: revealApplicationFromNotification
   })
 
   // 3.3 生效便签激活任务（含通知）
   scheduler.register({
     name: 'activationTask',
     shouldRun: () => true,
-    execute: () => {
+    execute: (context) => {
       const result = activateNotes()
+      let notifiedCount = 0
       for (const note of result.notified) {
         if (notificationService.trySend(note.content, { noteId: note.id })) {
-          const preview = (note.content || '').trim().slice(0, 10) || '空内容'
-          console.log(`[activation-notify]「${preview}」便签已发送系统通知`)
+          notifiedCount += 1
         }
+      }
+      if (result.count > 0) {
+        logger.info('scheduler.activation', '到期便签激活完成', {
+          reason: context.reason,
+          activatedCount: result.count,
+          notificationRequestedCount: result.notified.length,
+          notifiedCount
+        })
       }
       if (result.count > 0 && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('notes:changed', { reason: 'activation' })
@@ -4499,6 +4637,7 @@ app.whenReady().then(async () => {
     shouldRun: (context) => templateSchedulerGuard.shouldRun(context.now),
     execute: (context) => {
       const result = templateSchedulerGuard.run(() => runRecurringTemplates(context), context.now)
+      let notifiedCount = 0
       for (const note of result.generated) {
         const preview = (note.content || '').trim().slice(0, 10) || '空内容'
         if (
@@ -4507,7 +4646,7 @@ app.whenReady().then(async () => {
             noteId: note.id
           })
         ) {
-          console.log(`[generation-notify]「${preview}」已由循环模板生成便签，模板已发送通知`)
+          notifiedCount += 1
         }
       }
       for (const template of result.autoPaused) {
@@ -4521,6 +4660,18 @@ app.whenReady().then(async () => {
         result.skipped > 0 ||
         result.errors.length > 0 ||
         result.autoPaused.length > 0
+      if (templatesChanged) {
+        logger.info('scheduler.template-generation', '循环模板调度发生业务变化', {
+          reason: context.reason,
+          generatedCount: result.count,
+          notificationRequestedCount: result.generated.length,
+          notifiedCount,
+          skippedCount: result.skipped,
+          errorCount: result.errors.length,
+          errorTemplateIds: result.errors.map((item) => item.templateId),
+          autoPausedTemplateIds: result.autoPaused.map((template) => template.id)
+        })
+      }
       if (templatesChanged && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('templates:changed', {
           reason: result.autoPaused.length > 0 ? 'auto-pause' : 'scheduler',
@@ -4564,14 +4715,32 @@ app.whenReady().then(async () => {
   mainWindow.on('show', () => {
     if (isDockHidden) doShow('main-window-show-event')
   })
+  mainWindow.on('session-end', () => {
+    shutdownTrigger = 'windows-session-end'
+    logger.warn('lifecycle.session-end', 'Windows 会话正在结束，应用将执行退出清理')
+  })
 
   // 【清空便签数据】仅清理便签、模板、标签和附件，保留 app_settings。
   mainWindowIpc.handle('clear-note-data', async () => {
+    const counts = getDb()
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM notes) AS notes,
+           (SELECT COUNT(*) FROM note_templates) AS templates,
+           (SELECT COUNT(*) FROM tags) AS tags,
+           (SELECT COUNT(*) FROM note_attachments) AS attachments,
+           (SELECT COUNT(*) FROM desktop_stickies) AS desktopStickies`
+      )
+      .get()
     await clearNoteData()
     stickyService?.discardAllRuntime()
     for (const window of getApplicationWindows()) {
       window.webContents.send('notes:changed', { reason: 'note-data-cleared' })
     }
+    logger.info('data.clear', '便签业务数据已清空', {
+      viewMode: activeViewMode,
+      ...counts
+    })
     return true
   })
 
@@ -4603,7 +4772,9 @@ app.whenReady().then(async () => {
     getMainWindow: () => mainWindow,
     getAuthorizedWindows: () => getApplicationWindows(),
     getBroadcastWindows: () => getApplicationWindows(),
+    getViewMode: () => activeViewMode,
     platform: process.platform,
+    diagnosticLogger: logger,
     onNotePurged: (noteId) => stickyService?.discardByNoteId(noteId)
   })
   registerCalendarIpcHandlers({
@@ -4624,7 +4795,8 @@ app.whenReady().then(async () => {
     userDataPath,
     appVersion: app.getVersion(),
     getMainWindow: () => mainWindow,
-    getWeatherSettings: () => structuredClone(resolvedSettings.weather)
+    getWeatherSettings: () => structuredClone(resolvedSettings.weather),
+    logger
   })
   void weatherRuntime.refreshAtStartup().catch((error) => {
     logger.warn('weather.startup-refresh', error?.message || '启动时天气更新失败')
@@ -4689,17 +4861,49 @@ app.whenReady().then(async () => {
 
 // 应用退出前关闭数据库连接和贴边资源，确保数据安全
 app.on('before-quit', (event) => {
+  if (!shutdownStartedAt) {
+    shutdownStartedAt = Date.now()
+    shutdownTrigger = shutdownTrigger || (isQuitting ? 'user-request' : 'system-or-programmatic')
+    logger.info('lifecycle.shutdown-start', '应用开始退出清理', {
+      trigger: shutdownTrigger,
+      remoteSessionActive: Boolean(remoteCoordinator?.hasActiveSession()),
+      compactPhase: compactWindowController.phase,
+      compactTransitionActive: Boolean(compactWindowController.activePromise())
+    })
+  }
   // 系统退出、Cmd+Q 与代码触发的 app.quit() 都必须绕过“关闭到托盘”。
   isQuitting = true
   if (!remoteShutdownFinished && (remoteShutdownStarted || remoteCoordinator?.hasActiveSession())) {
     event.preventDefault()
     if (!remoteShutdownStarted) {
       remoteShutdownStarted = true
-      const timeout = new Promise((resolve) => setTimeout(resolve, 1600))
-      void Promise.race([remoteCoordinator.stop(), timeout]).finally(() => {
-        remoteShutdownFinished = true
-        app.quit()
+      const stageStartedAt = Date.now()
+      logger.info('lifecycle.shutdown-wait', '退出前等待远程会话结束', {
+        stage: 'remote-session'
       })
+      const timeout = new Promise((resolve) => setTimeout(() => resolve('timeout'), 1600))
+      const stop = Promise.resolve()
+        .then(() => remoteCoordinator.stop())
+        .then(() => 'completed')
+      void Promise.race([stop, timeout])
+        .then((result) => {
+          logger.info('lifecycle.shutdown-wait', '远程会话退出等待结束', {
+            stage: 'remote-session',
+            result,
+            elapsedMs: Date.now() - stageStartedAt
+          })
+        })
+        .catch((error) => {
+          logger.error('lifecycle.shutdown-wait', error, {
+            stage: 'remote-session',
+            result: 'failed',
+            elapsedMs: Date.now() - stageStartedAt
+          })
+        })
+        .finally(() => {
+          remoteShutdownFinished = true
+          app.quit()
+        })
     }
     return
   }
@@ -4708,10 +4912,34 @@ app.on('before-quit', (event) => {
     event.preventDefault()
     if (!compactShutdownWaitStarted) {
       compactShutdownWaitStarted = true
-      void compactTransitionPromise.finally(() => {
-        compactShutdownWaitStarted = false
-        app.quit()
+      const stageStartedAt = Date.now()
+      logger.info('lifecycle.shutdown-wait', '退出前等待窗口形态切换结束', {
+        stage: 'compact-transition',
+        compactPhase: compactWindowController.phase
       })
+      void compactTransitionPromise
+        .then(
+          () => {
+            logger.info('lifecycle.shutdown-wait', '窗口形态切换退出等待结束', {
+              stage: 'compact-transition',
+              result: 'completed',
+              elapsedMs: Date.now() - stageStartedAt,
+              compactPhase: compactWindowController.phase
+            })
+          },
+          (error) => {
+            logger.error('lifecycle.shutdown-wait', error, {
+              stage: 'compact-transition',
+              result: 'failed',
+              elapsedMs: Date.now() - stageStartedAt,
+              compactPhase: compactWindowController.phase
+            })
+          }
+        )
+        .finally(() => {
+          compactShutdownWaitStarted = false
+          app.quit()
+        })
     }
     return
   }
@@ -4767,6 +4995,13 @@ app.on('before-quit', (event) => {
   if (tray) {
     tray.destroy()
     tray = null
+  }
+  if (!shutdownCompletedLogged) {
+    shutdownCompletedLogged = true
+    logger.info('lifecycle.shutdown-complete', '应用退出清理完成', {
+      trigger: shutdownTrigger,
+      elapsedMs: shutdownStartedAt ? Date.now() - shutdownStartedAt : null
+    })
   }
   flushLogs()
 })

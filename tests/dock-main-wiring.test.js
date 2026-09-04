@@ -131,4 +131,30 @@ describe('dock main-process wiring', () => {
     expect(hide).toContain('handlePositionPermille: null')
     expect(hide).not.toContain("applyDockPersistentHandlePosition(dockMotionSession, 'hide')")
   })
+
+  it('records actionable hide and wake latency without logging animation frames', () => {
+    const source = readFileSync(MAIN_PATH, 'utf8')
+    const hide = source.slice(
+      source.indexOf('function doHide()'),
+      source.indexOf('function doShow(')
+    )
+    const show = source.slice(
+      source.indexOf('function doShow('),
+      source.indexOf(
+        '// ============================================================\n// 主窗口层级控制'
+      )
+    )
+
+    expect(source).toContain('pendingDockHideRequestedAt = Date.now()')
+    expect(hide).toContain('requestDelayMs:')
+    expect(hide).toContain('preparationMs:')
+    expect(hide).toContain('animationMs:')
+    expect(hide).toContain('totalElapsedMs:')
+    expect(hide).toContain('edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor')
+    expect(show).toContain('monitorStopMs')
+    expect(show).toContain('animationMs:')
+    expect(show).toContain('totalElapsedMs:')
+    expect(show).toContain('edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor')
+    expect(source).not.toContain("logger.info('dock.slide-frame'")
+  })
 })

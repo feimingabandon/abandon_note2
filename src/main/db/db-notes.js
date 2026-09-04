@@ -7,8 +7,10 @@ import { getDb } from './db-connection.js'
 import { localDateKey } from '../../shared/calendar/calendar-date-rules.js'
 import { normalizeAssignedTagIds } from '../../shared/tag-rules.js'
 import {
+  HISTORICAL_NOTE_MOVE_PREVIEW_MAX_CONTENT_LENGTH,
   HISTORICAL_NOTE_MOVE_SCOPES,
   normalizeHistoricalNoteMoveIds,
+  normalizeHistoricalNoteMovePreviewPage,
   normalizeHistoricalNoteMoveSelection
 } from '../../shared/historical-note-move-rules.js'
 
@@ -291,11 +293,6 @@ export function activateNotes() {
       )
       .run(ts, ts, ts)
 
-    for (const note of due) {
-      const preview = (note.content || '').trim().slice(0, 10) || '空内容'
-      console.log(`[activateNotes]「${preview}」便签到达生效时间，进入进行中`)
-    }
-
     return {
       count: result.changes,
       notified: due
@@ -321,23 +318,48 @@ function historicalInProgressWhere(selection) {
 /** 统计所选历史自然日中仍处于进行中的便签。 */
 export function previewHistoricalInProgressMove(selection = {}, currentTime = Date.now()) {
   const normalized = normalizeHistoricalNoteMoveSelection(selection, currentTime)
+  const page = normalizeHistoricalNoteMovePreviewPage(selection)
   const where = historicalInProgressWhere(normalized)
+  const count = Number(
+    getDb()
+      .prepare(`SELECT COUNT(*) AS total FROM notes WHERE ${where.clause}`)
+      .get(...where.params).total
+  )
   const notes = getDb()
     .prepare(
-      `SELECT id, content, effective_at
+      `SELECT id,
+              CASE WHEN length(content) > ? THEN substr(content, 1, ?) ELSE content END
+                AS content_preview,
+              length(content) AS content_length,
+              effective_at
        FROM notes
        WHERE ${where.clause}
-       ORDER BY effective_at DESC, id DESC`
+       ORDER BY effective_at DESC, id DESC
+       LIMIT ? OFFSET ?`
     )
-    .all(...where.params)
+    .all(
+      HISTORICAL_NOTE_MOVE_PREVIEW_MAX_CONTENT_LENGTH,
+      HISTORICAL_NOTE_MOVE_PREVIEW_MAX_CONTENT_LENGTH - 1,
+      ...where.params,
+      page.limit,
+      page.offset
+    )
     .map((note) => ({
       id: Number(note.id),
-      content: String(note.content || ''),
+      content:
+        Number(note.content_length) > HISTORICAL_NOTE_MOVE_PREVIEW_MAX_CONTENT_LENGTH
+          ? `${String(note.content_preview || '')}…`
+          : String(note.content_preview || ''),
+      contentTruncated:
+        Number(note.content_length) > HISTORICAL_NOTE_MOVE_PREVIEW_MAX_CONTENT_LENGTH,
       dateKey: localDateKey(note.effective_at)
     }))
   return {
-    count: notes.length,
+    count,
     notes,
+    offset: page.offset,
+    limit: page.limit,
+    hasMore: page.offset + notes.length < count,
     scope: normalized.scope,
     startDateKey: normalized.startDateKey,
     endDateKey: normalized.endDateKey,
@@ -353,11 +375,15 @@ export function moveHistoricalInProgressNotesToToday(selection = {}, currentTime
   const timestamp = Number(currentTime)
   const normalized = normalizeHistoricalNoteMoveSelection(selection, timestamp)
   const selectedNoteIds = normalizeHistoricalNoteMoveIds(selection?.noteIds)
+  const excludedNoteIds = normalizeHistoricalNoteMoveIds(selection?.excludedNoteIds)
+  if (selectedNoteIds !== null && excludedNoteIds !== null) {
+    throw new Error('不能同时指定待移动和排除的便签列表')
+  }
   const where = historicalInProgressWhere(normalized)
   const db = getDb()
   return db.transaction(() => {
     let changes = 0
-    if (selectedNoteIds === null) {
+    if (selectedNoteIds === null && (!excludedNoteIds || excludedNoteIds.length === 0)) {
       changes = db
         .prepare(
           `UPDATE notes
@@ -365,6 +391,14 @@ export function moveHistoricalInProgressNotesToToday(selection = {}, currentTime
            WHERE ${where.clause}`
         )
         .run(timestamp, timestamp, ...where.params).changes
+    } else if (selectedNoteIds === null) {
+      changes = db
+        .prepare(
+          `UPDATE notes
+           SET effective_at = ?, notify_enabled = 0, updated_at = ?
+           WHERE ${where.clause} AND id NOT IN (${excludedNoteIds.map(() => '?').join(',')})`
+        )
+        .run(timestamp, timestamp, ...where.params, ...excludedNoteIds).changes
     } else if (selectedNoteIds.length > 0) {
       const updateSelected = db.prepare(
         `UPDATE notes

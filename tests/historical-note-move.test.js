@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
+  HISTORICAL_NOTE_MOVE_PREVIEW_PAGE_SIZE,
   HISTORICAL_NOTE_MOVE_SCOPES,
   normalizeHistoricalNoteMoveIds,
+  normalizeHistoricalNoteMovePreviewPage,
   normalizeHistoricalNoteMoveSelection
 } from '../src/shared/historical-note-move-rules.js'
 import { localMidnightTimestamp } from '../src/shared/calendar/calendar-date-rules.js'
@@ -72,6 +74,21 @@ describe('historical note move rules', () => {
     expect(() => normalizeHistoricalNoteMoveIds('3')).toThrow(/列表无效/)
     expect(() => normalizeHistoricalNoteMoveIds([0])).toThrow(/ID 无效/)
   })
+
+  it('bounds each preview page while accepting a safe non-negative offset', () => {
+    expect(normalizeHistoricalNoteMovePreviewPage()).toEqual({
+      limit: HISTORICAL_NOTE_MOVE_PREVIEW_PAGE_SIZE,
+      offset: 0
+    })
+    expect(normalizeHistoricalNoteMovePreviewPage({ limit: 10_000, offset: 25 })).toEqual({
+      limit: HISTORICAL_NOTE_MOVE_PREVIEW_PAGE_SIZE,
+      offset: 25
+    })
+    expect(normalizeHistoricalNoteMovePreviewPage({ limit: 0, offset: -5 })).toEqual({
+      limit: 1,
+      offset: 0
+    })
+  })
 })
 
 describe('historical note move UI wiring', () => {
@@ -89,7 +106,7 @@ describe('historical note move UI wiring', () => {
     expect(control).toContain("{ value: 'all', label: '全部历史' }")
     expect(control).toContain("selectedPreset.value = 'yesterday'")
     expect(control).toContain(':max-date="maxDateKey"')
-    expect(control).toContain('previewHistoricalNoteMove(selectionPayload())')
+    expect(control).toContain('previewHistoricalNoteMove({')
     expect(control).toContain('moveHistoricalNotesToToday({')
     expect(control).toContain('data-move-note-list')
     expect(control).toContain('{{ group.dateKey }}')
@@ -102,10 +119,12 @@ describe('historical note move UI wiring', () => {
     expect(control).toContain('transform 260ms cubic-bezier(0.32, 0.72, 0, 1)')
     expect(control).toContain(':value-transition-direction="selectionDirection"')
     expect(control).toContain('data-move-preview-page')
-    expect(control).toContain('selectedNoteIds.value = new Set(previewNotes.value.map')
+    expect(control).toContain('allMatchingSelected.value = true')
+    expect(control).toContain('excludedNoteIds: [...deselectedNoteIds.value]')
+    expect(control).toContain('data-move-load-more')
     expect(control).toContain('data-move-select-all')
     expect(control).toContain('data-move-clear-selection')
-    expect(control).toContain('noteIds: [...selectedNoteIds.value]')
+    expect(control).toContain('{ noteIds: [...selectedNoteIds.value] }')
     expect(control).toMatch(
       /\.historical-note-move__selection-bar\s*\{[\s\S]*?background: var\(--surface-float\)/
     )

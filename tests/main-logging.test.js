@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -21,10 +21,12 @@ vi.mock('electron', () => ({
 
 let logging
 let windowCapture
+let processCapture
 
 beforeAll(async () => {
   logging = await import('../src/main/logging/logger.js')
   windowCapture = await import('../src/main/logging/window-capture.js')
+  processCapture = await import('../src/main/logging/process-capture.js')
 })
 
 afterAll(() => {
@@ -114,8 +116,15 @@ describe('main-process logging', () => {
     const webContents = new EventEmitter()
     webContents.id = 73
     const win = new EventEmitter()
+    win.id = 19
     win.webContents = webContents
     win.isDestroyed = () => false
+    win.getBounds = () => ({ x: 1, y: 2, width: 300, height: 200 })
+    win.isVisible = () => true
+    win.isFocused = () => false
+    win.isMinimized = () => false
+    webContents.getOSProcessId = () => 9876
+    webContents.getURL = () => 'app://test-window'
 
     windowCapture.setWindowLogContext(win, { role: 'test-window' })
     windowCapture.attachWindowLogging(win)
@@ -137,9 +146,87 @@ describe('main-process logging', () => {
       webContentsId: 73,
       metadata: {
         lineNumber: 42,
-        sourceId: 'SettingsPanel.vue'
+        sourceId: 'SettingsPanel.vue',
+        windowContext: { role: 'test-window' },
+        browserWindowId: 19,
+        rendererProcessId: 9876,
+        url: 'app://test-window',
+        windowState: {
+          bounds: { x: 1, y: 2, width: 300, height: 200 },
+          visible: true,
+          focused: false,
+          minimized: false
+        }
       }
     })
+  })
+
+  it('lists recent Crashpad dumps without reading their contents', () => {
+    const reports = join(testUserData, 'reports')
+    mkdirSync(reports, { recursive: true })
+    writeFileSync(join(reports, 'older.dmp'), Buffer.alloc(3))
+    writeFileSync(join(reports, 'newer.dmp'), Buffer.alloc(7))
+    writeFileSync(join(reports, 'ignored.txt'), 'not a dump')
+
+    expect(processCapture.getRecentCrashDumps()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'older.dmp', size: 3 }),
+        expect.objectContaining({ name: 'newer.dmp', size: 7 })
+      ])
+    )
+    expect(processCapture.getRecentCrashDumps().some((item) => item.name === 'ignored.txt')).toBe(
+      false
+    )
+  })
+
+  it('suppresses only Vite development transport noise from renderer console capture', async () => {
+    const previousRendererUrl = process.env.ELECTRON_RENDERER_URL
+    process.env.ELECTRON_RENDERER_URL = 'http://localhost:5173'
+    const marker = `vite-console-${Date.now()}`
+    const webContents = new EventEmitter()
+    webContents.id = 74
+    const win = new EventEmitter()
+    win.webContents = webContents
+    win.isDestroyed = () => false
+
+    try {
+      windowCapture.setWindowLogContext(win, { role: 'sticky' })
+      windowCapture.attachWindowLogging(win)
+      webContents.emit('console-message', {
+        level: 'info',
+        message: `[vite] hot updated: /${marker}.vue`,
+        lineNumber: 1,
+        sourceId: 'http://localhost:5173/@vite/client'
+      })
+      webContents.emit('console-message', {
+        level: 'error',
+        message: `Connecting to 'ws://localhost:5173/?token=${marker}' violates the following Content Security Policy directive: "connect-src 'none'". The action has been blocked.`,
+        lineNumber: 2,
+        sourceId: 'http://localhost:5173/@vite/client'
+      })
+      webContents.emit('console-message', {
+        level: 'error',
+        message: `应用错误 ${marker}`,
+        lineNumber: 3,
+        sourceId: 'http://localhost:5173/@vite/client'
+      })
+      webContents.emit('console-message', {
+        level: 'error',
+        message: `[vite] connection failed ${marker}`,
+        lineNumber: 4,
+        sourceId: 'http://localhost:5173/@vite/client'
+      })
+
+      const result = await logging.queryLogs({ search: marker, limit: 10 })
+      const messages = result.items.map((item) => item.message)
+      expect(messages).toHaveLength(2)
+      expect(messages).toEqual(
+        expect.arrayContaining([`应用错误 ${marker}`, `[vite] connection failed ${marker}`])
+      )
+    } finally {
+      if (previousRendererUrl === undefined) delete process.env.ELECTRON_RENDERER_URL
+      else process.env.ELECTRON_RENDERER_URL = previousRendererUrl
+    }
   })
 
   it('returns the registered role for structured renderer logs', () => {

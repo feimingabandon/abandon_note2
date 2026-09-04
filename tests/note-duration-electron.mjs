@@ -140,23 +140,63 @@ async function runTests() {
     await waitUntil(
       () =>
         window.webContents.executeJavaScript(
-          `Boolean(document.querySelector('.app-editor-dialog textarea')?.value.includes('旧库单日便签'))`
+          `Boolean(Array.from(document.querySelectorAll('.nl-card')).find((card) => card.textContent.includes('旧库单日便签')))`
         ),
-      '冷启动通知没有定位并打开对应便签'
+      '旧库便签未进入列表'
     )
+    await wait(300)
+    assert.equal(
+      await window.webContents.executeJavaScript(`Boolean(document.querySelector('.app-editor-dialog'))`),
+      false,
+      '点击通知只应显示主视图，不应打开便签编辑器'
+    )
+
+    await window.webContents.executeJavaScript(`(() => {
+      const card = Array.from(document.querySelectorAll('.nl-card')).find((node) => node.textContent.includes('旧库单日便签'))
+      card.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 120 }))
+    })()`)
+    await waitUntil(
+      () =>
+        window.webContents.executeJavaScript(
+          `Boolean(Array.from(document.querySelectorAll('.nl-context-menu button')).find((button) => button.textContent.trim() === '修改'))`
+        ),
+      '便签操作菜单未打开'
+    )
+    await window.webContents.executeJavaScript(`(() => {
+      const button = Array.from(document.querySelectorAll('.nl-context-menu button')).find((node) => node.textContent.trim() === '修改')
+      button.click()
+    })()`)
+    await waitUntil(
+      () => window.webContents.executeJavaScript(`Boolean(document.querySelector('.app-editor-dialog textarea'))`),
+      '便签编辑器未打开'
+    )
+    const draftContent = '通知点击期间保留的未保存草稿'
+    await window.webContents.executeJavaScript(`(() => {
+      const textarea = document.querySelector('.app-editor-dialog textarea')
+      textarea.value = ${JSON.stringify(draftContent)}
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })()`)
+    app.emit('second-instance', {}, ['electron.exe', 'abandon-note://notification/open?id=1'])
+    await wait(500)
     assert.equal(
       await window.webContents.executeJavaScript(
-        `document.activeElement === document.querySelector('.app-editor-dialog textarea')`
+        `document.querySelector('.app-editor-dialog textarea')?.value`
       ),
-      true,
-      '通知打开编辑器后焦点必须进入正文'
+      draftContent,
+      '点击通知不应关闭编辑器或覆盖未保存草稿'
     )
-    await window.webContents.executeJavaScript(
-      `document.querySelector('.app-editor-close').click()`
+    await window.webContents.executeJavaScript(`document.querySelector('.app-editor-close').click()`)
+    await waitUntil(
+      () => window.webContents.executeJavaScript(`Boolean(document.querySelector('.confirm-overlay.active'))`),
+      '未出现放弃编辑确认框'
     )
+    await window.webContents.executeJavaScript(`(() => {
+      const button = Array.from(document.querySelectorAll('.confirm-actions button')).find((node) => node.textContent.trim() === '放弃修改')
+      button.click()
+    })()`)
     await waitUntil(
       () => window.webContents.executeJavaScript(`!document.querySelector('.app-editor-dialog')`),
-      '通知打开的编辑器无法关闭'
+      '测试便签编辑器未关闭'
     )
 
     const migrated = await window.webContents.executeJavaScript(`window.api.getNote(1)`)
@@ -166,14 +206,6 @@ async function runTests() {
       existsSync(join(testUserData, 'app-v0-before-v3.db')),
       true,
       'V0 旧库在标签 ID 迁移前必须创建备份'
-    )
-
-    await waitUntil(
-      () =>
-        window.webContents.executeJavaScript(
-          `Boolean(Array.from(document.querySelectorAll('.nl-card')).find((card) => card.textContent.includes('旧库单日便签')))`
-        ),
-      '旧库便签未进入列表'
     )
 
     await window.webContents.executeJavaScript(`window.api.createTag('空层级测试', '#ff9500')`)

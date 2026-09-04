@@ -5,6 +5,46 @@ const url = (path) => new URL(path, import.meta.url)
 const read = (path) => readFileSync(url(path), 'utf8')
 
 describe('compact single-window architecture', () => {
+  it('reveals the main view from notifications without routing into note editors', () => {
+    const main = read('../src/main/index.js')
+    const service = read('../src/main/services/NotificationService.js')
+    const preload = read('../src/preload/index.js')
+    const listApp = read('../src/renderer/src/App.vue')
+    const calendarApp = read('../src/renderer/src/MonthApp.vue')
+
+    expect(main).toContain('revealApplicationFromNotification()')
+    expect(main).toContain('revealPendingNotificationApplication()')
+    expect(main).toContain('expandCompactWindowForNotification()')
+    expect(service).toContain('this.revealApplication?.()')
+    expect(service).toContain('`${this.appProtocol}://notification/open`')
+    for (const source of [main, preload, listApp, calendarApp]) {
+      expect(source).not.toContain('notification:open-note')
+      expect(source).not.toContain('onNotificationOpenNote')
+      expect(source).not.toContain('openNoteFromNotification')
+    }
+  })
+
+  it('keeps every new Windows runtime suite in the CI and release aggregate', () => {
+    const packageJson = JSON.parse(read('../package.json'))
+    const aggregate = packageJson.scripts['test:window-frame:win']
+    const ci = read('../.github/workflows/ci.yml')
+    const release = read('../.github/workflows/release.yml')
+
+    for (const testFile of [
+      'daily-report-electron.mjs',
+      'titlebar-icon-scale-electron.mjs',
+      'view-visibility-shortcut-electron.mjs',
+      'compact-window-electron.mjs list',
+      'compact-window-electron.mjs month',
+      'compact-window-electron.mjs week',
+      'compact-window-electron.mjs list notification'
+    ]) {
+      expect(aggregate).toContain(testFile)
+    }
+    expect(ci).toContain('npm run test:window-frame:win')
+    expect(release).toContain('npm run test:window-frame:win')
+  })
+
   it('pre-mounts both presentations in each main renderer and has no dedicated compact renderer', () => {
     const config = read('../electron.vite.config.mjs')
     const scene = read('../src/renderer/src/components/system/CompactWindowScene.vue')
@@ -62,6 +102,9 @@ describe('compact single-window architecture', () => {
     expect(blurEngine.match(/DeferWindowPos\(/g)?.length).toBeGreaterThanOrEqual(4)
     expect(blurEngine).toContain('EqualRect(&parentAfter, &overlayAfter)')
     expect(blurEngine).toContain('WM_BLUR_TRANSITION_VISUAL')
+    expect(blurEngine).not.toContain('TransitionVisualSize')
+    expect(blurEngine).toContain('static_cast<WPARAM>(width)')
+    expect(blurEngine).toContain('static_cast<LPARAM>(height)')
     expect(blurEngine).toContain('m_rootVisual.Clip(m_clip)')
     expect(blurEngine).toContain('m_tintVisual.Size(visualSize)')
     expect(blurEngine).toContain('m_tintVisual.Opacity(cfg.tintOpacity)')
@@ -93,7 +136,8 @@ describe('compact single-window architecture', () => {
     expect(main).toContain('waitForCompactExpandContentCue(nativeTransition)')
     expect(main).toContain('Promise.all([nativeTransition, rendererContentEnter])')
     expect(main).toContain('setTransitionStage(')
-    expect(main).toContain('screen.dipToScreenPoint')
+    expect(main).toContain('screen.dipToScreenRect(window, bounds)')
+    expect(main).not.toContain('screen.dipToScreenPoint')
     expect(main).toContain("ipcMain.on('compact-window:transition-ready'")
     expect(preload).toContain(
       "ipcRenderer.send('compact-window:transition-ready', generation, stage)"

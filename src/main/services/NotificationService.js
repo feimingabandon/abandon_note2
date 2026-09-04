@@ -19,14 +19,14 @@ export class NotificationService {
     getMainWindow,
     icon,
     platform = process.platform,
-    openNote
+    revealApplication
   }) {
     this.appProtocol = appProtocol
     this.capability = capability
     this.getMainWindow = getMainWindow
     this.icon = icon
     this.platform = platform
-    this.openNote = openNote
+    this.revealApplication = revealApplication
   }
 
   notifyFailure(scene, title, body, error) {
@@ -46,7 +46,7 @@ export class NotificationService {
     const parsedNoteId = Number(noteId)
 
     if (this.platform === 'win32' && Number.isInteger(parsedNoteId) && parsedNoteId > 0) {
-      const openUrl = `${this.appProtocol}://notification/open?id=${parsedNoteId}`
+      const openUrl = `${this.appProtocol}://notification/open`
       const iconUri = escapeToastXml(pathToFileURL(this.icon).href)
       const toastXml = `<toast launch="${openUrl}" activationType="protocol">
         <visual>
@@ -71,7 +71,7 @@ export class NotificationService {
     const notification = new Notification(options)
     if (hasNote) {
       notification.on('click', () => {
-        this.openNote?.(parsedNoteId)
+        this.revealApplication?.()
       })
     }
     notification.on('failed', (_event, error) => {

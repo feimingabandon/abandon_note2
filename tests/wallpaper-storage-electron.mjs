@@ -114,8 +114,17 @@ app.once('ready', async () => {
       ),
       true
     )
-    await cleanupPendingWallpaperFiles()
+    const recoveryEvents = []
+    await cleanupPendingWallpaperFiles({
+      onRecovery: (event) => recoveryEvents.push(event)
+    })
     assert.equal((await readdir(join(tempRoot, 'wallpapers', '.staging'))).length, 0)
+    assert.equal(
+      recoveryEvents.some(
+        (event) => event.operationType === 'delete' && event.action === 'committed-cleanup'
+      ),
+      true
+    )
 
     await expectStorageFault('delete:before-source-delete', () => deleteWallpaperVersion(second.id))
     assert.equal(listWallpaperRecords().length, 1)

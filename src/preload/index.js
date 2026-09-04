@@ -122,12 +122,6 @@ const api = {
     ipcRenderer.on('app:message', handler)
     return () => ipcRenderer.removeListener('app:message', handler)
   },
-  /** 点击便签系统通知后，由主进程要求当前视图定位并打开对应便签。 */
-  onNotificationOpenNote: (callback) => {
-    const handler = (_event, payload) => callback(payload)
-    ipcRenderer.on('notification:open-note', handler)
-    return () => ipcRenderer.removeListener('notification:open-note', handler)
-  },
 
   // ---- 应用更新（浏览器直链下载 + 对应版本发布页） ----
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),

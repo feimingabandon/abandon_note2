@@ -68,7 +68,12 @@ try {
   )
   assert.equal(yesterdayPreview.count, 1)
   assert.deepEqual(yesterdayPreview.notes, [
-    { id: yesterdayId, content: '昨天进行中', dateKey: '2026-09-03' }
+    {
+      id: yesterdayId,
+      content: '昨天进行中',
+      contentTruncated: false,
+      dateKey: '2026-09-03'
+    }
   ])
 
   const recentPreview = previewHistoricalInProgressMove(
@@ -135,6 +140,41 @@ try {
   const movedRemaining = moveHistoricalInProgressNotesToToday({ scope: 'all' }, currentTime + 2000)
   assert.equal(movedRemaining.count, 1, '未传 noteIds 时应保留原有整批移动语义')
   assert.equal(previewHistoricalInProgressMove({ scope: 'all' }, currentTime + 2000).count, 0)
+
+  const pagedIds = []
+  for (let index = 0; index < 101; index += 1) {
+    pagedIds.push(
+      seed({
+        content: index === 100 ? '长'.repeat(800) : `分页便签 ${index}`,
+        effectiveAt: localTs(2026, 7, 1, 8)
+      })
+    )
+  }
+  const firstPage = previewHistoricalInProgressMove({ scope: 'all' }, currentTime + 3000)
+  assert.equal(firstPage.count, 101)
+  assert.equal(firstPage.notes.length, 100)
+  assert.equal(firstPage.hasMore, true)
+  assert.equal(firstPage.notes[0].id, pagedIds.at(-1))
+  assert.equal(firstPage.notes[0].contentTruncated, true)
+  assert.equal(firstPage.notes[0].content.length, 500)
+
+  const secondPage = previewHistoricalInProgressMove(
+    { scope: 'all', offset: 100 },
+    currentTime + 3000
+  )
+  assert.equal(secondPage.notes.length, 1)
+  assert.equal(secondPage.hasMore, false)
+
+  const excludedId = firstPage.notes[0].id
+  const movedPaged = moveHistoricalInProgressNotesToToday(
+    { scope: 'all', excludedNoteIds: [excludedId] },
+    currentTime + 4000
+  )
+  assert.equal(movedPaged.count, 100)
+  assert.equal(
+    db.prepare('SELECT effective_at FROM notes WHERE id = ?').get(excludedId).effective_at,
+    localTs(2026, 7, 1, 8)
+  )
 
   process.stderr.write('historical note move database integration passed\n')
 } finally {

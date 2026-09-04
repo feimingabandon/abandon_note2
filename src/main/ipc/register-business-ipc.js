@@ -96,7 +96,9 @@ export function registerBusinessIpcHandlers({
   getMainWindow,
   getAuthorizedWindows = getMainWindow,
   getBroadcastWindows = getMainWindow,
+  getViewMode = () => null,
   platform = process.platform,
+  diagnosticLogger = null,
   onNotePurged = () => {}
 }) {
   const ipcMain = createMainWindowIpc(rawIpcMain, getAuthorizedWindows, '便签业务数据')
@@ -325,8 +327,14 @@ export function registerBusinessIpcHandlers({
 
   ipcMain.handle('notes:purge', async (_event, { id }) => {
     const noteId = Number(id)
+    const note = getNoteById(noteId)
     const purged = await purgeNoteAndFiles(noteId)
     if (purged) {
+      diagnosticLogger?.info?.('note.purge', '便签已永久删除', {
+        noteId,
+        viewMode: getViewMode(),
+        attachmentCount: Array.isArray(note?.attachments) ? note.attachments.length : null
+      })
       onNotePurged(noteId)
       sendToWindows(getBroadcastWindows, 'notes:changed', { reason: 'purge', id: noteId })
     }
@@ -353,6 +361,18 @@ export function registerBusinessIpcHandlers({
   )
   ipcMain.handle('notes:move-historical-to-today', (_event, selection) => {
     const result = moveHistoricalInProgressNotesToToday(selection || {})
+    diagnosticLogger?.info?.('notes.historical-move', '历史未完成便签移动操作已完成', {
+      scope: result.scope,
+      viewMode: getViewMode(),
+      startDateKey: result.startDateKey,
+      endDateKey: result.endDateKey,
+      targetDateKey: result.targetDateKey,
+      selectedCount: Array.isArray(selection?.noteIds) ? selection.noteIds.length : null,
+      excludedCount: Array.isArray(selection?.excludedNoteIds)
+        ? selection.excludedNoteIds.length
+        : null,
+      affectedCount: result.count
+    })
     if (result.count > 0) {
       sendToWindows(getBroadcastWindows, 'notes:changed', {
         reason: 'historical-move',
@@ -431,7 +451,17 @@ export function registerBusinessIpcHandlers({
   ipcMain.handle('templates:pause', (_event, { id }) => pauseTemplate(id))
   ipcMain.handle('templates:resume', (_event, { id }) => resumeTemplate(id))
   ipcMain.handle('templates:restore', (_event, { id }) => restoreTemplate(id))
-  ipcMain.handle('templates:purge', (_event, { id }) => purgeTemplate(id))
+  ipcMain.handle('templates:purge', (_event, { id }) => {
+    const templateId = Number(id)
+    const purged = purgeTemplate(templateId)
+    if (purged) {
+      diagnosticLogger?.info?.('template.purge', '循环模板已永久删除', {
+        templateId,
+        viewMode: getViewMode()
+      })
+    }
+    return purged
+  })
   ipcMain.handle(
     'templates:preview-next-run',
     (_event, { recurrenceRule, afterTimestamp } = {}) => {

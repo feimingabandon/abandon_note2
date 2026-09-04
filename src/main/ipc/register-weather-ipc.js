@@ -10,13 +10,16 @@ export function registerWeatherIpcHandlers({
   appVersion,
   getMainWindow,
   getWeatherSettings,
+  logger = null,
   weatherService = null
 }) {
   const service =
     weatherService ||
     new WeatherService({
       cachePath: join(userDataPath, 'cache', 'weather.json'),
-      userAgent: `Abandon-Note/${appVersion}`
+      userAgent: `Abandon-Note/${appVersion}`,
+      diagnosticLog: (level, scope, message, metadata) =>
+        logger?.[level]?.(scope, message, metadata)
     })
   const forecastRequests = new Map()
   const assertAuthorized = (event) => assertMainWindowSender(event, getMainWindow, '天气服务')
@@ -45,7 +48,7 @@ export function registerWeatherIpcHandlers({
     assertAuthorized(event)
     return service.getChinaDivisionTree()
   })
-  const refreshForecastFor = (settings, { refresh = false } = {}) => {
+  const refreshForecastFor = (settings, { refresh = false, trigger = 'unspecified' } = {}) => {
     if (!settings?.enabled || !settings.location) return Promise.resolve(null)
     const location = settings.location
     const key = weatherLocationKey(location)
@@ -55,10 +58,17 @@ export function registerWeatherIpcHandlers({
     const request = service
       .getForecast(location, {
         refresh,
-        shouldStore: () => isCurrentLocation(key)
+        shouldStore: () => isCurrentLocation(key),
+        trigger
       })
       .then((forecast) => {
-        if (!sendForecastIfCurrent(forecast, key)) return null
+        if (!sendForecastIfCurrent(forecast, key)) {
+          logger?.info?.('weather.result-discarded', '天气结果返回时地区已变化，结果未发送', {
+            trigger,
+            locationKey: key
+          })
+          return null
+        }
         return forecast
       })
       .finally(() => {
@@ -68,10 +78,10 @@ export function registerWeatherIpcHandlers({
     return request
   }
 
-  const refreshForecast = ({ refresh = false } = {}) =>
-    refreshForecastFor(getWeatherSettings(), { refresh })
+  const refreshForecast = ({ refresh = false, trigger = 'unspecified' } = {}) =>
+    refreshForecastFor(getWeatherSettings(), { refresh, trigger })
 
-  const refreshAtStartup = () => refreshForecast({ refresh: true })
+  const refreshAtStartup = () => refreshForecast({ refresh: true, trigger: 'startup' })
 
   ipcMain.handle('weather:get-forecast', async (event) => {
     assertAuthorized(event)
@@ -82,7 +92,7 @@ export function registerWeatherIpcHandlers({
     if (!isCurrentLocation(key)) return null
     if (cached) return cached
     // 首次启用天气或切换到从未缓存过的地区时，立即拉取该地区，而不是永久返回空缓存。
-    return refreshForecastFor(settings, { refresh: true })
+    return refreshForecastFor(settings, { refresh: true, trigger: 'initial-load' })
   })
   ipcMain.handle('weather:refresh-forecast', async (event) => {
     assertAuthorized(event)
@@ -94,7 +104,8 @@ export function registerWeatherIpcHandlers({
     if (pendingForecast) await pendingForecast
     if (!isCurrentLocation(key)) throw new Error('天气地区已变化，请重试')
     const forecast = await service.refreshForecastManually(settings.location, {
-      shouldStore: () => isCurrentLocation(key)
+      shouldStore: () => isCurrentLocation(key),
+      trigger: 'manual'
     })
     if (!sendForecastIfCurrent(forecast, key)) throw new Error('天气地区已变化，请重试')
     return forecast
@@ -105,5 +116,8 @@ export function registerWeatherIpcHandlers({
     return true
   })
 
-  return { refreshAtStartup, refreshDaily: () => refreshForecast({ refresh: true }) }
+  return {
+    refreshAtStartup,
+    refreshDaily: () => refreshForecast({ refresh: true, trigger: 'daily' })
+  }
 }

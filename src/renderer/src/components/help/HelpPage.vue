@@ -1206,7 +1206,9 @@ onBeforeUnmount(() => {
             <div class="help-platform-grid">
               <div>
                 <strong>Windows 10 / 11</strong
-                ><span>支持系统通知及点击通知定位便签；受支持版本可调原生毛玻璃半径与饱和度。</span>
+                ><span
+                  >支持系统通知，点击后会显示主视图；受支持版本可调原生毛玻璃半径与饱和度。</span
+                >
               </div>
               <div>
                 <strong>macOS</strong

@@ -13,7 +13,13 @@ export class ViewVisibilityShortcutService {
     this.runtimeError = null
     this.captureOwners = new Set()
     this.handleTrigger = () => {
-      if (this.captureOwners.size > 0) return
+      if (this.captureOwners.size > 0) {
+        this.logger?.info?.('shortcut.view-visibility-trigger', '显示/隐藏快捷键触发被忽略', {
+          action: 'ignored',
+          reason: 'capture'
+        })
+        return
+      }
       this.onTrigger?.()
     }
   }

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const electronMocks = vi.hoisted(() => ({
@@ -68,5 +69,18 @@ describe('ScreenshotService dock suspension', () => {
     await expect(handler({ sender: {} })).rejects.toThrow('无权使用截图功能')
     expect(onCaptureStart).not.toHaveBeenCalled()
     expect(onCaptureEnd).not.toHaveBeenCalled()
+  })
+
+  it('reports inline screenshot renderer errors without screenshot image data', () => {
+    const source = readFileSync(
+      new URL('../src/main/services/ScreenshotService.js', import.meta.url),
+      'utf8'
+    )
+
+    expect(source).toContain("window.addEventListener('error'")
+    expect(source).toContain("window.addEventListener('unhandledrejection'")
+    expect(source).toContain("scope:'screenshot.renderer'")
+    expect(source).toContain('displayId,viewport:')
+    expect(source).not.toContain('screenshot.reportLog({image')
   })
 })

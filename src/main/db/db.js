@@ -12,7 +12,7 @@
  */
 
 import Database from 'better-sqlite3' // SQLite3 同步驱动，适合 Electron 主进程
-import { dirname, join } from 'path' // Node.js 路径拼接工具
+import { basename, dirname, join } from 'path' // Node.js 路径拼接工具
 import { app } from 'electron' // Electron app 模块，用于获取用户数据目录
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs' // 文件系统操作
 import { readdir, rm } from 'fs/promises'
@@ -129,7 +129,7 @@ function businessDataExists() {
   return Number(row?.total) > 0
 }
 
-async function recoverImageDeletionOperation(operationDirectory) {
+async function recoverImageDeletionOperation(operationDirectory, onRecovery) {
   const manifestPath = join(operationDirectory, ATTACHMENT_OPERATION_MANIFEST)
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
   if (manifest?.version !== 1 || manifest?.type !== 'image-delete') return false
@@ -137,6 +137,11 @@ async function recoverImageDeletionOperation(operationDirectory) {
   const pendingPath = join(operationDirectory, 'payload')
   if (!existsSync(pendingPath)) {
     await rm(operationDirectory, { recursive: true, force: true })
+    onRecovery({
+      operationId: basename(operationDirectory),
+      operationType: 'image-delete',
+      action: 'cleanup-missing-payload'
+    })
     return true
   }
 
@@ -145,21 +150,37 @@ async function recoverImageDeletionOperation(operationDirectory) {
     .get(manifest.relativePath)
   if (!row) {
     await rm(operationDirectory, { recursive: true, force: true })
+    onRecovery({
+      operationId: basename(operationDirectory),
+      operationType: 'image-delete',
+      action: 'committed-cleanup'
+    })
     return true
   }
 
   const originalPath = resolveImagePath(manifest.relativePath)
   if (existsSync(originalPath)) {
     console.warn('[images] 附件原路径已存在，保留待恢复文件:', operationDirectory)
+    onRecovery({
+      operationId: basename(operationDirectory),
+      operationType: 'image-delete',
+      action: 'preserved-conflict'
+    })
     return true
   }
   mkdirSync(dirname(originalPath), { recursive: true })
   renameSync(pendingPath, originalPath)
   await rm(operationDirectory, { recursive: true, force: true })
+  onRecovery({
+    operationId: basename(operationDirectory),
+    operationType: 'image-delete',
+    action: 'rolled-back',
+    recoveredFiles: 1
+  })
   return true
 }
 
-async function recoverImageAdditionOperation(operationDirectory) {
+async function recoverImageAdditionOperation(operationDirectory, onRecovery) {
   const manifestPath = join(operationDirectory, ATTACHMENT_OPERATION_MANIFEST)
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
   if (manifest?.version !== 1 || manifest?.type !== 'image-add') return false
@@ -168,12 +189,22 @@ async function recoverImageAdditionOperation(operationDirectory) {
   if (existsSync(pendingPath)) {
     // 文件仍在暂存区，说明尚未进入数据库事务，可以直接丢弃。
     await rm(operationDirectory, { recursive: true, force: true })
+    onRecovery({
+      operationId: basename(operationDirectory),
+      operationType: 'image-add',
+      action: 'rolled-back-staging'
+    })
     return true
   }
 
   const targetManifestPath = join(operationDirectory, 'target.json')
   if (!existsSync(targetManifestPath)) {
     await rm(operationDirectory, { recursive: true, force: true })
+    onRecovery({
+      operationId: basename(operationDirectory),
+      operationType: 'image-add',
+      action: 'cleanup-missing-target'
+    })
     return true
   }
   const target = JSON.parse(readFileSync(targetManifestPath, 'utf8'))
@@ -186,60 +217,99 @@ async function recoverImageAdditionOperation(operationDirectory) {
     .prepare('SELECT 1 FROM note_attachments WHERE file_path = ? LIMIT 1')
     .get(target.relativePath)
   // 重命名成功但事务未提交时，最终文件没有数据库记录，必须清理孤儿文件。
-  if (!row && existsSync(finalPath)) await rm(finalPath, { force: true })
+  const orphanDeleted = !row && existsSync(finalPath)
+  if (orphanDeleted) await rm(finalPath, { force: true })
   await rm(operationDirectory, { recursive: true, force: true })
+  onRecovery({
+    operationId: basename(operationDirectory),
+    operationType: 'image-add',
+    action: row ? 'committed-cleanup' : 'rolled-back',
+    deletedFiles: orphanDeleted ? 1 : 0
+  })
   return true
 }
 
-async function recoverAttachmentStagingDirectory(stagingDirectory) {
+async function recoverAttachmentStagingDirectory(stagingDirectory, onRecovery) {
   const entries = await readdir(stagingDirectory, { withFileTypes: true })
   for (const entry of entries) {
     const path = join(stagingDirectory, entry.name)
     if (entry.isDirectory()) {
       try {
-        if (await recoverImageAdditionOperation(path)) continue
-        if (await recoverImageDeletionOperation(path)) continue
+        if (await recoverImageAdditionOperation(path, onRecovery)) continue
+        if (await recoverImageDeletionOperation(path, onRecovery)) continue
       } catch (error) {
         console.warn('[images] 恢复暂存附件失败，保留现场:', error)
+        onRecovery({
+          operationId: entry.name,
+          operationType: 'unknown',
+          action: 'failed-preserved',
+          reason: error?.message || String(error)
+        })
         continue
       }
       console.warn('[images] 发现未知附件暂存目录，保留现场:', path)
+      onRecovery({
+        operationId: entry.name,
+        operationType: 'unknown',
+        action: 'preserved-unknown'
+      })
       continue
     }
 
     await rm(path, { force: true })
+    onRecovery({
+      operationId: entry.name,
+      operationType: 'staging-file',
+      action: 'cleanup'
+    })
   }
 }
 
-async function recoverResetOperation(operationDirectory) {
+async function recoverResetOperation(operationDirectory, onRecovery) {
   const payloadPath = join(operationDirectory, 'attachments')
   const attachmentsDir = join(app.getPath('userData'), 'attachments')
   const committed = existsSync(join(operationDirectory, ATTACHMENT_OPERATION_COMMITTED))
 
   if (committed || !businessDataExists() || !existsSync(payloadPath)) {
     await rm(operationDirectory, { recursive: true, force: true })
+    onRecovery({
+      operationId: basename(operationDirectory),
+      operationType: 'reset',
+      action: committed ? 'committed-cleanup' : 'cleanup-unneeded'
+    })
     return
   }
   if (existsSync(attachmentsDir)) {
     console.warn('[clearNoteData] 附件目录已重新创建，保留待恢复目录:', operationDirectory)
+    onRecovery({
+      operationId: basename(operationDirectory),
+      operationType: 'reset',
+      action: 'preserved-conflict'
+    })
     return
   }
   renameSync(payloadPath, attachmentsDir)
   await rm(operationDirectory, { recursive: true, force: true })
+  onRecovery({
+    operationId: basename(operationDirectory),
+    operationType: 'reset',
+    action: 'rolled-back',
+    recoveredDirectories: 1
+  })
 }
 
 /** 启动时恢复未提交的附件操作，并清理已经提交的暂存数据。 */
-export async function cleanupPendingAttachmentDirs() {
+export async function cleanupPendingAttachmentDirs({ onRecovery = () => {} } = {}) {
   const userDataDir = app.getPath('userData')
   const entries = await readdir(userDataDir, { withFileTypes: true })
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     if (entry.name === '.attachments-staging') {
-      await recoverAttachmentStagingDirectory(join(userDataDir, entry.name))
+      await recoverAttachmentStagingDirectory(join(userDataDir, entry.name), onRecovery)
       continue
     }
     if (entry.name.startsWith('.attachments-deleting-reset-')) {
-      await recoverResetOperation(join(userDataDir, entry.name))
+      await recoverResetOperation(join(userDataDir, entry.name), onRecovery)
     }
   }
 }

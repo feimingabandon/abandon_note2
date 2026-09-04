@@ -200,7 +200,8 @@ export class WeatherService {
   constructor({
     cachePath,
     fetchImpl = globalThis.fetch,
-    userAgent = 'Abandon-Note/unknown'
+    userAgent = 'Abandon-Note/unknown',
+    diagnosticLog = null
   } = {}) {
     if (!cachePath) throw new Error('天气缓存路径不能为空')
     if (typeof fetchImpl !== 'function') throw new Error('当前运行时不支持 fetch')
@@ -210,8 +211,13 @@ export class WeatherService {
     this.cachePath = cachePath
     this.fetchImpl = fetchImpl
     this.userAgent = String(userAgent).trim()
+    this.diagnosticLog = typeof diagnosticLog === 'function' ? diagnosticLog : null
     this.cacheLoaded = false
     this.cache = { version: CACHE_VERSION, forecasts: {} }
+  }
+
+  report(level, scope, message, metadata) {
+    this.diagnosticLog?.(level, scope, message, metadata)
   }
 
   async loadCache() {
@@ -475,7 +481,10 @@ export class WeatherService {
     return this.normalizeForecast(data, location, fetchedAt, model)
   }
 
-  async getForecast(rawLocation, { refresh = false, cacheOnly = false, shouldStore = null } = {}) {
+  async getForecast(
+    rawLocation,
+    { refresh = false, cacheOnly = false, shouldStore = null, trigger = 'unspecified' } = {}
+  ) {
     const location = normalizeWeatherLocation(rawLocation)
     if (!location) throw new Error('请先在设置中选择城市')
     await this.loadCache()
@@ -499,22 +508,58 @@ export class WeatherService {
         const primary = primaryResult.status === 'fulfilled' ? primaryResult.value : null
         const fallback = fallbackResult.status === 'fulfilled' ? fallbackResult.value : null
         if (!primary && !fallback) throw primaryResult.reason || fallbackResult.reason
+        if (!primary && fallback) {
+          this.report(
+            'warn',
+            'weather.provider-fallback',
+            '中国气象局天气模型失败，已使用自动模型',
+            {
+              trigger,
+              locationKey: weatherLocationKey(location),
+              failedModel: CHINA_WEATHER_MODEL.id,
+              actualModel: fallback.source?.model?.id || AUTO_WEATHER_MODEL.id,
+              reason: primaryResult.reason?.message || String(primaryResult.reason || '')
+            }
+          )
+        }
         forecast = mergeForecasts(primary, fallback)
       } else {
         forecast = await this.requestForecast(location, now, model)
       }
       // 地区可能在请求期间被修改。由调用方确认结果仍属于当前设置，避免旧请求
       // 后完成时覆盖新地区缓存；服务独立使用时保持原有写入行为。
-      if (typeof shouldStore !== 'function' || shouldStore() !== false) {
+      const stored = typeof shouldStore !== 'function' || shouldStore() !== false
+      let cachePersisted = false
+      if (stored) {
         this.cache.forecasts = { [key]: forecast }
-        await this.saveCache().catch((error) => console.warn('[weather] 保存缓存失败:', error))
+        try {
+          await this.saveCache()
+          cachePersisted = true
+        } catch (error) {
+          console.warn('[weather] 保存缓存失败:', error)
+        }
       }
+      this.report('info', 'weather.network-refresh', '天气网络更新完成', {
+        trigger,
+        locationKey: weatherLocationKey(location),
+        requestedModel: model.id,
+        actualModel: forecast.source?.model?.id || model.id,
+        dayCount: forecast.days.length,
+        stored,
+        cachePersisted
+      })
       return {
         ...forecast,
         cache: { hit: false, stale: false, policy: 'startup-and-daily-09:00' }
       }
     } catch (error) {
       if (cached) {
+        this.report('warn', 'weather.stale-cache', '天气更新失败，已返回旧缓存', {
+          trigger,
+          locationKey: weatherLocationKey(location),
+          cachedAt: cached.fetchedAt || null,
+          reason: error?.message || String(error)
+        })
         return {
           ...cached,
           cache: { hit: true, stale: true, policy: 'startup-and-daily-09:00' },
@@ -525,7 +570,7 @@ export class WeatherService {
     }
   }
 
-  async refreshForecastManually(rawLocation, { shouldStore = null } = {}) {
+  async refreshForecastManually(rawLocation, { shouldStore = null, trigger = 'manual' } = {}) {
     const location = normalizeWeatherLocation(rawLocation)
     if (!location) throw new Error('请先在设置中选择地区')
     await this.loadCache()
@@ -545,7 +590,7 @@ export class WeatherService {
       }
     }
 
-    const forecast = await this.getForecast(location, { refresh: true, shouldStore })
+    const forecast = await this.getForecast(location, { refresh: true, shouldStore, trigger })
     return {
       ...forecast,
       manualRefresh: {

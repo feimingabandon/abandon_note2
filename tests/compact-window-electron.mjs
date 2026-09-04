@@ -761,10 +761,9 @@ async function runTitlebarInteractionTest(window) {
     const surface = document.querySelector('.app-titlebar-interaction-surface')
     const resizeHandle = document.querySelector('.rh-n')
     const rect = titlebar.getBoundingClientRect()
-    const surfaceRect = surface.getBoundingClientRect()
     const resizeRect = resizeHandle.getBoundingClientRect()
     const y = Math.min(
-      Math.floor(surfaceRect.top) - 1,
+      Math.floor(rect.bottom) - 2,
       Math.max(Math.ceil(resizeRect.bottom) + 2, Math.ceil(rect.top) + 1)
     )
     let point = null
@@ -940,6 +939,7 @@ async function runCompactWindowTest() {
     assertBlurRuntimeHealthy('主视图展开')
     await runSettingsPanelOpeningTest(mainWindow)
     await runBlurDisabledTransitionTest(mainWindow)
+    await runTitlebarInteractionTest(mainWindow)
     const expandedBounds = mainWindow.getBounds()
 
     await mainWindow.webContents.executeJavaScript(
@@ -1175,8 +1175,6 @@ async function runCompactWindowTest() {
       '最终展开',
       replacement
     )
-    await runTitlebarInteractionTest(mainWindow)
-
     const db = new Database(join(testUserData, 'app.db'), { readonly: true })
     const compactRows = db
       .prepare(

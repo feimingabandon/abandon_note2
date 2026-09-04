@@ -117,6 +117,21 @@ export function updateDesktopStickyRecord(id, patch) {
   )
 }
 
+/**
+ * A writable desktop sticky mirrors its source note. Updating every persisted
+ * copy in the same transaction prevents another window from restoring and
+ * later writing an obsolete snapshot back to the source note.
+ */
+export function updateDesktopStickyContentsByNoteId(noteId, content, updatedAt = Date.now()) {
+  return getDb()
+    .prepare(
+      `UPDATE desktop_stickies
+       SET content_snapshot = ?, updated_at = ?
+       WHERE note_id = ?`
+    )
+    .run(String(content), Number(updatedAt) || Date.now(), Number(noteId)).changes
+}
+
 export function deleteDesktopStickyRecord(id) {
   return getDb().prepare('DELETE FROM desktop_stickies WHERE id = ?').run(id).changes === 1
 }

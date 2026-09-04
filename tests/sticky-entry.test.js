@@ -61,7 +61,13 @@ describe('sticky renderer entry', () => {
     expect(script).toContain("setAttribute('contenteditable', 'plaintext-only')")
     expect(script).toContain("contentElement.addEventListener('dblclick', beginEditing)")
     expect(script).toContain("contentElement.addEventListener('blur'")
-    expect(script).toContain('.updateContent(nextContent)')
+    expect(script).toContain(
+      '.updateContent({ content: nextContent, expectedContent: committedContent })'
+    )
+    expect(script).toContain('result?.conflict')
+    expect(script).toContain('onContentChanged?.')
+    expect(script).toContain('pendingSyncedContent ?? String(result.content ?? nextContent)')
+    expect(script).toContain('if (pendingSyncedContent !== null) applySyncedContent')
     expect(script).toContain("showMessage('success', '便签已保存')")
     expect(html).toContain('data-message')
     expect(script).toContain('if (!(await finishEditing())) return')

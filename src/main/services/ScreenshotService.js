@@ -26,7 +26,24 @@ canvas.sc-canvas{position:absolute;inset:0;z-index:1}
 <script>
 const cv=document.querySelector('canvas'),ctx=cv.getContext('2d')
 const hint=document.getElementById('hint'),actions=document.getElementById('actions'),btnExit=document.getElementById('btnExit'),btnSave=document.getElementById('btnSave')
+const displayId=__SCREENSHOT_DISPLAY_ID__
 let s={x:0,y:0},e={x:0,y:0},has=false,mode='idle',dragOX=0,dragOY=0,dsX=0,dsY=0,deX=0,deY=0
+let reportingError=false
+
+function reportRendererError(kind,error){
+  if(reportingError)return
+  reportingError=true
+  try{
+    const message=String(error?.message||error||kind)
+    screenshot.reportLog({
+      level:'error',scope:'screenshot.renderer',message,
+      error:{name:String(error?.name||'Error'),message,stack:String(error?.stack||'')},
+      metadata:{kind,displayId,viewport:{width:window.innerWidth,height:window.innerHeight},devicePixelRatio:window.devicePixelRatio||1,mode}
+    })
+  }catch{}finally{reportingError=false}
+}
+window.addEventListener('error',(event)=>reportRendererError('error',event.error||event.message))
+window.addEventListener('unhandledrejection',(event)=>reportRendererError('unhandledrejection',event.reason))
 
 function resize(){
   const dpr=window.devicePixelRatio||1
@@ -190,7 +207,7 @@ export class ScreenshotService {
           nodeIntegration: false
         }
       })
-      setWindowLogContext(window, { role: 'screenshot' })
+      setWindowLogContext(window, { role: 'screenshot', displayId: String(targetDisplay.id) })
       this.window = window
 
       let settled = false
@@ -224,7 +241,14 @@ export class ScreenshotService {
       this.ipcMain.on('screenshot:cancel', onCancel)
       window.on('closed', () => done(null))
       window
-        .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(SCREENSHOT_HTML)}`)
+        .loadURL(
+          `data:text/html;charset=utf-8,${encodeURIComponent(
+            SCREENSHOT_HTML.replace(
+              '__SCREENSHOT_DISPLAY_ID__',
+              JSON.stringify(String(targetDisplay.id))
+            )
+          )}`
+        )
         .then(() => {
           window.show()
           window.focus()

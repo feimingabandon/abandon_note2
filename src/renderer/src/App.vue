@@ -335,7 +335,6 @@ let wallpaperReleaseTimer = null
 let stopSettingsListener = null
 let stopNotesChangedListener = null
 let stopAppMessageListener = null
-let stopNotificationOpenListener = null
 let stopRemoteNoticesListener = null
 let startupUpdateTimer = null
 
@@ -443,10 +442,6 @@ onMounted(async () => {
   stopNotesChangedListener = window.api.onNotesChanged?.((event) => {
     if (event?.reason === 'note-data-cleared') selectedNote.value = null
   })
-  stopNotificationOpenListener = window.api.onNotificationOpenNote?.((payload) => {
-    void openNoteFromNotification(payload)
-  })
-
   // 主进程系统通知发送失败（如 macOS 未签名）时降级为应用内消息条。
   stopAppMessageListener = window.api.onAppMessage?.((payload) => {
     if (!payload?.text) return
@@ -493,22 +488,6 @@ async function onEditNote(note) {
     }
     showMessage('error', error.message || '无法打开便签')
   }
-}
-
-async function openNoteFromNotification(payload) {
-  if (showFirstUseNotice.value) return
-  const noteId = Number(payload?.id)
-  if (!Number.isInteger(noteId) || noteId <= 0) return
-  const closingModal = showSettings.value || showUpdateDialog.value || showRemoteNoticeDialog.value
-  showSettings.value = false
-  releaseSettingsBlur()
-  showUpdateDialog.value = false
-  showRemoteNoticeDialog.value = false
-  closeTemplates()
-  closeHelp()
-  await nextTick()
-  if (closingModal) await new Promise((resolve) => setTimeout(resolve, 240))
-  await onEditNote({ id: noteId })
 }
 
 function onCloseEditor() {
@@ -561,7 +540,6 @@ onUnmounted(() => {
   stopSettingsListener?.()
   stopNotesChangedListener?.()
   stopAppMessageListener?.()
-  stopNotificationOpenListener?.()
   stopRemoteNoticesListener?.()
   document.removeEventListener('mouseenter', onMouseEnter)
   document.removeEventListener('mouseleave', onMouseLeave)
@@ -668,12 +646,7 @@ onUnmounted(() => {
               @create="onCreateNote"
               @edit="onEditNote"
             />
-            <NoteList
-              ref="noteListRef"
-              class="app-list"
-              @edit="onEditNote"
-              @create="onCreateNote"
-            />
+            <NoteList ref="noteListRef" class="app-list" @edit="onEditNote" />
           </main>
 
           <div

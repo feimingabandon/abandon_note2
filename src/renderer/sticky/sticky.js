@@ -24,6 +24,7 @@ let appearance = {
   pinned: false
 }
 let committedContent = ''
+let pendingSyncedContent = null
 let editing = false
 let savingContent = false
 let pendingContentSave = null
@@ -116,25 +117,58 @@ function beginEditing() {
   contentElement.focus({ preventScroll: true })
 }
 
+function applySyncedContent(value) {
+  const content = String(value ?? '')
+  if (editing || savingContent) {
+    pendingSyncedContent = content
+    return
+  }
+  pendingSyncedContent = null
+  committedContent = content
+  contentElement.textContent = content
+}
+
 function finishEditing({ save = true } = {}) {
   if (!editing) return pendingContentSave || Promise.resolve(true)
   const nextContent = readEditorText()
   setEditing(false)
-  contentElement.textContent = save ? nextContent : committedContent
-  if (!save || nextContent === committedContent) return Promise.resolve(true)
+  if (!save) {
+    if (pendingSyncedContent !== null) applySyncedContent(pendingSyncedContent)
+    else contentElement.textContent = committedContent
+    return Promise.resolve(true)
+  }
+  contentElement.textContent = nextContent
+  if (nextContent === committedContent) {
+    if (pendingSyncedContent !== null) applySyncedContent(pendingSyncedContent)
+    return Promise.resolve(true)
+  }
 
   savingContent = true
   contentElement.dataset.saving = 'true'
   const request = window.stickyAPI
-    .updateContent(nextContent)
+    .updateContent({ content: nextContent, expectedContent: committedContent })
     .then((result) => {
-      committedContent = result.content
+      if (result?.conflict) {
+        const latestSourceContent =
+          pendingSyncedContent ?? String(result.content ?? committedContent)
+        pendingSyncedContent = null
+        committedContent = latestSourceContent
+        contentElement.textContent = nextContent
+        setEditing(true)
+        contentElement.focus({ preventScroll: true })
+        showError('来源便签已更新，本次修改尚未保存；请确认正文后重新保存')
+        return false
+      }
+      const latestSourceContent = pendingSyncedContent ?? String(result.content ?? nextContent)
+      pendingSyncedContent = null
+      committedContent = latestSourceContent
       contentElement.textContent = committedContent
       showMessage('success', '便签已保存')
       return true
     })
     .catch((error) => {
-      contentElement.textContent = committedContent
+      if (pendingSyncedContent !== null) applySyncedContent(pendingSyncedContent)
+      else contentElement.textContent = committedContent
       console.error('[Sticky] 保存便利贴正文失败:', error)
       showError(error.message || '便利贴正文保存失败，请重试')
       return false
@@ -142,6 +176,7 @@ function finishEditing({ save = true } = {}) {
     .finally(() => {
       savingContent = false
       delete contentElement.dataset.saving
+      if (pendingSyncedContent !== null && !editing) applySyncedContent(pendingSyncedContent)
       if (pendingContentSave === request) pendingContentSave = null
     })
   pendingContentSave = request
@@ -259,5 +294,7 @@ async function initialize() {
     showError(error.message || '便利贴初始化失败', { persistent: true })
   }
 }
+
+window.stickyAPI.onContentChanged?.((payload) => applySyncedContent(payload?.content))
 
 initialize()

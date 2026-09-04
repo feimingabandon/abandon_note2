@@ -27,5 +27,8 @@ describe('主视图切换几何收敛顺序', () => {
     expect(switchBlock.indexOf('prepareViewSettingsForSwitch({')).toBeLessThan(
       switchBlock.indexOf('activeViewMode = normalized')
     )
+    expect(switchBlock.indexOf('if (nativeEdgeCleanupPending)')).toBeLessThan(
+      switchBlock.indexOf('prepareCompactWindowForReplacement(mainWindow)')
+    )
   })
 })

@@ -1962,17 +1962,16 @@ defineExpose({
         <span>共{{ allNoteTotal }}条</span>
       </div>
     </template>
+    <ConfirmDialog
+      v-model:visible="earlyStartConfirmVisible"
+      title="提前执行便签？"
+      :message="earlyStartMessage"
+      confirm-text="提前执行"
+      cancel-text="取消"
+      @confirm="confirmEarlyStart"
+      @cancel="cancelEarlyStart"
+    />
   </div>
-
-  <ConfirmDialog
-    v-model:visible="earlyStartConfirmVisible"
-    title="提前执行便签？"
-    :message="earlyStartMessage"
-    confirm-text="提前执行"
-    cancel-text="取消"
-    @confirm="confirmEarlyStart"
-    @cancel="cancelEarlyStart"
-  />
 </template>
 
 <style scoped>

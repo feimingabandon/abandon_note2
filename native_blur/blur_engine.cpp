@@ -39,11 +39,6 @@ namespace BlurEngine {
 #define WM_BLUR_END_TRANSITION   (WM_USER + 107)
 #define WM_BLUR_TRANSITION_VISUAL (WM_USER + 108)
 
-struct TransitionVisualSize {
-    int width;
-    int height;
-};
-
 // ---- 效果管线硬编码参数 ----
 // 模糊优化: Balanced；边框模式: Hard
 
@@ -393,13 +388,12 @@ bool Engine::SetWindowTransitionGeometry(
     }
 
     if (showOverlay) {
-        TransitionVisualSize visualSize{ width, height };
         DWORD_PTR syncResult = 0;
         if (!SendMessageTimeoutW(
                 overlayHwnd,
                 WM_BLUR_TRANSITION_VISUAL,
-                0,
-                reinterpret_cast<LPARAM>(&visualSize),
+                static_cast<WPARAM>(width),
+                static_cast<LPARAM>(height),
                 SMTO_ABORTIFHUNG | SMTO_BLOCK,
                 100,
                 &syncResult) || syncResult != 1) {
@@ -1222,10 +1216,11 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     }
 
     case WM_BLUR_TRANSITION_VISUAL: {
-        const auto* size = reinterpret_cast<const TransitionVisualSize*>(lParam);
-        if (!size || size->width <= 0 || size->height <= 0 || !self->m_rootVisual) return 0;
+        const int width = static_cast<int>(wParam);
+        const int height = static_cast<int>(lParam);
+        if (width <= 0 || height <= 0 || !self->m_rootVisual) return 0;
         try {
-            self->UpdateVisualSize(size->width, size->height);
+            self->UpdateVisualSize(width, height);
             return 1;
         }
         catch (...) {
