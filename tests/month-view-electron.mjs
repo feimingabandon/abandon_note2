@@ -1367,14 +1367,143 @@ async function runMonthViewTests() {
       '月历测试数据断言后没有回到今天'
     )
 
-    const pastCreateDisabled = await monthWindow.webContents.executeJavaScript(`(() => {
+    const pastCreateState = await monthWindow.webContents.executeJavaScript(`(() => {
       const today = new Date()
       const key = [today.getFullYear(), String(today.getMonth() + 1).padStart(2, '0'), String(today.getDate()).padStart(2, '0')].join('-')
       const past = Array.from(document.querySelectorAll('.month-day-cell:not(.is-outside)')).find((cell) => cell.dataset.date < key)
       const create = past?.querySelector('.month-day-cell__quick-activate')
-      return create?.getAttribute('aria-disabled') === 'true'
+      return { key: past?.dataset.date || '', ariaDisabled: create?.getAttribute('aria-disabled') || '' }
     })()`)
-    assert.equal(pastCreateDisabled, true, '过去日期必须禁止新建便签')
+    assert.ok(pastCreateState.key, '当前月份缺少可用于历史补录的过去日期')
+    assert.equal(pastCreateState.ariaDisabled, '', '过去日期的快速新建入口不应再禁用')
+
+    const historicalQuickContent = `历史补录-${Date.now()}`
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-day-cell[data-date="${pastCreateState.key}"] .month-day-cell__quick-activate').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `document.activeElement?.matches('.month-day-cell[data-date="${pastCreateState.key}"] .month-day-cell__quick-create input')`
+        ),
+      '过去日期快速新建没有进入历史补录输入状态'
+    )
+    await monthWindow.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('.month-day-cell[data-date="${pastCreateState.key}"] .month-day-cell__quick-create input')
+      input.value = ${JSON.stringify(historicalQuickContent)}
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.closest('form').requestSubmit()
+    })()`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.month-event-bar[data-preview=${JSON.stringify(historicalQuickContent)}]'))`
+        ),
+      '历史补录成功后没有显示在所选过去日期'
+    )
+    const historicalQuickNote = await monthWindow.webContents.executeJavaScript(`(async () => {
+      const bar = document.querySelector('.month-event-bar[data-preview=${JSON.stringify(historicalQuickContent)}]')
+      return window.api.getNote(Number(bar.dataset.noteId))
+    })()`)
+    const historicalDate = new Date(historicalQuickNote.effective_at)
+    const historicalDateKey = [
+      historicalDate.getFullYear(),
+      String(historicalDate.getMonth() + 1).padStart(2, '0'),
+      String(historicalDate.getDate()).padStart(2, '0')
+    ].join('-')
+    assert.equal(historicalDateKey, pastCreateState.key)
+    assert.equal(historicalDate.getHours(), 0)
+    assert.equal(historicalDate.getMinutes(), 1)
+    assert.equal(historicalQuickNote.status, 'in_progress')
+    assert.equal(historicalQuickNote.notify_enabled, 0)
+    assert.ok(Math.abs(historicalQuickNote.created_at - Date.now()) < 10_000)
+    assert.equal(historicalQuickNote.updated_at, historicalQuickNote.created_at)
+    await monthWindow.webContents.executeJavaScript(
+      `window.api.deleteNote(${Number(historicalQuickNote.id)})`
+    )
+
+    const scheduleEditResult = await monthWindow.webContents.executeJavaScript(`(async () => {
+      let nearFutureError = ''
+      try {
+        await window.api.createNote({
+          content: '不应创建的临近预约',
+          effectiveAt: Date.now() + 30 * 1000
+        })
+      } catch (error) {
+        nearFutureError = error.message
+      }
+      const created = await window.api.createNote({
+        content: '历史补录保存边界',
+        effectiveAt: Date.now() + 10 * 60 * 1000,
+        notifyEnabled: true
+      })
+      const save = (note, effectiveAt, notifyEnabled = true) => window.api.saveNoteDraft({
+        id: note.id,
+        fields: {
+          content: note.content,
+          status: note.status,
+          effectiveAt,
+          durationDays: note.duration_days,
+          notifyEnabled,
+          isPinned: Boolean(note.is_pinned)
+        },
+        tagIds: [],
+        addedImages: [],
+        deletedImageIds: []
+      })
+      try {
+        const backfillAt = Date.now() - 2 * 24 * 60 * 60 * 1000
+        const backfilled = await save(created, backfillAt)
+        const correctedAt = backfillAt - 60 * 60 * 1000
+        const corrected = await save(backfilled, correctedAt)
+        let futureError = ''
+        try {
+          await save(corrected, Date.now() + 10 * 60 * 1000)
+        } catch (error) {
+          futureError = error.message
+        }
+        const completed = await window.api.completeNote(corrected.id)
+        let completedError = ''
+        try {
+          await save(completed, correctedAt - 60 * 60 * 1000, false)
+        } catch (error) {
+          completedError = error.message
+        }
+        return {
+          created,
+          backfilled,
+          corrected,
+          backfillAt,
+          correctedAt,
+          nearFutureError,
+          futureError,
+          completedError
+        }
+      } finally {
+        await window.api.deleteNote(created.id)
+      }
+    })()`)
+    assert.equal(scheduleEditResult.created.status, 'initialized')
+    assert.equal(scheduleEditResult.created.notify_enabled, 1)
+    assert.match(scheduleEditResult.nearFutureError, /2 分钟之后/)
+    assert.equal(scheduleEditResult.backfilled.status, 'in_progress')
+    assert.equal(scheduleEditResult.backfilled.effective_at, scheduleEditResult.backfillAt)
+    assert.equal(scheduleEditResult.backfilled.notify_enabled, 0)
+    assert.equal(scheduleEditResult.backfilled.created_at, scheduleEditResult.created.created_at)
+    assert.ok(scheduleEditResult.backfilled.updated_at >= scheduleEditResult.created.updated_at)
+    assert.equal(
+      scheduleEditResult.backfilled.finished_at,
+      scheduleEditResult.backfilled.updated_at
+    )
+    assert.equal(scheduleEditResult.corrected.status, 'in_progress')
+    assert.equal(scheduleEditResult.corrected.effective_at, scheduleEditResult.correctedAt)
+    assert.equal(scheduleEditResult.corrected.notify_enabled, 0)
+    assert.equal(
+      scheduleEditResult.corrected.finished_at,
+      scheduleEditResult.backfilled.finished_at
+    )
+    assert.match(scheduleEditResult.futureError, /只能修正为当前或过去时间/)
+    assert.match(scheduleEditResult.completedError, /已完成便签的生效时间不可修改/)
 
     // 日期侧栏保留完整属性新建器；日期格底部改为不遮挡日历的快速创建器。
     const todayKey = await monthWindow.webContents.executeJavaScript(`(() => {

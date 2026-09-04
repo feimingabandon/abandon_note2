@@ -20,9 +20,10 @@ import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 import {
+  assertCreatableNoteEffectiveTime,
+  canScheduleNoteNotification,
   DEFAULT_NEW_NOTE_SCHEDULE_TIME,
-  MIN_SCHEDULE_LEAD_TIME_MINUTES,
-  MIN_SCHEDULE_LEAD_TIME_MS
+  MIN_SCHEDULE_LEAD_TIME_MINUTES
 } from '../../../../shared/note-scheduling-rules.js'
 
 const emit = defineEmits(['create'])
@@ -154,20 +155,24 @@ let successTimer = null
 let successHoldResolve = null
 
 // ---- 联动逻辑 ----
-/** 只有设置了生效时间才能开启系统提醒 */
-const canEnableNotify = computed(() => systemNotificationsSupported && !!effectiveAt.value)
+const effectiveTimestamp = computed(() =>
+  effectiveAt.value ? new Date(effectiveAt.value).getTime() : null
+)
+const isHistoricalBackfill = computed(
+  () => Number.isFinite(effectiveTimestamp.value) && effectiveTimestamp.value <= Date.now()
+)
+/** 只有满足最小提前量的未来预约才能开启系统提醒。 */
+const canEnableNotify = computed(
+  () =>
+    systemNotificationsSupported &&
+    canScheduleNoteNotification(effectiveTimestamp.value, Date.now())
+)
 const submitLabel = computed(() => {
   if (submitState.value === 'creating') return '创建中…'
   if (submitState.value === 'success') return '✓ 已创建'
   return '创建便签'
 })
 const submitEmpty = computed(() => submitState.value === 'idle' && !content.value.trim())
-
-/** 今天零点，作为日期选择下限 */
-const today = computed(() => {
-  const d = new Date()
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate())
-})
 
 function dateAtDefaultScheduleTime(dayOffset = 0) {
   const date = new Date()
@@ -176,19 +181,19 @@ function dateAtDefaultScheduleTime(dayOffset = 0) {
   return date
 }
 
-/** 自定义快捷选项（不含过去日期，时间统一为当天 00:01） */
+/** 历史补录和未来预约共用快捷选项，时间统一为当天 00:01。 */
 const dateShortcuts = [
-  { label: '今天', getValue: () => dateAtDefaultScheduleTime() },
-  { label: '明天', getValue: () => dateAtDefaultScheduleTime(1) },
-  { label: '三天后', getValue: () => dateAtDefaultScheduleTime(3) }
+  { label: '昨天', getValue: () => dateAtDefaultScheduleTime(-1) },
+  { label: '一周前', getValue: () => dateAtDefaultScheduleTime(-7) },
+  { label: '明天', getValue: () => dateAtDefaultScheduleTime(1) }
 ]
 
-// 生效时间被清空时，强制关闭系统提醒
+// 立即生效、历史补录或提前量不足时，强制关闭系统提醒。
 watch(effectiveAt, (val) => {
   if (!val) {
     durationDays.value = 1
-    if (notifyEnabled.value) notifyEnabled.value = false
   }
+  if (!canEnableNotify.value && notifyEnabled.value) notifyEnabled.value = false
 })
 
 // ============================================================
@@ -239,16 +244,16 @@ async function handleCreate() {
     return
   }
 
-  // 校验：显式设置的生效时间必须留出统一的最小提前量。
+  let historicalBackfill = false
   if (effectiveAt.value) {
-    const ts = new Date(effectiveAt.value).getTime()
-    if (ts - Date.now() < MIN_SCHEDULE_LEAD_TIME_MS) {
-      showMessage(
-        'warning',
-        `生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后，请重新选择`
-      )
+    const now = Date.now()
+    try {
+      assertCreatableNoteEffectiveTime(effectiveTimestamp.value, now)
+    } catch (error) {
+      showMessage('warning', error.message || '请选择有效的生效时间')
       return
     }
+    historicalBackfill = effectiveTimestamp.value <= now
   }
 
   if (submitState.value !== 'idle') return
@@ -258,11 +263,11 @@ async function handleCreate() {
     const options = {
       content: text,
       durationDays: durationDays.value,
-      notifyEnabled: notifyEnabled.value ? 1 : 0,
+      notifyEnabled: canEnableNotify.value && notifyEnabled.value ? 1 : 0,
       isPinned: isPinned.value ? 1 : 0
     }
     if (effectiveAt.value) {
-      options.effectiveAt = new Date(effectiveAt.value).getTime()
+      options.effectiveAt = effectiveTimestamp.value
     }
     const imgs = imagePickerRef.value?.getImages() || []
     // 检查 API 是否存在
@@ -270,14 +275,18 @@ async function handleCreate() {
       throw new Error('接口未就绪，请完全重启应用（npm run dev）')
     }
 
-    await window.api.createNoteWithAssets({
+    const created = await window.api.createNoteWithAssets({
       options,
       images: imgs,
       tagIds: [...tagIds.value]
     })
+    if (!created?.id) throw new Error('创建接口未返回便签')
 
     submitState.value = 'success'
-    showMessage('success', '便签创建成功')
+    showMessage(
+      'success',
+      historicalBackfill ? '历史便签补录成功，已按生效日期归档' : '便签创建成功'
+    )
     // 先保留 SUCCESS_HOLD 展示「✓ 已创建」，再 emit（由父级刷新列表并收起面板），确保用户能看清成功反馈。
     await holdSuccessState()
     emit('create')
@@ -315,11 +324,13 @@ async function handleCreate() {
         <DateTimePicker
           v-model="effectiveAt"
           placeholder="立即生效"
-          :min-date="today"
           :shortcuts="dateShortcuts"
           :default-time="`${DEFAULT_NEW_NOTE_SCHEDULE_TIME}:00`"
         />
       </div>
+      <p v-if="isHistoricalBackfill" class="nnp-platform-note">
+        历史补录将直接进入进行中，不发送系统提醒。
+      </p>
 
       <NoteDurationField v-model="durationDays" :visible="!!effectiveAt" />
 
@@ -330,7 +341,7 @@ async function handleCreate() {
             >启用系统提醒<HelpButton
               :text="
                 systemNotificationsSupported
-                  ? '仅在设置生效时间后才可开启。到达生效时间时通过操作系统发送通知提醒'
+                  ? `仅未来至少 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟的预约可开启；历史补录不发送系统提醒。`
                   : systemNotificationUnavailableReason
               "
           /></label>

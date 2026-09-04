@@ -13,9 +13,10 @@ import { useTodayKey } from '../../composables/useTodayKey.js'
 import { combineLocalDateAndTime } from '../../../../shared/calendar/calendar-date-rules.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 import {
+  assertCreatableNoteEffectiveTime,
+  canScheduleNoteNotification,
   defaultMonthNoteEffectiveTime,
-  MIN_SCHEDULE_LEAD_TIME_MINUTES,
-  MIN_SCHEDULE_LEAD_TIME_MS
+  MIN_SCHEDULE_LEAD_TIME_MINUTES
 } from '../../../../shared/note-scheduling-rules.js'
 
 const props = defineProps({
@@ -46,10 +47,16 @@ const dateLabel = computed(() => {
   const [year, month, day] = props.dateKey.split('-').map(Number)
   return `${year}年${month}月${day}日`
 })
-const isPast = computed(() => props.dateKey < todayKey.value)
 const isImmediateDefault = computed(() => props.dateKey === todayKey.value && !timeDirty.value)
+const selectedEffectiveAt = computed(() => combineLocalDateAndTime(props.dateKey, time.value))
+const isHistoricalBackfill = computed(
+  () => !isImmediateDefault.value && selectedEffectiveAt.value <= Date.now()
+)
 const canNotify = computed(
-  () => systemNotificationCapability.supported && !isImmediateDefault.value && !isPast.value
+  () =>
+    systemNotificationCapability.supported &&
+    !isImmediateDefault.value &&
+    canScheduleNoteNotification(selectedEffectiveAt.value, Date.now())
 )
 const dirty = computed(
   () =>
@@ -64,6 +71,7 @@ const dirty = computed(
 
 function onTimeChange() {
   timeDirty.value = true
+  if (!canNotify.value) notifyEnabled.value = false
 }
 
 function requestClose() {
@@ -73,7 +81,7 @@ function requestClose() {
 }
 
 async function create() {
-  if (saving.value || isPast.value) return
+  if (saving.value) return
   if (!content.value.trim()) {
     showMessage('warning', '请输入便签内容')
     return
@@ -90,17 +98,13 @@ async function create() {
     isPinned: isPinned.value
   }
   if (!isImmediateDefault.value) {
-    const effectiveAt = combineLocalDateAndTime(props.dateKey, time.value)
-    if (effectiveAt - Date.now() < MIN_SCHEDULE_LEAD_TIME_MS) {
-      showMessage(
-        'warning',
-        props.dateKey === todayKey.value
-          ? `今天的生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后；不调整时间可直接立即创建`
-          : `生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后，请重新选择`
-      )
+    try {
+      assertCreatableNoteEffectiveTime(selectedEffectiveAt.value, Date.now())
+    } catch (error) {
+      showMessage('warning', error.message || '请选择有效的生效时间')
       return
     }
-    options.effectiveAt = effectiveAt
+    options.effectiveAt = selectedEffectiveAt.value
   }
 
   saving.value = true
@@ -111,7 +115,7 @@ async function create() {
       tagIds: [...tagIds.value]
     })
     if (!created?.id) throw new Error('创建接口未返回便签')
-    showMessage('success', '便签已创建')
+    showMessage('success', isHistoricalBackfill.value ? '历史便签补录成功' : '便签已创建')
     emit('created', created)
   } catch (error) {
     console.error('[MonthNoteCreator] 创建失败:', error)
@@ -156,7 +160,7 @@ defineExpose({ requestClose })
       <div class="month-creator__row">
         <label
           >生效时间<HelpButton
-            :text="`今天保持默认时间会立即生效；手动调整后需至少晚于当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟。`"
+            :text="`过去时间可用于历史补录；未来预约需至少晚于当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟。今天保持默认时间会立即生效。`"
         /></label>
         <TimePicker
           v-model="time"
@@ -166,13 +170,20 @@ defineExpose({ requestClose })
         />
       </div>
       <p v-if="isImmediateDefault" class="month-creator__hint">保持默认时间：创建后立即生效</p>
+      <p v-else-if="isHistoricalBackfill" class="month-creator__hint is-history">
+        历史补录将直接进入进行中，不发送系统提醒。
+      </p>
 
       <NoteDurationField v-model="durationDays" visible />
 
       <div class="month-creator__row">
         <label
           >系统提醒<HelpButton
-            :text="canNotify ? '到达生效时间时发送系统提醒。' : '立即生效的便签无需定时提醒。'"
+            :text="
+              canNotify
+                ? '到达生效时间时发送系统提醒。'
+                : `仅未来至少 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟的预约可开启提醒。`
+            "
         /></label>
         <AppToggle v-model="notifyEnabled" :disabled="!canNotify" />
       </div>
@@ -203,7 +214,7 @@ defineExpose({ requestClose })
       <button
         type="button"
         class="is-primary"
-        :disabled="saving || !content.trim() || isPast"
+        :disabled="saving || !content.trim()"
         @click="create"
       >
         {{ saving ? '创建中…' : '创建便签' }}
@@ -298,6 +309,9 @@ defineExpose({ requestClose })
   color: #0a84ff;
   font-size: calc(var(--fs-secondary) * 0.82);
   text-align: right;
+}
+.month-creator__hint.is-history {
+  color: var(--text-color-secondary);
 }
 .month-creator__field {
   display: flex;

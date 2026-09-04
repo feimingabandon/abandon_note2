@@ -337,7 +337,6 @@ function runContextMenuAction(action) {
   const note = target.type === 'note' ? contextMenuNote.value : null
   closeContextMenu({ restoreFocus: action !== 'preview' })
   if (action === 'create' && target.type === 'day') {
-    if (target.day.key < props.todayKey) return
     emit('context-create', target.day)
     return
   }
@@ -373,10 +372,6 @@ function onContextMenuKeydown(event) {
 
 async function openQuickCreator(day) {
   if (!isActiveDay(day)) return
-  if (day.key < props.todayKey) {
-    showMessage('warning', '不能为过去日期新建便签')
-    return
-  }
   clearQuickCreateReadyTimer()
   activeQuickCreateKey.value = day.key
   quickCreateReady.value = false
@@ -417,13 +412,8 @@ async function submitQuickNote(day) {
     await focusQuickCreator(day.key)
     return
   }
-  if (day.key < props.todayKey) {
-    showMessage('warning', '不能为过去日期新建便签')
-    return
-  }
-
   const options = { content, durationDays: 1 }
-  if (day.key > props.todayKey) {
+  if (day.key !== props.todayKey) {
     const time = defaultMonthNoteEffectiveTime(day.key, props.todayKey, new Date())
     options.effectiveAt = combineLocalDateAndTime(day.key, time)
   }
@@ -434,7 +424,7 @@ async function submitQuickNote(day) {
     if (!created?.id) throw new Error('创建接口未返回便签')
     quickDrafts.set(day.key, '')
     emit('quick-created', created)
-    showMessage('success', '便签创建成功')
+    showMessage('success', day.key < props.todayKey ? '历史便签补录成功' : '便签创建成功')
     if (activeQuickCreateKey.value === day.key) await focusQuickCreator(day.key)
   } catch (error) {
     console.error('[MonthCalendarGrid] 快速创建失败:', error)
@@ -749,10 +739,8 @@ onBeforeUnmount(() => {
               v-if="isActiveDay(day) && activeQuickCreateKey !== day.key"
               type="button"
               class="month-day-cell__quick-activate"
-              :class="{ 'is-disabled': day.key < todayKey }"
-              :tabindex="day.key === tabStopKey && day.key >= todayKey ? 0 : -1"
-              :aria-disabled="day.key < todayKey"
-              :title="day.key < todayKey ? '不能为过去日期新建便签' : '在这一天快速新建便签'"
+              :tabindex="day.key === tabStopKey ? 0 : -1"
+              title="在这一天快速新建便签"
               :aria-label="`在 ${day.key} 快速新建便签${noteCounts.get(day.key) ? `，当前 ${noteCounts.get(day.key)} 条` : ''}`"
               @click.stop="openQuickCreator(day)"
             />
@@ -763,8 +751,7 @@ onBeforeUnmount(() => {
               :class="{
                 'is-active': activeQuickCreateKey === day.key,
                 'is-ready': activeQuickCreateKey === day.key && quickCreateReady,
-                'is-saving': quickSavingKeys.has(day.key),
-                'is-disabled': day.key < todayKey
+                'is-saving': quickSavingKeys.has(day.key)
               }"
               :aria-hidden="activeQuickCreateKey !== day.key"
               @click.stop
@@ -866,13 +853,7 @@ onBeforeUnmount(() => {
               </button>
             </template>
             <template v-else>
-              <button
-                role="menuitem"
-                type="button"
-                :disabled="contextMenuTarget?.day?.key < todayKey"
-                :title="contextMenuTarget?.day?.key < todayKey ? '不能为过去日期新建便签' : ''"
-                @click="runContextMenuAction('create')"
-              >
+              <button role="menuitem" type="button" @click="runContextMenuAction('create')">
                 新建便签…
               </button>
               <button role="menuitem" type="button" @click="runContextMenuAction('preview')">
@@ -1154,9 +1135,6 @@ onBeforeUnmount(() => {
   background: transparent;
   cursor: pointer;
 }
-.month-day-cell__quick-activate.is-disabled {
-  cursor: not-allowed;
-}
 .month-day-cell__quick-activate:focus-visible {
   outline: 1px solid color-mix(in srgb, var(--ui-accent) 72%, transparent);
   outline-offset: -3rem;
@@ -1185,9 +1163,6 @@ onBeforeUnmount(() => {
     background-color 180ms ease,
     opacity 210ms ease,
     transform 260ms var(--ease-standard);
-}
-.month-day-cell__quick-create.is-disabled {
-  opacity: 0.28;
 }
 .month-day-cell__quick-create.is-active {
   width: calc(100% - 12rem);

@@ -690,10 +690,7 @@ function toggleDayPanel() {
 
 function openCreator(dayOrKey) {
   const dateKey = typeof dayOrKey === 'string' ? dayOrKey : dayOrKey?.key
-  if (!dateKey || dateKey < todayKey.value) {
-    showMessage('warning', '不能为过去日期新建便签')
-    return
-  }
+  if (!dateKey) return
   creatorDate.value = dateKey
 }
 
@@ -904,7 +901,6 @@ onBeforeUnmount(() => {
           :style="{ width: `${dayPanelSize}%` }"
           :date-key="selectedKey"
           :notes="selectedNotes"
-          :can-create="selectedKey >= todayKey"
           :weather="selectedWeather"
           :weather-location="weatherForecast?.location || null"
           :weather-fetched-at="weatherForecast?.fetchedAt || null"

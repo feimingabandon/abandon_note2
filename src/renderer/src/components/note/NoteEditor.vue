@@ -15,9 +15,10 @@ import NoteDurationField from './NoteDurationField.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 import {
+  assertCreatableNoteEffectiveTime,
+  canScheduleNoteNotification,
   createSafeScheduleShortcutTimestamp,
-  MIN_SCHEDULE_LEAD_TIME_MINUTES,
-  MIN_SCHEDULE_LEAD_TIME_MS
+  MIN_SCHEDULE_LEAD_TIME_MINUTES
 } from '../../../../shared/note-scheduling-rules.js'
 
 const props = defineProps({
@@ -105,16 +106,31 @@ const statusLabel = computed(
     })[status.value] || status.value
 )
 
-const canEditSchedule = computed(() => status.value === 'initialized')
-const today = computed(() => {
-  const now = new Date()
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
-})
-const dateShortcuts = [
+const canEditSchedule = computed(() => ['initialized', 'in_progress'].includes(status.value))
+const effectiveTimestamp = computed(() => new Date(effectiveAt.value).getTime())
+const isHistoricalSchedule = computed(
+  () => Number.isFinite(effectiveTimestamp.value) && effectiveTimestamp.value <= Date.now()
+)
+const canEditNotify = computed(
+  () =>
+    status.value === 'initialized' &&
+    systemNotificationsSupported &&
+    canScheduleNoteNotification(effectiveTimestamp.value, Date.now())
+)
+
+function dateAtDefaultScheduleTime(dayOffset) {
+  const date = new Date()
+  date.setDate(date.getDate() + dayOffset)
+  date.setHours(0, 1, 0, 0)
+  return date
+}
+
+const initializedDateShortcuts = [
   {
     label: '今天',
     getValue: () => new Date(createSafeScheduleShortcutTimestamp())
   },
+  { label: '昨天', getValue: () => dateAtDefaultScheduleTime(-1) },
   {
     label: '明天',
     getValue: () => {
@@ -122,28 +138,33 @@ const dateShortcuts = [
       date.setDate(date.getDate() + 1)
       return date
     }
-  },
-  {
-    label: '三天后',
-    getValue: () => {
-      const date = new Date()
-      date.setDate(date.getDate() + 3)
-      return date
-    }
   }
 ]
+const inProgressDateShortcuts = [
+  { label: '今天', getValue: () => new Date() },
+  { label: '昨天', getValue: () => dateAtDefaultScheduleTime(-1) },
+  { label: '一周前', getValue: () => dateAtDefaultScheduleTime(-7) }
+]
+const dateShortcuts = computed(() =>
+  status.value === 'in_progress' ? inProgressDateShortcuts : initializedDateShortcuts
+)
 
 const scheduleHelp = computed(() => {
   if (status.value === 'initialized')
-    return `仅初始化状态允许修改，新的生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后。`
-  if (status.value === 'in_progress') return '便签生效后不能修改原始生效时间。'
+    return `可改为过去时间进行历史补录；未来预约需至少晚于当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟。`
+  if (status.value === 'in_progress') return '可修正为当前或过去时间，不能改为未来预约。'
   return '已完成便签的生效时间不可修改。'
 })
 
 const notifyHelp = computed(() => {
   if (!systemNotificationsSupported) return systemNotificationUnavailableReason
-  if (status.value === 'initialized') return '初始化状态可以修改系统提醒设置。'
-  return '便签进入当前状态后，系统提醒设置不可修改。'
+  if (status.value === 'initialized')
+    return `仅未来至少 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟的预约可以修改系统提醒设置。`
+  return '进行中或已完成便签不发送待生效提醒。'
+})
+
+watch([effectiveAt, status], () => {
+  if (!canEditNotify.value && notifyEnabled.value) notifyEnabled.value = false
 })
 
 const hasChanges = computed(() => {
@@ -191,15 +212,23 @@ async function handleSave() {
     return
   }
 
-  let effectiveTimestamp = new Date(effectiveAt.value).getTime()
-  if (status.value === 'initialized') {
-    if (!Number.isFinite(effectiveTimestamp)) {
+  const requestedEffectiveAt = effectiveTimestamp.value
+  if (canEditSchedule.value) {
+    if (!Number.isFinite(requestedEffectiveAt)) {
       showMessage('warning', '请选择有效的生效时间')
       return
     }
     const effectiveAtChanged = effectiveAt.value !== initialSnapshot.value?.effectiveAt
-    if (effectiveAtChanged && effectiveTimestamp - Date.now() < MIN_SCHEDULE_LEAD_TIME_MS) {
-      showMessage('warning', `生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后`)
+    if (effectiveAtChanged && status.value === 'initialized') {
+      try {
+        assertCreatableNoteEffectiveTime(requestedEffectiveAt, Date.now())
+      } catch (error) {
+        showMessage('warning', error.message || '请选择有效的生效时间')
+        return
+      }
+    }
+    if (effectiveAtChanged && status.value === 'in_progress' && requestedEffectiveAt > Date.now()) {
+      showMessage('warning', '进行中便签的生效时间只能修正为当前或过去时间')
       return
     }
   }
@@ -215,9 +244,9 @@ async function handleSave() {
       fields: {
         content: text,
         status: status.value,
-        effectiveAt: effectiveTimestamp,
+        effectiveAt: requestedEffectiveAt,
         durationDays: durationDays.value,
-        notifyEnabled: systemNotificationsSupported && notifyEnabled.value,
+        notifyEnabled: canEditNotify.value && notifyEnabled.value,
         isPinned: isPinned.value
       },
       tagIds: [...tagIds.value],
@@ -259,20 +288,22 @@ defineExpose({ requestClose })
           v-model="effectiveAt"
           :disabled="!canEditSchedule"
           :clearable="false"
-          :min-date="today"
           :shortcuts="dateShortcuts"
         />
       </div>
+      <p
+        v-if="status === 'initialized' && isHistoricalSchedule"
+        class="ne-platform-note ne-schedule-note"
+      >
+        保存后将直接进入进行中，并关闭系统提醒。
+      </p>
 
       <NoteDurationField v-model="durationDays" :visible="!!effectiveAt" />
 
       <div class="ne-notification-field ne-stagger" style="animation-delay: 100ms">
         <div class="ne-field-row">
           <label class="ne-field-label">系统提醒<HelpButton :text="notifyHelp" /></label>
-          <AppToggle
-            v-model="notifyEnabled"
-            :disabled="!systemNotificationsSupported || !canEditSchedule"
-          />
+          <AppToggle v-model="notifyEnabled" :disabled="!canEditNotify" />
         </div>
         <p v-if="!systemNotificationsSupported" class="ne-platform-note">
           {{ systemNotificationUnavailableReason }}
@@ -392,6 +423,10 @@ defineExpose({ requestClose })
   font-size: var(--fs-secondary);
   line-height: 1.5;
   opacity: 0.72;
+}
+.ne-schedule-note {
+  margin-top: 5rem;
+  text-align: right;
 }
 .ne-field {
   margin-top: 12rem;

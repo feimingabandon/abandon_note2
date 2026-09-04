@@ -69,9 +69,8 @@ import {
   assertAttachmentBatchWithinLimit
 } from '../../shared/attachment-rules.js'
 import {
-  assertMinimumScheduleLeadTime,
-  MIN_SCHEDULE_LEAD_TIME_MINUTES,
-  MIN_SCHEDULE_LEAD_TIME_MS
+  assertCreatableNoteEffectiveTime,
+  resolveNoteDraftSchedule
 } from '../../shared/note-scheduling-rules.js'
 import { createMainWindowIpc } from './ipc-authorization.js'
 
@@ -107,7 +106,7 @@ export function registerBusinessIpcHandlers({
       options.effectiveAt !== null &&
       options.effectiveAt !== ''
     if (hasExplicitEffectiveAt) {
-      options.effectiveAt = assertMinimumScheduleLeadTime(options.effectiveAt)
+      options.effectiveAt = assertCreatableNoteEffectiveTime(options.effectiveAt)
     }
     return options
   }
@@ -249,22 +248,19 @@ export function registerBusinessIpcHandlers({
       }
 
       const timestamp = Date.now()
-      let effectiveAt = current.effective_at
-      let notifyEnabled = current.notify_enabled
-
-      if (current.status === 'initialized') {
-        const requestedEffectiveAt = Number(fields.effectiveAt)
-        if (!Number.isFinite(requestedEffectiveAt) || requestedEffectiveAt <= 0) {
-          throw new Error('请选择有效的生效时间')
-        }
-        const effectiveAtChanged =
-          Math.floor(requestedEffectiveAt / 1000) !== Math.floor(current.effective_at / 1000)
-        if (effectiveAtChanged && requestedEffectiveAt - timestamp < MIN_SCHEDULE_LEAD_TIME_MS) {
-          throw new Error(`生效时间需在当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟之后`)
-        }
-        effectiveAt = effectiveAtChanged ? requestedEffectiveAt : current.effective_at
-        notifyEnabled = fields.notifyEnabled ? 1 : 0
-      }
+      const requestedEffectiveAt =
+        fields.effectiveAt === undefined || fields.effectiveAt === null || fields.effectiveAt === ''
+          ? current.effective_at
+          : fields.effectiveAt
+      const schedule = resolveNoteDraftSchedule({
+        status: current.status,
+        currentEffectiveAt: current.effective_at,
+        currentNotifyEnabled: current.notify_enabled,
+        currentFinishedAt: current.finished_at,
+        requestedEffectiveAt,
+        requestedNotifyEnabled: fields.notifyEnabled,
+        currentTime: timestamp
+      })
 
       db.prepare(
         `UPDATE notes SET
@@ -273,12 +269,12 @@ export function registerBusinessIpcHandlers({
          WHERE id = ? AND is_deleted = 0`
       ).run(
         content,
-        current.status,
+        schedule.status,
         fields.isPinned ? 1 : 0,
-        notifyEnabled,
-        effectiveAt,
+        schedule.notifyEnabled,
+        schedule.effectiveAt,
         durationDays,
-        current.finished_at,
+        schedule.finishedAt,
         timestamp,
         id
       )

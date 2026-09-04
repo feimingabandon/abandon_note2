@@ -32,10 +32,11 @@ describe('月历日期格右键菜单', () => {
     expect(grid).toContain('if (dayPreviewRef.value?.contains(event.target)) return')
   })
 
-  it('按具体日期限制新建，并提供完整的便签操作菜单', () => {
+  it('允许任意有效日期新建，并提供完整的便签操作菜单', () => {
     const grid = readFileSync(GRID_PATH, 'utf8')
 
-    expect(grid).toContain(':disabled="contextMenuTarget?.day?.key < todayKey"')
+    expect(grid).not.toContain(':disabled="contextMenuTarget?.day?.key < todayKey"')
+    expect(grid).not.toContain('if (target.day.key < props.todayKey) return')
     expect(grid).not.toMatch(/contextMenuTarget\?\.day\?\.inCurrentMonth/)
     expect(grid).toContain('新建便签…')
     expect(grid).toContain('预览当日全部便签')

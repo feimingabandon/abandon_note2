@@ -225,8 +225,33 @@ async function runContextMenuTests() {
         const button = document.querySelector('.month-cell-context-menu button')
         return { label: button?.textContent.trim(), disabled: button?.disabled }
       })()`),
-      { label: '新建便签…', disabled: true },
-      '过去日期的右键新建入口必须保持禁用'
+      { label: '新建便签…', disabled: false },
+      '过去日期的右键新建入口应允许历史补录'
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-cell-context-menu button').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.month-creator'))`
+        ),
+      '过去日期的右键新建入口没有打开历史补录表单'
+    )
+    const [pastYear, pastMonth, pastDay] = dates.pastKey.split('-').map(Number)
+    assert.equal(
+      await monthWindow.webContents.executeJavaScript(
+        `document.querySelector('.month-creator > header span')?.textContent.trim()`
+      ),
+      `${pastYear}年${pastMonth}月${pastDay}日`,
+      '历史补录表单没有保留右键日期'
+    )
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-creator > header button').click()`
+    )
+    await waitUntil(
+      () => monthWindow.webContents.executeJavaScript(`!document.querySelector('.month-creator')`),
+      '历史补录表单没有关闭'
     )
     if (movedToPreviousMonth) {
       await monthWindow.webContents.executeJavaScript(
@@ -283,6 +308,13 @@ async function runContextMenuTests() {
           `document.activeElement?.matches('.month-day-cell__quick-create input')`
         ),
       '快速输入框没有进入编辑状态'
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `!document.querySelector('.month-cell-context-menu-shell')`
+        ),
+      '上一个日期菜单没有完成离场'
     )
     await monthWindow.webContents.executeJavaScript(`(() => {
       const input = document.querySelector('.month-day-cell[data-date="${dates.todayKey}"] .month-day-cell__quick-create input')

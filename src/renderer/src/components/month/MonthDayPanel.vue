@@ -8,7 +8,6 @@ import { weatherLocationLabel } from '../../../../shared/weather-rules.js'
 const props = defineProps({
   dateKey: { type: String, required: true },
   notes: { type: Array, default: () => [] },
-  canCreate: { type: Boolean, default: true },
   weather: { type: Object, default: null },
   weatherLocation: { type: Object, default: null },
   weatherFetchedAt: { type: Number, default: null },
@@ -152,9 +151,8 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="month-day-panel__create"
-          :disabled="!canCreate"
-          :title="canCreate ? '新建便签' : '不能为过去日期新建便签'"
-          :aria-label="canCreate ? '新建便签' : '不能为过去日期新建便签'"
+          title="新建便签"
+          aria-label="新建便签"
           @click="emit('create')"
         >
           <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -221,7 +219,7 @@ onBeforeUnmount(() => {
       <Transition name="month-day-empty">
         <div v-if="!notes.length" class="month-day-panel__empty">
           <span>这一天还没有便签</span>
-          <button v-if="canCreate" type="button" @click="emit('create')">创建第一条</button>
+          <button type="button" @click="emit('create')">创建第一条</button>
         </div>
       </Transition>
     </div>

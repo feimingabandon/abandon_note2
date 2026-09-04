@@ -948,6 +948,21 @@ try {
   assert.equal(multiDayNote.duration_days, 7)
   assert.throws(() => createNote({ content: '无效持续时间', durationDays: 366 }), /持续天数/)
 
+  const historicalEffectiveAt = Date.now() - 7 * 24 * 60 * 60 * 1000
+  const historicalCreateStartedAt = Date.now()
+  const historicalNote = createNote({
+    content: '历史补录便签',
+    effectiveAt: historicalEffectiveAt,
+    notifyEnabled: true
+  })
+  const historicalCreateFinishedAt = Date.now()
+  assert.equal(historicalNote.status, 'in_progress')
+  assert.equal(historicalNote.notify_enabled, 0)
+  assert.equal(historicalNote.effective_at, historicalEffectiveAt)
+  assert.ok(historicalNote.created_at >= historicalCreateStartedAt)
+  assert.ok(historicalNote.created_at <= historicalCreateFinishedAt)
+  assert.equal(historicalNote.updated_at, historicalNote.created_at)
+
   db.prepare("UPDATE notes SET status = 'completed' WHERE is_deleted = 0").run()
   const nextInitialized = createNote({ content: '灵动岛下一条待生效' })
   const laterPinnedInitialized = createNote({ content: '灵动岛较晚置顶待生效' })
