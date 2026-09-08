@@ -33,6 +33,15 @@ document.addEventListener('scroll', showScrollbar, { passive: true, capture: tru
 /* ---- 每个可滚动元素独立的速度状态 ---- */
 const states = new WeakMap()
 
+/** 主动定位前停止该容器尚未结束的滚轮惯性，避免两条 RAF 同时写 scrollTop。 */
+export function stopScrollInertia(container) {
+  const state = states.get(container)
+  if (!state) return
+  if (state.raf !== null) cancelAnimationFrame(state.raf)
+  state.raf = null
+  state.v = 0
+}
+
 /** 从目标元素向上查找最近的可滚动容器 */
 function findScrollContainer(el) {
   while (el && el !== document.documentElement) {

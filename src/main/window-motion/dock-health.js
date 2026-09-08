@@ -20,6 +20,11 @@ export function inspectDockHealth(snapshot) {
     return issues
   }
 
+  // Windows 最小化窗口会暂时报告 (-32000, -32000) 及缩略尺寸。该几何不是
+  // BrowserWindow 的可恢复正常边界，此时不能据此触发贴边故障恢复；窗口恢复后
+  // 下一轮健康检查会重新读取真实物理边界。
+  if (snapshot.mainWindowMinimized) return issues
+
   if (snapshot.isSliding && snapshot.slideAgeMs >= snapshot.maxSlideAgeMs) {
     issues.push(`贴边动画已持续 ${snapshot.slideAgeMs}ms，超过允许时间`)
   }

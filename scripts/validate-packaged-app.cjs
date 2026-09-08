@@ -85,7 +85,9 @@ async function validatePackagedApp(context, dependencies = {}) {
     '/output/',
     '/scripts/',
     '/src/',
-    '/tests/'
+    '/tests/',
+    '/tmp/',
+    '/tools/'
   ]
   const forbiddenAsarFiles = new Set(['/AGENTS.md'])
   const leakedEntry = listPackage(asarPath)

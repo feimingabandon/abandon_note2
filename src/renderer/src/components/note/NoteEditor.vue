@@ -46,6 +46,7 @@ const mounted = ref(false)
 const imagePickerRef = ref(null)
 const attachmentDirty = ref(false)
 const initialSnapshot = ref(null)
+const initialVersion = ref(null)
 const confirmVisible = ref(false)
 
 function pad(value) {
@@ -78,6 +79,7 @@ function resetFromNote(note) {
   if (!note) return
   const snapshot = createSnapshot(note)
   initialSnapshot.value = snapshot
+  initialVersion.value = note.editVersion
   content.value = snapshot.content
   status.value = snapshot.status
   effectiveAt.value = snapshot.effectiveAt
@@ -241,6 +243,7 @@ async function handleSave() {
     }
     const updated = await window.api.saveNoteDraft({
       id: props.note.id,
+      expectedVersion: initialVersion.value,
       fields: {
         content: text,
         status: status.value,

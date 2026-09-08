@@ -18,6 +18,7 @@ import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 import { useMessage } from '../../composables/useMessage.js'
 import { weatherLocationKey } from '../../../../shared/weather-rules.js'
 import { buildDisplayableWeatherByDate, getWeatherForNote } from '../../utils/noteWeather.js'
+import { recentLocalDayRange } from '../../../../shared/calendar/calendar-date-rules.js'
 
 const emit = defineEmits(['edit'])
 const { showMessage } = useMessage()
@@ -241,19 +242,9 @@ let loadSeq = 0
 let earlierRequestSeq = 0
 let customMoreRequestSeq = 0
 
-/** 三天截止时间戳（毫秒）：今天 23:59:59 倒推 3×24h 再减 1 秒 */
+/** 数据库用 > cutoff 区分最近三天，因此边界取前天零点的前一毫秒。 */
 function threeDayCutoff() {
-  const now = new Date()
-  const todayEnd = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-    23,
-    59,
-    59,
-    999
-  ).getTime()
-  return todayEnd - 3 * 24 * 60 * 60 * 1000 - 1000
+  return recentLocalDayRange(Date.now(), 3).timeFrom - 1
 }
 
 // ---- 时间线模式：单一统一列表 ----

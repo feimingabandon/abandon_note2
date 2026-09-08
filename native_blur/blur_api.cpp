@@ -13,7 +13,7 @@
 #include <winternl.h>
 
 namespace {
-constexpr int kNativeAbiVersion = 9;
+constexpr int kNativeAbiVersion = 12;
 }
 
 int AbandonNative_GetAbiVersion(void) {
@@ -105,6 +105,23 @@ void Blur_SetCornerRadius(float radiusDip) {
 
 void Blur_UpdateGeometry(void) {
     BlurEngine::Engine::Instance().UpdateGeometry();
+}
+
+int WindowTransition_WarmShell(void* hwnd) {
+    try { return BlurEngine::Engine::Instance().WarmShellResources(static_cast<HWND>(hwnd)) ? 1 : 0; }
+    catch (...) { return 0; }
+}
+
+int WindowTransition_PrepareShell(void* hwnd, int x, int y, int width, int height) {
+    try {
+        return BlurEngine::Engine::Instance().PrepareShellTransition(
+            static_cast<HWND>(hwnd), RECT{ x, y, x + width, y + height }) ? 1 : 0;
+    } catch (...) { return 0; }
+}
+
+int WindowTransition_FinishShell(void) {
+    try { return BlurEngine::Engine::Instance().FinishShellTransition() ? 1 : 0; }
+    catch (...) { return 0; }
 }
 
 int WindowTransition_Run(

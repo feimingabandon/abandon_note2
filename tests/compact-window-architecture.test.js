@@ -12,7 +12,7 @@ describe('compact single-window architecture', () => {
     const listApp = read('../src/renderer/src/App.vue')
     const calendarApp = read('../src/renderer/src/MonthApp.vue')
 
-    expect(main).toContain('revealApplicationFromNotification()')
+    expect(main).toMatch(/function revealApplicationFromNotification\([^)]*\)/)
     expect(main).toContain('revealPendingNotificationApplication()')
     expect(main).toContain('expandCompactWindowForNotification()')
     expect(service).toContain('this.revealApplication?.()')
@@ -90,7 +90,7 @@ describe('compact single-window architecture', () => {
     expect(controller).not.toContain('.setBounds(')
   })
 
-  it('uses one native geometry clock and synchronizes HWND, DComp visual, tint and clip', () => {
+  it('uses a compositor clock with a fixed carrier and one final HWND resize', () => {
     const transition = read('../native_blur/transition_engine.cpp')
     const blurEngine = read('../native_blur/blur_engine.cpp')
     const bridge = read('../src/main/bridge/blur_bridge.js')
@@ -98,6 +98,13 @@ describe('compact single-window architecture', () => {
     expect(transition).toContain('blurEngine.SetWindowTransitionGeometry')
     expect(transition).toContain('blurEngine.AbortWindowTransition')
     expect(transition).toContain('DwmFlush()')
+    expect(transition).toContain('blurEngine.AnimateShellTransition(durationMs)')
+    expect(transition).toContain('composition-shell')
+    expect(transition).not.toContain('std::pow(')
+    expect(blurEngine).toContain('CreateVector2KeyFrameAnimation()')
+    expect(blurEngine).toContain('CompositionBatchTypes::Animation')
+    expect(blurEngine).toContain('m_shellClipGeometry.StartAnimation(property, animation)')
+    expect(blurEngine).toContain('m_blurVisual.IsVisible(cfg.enabled)')
     expect(blurEngine).toContain('BeginDeferWindowPos(showOverlay ? 2 : 1)')
     expect(blurEngine.match(/DeferWindowPos\(/g)?.length).toBeGreaterThanOrEqual(4)
     expect(blurEngine).toContain('EqualRect(&parentAfter, &overlayAfter)')
@@ -123,7 +130,21 @@ describe('compact single-window architecture', () => {
     }
   })
 
-  it('keeps ordered scene stages while overlapping expanded content with the shell tail', () => {
+  it('retires the fixed native shell without rebasing visible clip coordinates', () => {
+    const source = read('../native_blur/blur_engine.cpp')
+    const finish = source.slice(
+      source.indexOf('bool Engine::FinishShellOnSta()'),
+      source.indexOf('void Engine::CancelShellOnSta()')
+    )
+    expect(finish).not.toContain('.Offset(')
+    expect(finish).not.toContain('SetWindowPos(')
+    expect(finish).toContain('GetCommitBatch(CompositionBatchTypes::Animation)')
+    expect(finish).toContain('m_rootVisual.IsVisible(true)')
+    expect(finish).toContain('m_shellRoot.IsVisible(false)')
+    expect(finish).toContain('m_shellReleaseBatch.Completed(')
+  })
+
+  it('waits for final layout before handing the shell to the entering content', () => {
     const main = read('../src/main/index.js')
     const preload = read('../src/preload/index.js')
     const composable = read('../src/renderer/src/composables/useCompactWindowMode.js')
@@ -132,9 +153,11 @@ describe('compact single-window architecture', () => {
     expect(main).toContain('PRESENTATION_STAGES.CONTENT_EXIT')
     expect(main).toContain('PRESENTATION_STAGES.SHELL_TRANSFORM')
     expect(main).toContain('PRESENTATION_STAGES.CONTENT_ENTER')
-    expect(main).toContain('COMPACT_EXPAND_CONTENT_ENTER_PROGRESS = 0.65')
-    expect(main).toContain('waitForCompactExpandContentCue(nativeTransition)')
-    expect(main).toContain('Promise.all([nativeTransition, rendererContentEnter])')
+    expect(main).not.toContain('COMPACT_EXPAND_CONTENT_ENTER_PROGRESS')
+    expect(main).toContain('PRESENTATION_STAGES.SHELL_SETTLE')
+    expect(main).toContain('await finishWindowTransitionShell()')
+    expect(main).toContain('operationWindow.setOpacity(originalOpacity)')
+    expect(main).toContain('operationWindow.setIgnoreMouseEvents(false)')
     expect(main).toContain('setTransitionStage(')
     expect(main).toContain('screen.dipToScreenRect(window, bounds)')
     expect(main).not.toContain('screen.dipToScreenPoint')
@@ -160,6 +183,15 @@ describe('compact single-window architecture', () => {
     expect(main).toContain("beginDockInteractionSuspension('titlebar-drag')")
     expect(main).toContain("endDockInteractionSuspension('titlebar-drag')")
     expect(main).toContain('if (titlebarDragSession) return')
+    const titlebarDrag = main.slice(
+      main.indexOf('function beginTitlebarWindowDrag'),
+      main.indexOf('const WINDOW_CONTROL_GUARD_MS')
+    )
+    expect(titlebarDrag).toContain('windowMotionBackend?.capture()')
+    expect(titlebarDrag).toContain('setDockPosition(motionPosition, session.motionPlan)')
+    expect(titlebarDrag).toContain('expectedElectronContentSize')
+    expect(titlebarDrag).toContain("logger.error('titlebar.drag-move'")
+    expect(titlebarDrag).not.toContain('mainWindow.setPosition(')
     expect(titlebar).toContain('window.api.beginTitlebarWindowDrag(titlebarDragLatestPoint)')
     expect(titlebar).toContain('window.api.updateTitlebarWindowDrag(titlebarDragLatestPoint)')
     expect(titlebar).toContain('@pointerdown="onTitlebarPointerDown"')
@@ -197,7 +229,7 @@ describe('compact single-window architecture', () => {
     expect(api).toContain('BLUR_API int Blur_ApplyConfig(')
     expect(blurEngine).toContain('bool Engine::ApplyConfigAndWait(')
     expect(blurEngine).toContain('SendMessageTimeoutW(')
-    expect(blurEngine).toContain('if (FAILED(DwmFlush()))')
+    expect(blurEngine).toContain('IsWindowVisible(self->m_parentHwnd.load()) && FAILED(DwmFlush())')
     expect(bridge).toContain('export function setWindowBoundsSynchronized(')
     expect(bridge).toContain('lib.WindowTransition_Run(')
     expect(bridge).toContain('      0\n    )')

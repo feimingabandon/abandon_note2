@@ -32,8 +32,8 @@ describe('view visibility shortcut UI wiring', () => {
   })
 
   it('documents shared scope and tray operation in the help page', () => {
-    const help = read('src/renderer/src/components/help/HelpPage.vue')
-    expect(help).toContain('<strong>视图显示快捷键</strong')
+    const help = read('src/renderer/src/components/help/help-content.js')
+    expect(help).toContain('视图显示快捷键')
     expect(help).toContain('窗口隐藏到托盘后仍然有效')
   })
 
@@ -55,8 +55,41 @@ describe('view visibility shortcut UI wiring', () => {
     expect(preload).toContain('setViewVisibilityShortcut')
     expect(main).toContain("mainWindowIpc.handle('shortcut:view-visibility-set'")
     expect(main).toContain('viewVisibilityShortcutCaptureSenders.has(event.sender)')
-    expect(shortcutHandler).toContain('isQuitting || switchingMainView || screenshotCaptureActive')
-    expect(shortcutHandler).toContain('toggleWindow()')
+    // 执行实际处理器验证保护条件，避免等价重构被字面表达式断言误报。
+    const calls = []
+    for (const [isQuitting, switchingMainView, screenshotCaptureActive] of [
+      [false, false, false],
+      [true, false, false],
+      [false, true, false],
+      [false, false, true],
+      [true, true, true]
+    ]) {
+      calls.length = 0
+      const invoke = new Function(
+        'isQuitting',
+        'switchingMainView',
+        'screenshotCaptureActive',
+        'mainWindow',
+        'isDockHidden',
+        'compactWindowController',
+        'logger',
+        'toggleWindow',
+        `${shortcutHandler}; handleViewVisibilityShortcut()`
+      )
+      invoke(
+        isQuitting,
+        switchingMainView,
+        screenshotCaptureActive,
+        null,
+        false,
+        { phase: 'expanded' },
+        { info: () => {} },
+        () => calls.push('toggle')
+      )
+      expect(calls).toEqual(
+        isQuitting || switchingMainView || screenshotCaptureActive ? [] : ['toggle']
+      )
+    }
     expect(main).toContain('if (compactWindowController.activePromise()) return')
     expect(main).toContain('viewVisibilityShortcutService?.dispose()')
   })

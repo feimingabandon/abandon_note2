@@ -79,6 +79,12 @@ describe('CompactWindowController', () => {
     ).toBe(true)
     expect(
       controller.setTransitionStage(window, generation, PRESENTATION_STAGES.CONTENT_ENTER)
+    ).toBe(false)
+    expect(
+      controller.setTransitionStage(window, generation, PRESENTATION_STAGES.SHELL_SETTLE)
+    ).toBe(true)
+    expect(
+      controller.setTransitionStage(window, generation, PRESENTATION_STAGES.CONTENT_ENTER)
     ).toBe(true)
     expect(
       controller.setTransitionStage(window, generation, PRESENTATION_STAGES.SHELL_TRANSFORM)
@@ -139,6 +145,8 @@ describe('CompactWindowController', () => {
     expect(result.status).toBe(TRANSITION_STATUSES.FAILED)
     expect(result.error).toBe(failure)
     expect(onError).toHaveBeenCalledWith(failure, expect.any(Object))
+    expect(onError.mock.calls[0][1].transition).not.toHaveProperty('window')
+    expect(onError.mock.calls[0][1].transition).not.toHaveProperty('promise')
     expect(controller.setPhase(window, 'compact')).toBe(true)
   })
 

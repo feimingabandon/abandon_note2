@@ -3,8 +3,7 @@ export const MAX_CALENDAR_YEAR = 2100
 export const MIN_CALENDAR_DATE = `${MIN_CALENDAR_YEAR}-01-01`
 export const MAX_CALENDAR_DATE = `${MAX_CALENDAR_YEAR}-12-31`
 export const CALENDAR_COLUMN_COUNT = 7
-export const CALENDAR_ROW_COUNT = 6
-export const CALENDAR_CELL_COUNT = CALENDAR_COLUMN_COUNT * CALENDAR_ROW_COUNT
+export const MIN_CALENDAR_ROW_COUNT = 5
 export const WEEK_CALENDAR_CELL_COUNT = CALENDAR_COLUMN_COUNT
 
 function pad(value) {
@@ -77,6 +76,15 @@ export function localMidnightTimestamp(dateKey) {
   return new Date(year, month - 1, day, 0, 0, 0, 0).getTime()
 }
 
+/** 含今天的最近若干个本地日历日；夏令时切换日可以是 23 或 25 小时。 */
+export function recentLocalDayRange(value = Date.now(), days = 1) {
+  const today = localDateKey(value)
+  return {
+    timeFrom: localMidnightTimestamp(addCalendarDays(today, 1 - days)),
+    timeTo: localMidnightTimestamp(addCalendarDays(today, 1)) - 1
+  }
+}
+
 export function combineLocalDateAndTime(dateKey, timeValue) {
   const { year, month, day } = parseDateKey(dateKey)
   const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(timeValue || ''))
@@ -112,6 +120,10 @@ export function buildMonthGrid(year, month) {
   const first = new Date(normalized.year, normalized.month - 1, 1)
   const last = new Date(normalized.year, normalized.month, 0)
   const mondayOffset = (first.getDay() + 6) % 7
+  const rowCount = Math.max(
+    MIN_CALENDAR_ROW_COUNT,
+    Math.ceil((mondayOffset + last.getDate()) / CALENDAR_COLUMN_COUNT)
+  )
   const visibleStartDate = new Date(normalized.year, normalized.month - 1, 1 - mondayOffset)
   const visibleStart = dateKeyFromParts(
     visibleStartDate.getFullYear(),
@@ -120,12 +132,12 @@ export function buildMonthGrid(year, month) {
   )
   const days = buildCalendarRangeDays(
     visibleStart,
-    CALENDAR_CELL_COUNT,
+    rowCount * CALENDAR_COLUMN_COUNT,
     ({ year: dayYear, month: dayMonth }) =>
       dayYear === normalized.year && dayMonth === normalized.month
   )
   days.forEach((day) => {
-    // 月视图的 42 格都是当前可见范围。前后月份日期保留 inCurrentMonth=false
+    // 月视图的 35/42 格都是当前可见范围。前后月份日期保留 inCurrentMonth=false
     // 仅用于视觉区分，但数据、选择、键盘导航和新建能力与本月日期一致。
     day.isActive = true
   })

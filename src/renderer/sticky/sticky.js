@@ -167,10 +167,12 @@ function finishEditing({ save = true } = {}) {
       return true
     })
     .catch((error) => {
-      if (pendingSyncedContent !== null) applySyncedContent(pendingSyncedContent)
-      else contentElement.textContent = committedContent
+      // 写入失败保留草稿；同步到的新正文继续等待取消或版本冲突处理，不能覆盖输入。
+      contentElement.textContent = nextContent
+      setEditing(true)
+      contentElement.focus({ preventScroll: true })
       console.error('[Sticky] 保存便利贴正文失败:', error)
-      showError(error.message || '便利贴正文保存失败，请重试')
+      showError(error.message || '便利贴正文保存失败，请重试', { persistent: true })
       return false
     })
     .finally(() => {

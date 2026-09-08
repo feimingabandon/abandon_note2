@@ -4,6 +4,7 @@ import { inspectDockHealth } from '../src/main/window-motion/dock-health.js'
 function healthyHiddenSnapshot(overrides = {}) {
   return {
     mainWindowExists: true,
+    mainWindowMinimized: false,
     isDockHidden: true,
     dockSide: 'left',
     hasDockMotionSession: true,
@@ -34,6 +35,22 @@ function healthyHiddenSnapshot(overrides = {}) {
 describe('dock health inspection', () => {
   it('accepts a consistent native hidden session', () => {
     expect(inspectDockHealth(healthyHiddenSnapshot())).toEqual([])
+  })
+
+  it('ignores Windows iconic sentinel geometry while the main window is minimized', () => {
+    expect(
+      inspectDockHealth(
+        healthyHiddenSnapshot({
+          mainWindowMinimized: true,
+          mainAtHiddenTarget: false,
+          edgeMonitor: {
+            ...healthyHiddenSnapshot().edgeMonitor,
+            workerAlive: false,
+            state: 'failed'
+          }
+        })
+      )
+    ).toEqual([])
   })
 
   it('accepts waiting-outside, trigger-pending and transient degraded states', () => {

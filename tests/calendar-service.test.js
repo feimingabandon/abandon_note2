@@ -93,6 +93,22 @@ describe('calendar service ranges', () => {
     })
   })
 
+  it('queries only the visible five rows including cross-month dates', () => {
+    mocks.queryCalendarNotes.mockReturnValue([
+      candidate(20, '2026-08-31'),
+      candidate(21, '2026-10-04'),
+      candidate(22, '2026-10-05')
+    ])
+    const result = getMonthCalendarData(2026, 9)
+    expect(result.days).toHaveLength(35)
+    expect(mocks.buildCalendarDayMetadata).toHaveBeenCalledWith('2026-08-31', '2026-10-04')
+    expect(mocks.queryCalendarNotes).toHaveBeenCalledWith({
+      candidateFrom: localMidnightTimestamp(addCalendarDays('2026-08-31', -364)),
+      visibleEndExclusive: localMidnightTimestamp('2026-10-05')
+    })
+    expect(result.notes.map((note) => note.id)).toEqual([20, 21])
+  })
+
   it('keeps every date usable in the final week beyond the lunar metadata range', () => {
     mocks.queryCalendarNotes.mockReturnValue([])
 

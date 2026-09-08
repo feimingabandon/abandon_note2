@@ -22,6 +22,7 @@ const panelStyle = ref({})
 const viewYear = ref(new Date().getFullYear())
 const viewMonth = ref(new Date().getMonth() + 1)
 const monthDirection = ref('next')
+let panelResizeObserver = null
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
 
 const selectedParts = computed(() => {
@@ -49,6 +50,7 @@ function syncView() {
 }
 
 function updatePosition() {
+  if (!open.value) return
   const triggerRect = triggerRef.value?.getBoundingClientRect()
   const panelRect = panelRef.value?.getBoundingClientRect()
   if (!triggerRect || !panelRect) return
@@ -65,12 +67,19 @@ async function openPanel() {
   syncView()
   open.value = true
   await nextTick()
+  if (!open.value || !panelRef.value) return
+  panelResizeObserver?.disconnect()
+  // 切月的 out-in 过渡会先移除旧网格，再插入新网格；按实际尺寸重定位。
+  panelResizeObserver = new ResizeObserver(updatePosition)
+  panelResizeObserver.observe(panelRef.value)
   updatePosition()
   window.addEventListener('resize', updatePosition)
 }
 
 function closePanel() {
   open.value = false
+  panelResizeObserver?.disconnect()
+  panelResizeObserver = null
   window.removeEventListener('resize', updatePosition)
 }
 
@@ -120,6 +129,7 @@ document.addEventListener('pointerdown', onDocumentPointerDown)
 document.addEventListener('keydown', onDocumentKeydown)
 
 onBeforeUnmount(() => {
+  panelResizeObserver?.disconnect()
   document.removeEventListener('pointerdown', onDocumentPointerDown)
   document.removeEventListener('keydown', onDocumentKeydown)
   window.removeEventListener('resize', updatePosition)

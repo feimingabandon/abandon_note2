@@ -133,6 +133,26 @@ async function chooseView(window, mode) {
   )
 }
 
+async function assertWeatherLocationOnly(window) {
+  const meta = await waitUntil(
+    () =>
+      window.webContents.executeJavaScript(`(() => {
+    const element = document.querySelector('.month-toolbar__weather-meta')
+    return element?.textContent.includes('广州市') ? {
+      text: element.textContent.trim(),
+      title: element.title,
+      isButton: element.matches('button, [role="button"]'),
+      sourceCount: element.querySelectorAll('small, i').length
+    } : null
+  })()`),
+    '天气地点没有显示'
+  )
+  assert.equal(meta.title, meta.text)
+  assert.equal(meta.isButton, false)
+  assert.equal(meta.sourceCount, 0)
+  assert.doesNotMatch(meta.text, /数据来源|Open-Meteo|CMA/)
+}
+
 const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-main-view-enhancements-'))
 
 try {
@@ -261,6 +281,7 @@ async function runMainViewEnhancementsTest() {
 
     await chooseView(listWindow, 'month')
     const monthWindow = await waitForView('month')
+    await assertWeatherLocationOnly(monthWindow)
     assert.equal(
       await monthWindow.webContents.executeJavaScript(
         `Boolean(document.querySelector('.compact-mode-trigger'))`
@@ -270,6 +291,7 @@ async function runMainViewEnhancementsTest() {
     )
     await chooseView(monthWindow, 'week')
     const weekWindow = await waitForView('week')
+    await assertWeatherLocationOnly(weekWindow)
     assert.equal(
       await weekWindow.webContents.executeJavaScript(
         `Boolean(document.querySelector('.compact-mode-trigger'))`

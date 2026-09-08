@@ -114,11 +114,6 @@ const toolbarWeatherLocation = computed(() =>
     ? weatherLocationLabel(weatherForecast.value.location)
     : ''
 )
-const toolbarWeatherSource = computed(() => {
-  const source = weatherForecast.value?.source
-  if (!source) return ''
-  return source.model?.name ? `${source.attribution} · ${source.model.name}` : source.attribution
-})
 
 async function loadWeather({ quiet = false } = {}) {
   const sequence = ++weatherLoadSequence
@@ -928,7 +923,6 @@ onBeforeUnmount(() => {
           :refreshing="refreshing"
           :busy="transitioning"
           :weather-location-label="toolbarWeatherLocation"
-          :weather-source-label="toolbarWeatherSource"
           @previous="goPrevious"
           @next="goNext"
           @today="goToday"

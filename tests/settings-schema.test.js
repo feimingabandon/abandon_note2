@@ -99,8 +99,8 @@ describe('global main-window controls', () => {
         enabled: false,
         x: null,
         y: null,
-        width: 360,
-        height: 76,
+        width: 200,
+        height: 40,
         displayId: null,
         previousWorkArea: null
       }
@@ -532,5 +532,23 @@ describe('first-use notice setting', () => {
       resolveSettingsRows([{ type: 'onboarding', key: 'first_use_notice_version', value: '1' }])
         .onboarding.noticeVersion
     ).toBe(1)
+  })
+})
+
+describe('calendar font settings', () => {
+  it('defaults calendars to 20 and preserves stored font sizes', () => {
+    expect(createDefaultSettings(VIEW_MODES.LIST).css.fontSizeBase).toBe(17)
+    for (const mode of [VIEW_MODES.MONTH, VIEW_MODES.WEEK]) {
+      expect(createDefaultSettings(mode).css.fontSizeBase).toBe(20)
+      expect(
+        resolveSettingsRows([{ type: 'css', key: 'font_size_base', value: '18' }], mode).css
+          .fontSizeBase
+      ).toBe(18)
+      expect(
+        resolveSettingsRows([{ type: 'css', key: 'font_size_base', value: '28' }], mode).css
+          .fontSizeBase
+      ).toBe(28)
+    }
+    expect(serializeSetting('css.fontSizeBase', 40).value).toBe('28')
   })
 })

@@ -230,7 +230,7 @@ onBeforeUnmount(() => {
   z-index: var(--z-local-overlay);
   display: flex;
   grid-row: 1;
-  height: 19rem;
+  height: max(19rem, calc(var(--fs-month-event) + 6rem));
   align-items: center;
   align-self: start;
   gap: 5rem;
@@ -248,7 +248,7 @@ onBeforeUnmount(() => {
   font-size: var(--fs-month-event);
   line-height: 1;
   pointer-events: auto;
-  transform: translateY(calc(var(--event-lane) * 22rem));
+  transform: translateY(calc(var(--event-lane) * max(22rem, calc(var(--fs-month-event) + 9rem))));
   transition: filter 140ms ease;
 }
 .month-event-bar:hover {

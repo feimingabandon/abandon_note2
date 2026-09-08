@@ -38,9 +38,16 @@ import {
   reassertWindowZOrder,
   setWindowAlwaysOnBottom,
   runWindowTransition,
-  setWindowBoundsSynchronized
+  prepareWindowTransitionShell,
+  warmWindowTransitionShell,
+  finishWindowTransitionShell
 } from './bridge/blur_bridge.js'
 import { createWindowMotionBackend } from './window-motion/index.js'
+import { prepareCompactTargetFrame } from './windows/compact-target-frame.js'
+import { CompactPresentationWaiters } from './windows/compact-presentation-waiters.js'
+import { settleCompactPresentation } from './windows/compact-transition-settle.js'
+import { compactMotionDuration } from './windows/compact-motion-policy.js'
+import { CompactIntent } from './windows/compact-intent.js'
 import { DockTransitionState } from './window-motion/dock-transition-state.js'
 import {
   resolveFullscreenRebuildHandlePosition,
@@ -96,6 +103,7 @@ import {
   saveWallpaperVersion
 } from './db/db-wallpapers.js'
 import { Scheduler } from './services/scheduler.js'
+import { runAutomaticNoteMove } from './services/automatic-note-move.js'
 import { runRecurringTemplates } from './services/recurrence.js'
 import { TemplateSchedulerGuard } from './services/template-scheduler-guard.js'
 import { inspectDockHealth } from './window-motion/dock-health.js'
@@ -128,6 +136,8 @@ import {
   setWindowLogContext
 } from './logging/window-capture.js'
 import { getRecentCrashDumps } from './logging/process-capture.js'
+import { collectSystemDiagnostics } from './logging/system-diagnostics.js'
+import { normalizeCompactRendererDiagnostics } from './logging/compact-diagnostics.js'
 import { enforceNativeRuntimeCompatibility } from './native-runtime-gate.js'
 import {
   DEFAULT_SETTINGS,
@@ -204,6 +214,7 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'ui.settingsPanelSize',
   'ui.dayPanelSize',
   'interaction.doubleClickQuickEdit',
+  'notes.autoMoveYesterday',
   'weather.enabled',
   'weather.location',
   'remote.receiveNotices',
@@ -214,6 +225,7 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'listFilter'
 ])
 const APPLICATION_SETTING_IDS = new Set([
+  'notes.autoMoveYesterday',
   'appearance.titlebarIconScale',
   'appearance.iconColor',
   'shortcuts.viewVisibility',
@@ -461,13 +473,33 @@ let zOrderMode = DEFAULT_SETTINGS.window.zOrderMode
 /** 窗口锁定状态（全视图共享，禁止移动和缩放） */
 let isLocked = DEFAULT_SETTINGS.window.lockState
 
-const COMPACT_WINDOW_ANIMATION_MS = 440
-// 展开使用 ease-out cubic；时间进度到 65% 时，原生几何已完成约 96%。
-// 此时开始低透明度呈现主内容，可以缩短空白期，又避免在大幅 resize 阶段暴露响应式重排。
-const COMPACT_EXPAND_CONTENT_ENTER_PROGRESS = 0.65
-const COMPACT_EXPAND_CONTENT_ENTER_DELAY_MS = Math.round(
-  COMPACT_WINDOW_ANIMATION_MS * COMPACT_EXPAND_CONTENT_ENTER_PROGRESS
-)
+const compactIntent = new CompactIntent({
+  getWindow: () => mainWindow,
+  isCompact: () => compactWindowController.phase === 'compact',
+  apply: (compact) => (compact ? enterCompactWindow() : exitCompactWindow())
+})
+let compactWarmupTimer = null
+
+function scheduleCompactShellWarmup(window) {
+  clearTimeout(compactWarmupTimer)
+  compactWarmupTimer = setTimeout(async () => {
+    compactWarmupTimer = null
+    if (
+      window !== mainWindow ||
+      window.isDestroyed() ||
+      !blurInitialized ||
+      compactWindowController.activePromise()
+    )
+      return
+    const started = Date.now()
+    const ready = await warmWindowTransitionShell(window)
+    logger.info('compact-window.warmup', '预备隐藏动画外壳', {
+      ready,
+      elapsedMs: Date.now() - started
+    })
+  }, 500)
+  compactWarmupTimer.unref()
+}
 const EXPANDED_WINDOW_MIN_SIZE = 240
 let compactExpandedBounds = null
 let stableCompactBounds = null
@@ -479,7 +511,7 @@ let compactSizeMutationQueue = Promise.resolve()
 let pendingCompactTopologyChange = null
 
 const rendererReadyWaiters = new Set()
-const compactTransitionReadyWaiters = new Map()
+const compactTransitionReadyWaiters = new CompactPresentationWaiters()
 
 const compactWindowController = new CompactWindowController({
   onPhaseChanged: () => broadcastCompactWindowState(),
@@ -520,52 +552,18 @@ function waitForWindowRendererReady() {
   })
 }
 
-function compactTransitionReadyKey(generation, stage) {
-  return `${generation}:${stage}`
-}
-
 function waitForCompactRendererTransitionReady(generation, stage) {
-  if (!Number.isInteger(generation) || generation <= 0) {
-    return Promise.reject(new Error('无效的胶囊过渡代次'))
-  }
-  if (!Object.values(PRESENTATION_STAGES).includes(stage)) {
-    return Promise.reject(new Error('无效的胶囊呈现阶段'))
-  }
-  const key = compactTransitionReadyKey(generation, stage)
-  if (compactTransitionReadyWaiters.has(key)) {
-    return Promise.reject(new Error(`胶囊呈现阶段存在重复等待器：${stage}`))
-  }
-  return new Promise((resolveReady, rejectReady) => {
-    const timer = setTimeout(() => {
-      compactTransitionReadyWaiters.delete(key)
-      rejectReady(new Error(`Renderer 未及时完成胶囊呈现阶段：${stage}`))
-    }, 2_000)
-    compactTransitionReadyWaiters.set(key, {
-      generation,
-      stage,
-      timer,
-      resolveReady
-    })
-  })
+  return compactTransitionReadyWaiters.wait(generation, stage)
 }
 
 function resolveCompactRendererTransitionReady(generation, stage) {
-  const key = compactTransitionReadyKey(generation, stage)
-  const waiter = compactTransitionReadyWaiters.get(key)
-  if (!waiter) return false
-  compactTransitionReadyWaiters.delete(key)
-  clearTimeout(waiter.timer)
-  waiter.resolveReady()
-  return true
+  const transition = compactWindowController.transitionSnapshot()
+  if (transition?.generation !== generation || transition.stage !== stage) return false
+  return compactTransitionReadyWaiters.acknowledge(generation, stage)
 }
 
 function clearCompactRendererTransitionWaiters(generation) {
-  for (const [key, waiter] of compactTransitionReadyWaiters) {
-    if (waiter.generation !== generation) continue
-    compactTransitionReadyWaiters.delete(key)
-    clearTimeout(waiter.timer)
-    waiter.resolveReady()
-  }
+  compactTransitionReadyWaiters.clear(generation)
 }
 
 function isCompactWindowSupported() {
@@ -699,28 +697,39 @@ function ensureCompactNativeTransitionSucceeded(nativeResult) {
   throw error
 }
 
-function waitForCompactExpandContentCue(nativeTransition) {
-  let timer = null
-  const contentCue = new Promise((resolveCue) => {
-    timer = setTimeout(resolveCue, COMPACT_EXPAND_CONTENT_ENTER_DELAY_MS)
-  })
-  // 原生层若提前完成，就直接进入内容；若提前失败，则在显示新内容前中止。
-  return Promise.race([nativeTransition, contentCue]).finally(() => {
-    if (timer !== null) clearTimeout(timer)
-  })
-}
-
 async function runCompactNativeTransition({ window, from, target, phase }) {
+  const duration = compactMotionDuration(phase)
   const operationWindow = window
   let generation = null
+  const diagnosticStartedAt = Date.now()
+  const stageTimings = []
+  const originalOpacity = operationWindow.getOpacity()
+  let shellPrepared = false
+  let presentationSuppressed = false
+  let presentationCompleted = false
   try {
     const result = await compactWindowController.run(
       operationWindow,
-      { from, target, duration: COMPACT_WINDOW_ANIMATION_MS, phase },
+      { from, target, duration, phase },
       async () => {
         generation = compactWindowController.transitionSnapshot()?.generation
+        // 合成外壳与毛玻璃开关无关。首次配置失败后可在窗口可见时重试，
+        // 不要求用户先打开毛玻璃，也不修改用户保存的开关。
+        if (!blurInitialized) {
+          const runtime = initializeBlurRuntime()
+          if (!runtime.success) throw new Error(runtime.error || '原生外壳初始化失败')
+        }
         await waitForCompactRendererTransitionReady(generation, PRESENTATION_STAGES.CONTENT_EXIT)
+        stageTimings.push({
+          stage: 'content-exit-ready',
+          elapsedMs: Date.now() - diagnosticStartedAt
+        })
 
+        shellPrepared = await prepareWindowTransitionShell(
+          operationWindow,
+          dipBoundsToPhysical(operationWindow, target)
+        )
+        if (!shellPrepared) throw new Error('原生动画外壳准备失败')
         if (
           !compactWindowController.setTransitionStage(
             operationWindow,
@@ -731,19 +740,76 @@ async function runCompactNativeTransition({ window, from, target, phase }) {
           throw new Error('胶囊外壳变形阶段已经失效')
         }
         await waitForCompactRendererTransitionReady(generation, PRESENTATION_STAGES.SHELL_TRANSFORM)
+        stageTimings.push({
+          stage: 'shell-transform-ready',
+          elapsedMs: Date.now() - diagnosticStartedAt
+        })
+
+        // 布局退出后交给外壳。真实 Renderer 保持透明，在外壳运动期间排目标布局。
+        presentationSuppressed = true
+        operationWindow.setIgnoreMouseEvents(true)
+        operationWindow.setOpacity(0)
 
         const nativeTransition = runWindowTransition(
           operationWindow,
           dipBoundsToPhysical(operationWindow, target),
-          { duration: COMPACT_WINDOW_ANIMATION_MS }
-        ).then(ensureCompactNativeTransitionSucceeded)
+          { duration }
+        ).then((nativeResult) => {
+          stageTimings.push({
+            stage: 'native-complete',
+            elapsedMs: Date.now() - diagnosticStartedAt
+          })
+          try {
+            logger.info('compact-window.native-diagnostics', '灵动岛原生过渡采样', {
+              generation,
+              phase,
+              viewMode: activeViewMode,
+              startedAtUnixMs: diagnosticStartedAt,
+              elapsedMs: Date.now() - diagnosticStartedAt,
+              from,
+              target,
+              display: screen.getDisplayMatching(target),
+              blurEnabled: blurConfig.enabled,
+              success: nativeResult.success,
+              code: nativeResult.code,
+              error: nativeResult.error,
+              diagnostics: nativeResult.diagnostics
+            })
+          } catch {
+            /* 诊断读取失败不得改变窗口动画结果。 */
+          }
+          return ensureCompactNativeTransitionSucceeded(nativeResult)
+        })
 
-        if (phase === 'expanding') {
-          await waitForCompactExpandContentCue(nativeTransition)
-        } else {
-          await nativeTransition
-        }
-
+        const nativeResult = await settleCompactPresentation(nativeTransition, async () => {
+          if (
+            !compactWindowController.setTransitionStage(
+              operationWindow,
+              generation,
+              PRESENTATION_STAGES.SHELL_SETTLE
+            )
+          )
+            throw new Error('目标窗口准备阶段已经失效')
+          stageTimings.push({
+            stage: 'target-layout-requested',
+            elapsedMs: Date.now() - diagnosticStartedAt
+          })
+          // SHELL_SETTLE 表示目标页面准备：外壳此时仍可在运动，不能恢复透明度。
+          await waitForCompactRendererTransitionReady(generation, PRESENTATION_STAGES.SHELL_SETTLE)
+          stageTimings.push({
+            stage: 'target-layout-ready',
+            elapsedMs: Date.now() - diagnosticStartedAt
+          })
+          const targetFrame = await prepareCompactTargetFrame(operationWindow)
+          stageTimings.push({
+            stage: 'target-frame-ready',
+            elapsedMs: Date.now() - diagnosticStartedAt,
+            frameSize: targetFrame
+          })
+        })
+        operationWindow.setOpacity(originalOpacity)
+        // 原生运动和目标帧均已完成。先通知内容淡入，让 Renderer 与原生材质
+        // 提交确认并行；外壳保持终点坐标，输入仍要等交接成功才恢复。
         if (
           !compactWindowController.setTransitionStage(
             operationWindow,
@@ -757,33 +823,65 @@ async function runCompactNativeTransition({ window, from, target, phase }) {
           generation,
           PRESENTATION_STAGES.CONTENT_ENTER
         )
-        const [nativeResult] = await Promise.all([nativeTransition, rendererContentEnter])
+        stageTimings.push({
+          stage: 'content-enter-requested',
+          elapsedMs: Date.now() - diagnosticStartedAt
+        })
+        if (!finishWindowTransitionShell()) throw new Error('原生动画外壳交接失败')
+        shellPrepared = false
+        operationWindow.setIgnoreMouseEvents(false)
+        presentationSuppressed = false
+        stageTimings.push({
+          stage: 'shell-released',
+          elapsedMs: Date.now() - diagnosticStartedAt
+        })
+        await rendererContentEnter
+        stageTimings.push({
+          stage: 'content-enter-ready',
+          elapsedMs: Date.now() - diagnosticStartedAt
+        })
         return nativeResult
       }
     )
     if (result.status !== TRANSITION_STATUSES.COMPLETED) {
       throw result.error || new Error(`窗口过渡未完成：${result.status}`)
     }
+    presentationCompleted = true
     return result
   } finally {
+    // 出错、Renderer 超时和窗口销毁都必须释放临时外壳与输入/透明度状态。
+    // 原生运动已经收口后，由 Electron 所属线程恢复真实窗口；仍透明时先就位，
+    // 外壳随后把普通材质同步到恢复后的坐标，避免显示失败目标或二次原生事务。
+    if (!presentationCompleted && presentationSuppressed && !operationWindow.isDestroyed()) {
+      restoreCompactWindowBounds(operationWindow, from, 'presentation')
+    }
+    if (presentationSuppressed && !operationWindow.isDestroyed()) {
+      operationWindow.setOpacity(originalOpacity)
+      operationWindow.setIgnoreMouseEvents(false)
+    }
+    if (shellPrepared) await finishWindowTransitionShell()
+    logger.info('compact-window.stage-diagnostics', '灵动岛呈现阶段采样', {
+      generation,
+      phase,
+      viewMode: activeViewMode,
+      startedAtUnixMs: diagnosticStartedAt,
+      totalMs: Date.now() - diagnosticStartedAt,
+      stages: stageTimings
+    })
     if (Number.isInteger(generation)) clearCompactRendererTransitionWaiters(generation)
   }
 }
 
 function restoreCompactWindowBounds(window, bounds, source) {
   if (!window || window.isDestroyed()) return false
-  const result = setWindowBoundsSynchronized(window, dipBoundsToPhysical(window, bounds))
-  if (result.success) return true
-
-  logger.error('compact-window.rollback-native', new Error(result.error || '原生边界恢复失败'), {
-    source,
-    code: result.code,
-    bounds
-  })
   try {
-    window.setBounds(bounds, false)
-  } catch (fallbackError) {
-    logger.error('compact-window.rollback-fallback', fallbackError, { source, bounds })
+    const current = window.getBounds()
+    if (['x', 'y', 'width', 'height'].some((key) => current[key] !== bounds[key])) {
+      window.setBounds(bounds, false)
+    }
+    return true
+  } catch (error) {
+    logger.error('compact-window.rollback', error, { source, bounds })
   }
   return false
 }
@@ -821,7 +919,7 @@ async function enterCompactWindow() {
   stableCompactBounds = target
   suppressGeometryPersistenceUntil = Math.max(
     suppressGeometryPersistenceUntil,
-    Date.now() + COMPACT_WINDOW_ANIMATION_MS + 900
+    Date.now() + compactMotionDuration('collapsing') + 900
   )
   try {
     const transitionResult = await runCompactNativeTransition({
@@ -888,7 +986,7 @@ async function exitCompactWindow() {
   })
   suppressGeometryPersistenceUntil = Math.max(
     suppressGeometryPersistenceUntil,
-    Date.now() + COMPACT_WINDOW_ANIMATION_MS + 900
+    Date.now() + compactMotionDuration('expanding') + 900
   )
   try {
     const transitionResult = await runCompactNativeTransition({
@@ -1095,25 +1193,81 @@ function beginTitlebarWindowDrag(pointerOrigin) {
   ) {
     return false
   }
+  let motionBounds
+  try {
+    motionBounds = windowMotionBackend?.capture()
+  } catch (error) {
+    logger.error('titlebar.drag-start', error, {
+      pointerOrigin,
+      electronBounds: mainWindow.getBounds()
+    })
+    return false
+  }
+  if (!motionBounds) return false
+  const electronBounds = mainWindow.getBounds()
+  const electronContentBounds = mainWindow.getContentBounds()
   beginDockInteractionSuspension('titlebar-drag')
   titlebarDockSuspended = true
   titlebarDragSession = {
     cursor: resolvedDragPoint(pointerOrigin),
-    bounds: mainWindow.getBounds(),
-    moved: false
+    bounds: electronBounds,
+    lastPosition: { x: electronBounds.x, y: electronBounds.y },
+    motionPlan: {
+      initial: motionBounds,
+      expectedSize: { width: motionBounds.width, height: motionBounds.height },
+      expectedElectronContentSize: {
+        width: electronContentBounds.width,
+        height: electronContentBounds.height
+      }
+    },
+    moved: false,
+    failureLogged: false
   }
   return true
 }
 
 function updateTitlebarWindowDrag(pointerPosition) {
   if (!titlebarDragSession || !mainWindow || mainWindow.isDestroyed()) return false
+  const session = titlebarDragSession
   const cursor = resolvedDragPoint(pointerPosition)
-  const x = Math.round(titlebarDragSession.bounds.x + cursor.x - titlebarDragSession.cursor.x)
-  const y = Math.round(titlebarDragSession.bounds.y + cursor.y - titlebarDragSession.cursor.y)
-  if (x === titlebarDragSession.bounds.x && y === titlebarDragSession.bounds.y) return false
-  titlebarDragSession.moved = true
-  mainWindow.setPosition(x, y)
-  return true
+  const position = {
+    x: Math.round(session.bounds.x + cursor.x - session.cursor.x),
+    y: Math.round(session.bounds.y + cursor.y - session.cursor.y)
+  }
+  if (position.x === session.lastPosition.x && position.y === session.lastPosition.y) return false
+
+  const motionPosition =
+    session.motionPlan.initial.coordinateSpace === 'physical'
+      ? dipBoundsToPhysical(mainWindow, { ...session.bounds, ...position })
+      : position
+  try {
+    // 与贴边动画共用只移动、不提交宽高的原生链路，并抑制程序化移动期间产生的
+    // 异步 resize/move 事件，避免高 DPI 换算后的中间尺寸被写入设置。
+    setDockPosition(motionPosition, session.motionPlan)
+    session.lastPosition = position
+    session.moved = true
+    return true
+  } catch (error) {
+    if (!session.failureLogged) {
+      session.failureLogged = true
+      let actualMotionBounds = null
+      try {
+        actualMotionBounds = windowMotionBackend?.capture() || null
+      } catch {
+        // 原始移动错误优先，诊断快照读取失败不再制造第二条日志。
+      }
+      logger.error('titlebar.drag-move', error, {
+        pointerOrigin: session.cursor,
+        pointerPosition: cursor,
+        electronStartBounds: session.bounds,
+        electronTargetPosition: position,
+        electronActualBounds: mainWindow.getBounds(),
+        motionStartBounds: session.motionPlan.initial,
+        motionActualBounds: actualMotionBounds
+      })
+    }
+    return false
+  }
 }
 
 function endTitlebarWindowDrag() {
@@ -1259,6 +1413,7 @@ function refreshResolvedSettings({ incrementRevision = false } = {}) {
   nextSettings.appearance.iconColor = applicationSettings.appearance.iconColor
   nextSettings.shortcuts = { ...applicationSettings.shortcuts }
   nextSettings.interaction = { ...applicationSettings.interaction }
+  nextSettings.notes = { ...applicationSettings.notes }
   nextSettings.window = { ...applicationSettings.window }
   nextSettings.remote = { ...applicationSettings.remote }
   nextSettings.weather = structuredClone(applicationSettings.weather)
@@ -1730,6 +1885,7 @@ function reconcileDockRuntimeConfig(previousConfig, source = 'settings') {
  * 返回广播出去的同一份完整快照。
  */
 function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
+  const previousAutoMove = resolvedSettings.notes.autoMoveYesterday
   const changesDockConfig = entries.some(({ id }) => id.startsWith('dock.'))
   const previousDockConfig = changesDockConfig ? getDockRuntimeConfig() : null
   const normalizedEntries = entries.map(({ id, value }) => ({ id, ...serializeSetting(id, value) }))
@@ -1742,14 +1898,44 @@ function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
   if (normalizedEntries.some(({ id }) => id.startsWith('window.'))) {
     applyResolvedWindowRuntime()
   }
-  if (applyBlurRuntime && normalizedEntries.some(({ id }) => id.startsWith('blur.'))) {
+  const changesBlurRuntime = normalizedEntries.some(
+    ({ id }) => id.startsWith('blur.') || id === 'css.bgColor' || id === 'css.windowOpacity'
+  )
+  if (applyBlurRuntime && changesBlurRuntime) {
     applyResolvedBlurRuntime()
   }
   if (changesDockConfig) reconcileDockRuntimeConfig(previousDockConfig, 'persist')
 
   const snapshot = getResolvedSettingsSnapshot()
   broadcastSettingsChanged(snapshot)
+  if (!previousAutoMove && resolvedSettings.notes.autoMoveYesterday) {
+    try {
+      checkAutomaticNoteMove({ reason: 'enabled', force: true })
+    } catch (error) {
+      logger.error('notes.auto-move', error, { reason: 'enabled' })
+    }
+  }
   return snapshot
+}
+
+function checkAutomaticNoteMove({ now = Date.now(), reason = 'scheduled', force = false } = {}) {
+  const result = runAutomaticNoteMove({
+    enabled: resolvedSettings.notes.autoMoveYesterday,
+    now,
+    force
+  })
+  if (!result.skipped)
+    logger.info('notes.auto-move', '昨日未完成便签自动移动检查完成', { ...result, reason })
+  if (result.count > 0) {
+    for (const window of getApplicationWindows()) {
+      window.webContents.send('notes:changed', {
+        reason: 'automatic-historical-move',
+        count: result.count,
+        targetDateKey: result.targetDateKey
+      })
+    }
+  }
+  return result
 }
 
 function persistSettingValue(id, value) {
@@ -2336,6 +2522,21 @@ function createWindow({ preferredDisplay = null } = {}) {
     reassertBottomWindowZOrder('window-show')
   })
 
+  mainWindow.on('minimize', () => {
+    if (!isDockTransitionActive()) return
+    logger.info('dock.window-minimized', '贴边会话进入系统最小化状态，暂停几何健康判断', {
+      snapshot: getDockDiagnosticSnapshot()
+    })
+  })
+
+  mainWindow.on('restore', () => {
+    if (!isDockTransitionActive()) return
+    logger.info('dock.window-restored', '贴边会话已退出系统最小化状态，重新校验真实边界', {
+      snapshot: getDockDiagnosticSnapshot()
+    })
+    setImmediate(runDockHealthCheck)
+  })
+
   // 窗口销毁时清除引用和贴边资源
   mainWindow.on('closed', () => {
     // 视图切换会紧接着创建新窗口；旧窗口的延迟 closed 事件不能清空新引用。
@@ -2431,6 +2632,8 @@ function setDockPosition(position, motionPlan) {
 
 /** 生成纯数据快照，供每分钟健康任务和托盘诊断日志复用。 */
 function getDockDiagnosticSnapshot() {
+  const mainWindowExists = Boolean(mainWindow && !mainWindow.isDestroyed())
+  const mainWindowMinimized = mainWindowExists ? mainWindow.isMinimized() : false
   let mainMotionBounds = null
   let mainAtHiddenTarget = null
   let edgeMonitor = {
@@ -2448,7 +2651,13 @@ function getDockDiagnosticSnapshot() {
     logger.error('dock.health-snapshot', error, { stage: 'capture-edge-monitor' })
   }
 
-  if (isDockHidden && !isSliding && dockMotionSession?.motionPlan && windowMotionBackend) {
+  if (
+    !mainWindowMinimized &&
+    isDockHidden &&
+    !isSliding &&
+    dockMotionSession?.motionPlan &&
+    windowMotionBackend
+  ) {
     try {
       mainMotionBounds = windowMotionBackend.capture()
       mainAtHiddenTarget =
@@ -2461,7 +2670,9 @@ function getDockDiagnosticSnapshot() {
 
   const dockConfig = getDockRuntimeConfig()
   return {
-    mainWindowExists: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    mainWindowExists,
+    mainWindowMinimized,
+    mainElectronBounds: mainWindowExists ? mainWindow.getBounds() : null,
     viewMode: activeViewMode,
     supportedDockEdges: dockConfig.supportedEdges,
     enabledDockEdges: dockConfig.enabledEdges,
@@ -2494,7 +2705,8 @@ function runDockHealthCheck() {
 
   const error = new Error(`贴边隐藏状态异常：${issues.join('；')}`)
   logger.error('dock.health', error, { issues, snapshot })
-  emergencyRestoreDock('dock-health', error)
+  // dock.health 已包含完整快照；恢复入口不再重复写一条相同 error。
+  emergencyRestoreDock('dock-health', error, { skipRecoveryLog: true })
 }
 
 /** 重置贴边状态（隐藏/关闭/最大化时统一调用） */
@@ -2583,14 +2795,23 @@ function runPendingSlideCallback() {
  * 贴边子系统故障时统一恢复可见。窗口可见性优先于动画和毛玻璃；本函数可被
  * DLL 故障、每分钟健康检查、动画失败和系统事件重复调用。
  */
-function emergencyRestoreDock(source, cause = null, { skipNativeDisarm = false } = {}) {
+function emergencyRestoreDock(
+  source,
+  cause = null,
+  { skipNativeDisarm = false, skipRecoveryLog = false, recoveryLogLevel = 'error' } = {}
+) {
   const session = dockMotionSession
-  logger.error('dock.emergency-restore', cause || new Error('贴边隐藏进入故障开放恢复'), {
-    source,
-    session,
-    isDockHidden,
-    isSliding
-  })
+  const recoveryCause = cause || new Error('贴边隐藏进入故障开放恢复')
+  const recoveryMetadata = { source, session, isDockHidden, isSliding }
+  if (!skipRecoveryLog) {
+    if (recoveryLogLevel === 'info') {
+      logger.info('dock.emergency-restore', recoveryCause.message, recoveryMetadata)
+    } else if (recoveryLogLevel === 'warn') {
+      logger.warn('dock.emergency-restore', recoveryCause.message, recoveryMetadata)
+    } else {
+      logger.error('dock.emergency-restore', recoveryCause, recoveryMetadata)
+    }
+  }
 
   if (mainWindow && !mainWindow.isDestroyed() && session) {
     try {
@@ -2891,7 +3112,9 @@ function detachDockDisplayListeners() {
 
 function handleDockPowerBoundary(source) {
   if (!isDockHidden && !isSliding && !dockMotionSession) return
-  emergencyRestoreDock(source, new Error(`系统电源/桌面状态发生变化：${source}`))
+  emergencyRestoreDock(source, new Error(`系统电源/桌面状态发生变化：${source}`), {
+    recoveryLogLevel: 'info'
+  })
 }
 
 function attachDockPowerListeners() {
@@ -3405,6 +3628,20 @@ function applyWindowZOrder(mode = zOrderMode) {
       if (!result.success) return result
       visualWindow.setAlwaysOnTop(normalized === WINDOW_Z_ORDER_MODES.TOP, 'pop-up-menu')
     }
+
+    // Electron 的置顶事件不保证 HWND 已进入对应层级。原生置底解除或系统重排后，
+    // 若实际状态没有跟上，先清除置顶再重试一次；禁止把未生效的请求保存为成功。
+    const expectedTopmost = normalized === WINDOW_Z_ORDER_MODES.TOP
+    if (
+      normalized !== WINDOW_Z_ORDER_MODES.BOTTOM &&
+      visualWindow.isAlwaysOnTop() !== expectedTopmost
+    ) {
+      visualWindow.setAlwaysOnTop(false, 'pop-up-menu')
+      if (expectedTopmost) visualWindow.setAlwaysOnTop(true, 'pop-up-menu')
+    }
+    if (visualWindow.isAlwaysOnTop() !== expectedTopmost) {
+      return { success: false, code: null, error: '系统未能应用窗口层级，请重新选择后重试' }
+    }
   } catch (error) {
     return {
       success: false,
@@ -3450,21 +3687,49 @@ function reassertBottomWindowZOrder(source) {
   return true
 }
 
-function persistWindowZOrderMode(mode) {
+async function confirmWindowZOrder(mode, window) {
+  // 毛玻璃在独立 STA 线程处理排层消息。先等待实际 HWND 和 Overlay 一致，
+  // 必要时受限地重发同步；队列接收成功不能代替可见层级已经生效。
+  for (const delay of [0, 40, 120, 240]) {
+    if (delay) await new Promise((resolveWait) => setTimeout(resolveWait, delay))
+    if (window.isDestroyed() || window !== getActiveVisualWindow()) {
+      throw new Error('窗口已切换，请在当前窗口重新选择层级')
+    }
+    const topmostMatches = window.isAlwaysOnTop() === (mode === WINDOW_Z_ORDER_MODES.TOP)
+    const blurHealth =
+      process.platform === 'win32' && blurInitialized && blurConfig.enabled
+        ? getBlurRuntimeHealth()
+        : null
+    if (topmostMatches && (!blurHealth || (blurHealth.healthy && blurHealth.zOrderSynchronized))) {
+      return
+    }
+    if (delay === 240) break
+    const result = applyWindowZOrder(mode)
+    if (!result.success) throw new Error(result.error)
+  }
+  throw new Error('窗口层级未能同步，请重新选择后重试')
+}
+
+async function persistWindowZOrderMode(mode) {
   const normalized = normalizeWindowZOrderMode(mode)
   const previousMode = zOrderMode
-  if (normalized === previousMode) {
-    return { mode: previousMode, changed: false, throttled: false }
-  }
 
   let persistenceUpdated = false
   try {
+    // 原生排层期间可能同步触发 show 等回调；这些回调必须看到目标模式，
+    // 不能在退出置底时重新装回旧的置底拦截器。失败时在下方恢复原模式。
+    zOrderMode = normalized
     const runtimeResult = applyWindowZOrder(normalized)
     if (!runtimeResult.success) {
       const error = new Error(runtimeResult.error || '切换窗口层级失败')
       error.code = 'WINDOW_Z_ORDER_APPLY_FAILED'
       error.nativeCode = runtimeResult.code
       throw error
+    }
+    await confirmWindowZOrder(normalized, getActiveVisualWindow())
+    // 保存模式相同也必须重应用真实窗口状态，允许用户修复系统重排后的层级漂移。
+    if (normalized === previousMode) {
+      return { mode: previousMode, changed: false, throttled: false }
     }
     writeApplicationSetting('window.zOrderMode', normalized)
     persistenceUpdated = true
@@ -3474,6 +3739,7 @@ function persistWindowZOrderMode(mode) {
     broadcastSettingsChanged(snapshot)
     return { mode: zOrderMode, changed: true, throttled: false }
   } catch (error) {
+    zOrderMode = previousMode
     const rollbackResult = applyWindowZOrder(previousMode)
     if (!rollbackResult.success) {
       logger.error('window.z-order-rollback', new Error(rollbackResult.error), {
@@ -3898,11 +4164,35 @@ app.whenReady().then(async () => {
       filters: [{ name: 'JSON Lines', extensions: ['jsonl'] }]
     })
     if (result.canceled || !result.filePath) return { canceled: true }
-    await exportLogs(result.filePath, {
-      logDirectory: getLogDirectory(),
-      crashDumpsPath: app.getPath('crashDumps'),
-      recentCrashDumps: getRecentCrashDumps()
-    })
+    let systemDiagnostics
+    try {
+      systemDiagnostics = await collectSystemDiagnostics({
+        app,
+        screen,
+        windows: getApplicationWindows(),
+        runtime: {
+          activeViewMode,
+          compact: compactWindowStateSnapshot(),
+          blur: { ...blurConfig, initialized: blurInitialized },
+          native: getNativeRuntimeCompatibility(),
+          dock: getDockDiagnosticSnapshot()
+        }
+      })
+    } catch (error) {
+      systemDiagnostics = {
+        capturedAt: new Date().toISOString(),
+        collectionErrors: [{ field: 'system', message: error?.message || String(error) }]
+      }
+    }
+    await exportLogs(
+      result.filePath,
+      {
+        logDirectory: getLogDirectory(),
+        crashDumpsPath: app.getPath('crashDumps'),
+        recentCrashDumps: getRecentCrashDumps()
+      },
+      systemDiagnostics
+    )
     logger.info('logs.export', '诊断日志已导出', { targetPath: result.filePath })
     return { canceled: false, filePath: result.filePath }
   })
@@ -3939,12 +4229,28 @@ app.whenReady().then(async () => {
       reassertBottomWindowZOrder('renderer-ready')
       broadcastCompactWindowState()
       revealPendingNotificationApplication()
+      scheduleCompactShellWarmup(mainWindow)
     }
   })
 
   ipcMain.on('compact-window:transition-ready', (event, generation, stage) => {
     if (event.sender !== mainWindow?.webContents) return
     resolveCompactRendererTransitionReady(Number(generation), String(stage || ''))
+  })
+
+  let lastCompactDiagnosticGeneration = 0
+  ipcMain.on('compact-window:diagnostics', (event, payload) => {
+    if (event.sender !== mainWindow?.webContents) return
+    const diagnostics = normalizeCompactRendererDiagnostics(
+      payload,
+      compactWindowController.generation
+    )
+    if (!diagnostics || diagnostics.generation <= lastCompactDiagnosticGeneration) return
+    lastCompactDiagnosticGeneration = diagnostics.generation
+    logger.info('compact-window.renderer-diagnostics', '灵动岛渲染端过渡采样', {
+      viewMode: activeViewMode,
+      ...diagnostics
+    })
   })
 
   // 【窗口控制 - 关闭】渲染进程请求关闭窗口 → 最小化到托盘
@@ -3986,7 +4292,7 @@ app.whenReady().then(async () => {
   })
 
   // 【主窗口层级 - top / normal / bottom】
-  mainWindowIpc.handle('set-window-z-order-mode', (_event, requestedMode) => {
+  mainWindowIpc.handle('set-window-z-order-mode', async (_event, requestedMode) => {
     const requested = normalizeWindowZOrderMode(requestedMode, null)
     if (!requested) throw new Error('无效的窗口层级')
 
@@ -3996,7 +4302,7 @@ app.whenReady().then(async () => {
     }
     zOrderChangeInFlight = true
     try {
-      const result = persistWindowZOrderMode(requested)
+      const result = await persistWindowZOrderMode(requested)
       if (result.changed) {
         const message =
           result.mode === WINDOW_Z_ORDER_MODES.TOP
@@ -4024,8 +4330,9 @@ app.whenReady().then(async () => {
   })
 
   compactControlIpc.handle('compact-window:get-state', () => compactWindowStateSnapshot())
-  compactControlIpc.handle('compact-window:enter', () => enterCompactWindow())
-  compactControlIpc.handle('compact-window:exit', () => exitCompactWindow())
+  compactControlIpc.handle('compact-window:enter', () => compactIntent.request(true))
+  compactControlIpc.handle('compact-window:exit', () => compactIntent.request(false))
+  compactControlIpc.handle('compact-window:toggle', () => compactIntent.toggle())
   compactControlIpc.handle('compact-window:begin-drag', (_event, point) =>
     beginCompactWindowDrag(point)
   )
@@ -4684,6 +4991,13 @@ app.whenReady().then(async () => {
     }
   })
 
+  scheduler.register({
+    name: 'automaticNoteMoveTask',
+    maxFailures: Infinity,
+    shouldRun: () => resolvedSettings.notes.autoMoveYesterday,
+    execute: (context) => checkAutomaticNoteMove(context)
+  })
+
   // 3.6 原生毛玻璃运行诊断：随统一调度器启动即检查，之后每分钟检查一次。
   scheduler.register({
     name: 'blurRuntimeDiagnosticTask',
@@ -4707,6 +5021,9 @@ app.whenReady().then(async () => {
     notificationService.notifyFailure('调度器告警通知', title, body, error)
   }
   scheduler.start()
+  const resumeScheduledTasks = () => scheduler.tick({ reason: 'resume' })
+  powerMonitor.on('resume', resumeScheduledTasks)
+  app.once('will-quit', () => powerMonitor.removeListener('resume', resumeScheduledTasks))
   console.log('[scheduler] 调度器已启动')
 
   // ---- 任务栏 & 托盘事件 ----

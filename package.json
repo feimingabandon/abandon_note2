@@ -23,7 +23,7 @@
     "test:main-view-enhancements:win": "npm run build && electron tests/main-view-enhancements-electron.mjs",
     "test:wallpaper-storage": "node scripts/run-electron-wallpaper-tests.cjs",
     "test:attachment-storage": "node scripts/run-electron-attachment-tests.cjs",
-    "test:window-frame:win": "npm run build:native:win && npm run build && electron tests/window-frame-electron.mjs && electron tests/dock-trigger-electron.mjs && electron tests/blur-z-order-electron.mjs && electron tests/window-z-order-electron.mjs && electron tests/window-border-electron.mjs && electron tests/note-duration-electron.mjs && electron tests/main-view-enhancements-electron.mjs && electron tests/daily-report-electron.mjs && electron tests/template-quarterly-electron.mjs && electron tests/month-view-electron.mjs && electron tests/week-view-electron.mjs && electron tests/weather-settings-electron.mjs && electron tests/sticky-persistence-electron.mjs && electron tests/historical-note-move-electron.mjs && electron tests/quick-note-edit-electron.mjs && electron tests/titlebar-icon-scale-electron.mjs && electron tests/view-visibility-shortcut-electron.mjs && electron tests/compact-window-electron.mjs list && electron tests/compact-window-electron.mjs month && electron tests/compact-window-electron.mjs week && electron tests/compact-window-electron.mjs list notification",
+    "test:window-frame:win": "npm run build:native:win && npm run build && electron tests/window-frame-electron.mjs && electron tests/dock-trigger-electron.mjs && electron tests/blur-z-order-electron.mjs && electron tests/window-z-order-electron.mjs && electron tests/window-border-electron.mjs && electron tests/note-duration-electron.mjs && electron tests/main-view-enhancements-electron.mjs && electron tests/daily-report-electron.mjs && electron tests/template-quarterly-electron.mjs && electron tests/month-view-electron.mjs && electron tests/week-view-electron.mjs && electron tests/weather-settings-electron.mjs && electron tests/sticky-persistence-electron.mjs && electron tests/historical-note-move-electron.mjs && electron tests/quick-note-edit-electron.mjs && electron tests/titlebar-icon-scale-electron.mjs && electron tests/view-visibility-shortcut-electron.mjs && electron tests/compact-window-electron.mjs list && electron tests/compact-window-electron.mjs month && electron tests/compact-window-electron.mjs week && electron tests/compact-window-electron.mjs list notification && electron tests/note-draft-conflict-electron.mjs && electron tests/note-draft-conflict-ui-electron.mjs",
     "test:historical-note-move:win": "npm run build && electron tests/historical-note-move-electron.mjs",
     "test:quick-note-edit:win": "npm run build && electron tests/quick-note-edit-electron.mjs",
     "test:template-quarterly:win": "npm run build && electron tests/template-quarterly-electron.mjs",
@@ -39,6 +39,7 @@
     "start": "electron-vite preview",
     "dev": "chcp 65001 && electron-vite dev",
     "build": "electron-vite build",
+    "build:notice-preview": "node scripts/build-notice-preview.mjs",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build:unpack:win",
     "build:unpack:win": "npm run build:native:win && npm run build && electron-builder --config electron-builder.win.yml --win --x64 --dir",
@@ -54,7 +55,8 @@
     "better-sqlite3": "13.0.1",
     "chinese-days": "1.5.9",
     "exceljs": "^4.4.0",
-    "koffi": "2.16.2"
+    "koffi": "2.16.2",
+    "markdown-it": "14.1.1"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config": "^2.1.0",

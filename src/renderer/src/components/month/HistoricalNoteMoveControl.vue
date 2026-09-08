@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DateRangePicker from '../ui/DateRangePicker.vue'
+import AppToggle from '../ui/AppToggle.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import {
   MIN_CALENDAR_DATE,
@@ -42,6 +43,12 @@ const previewLoading = ref(false)
 const previewLoadingMore = ref(false)
 const previewError = ref('')
 const moving = ref(false)
+const autoMove = ref(false)
+const autoMoveReady = ref(false)
+const autoMoveSaving = ref(false)
+let settingsRevision = -1
+let stopSettingsListener = null
+let stopNotesListener = null
 let previewSequence = 0
 let previewResizeObserver = null
 
@@ -108,6 +115,34 @@ const previewLabel = computed(() => {
 
 function yesterdayKey() {
   return addCalendarDays(localDateKey(), -1)
+}
+
+function applyAutoMoveSettings(snapshot) {
+  if (!snapshot?.values || Number(snapshot.revision) < settingsRevision) return
+  settingsRevision = Number(snapshot.revision) || 0
+  autoMove.value = Boolean(snapshot.values.notes?.autoMoveYesterday)
+  autoMoveReady.value = true
+}
+
+async function loadAutoMoveSettings() {
+  try {
+    applyAutoMoveSettings(await window.api.getSettingsSnapshot())
+  } catch (error) {
+    showMessage('error', error?.message || '读取自动移动设置失败')
+  }
+}
+
+async function changeAutoMove(enabled) {
+  if (!autoMoveReady.value || autoMoveSaving.value) return
+  autoMoveSaving.value = true
+  try {
+    applyAutoMoveSettings(await window.api.setSettingValue('notes.autoMoveYesterday', enabled))
+    if (props.open) await loadPreview()
+  } catch (error) {
+    showMessage('error', error?.message || '保存自动移动设置失败')
+  } finally {
+    autoMoveSaving.value = false
+  }
 }
 
 function resetDefaultSelection() {
@@ -372,28 +407,32 @@ watch(
       return
     }
     resetDefaultSelection()
+    if (!autoMoveReady.value) void loadAutoMoveSettings()
     await nextTick()
     updatePosition()
     void loadPreview()
   }
 )
 
-watch(
-  () => props.disabled,
-  (disabled) => {
-    if (disabled && props.open && !moving.value) emit('update:open', false)
-  }
-)
+// 自动移动后日历会短暂进入同步状态；只禁用入口，不关闭用户正在操作的面板。
+// 导航或其他外部操作仍由 pointerdown / Escape 正常收起。
 
 watch(previewContentRef, observePreviewContent, { flush: 'post' })
 
 onMounted(() => {
+  stopSettingsListener = window.api.onSettingsChanged(applyAutoMoveSettings)
+  stopNotesListener = window.api.onNotesChanged((change) => {
+    if (props.open && change?.reason === 'automatic-historical-move') void loadPreview()
+  })
+  void loadAutoMoveSettings()
   document.addEventListener('pointerdown', onDocumentPointerDown)
   document.addEventListener('keydown', onDocumentKeydown)
   window.addEventListener('resize', updatePosition)
 })
 
 onBeforeUnmount(() => {
+  stopSettingsListener?.()
+  stopNotesListener?.()
   previewSequence += 1
   previewResizeObserver?.disconnect()
   document.removeEventListener('pointerdown', onDocumentPointerDown)
@@ -443,6 +482,25 @@ onBeforeUnmount(() => {
             <strong>未完成便签移至今天</strong>
             <span>选择便签当前所在的历史日期</span>
           </header>
+
+          <div class="historical-note-move__auto">
+            <div class="historical-note-move__auto-copy">
+              <label for="automatic-note-move">自动移至今天</label>
+              <span id="automatic-note-move-description"
+                >每天移动昨天未完成的普通单日便签，不适用于跨日和循环便签。开启后立即检查。</span
+              >
+            </div>
+            <AppToggle
+              id="automatic-note-move"
+              :model-value="autoMove"
+              :disabled="!autoMoveReady || autoMoveSaving || moving"
+              role="switch"
+              :aria-checked="autoMove"
+              aria-label="自动移至今天"
+              aria-describedby="automatic-note-move-description"
+              @update:model-value="changeAutoMove"
+            />
+          </div>
 
           <div class="historical-note-move__presets" aria-label="快捷选择日期范围">
             <span
@@ -698,6 +756,32 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 3rem;
   isolation: isolate;
+}
+
+.historical-note-move__auto {
+  display: flex;
+  align-items: center;
+  gap: 12rem;
+  margin-top: 12rem;
+  padding-bottom: 12rem;
+  border-bottom: 1px solid var(--ui-border-divider);
+}
+
+.historical-note-move__auto-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4rem;
+}
+
+.historical-note-move__auto-copy label {
+  font-size: var(--fs-body);
+}
+.historical-note-move__auto-copy span {
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  line-height: 1.5;
 }
 
 .historical-note-move__preset-indicator {

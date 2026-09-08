@@ -237,11 +237,11 @@ async function runMonthViewTests() {
     persistentJumpControls: Boolean(document.querySelector('.month-toolbar__jump'))
   }))()`)
     assert.equal(initialUi.title, '', '月视图窗口标题栏不应重复显示“月视图”')
-    assert.equal(initialUi.calendarCellCount, 42, '月视图必须固定渲染 7 列 6 行')
+    assert.ok([35, 42].includes(initialUi.calendarCellCount), '月视图必须渲染 7 列 5/6 行')
     assert.deepEqual(
       [initialUi.calendarRole, initialUi.calendarRowCount, initialUi.calendarColumnCount],
-      ['grid', '7', '7'],
-      '月历必须提供完整的七行七列网格语义'
+      ['grid', String(initialUi.calendarCellCount / 7 + 1), '7'],
+      '月历网格语义必须与实际行数一致'
     )
     assert.deepEqual(initialUi.weekdayText, [
       '周一',
@@ -275,6 +275,71 @@ async function runMonthViewTests() {
     )
     assert.equal(initialUi.refreshButton, true, '今天按钮旁必须提供刷新按钮')
     assert.equal(initialUi.persistentJumpControls, false, '工具栏右侧不得常驻年月选择控件')
+
+    // 固定月份验证增删第六行，避免测试覆盖随运行日期改变。
+    const dynamicBounds = monthWindow.getBounds()
+    await setToolbarYear(monthWindow, 2026)
+    for (const [month, rows] of [
+      [9, 5],
+      [11, 6],
+      [12, 5]
+    ]) {
+      await chooseToolbarMonth(monthWindow, month)
+      await waitUntil(
+        () =>
+          monthWindow.webContents.executeJavaScript(`(() => {
+          const title = document.querySelector('.month-toolbar__title').textContent
+          return title.includes('2026年${month}月') &&
+            !document.querySelector('.month-toolbar').classList.contains('is-busy') &&
+            document.querySelectorAll('.month-day-cell').length === ${rows * 7}
+        })()`),
+        `2026 年 ${month} 月没有切换到 ${rows} 行`
+      )
+      const layout = await monthWindow.webContents.executeJavaScript(`(() => {
+        const weeks = Array.from(document.querySelectorAll('.month-week'))
+        const rects = weeks.map((week) => week.getBoundingClientRect())
+        const grid = document.querySelector('.month-grid__weeks').getBoundingClientRect()
+        return {
+          rows: weeks.length,
+          ariaRows: document.querySelector('.month-grid').getAttribute('aria-rowcount'),
+          currentDays: document.querySelectorAll('.month-day-cell:not(.is-outside)').length,
+          heights: rects.map((rect) => rect.height),
+          contained: rects.every((rect) => rect.top >= grid.top - 1 && rect.bottom <= grid.bottom + 1)
+        }
+      })()`)
+      assert.equal(layout.rows, rows)
+      assert.equal(layout.ariaRows, String(rows + 1))
+      assert.equal(layout.currentDays, new Date(2026, month, 0).getDate())
+      assert.ok(layout.contained, '动态周行不能超出网格')
+      assert.ok(
+        layout.heights.every((height) => height > 0 && Math.abs(height - layout.heights[0]) < 1)
+      )
+      assert.deepEqual(monthWindow.getBounds(), dynamicBounds, '动态行数不能改变窗口尺寸')
+    }
+    await monthWindow.webContents.executeJavaScript(
+      `document.querySelector('.month-toolbar__today').click()`
+    )
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(`(() => {
+        const now = new Date()
+        return document.querySelector('.month-toolbar__title').textContent.includes(now.getFullYear() + '年' + (now.getMonth() + 1) + '月') &&
+          !document.querySelector('.month-toolbar').classList.contains('is-busy')
+      })()`),
+      '动态行数验证后未回到当前月'
+    )
+    await monthWindow.webContents.executeJavaScript(`(() => {
+      const title = document.querySelector('.month-toolbar__title')
+      if (title.getAttribute('aria-expanded') === 'true') title.click()
+    })()`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `!document.querySelector('.month-toolbar__picker')`
+        ),
+      '动态行数验证后年月选择面板未收起'
+    )
+    report('dynamic 5/6/5 rows, complete dates, equal heights and stable window bounds passed')
 
     await setDayPanelOpen(monthWindow, true)
     assert.equal(
@@ -805,12 +870,12 @@ async function runMonthViewTests() {
         }
       })
       document.querySelector('.month-toolbar__refresh').click()
-      return { bodyStart }
+      return { bodyStart, rows: document.querySelectorAll('.month-week').length }
     })()`)
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
-          `window.__refreshContentMotionFrames.length >= 12 && !document.querySelector('.month-toolbar__refresh').disabled`
+          `window.__refreshContentMotionFrames.length >= ${refreshMotionState.rows * 2} && !document.querySelector('.month-toolbar__refresh').disabled`
         ),
       '刷新按钮没有完成旧数据淡出和新数据淡入动画'
     )
@@ -820,7 +885,7 @@ async function runMonthViewTests() {
       '刷新当前月不得移动或缩放整块月历'
     )
     const refreshMotion = await monthWindow.webContents.executeJavaScript(
-      `({ outgoing: window.__refreshContentMotionFrames[0], incoming: window.__refreshContentMotionFrames[6] })`
+      `({ outgoing: window.__refreshContentMotionFrames[0], incoming: window.__refreshContentMotionFrames[${refreshMotionState.rows}] })`
     )
     assert.equal(refreshMotion.outgoing.keyframes[0].opacity, 1)
     assert.ok(
@@ -957,7 +1022,7 @@ async function runMonthViewTests() {
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
-          `document.querySelectorAll('.month-day-cell').length === 42`
+          `[35, 42].includes(document.querySelectorAll('.month-day-cell').length)`
         ),
       '月视图重载后日历没有恢复'
     )
@@ -1439,6 +1504,7 @@ async function runMonthViewTests() {
       })
       const save = (note, effectiveAt, notifyEnabled = true) => window.api.saveNoteDraft({
         id: note.id,
+        expectedVersion: note.editVersion,
         fields: {
           content: note.content,
           status: note.status,

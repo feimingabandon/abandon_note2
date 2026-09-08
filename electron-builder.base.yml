@@ -17,7 +17,7 @@ files:
   - '!Abandon-Note-*-setup.exe.blockmap'
   - '!latest.yml'
   - '!.audit-unpacked/**'
-  - '!{tests,docs,unused,scripts,native_blur,.github,.idea,.vs}/**'
+  - '!{tests,docs,unused,scripts,native_blur,tmp,tools,.github,.idea,.vs}/**'
   - '!{.codex-*,debug.log,identifier.sqlite}'
   - '!AGENTS.md'
   - '!electron-builder*.{yml,yaml,json,json5,js,cjs,ts}'

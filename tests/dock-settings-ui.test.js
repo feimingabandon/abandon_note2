@@ -5,7 +5,10 @@ const SETTINGS_PANEL_PATH = new URL(
   '../src/renderer/src/components/system/SettingsPanel.vue',
   import.meta.url
 )
-const HELP_PAGE_PATH = new URL('../src/renderer/src/components/help/HelpPage.vue', import.meta.url)
+const HELP_PAGE_PATH = new URL(
+  '../src/renderer/src/components/help/help-content.js',
+  import.meta.url
+)
 
 describe('dock settings UI', () => {
   it('offers all three reveal modes and all three edges in the shared settings panel', () => {

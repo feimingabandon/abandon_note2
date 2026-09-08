@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import SearchFilterPanel from './SearchFilterPanel.vue'
 import SearchResultCard from './SearchResultCard.vue'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
+import { recentLocalDayRange } from '../../../../shared/calendar/calendar-date-rules.js'
 
 const props = defineProps({
   active: { type: Boolean, default: false },
@@ -176,15 +177,8 @@ function selectedTimeRange() {
   if (timePreset.value === 'custom') {
     return { timeFrom: dateBoundary(customFrom.value), timeTo: dateBoundary(customTo.value, true) }
   }
-  const current = new Date()
-  const todayStart = new Date(
-    current.getFullYear(),
-    current.getMonth(),
-    current.getDate()
-  ).getTime()
-  const todayEnd = todayStart + 86400000 - 1
   const days = timePreset.value === '3days' ? 3 : 1
-  return { timeFrom: todayStart - (days - 1) * 86400000, timeTo: todayEnd }
+  return recentLocalDayRange(Date.now(), days)
 }
 
 function searchOptions(limit, offset) {

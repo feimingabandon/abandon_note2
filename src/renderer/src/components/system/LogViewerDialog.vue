@@ -250,7 +250,12 @@ onBeforeUnmount(() => {
           <BaseButton size="sm" :disabled="loading" @click="query()">刷新</BaseButton>
           <BaseButton size="sm" @click="openFolder">打开文件夹</BaseButton>
         </div>
-        <BaseButton size="sm" :disabled="exporting" @click="exportLogs">
+        <BaseButton
+          size="sm"
+          :disabled="exporting"
+          title="导出全部日志，并附上当前系统、显示器和显卡诊断信息"
+          @click="exportLogs"
+        >
           {{ exporting ? '正在导出…' : '导出完整日志' }}
         </BaseButton>
       </footer>

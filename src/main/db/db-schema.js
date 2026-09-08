@@ -1,5 +1,5 @@
 /** 数据库结构版本。公开版本只能通过显式迁移递增。 */
-export const DATABASE_SCHEMA_VERSION = 8
+export const DATABASE_SCHEMA_VERSION = 9
 
 function hasTable(db, tableName) {
   return Boolean(
@@ -203,6 +203,19 @@ function migrateToVersion8(db) {
   ).run()
 }
 
+/** V9 保存循环来源；模板删除或更新 last_generated_note_id 不应抹去实例来源。 */
+function migrateToVersion9(db) {
+  if (!hasColumn(db, 'notes', 'from_template')) {
+    db.exec(
+      'ALTER TABLE notes ADD COLUMN from_template INTEGER NOT NULL DEFAULT 0 CHECK(from_template IN (0, 1));'
+    )
+  }
+  // 旧版只保留模板的最后实例关联；仅回填确实能确认来源的记录。
+  db.exec(`UPDATE notes SET from_template = 1
+           WHERE id IN (SELECT last_generated_note_id FROM note_templates
+                        WHERE last_generated_note_id IS NOT NULL);`)
+}
+
 function ensureTagRelationIndexes(db) {
   if (hasColumn(db, 'note_tags', 'tag_id')) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id ON note_tags(tag_id);')
@@ -218,6 +231,7 @@ function migrateDatabaseSchema(db, existingVersion) {
     !hasColumn(db, 'note_tags', 'tag_id') || !hasColumn(db, 'template_tags', 'tag_id')
   const missingTagSortOrder = !hasColumn(db, 'tags', 'sort_order')
   const missingDesktopStickies = !hasTable(db, 'desktop_stickies')
+  const missingTemplateOrigin = !hasColumn(db, 'notes', 'from_template')
   const hasObsoleteTagPinning =
     hasColumn(db, 'tags', 'is_pinned') || hasColumn(db, 'tags', 'pinned_at')
   const hasObsoleteSnoozeColumn = hasColumn(db, 'notes', 'remind_again_at')
@@ -236,7 +250,8 @@ function migrateDatabaseSchema(db, existingVersion) {
     !hasObsoleteTagPinning &&
     !hasObsoleteSnoozeColumn &&
     !missingDesktopStickies &&
-    !hasObsoleteDockRevealHandlePositions
+    !hasObsoleteDockRevealHandlePositions &&
+    !missingTemplateOrigin
   )
     return
   db.transaction(() => {
@@ -251,6 +266,7 @@ function migrateDatabaseSchema(db, existingVersion) {
     }
     if (existingVersion < 7 || missingDesktopStickies) migrateToVersion7(db)
     if (existingVersion < 8 || hasObsoleteDockRevealHandlePositions) migrateToVersion8(db)
+    if (existingVersion < 9 || missingTemplateOrigin) migrateToVersion9(db)
     if (existingVersion < DATABASE_SCHEMA_VERSION) {
       db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
     }
@@ -359,6 +375,7 @@ export function createNotesSchema(db) {
       effective_at        INTEGER NOT NULL,
       duration_days       INTEGER NOT NULL DEFAULT 1
                           CHECK(duration_days >= 1 AND duration_days <= 365),
+      from_template       INTEGER NOT NULL DEFAULT 0 CHECK(from_template IN (0, 1)),
       finished_at         INTEGER,
       sort_order          INTEGER NOT NULL DEFAULT 0,
       created_at          INTEGER NOT NULL,

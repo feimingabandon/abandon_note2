@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
+import { verifyCalendarCountPreview } from './calendar-count-preview-helper.mjs'
 
 const WAIT_STEP_MS = 25
 const require = createRequire(import.meta.url)
@@ -101,7 +102,10 @@ async function openDayMenu(monthWindow, selector) {
   await waitUntil(
     () =>
       monthWindow.webContents.executeJavaScript(
-        `Boolean(document.querySelector('.month-cell-context-menu-shell'))`
+        `(() => {
+          const menu = document.querySelector('.month-cell-context-menu-shell')
+          return Boolean(menu) && !menu.classList.contains('month-cell-context-menu-enter-active')
+        })()`
       ),
     '日期格右键没有打开菜单'
   )
@@ -141,10 +145,13 @@ async function clickMenuItem(monthWindow, label) {
 async function runContextMenuTests() {
   try {
     const monthWindow = await waitUntil(() => getMonthWindow(), '月视图未按 active_view 启动')
+    monthWindow.webContents.on('console-message', (event) => {
+      if (event.level === 'error') report(`renderer: ${event.message}`)
+    })
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(
-          `document.querySelectorAll('.month-day-cell').length === 42`
+          `[35, 42].includes(document.querySelectorAll('.month-day-cell').length)`
         ),
       '月视图日期格没有完成渲染'
     )
@@ -616,6 +623,7 @@ async function runContextMenuTests() {
     verificationDb.close()
     assert.equal(deletedRecord?.is_deleted, 1, '右键删除没有执行逻辑删除')
 
+    await verifyCalendarCountPreview(monthWindow, waitUntil)
     report('focused context-menu interaction passed')
     app.exit(0)
   } catch (error) {

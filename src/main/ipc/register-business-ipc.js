@@ -202,6 +202,16 @@ export function registerBusinessIpcHandlers({
     if (!Number.isInteger(id) || id <= 0) throw new Error('无效的便签 ID')
     const original = getNoteById(id)
     if (!original) throw new Error('便签不存在或已删除')
+    const assertDraftVersion = (note) => {
+      if (!note) throw new Error('便签不存在或已删除')
+      if (typeof payload.expectedVersion !== 'string' || !payload.expectedVersion) {
+        throw new Error('缺少便签编辑版本，请重新打开编辑器')
+      }
+      if (note.editVersion !== payload.expectedVersion) {
+        throw new Error('便签已发生变化，当前草稿尚未保存；请保留草稿后重新打开编辑器')
+      }
+    }
+    assertDraftVersion(original)
 
     const content = normalizeRequiredNoteContent(fields.content)
     const durationDays = normalizeNoteDurationDays(fields.durationDays ?? original.duration_days)
@@ -245,11 +255,9 @@ export function registerBusinessIpcHandlers({
     }
 
     const transaction = db.transaction(() => {
-      const current = db.prepare('SELECT * FROM notes WHERE id = ? AND is_deleted = 0').get(id)
-      if (!current) throw new Error('便签不存在或已删除')
-      if (current.status !== original.status) {
-        throw new Error('便签状态已发生变化，请重新打开后再修改')
-      }
+      const current = getNoteById(id)
+      // 大附件暂存期间其他 IPC / 调度器仍可修改便签，提交前必须再次核对。
+      assertDraftVersion(current)
 
       const timestamp = Date.now()
       const requestedEffectiveAt =

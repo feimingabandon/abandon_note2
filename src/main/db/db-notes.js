@@ -4,6 +4,7 @@
  * 状态模型：initialized → in_progress ⇄ completed
  */
 import { getDb } from './db-connection.js'
+import { createHash } from 'node:crypto'
 import { localDateKey } from '../../shared/calendar/calendar-date-rules.js'
 import { normalizeAssignedTagIds } from '../../shared/tag-rules.js'
 import {
@@ -130,8 +131,8 @@ export function createRecurringNoteSnapshot({
     .prepare(
       `INSERT INTO notes (
          note_type, content, status, is_pinned, notify_enabled,
-         effective_at, finished_at, sort_order, created_at, updated_at
-       ) VALUES ('one_time', ?, 'in_progress', ?, 0, ?, ?, 0, ?, ?)`
+         effective_at, finished_at, sort_order, created_at, updated_at, from_template
+       ) VALUES ('one_time', ?, 'in_progress', ?, 0, ?, ?, 0, ?, ?, 1)`
     )
     .run(content, isPinned ? 1 : 0, scheduledAt, ts, ts, ts)
 
@@ -192,6 +193,26 @@ export function getNoteById(id) {
   note.attachment_count = note.attachments.length
   note.has_text = Boolean(note.content?.trim())
   note.has_image = note.attachment_count > 0
+
+  // 时间戳可能落在同一毫秒；版本同时覆盖实际字段和关系，供编辑草稿比较。
+  note.editVersion = createHash('sha256')
+    .update(
+      JSON.stringify({
+        content: note.content,
+        status: note.status,
+        effectiveAt: note.effective_at,
+        durationDays: note.duration_days,
+        notifyEnabled: note.notify_enabled,
+        isPinned: note.is_pinned,
+        finishedAt: note.finished_at,
+        updatedAt: note.updated_at,
+        tagIds: note.tags.map((tag) => tag.id).sort((a, b) => a - b),
+        attachments: note.attachments
+          .map(({ id, file_path, file_size, sort_order }) => [id, file_path, file_size, sort_order])
+          .sort((a, b) => a[0] - b[0])
+      })
+    )
+    .digest('hex')
 
   return note
 }

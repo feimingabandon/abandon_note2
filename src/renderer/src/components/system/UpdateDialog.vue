@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import AppModalShell from '../ui/AppModalShell.vue'
 import BaseButton from '../ui/BaseButton.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
+import MarkdownContent from '../markdown/MarkdownContent.vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -51,7 +52,7 @@ const hasRelease = computed(
     ['available', 'current', 'downgrade'].includes(props.result?.status)
 )
 
-const releaseNotes = computed(() => String(props.result?.releaseNotes || '').trim())
+const releaseNotes = computed(() => String(props.result?.releaseNotes || ''))
 
 const statusSummary = computed(() => {
   if (props.result?.status === 'available') {
@@ -182,12 +183,12 @@ function confirmOpenUpdateTarget() {
 
           <template v-if="hasRelease">
             <section
-              v-if="releaseNotes"
+              v-if="releaseNotes.trim()"
               class="release-notes"
               aria-labelledby="release-notes-heading"
             >
               <strong id="release-notes-heading">本次更新</strong>
-              <p>{{ releaseNotes }}</p>
+              <MarkdownContent :content="releaseNotes" />
             </section>
 
             <section class="download-section" aria-labelledby="browser-download-heading">
@@ -336,13 +337,12 @@ function confirmOpenUpdateTarget() {
   font-size: var(--fs-body);
 }
 
-.release-notes p {
+.release-notes .notice-markdown {
   margin: 0;
   overflow-wrap: anywhere;
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
   line-height: 1.6;
-  white-space: pre-wrap;
 }
 
 .download-section,

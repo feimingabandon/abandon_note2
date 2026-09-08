@@ -26,6 +26,18 @@ function note(id, year, month, day, durationDays, overrides = {}) {
 describe('month multi-day event layout', () => {
   const days = buildMonthGrid(2026, 8).days
 
+  it('clips a cross-month note at the fifth row and preserves continuation', () => {
+    const grid = buildMonthGrid(2026, 9)
+    const segments = buildCalendarEventSegments(grid.days, [note(1, 2026, 9, 27, 12)])
+    expect(
+      segments.map((segment) => [segment.weekIndex, segment.startKey, segment.endKey])
+    ).toEqual([
+      [3, '2026-09-27', '2026-09-27'],
+      [4, '2026-09-28', '2026-10-04']
+    ])
+    expect(segments.at(-1).continuesAfter).toBe(true)
+  })
+
   it('keeps a same-week note as one continuous segment', () => {
     const segments = buildCalendarEventSegments(days, [note(1, 2026, 8, 4, 3)])
     expect(segments).toEqual([

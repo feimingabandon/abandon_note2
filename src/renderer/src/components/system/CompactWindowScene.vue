@@ -63,10 +63,20 @@ async function armStageCompletion(expectedStage, generation) {
   completionTimer = null
 
   await nextTick()
-  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  // 仅最终尺寸交接需要布局帧；内容动画依靠 transitionend，外壳接管时
+  // 旧内容已经退完，不能在每个阶段再固定串行等待两帧。
+  if (expectedStage === 'shell-settle') {
+    do {
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      if (revision !== completionRevision || !isCurrentTransition(generation, expectedStage)) return
+    } while (
+      window.innerWidth !== props.transition.target.width ||
+      window.innerHeight !== props.transition.target.height
+    )
+  }
   if (revision !== completionRevision || !isCurrentTransition(generation, expectedStage)) return
 
-  if (expectedStage === 'shell-transform') {
+  if (['shell-transform', 'shell-settle'].includes(expectedStage)) {
     notifyReady(generation, expectedStage)
     return
   }
@@ -79,8 +89,17 @@ async function armStageCompletion(expectedStage, generation) {
   }
   completionTimer = setTimeout(() => {
     completionTimer = null
-    if (revision === completionRevision) notifyReady(generation, expectedStage)
+    // 取消事件或丢失的 transitionend 不能把仍在运动的页面误判为完成。
+    if (revision === completionRevision && isLayerAtEndpoint(layer, expectedStage)) {
+      notifyReady(generation, expectedStage)
+    }
   }, duration + 100)
+}
+
+function isLayerAtEndpoint(layer, expectedStage) {
+  if (!layer) return false
+  const targetOpacity = expectedStage === 'content-exit' ? 0 : 1
+  return Math.abs(Number(getComputedStyle(layer).opacity) - targetOpacity) < 0.001
 }
 
 function onLayerTransitionComplete(event) {
@@ -89,6 +108,7 @@ function onLayerTransitionComplete(event) {
   if (!['content-exit', 'content-enter'].includes(expectedStage)) return
   const expectedLayer = currentStageLayer(expectedStage)
   if (event.currentTarget !== expectedLayer) return
+  if (!isLayerAtEndpoint(expectedLayer, expectedStage)) return
   if (completionTimer !== null) clearTimeout(completionTimer)
   completionTimer = null
   notifyReady(Number(props.transition?.generation), expectedStage)
@@ -101,7 +121,7 @@ watch(
       clearCompletion()
       return
     }
-    if (['content-exit', 'shell-transform', 'content-enter'].includes(nextStage)) {
+    if (['content-exit', 'shell-transform', 'shell-settle', 'content-enter'].includes(nextStage)) {
       void armStageCompletion(nextStage, Number(generation))
     }
   },
@@ -109,6 +129,12 @@ watch(
 )
 
 onBeforeUnmount(clearCompletion)
+
+function requestOppositeMode() {
+  void window.api.toggleCompactWindow().catch((error) => {
+    console.warn('[CompactWindowScene] 切换窗口目标失败:', error)
+  })
+}
 </script>
 
 <template>
@@ -129,7 +155,6 @@ onBeforeUnmount(clearCompletion)
       :aria-hidden="!expandedInteractive"
       :inert="!expandedInteractive"
       @transitionend="onLayerTransitionComplete"
-      @transitioncancel="onLayerTransitionComplete"
     >
       <slot />
     </div>
@@ -140,10 +165,16 @@ onBeforeUnmount(clearCompletion)
       :aria-hidden="!compactInteractive"
       :inert="!compactInteractive"
       @transitionend="onLayerTransitionComplete"
-      @transitioncancel="onLayerTransitionComplete"
     >
       <CompactIsland :phase="phase" />
     </aside>
+    <!-- 内容交接期间只接收再次双击，业务控件继续 inert，防止误触。 -->
+    <div
+      v-if="['content-exit', 'content-enter'].includes(stage)"
+      class="compact-transition-input"
+      aria-hidden="true"
+      @dblclick.stop="requestOppositeMode"
+    />
   </section>
 </template>
 
@@ -180,6 +211,13 @@ onBeforeUnmount(clearCompletion)
   z-index: var(--z-local-raised);
 }
 
+.compact-transition-input {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-local-top);
+  pointer-events: auto;
+}
+
 .compact-presentation-host.is-stage-stable.is-stable-expanded .compact-presentation-layer--expanded,
 .compact-presentation-host.is-stage-stable.is-stable-compact .compact-presentation-layer--compact {
   opacity: 1;
@@ -193,18 +231,15 @@ onBeforeUnmount(clearCompletion)
   .compact-presentation-layer--compact {
   opacity: 0;
   visibility: visible;
-  transition:
-    opacity 140ms var(--ease-standard),
-    transform 160ms var(--ease-standard);
-  transform: translateY(8px);
-  will-change: opacity, transform;
+  transition: opacity var(--compact-content-exit) var(--ease-standard);
+  will-change: opacity;
 }
 
 .compact-presentation-host.is-stage-content-enter.is-target-expanded
   .compact-presentation-layer--expanded {
   opacity: 1;
   visibility: visible;
-  transition: opacity 300ms var(--ease-standard);
+  transition: opacity var(--compact-content-expand) var(--ease-standard);
   will-change: opacity;
 }
 
@@ -212,11 +247,12 @@ onBeforeUnmount(clearCompletion)
   .compact-presentation-layer--compact {
   opacity: 1;
   visibility: visible;
-  transition: opacity 170ms var(--ease-standard);
+  transition: opacity var(--compact-content-collapse) var(--ease-standard);
   will-change: opacity;
 }
 
-.compact-presentation-host.is-stage-shell-transform .compact-presentation-layer {
+.compact-presentation-host.is-stage-shell-transform .compact-presentation-layer,
+.compact-presentation-host.is-stage-shell-settle .compact-presentation-layer {
   opacity: 0;
   visibility: hidden;
 }

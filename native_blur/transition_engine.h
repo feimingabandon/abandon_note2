@@ -43,6 +43,8 @@ private:
     std::mutex m_errorMutex;
     std::string m_error;
     std::string m_errorSnapshot;
+    std::mutex m_timingMutex;
+    std::string m_timingJson = "null";
 };
 
 } // namespace WindowTransition

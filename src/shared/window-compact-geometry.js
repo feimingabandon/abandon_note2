@@ -3,8 +3,8 @@ export const COMPACT_WINDOW_LIMITS = Object.freeze({
   maxWidth: 720,
   minHeight: 40,
   maxHeight: 180,
-  defaultWidth: 360,
-  defaultHeight: 76,
+  defaultWidth: 200,
+  defaultHeight: 40,
   screenMargin: 0
 })
 

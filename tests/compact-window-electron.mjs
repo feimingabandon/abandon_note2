@@ -1,17 +1,27 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
-import { app, BrowserWindow, screen } from 'electron'
+import { app, BrowserWindow, dialog, screen, desktopCapturer } from 'electron'
 import koffi from 'koffi'
+import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
 
 const require = createRequire(import.meta.url)
 const WAIT_STEP_MS = 16
 const requestedView = ['list', 'month', 'week'].includes(process.argv[2]) ? process.argv[2] : 'list'
 const notificationLaunch = process.argv.includes('notification')
 const normalZOrderLaunch = process.argv.includes('normal-z-order')
+const coldBlurOff = process.argv.includes('cold-blur-off')
 const expectedZOrderMode = normalZOrderLaunch
   ? 'normal'
   : { list: 'top', month: 'normal', week: 'bottom' }[requestedView]
@@ -20,10 +30,10 @@ const viewConfig = {
   month: { scope: 'month', rendererFile: 'month.html', root: '.month-root', scene: '.month-scene' },
   week: { scope: 'week', rendererFile: 'week.html', root: '.month-root', scene: '.month-scene' }
 }[requestedView]
-const nativeDllPath = [
-  resolve('native_blur', 'build-transition', 'bin', 'blur_engine.dll'),
+// 默认验证开发/常规打包使用的 DLL。临时构建只能显式指定，不能掩盖默认目录的旧 ABI。
+const nativeDllPath =
+  process.env.ABANDON_INTEGRATION_NATIVE_DLL ||
   resolve('native_blur', 'build', 'bin', 'blur_engine.dll')
-].find(existsSync)
 
 let native = null
 
@@ -85,7 +95,7 @@ function seedSettings(userDataPath) {
     ['application', 'onboarding', 'first_use_notice_version', '1'],
     ['application', 'system', 'lock_state', 'true'],
     ['application', 'system', 'z_order_mode', expectedZOrderMode],
-    ['application', 'compact', 'enabled', 'true'],
+    ['application', 'compact', 'enabled', coldBlurOff ? 'false' : 'true'],
     ['application', 'compact', 'x', '130'],
     ['application', 'compact', 'y', '140'],
     ['application', 'compact', 'width', '360'],
@@ -94,7 +104,12 @@ function seedSettings(userDataPath) {
     [viewConfig.scope, 'css', 'bg_color', '32 33 36'],
     [viewConfig.scope, 'css', 'text_color', '#f1f3f4'],
     [viewConfig.scope, 'css', 'window_opacity', '0.72'],
-    [viewConfig.scope, 'system', 'blur_enabled', requestedView === 'list' ? 'true' : 'false']
+    [
+      viewConfig.scope,
+      'system',
+      'blur_enabled',
+      !coldBlurOff && requestedView === 'list' ? 'true' : 'false'
+    ]
   ]
   for (const row of rows) insert.run(...row, now, now)
   db.close()
@@ -213,6 +228,8 @@ async function readRendererDiagnostics(
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
       mainOpacity: expandedLayer ? getComputedStyle(expandedLayer).opacity : null,
+      mainTransform: expandedLayer ? getComputedStyle(expandedLayer).transform : null,
+      mainTransitionDuration: expandedLayer ? getComputedStyle(expandedLayer).transitionDuration : null,
       mainVisibility: expandedLayer ? getComputedStyle(expandedLayer).visibility : null,
       mainInert: expandedLayer?.inert ?? null,
       mainWidth: expandedLayer?.getBoundingClientRect().width ?? 0,
@@ -220,6 +237,8 @@ async function readRendererDiagnostics(
       titlebarWidth: titlebar?.getBoundingClientRect().width ?? 0,
       titlebarHeight: titlebar?.getBoundingClientRect().height ?? 0,
       compactOpacity: compactScene ? getComputedStyle(compactScene).opacity : null,
+      compactTransform: compactScene ? getComputedStyle(compactScene).transform : null,
+      compactTransitionDuration: compactScene ? getComputedStyle(compactScene).transitionDuration : null,
       compactVisibility: compactScene ? getComputedStyle(compactScene).visibility : null,
       compactInert: compactScene?.inert ?? null,
       compactSceneWidth: compactScene?.getBoundingClientRect().width ?? 0,
@@ -317,7 +336,9 @@ function transitionGeometryProgress(bounds, transition) {
 
 function hasHiddenTransitionContent(diagnostics) {
   return (
-    diagnostics.presentationClass.includes('is-stage-shell-transform') &&
+    ['shell-transform', 'shell-settle'].some((stage) =>
+      diagnostics.presentationClass.includes(`is-stage-${stage}`)
+    ) &&
     diagnostics.mainOpacity === '0' &&
     diagnostics.mainVisibility === 'hidden' &&
     diagnostics.compactOpacity === '0' &&
@@ -327,6 +348,16 @@ function hasHiddenTransitionContent(diagnostics) {
 
 function assertSourceContentExiting(diagnostics, phase, label) {
   const sourceIsCompact = phase === 'expanding'
+  assert.equal(
+    sourceIsCompact ? diagnostics.compactTransitionDuration : diagnostics.mainTransitionDuration,
+    '0.1s',
+    `${label} 旧内容没有使用统一的快速淡出`
+  )
+  assert.equal(
+    sourceIsCompact ? diagnostics.compactTransform : diagnostics.mainTransform,
+    'matrix(1, 0, 0, 1, 0, 0)',
+    `${label} 外壳运动前内容发生了多余位移`
+  )
   assert.equal(
     sourceIsCompact ? diagnostics.compactVisibility : diagnostics.mainVisibility,
     'visible',
@@ -341,6 +372,11 @@ function assertSourceContentExiting(diagnostics, phase, label) {
 
 function assertTargetContentEntering(diagnostics, finalPhase, label) {
   const targetIsCompact = finalPhase === 'compact'
+  assert.equal(
+    targetIsCompact ? diagnostics.compactTransitionDuration : diagnostics.mainTransitionDuration,
+    targetIsCompact ? '0.1s' : '0.16s',
+    `${label} 新内容淡入时长没有与边框、壁纸统一`
+  )
   assert.equal(
     targetIsCompact ? diagnostics.compactVisibility : diagnostics.mainVisibility,
     'visible',
@@ -402,7 +438,7 @@ async function runTransitionAndAssertSynchronizedGeometry({
 
   const transitionState = await waitUntil(async () => {
     const state = await readState(window)
-    return state.transition?.stage === 'shell-transform' && state
+    return ['shell-transform', 'shell-settle'].includes(state.transition?.stage) && state
   }, `${label} 没有在内容退出后进入外壳变形阶段`)
   const phaseDiagnostics = await waitUntil(
     async () => {
@@ -424,11 +460,12 @@ async function runTransitionAndAssertSynchronizedGeometry({
   assert.equal(phaseDiagnostics.mainSceneExists, true)
   assert.equal(phaseDiagnostics.compactSceneExists, true)
   assert.equal(transitionState.transition?.phase, transitionState.phase)
-  assert.equal(transitionState.transition?.stage, 'shell-transform')
+  assert.ok(['shell-transform', 'shell-settle'].includes(transitionState.transition?.stage))
   const rendererSamples = [phaseDiagnostics]
   const surfaceCaptures = []
   let sawContentEnter = false
-  let sawExpandedContentEnterBeforeShellSettled = false
+  let sawCompositorShell = false
+  let desktopCaptureCount = 0
   if (captureSurface) {
     surfaceCaptures.push(await captureRendererSurface(window, `${label}过渡帧1`))
   }
@@ -444,6 +481,31 @@ async function runTransitionAndAssertSynchronizedGeometry({
     samples.push(window.getBounds())
     const nativeStatus = readNativeTransitionStatus(window)
     nativeSamples.push(nativeStatus)
+    if (nativeStatus.shellPrepared && nativeStatus.running) {
+      sawCompositorShell = true
+      assert.equal(window.getOpacity(), 0, `${label} 原生外壳动画时 Renderer 没有隐藏`)
+      if (process.env.SHELL_CAPTURE_DIR && desktopCaptureCount < 3) {
+        const sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: 1920, height: 1080 }
+        })
+        const display = screen.getDisplayMatching(window.getBounds())
+        const source = sources.find((item) => item.display_id === String(display.id))
+        if (source && !source.thumbnail.isEmpty()) {
+          mkdirSync(process.env.SHELL_CAPTURE_DIR, { recursive: true })
+          writeFileSync(
+            join(
+              process.env.SHELL_CAPTURE_DIR,
+              `${requestedView}-${label}-${++desktopCaptureCount}.png`
+            ),
+            source.thumbnail.toPNG()
+          )
+        }
+      }
+      const carrier = nativeStatus.shellCarrier
+      const overlay = nativeStatus.shellRect
+      assert.deepEqual(overlay, carrier, `${label} 动画承载窗口没有保持固定尺寸`)
+    }
     if (nativeStatus.overlayExpected) {
       assert.equal(nativeStatus.geometryEqual, true, `${label} 的 Electron/Overlay 当前帧不同步`)
       assert.equal(nativeStatus.currentDelta, 0, `${label} 的 Electron/Overlay 当前帧存在像素偏差`)
@@ -454,10 +516,14 @@ async function runTransitionAndAssertSynchronizedGeometry({
         selectors.root || viewConfig.root,
         selectors.scene || viewConfig.scene
       )
-      if (currentState.transition?.stage === 'shell-transform') {
+      if (['shell-transform', 'shell-settle'].includes(currentState.transition?.stage)) {
         // IPC 状态与 DOM 诊断不是同一个原子快照；Renderer 已进入下一阶段时，
         // 不能拿旧的主进程阶段去断言新的 DOM 帧。
-        if (diagnostics.presentationClass.includes('is-stage-shell-transform')) {
+        if (
+          ['shell-transform', 'shell-settle'].some((stage) =>
+            diagnostics.presentationClass.includes(`is-stage-${stage}`)
+          )
+        ) {
           assert.equal(
             hasHiddenTransitionContent(diagnostics),
             true,
@@ -491,9 +557,8 @@ async function runTransitionAndAssertSynchronizedGeometry({
             geometryProgress >= 0.9,
             `${label} 在外壳尚未接近最终尺寸时显示了主内容 (${geometryProgress})`
           )
-          if (nativeStatus.running && geometryProgress < 1) {
-            sawExpandedContentEnterBeforeShellSettled = true
-          }
+          assert.equal(nativeStatus.running, false, `${label} 内容在布局稳定前出现`)
+          assert.equal(geometryProgress, 1)
         } else {
           assert.equal(diagnostics.viewportWidth, currentState.transition.target.width)
           assert.equal(diagnostics.viewportHeight, currentState.transition.target.height)
@@ -520,7 +585,7 @@ async function runTransitionAndAssertSynchronizedGeometry({
   samples.push(window.getBounds())
 
   const uniqueBounds = new Set(samples.map((bounds) => JSON.stringify(bounds))).size
-  assert.ok(uniqueBounds >= 4, `${label} 没有由同一个 BrowserWindow 连续改变几何`)
+  assert.ok(uniqueBounds <= 2, `${label} 真实窗口在动画中反复 resize (${uniqueBounds})`)
   for (const key of ['x', 'y', 'width', 'height']) assertMonotonic(samples, key, label)
   assert.equal(window.id, windowId)
   assert.equal(window.isVisible(), true, `${label} 完成后唯一窗口不可见`)
@@ -529,7 +594,16 @@ async function runTransitionAndAssertSynchronizedGeometry({
   const finalNative = readNativeTransitionStatus(window)
   assert.equal(finalNative.running, false, `${label} 完成后原生事务仍在运行`)
   assert.equal(finalNative.blurTransitionActive, false, `${label} 完成后 Blur 仍处于 transition`)
-  assert.ok(finalNative.frameCount >= 4, `${label} 原生几何帧数异常`)
+  assert.equal(finalNative.frameCount, 1, `${label} 真实窗口必须只提交一次目标尺寸`)
+  assert.equal(finalNative.shellPrepared, false, `${label} 临时外壳没有释放`)
+  assert.equal(finalNative.shellError, 0, `${label} 原生外壳报告错误`)
+  assert.equal(finalNative.shellVisible, false, `${label} 临时承载窗口没有隐藏`)
+  assert.deepEqual(
+    finalNative.shellRect,
+    finalNative.shellCarrier,
+    `${label} 交接时修改了外壳承载坐标，可能在旧原点显示胶囊`
+  )
+  assert.equal(window.getOpacity(), 1, `${label} 原窗口透明度没有恢复`)
   assert.equal(finalNative.geometryEqual, true, `${label} 完成后 Electron/Overlay 不一致`)
   if (expectOverlay) {
     assert.equal(finalNative.overlayExpected, true, `${label} 未保持 Blur Overlay`)
@@ -555,13 +629,7 @@ async function runTransitionAndAssertSynchronizedGeometry({
     `${label} 未覆盖新旧内容都隐藏的外壳变形阶段`
   )
   assert.equal(sawContentEnter, true, `${label} 未覆盖新内容进入阶段`)
-  if (finalPhase === 'expanded') {
-    assert.equal(
-      sawExpandedContentEnterBeforeShellSettled,
-      true,
-      `${label} 未覆盖主内容与原生外壳后段重叠进入`
-    )
-  }
+  assert.equal(sawCompositorShell, true, `${label} 未覆盖固定承载窗口的合成动画`)
   if (captureSurface) {
     assert.ok(surfaceCaptures.length >= 3, `${label} 未覆盖过渡前中后段 Renderer 帧`)
   }
@@ -583,7 +651,16 @@ async function assertCompactContent(window, expectedBounds, expectedFontSize = n
     const root = document.querySelector('.compact-island')
     const content = document.querySelector('.compact-island__content')
     const text = document.querySelector('.compact-island__text')
+    const ring = document.querySelector('.compact-island__status-ring')
+    const rootRect = root.getBoundingClientRect()
+    const textRect = text.getBoundingClientRect()
+    const ringRect = ring?.getBoundingClientRect()
+    const left = ringRect ? ringRect.left : textRect.left
     return {
+      centerDeltaX: (left + textRect.right - rootRect.left - rootRect.right) / 2,
+      centerDeltaY: (textRect.top + textRect.bottom - rootRect.top - rootRect.bottom) / 2,
+      ringCenterDeltaY: ringRect ? (ringRect.top + ringRect.bottom - rootRect.top - rootRect.bottom) / 2 : 0,
+      textFitsVertically: textRect.top >= rootRect.top && textRect.bottom <= rootRect.bottom,
       contentPadding: content ? getComputedStyle(content).padding : null,
       textFontSize: text ? getComputedStyle(text).fontSize : null,
       textOverflow: text ? getComputedStyle(text).textOverflow : null,
@@ -592,7 +669,11 @@ async function assertCompactContent(window, expectedBounds, expectedFontSize = n
       expandIcon: Boolean(document.querySelector('.compact-island__expand-icon'))
     }
   })()`)
-  assert.equal(diagnostics.contentPadding, '6px 12px')
+  assert.equal(diagnostics.contentPadding, '4px 12px')
+  assert.ok(Math.abs(diagnostics.centerDeltaX) <= 1, '圆环与文字整体没有水平居中')
+  assert.ok(Math.abs(diagnostics.centerDeltaY) <= 1, '文字没有垂直居中')
+  assert.ok(Math.abs(diagnostics.ringCenterDeltaY) <= 1, '状态圆环没有垂直居中')
+  assert.equal(diagnostics.textFitsVertically, true, '文字超出了胶囊高度')
   assert.ok(Number.parseFloat(diagnostics.textFontSize) >= 12)
   if (expectedFontSize) assert.equal(diagnostics.textFontSize, expectedFontSize)
   assert.equal(diagnostics.textOverflow, 'ellipsis')
@@ -600,6 +681,284 @@ async function assertCompactContent(window, expectedBounds, expectedFontSize = n
   assert.equal(diagnostics.cursor, 'default')
   assert.equal(diagnostics.expandIcon, false)
   return diagnostics
+}
+
+async function runCompactLayoutTest(window) {
+  const bounds = window.getBounds()
+  const themes = [
+    { name: 'white', background: '#fff', text: '#111' },
+    { name: 'black', background: '#000', text: '#fff' },
+    {
+      name: 'pattern',
+      background:
+        'repeating-linear-gradient(35deg, #405060 0 13px, #697867 13px 27px, #564d63 27px 42px)',
+      text: '#fff'
+    }
+  ]
+  for (const [name, content] of [
+    ['empty', null],
+    ['short', '测试'],
+    ['long', '这是一条需要省略显示的很长的进行中便签'.repeat(4)]
+  ]) {
+    let note = null
+    if (content) {
+      note = await window.webContents.executeJavaScript(
+        `window.api.createNote({ content: ${JSON.stringify(content)} })`
+      )
+      await waitUntil(
+        () =>
+          window.webContents.executeJavaScript(
+            `document.querySelector('.compact-island__content')?.dataset.noteId === '${note.id}'`
+          ),
+        '没有显示布局测试便签'
+      )
+    }
+    await assertCompactContent(window, bounds)
+    for (const theme of themes) {
+      await window.webContents.executeJavaScript(`(() => {
+        const root = document.querySelector('${viewConfig.root}')
+        root.style.background = ${JSON.stringify(theme.background)}
+        root.style.setProperty('--text-color', ${JSON.stringify(theme.text)})
+        return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      })()`)
+      await assertCompactContent(window, bounds)
+      if (process.env.ABANDON_LAYOUT_ARTIFACT_DIR) {
+        mkdirSync(process.env.ABANDON_LAYOUT_ARTIFACT_DIR, { recursive: true })
+        writeFileSync(
+          join(
+            process.env.ABANDON_LAYOUT_ARTIFACT_DIR,
+            `${requestedView}-${name}-${theme.name}.png`
+          ),
+          (await window.webContents.capturePage()).toPNG()
+        )
+      }
+    }
+    if (note) {
+      await window.webContents.executeJavaScript(`window.api.completeNote('${note.id}')`)
+      await waitUntil(
+        () =>
+          window.webContents.executeJavaScript(
+            `document.querySelector('.compact-island__content')?.dataset.noteId === ''`
+          ),
+        '布局测试便签完成后没有恢复空状态'
+      )
+    }
+  }
+  await window.webContents.executeJavaScript(`(() => {
+    const root = document.querySelector('${viewConfig.root}')
+    root.style.removeProperty('background')
+    root.style.removeProperty('--text-color')
+  })()`)
+  await window.webContents.executeJavaScript('window.api.exitCompactWindow()')
+  assert.equal((await readState(window)).phase, 'expanded')
+  await window.webContents.executeJavaScript('window.api.enterCompactWindow()')
+  assert.equal((await readState(window)).phase, 'compact')
+  assert.equal(window.getBounds().width, 200)
+  assert.equal(window.getBounds().height, 40)
+  await assertCompactContent(window, window.getBounds())
+  report(`${requestedView} compact default migration, centered layout and round-trip passed`)
+}
+
+async function assertDiagnosticExport(window) {
+  // 单次事务采样应在本地日志里完整保留，不依赖开发者工具或逐帧 IPC。
+  const native = await waitUntil(async () => {
+    const result = await window.webContents.executeJavaScript(
+      `window.api.queryLogs({ scope: 'compact-window.native-diagnostics', limit: 10 })`
+    )
+    return result.items.find(
+      (item) =>
+        item.scope === 'compact-window.native-diagnostics' && item.metadata?.phase === 'collapsing'
+    )
+  }, '没有自动记录原生窗口过渡采样')
+  const timing = native.metadata.diagnostics.timing
+  assert.equal(timing.schemaVersion, 1)
+  assert.equal(timing.mode, 'composition-shell')
+  assert.equal(timing.frames.length, 1)
+  assert.equal(timing.presentationFramesMeasured, false)
+  assert.equal(timing.durationRequestedMs, native.metadata.phase === 'collapsing' ? 320 : 400)
+  assert.ok(
+    timing.compositionWaitMs >= timing.durationRequestedMs - 30 && timing.compositionWaitMs < 2000
+  )
+  assert.ok(
+    timing.frames[0].elapsedMs + timing.compositionWaitMs <= timing.totalMs + 1,
+    '真实窗口尺寸仍然在外壳动画结束后才提交'
+  )
+  assert.equal(timing.droppedFrames, 0)
+  assert.ok(timing.frames.every((frame) => !frame.dwmWaited))
+  for (const frame of timing.frames) {
+    assert.deepEqual(frame.actual, frame.requested)
+    for (const field of ['geometryMs', 'batchMs', 'visualSyncMs', 'elapsedMs', 'intervalMs']) {
+      assert.ok(Number.isFinite(frame[field]) && frame[field] >= 0, field)
+    }
+  }
+  await waitUntil(async () => {
+    const result = await window.webContents.executeJavaScript(
+      `window.api.queryLogs({ scope: 'compact-window.renderer-diagnostics', limit: 10 })`
+    )
+    return result.items.find(
+      (item) =>
+        item.metadata?.generation === native.metadata.generation &&
+        item.metadata?.frames?.some((frame) => frame.event === 'resize')
+    )
+  }, '没有与原生过渡对应的 renderer 尺寸采样')
+  const exportPath = join(testUserData, 'diagnostics-export.jsonl')
+  const originalDialog = dialog.showSaveDialog
+  try {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: exportPath })
+    const result = await window.webContents.executeJavaScript('window.api.exportLogs()')
+    assert.equal(result.canceled, false)
+  } finally {
+    dialog.showSaveDialog = originalDialog
+  }
+  const records = readFileSync(exportPath, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line))
+  assert.equal(records[0].type, 'diagnostic-export')
+  assert.equal(records.at(-1).type, 'diagnostic-system')
+  const snapshot = records.at(-1).snapshot
+  assert.ok(snapshot.system.release)
+  assert.ok(snapshot.hardware.totalMemoryBytes > 0)
+  assert.ok(
+    snapshot.displays.some((display) => display.scaleFactor > 0 && display.displayFrequency > 0)
+  )
+  assert.ok(snapshot.system.windowsVersion?.CurrentBuildNumber)
+  assert.match(snapshot.application.nativeDllSha256, /^[a-f0-9]{64}$/)
+  assert.ok(
+    records.some(
+      (record) =>
+        record.scope === 'compact-window.native-diagnostics' &&
+        record.metadata.diagnostics.timing.frames.length > 0
+    )
+  )
+  let overlappedFrames = 0
+  for (const record of records.filter(
+    (item) => item.scope === 'compact-window.stage-diagnostics'
+  )) {
+    const stages = record.metadata.stages
+    const readyIndex = stages.findIndex((stage) => stage.stage === 'target-frame-ready')
+    const enterIndex = stages.findIndex((stage) => stage.stage === 'content-enter-requested')
+    const releaseIndex = stages.findIndex((stage) => stage.stage === 'shell-released')
+    const nativeIndex = stages.findIndex((stage) => stage.stage === 'native-complete')
+    const requestedIndex = stages.findIndex((stage) => stage.stage === 'target-layout-requested')
+    if (enterIndex >= 0) {
+      assert.ok(
+        requestedIndex >= 0 && requestedIndex < nativeIndex,
+        '布局准备没有与原生动画同时启动'
+      )
+      assert.ok(releaseIndex > nativeIndex, '原生动画未结束就撤下了外壳')
+      if (readyIndex >= 0 && readyIndex < nativeIndex) overlappedFrames += 1
+      assert.ok(readyIndex >= 0 && readyIndex < enterIndex, '内容显示前没有生成目标合成帧')
+      assert.ok(enterIndex > nativeIndex && releaseIndex > enterIndex, '内容没有与最终材质提交重叠')
+      assert.ok(stages[readyIndex].frameSize.width > 0 && stages[readyIndex].frameSize.height > 0)
+    }
+  }
+  assert.ok(overlappedFrames > 0, '未观察到动画期间生成目标合成帧')
+  report(`${requestedView} target frames prepared during native motion: ${overlappedFrames}`)
+  if (process.env.ABANDON_LAYOUT_ARTIFACT_DIR) {
+    mkdirSync(process.env.ABANDON_LAYOUT_ARTIFACT_DIR, { recursive: true })
+    writeFileSync(
+      join(process.env.ABANDON_LAYOUT_ARTIFACT_DIR, `${requestedView}-diagnostics-export.jsonl`),
+      readFileSync(exportPath)
+    )
+  }
+  report(`${requestedView} native/renderer timing and complete export system footer passed`)
+}
+
+async function runHandoffReadbackChecks(window) {
+  report('handoff checks: holding first compositor readback')
+  const initialBounds = window.getBounds()
+  const capture = window.webContents.capturePage.bind(window.webContents)
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  let captured = false
+  let holdFirst = true
+  window.webContents.capturePage = async (...args) => {
+    const image = await capture(...args)
+    if (holdFirst && args[0]?.width === 1) {
+      holdFirst = false
+      captured = true
+      await gate
+    }
+    return image
+  }
+  try {
+    const pending = window.webContents.executeJavaScript('window.api.exitCompactWindow()')
+    await waitUntil(
+      () => captured && readNativeTransitionStatus(window).shellCompleted,
+      '小区域合成帧等待未能与原生完成分离'
+    )
+    const state = await readState(window)
+    assert.equal(state.phase, 'expanding')
+    assert.equal(state.transition.stage, 'shell-settle')
+    assert.equal(window.getOpacity(), 0, '慢帧期间提前显示真实窗口')
+    assert.equal(readNativeTransitionStatus(window).shellPrepared, true)
+    release()
+    await pending
+    assert.equal((await readState(window)).phase, 'expanded')
+    await window.webContents.executeJavaScript('window.api.enterCompactWindow()')
+  } finally {
+    release()
+    window.webContents.capturePage = capture
+  }
+
+  const beforeFailure = window.getBounds()
+  report('handoff checks: injecting readback failure')
+  window.webContents.capturePage = async (...args) => {
+    if (args[0]?.width === 1) {
+      report('handoff checks: returning rejected capture promise')
+      throw new Error('injected target readback failure')
+    }
+    return capture(...args)
+  }
+  try {
+    await window.webContents.executeJavaScript('window.api.exitCompactWindow().catch(() => null)')
+    assert.deepEqual(window.getBounds(), beforeFailure)
+    assert.equal(window.getOpacity(), 1)
+    assert.equal((await readState(window)).phase, 'compact')
+    const status = readNativeTransitionStatus(window)
+    assert.equal(status.running, false, '读取失败后原生动画尚未结束就回滚了窗口')
+    assert.equal(status.shellPrepared, false)
+  } finally {
+    window.webContents.capturePage = capture
+  }
+
+  // 模拟运动期间连续请求，只执行当前事务和最后目标，不逐项排队。
+  const before = (await readState(window)).transition
+  report('handoff checks: coalescing opposite requests')
+  assert.equal(before, null)
+  const pending = window.webContents.executeJavaScript('window.api.exitCompactWindow()')
+  await waitUntil(
+    async () => (await readState(window)).transition?.stage === 'shell-settle',
+    '连续请求测试未进入外壳阶段'
+  )
+  const requests = window.webContents.executeJavaScript(`Promise.all([
+    window.api.enterCompactWindow(), window.api.exitCompactWindow(), window.api.enterCompactWindow()
+  ])`)
+  await Promise.all([pending, requests])
+  assert.equal((await readState(window)).phase, 'compact')
+  assert.equal(window.getOpacity(), 1)
+  assert.equal(readNativeTransitionStatus(window).shellPrepared, false)
+  assert.equal(window.getBounds().width, initialBounds.width)
+  const entering = window.webContents.executeJavaScript('window.api.exitCompactWindow()')
+  await waitUntil(
+    async () => (await readState(window)).transition?.stage === 'content-enter',
+    '双击测试未进入内容交接阶段'
+  )
+  assert.equal(
+    await window.webContents.executeJavaScript(`(() => {
+    const target = document.querySelector('.compact-transition-input')
+    if (!target) return false
+    target.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    return true
+  })()`),
+    true
+  )
+  await entering
+  assert.equal((await readState(window)).phase, 'compact', '交接期间的双击意图丢失')
+  report(`${requestedView} small readback, slow/failing frame recovery and latest intent passed`)
 }
 
 async function runSettingsPanelOpeningTest(window) {
@@ -756,6 +1115,8 @@ async function runTitlebarInteractionTest(window) {
   }
   window.setPosition(centered.x, centered.y, false)
   await wait(80)
+  const centeredBounds = window.getBounds()
+  const centeredNativeBounds = readNativeTransitionStatus(window).parentRect
   const target = await window.webContents.executeJavaScript(`(() => {
     const titlebar = document.querySelector('.app-titlebar')
     const surface = document.querySelector('.app-titlebar-interaction-surface')
@@ -796,7 +1157,7 @@ async function runTitlebarInteractionTest(window) {
 
   const delta = { x: 36, y: 22 }
   const dragStart = { x: centered.x + point.x, y: centered.y + point.y }
-  await window.webContents.executeJavaScript(`(() => {
+  await window.webContents.executeJavaScript(`(async () => {
     const titlebar = document.querySelector('.app-titlebar')
     const send = (type, screenX, screenY) => titlebar.dispatchEvent(new PointerEvent(type, {
       bubbles: true,
@@ -810,7 +1171,14 @@ async function runTitlebarInteractionTest(window) {
       screenY
     }))
     send('pointerdown', ${dragStart.x}, ${dragStart.y})
-    send('pointermove', ${dragStart.x + delta.x}, ${dragStart.y + delta.y})
+    for (let step = 1; step <= 16; step += 1) {
+      send(
+        'pointermove',
+        ${dragStart.x} + Math.round((${delta.x} * step) / 16),
+        ${dragStart.y} + Math.round((${delta.y} * step) / 16)
+      )
+      await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame))
+    }
     send('pointerup', ${dragStart.x + delta.x}, ${dragStart.y + delta.y})
     return true
   })()`)
@@ -818,6 +1186,20 @@ async function runTitlebarInteractionTest(window) {
     const bounds = window.getBounds()
     return bounds.x === centered.x + delta.x && bounds.y === centered.y + delta.y
   }, '快速标题栏拖动丢失了 IPC 返回前的指针位移')
+  const draggedBounds = window.getBounds()
+  const draggedNativeBounds = readNativeTransitionStatus(window).parentRect
+  assert.equal(draggedBounds.width, centeredBounds.width, '标题栏拖动改变了 Electron 窗口宽度')
+  assert.equal(draggedBounds.height, centeredBounds.height, '标题栏拖动改变了 Electron 窗口高度')
+  assert.equal(
+    draggedNativeBounds.right - draggedNativeBounds.left,
+    centeredNativeBounds.right - centeredNativeBounds.left,
+    '标题栏拖动改变了窗口物理宽度'
+  )
+  assert.equal(
+    draggedNativeBounds.bottom - draggedNativeBounds.top,
+    centeredNativeBounds.bottom - centeredNativeBounds.top,
+    '标题栏拖动改变了窗口物理高度'
+  )
 
   const clickScreen = {
     x: centered.x + delta.x + point.x,
@@ -854,6 +1236,73 @@ async function runTitlebarInteractionTest(window) {
   )
 }
 
+async function runActionBarAccessibilityTest(window) {
+  if (requestedView !== 'list') return
+  await waitUntil(
+    () =>
+      window.webContents.executeJavaScript(`(() => {
+        const scene = document.querySelector('.app-scene')
+        const actionBar = document.querySelector('.ab-root')
+        return scene && !scene.inert && actionBar?.dataset.phase === 'collapsed'
+      })()`),
+    '操作栏无障碍测试前主场景没有恢复交互'
+  )
+  const hintPoint = await window.webContents.executeJavaScript(`(() => {
+    const hint = document.querySelector('.ab-inline-hint--new')
+    const rect = hint.getBoundingClientRect()
+    hint.focus()
+    return { x: Math.floor(rect.left + rect.width / 2), y: Math.floor(rect.top + rect.height / 2) }
+  })()`)
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    ...hintPoint,
+    button: 'left',
+    clickCount: 1
+  })
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    ...hintPoint,
+    button: 'left',
+    clickCount: 1
+  })
+  await waitUntil(
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector('.ab-root')?.dataset.phase !== 'collapsed'`
+      ),
+    '操作栏提示按钮没有开始展开面板'
+  )
+  const focusState = await window.webContents.executeJavaScript(`(() => {
+    const hint = document.querySelector('.ab-inline-hint--new')
+    const active = document.activeElement
+    return {
+      hintHidden: hint.getAttribute('aria-hidden'),
+      hintStillFocused: active === hint,
+      activeClass: active?.className || ''
+    }
+  })()`)
+  assert.equal(focusState.hintHidden, 'true', '操作栏展开后提示按钮没有退出无障碍树')
+  assert.equal(focusState.hintStillFocused, false, '操作栏提示按钮隐藏后仍保留焦点')
+  assert.match(focusState.activeClass, /ab-box-btn/, '操作栏没有把焦点转移到可见的折叠按钮')
+  await waitUntil(
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector('.ab-root')?.dataset.phase === 'open'`
+      ),
+    '操作栏无障碍测试中面板没有完成展开'
+  )
+  await window.webContents.executeJavaScript(
+    `document.querySelector('.ab-box-btn:not(.ab-btn-fixed--right)').click()`
+  )
+  await waitUntil(
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector('.ab-root')?.dataset.phase === 'collapsed'`
+      ),
+    '操作栏无障碍测试后面板没有恢复折叠'
+  )
+}
+
 async function runViewReplacementTest(window) {
   if (requestedView !== 'list') return { window, root: viewConfig.root, scene: viewConfig.scene }
   const oldId = window.id
@@ -884,8 +1333,8 @@ async function runViewReplacementTest(window) {
 async function runCompactWindowTest() {
   let exitCode = 0
   try {
-    assert.ok(nativeDllPath, '未找到 ABI 9 原生测试 DLL')
-    assert.equal(loadNative().getAbiVersion(), 9, '原生 DLL 不是当前单窗口 ABI 9')
+    assert.ok(existsSync(nativeDllPath), `未找到原生测试 DLL：${nativeDllPath}`)
+    assert.equal(loadNative().getAbiVersion(), NATIVE_ABI_VERSION, '原生 DLL ABI 与当前代码不一致')
     let mainWindow = await waitUntil(
       () => getMainWindow(),
       `${requestedView} 主窗口没有创建`,
@@ -905,6 +1354,30 @@ async function runCompactWindowTest() {
       return
     }
 
+    if (coldBlurOff) {
+      await waitUntil(
+        async () => (await readState(mainWindow)).phase === 'expanded' && mainWindow.isVisible(),
+        '关闭毛玻璃冷启动未显示主视图'
+      )
+      // 不先调用 setBlurConfig；第一下直接收起，避免开关操作掩盖首次初始化错误。
+      await runTransitionAndAssertSynchronizedGeometry({
+        window: mainWindow,
+        invoke: () => mainWindow.webContents.executeJavaScript('window.api.enterCompactWindow()'),
+        finalPhase: 'compact',
+        label: 'cold-blur-off-first-collapse',
+        expectOverlay: false
+      })
+      await runTransitionAndAssertSynchronizedGeometry({
+        window: mainWindow,
+        invoke: () => mainWindow.webContents.executeJavaScript('window.api.exitCompactWindow()'),
+        finalPhase: 'expanded',
+        label: 'cold-blur-off-first-expand',
+        expectOverlay: false
+      })
+      report(`${requestedView} cold start with blur disabled: first double-click round-trip passed`)
+      await mainWindow.webContents.executeJavaScript('window.api.enterCompactWindow()')
+    }
+
     await waitUntil(
       async () => (await readState(mainWindow)).phase === 'compact' && mainWindow.isVisible(),
       '启动时没有在唯一主窗口恢复胶囊状态'
@@ -912,12 +1385,100 @@ async function runCompactWindowTest() {
     assertOnlyOneBrowserWindow(mainWindow, '胶囊冷启动')
     const initialWindowId = mainWindow.id
     const startupCompactBounds = mainWindow.getBounds()
-    assert.deepEqual(startupCompactBounds, { x: 130, y: 140, width: 360, height: 76 })
+    if (!coldBlurOff)
+      assert.deepEqual(startupCompactBounds, { x: 130, y: 140, width: 200, height: 40 })
     assert.equal(mainWindow.isMovable(), true, '胶囊错误继承了主窗口锁定')
     await assertRendererSurface(mainWindow, startupCompactBounds, 'compact', '胶囊冷启动')
     const startupRenderer = await assertCompactContent(mainWindow, startupCompactBounds)
     await assertZOrderMode(mainWindow, '胶囊冷启动')
     assertBlurRuntimeHealthy('胶囊冷启动')
+
+    if (process.argv.includes('layout-only')) {
+      await runCompactLayoutTest(mainWindow)
+      await assertDiagnosticExport(mainWindow)
+      return
+    }
+
+    if (process.argv.includes('shell-only')) {
+      if (!coldBlurOff) {
+        const beforeWarmup = mainWindow.getBounds()
+        await waitUntil(async () => {
+          const logs = await mainWindow.webContents.executeJavaScript(
+            "window.api.queryLogs({ scope: 'compact-window.warmup', limit: 5 })"
+          )
+          return logs.items.some((item) => item.metadata?.ready)
+        }, '首次动画之前未完成隐藏资源预热')
+        assert.deepEqual(mainWindow.getBounds(), beforeWarmup)
+        assert.equal(readNativeTransitionStatus(mainWindow).shellPrepared, false)
+        assert.equal(readNativeTransitionStatus(mainWindow).shellVisible, false)
+        report(`${requestedView} hidden shell warmup preserved stable window`)
+      }
+      if (process.argv.includes('handoff-checks')) {
+        for (const enabled of [false, true]) {
+          await mainWindow.webContents.executeJavaScript(
+            `window.api.setBlurConfig({ enabled: ${enabled} })`
+          )
+          await runHandoffReadbackChecks(mainWindow)
+        }
+      }
+      // 模拟原窗口透明度切换失败：必须回滚、释放 Overlay，后续还能再次展开。
+      const beforeFailure = mainWindow.getBounds()
+      const setOpacity = mainWindow.setOpacity.bind(mainWindow)
+      mainWindow.setOpacity = (value) => {
+        if (value === 0) throw new Error('injected shell presentation failure')
+        return setOpacity(value)
+      }
+      await mainWindow.webContents.executeJavaScript(
+        'window.api.exitCompactWindow().catch(() => null)'
+      )
+      mainWindow.setOpacity = setOpacity
+      assert.equal(mainWindow.getOpacity(), 1)
+      assert.deepEqual(mainWindow.getBounds(), beforeFailure)
+      assert.equal(readNativeTransitionStatus(mainWindow).shellPrepared, false)
+      assert.equal((await readState(mainWindow)).phase, 'compact')
+      for (const enabled of [false, true]) {
+        await mainWindow.webContents.executeJavaScript(
+          `window.api.setBlurConfig({ enabled: ${enabled} })`
+        )
+        const cycles = process.argv.includes('shell-stress') ? 8 : 2
+        for (let cycle = 0; cycle < cycles; cycle += 1) {
+          await runTransitionAndAssertSynchronizedGeometry({
+            window: mainWindow,
+            invoke: () =>
+              mainWindow.webContents.executeJavaScript('window.api.exitCompactWindow()'),
+            finalPhase: 'expanded',
+            label: `shell-${enabled}-${cycle}-expand`,
+            expectOverlay: enabled
+          })
+          await runTransitionAndAssertSynchronizedGeometry({
+            window: mainWindow,
+            invoke: () =>
+              mainWindow.webContents.executeJavaScript('window.api.enterCompactWindow()'),
+            finalPhase: 'compact',
+            label: `shell-${enabled}-${cycle}-collapse`,
+            expectOverlay: enabled
+          })
+        }
+      }
+      await assertDiagnosticExport(mainWindow)
+      if (requestedView === 'list') {
+        // 复用过的临时原生外壳也必须随旧主视图释放，新 HWND 能重新创建外壳。
+        const replacement = await runViewReplacementTest(mainWindow)
+        mainWindow = replacement.window
+        await runTransitionAndAssertSynchronizedGeometry({
+          window: mainWindow,
+          invoke: () => mainWindow.webContents.executeJavaScript('window.api.exitCompactWindow()'),
+          finalPhase: 'expanded',
+          label: 'shell-after-view-replacement',
+          expectOverlay: true,
+          selectors: replacement
+        })
+      }
+      report(
+        `${requestedView} composition shell, blur on/off, stable carrier and single resize passed`
+      )
+      return
+    }
 
     await runTransitionAndAssertSynchronizedGeometry({
       window: mainWindow,
@@ -930,7 +1491,7 @@ async function runCompactWindowTest() {
         })()`),
       finalPhase: 'expanded',
       label: '胶囊展开',
-      expectOverlay: requestedView === 'list',
+      expectOverlay: requestedView === 'list' && !coldBlurOff,
       captureSurface: true
     })
     assert.equal(mainWindow.id, initialWindowId)
@@ -940,6 +1501,7 @@ async function runCompactWindowTest() {
     await runSettingsPanelOpeningTest(mainWindow)
     await runBlurDisabledTransitionTest(mainWindow)
     await runTitlebarInteractionTest(mainWindow)
+    await runActionBarAccessibilityTest(mainWindow)
     const expandedBounds = mainWindow.getBounds()
 
     await mainWindow.webContents.executeJavaScript(
@@ -1189,6 +1751,17 @@ async function runCompactWindowTest() {
     report(`compact single-window integration passed (${requestedView})`)
   } catch (error) {
     console.error(error)
+    const failedWindow = getApplicationWindows()[0]
+    if (failedWindow) {
+      report(JSON.stringify(readNativeTransitionStatus(failedWindow)))
+      report(
+        JSON.stringify(
+          await failedWindow.webContents.executeJavaScript(
+            `window.api.queryLogs({ scope: 'compact-window.renderer-diagnostics', limit: 2 })`
+          )
+        )
+      )
+    }
     exitCode = 1
   } finally {
     app.releaseSingleInstanceLock()
@@ -1204,6 +1777,28 @@ async function runCompactWindowTest() {
 const testUserData = mkdtempSync(
   join(tmpdir(), `abandon-note-compact-window-${requestedView}-e2e-`)
 )
+
+// 只在专项测试中模拟一次首次配置失败，验证用户无需先开毛玻璃即可重试初始化。
+if (process.argv.includes('fail-first-blur-config')) {
+  const originalLoad = koffi.load.bind(koffi)
+  let failed = false
+  koffi.load = (...loadArgs) => {
+    const library = originalLoad(...loadArgs)
+    const originalFunc = library.func.bind(library)
+    library.func = (...funcArgs) => {
+      const fn = originalFunc(...funcArgs)
+      if (funcArgs[0] !== 'Blur_ApplyConfig') return fn
+      return (...args) => {
+        if (!failed) {
+          failed = true
+          return 0
+        }
+        return fn(...args)
+      }
+    }
+    return library
+  }
+}
 
 try {
   app.setPath('userData', testUserData)

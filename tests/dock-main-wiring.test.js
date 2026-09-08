@@ -157,4 +157,23 @@ describe('dock main-process wiring', () => {
     expect(show).toContain('edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor')
     expect(source).not.toContain("logger.info('dock.slide-frame'")
   })
+
+  it('distinguishes minimized window geometry and avoids duplicate recovery errors', () => {
+    const source = readFileSync(MAIN_PATH, 'utf8')
+    const health = source.slice(
+      source.indexOf('function getDockDiagnosticSnapshot'),
+      source.indexOf('/** 重置贴边状态')
+    )
+    const power = source.slice(
+      source.indexOf('function handleDockPowerBoundary'),
+      source.indexOf('function attachDockPowerListeners')
+    )
+
+    expect(health).toContain('mainWindowMinimized')
+    expect(health).toContain('mainElectronBounds')
+    expect(health).toContain('{ skipRecoveryLog: true }')
+    expect(source).toContain("mainWindow.on('minimize'")
+    expect(source).toContain("mainWindow.on('restore'")
+    expect(power).toContain("recoveryLogLevel: 'info'")
+  })
 })

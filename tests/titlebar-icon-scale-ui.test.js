@@ -38,6 +38,7 @@ describe('titlebar icon scale UI wiring', () => {
   it('uses one themed component with black and white SVG files for all 12 icon types', () => {
     const appIcon = read('src/renderer/src/components/ui/AppIcon.vue')
     const filterTabs = read('src/renderer/src/components/ui/FilterTabs.vue')
+    const calendarToolbar = read('src/renderer/src/components/month/MonthCalendarToolbar.vue')
     const viewSwitcher = read('src/renderer/src/components/system/ViewSwitcher.vue')
     const names = [
       'compact',
@@ -58,6 +59,9 @@ describe('titlebar icon scale UI wiring', () => {
     expect(filterTabs).toContain("'tag'")
     expect(filterTabs).toContain("'taiji'")
     expect(filterTabs).toContain("'clover'")
+    expect(calendarToolbar).toContain("import AppIcon from '../ui/AppIcon.vue'")
+    expect(calendarToolbar).toContain('name="taiji"')
+    expect(calendarToolbar).toContain('class="month-toolbar__refresh-icon"')
     expect(viewSwitcher).toContain('<AppIcon class="btn-icon view-switcher__trigger-icon"')
     expect(viewSwitcher).toContain('name="switch-view"')
     expect(viewSwitcher).not.toContain('view-switcher__trigger-label')

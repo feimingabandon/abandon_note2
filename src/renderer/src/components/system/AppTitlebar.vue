@@ -140,7 +140,7 @@ function closeZOrderMenu({ restoreFocus = false } = {}) {
 async function selectZOrderMode(mode) {
   if (zOrderChanging.value) return
   closeZOrderMenu({ restoreFocus: true })
-  if (mode === props.zOrderMode) return
+  // 同一选项也交给主进程核验并恢复实际层级，界面状态不能代表 HWND 状态。
 
   zOrderChanging.value = true
   try {

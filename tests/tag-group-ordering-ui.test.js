@@ -7,7 +7,10 @@ const TAG_EDITOR_PATH = new URL(
   '../src/renderer/src/components/ui/TagEditorForm.vue',
   import.meta.url
 )
-const HELP_PAGE_PATH = new URL('../src/renderer/src/components/help/HelpPage.vue', import.meta.url)
+const HELP_PAGE_PATH = new URL(
+  '../src/renderer/src/components/help/help-content.js',
+  import.meta.url
+)
 
 describe('标签分组排序与右键入口', () => {
   it('通过独立按钮进入整行拖拽模式，并保持未分类不可拖动', () => {

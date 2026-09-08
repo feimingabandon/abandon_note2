@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
+import { verifyCalendarCountPreview } from './calendar-count-preview-helper.mjs'
 
 const WAIT_STEP_MS = 25
 const require = createRequire(import.meta.url)
@@ -282,6 +283,7 @@ async function runWeekDayPanelTests() {
       '周视图工具栏没有收起日期列表'
     )
 
+    await verifyCalendarCountPreview(weekWindow, waitUntil)
     report('focused week day-panel interaction passed')
     app.exit(0)
   } catch (error) {

@@ -57,6 +57,7 @@ const api = {
   getCompactWindowState: () => ipcRenderer.invoke('compact-window:get-state'),
   enterCompactWindow: () => ipcRenderer.invoke('compact-window:enter'),
   exitCompactWindow: () => ipcRenderer.invoke('compact-window:exit'),
+  toggleCompactWindow: () => ipcRenderer.invoke('compact-window:toggle'),
   beginCompactWindowDrag: (point) => ipcRenderer.invoke('compact-window:begin-drag', point),
   updateCompactWindowDrag: (point) => ipcRenderer.send('compact-window:update-drag', point),
   endCompactWindowDrag: () => ipcRenderer.invoke('compact-window:end-drag'),
@@ -71,6 +72,8 @@ const api = {
   },
   notifyCompactTransitionReady: (generation, stage) =>
     ipcRenderer.send('compact-window:transition-ready', generation, stage),
+  reportCompactTransitionDiagnostics: (payload) =>
+    ipcRenderer.send('compact-window:diagnostics', payload),
 
   // ---- 设置桥接（双向通信，均返回 Promise） ----
   /** 按共享 schema ID 写入设置；数据库键名和校验不暴露给 renderer */

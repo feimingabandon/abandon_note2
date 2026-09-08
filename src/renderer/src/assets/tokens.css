@@ -160,6 +160,9 @@ html.month-view {
   --motion-fast: 120ms;
   --motion-control: 180ms;
   --motion-panel: 300ms;
+  --compact-content-exit: 100ms;
+  --compact-content-expand: 160ms;
+  --compact-content-collapse: 100ms;
   --ease-standard: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -218,38 +221,38 @@ html.is-system-glass-active .month-root.app-bg {
   pointer-events: none;
 }
 
-/* 外壳变形前段由原生圆角材质独占呈现。Renderer 边框随内容退场；展开时
- * 在几何接近完成后淡入，收起时仍在最终胶囊几何上淡入。 */
+/* 外壳变形由原生圆角材质独占呈现。边框、壁纸与内容共享进退场时长；
+ * 目标布局和合成帧准备完成后再淡入，避免交接时某一层突然出现。 */
 .app-bg.is-compact-stage-content-exit::after {
   opacity: 0;
-  transition: opacity 140ms var(--ease-standard);
+  transition: opacity var(--compact-content-exit) var(--ease-standard);
 }
 
-.app-bg.is-compact-stage-shell-transform::after {
+.app-bg.is-compact-stage-shell-transform::after,
+.app-bg.is-compact-stage-shell-settle::after {
   opacity: 0;
 }
 
 .app-bg.is-compact-expanding.is-compact-stage-content-enter::after {
   opacity: 1;
-  transition: opacity 300ms var(--ease-standard);
+  transition: opacity var(--compact-content-expand) var(--ease-standard);
 }
 
 .app-bg.is-compact-collapsing.is-compact-stage-content-enter::after {
   opacity: 1;
-  transition: opacity 170ms var(--ease-standard);
+  transition: opacity var(--compact-content-collapse) var(--ease-standard);
 }
 
 .app-root.is-compact-stage-content-exit .app-wallpaper,
 .month-root.is-compact-stage-content-exit .month-wallpaper {
   opacity: 0;
-  transition:
-    opacity 140ms var(--ease-standard),
-    transform 160ms var(--ease-standard);
-  transform: translateY(8px);
+  transition: opacity var(--compact-content-exit) var(--ease-standard);
 }
 
 .app-root.is-compact-stage-shell-transform .app-wallpaper,
-.month-root.is-compact-stage-shell-transform .month-wallpaper {
+.month-root.is-compact-stage-shell-transform .month-wallpaper,
+.app-root.is-compact-stage-shell-settle .app-wallpaper,
+.month-root.is-compact-stage-shell-settle .month-wallpaper {
   opacity: 0;
   visibility: hidden;
 }
@@ -258,14 +261,14 @@ html.is-system-glass-active .month-root.app-bg {
 .month-root.is-compact-expanding.is-compact-stage-content-enter .month-wallpaper {
   opacity: 1;
   visibility: visible;
-  transition: opacity 300ms var(--ease-standard);
+  transition: opacity var(--compact-content-expand) var(--ease-standard);
 }
 
 .app-root.is-compact-collapsing.is-compact-stage-content-enter .app-wallpaper,
 .month-root.is-compact-collapsing.is-compact-stage-content-enter .month-wallpaper {
   opacity: 1;
   visibility: visible;
-  transition: opacity 170ms var(--ease-standard);
+  transition: opacity var(--compact-content-collapse) var(--ease-standard);
 }
 
 /* 主窗口的旧模糊伪层继续禁用；可选边框由 .app-bg::after 统一绘制。 */

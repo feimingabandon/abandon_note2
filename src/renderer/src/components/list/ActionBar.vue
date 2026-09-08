@@ -10,6 +10,10 @@ const phase = ref('collapsed') // collapsed | opening | open | closing-content |
 const expandHeight = ref(58)
 const resizing = ref(false)
 const searchBoxRef = ref(null)
+const newButtonRef = ref(null)
+const searchButtonRef = ref(null)
+const newHintRef = ref(null)
+const searchHintRef = ref(null)
 const searchContentReady = ref(false)
 let pendingMode = null
 let pendingOpen = false
@@ -31,6 +35,9 @@ const searchBoxClass = computed(() => {
 
 function openExpanded() {
   if (phase.value !== 'collapsed') return
+  const activeElement = document.activeElement
+  if (activeElement === newHintRef.value) newButtonRef.value?.focus?.({ preventScroll: true })
+  if (activeElement === searchHintRef.value) searchButtonRef.value?.focus?.({ preventScroll: true })
   searchContentReady.value = false
   phase.value = 'opening'
 }
@@ -220,6 +227,7 @@ defineExpose({
     >
       <!-- 按钮始终可见，固定在左上角 -->
       <button
+        ref="newButtonRef"
         class="ab-box-btn ab-btn-fixed"
         :title="isNewExpanded ? '折叠' : '新建'"
         @click.stop="onNewBtnClick"
@@ -247,6 +255,7 @@ defineExpose({
       </button>
 
       <button
+        ref="newHintRef"
         type="button"
         class="ab-inline-hint ab-inline-hint--new"
         :class="hintClass('new')"
@@ -290,6 +299,7 @@ defineExpose({
     >
       <!-- 按钮始终可见，固定在右上角 -->
       <button
+        ref="searchButtonRef"
         class="ab-box-btn ab-btn-fixed ab-btn-fixed--right"
         :title="isSearchExpanded ? '折叠' : '搜索'"
         @click.stop="onSearchBtnClick"
@@ -333,6 +343,7 @@ defineExpose({
       </button>
 
       <button
+        ref="searchHintRef"
         type="button"
         class="ab-inline-hint ab-inline-hint--search"
         :class="hintClass('search')"

@@ -1,4 +1,5 @@
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -33,7 +34,7 @@ async function writeFixture(root, relativePath, content = 'fixture') {
 async function createPackagedFixture(
   platform,
   arch,
-  { breakAsar = false, leakOutput = false, leakSource = false } = {}
+  { breakAsar = false, leakOutput = false, leakSource = false, leakDirectory = null } = {}
 ) {
   const root = await mkdtemp(path.join(tmpdir(), 'abandon-package-native-'))
   temporaryRoots.push(root)
@@ -52,6 +53,7 @@ async function createPackagedFixture(
   if (leakOutput) {
     await writeFixture(appSource, path.join('output', 'marketing', 'promo.png'))
   }
+  if (leakDirectory) await writeFixture(appSource, path.join(leakDirectory, 'audit.json'))
   await mkdir(resourcesDir, { recursive: true })
   await createPackageWithOptions(appSource, path.join(resourcesDir, 'app.asar'), {
     unpack: '*.node',
@@ -77,6 +79,41 @@ async function createPackagedFixture(
 }
 
 describe('platform native module configuration', () => {
+  it('excludes local temporary and tool files using the actual builder filters', () => {
+    const { getMainFileMatchers } = require('app-builder-lib/out/fileMatcher')
+    const config = require('js-yaml').load(
+      readFileSync(new URL('../electron-builder.base.yml', import.meta.url), 'utf8')
+    )
+    const root = process.cwd()
+    const matcher = getMainFileMatchers(
+      root,
+      path.join(root, 'dist-test'),
+      (value) => value,
+      {},
+      {
+        info: {
+          projectDir: root,
+          buildResourcesDir: 'build',
+          config,
+          debugLogger: { isEnabled: false }
+        }
+      },
+      path.join(root, 'dist'),
+      false
+    )[0]
+    const filter = matcher.createFilter()
+    for (const file of ['tmp/qa/image.png', 'tmp/server/.env', 'tools/deploy.py']) {
+      expect(filter(path.join(root, file), { isDirectory: () => false })).toBe(false)
+    }
+    expect(filter(path.join(root, 'out/main/index.js'), { isDirectory: () => false })).toBe(true)
+  })
+
+  it.each(['tmp', 'tools'])('rejects %s files if they leak into ASAR', async (leakDirectory) => {
+    const context = await createPackagedFixture('win32', 'x64', { leakDirectory })
+    await expect(
+      validatePackagedApp(context, { validateWindowsNativeAbi: vi.fn() })
+    ).rejects.toThrow(`Development file leaked into app.asar: /${leakDirectory}`)
+  })
   for (const [platform, platformPlans] of Object.entries(NATIVE_TARGETS)) {
     for (const [arch, plan] of Object.entries(platformPlans)) {
       it(`adds ${platform}-${arch} exclusions before ASAR packaging`, async () => {

@@ -11,7 +11,7 @@ import {
 } from '../src/shared/calendar/calendar-date-rules.js'
 
 describe('month calendar date rules', () => {
-  it('always builds Monday-first 7×6 grids', () => {
+  it('builds six Monday-first rows when the month needs them', () => {
     const grid = buildMonthGrid(2026, 8)
     expect(grid.days).toHaveLength(42)
     expect(grid.visibleStart).toBe('2026-07-27')
@@ -20,6 +20,18 @@ describe('month calendar date rules', () => {
     expect(grid.monthEnd).toBe('2026-08-31')
     expect(grid.days[0]).toMatchObject({ weekday: 0, weekIndex: 0, columnIndex: 0 })
     expect(grid.days[41]).toMatchObject({ weekday: 6, weekIndex: 5, columnIndex: 6 })
+  })
+
+  it.each([
+    [2026, 9, '2026-08-31', '2026-10-04'],
+    [2024, 2, '2024-01-29', '2024-03-03'],
+    [2021, 2, '2021-02-01', '2021-03-07'],
+    [2026, 12, '2026-11-30', '2027-01-03']
+  ])('keeps at least five rows for %i-%i', (year, month, start, end) => {
+    const grid = buildMonthGrid(year, month)
+    expect(grid.days).toHaveLength(35)
+    expect([grid.visibleStart, grid.visibleEnd]).toEqual([start, end])
+    expect(grid.days.every((day) => day.isActive)).toBe(true)
   })
 
   it('handles leap years and year boundaries without fixed-millisecond local math', () => {
@@ -53,7 +65,10 @@ describe('month calendar date rules', () => {
           (ordinal, index) => index === 0 || ordinal === ordinals[index - 1] + 1
         )
         if (
-          grid.days.length !== 42 ||
+          ![35, 42].includes(grid.days.length) ||
+          (grid.days.length === 42 && !grid.days.slice(35).some((day) => day.inCurrentMonth)) ||
+          grid.days[0].weekday !== 0 ||
+          grid.days.at(-1).weekday !== 6 ||
           currentDays.length !== expectedDayCount ||
           currentDays[0]?.day !== 1 ||
           currentDays.at(-1)?.day !== expectedDayCount ||

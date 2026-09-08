@@ -373,7 +373,7 @@ const definitions = [
     path: ['css', 'fontSizeBase'],
     db: { type: 'css', key: 'font_size_base' },
     defaultValue: 17,
-    parse: (value, fallback) => parseNumber(value, fallback, { min: 14, max: 22, integer: true }),
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 14, max: 28, integer: true }),
     serialize: String,
     remark: '基准字号（rem 单位数值）'
   },
@@ -477,6 +477,15 @@ const definitions = [
     remark: '列表、月视图和周视图双击便签快速编辑正文'
   },
   {
+    id: 'notes.autoMoveYesterday',
+    path: ['notes', 'autoMoveYesterday'],
+    db: { type: 'notes', key: 'auto_move_yesterday' },
+    defaultValue: false,
+    parse: parseBoolean,
+    serialize: (value) => (value ? '1' : '0'),
+    remark: '自动将昨天普通单日未完成便签移至今天，排除循环实例'
+  },
+  {
     id: 'window.lockState',
     path: ['window', 'lockState'],
     db: { type: 'system', key: 'lock_state' },
@@ -525,7 +534,7 @@ const definitions = [
     id: 'window.compact.width',
     path: ['window', 'compact', 'width'],
     db: { type: 'compact', key: 'width' },
-    defaultValue: 360,
+    defaultValue: COMPACT_WINDOW_LIMITS.defaultWidth,
     parse: (value, fallback) =>
       parseNumber(value, fallback, {
         min: COMPACT_WINDOW_LIMITS.minWidth,
@@ -539,7 +548,7 @@ const definitions = [
     id: 'window.compact.height',
     path: ['window', 'compact', 'height'],
     db: { type: 'compact', key: 'height' },
-    defaultValue: 76,
+    defaultValue: COMPACT_WINDOW_LIMITS.defaultHeight,
     parse: (value, fallback) =>
       parseNumber(value, fallback, {
         min: COMPACT_WINDOW_LIMITS.minHeight,
@@ -758,6 +767,7 @@ function buildDefaults(viewMode = VIEW_MODES.LIST) {
     setAtPath(defaults, definition.path, cloneValue(definition.defaultValue))
   })
   if ([VIEW_MODES.MONTH, VIEW_MODES.WEEK].includes(normalizeViewMode(viewMode))) {
+    defaults.css.fontSizeBase = 20
     defaults.geometry.widthRatio = 0.7
     defaults.geometry.heightRatio = 0.7
     defaults.ui.settingsPanelSize = 40

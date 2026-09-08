@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import AppIcon from '../ui/AppIcon.vue'
 import NumberStepper from '../ui/NumberStepper.vue'
 import HistoricalNoteMoveControl from './HistoricalNoteMoveControl.vue'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
@@ -23,8 +24,7 @@ const props = defineProps({
   dayPanelOpen: { type: Boolean, default: false },
   refreshing: { type: Boolean, default: false },
   busy: { type: Boolean, default: false },
-  weatherLocationLabel: { type: String, default: '' },
-  weatherSourceLabel: { type: String, default: '' }
+  weatherLocationLabel: { type: String, default: '' }
 })
 const emit = defineEmits([
   'previous',
@@ -287,26 +287,20 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
         :aria-label="isWeekView ? '刷新周视图' : '刷新月视图'"
         @click="emit('refresh')"
       >
-        <svg
+        <AppIcon
+          name="taiji"
+          class="month-toolbar__refresh-icon"
           :class="{ 'is-spinning': refreshSpinActive }"
-          viewBox="0 0 20 20"
-          aria-hidden="true"
           @animationend="finishRefreshSpin"
-        >
-          <path d="M16 7a7 7 0 1 0 .4 5M16 3v4h-4" />
-        </svg>
+        />
       </button>
-      <button
+      <div
         v-if="weatherLocationLabel"
-        type="button"
         class="month-toolbar__weather-meta"
-        title="查看天气数据来源"
-        @click="window.api.openWeatherSource()"
+        :title="weatherLocationLabel"
       >
         <span>{{ weatherLocationLabel }}</span>
-        <i aria-hidden="true">·</i>
-        <small>{{ weatherSourceLabel }}</small>
-      </button>
+      </div>
     </div>
 
     <div class="month-toolbar__navigation" :aria-label="isWeekView ? '周导航' : '月份导航'">
@@ -542,7 +536,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   display: grid;
   min-height: 42rem;
   align-items: center;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(max-content, 1fr);
   gap: 12rem;
   padding: 0 4rem;
 }
@@ -562,6 +556,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 }
 .month-toolbar__navigation {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
   z-index: var(--z-local-top);
   justify-self: center;
   gap: 9rem;
@@ -592,25 +588,19 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   stroke-width: 1.6;
 }
 .month-toolbar__weather-meta {
-  display: flex !important;
-  min-width: 0 !important;
+  display: flex;
+  min-width: 0;
   max-width: 100%;
-  height: 30rem !important;
-  align-items: center !important;
+  height: 30rem;
+  align-items: center;
   justify-self: start;
   flex-direction: row;
-  gap: 5rem;
-  padding: 0 7rem !important;
-  color: var(--text-color-secondary) !important;
+  padding: 0 7rem;
+  color: var(--text-color-secondary);
   line-height: 1.15;
   text-align: left;
 }
-.month-toolbar__weather-meta:hover:not(:disabled) {
-  background: transparent !important;
-  color: var(--text-color) !important;
-}
-.month-toolbar__weather-meta span,
-.month-toolbar__weather-meta small {
+.month-toolbar__weather-meta span {
   display: block;
   max-width: 100%;
   overflow: hidden;
@@ -621,20 +611,6 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   min-width: 0;
   font-size: var(--fs-secondary);
   font-weight: 500;
-}
-.month-toolbar__weather-meta i {
-  flex: 0 0 auto;
-  color: var(--text-color-secondary);
-  font-size: var(--fs-secondary);
-  font-style: normal;
-  opacity: 0.55;
-}
-.month-toolbar__weather-meta small {
-  flex: 0 1 auto;
-  color: var(--text-color-secondary);
-  font-size: calc(var(--fs-secondary) * 0.72);
-  font-weight: 400;
-  opacity: 0.72;
 }
 .month-toolbar button {
   display: grid;
@@ -720,11 +696,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 }
 .month-toolbar__title-label.is-week {
   display: inline-grid;
+  min-width: 0;
   width: 29ch;
   place-items: center;
 }
 .month-toolbar__week-range {
   grid-area: 1 / 1;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   line-height: 1.2;
 }
 .month-toolbar__value-slot {
@@ -794,16 +774,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 .month-toolbar__refresh:hover:not(:disabled) {
   color: var(--text-color) !important;
 }
-.month-toolbar__refresh svg {
+.month-toolbar__refresh-icon {
+  display: block;
   width: 17rem;
   height: 17rem;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
 }
-.month-toolbar__refresh svg.is-spinning {
+.month-toolbar__refresh-icon.is-spinning {
   animation: month-toolbar-spin 520ms var(--ease-emphasized);
 }
 .month-toolbar__picker {
@@ -908,7 +884,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   text-align: center;
 }
 .month-toolbar__date-picker-days {
-  min-height: 195rem;
+  grid-auto-rows: 30rem;
 }
 .month-toolbar__date-option {
   position: relative;

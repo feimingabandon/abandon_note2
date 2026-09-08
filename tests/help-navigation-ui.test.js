@@ -37,6 +37,6 @@ describe('帮助中心导航与关闭操作', () => {
     expect(help).toContain('showBackToTop.value = (contentRef.value?.scrollTop ?? 0) > 240')
     expect(help).toContain('class="help-back-to-top"')
     expect(help).toContain('aria-label="回到帮助中心顶部"')
-    expect(help).toContain("contentRef.value?.scrollTo({ top: 0, behavior: 'smooth' })")
+    expect(help).toContain('void animateScroll(0)')
   })
 })

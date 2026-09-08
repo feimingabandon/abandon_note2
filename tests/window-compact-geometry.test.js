@@ -16,6 +16,7 @@ const workArea = { x: 0, y: 0, width: 1920, height: 1040 }
 
 describe('compact window geometry', () => {
   it('clamps user sizes to product and display limits', () => {
+    expect(normalizeCompactSize()).toEqual({ width: 200, height: 40 })
     expect(normalizeCompactSize({ width: 20, height: 20 }, workArea)).toEqual({
       width: 100,
       height: 40

@@ -405,7 +405,8 @@ onBeforeUnmount(() => {
   height: 100%;
   min-width: 0;
   box-sizing: border-box;
-  padding: 6px 12px;
+  justify-content: center;
+  padding: 4px 12px;
 }
 
 .compact-island__content.has-note {
@@ -415,7 +416,7 @@ onBeforeUnmount(() => {
 .compact-island__text-viewport {
   display: flex;
   align-items: center;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   width: auto;
   height: 100%;
   min-width: 0;

@@ -28,6 +28,13 @@ const WEEK_SETTINGS_INITIALIZED_ROW = Object.freeze({
   remark: '周视图已完成首次设置继承'
 })
 
+const COMPACT_SIZE_DEFAULTS_ROW = Object.freeze({
+  type: 'compact',
+  key: 'compact_size_defaults_version',
+  value: '1',
+  remark: '灵动岛默认尺寸已更新为 200×40'
+})
+
 const APPLICATION_SETTING_DB_KEYS = new Set([
   'appearance:titlebar_icon_scale',
   'appearance:icon_color',
@@ -37,6 +44,8 @@ const APPLICATION_SETTING_DB_KEYS = new Set([
   'weather:enabled',
   'weather:location',
   'interaction:double_click_quick_edit',
+  'notes:auto_move_yesterday',
+  'notes:auto_move_last_date',
   'onboarding:first_use_notice_version'
 ])
 
@@ -77,6 +86,7 @@ export function readApplicationSettings() {
     },
     shortcuts: { ...applicationResolved.shortcuts },
     interaction: { ...applicationResolved.interaction },
+    notes: { ...applicationResolved.notes },
     window: { ...applicationResolved.window },
     weather: applicationResolved.weather,
     onboarding: applicationResolved.onboarding,
@@ -93,7 +103,8 @@ export function readApplicationSettings() {
 /**
  * 导航栏的锁定与窗口层级从历史分视图状态收敛为应用级状态。
  * 旧布尔置顶值天然映射为 top / normal；只在应用级记录缺失时读取一次当前视图，
- * 不保留版本回退镜像或额外迁移标记。
+ * 不保留锁定和层级的版本回退镜像或额外迁移标记。
+ * 灵动岛尺寸另做一次默认值升级，只替换旧的完整默认尺寸，保留自定义尺寸。
  */
 export function ensureApplicationWindowSettingsInitialized(viewMode) {
   const normalizedViewMode = normalizeViewMode(viewMode)
@@ -102,12 +113,28 @@ export function ensureApplicationWindowSettingsInitialized(viewMode) {
   const zOrderDbKey = 'system:z_order_mode'
   const needsLockState = !applicationRows.has(lockDbKey)
   const needsZOrderMode = !applicationRows.has(zOrderDbKey)
-  if (!needsLockState && !needsZOrderMode) return false
+  const needsCompactSizeDefaults = !applicationRows.has(
+    `${COMPACT_SIZE_DEFAULTS_ROW.type}:${COMPACT_SIZE_DEFAULTS_ROW.key}`
+  )
+  if (!needsLockState && !needsZOrderMode && !needsCompactSizeDefaults) return false
 
   const legacyRows = getAllSettings(getViewSettingsScope(normalizedViewMode))
   const legacyRowMap = rowMap(legacyRows)
   const resolvedLegacy = resolveSettingsRows(legacyRows, normalizedViewMode)
   const entries = []
+
+  if (needsCompactSizeDefaults) {
+    if (
+      Number(applicationRows.get('compact:width')) === 360 &&
+      Number(applicationRows.get('compact:height')) === 76
+    ) {
+      entries.push(
+        serializeSetting('window.compact.width', DEFAULT_SETTINGS.window.compact.width),
+        serializeSetting('window.compact.height', DEFAULT_SETTINGS.window.compact.height)
+      )
+    }
+    entries.push(COMPACT_SIZE_DEFAULTS_ROW)
+  }
 
   if (needsLockState) {
     entries.push(serializeSetting('window.lockState', resolvedLegacy.window.lockState))
@@ -207,6 +234,7 @@ export function writeApplicationSetting(id, value) {
     id !== 'appearance.iconColor' &&
     id !== 'shortcuts.viewVisibility' &&
     id !== 'interaction.doubleClickQuickEdit' &&
+    id !== 'notes.autoMoveYesterday' &&
     id !== 'window.lockState' &&
     id !== 'window.zOrderMode' &&
     !id.startsWith('window.compact.')

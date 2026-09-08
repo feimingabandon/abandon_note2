@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -39,6 +39,23 @@ afterAll(() => {
 })
 
 describe('main-process logging', () => {
+  it('keeps serializing Electron-like objects when an enumerable getter throws', () => {
+    const destroyedWindow = { id: 17 }
+    Object.defineProperty(destroyedWindow, 'devToolsWebContents', {
+      enumerable: true,
+      get() {
+        throw new Error('Object has been destroyed')
+      }
+    })
+
+    expect(logging.loggingInternals.serializeUnknown({ window: destroyedWindow })).toEqual({
+      window: {
+        id: 17,
+        devToolsWebContents: '[Unreadable property: Object has been destroyed]'
+      }
+    })
+  })
+
   it('keeps the complete encoded JSONL record within the hard byte limit', () => {
     const line = logging.loggingInternals.createBoundedLine({
       id: 'oversized-record',
@@ -109,6 +126,25 @@ describe('main-process logging', () => {
     const [source] = logging.getLogFiles()
 
     await expect(logging.exportLogs(source.path)).rejects.toThrow('导出目标不能覆盖现有日志文件')
+  })
+
+  it('keeps existing records and appends the current system snapshot as the last JSONL record', async () => {
+    const marker = `export-tail-${Date.now()}`
+    logging.writeLog({ scope: 'test.export', message: marker })
+    const target = join(testUserData, 'diagnostics-export.jsonl')
+    const snapshot = {
+      capturedAt: new Date().toISOString(),
+      displays: [{ scaleFactor: 1.25, scalePercent: 125 }]
+    }
+    await logging.exportLogs(target, { fixture: true }, snapshot)
+    const records = readFileSync(target, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+    expect(records[0]).toMatchObject({ type: 'diagnostic-export', metadata: { fixture: true } })
+    expect(records.some((record) => record.message === marker)).toBe(true)
+    expect(records.at(-1)).toEqual({ type: 'diagnostic-system', schemaVersion: 1, snapshot })
   })
 
   it('captures the Electron 43 console-message event details object', async () => {

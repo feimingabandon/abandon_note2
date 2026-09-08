@@ -45,6 +45,20 @@ beforeEach(() => {
 })
 
 describe('application view settings', () => {
+  it('persists automatic movement once for all views and defaults to disabled', () => {
+    expect(readApplicationSettings().notes.autoMoveYesterday).toBe(false)
+    writeApplicationSetting('notes.autoMoveYesterday', true)
+    expect(readApplicationSettings().notes.autoMoveYesterday).toBe(true)
+    expect(db.rowsByScope.get('application')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'notes', key: 'auto_move_yesterday', value: '1' })
+      ])
+    )
+    ensureViewSettingsInitialized('week')
+    expect(readApplicationSettings().notes.autoMoveYesterday).toBe(true)
+    writeApplicationSetting('notes.autoMoveYesterday', false)
+    expect(readApplicationSettings().notes.autoMoveYesterday).toBe(false)
+  })
   it('initializes lock and z-order once from the active legacy view, then shares them globally', () => {
     db.rowsByScope.set('main', [
       { type: 'system', key: 'lock_state', value: 'true' },
@@ -55,7 +69,7 @@ describe('application view settings', () => {
     expect(readApplicationSettings().window).toEqual({
       lockState: true,
       zOrderMode: 'normal',
-      compact: expect.objectContaining({ enabled: false, width: 360, height: 76 })
+      compact: expect.objectContaining({ enabled: false, width: 200, height: 40 })
     })
     expect(ensureApplicationWindowSettingsInitialized('month')).toBe(false)
 
@@ -64,8 +78,39 @@ describe('application view settings', () => {
     expect(readApplicationSettings().window).toEqual({
       lockState: false,
       zOrderMode: 'bottom',
-      compact: expect.objectContaining({ enabled: false, width: 360, height: 76 })
+      compact: expect.objectContaining({ enabled: false, width: 200, height: 40 })
     })
+  })
+
+  it('upgrades the old compact default once without changing position or later size choices', () => {
+    writeApplicationSettings([
+      { id: 'window.compact.width', value: 360 },
+      { id: 'window.compact.height', value: 76 },
+      { id: 'window.compact.x', value: 130 },
+      { id: 'window.compact.y', value: 140 }
+    ])
+    ensureApplicationWindowSettingsInitialized('list')
+    expect(readApplicationSettings().window.compact).toMatchObject({
+      width: 200,
+      height: 40,
+      x: 130,
+      y: 140
+    })
+    writeApplicationSettings([
+      { id: 'window.compact.width', value: 360 },
+      { id: 'window.compact.height', value: 76 }
+    ])
+    expect(ensureApplicationWindowSettingsInitialized('list')).toBe(false)
+    expect(readApplicationSettings().window.compact).toMatchObject({ width: 360, height: 76 })
+  })
+
+  it('preserves customized compact dimensions during the default upgrade', () => {
+    writeApplicationSettings([
+      { id: 'window.compact.width', value: 280 },
+      { id: 'window.compact.height', value: 76 }
+    ])
+    ensureApplicationWindowSettingsInitialized('month')
+    expect(readApplicationSettings().window.compact).toMatchObject({ width: 280, height: 76 })
   })
 
   it('keeps the first-use notice version in the application scope', () => {

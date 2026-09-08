@@ -115,14 +115,37 @@ function serializeUnknown(value, seen = new WeakSet()) {
     }
     if (value.code !== undefined) result.code = value.code
     if (value.cause !== undefined) result.cause = serializeUnknown(value.cause, seen)
-    for (const key of Object.keys(value)) {
-      if (!(key in result)) result[key] = serializeUnknown(value[key], seen)
+    let keys = []
+    try {
+      keys = Object.keys(value)
+    } catch (keyError) {
+      result.serializationError = keyError?.message || String(keyError)
+    }
+    for (const key of keys) {
+      if (key in result) continue
+      try {
+        result[key] = serializeUnknown(value[key], seen)
+      } catch (propertyError) {
+        result[key] = `[Unreadable property: ${propertyError?.message || String(propertyError)}]`
+      }
     }
     return result
   }
   if (Array.isArray(value)) return value.map((item) => serializeUnknown(item, seen))
   const result = {}
-  for (const [key, item] of Object.entries(value)) result[key] = serializeUnknown(item, seen)
+  let keys
+  try {
+    keys = Object.keys(value)
+  } catch (keyError) {
+    return { serializationError: keyError?.message || String(keyError) }
+  }
+  for (const key of keys) {
+    try {
+      result[key] = serializeUnknown(value[key], seen)
+    } catch (propertyError) {
+      result[key] = `[Unreadable property: ${propertyError?.message || String(propertyError)}]`
+    }
+  }
   return result
 }
 
@@ -546,7 +569,7 @@ export function getLogFiles() {
   })
 }
 
-export async function exportLogs(targetPath, metadata = {}) {
+export async function exportLogs(targetPath, metadata = {}, systemDiagnostics = null) {
   flushLogs()
   const files = listLogFilesNewestFirst().reverse()
   const resolvedTarget = resolve(targetPath)
@@ -571,6 +594,17 @@ export async function exportLogs(targetPath, metadata = {}) {
     await appendFileAsync(resolvedTarget, await readFileAsync(file.path))
     await appendFileAsync(resolvedTarget, '\n')
   }
+  await appendFileAsync(
+    resolvedTarget,
+    `${JSON.stringify({
+      type: 'diagnostic-system',
+      schemaVersion: 1,
+      snapshot: systemDiagnostics || {
+        collectionErrors: [{ field: 'system', message: 'System snapshot was not collected' }]
+      }
+    })}\n`,
+    'utf8'
+  )
   return resolvedTarget
 }
 

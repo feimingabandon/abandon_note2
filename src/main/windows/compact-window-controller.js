@@ -7,12 +7,14 @@ const TRANSITION_STATUSES = Object.freeze({
 const PRESENTATION_STAGES = Object.freeze({
   CONTENT_EXIT: 'content-exit',
   SHELL_TRANSFORM: 'shell-transform',
+  SHELL_SETTLE: 'shell-settle',
   CONTENT_ENTER: 'content-enter'
 })
 
 const NEXT_PRESENTATION_STAGE = Object.freeze({
   [PRESENTATION_STAGES.CONTENT_EXIT]: PRESENTATION_STAGES.SHELL_TRANSFORM,
-  [PRESENTATION_STAGES.SHELL_TRANSFORM]: PRESENTATION_STAGES.CONTENT_ENTER
+  [PRESENTATION_STAGES.SHELL_TRANSFORM]: PRESENTATION_STAGES.SHELL_SETTLE,
+  [PRESENTATION_STAGES.SHELL_SETTLE]: PRESENTATION_STAGES.CONTENT_ENTER
 })
 
 function isUsableWindow(window) {
@@ -23,7 +25,7 @@ function isUsableWindow(window) {
  * 单 BrowserWindow 胶囊事务状态机。
  *
  * 这里只保存 phase、generation 和当前原生事务；原生层负责把同一个 Electron
- * HWND 与 Blur Overlay 的几何逐帧放入同一 Win32 批次。
+ * 外壳交给固定尺寸的 Composition Overlay，真实 HWND 在透明期间一次就位。
  */
 export class CompactWindowController {
   constructor({ onPhaseChanged = () => {}, onError = () => {} } = {}) {
@@ -156,7 +158,11 @@ export class CompactWindowController {
         error: null
       }))
       .catch((error) => {
-        this.onError(error, { operation: 'native-transition', transition })
+        // 诊断只传普通快照，不能遍历 BrowserWindow / WebContents 的原生属性。
+        this.onError(error, {
+          operation: 'native-transition',
+          transition: this.transitionSnapshot()
+        })
         return {
           status: TRANSITION_STATUSES.FAILED,
           generation,

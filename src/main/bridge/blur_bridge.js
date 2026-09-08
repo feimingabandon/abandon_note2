@@ -250,6 +250,17 @@ function initNative() {
     loaded.WindowZOrder_GetStatusJson = loaded.func('WindowZOrder_GetStatusJson', 'str', [
       'intptr_t'
     ])
+    loaded.WindowTransition_WarmShell = loaded.func('WindowTransition_WarmShell', 'int', [
+      'intptr_t'
+    ])
+    loaded.WindowTransition_PrepareShell = loaded.func('WindowTransition_PrepareShell', 'int', [
+      'intptr_t',
+      'int',
+      'int',
+      'int',
+      'int'
+    ])
+    loaded.WindowTransition_FinishShell = loaded.func('WindowTransition_FinishShell', 'int', [])
     loaded.WindowTransition_Run = loaded.func('WindowTransition_Run', 'int', [
       'intptr_t',
       'int',
@@ -454,6 +465,40 @@ export function getWindowZOrderStatus(window) {
   }
 }
 
+export function warmWindowTransitionShell(window) {
+  if (!window || window.isDestroyed() || !initNative()) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    lib.WindowTransition_WarmShell.async(getWindowHandleValue(window), (error, code) =>
+      resolve(!error && code === 1)
+    )
+  })
+}
+
+export function prepareWindowTransitionShell(window, bounds) {
+  if (!window || window.isDestroyed() || !initNative()) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    lib.WindowTransition_PrepareShell.async(
+      getWindowHandleValue(window),
+      Math.round(bounds.x),
+      Math.round(bounds.y),
+      Math.round(bounds.width),
+      Math.round(bounds.height),
+      (error, code) => resolve(!error && code === 1)
+    )
+  })
+}
+
+export function finishWindowTransitionShell() {
+  if (!initNative()) return false
+  // 最终交接不再排到 Koffi worker：与恢复窗口透明度在同一主线程调用栈完成。
+  // 原生端仍有超时保护；连续动画本身继续在合成器执行。
+  try {
+    return lib.WindowTransition_FinishShell() === 1
+  } catch {
+    return false
+  }
+}
+
 export function runWindowTransition(window, targetPhysicalBounds, { duration }) {
   if (
     process.platform !== 'win32' ||
@@ -484,9 +529,16 @@ export function runWindowTransition(window, targetPhysicalBounds, { duration }) 
           resolve({ success: false, code: null, error: error.message || String(error) })
           return
         }
+        let diagnostics = null
+        try {
+          diagnostics = JSON.parse(lib.WindowTransition_GetStatusJson(hwnd))
+        } catch (diagnosticError) {
+          diagnostics = { collectionError: diagnosticError?.message || String(diagnosticError) }
+        }
         resolve({
           success: code === 1,
           code,
+          diagnostics,
           error: code === 1 ? null : lib.WindowTransition_GetLastErrorMessage()
         })
       }

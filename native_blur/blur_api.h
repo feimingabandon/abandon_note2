@@ -96,8 +96,10 @@ BLUR_API int WindowZOrder_Reassert(void* hwnd);
 BLUR_API const char* WindowZOrder_GetStatusJson(void* hwnd);
 
 // ---- 主视图 / 胶囊原生过渡 ----
-// 同一个 Electron HWND 与持久 Blur Overlay 在每一帧通过一个
-// BeginDeferWindowPos 批次同步提交；目标边界使用物理屏幕坐标。
+BLUR_API int WindowTransition_WarmShell(void* hwnd);
+BLUR_API int WindowTransition_PrepareShell(void* hwnd, int x, int y, int width, int height);
+BLUR_API int WindowTransition_FinishShell(void);
+// 真实 HWND 一次就位，独立 Composition 外壳插值；目标边界为物理屏幕坐标。
 BLUR_API int WindowTransition_Run(
     void* hwnd,
     int targetPhysicalX,

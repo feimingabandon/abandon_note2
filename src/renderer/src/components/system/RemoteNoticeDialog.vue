@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import AppModalShell from '../ui/AppModalShell.vue'
 import BaseButton from '../ui/BaseButton.vue'
+import MarkdownContent from '../markdown/MarkdownContent.vue'
 
 const props = defineProps({
   notices: {
@@ -63,7 +64,7 @@ async function acknowledge() {
     max-height="min(620rem, calc(100vh - 40rem))"
     @update:visible="emit('close')"
   >
-    <div class="notice-body">{{ current?.body }}</div>
+    <MarkdownContent class="notice-body" :content="current?.body || ''" />
     <button
       v-if="current?.link"
       type="button"
@@ -114,7 +115,6 @@ async function acknowledge() {
   color: var(--text-color);
   font-size: var(--fs-body);
   line-height: 1.72;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

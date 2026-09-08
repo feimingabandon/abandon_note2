@@ -301,7 +301,7 @@ const viewVisibilityShortcutRuntime = ref({
 })
 const bgColor = ref(DEFAULT_SETTINGS.css.bgColor)
 const windowBorder = ref(DEFAULT_SETTINGS.css.windowBorder)
-const fontSizeBase = ref(DEFAULT_SETTINGS.css.fontSizeBase)
+const fontSizeBase = ref(viewDefaults.value.css.fontSizeBase)
 const textColor = ref(DEFAULT_SETTINGS.css.textColor)
 const stickyFontSize = ref(DEFAULT_SETTINGS.sticky.fontSize)
 const stickyBackgroundColor = ref(DEFAULT_SETTINGS.sticky.backgroundColor)
@@ -353,7 +353,10 @@ async function loadRemoteHealth() {
 }
 
 /** 字体大小预设（datalist 选项） */
-const fontSizePresets = [14, 15, 16, 17, 18, 19, 20, 21, 22]
+const fontSizeMax = computed(() => (isCalendarView.value ? 28 : 22))
+const fontSizePresets = computed(() =>
+  Array.from({ length: fontSizeMax.value - 13 }, (_, index) => index + 14)
+)
 const stickyFontSizePresets = [12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
 const stickyColorPresets = [
   { label: '便签黄', value: '#fff2a8' },
@@ -1597,7 +1600,7 @@ const onConfirmResetSettings = async () => {
                   v-model="fontSizeBase"
                   :presets="fontSizePresets"
                   :min="14"
-                  :max="22"
+                  :max="fontSizeMax"
                   width="90rem"
                 />
               </div>

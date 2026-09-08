@@ -175,6 +175,10 @@ async function runTests() {
       { editable: 'plaintext-only', focused: true },
       '双击正文没有进入纯文本编辑状态'
     )
+    const saveContent = service.saveContent
+    service.saveContent = () => {
+      throw new Error('SQLITE_FULL injected')
+    }
     await entry.window.webContents.executeJavaScript(`(() => {
       const content = document.querySelector('[data-content]')
       content.textContent = '双击编辑并失焦保存后的正文'
@@ -182,6 +186,21 @@ async function runTests() {
         new PointerEvent('pointerdown', { bubbles: true })
       )
     })()`)
+    await waitUntil(
+      () =>
+        entry.window.webContents.executeJavaScript(`(() => {
+        const content = document.querySelector('[data-content]')
+        return content.textContent === '双击编辑并失焦保存后的正文' &&
+          content.getAttribute('contenteditable') === 'plaintext-only' &&
+          document.querySelector('[data-message]').textContent.includes('SQLITE_FULL')
+      })()`),
+      '数据库保存失败后没有保留草稿并恢复编辑'
+    )
+    assert.equal(getNoteById(noteId).content, '真实 Electron 便利贴恢复测试')
+    service.saveContent = saveContent
+    await entry.window.webContents.executeJavaScript(
+      `document.querySelector('[data-content]').dispatchEvent(new FocusEvent('blur'))`
+    )
     await waitUntil(
       () => getNoteById(noteId)?.content === '双击编辑并失焦保存后的正文',
       '双击编辑没有同步到来源便签'
@@ -227,8 +246,18 @@ async function runTests() {
       await entry.window.webContents.executeJavaScript(
         `document.querySelector('[data-content]').textContent`
       ),
+      '   ',
+      '保存失败后没有保留未提交正文'
+    )
+    await entry.window.webContents.executeJavaScript(
+      `document.querySelector('[data-content]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`
+    )
+    assert.equal(
+      await entry.window.webContents.executeJavaScript(
+        `document.querySelector('[data-content]').textContent`
+      ),
       '双击编辑并失焦保存后的正文',
-      '保存失败后没有恢复已提交正文'
+      '明确取消后没有恢复已提交正文'
     )
 
     service.dispose()

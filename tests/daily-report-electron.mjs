@@ -67,6 +67,136 @@ function getListWindow() {
 const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-report-e2e-'))
 let exitCode = 0
 
+async function verifyDynamicDatePicker(listWindow) {
+  await waitUntil(
+    () => listWindow.webContents.executeJavaScript(`!document.querySelector('.date-picker-panel')`),
+    '前一个日期面板尚未完成收起动画'
+  )
+  const originalBounds = listWindow.getBounds()
+  listWindow.setSize(720, 540)
+  await waitUntil(() => listWindow.getBounds().height === 540, '日期面板测试窗口尺寸未就绪')
+  await listWindow.webContents.executeJavaScript(
+    `document.querySelector('.date-picker__trigger[aria-label="选择报表结束日期"]').click()`
+  )
+  await waitUntil(
+    () =>
+      listWindow.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.date-picker-panel__calendar'))`
+      ),
+    '结束日期面板未打开'
+  )
+  // 在当前日期附近找一个五行、下月六行的组合，避免依赖运行当天的月份。
+  const target = new Date()
+  target.setDate(1)
+  const rowsInMonth = (date) =>
+    Math.max(
+      5,
+      Math.ceil(
+        (((date.getDay() + 6) % 7) +
+          new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()) /
+          7
+      )
+    )
+  let steps = 0
+  while (steps < 12) {
+    const next = new Date(target.getFullYear(), target.getMonth() + 1, 1)
+    if (rowsInMonth(target) === 5 && rowsInMonth(next) === 6) break
+    target.setMonth(target.getMonth() + 1)
+    steps += 1
+  }
+  assert.ok(steps < 12, '未找到相邻的五行和六行月份')
+  async function waitForMonth(date) {
+    const firstKey = dateKey(date)
+    await waitUntil(
+      () =>
+        listWindow.webContents.executeJavaScript(`(() => {
+        const calendar = document.querySelector('.date-picker-panel__calendar')
+        return Boolean(calendar?.querySelector('[aria-label="${firstKey}"]:not(.is-other)')) &&
+          calendar.querySelectorAll('button').length === ${rowsInMonth(date) * 7} &&
+          !calendar.getAnimations().some((animation) => animation.playState === 'running')
+      })()`),
+      `日期选择器没有完成 ${firstKey} 的切月`
+    ).catch(async (error) => {
+      console.error(
+        await listWindow.webContents.executeJavaScript(`(() => {
+        const calendar = document.querySelector('.date-picker-panel__calendar')
+        return { title: document.querySelector('.date-picker-panel__header')?.textContent,
+          count: calendar?.querySelectorAll('button').length,
+          first: calendar?.querySelector('button:not(.is-other)')?.getAttribute('aria-label'),
+          animations: calendar?.getAnimations().map((item) => item.playState) }
+      })()`)
+      )
+      throw error
+    })
+  }
+  const cursor = new Date()
+  cursor.setDate(1)
+  await waitForMonth(cursor)
+  for (let index = 0; index < steps; index += 1) {
+    await listWindow.webContents.executeJavaScript(
+      `document.querySelector('.date-picker-panel [aria-label="下个月"]').click()`
+    )
+    cursor.setMonth(cursor.getMonth() + 1)
+    await waitForMonth(cursor)
+  }
+  const five = await listWindow.webContents.executeJavaScript(`(() => {
+    const panel = document.querySelector('.date-picker-panel')
+    const trigger = document.querySelector('.date-picker__trigger[aria-label="选择报表结束日期"]').parentElement
+    const rect = trigger.getBoundingClientRect()
+    const height = panel.offsetHeight
+    const desiredTop = window.innerHeight - height - rect.height - 7 - 20
+    trigger.style.transform = 'translateY(' + (desiredTop - rect.top) + 'px)'
+    window.dispatchEvent(new Event('resize'))
+    return { height, viewport: window.innerHeight }
+  })()`)
+  assert.ok(five.height + 50 < five.viewport, '测试窗口必须容得下完整日期面板')
+  await waitUntil(
+    () =>
+      listWindow.webContents.executeJavaScript(
+        `Math.abs(document.querySelector('.date-picker-panel').getBoundingClientRect().bottom - (window.innerHeight - 20)) < 2`
+      ),
+    '五行面板未定位到靠近窗口底部的位置'
+  )
+  await listWindow.webContents.executeJavaScript(
+    `document.querySelector('.date-picker-panel [aria-label="下个月"]').click()`
+  )
+  cursor.setMonth(cursor.getMonth() + 1)
+  await waitForMonth(cursor)
+  const six = await waitUntil(
+    () =>
+      listWindow.webContents.executeJavaScript(`(() => {
+      const rect = document.querySelector('.date-picker-panel').getBoundingClientRect()
+      const footer = document.querySelector('.date-picker-panel__footer').getBoundingClientRect()
+      return rect.bottom <= window.innerHeight - 11 && rect.top >= 11 && footer.bottom <= window.innerHeight - 11
+        ? { height: rect.height, top: rect.top } : null
+    })()`),
+    '切到六行后面板或今天按钮超出窗口，未按实际高度重新定位'
+  )
+  assert.ok(six.height > five.height + 25, '测试必须实际增加一行日期')
+  await listWindow.webContents.executeJavaScript(
+    `document.querySelector('.date-picker-panel [aria-label="上个月"]').click()`
+  )
+  cursor.setMonth(cursor.getMonth() - 1)
+  await waitForMonth(cursor)
+  await waitUntil(
+    () =>
+      listWindow.webContents.executeJavaScript(
+        `Math.abs(document.querySelector('.date-picker-panel').getBoundingClientRect().bottom - (window.innerHeight - 20)) < 2`
+      ),
+    '切回五行后没有恢复触发器下方的位置'
+  )
+  await listWindow.webContents.executeJavaScript(`(() => {
+    document.querySelector('.date-picker__trigger[aria-label="选择报表结束日期"]').parentElement.style.removeProperty('transform')
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })()`)
+  await waitUntil(
+    () => listWindow.webContents.executeJavaScript(`!document.querySelector('.date-picker-panel')`),
+    '日期面板未正常关闭'
+  )
+  listWindow.setBounds(originalBounds)
+  process.stderr.write('date picker 5/6/5 viewport positioning passed\n')
+}
+
 async function runDailyReportTest() {
   try {
     const listWindow = await waitUntil(getListWindow, '列表主窗口没有按隔离设置启动', 10000)
@@ -162,6 +292,7 @@ async function runDailyReportTest() {
       '选择 Excel 后导出操作没有切换'
     )
 
+    await verifyDynamicDatePicker(listWindow)
     process.stderr.write('daily report range dialog integration passed\n')
   } catch (error) {
     console.error(error)

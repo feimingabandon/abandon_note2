@@ -1,7 +1,11 @@
 const { spawnSync } = require('node:child_process')
 const electronPath = require('electron')
 
-const testFiles = ['tests/backend-integration.mjs', 'tests/historical-note-move-db.mjs']
+const testFiles = [
+  'tests/backend-integration.mjs',
+  'tests/historical-note-move-db.mjs',
+  'tests/automatic-note-move-db.mjs'
+]
 
 for (const testFile of testFiles) {
   const result = spawnSync(electronPath, ['node_modules/vite-node/dist/cli.mjs', testFile], {

@@ -666,7 +666,132 @@ async function runHistoricalNoteMoveTest() {
     )
     assert.equal(oldNoteDate, timestamps.old, '只预览全部历史时不应提前移动便签')
 
-    report('month/week ranges, grouped note previews and moves passed')
+    await closeMovePanel(weekWindow)
+    const automaticNotes = await weekWindow.webContents.executeJavaScript(`(async () => {
+      const ordinary = await window.api.createNote({ content: '自动移动普通便签', effectiveAt: ${timestamps.yesterday} })
+      const multi = await window.api.createNote({ content: '自动移动排除跨日', effectiveAt: ${timestamps.yesterday}, durationDays: 2 })
+      const recurring = await window.api.createNote({ content: '自动移动排除循环', effectiveAt: ${timestamps.yesterday} })
+      return { ordinary: ordinary.id, multi: multi.id, recurring: recurring.id }
+    })()`)
+    // 模拟已生成且模板已删除的循环实例，验证永久来源标记也参与实际 IPC 移动筛选。
+    const fixtureDb = new Database(join(testUserData, 'app.db'))
+    fixtureDb
+      .prepare('UPDATE notes SET from_template = 1 WHERE id = ?')
+      .run(automaticNotes.recurring)
+    fixtureDb.close()
+    await openMovePanel(weekWindow)
+    await waitForPreview(weekWindow, 3, dates.yesterday)
+    assert.equal(
+      await weekWindow.webContents.executeJavaScript(
+        `document.querySelector('#automatic-note-move').getAttribute('aria-checked')`
+      ),
+      'false',
+      '自动移动默认应关闭'
+    )
+
+    async function toggleAutomatic(viewWindow, enabled) {
+      await waitUntil(
+        () =>
+          viewWindow.webContents.executeJavaScript(
+            `Boolean(document.querySelector('#automatic-note-move')) && !document.querySelector('#automatic-note-move').disabled`
+          ),
+        '自动移动开关没有就绪'
+      )
+      await viewWindow.webContents.executeJavaScript(
+        `document.querySelector('#automatic-note-move').click()`
+      )
+      await waitUntil(
+        () =>
+          viewWindow.webContents.executeJavaScript(`(async () => {
+        const toggle = document.querySelector('#automatic-note-move')
+        const settings = await window.api.getSettingsSnapshot()
+        return toggle?.getAttribute('aria-checked') === '${enabled}' && !toggle.disabled && settings.values.notes.autoMoveYesterday === ${enabled}
+      })()`),
+        '自动移动开关没有保存'
+      )
+    }
+
+    await toggleAutomatic(weekWindow, true)
+    await wait(400)
+    await waitForPreview(weekWindow, 2, dates.yesterday)
+    const automaticResult = await weekWindow.webContents.executeJavaScript(`(async () => ({
+      ordinary: (await window.api.getNote(${automaticNotes.ordinary})).effective_at,
+      multi: (await window.api.getNote(${automaticNotes.multi})).effective_at,
+      recurring: (await window.api.getNote(${automaticNotes.recurring})).effective_at
+    }))()`)
+    assert.equal(dateKey(new Date(automaticResult.ordinary)), dates.today)
+    assert.equal(automaticResult.multi, timestamps.yesterday)
+    assert.equal(automaticResult.recurring, timestamps.yesterday)
+    await closeMovePanel(weekWindow)
+    await chooseView(weekWindow, 'month')
+    const returnedMonth = await waitForView('month')
+    await openMovePanel(returnedMonth)
+    await waitUntil(
+      () =>
+        returnedMonth.webContents.executeJavaScript(
+          `document.querySelector('#automatic-note-move')?.getAttribute('aria-checked') === 'true'`
+        ),
+      '月视图没有继承周视图保存的自动移动开关'
+    )
+    await toggleAutomatic(returnedMonth, false)
+    const lateNote = await returnedMonth.webContents.executeJavaScript(
+      `window.api.createNote({ content: '关闭期间补录', effectiveAt: ${timestamps.yesterday} })`
+    )
+    // 唤醒会真正触发调度器；关闭时不可移动补录数据。
+    const { powerMonitor } = await import('electron')
+    powerMonitor.emit('resume')
+    assert.equal(
+      await returnedMonth.webContents.executeJavaScript(
+        `window.api.getNote(${lateNote.id}).then(note => note.effective_at)`
+      ),
+      timestamps.yesterday
+    )
+    await toggleAutomatic(returnedMonth, true)
+    assert.equal(
+      dateKey(
+        new Date(
+          await returnedMonth.webContents.executeJavaScript(
+            `window.api.getNote(${lateNote.id}).then(note => note.effective_at)`
+          )
+        )
+      ),
+      dates.today,
+      '同日重新开启应补检查'
+    )
+    await wait(400)
+    await waitForPreview(returnedMonth, 2, dates.yesterday)
+    // 让每日检查尚未执行的状态进入真实唤醒链路。
+    const resumedNote = await returnedMonth.webContents.executeJavaScript(
+      `window.api.createNote({ content: '唤醒补检查', effectiveAt: ${timestamps.yesterday} })`
+    )
+    const resumeDb = new Database(join(testUserData, 'app.db'))
+    resumeDb
+      .prepare(
+        "DELETE FROM app_settings WHERE window_name = 'application' AND key = 'auto_move_last_date'"
+      )
+      .run()
+    resumeDb.close()
+    powerMonitor.emit('resume')
+    await waitUntil(
+      () =>
+        returnedMonth.webContents.executeJavaScript(
+          `window.api.getNote(${resumedNote.id}).then(note => note.effective_at >= ${localDate(0, 0).getTime()})`
+        ),
+      '开启后的系统唤醒没有补检查'
+    )
+    await wait(400)
+    await waitForPreview(returnedMonth, 2, dates.yesterday)
+    if (visualQaDirectory) {
+      await wait(320)
+      writeFileSync(
+        join(visualQaDirectory, 'automatic-move-enabled.png'),
+        (await returnedMonth.capturePage()).toPNG()
+      )
+    }
+
+    report(
+      'month/week manual moves, automatic exclusions, immediate toggle, shared settings and resume passed'
+    )
     app.exit(0)
   } catch (error) {
     report(`failed: ${error?.stack || error}`)

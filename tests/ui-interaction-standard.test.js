@@ -156,7 +156,7 @@ describe('UI interaction standard', () => {
     expect(grid).toContain('nextDayRange !== previousDayRange')
     expect(grid).not.toContain('class="month-day-cell__overflow"')
     expect(grid).not.toContain('点击日期查看全部')
-    expect(grid).toContain('右键此日期可预览全部')
+    expect(grid).toContain('点击预览全部')
     expect(eventBar).toContain(':data-segment-key="`${note.id}:${segment.weekIndex}`"')
     expect(standard).toContain('日期格底部整体作为快速新建入口')
     expect(standard).toContain('左下角常显的“+”')

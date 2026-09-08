@@ -1,0 +1,152 @@
+.notice-markdown {
+  min-width: 0;
+  color: var(--text-color);
+  font-size: var(--fs-body);
+  line-height: 1.72;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.notice-markdown-body > :first-child {
+  margin-top: 0;
+}
+.notice-markdown-body > :last-child {
+  margin-bottom: 0;
+}
+.notice-markdown p,
+.notice-markdown ul,
+.notice-markdown ol,
+.notice-markdown blockquote,
+.notice-markdown pre,
+.notice-markdown table {
+  margin: 0 0 0.85em;
+}
+.notice-markdown h1,
+.notice-markdown h2,
+.notice-markdown h3,
+.notice-markdown h4,
+.notice-markdown h5,
+.notice-markdown h6 {
+  margin: 1.1em 0 0.45em;
+  line-height: 1.4;
+  font-weight: 700;
+}
+.notice-markdown h1 {
+  font-size: 1.5em;
+}
+.notice-markdown h2 {
+  font-size: 1.3em;
+}
+.notice-markdown h3 {
+  font-size: 1.15em;
+}
+.notice-markdown h4,
+.notice-markdown h5,
+.notice-markdown h6 {
+  font-size: 1em;
+}
+.notice-markdown ul {
+  list-style: disc;
+  padding-left: 1.6em;
+}
+.notice-markdown ol {
+  list-style: decimal;
+  padding-left: 1.6em;
+}
+.notice-markdown li + li {
+  margin-top: 0.2em;
+}
+.notice-markdown li > ul,
+.notice-markdown li > ol {
+  margin-bottom: 0;
+}
+.notice-markdown blockquote {
+  padding: 0.2em 0 0.2em 0.9em;
+  border-left: 1px solid var(--ui-border-control);
+  color: var(--text-color-secondary);
+}
+.notice-markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+.notice-markdown a {
+  color: var(--ui-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+.notice-markdown a:focus-visible,
+.notice-markdown button:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}
+.notice-markdown code {
+  padding: 0.1em 0.3em;
+  border-radius: 0.25em;
+  background: var(--ui-surface-subtle);
+  font-family: var(--font-family-mono);
+  font-size: 0.9em;
+}
+.notice-markdown pre {
+  max-width: 100%;
+  padding: 0.8em;
+  overflow-x: auto;
+  border-radius: 0.4em;
+  background: var(--ui-surface-subtle);
+  white-space: pre;
+}
+.notice-markdown pre code {
+  padding: 0;
+  background: transparent;
+}
+.notice-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.notice-markdown th,
+.notice-markdown td {
+  padding: 0.35em 0.65em;
+  border: 1px solid var(--ui-border-divider);
+}
+.notice-markdown th {
+  background: var(--ui-surface-subtle);
+}
+.notice-markdown hr {
+  margin: 1em 0;
+  border: 0;
+  border-top: 1px solid var(--ui-border-divider);
+}
+.notice-markdown .markdown-image {
+  display: block;
+  max-width: 100%;
+  margin: 0.5em 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: zoom-in;
+}
+.notice-markdown .markdown-image img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.4em;
+}
+.notice-markdown .markdown-image img[hidden],
+.notice-markdown [hidden] {
+  display: none;
+}
+.notice-markdown .markdown-image:disabled {
+  cursor: default;
+}
+.notice-markdown .markdown-image-error,
+.notice-markdown .markdown-image-unavailable {
+  color: var(--text-color-secondary);
+  font-size: 0.9em;
+}
+.markdown-enlarged {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: auto;
+}
