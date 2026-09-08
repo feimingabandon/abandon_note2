@@ -1,4 +1,6 @@
 <script setup>
+import { popoverStyle, ownPopover, releasePopover } from '../../utils/anchoredPopover.js'
+import { isComposingInput } from '../../utils/inputComposition.js'
 /** 轻量标签选择器：外层优先展示当前选中标签，其余遵循全局手动顺序。 */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
@@ -22,6 +24,7 @@ const panelButtonRef = ref(null)
 const panelPosition = ref({ top: 0, left: 0, width: 320 })
 const panelQuery = ref('')
 const panelInputRef = ref(null)
+const panelRef = ref(null)
 const managerVisible = ref(false)
 const refreshSpinning = ref(false)
 let unsubscribeTagsChanged = null
@@ -131,22 +134,20 @@ async function onRefresh() {
 function updatePanelPosition() {
   const rect = panelButtonRef.value?.getBoundingClientRect()
   if (!rect) return
-  const width = Math.min(360, Math.max(286, window.innerWidth - 16))
-  panelPosition.value = {
-    top: rect.bottom + 6,
-    left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)),
-    width
-  }
+  panelPosition.value = popoverStyle(rect, 360, Math.min(420, panelRef.value?.scrollHeight || 420))
 }
 
 async function openPanel() {
   updatePanelPosition()
   panelOpen.value = true
   await nextTick()
+  updatePanelPosition()
+  ownPopover(panelRef.value, panelButtonRef.value)
   panelInputRef.value?.focus()
 }
 
 function closePanel() {
+  releasePopover(panelRef.value)
   panelOpen.value = false
   panelQuery.value = ''
 }
@@ -163,7 +164,35 @@ function onDocumentPointerDown(event) {
 }
 
 function onDocumentKeydown(event) {
-  if (event.key === 'Escape' && panelOpen.value) closePanel()
+  if (!panelOpen.value || isComposingInput(event)) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closePanel()
+    panelButtonRef.value?.focus()
+    return
+  }
+  if (event.key === 'Tab' && panelRef.value?.contains(event.target)) {
+    const items = [...panelRef.value.querySelectorAll('input, button:not(:disabled)')]
+    const index = items.indexOf(document.activeElement)
+    event.preventDefault()
+    const next = index + (event.shiftKey ? -1 : 1)
+    if (next < 0 || next >= items.length) {
+      closePanel()
+      panelButtonRef.value?.focus()
+    } else items[next]?.focus()
+    return
+  }
+  if (['ArrowDown', 'ArrowUp'].includes(event.key) && panelRef.value?.contains(event.target)) {
+    event.preventDefault()
+    const items = [...panelRef.value.querySelectorAll('input, button:not(:disabled)')]
+    const index = items.indexOf(document.activeElement)
+    items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus()
+  }
+}
+
+function onScroll(event) {
+  if (!panelRef.value?.contains(event.target)) updatePanelPosition()
 }
 
 async function openManager() {
@@ -188,7 +217,7 @@ onMounted(async () => {
   document.addEventListener('pointerdown', onDocumentPointerDown)
   document.addEventListener('keydown', onDocumentKeydown)
   window.addEventListener('resize', updatePanelPosition)
-  window.addEventListener('scroll', closePanel, true)
+  window.addEventListener('scroll', onScroll, true)
   await loadTags()
 })
 
@@ -199,7 +228,8 @@ onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown)
   document.removeEventListener('keydown', onDocumentKeydown)
   window.removeEventListener('resize', updatePanelPosition)
-  window.removeEventListener('scroll', closePanel, true)
+  releasePopover(panelRef.value)
+  window.removeEventListener('scroll', onScroll, true)
 })
 </script>
 
@@ -267,12 +297,9 @@ onBeforeUnmount(() => {
       >
         <section
           v-if="panelOpen"
+          ref="panelRef"
           class="ts-panel"
-          :style="{
-            top: `${panelPosition.top}px`,
-            left: `${panelPosition.left}px`,
-            width: `${panelPosition.width}px`
-          }"
+          :style="panelPosition"
           aria-label="全部标签"
         >
           <div class="ts-search">
@@ -495,6 +522,8 @@ onBeforeUnmount(() => {
   font-size: var(--fs-secondary);
 }
 .ts-panel-list {
+  min-height: 0;
+  flex: 1;
   min-height: 80rem;
   flex: 1;
   padding: 0 6rem 6rem;

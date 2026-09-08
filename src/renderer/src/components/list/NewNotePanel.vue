@@ -1,4 +1,5 @@
 <script setup>
+import { useDraftProtection } from '../../composables/useDraftProtection.js'
 /**
  * NewNotePanel.vue — 新建便签表单面板
  *
@@ -282,6 +283,7 @@ async function handleCreate() {
     })
     if (!created?.id) throw new Error('创建接口未返回便签')
 
+    protectedDraft.clear()
     submitState.value = 'success'
     showMessage(
       'success',
@@ -291,6 +293,7 @@ async function handleCreate() {
     await holdSuccessState()
     emit('create')
     resetForm()
+    protectedDraft.resume()
     submitState.value = 'idle'
     await nextTick()
     if (props.active) requestAnimationFrame(focusTextareaAtTop)
@@ -302,6 +305,21 @@ async function handleCreate() {
     if (submitState.value === 'creating') submitState.value = 'idle'
   }
 }
+const protectedDraft = useDraftProtection({
+  key: 'new:list',
+  fields: { content, effectiveAt, durationDays, notifyEnabled, isPinned, tagIds },
+  dirty: () =>
+    !!content.value ||
+    !!effectiveAt.value ||
+    durationDays.value !== 1 ||
+    notifyEnabled.value ||
+    isPinned.value ||
+    tagIds.value.length > 0 ||
+    (imagePickerRef.value?.getImages().length || 0) > 0,
+  busy: () => submitState.value === 'creating',
+  extra: () => ({ attachments: imagePickerRef.value?.getDraftChanges() }),
+  restoreExtra: (data) => imagePickerRef.value?.restoreDraft(data.attachments)
+})
 </script>
 
 <template>

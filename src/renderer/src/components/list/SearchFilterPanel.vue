@@ -32,9 +32,9 @@ let resetTimer = null
 let resetRaf = null
 
 const statusOptions = [
-  { value: 'initialized', label: '初始化', color: '#0a84ff' },
-  { value: 'in_progress', label: '进行中', color: '#ff9f0a' },
-  { value: 'completed', label: '已完成', color: '#30d158' }
+  { value: 'initialized', label: '待开始', color: 'var(--ui-status-pending)' },
+  { value: 'in_progress', label: '进行中', color: 'var(--ui-status-progress)' },
+  { value: 'completed', label: '已完成', color: 'var(--ui-status-completed)' }
 ]
 
 const timeOptions = [
@@ -234,7 +234,7 @@ onBeforeUnmount(() => {
   padding: 3rem 5rem;
   border: 0;
   background: transparent;
-  color: #0a84ff;
+  color: var(--ui-status-pending);
   font: inherit;
   font-size: inherit;
   cursor: pointer;
@@ -249,13 +249,13 @@ onBeforeUnmount(() => {
     transform 160ms var(--ease-standard);
 }
 .sfp-reset:hover {
-  background: color-mix(in srgb, #0a84ff 8%, transparent);
+  background: color-mix(in srgb, var(--ui-status-pending) 8%, transparent);
 }
 .sfp-reset:active {
   transform: scale(0.98);
 }
 .sfp-reset.is-acknowledged {
-  background: color-mix(in srgb, #0a84ff 11%, transparent);
+  background: color-mix(in srgb, var(--ui-status-pending) 11%, transparent);
   transform: scale(1);
 }
 .sfp-reset-label-enter-active,

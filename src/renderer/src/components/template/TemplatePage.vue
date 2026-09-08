@@ -342,6 +342,7 @@ function requestCloseEdit() {
 }
 
 function discardEdit() {
+  editFormRef.value?.clearDraft()
   closeEdit()
 }
 
@@ -412,6 +413,7 @@ async function saveEdit(payload) {
   try {
     await window.api.updateTemplate(editedId, payload)
     if (requestSequence !== saveEditSequence) return
+    editFormRef.value?.clearDraft()
     if (isTemplateEditTarget(editing.value, editedId)) editing.value = null
     showMessage('success', '模板修改已保存')
     await refreshInBackground({ before, reenterIds: [editedId] })

@@ -357,7 +357,23 @@ function addImage(dataUrl, ext, name, size) {
   }
 }
 
-defineExpose({ getImages, getDraftChanges, clearImages, addImage, images })
+async function restoreDraft(draft) {
+  if (!draft) return
+  await loadImages()
+  deletedImageIds.value = [...(draft.deletedImageIds || [])]
+  images.value = images.value.filter((image) => !deletedImageIds.value.includes(image.id))
+  for (const image of draft.addedImages || []) {
+    addImage(
+      'data:image/' + image.ext + ';base64,' + image.base64,
+      image.ext,
+      image.name,
+      image.size
+    )
+  }
+  emitDraftChange()
+}
+
+defineExpose({ restoreDraft, getImages, getDraftChanges, clearImages, addImage, images })
 
 // ============================================================
 // noteId 变化时重新加载

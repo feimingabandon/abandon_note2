@@ -1,4 +1,6 @@
 <script setup>
+import { isComposingInput } from '../../utils/inputComposition.js'
+import { useDraftProtection } from '../../composables/useDraftProtection.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import MonthEventBar from './MonthEventBar.vue'
 import { animateCalendarPreview, calendarPreviewPosition } from './calendar-day-preview.js'
@@ -434,6 +436,7 @@ function onQuickCreatorFocusOut(day, event) {
 }
 
 function onQuickInputKeydown(event, day) {
+  if (isComposingInput(event)) return
   if (event.key === 'Escape') {
     event.preventDefault()
     closeQuickCreator({ restoreFocus: true })
@@ -693,6 +696,16 @@ onBeforeUnmount(() => {
   closeContextMenu()
   closeDayPreview()
   cancelEventBarMotion()
+})
+useDraftProtection({
+  key: 'calendar:quick',
+  fields: {},
+  dirty: () => [...quickDrafts.values()].some((value) => !!value),
+  busy: () => quickSavingKeys.size > 0,
+  extra: () => ({ drafts: [...quickDrafts] }),
+  restoreExtra: (data) => {
+    for (const [key, value] of data.drafts || []) quickDrafts.set(key, value)
+  }
 })
 </script>
 

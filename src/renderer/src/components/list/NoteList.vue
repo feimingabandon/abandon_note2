@@ -218,7 +218,7 @@ function onPanelClick(value) {
 
 /** 状态筛选项 */
 const statusOptions = [
-  { value: 'initialized', label: '初始化' },
+  { value: 'initialized', label: '待开始' },
   { value: 'in_progress', label: '进行中' },
   { value: 'completed', label: '完成' }
 ]
@@ -1029,7 +1029,7 @@ function finishStatusTransition(noteId, delay, callback) {
   })
 }
 
-/** 初始化便签先确认提前执行；其他状态保持原有单击流程。 */
+/** 待开始便签先确认提前执行；其他状态保持原有单击流程。 */
 function onCardStatusAction(note) {
   if (note.status === 'initialized') {
     earlyStartNote.value = note
@@ -1049,7 +1049,7 @@ function cancelEarlyStart() {
   earlyStartNote.value = null
 }
 
-/** 状态圆环的主操作：初始化提前开始，进行中标记完成，已完成重新进行。 */
+/** 状态圆环的主操作：待开始提前开始，进行中标记完成，已完成重新进行。 */
 async function executeCardStatusAction(note) {
   if (statusTransitions.has(note.id)) return
   const from = note.status

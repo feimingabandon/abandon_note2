@@ -1,3 +1,4 @@
+import { ownedPopovers } from './anchoredPopover.js'
 const FOCUSABLE_SELECTOR = [
   'button:not(:disabled)',
   'input:not(:disabled)',
@@ -30,9 +31,10 @@ export function restoreFocusedElement(element) {
 
 export function trapModalTab(event, root) {
   if (event.key !== 'Tab' || !root) return
-  const focusable = [...root.querySelectorAll(FOCUSABLE_SELECTOR)].filter(
-    (element) => isHTMLElement(element) && element.getClientRects().length > 0
-  )
+  const surfaces = [root, ...ownedPopovers(root)]
+  const focusable = surfaces
+    .flatMap((surface) => [...surface.querySelectorAll(FOCUSABLE_SELECTOR)])
+    .filter((element) => isHTMLElement(element) && element.getClientRects().length > 0)
   if (!focusable.length) {
     event.preventDefault()
     root.focus({ preventScroll: true })
@@ -42,7 +44,8 @@ export function trapModalTab(event, root) {
   const last = focusable[focusable.length - 1]
   if (
     event.shiftKey &&
-    (document.activeElement === first || !root.contains(document.activeElement))
+    (document.activeElement === first ||
+      !surfaces.some((surface) => surface.contains(document.activeElement)))
   ) {
     event.preventDefault()
     last.focus({ preventScroll: true })

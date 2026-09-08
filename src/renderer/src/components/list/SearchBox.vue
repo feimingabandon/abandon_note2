@@ -1,4 +1,5 @@
 <script setup>
+import { isComposingInput } from '../../utils/inputComposition.js'
 /** SearchBox.vue — 独立搜索工作区，不改变首页列表状态。 */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import SearchFilterPanel from './SearchFilterPanel.vue'
@@ -253,6 +254,7 @@ function onDateRangeChange({ start, end }) {
 }
 
 function onInputKeydown(event) {
+  if (isComposingInput(event)) return
   if (event.key === 'Enter') {
     event.preventDefault()
     submitSearch()

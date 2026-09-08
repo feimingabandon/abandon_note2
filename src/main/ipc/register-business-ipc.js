@@ -18,6 +18,7 @@ import {
   queryTagGroupNotes,
   queryTagGroups,
   reopenNote,
+  restoreNote,
   reorderCustomSortOrder,
   searchNotes,
   startProgress,
@@ -181,7 +182,17 @@ export function registerBusinessIpcHandlers({
     }
   })
 
-  ipcMain.handle('notes:update', (_event, { id, fields }) => {
+  ipcMain.handle('notes:restore', (_event, { id }) =>
+    broadcastNoteChange('restore', restoreNote(id), { id })
+  )
+
+  ipcMain.handle('notes:update', (_event, { id, fields, expectedContent }) => {
+    if (expectedContent !== undefined) {
+      const current = getNoteById(id)
+      if (!current) throw new Error('便签不存在或已被删除')
+      if (current.content !== expectedContent)
+        throw new Error('便签正文已被其他操作修改，草稿已保留。请复制草稿或加载最新正文后重试。')
+    }
     return broadcastNoteChange('update', updateNote(id, enforceNotificationPolicy(fields)), { id })
   })
 

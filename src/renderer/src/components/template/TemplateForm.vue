@@ -1,4 +1,5 @@
 <script setup>
+import { useDraftProtection } from '../../composables/useDraftProtection.js'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import TagSelector from '../ui/TagSelector.vue'
@@ -261,16 +262,37 @@ function submit() {
 }
 
 function reset() {
+  protectedDraft.clear()
+  protectedDraft.resume()
   const sequence = ++initialLoadSequence
   loadInitial(null)
   nextTick(() => {
     if (sequence === initialLoadSequence) initialSnapshot.value = currentSnapshot.value
   })
 }
-defineExpose({ reset, hasChanges })
+defineExpose({ reset, hasChanges, clearDraft: () => protectedDraft.clear() })
 onBeforeUnmount(() => {
   clearTimeout(previewTimer)
   cancelEntrance()
+})
+const protectedDraft = useDraftProtection({
+  key: 'template:' + (props.initial?.id || 'new'),
+  fields: {
+    content,
+    frequency,
+    interval,
+    weekdays,
+    monthDays,
+    quarterMonth,
+    quarterDays,
+    yearDates,
+    timeOfDay,
+    notifyEnabled,
+    isPinned,
+    tagIds
+  },
+  dirty: () => hasChanges.value,
+  busy: () => props.submitting
 })
 </script>
 

@@ -66,12 +66,12 @@ const emit = defineEmits(['click'])
 
 /* ---- 变体 ---- */
 .btn--primary {
-  background-color: #0071e3;
-  border-color: #0071e3;
-  color: var(--text-color);
+  background-color: var(--ui-primary);
+  border-color: var(--ui-primary);
+  color: var(--ui-on-primary);
 }
 .btn--primary:hover:not(:disabled) {
-  background-color: #0077ed;
+  background-color: var(--ui-primary-hover);
 }
 
 .btn--danger {

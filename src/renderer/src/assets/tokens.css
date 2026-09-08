@@ -122,6 +122,13 @@ html.month-view {
   --ui-fill-pressed: color-mix(in srgb, var(--text-color) 10%, transparent);
 
   /* ---- 交互语义色 ---- */
+  --ui-primary: #0071e3;
+  --ui-primary-hover: #0064c8;
+  --ui-on-primary: #fff;
+  --ui-status-pending: #0a84ff;
+  --ui-status-progress: #ff9f0a;
+  --ui-status-completed: #30d158;
+  --ui-danger: #ff453a;
   --ui-accent: #0a84ff;
   --ui-accent-subtle: color-mix(in srgb, var(--ui-accent) 15%, transparent);
   --ui-warning: rgb(255, 149, 0);
@@ -280,4 +287,29 @@ html.is-system-glass-active .month-root.app-bg {
 .is-ui-background-blurred {
   filter: blur(var(--bg-blur));
   will-change: filter;
+}
+
+/* Keyboard focus remains visible even when individual controls reset outline. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}
+/* Stable gutters expose long content without changing width on hover. */
+.scroll-y {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ui-border-hover) transparent;
+  scrollbar-gutter: stable;
+}
+.scroll-y::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+  height: 6px;
+}
+.scroll-y::-webkit-scrollbar-thumb {
+  background: var(--ui-border-hover);
+  border-radius: 6px;
 }

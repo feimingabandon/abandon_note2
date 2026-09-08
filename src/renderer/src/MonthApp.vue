@@ -1,11 +1,12 @@
 <script setup>
+import { defineAsyncComponent } from 'vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
 import ViewSwitcher from './components/system/ViewSwitcher.vue'
 import CompactWindowScene from './components/system/CompactWindowScene.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue'
-import SettingsPanel from './components/system/SettingsPanel.vue'
+const SettingsPanel = defineAsyncComponent(() => import('./components/system/SettingsPanel.vue'))
 import MessageToast from './components/system/MessageToast.vue'
 import MonthWorkspace from './components/month/MonthWorkspace.vue'
 import UpdateDialog from './components/system/UpdateDialog.vue'
@@ -15,8 +16,8 @@ import HolidayDataNoticeDialog from './components/system/HolidayDataNoticeDialog
 import DailyReportDialog from './components/report/DailyReportDialog.vue'
 import DailyReportButton from './components/report/DailyReportButton.vue'
 import AppIcon from './components/ui/AppIcon.vue'
-import TemplatePage from './components/template/TemplatePage.vue'
-import HelpPage from './components/help/HelpPage.vue'
+const TemplatePage = defineAsyncComponent(() => import('./components/template/TemplatePage.vue'))
+const HelpPage = defineAsyncComponent(() => import('./components/help/HelpPage.vue'))
 import { createMessageProvider } from './composables/useMessage.js'
 import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
 import { useTodayKey } from './composables/useTodayKey.js'

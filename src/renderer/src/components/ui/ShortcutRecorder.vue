@@ -1,4 +1,5 @@
 <script setup>
+import { isComposingInput } from '../../utils/inputComposition.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   formatViewVisibilityShortcut,
@@ -155,6 +156,7 @@ async function recordCandidate(accelerator, display) {
 }
 
 function onKeydown(event) {
+  if (isComposingInput(event)) return
   if (!isCapturing.value) return
   event.preventDefault()
   event.stopPropagation()

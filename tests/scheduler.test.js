@@ -108,7 +108,8 @@ describe('scheduler context', () => {
       name: 'blurRuntimeDiagnosticTask',
       failures: 0,
       disabled: false,
-      lastError: null
+      lastError: null,
+      nextRetryAt: null
     })
   })
 

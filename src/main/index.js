@@ -1,3 +1,5 @@
+import { installRendererRecovery } from './windows/renderer-recovery.js'
+import { createEditingDraftGuard } from './windows/editing-draft-guard.js'
 /**
  * index.js — Electron 主进程入口文件
  *
@@ -1589,7 +1591,12 @@ function initializeBlurRuntime() {
 
 function broadcastSettingsChanged(snapshot = getResolvedSettingsSnapshot()) {
   for (const window of getApplicationWindows()) {
-    if (!window.webContents.isDestroyed()) window.webContents.send('settings:changed', snapshot)
+    if (
+      !window.webContents.isDestroyed() &&
+      !window.webContents.isCrashed() &&
+      !window.webContents.isLoadingMainFrame()
+    )
+      window.webContents.send('settings:changed', snapshot)
   }
 }
 
@@ -2381,6 +2388,16 @@ function createWindow({ preferredDisplay = null } = {}) {
     }
   })
   const createdWindow = mainWindow
+  installRendererRecovery(createdWindow, {
+    dialog,
+    logger,
+    openDiagnostics: () => shell.openPath(getLogDirectory()),
+    canRecover: () => !isQuitting && !switchingMainView,
+    restart: () => {
+      app.relaunch()
+      app.quit()
+    }
+  })
   compactWindowController.initializeForWindow(createdWindow, createCompact ? 'compact' : 'expanded')
   const mainSession = mainWindow.webContents.session
   const allowMainWindowGeolocation = (webContents, permission) =>
@@ -3900,7 +3917,22 @@ function prepareCompactWindowForReplacement(window) {
 }
 
 /** 销毁当前唯一主视图并使用另一套独立设置创建目标视图。 */
-function switchMainView(targetMode) {
+const confirmEditingDrafts = createEditingDraftGuard({ dialog, logger })
+let checkingViewDrafts = false
+let quitDraftsApproved = false
+let checkingQuitDrafts = false
+
+async function switchMainView(targetMode) {
+  if (checkingViewDrafts || checkingQuitDrafts) return false
+  if (normalizeViewMode(targetMode) === activeViewMode) return false
+  checkingViewDrafts = true
+  let allowed
+  try {
+    allowed = await confirmEditingDrafts(mainWindow, '切换视图')
+  } finally {
+    checkingViewDrafts = false
+  }
+  if (!allowed) return false
   const normalized = normalizeViewMode(targetMode)
   if (switchingMainView) return false
   if (compactWindowController.activePromise()) {
@@ -4054,7 +4086,7 @@ if (process.env.ABANDON_INTEGRATION_TEST === '1') {
 // ============================================================
 // 应用就绪后的初始化逻辑
 // ============================================================
-app.whenReady().then(async () => {
+const startupPromise = app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return
 
   if (
@@ -4905,6 +4937,8 @@ app.whenReady().then(async () => {
   // 3.3 生效便签激活任务（含通知）
   scheduler.register({
     name: 'activationTask',
+    maxFailures: Infinity,
+    retryBackoff: true,
     shouldRun: () => true,
     execute: (context) => {
       const result = activateNotes()
@@ -5042,11 +5076,11 @@ app.whenReady().then(async () => {
     const counts = getDb()
       .prepare(
         `SELECT
-           (SELECT COUNT(*) FROM notes) AS notes,
-           (SELECT COUNT(*) FROM note_templates) AS templates,
-           (SELECT COUNT(*) FROM tags) AS tags,
-           (SELECT COUNT(*) FROM note_attachments) AS attachments,
-           (SELECT COUNT(*) FROM desktop_stickies) AS desktopStickies`
+         (SELECT COUNT(*) FROM notes) AS notes,
+         (SELECT COUNT(*) FROM note_templates) AS templates,
+         (SELECT COUNT(*) FROM tags) AS tags,
+         (SELECT COUNT(*) FROM note_attachments) AS attachments,
+         (SELECT COUNT(*) FROM desktop_stickies) AS desktopStickies`
       )
       .get()
     await clearNoteData()
@@ -5154,6 +5188,11 @@ app.whenReady().then(async () => {
   // ---- 调度器健康检查 IPC ----
 
   // 【调度器 - 健康检查】
+  mainWindowIpc.handle('scheduler:retry', () => {
+    scheduler.retryFailed()
+    return scheduler.getHealth()
+  })
+
   mainWindowIpc.handle('scheduler:health', () => {
     return scheduler.getHealth()
   })
@@ -5175,9 +5214,31 @@ app.whenReady().then(async () => {
     openMainWindow()
   })
 })
+startupPromise.catch((error) => {
+  logger.error('startup.failed', error)
+  dialog.showErrorBox(
+    'Abandon 便签启动失败',
+    '无法完成初始化，原有数据未被自动清除。请检查磁盘空间与目录权限后重启。\n\n' +
+      (error?.message || String(error))
+  )
+  app.quit()
+})
 
 // 应用退出前关闭数据库连接和贴边资源，确保数据安全
 app.on('before-quit', (event) => {
+  if (!quitDraftsApproved && mainWindow && !mainWindow.isDestroyed()) {
+    event.preventDefault()
+    if (checkingQuitDrafts || checkingViewDrafts) return
+    checkingQuitDrafts = true
+    void confirmEditingDrafts(mainWindow, '退出').then((allowed) => {
+      checkingQuitDrafts = false
+      if (allowed) {
+        quitDraftsApproved = true
+        app.quit()
+      } else isQuitting = false
+    })
+    return
+  }
   if (!shutdownStartedAt) {
     shutdownStartedAt = Date.now()
     shutdownTrigger = shutdownTrigger || (isQuitting ? 'user-request' : 'system-or-programmatic')

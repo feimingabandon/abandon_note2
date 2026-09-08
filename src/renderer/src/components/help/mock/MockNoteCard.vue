@@ -20,7 +20,7 @@ defineProps({
 })
 
 const STATUS_LABEL = {
-  initialized: '初始化',
+  initialized: '待开始',
   in_progress: '进行中',
   completed: '已完成'
 }
@@ -33,7 +33,7 @@ const STATUS_LABEL = {
       <p class="mc-text">{{ content }}</p>
       <div class="mc-meta">
         <div class="mc-context">
-          <span class="mc-status">{{ STATUS_LABEL[status] || '初始化' }}</span>
+          <span class="mc-status">{{ STATUS_LABEL[status] || '待开始' }}</span>
           <span class="mc-sep">·</span>
           <span class="mc-time">{{ timeText }}</span>
         </div>

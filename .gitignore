@@ -21,3 +21,7 @@ CMakeFiles/
 # 内部发布流程文档，不上传仓库
 docs/完整发布流程.md
 docs/发布构建与应用更新流程.md
+
+# Local QA snapshots and native transition build artifacts
+/tmp/
+/native_blur/build-transition/

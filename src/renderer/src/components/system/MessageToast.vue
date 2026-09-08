@@ -14,6 +14,7 @@ const { messages, closeMessage } = useMessage()
 
 /** 图标映射 */
 const iconMap = {
+  info: 'i',
   success: '✓',
   error: '✕',
   warning: '!'
@@ -21,6 +22,7 @@ const iconMap = {
 
 /** 图标颜色映射 */
 const colorMap = {
+  info: 'var(--ui-accent)',
   success: '#30d158', // Apple 系统绿
   error: '#ff453a', // Apple 系统红
   warning: '#ff9f0a' // Apple 系统橙

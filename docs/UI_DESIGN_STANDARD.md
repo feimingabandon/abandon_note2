@@ -140,6 +140,13 @@
 
 ## 5. 提交前检查
 
+### 本轮补充的公共交互令牌
+
+- `--ui-primary` / `--ui-primary-hover` / `--ui-on-primary` 必须成对用于实心主按钮，前景不继承用户自定义正文色。
+- 状态使用 `--ui-status-pending`、`--ui-status-progress`、`--ui-status-completed`，危险操作使用 `--ui-danger`；数据库状态枚举不变，`initialized` 面向用户显示为“待开始”。
+- 可聚焦控件必须保留 `:focus-visible` 焦点环；高频选择浮层遵守视口约束、键盘移动、Escape 关闭和触发器焦点恢复。
+- `.scroll-y` 长内容使用可拖动的细滚动条和稳定槽位；动效继续使用现有 `--motion-fast`、`--motion-control`、`--motion-panel`，不新增系统级动效偏好处理。
+
 - [ ] 没有新增 `1rem solid` 形式的组件细线。
 - [ ] 没有新增固定中性灰色作为常态表面。
 - [ ] 有边线控件没有在悬停时切换成独立灰底。

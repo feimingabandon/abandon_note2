@@ -1,4 +1,5 @@
 <script setup>
+import { useDraftProtection } from '../../composables/useDraftProtection.js'
 import { nextTick, onBeforeUnmount, onMounted, reactive, ref, useId } from 'vue'
 import { useMessage } from '../../composables/useMessage.js'
 
@@ -12,7 +13,9 @@ const hintId = useId()
 
 const editorRef = ref(null)
 const textareaRef = ref(null)
-const draft = ref(String(props.note.content || ''))
+const originalContent = ref(String(props.note.content || ''))
+const draft = ref(originalContent.value)
+const conflict = ref(false)
 const positionStyle = reactive({ left: '12px', top: '12px', visibility: 'hidden' })
 const phase = ref('editing')
 let pendingSave = null
@@ -53,6 +56,7 @@ function focusEditor() {
 
 function closeEditor() {
   if (phase.value === 'closed') return
+  protectedDraft.clear()
   phase.value = 'closed'
   emit('close')
 }
@@ -60,7 +64,7 @@ function closeEditor() {
 async function commit() {
   if (phase.value === 'closed') return true
   if (phase.value === 'saving') return pendingSave
-  if (phase.value === 'invalid') return false
+  if (phase.value === 'invalid' || conflict.value) return false
 
   const content = draft.value.replace(/\r\n?/g, '\n')
   if (!content.trim()) {
@@ -74,14 +78,14 @@ async function commit() {
     }, 0)
     return false
   }
-  if (content === String(props.note.content || '')) {
+  if (content === originalContent.value) {
     closeEditor()
     return true
   }
 
   phase.value = 'saving'
   pendingSave = window.api
-    .updateNote(props.note.id, { content })
+    .updateNote(props.note.id, { content }, originalContent.value)
     .then((updated) => {
       if (!updated) throw new Error('便签不存在或已被删除')
       showMessage('success', '便签已保存')
@@ -92,6 +96,7 @@ async function commit() {
     .catch(async (error) => {
       console.error('[QuickNoteContentEditor] 保存失败:', props.note.id, error)
       phase.value = 'editing'
+      conflict.value = true
       showMessage('error', error.message || '保存失败，请重试')
       await nextTick()
       if (mounted) focusEditor()
@@ -144,6 +149,39 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', onViewportChange)
   window.removeEventListener('scroll', onViewportChange, true)
 })
+const protectedDraft = useDraftProtection({
+  key: 'quick:' + props.note.id,
+  fields: { draft, originalContent },
+  dirty: () => draft.value !== originalContent.value,
+  busy: () => phase.value === 'saving'
+})
+function retrySave() {
+  conflict.value = false
+  void commit()
+}
+
+async function loadLatest() {
+  try {
+    const current = await window.api.getNote(props.note.id)
+    if (!current) {
+      showMessage('error', '便签已删除，草稿仍保留')
+      return
+    }
+    originalContent.value = current.content
+    draft.value = current.content
+    conflict.value = false
+  } catch (error) {
+    showMessage('error', error.message || '加载失败，草稿仍保留')
+  }
+}
+async function copyDraft() {
+  try {
+    await navigator.clipboard.writeText(draft.value)
+    showMessage('success', '草稿已复制')
+  } catch {
+    showMessage('error', '复制失败，请选中正文手动复制')
+  }
+}
 </script>
 
 <template>
@@ -166,6 +204,12 @@ onBeforeUnmount(() => {
           :disabled="phase === 'saving'"
           spellcheck="true"
         />
+        <div v-if="conflict" class="quick-note-editor__recovery">
+          <span>保存未完成，草稿已保留。</span>
+          <button type="button" @click="copyDraft">复制草稿</button>
+          <button type="button" @click="retrySave">重试保存</button>
+          <button type="button" @click="loadLatest">放弃草稿并加载最新正文</button>
+        </div>
         <div :id="hintId" class="quick-note-editor__hint" aria-live="polite">
           {{ phase === 'saving' ? '正在保存…' : '失焦自动保存 · Esc 取消' }}
         </div>
@@ -175,6 +219,29 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.quick-note-editor__recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px;
+}
+.quick-note-editor__recovery span {
+  flex-basis: 100%;
+  color: var(--text-color-secondary);
+}
+.quick-note-editor__recovery button {
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--ui-fill-passive);
+  color: var(--text-color);
+  font: inherit;
+  cursor: pointer;
+}
+.quick-note-editor__recovery button:hover {
+  background: var(--ui-fill-hover);
+}
+
 .quick-note-editor {
   position: fixed;
   z-index: var(--z-global-editor);

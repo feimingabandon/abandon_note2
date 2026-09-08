@@ -83,6 +83,7 @@ export function queryDailyReportNotes({
   if (normalizedStatuses.length === 0) return []
 
   const candidates = queryCalendarNotes({
+    hydrate: false,
     candidateFrom: localMidnightTimestamp(addCalendarDays(range.startDateKey, -364)),
     visibleEndExclusive: localMidnightTimestamp(addCalendarDays(range.endDateKey, 1))
   })

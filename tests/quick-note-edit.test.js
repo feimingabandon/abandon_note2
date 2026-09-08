@@ -7,7 +7,7 @@ describe('双击快速编辑正文', () => {
   it('uses one shared editor with blur-save, escape-cancel and semantic Apple-style tokens', () => {
     const editor = read('../src/renderer/src/components/note/QuickNoteContentEditor.vue')
 
-    expect(editor).toContain('.updateNote(props.note.id, { content })')
+    expect(editor).toContain('.updateNote(props.note.id, { content }, originalContent.value)')
     expect(editor).toContain('@focusout="onFocusOut"')
     expect(editor).toContain("window.addEventListener('blur', commit)")
     expect(editor).toContain('@keydown.esc="cancel"')

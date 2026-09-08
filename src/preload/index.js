@@ -171,7 +171,8 @@ const api = {
   createNoteWithAssets: ({ options, images, tagIds }) =>
     ipcRenderer.invoke('notes:create-with-assets', { options, images, tagIds }),
   /** 更新便签（部分字段） */
-  updateNote: (id, fields) => ipcRenderer.invoke('notes:update', { id, fields }),
+  updateNote: (id, fields, expectedContent) =>
+    ipcRenderer.invoke('notes:update', { id, fields, expectedContent }),
   /** 原子保存编辑草稿（字段、标签及附件变更） */
   saveNoteDraft: (payload) => ipcRenderer.invoke('notes:save-draft', payload),
   /** 逻辑删除便签（附件随记录保留，清空便签数据时物理清理） */
@@ -179,6 +180,7 @@ const api = {
   /** 彻底删除便签及其附件文件（不可恢复） */
   purgeNote: (id) => ipcRenderer.invoke('notes:purge', { id }),
   /** 获取单条便签（含附件和标签） */
+  restoreNote: (id) => ipcRenderer.invoke('notes:restore', { id }),
   getNote: (id) => ipcRenderer.invoke('notes:get', { id }),
   /** 基于有效便签正文创建一次性桌面便利贴；正文由主进程重新读取。 */
   createSticky: (noteId) => ipcRenderer.invoke('sticky:create', { noteId }),
@@ -357,6 +359,7 @@ const api = {
 
   // ---- 调度器健康检查 ----
   /** 获取调度器健康状态 */
+  retryScheduler: () => ipcRenderer.invoke('scheduler:retry'),
   getSchedulerHealth: () => ipcRenderer.invoke('scheduler:health')
 }
 

@@ -1,4 +1,5 @@
 <script setup>
+import { useDraftProtection } from '../../composables/useDraftProtection.js'
 import { computed, onBeforeUnmount, ref } from 'vue'
 import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import TimePicker from '../ui/TimePicker.vue'
@@ -80,6 +81,11 @@ function requestClose() {
   else emit('close')
 }
 
+function discardDraft() {
+  protectedDraft.clear()
+  emit('close')
+}
+
 async function create() {
   if (saving.value) return
   if (!content.value.trim()) {
@@ -116,6 +122,7 @@ async function create() {
     })
     if (!created?.id) throw new Error('创建接口未返回便签')
     showMessage('success', isHistoricalBackfill.value ? '历史便签补录成功' : '便签已创建')
+    protectedDraft.clear()
     emit('created', created)
   } catch (error) {
     console.error('[MonthNoteCreator] 创建失败:', error)
@@ -130,6 +137,14 @@ onBeforeUnmount(() => {
 })
 
 defineExpose({ requestClose })
+const protectedDraft = useDraftProtection({
+  key: 'new:calendar:' + props.dateKey,
+  fields: { content, time, timeDirty, durationDays, notifyEnabled, isPinned, tagIds },
+  dirty: () => dirty.value,
+  busy: () => saving.value,
+  extra: () => ({ attachments: imagePickerRef.value?.getDraftChanges() }),
+  restoreExtra: (data) => imagePickerRef.value?.restoreDraft(data.attachments)
+})
 </script>
 
 <template>
@@ -227,7 +242,7 @@ defineExpose({ requestClose })
       message="当前填写的正文、属性或附件尚未保存。"
       confirm-text="放弃"
       variant="danger"
-      @confirm="emit('close')"
+      @confirm="discardDraft"
     />
   </section>
 </template>

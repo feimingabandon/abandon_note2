@@ -1,4 +1,6 @@
 <script setup>
+import { popoverStyle, ownPopover, releasePopover } from '../../utils/anchoredPopover.js'
+import { isComposingInput } from '../../utils/inputComposition.js'
 /**
  * StyledSelect.vue — 自定义下拉选择组件
  *
@@ -68,14 +70,11 @@ function toggle() {
 function updatePanelPosition() {
   if (!wrapperRef.value) return
   const rect = wrapperRef.value.getBoundingClientRect()
-  panelStyle.value = {
-    position: 'fixed',
-    top: rect.bottom + 4 + 'px',
-    left: rect.left + 'px',
-    minWidth: rect.width + 'px',
-    // Teleport 到 body 后统一进入全局 Popover 层，可覆盖普通编辑器与 AppModalShell。
-    zIndex: 'var(--z-global-popover)'
-  }
+  panelStyle.value = popoverStyle(
+    rect,
+    Math.max(rect.width, panelRef.value?.scrollWidth || rect.width),
+    Math.min(320, panelRef.value?.scrollHeight || 256)
+  )
 }
 
 function select(opt) {
@@ -83,8 +82,45 @@ function select(opt) {
   emit('update:modelValue', opt.value)
   emit('change', opt)
   open.value = false
+  wrapperRef.value?.querySelector('button')?.focus({ preventScroll: true })
 }
 
+function onPanelKeydown(event) {
+  if (isComposingInput(event)) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    open.value = false
+    wrapperRef.value?.querySelector('button')?.focus()
+    return
+  }
+  const options = [...(panelRef.value?.querySelectorAll('button:not(:disabled)') || [])]
+  const index = options.indexOf(document.activeElement)
+  if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault()
+    const target =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? options.length - 1
+          : (index + (event.key === 'ArrowUp' ? -1 : 1) + options.length) % options.length
+    options[target]?.focus()
+  }
+  if (event.key === 'Tab') {
+    event.preventDefault()
+    open.value = false
+    wrapperRef.value?.querySelector('button')?.focus()
+  }
+}
+function onTriggerKeydown(event) {
+  if (isComposingInput(event) || !['ArrowDown', 'ArrowUp'].includes(event.key)) return
+  event.preventDefault()
+  if (!open.value) toggle()
+  nextTick(() => panelRef.value?.querySelector('button:not(:disabled)')?.focus())
+}
+function onScroll(event) {
+  if (!panelRef.value?.contains(event.target)) updatePanelPosition()
+}
 function onEnter(el, done) {
   enterPopover(el, done, 'dropdown')
 }
@@ -104,9 +140,18 @@ function onDocClick(e) {
 // 面板打开时监听窗口 resize，保持定位跟随
 watch(open, (val) => {
   if (val) {
-    nextTick(() => updatePanelPosition())
+    nextTick(() => {
+      updatePanelPosition()
+      ownPopover(panelRef.value, wrapperRef.value)
+      panelRef.value
+        ?.querySelector('button.is-active:not(:disabled), button:not(:disabled)')
+        ?.focus({ preventScroll: true })
+    })
+    window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', updatePanelPosition)
   } else {
+    releasePopover(panelRef.value)
+    window.removeEventListener('scroll', onScroll, true)
     window.removeEventListener('resize', updatePanelPosition)
   }
 })
@@ -115,6 +160,8 @@ onMounted(() => {
   document.addEventListener('click', onDocClick, true)
 })
 onBeforeUnmount(() => {
+  releasePopover(panelRef.value)
+  window.removeEventListener('scroll', onScroll, true)
   document.removeEventListener('click', onDocClick, true)
   window.removeEventListener('resize', updatePanelPosition)
 })
@@ -131,6 +178,7 @@ onBeforeUnmount(() => {
       aria-haspopup="listbox"
       :aria-expanded="open"
       @click="toggle"
+      @keydown="onTriggerKeydown"
     >
       <span class="sel-label" :class="{ 'is-placeholder': !modelValue && modelValue !== 0 }">
         {{ displayLabel }}
@@ -148,13 +196,22 @@ onBeforeUnmount(() => {
 
     <Teleport to="body">
       <Transition :css="false" @enter="onEnter" @leave="onLeave">
-        <div v-if="open" ref="panelRef" class="sel-panel-wrap" :style="panelStyle" @click.stop>
+        <div
+          v-if="open"
+          ref="panelRef"
+          class="sel-panel-wrap"
+          :style="panelStyle"
+          @keydown="onPanelKeydown"
+          @click.stop
+        >
           <div class="sel-panel-glass">
-            <div class="sel-panel scroll-y">
+            <div class="sel-panel scroll-y" role="listbox" :aria-label="ariaLabel || displayLabel">
               <button
                 v-for="opt in options"
                 :key="opt.value"
                 class="sel-option"
+                role="option"
+                :aria-selected="modelValue === opt.value"
                 :class="{ 'is-active': modelValue === opt.value, 'is-disabled': opt.disabled }"
                 :data-value="String(opt.value)"
                 :disabled="opt.disabled"
@@ -193,7 +250,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
   outline: none;
   transition:
-    background-color 160ms ease,
+    background-color var(--motion-control) ease,
     border-color 160ms ease;
 }
 .sel-trigger:hover:not(.is-disabled) {
@@ -223,7 +280,7 @@ onBeforeUnmount(() => {
   opacity: 0.45;
   color: var(--text-color);
   transition:
-    transform 200ms ease,
+    transform var(--motion-control) ease,
     opacity 160ms ease;
 }
 .sel-trigger:hover:not(.is-disabled) .sel-arrow,
@@ -250,7 +307,7 @@ onBeforeUnmount(() => {
 }
 .sel-panel {
   padding: 4rem 0;
-  max-height: 256rem;
+  max-height: calc(var(--popover-available-height) - 2px);
 }
 
 .sel-option {
@@ -266,14 +323,14 @@ onBeforeUnmount(() => {
   cursor: pointer;
   white-space: nowrap;
   outline: none;
-  transition: background-color 120ms ease;
+  transition: background-color var(--motion-fast) ease;
 }
 .sel-option:hover {
   background-color: var(--ui-fill-hover);
 }
 .sel-option.is-active {
-  color: #0071e3;
-  background-color: rgba(0, 113, 227, 0.12);
+  color: var(--ui-accent);
+  background-color: var(--ui-accent-subtle);
   font-weight: 600;
 }
 .sel-option.is-disabled {

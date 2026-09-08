@@ -1,3 +1,4 @@
+import { createThumbnailCache } from '../services/thumbnail-cache.js'
 /**
  * db-images.js — 图片附件存储模块（主进程）
  *
@@ -10,7 +11,7 @@
 import { dirname, join, resolve, sep } from 'path'
 import { randomUUID } from 'crypto'
 import { app, nativeImage } from 'electron'
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync, statSync } from 'fs'
 import { mkdir, writeFile, unlink, stat, readFile, rm } from 'fs/promises'
 import { getDb } from './db-connection.js'
 import {
@@ -218,9 +219,32 @@ export async function getImageBase64(relativePath) {
 }
 
 /** 生成列表展示用缩略图，原图只在大图预览时读取。 */
+const thumbnailCache = createThumbnailCache()
+const pendingThumbnails = new Map()
+let thumbnailQueue = Promise.resolve()
+
 export function getImageThumbnail(relativePath, maxSize = 240) {
+  const size = Math.max(32, Math.min(512, Number(maxSize) || 240))
+  const key = relativePath + ':' + size
+  if (pendingThumbnails.has(key)) return pendingThumbnails.get(key)
+  const pending = thumbnailQueue
+    .then(() => new Promise((resolve) => setImmediate(resolve)))
+    .then(() => decodeThumbnail(relativePath, size))
+    .finally(() => pendingThumbnails.delete(key))
+  thumbnailQueue = pending.catch(() => {})
+  pendingThumbnails.set(key, pending)
+  return pending
+}
+
+function decodeThumbnail(relativePath, maxSize) {
   try {
-    const image = nativeImage.createFromPath(resolveImagePath(relativePath))
+    const path = resolveImagePath(relativePath)
+    const metadata = statSync(path)
+    const cacheKey =
+      path + ':' + metadata.mtimeMs + ':' + metadata.ctimeMs + ':' + metadata.size + ':' + maxSize
+    const cached = thumbnailCache.get(cacheKey)
+    if (cached !== undefined) return cached
+    const image = nativeImage.createFromPath(path)
     if (image.isEmpty()) {
       console.warn('[images] 无法解析附件缩略图:', { relativePath })
       return null
@@ -231,7 +255,9 @@ export function getImageThumbnail(relativePath, maxSize = 240) {
       width >= height
         ? image.resize({ width: Math.min(width, limit), quality: 'good' })
         : image.resize({ height: Math.min(height, limit), quality: 'good' })
-    return resized.toDataURL()
+    const data = resized.toDataURL()
+    thumbnailCache.set(cacheKey, data)
+    return data
   } catch (error) {
     console.warn('[images] 生成附件缩略图失败:', error, { relativePath, maxSize })
     return null

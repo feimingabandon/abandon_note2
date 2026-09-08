@@ -1,4 +1,6 @@
 <script setup>
+import { useSettingsSearch } from '../../composables/useSettingsSearch.js'
+import { listEditingDrafts } from '../../composables/useDraftProtection.js'
 /**
  * SettingsPanel.vue — 底部弹出式设置面板
  *
@@ -1369,6 +1371,31 @@ const onConfirmResetSettings = async () => {
     isResetting.value = false
   }
 }
+const settingsSearch = useSettingsSearch(panelRef)
+async function retryScheduler() {
+  try {
+    schedulerHealth.value = await window.api.retryScheduler()
+    showMessage('info', '已重新检查核心任务，请查看诊断状态')
+  } catch (error) {
+    showMessage('error', error.message || '重试失败')
+  }
+}
+function exportEditingDrafts() {
+  window.__prepareEditingDrafts?.()
+  const drafts = listEditingDrafts()
+  if (!drafts.length) {
+    showMessage('info', '没有暂存的编辑草稿')
+    return
+  }
+  const url = URL.createObjectURL(
+    new Blob([JSON.stringify(drafts, null, 2)], { type: 'application/json' })
+  )
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'Abandon-未保存草稿.json'
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
 </script>
 
 <template>
@@ -1434,6 +1461,34 @@ const onConfirmResetSettings = async () => {
           </button>
         </div>
 
+        <div class="settings-search">
+          <input
+            v-model="settingsSearch.query.value"
+            type="search"
+            aria-label="搜索设置"
+            placeholder="搜索设置：字号、提醒、窗口…"
+          />
+          <p>
+            当前{{ currentViewLabel }}的窗口与外观独立保存；标注“所有视图”的项目由三个视图共用。
+          </p>
+          <div
+            v-if="settingsSearch.query.value.trim()"
+            class="settings-search-results scroll-y"
+            role="status"
+          >
+            <button
+              v-for="result in settingsSearch.results.value"
+              :key="result.title"
+              type="button"
+              @click="settingsSearch.navigate(result)"
+            >
+              {{ result.title }}
+            </button>
+            <span v-if="!settingsSearch.results.value.length"
+              >没有匹配的设置，请换一个关键词。</span
+            >
+          </div>
+        </div>
         <!-- 面板内容（可滚动） -->
         <fieldset
           class="panel-body scroll-y settings-controls"
@@ -1493,12 +1548,14 @@ const onConfirmResetSettings = async () => {
               />
               <span class="range-label-end">放大</span>
               <span class="setting-value">{{ titlebarIconScale }}%</span>
+              <small class="setting-scope-row">所有视图</small>
             </div>
 
             <div class="setting-item">
               <div class="setting-left">
                 <span class="setting-label"
-                  >图标颜色<HelpButton
+                  >图标颜色 <small>所有视图</small
+                  ><HelpButton
                     text="列表、月视图和周视图共同使用。控制顶部 8 个导航栏图标；列表视图还会同步控制标签、太极刷新和三叶草筛选图标。"
                 /></span>
               </div>
@@ -1960,7 +2017,7 @@ const onConfirmResetSettings = async () => {
 
           <!-- ========== 便签交互 ========== -->
           <section class="settings-section">
-            <h3 class="section-title">便签交互</h3>
+            <h3 class="section-title">便签交互 <small>所有视图</small></h3>
 
             <div class="setting-item has-hint">
               <div class="setting-left">
@@ -1983,7 +2040,8 @@ const onConfirmResetSettings = async () => {
             <div class="setting-item">
               <div class="setting-left">
                 <span class="setting-label"
-                  >开机自启<HelpButton
+                  >开机自启 <small>所有视图</small
+                  ><HelpButton
                     text="控制应用是否随系统登录自动启动。此状态直接读取并写入操作系统，不保存在应用数据库中。"
                 /></span>
                 <span v-if="autoStartError" class="setting-error">
@@ -2015,7 +2073,8 @@ const onConfirmResetSettings = async () => {
             <div class="setting-item has-hint shortcut-setting">
               <div class="setting-left">
                 <span class="setting-label"
-                  >视图显示快捷键<HelpButton
+                  >视图显示快捷键 <small>所有视图</small
+                  ><HelpButton
                     text="点击录制后直接按下组合键，无需输入或再次保存。用于显示或隐藏当前视图，窗口隐藏到托盘后仍可使用。"
                 /></span>
                 <span class="setting-hint-caption">列表、月视图和周视图共用</span>
@@ -2035,7 +2094,7 @@ const onConfirmResetSettings = async () => {
           <!-- ========== 天气 ========== -->
           <section class="settings-section">
             <h3 class="section-title">
-              <span>天气</span>
+              <span>天气 <small>所有视图</small></span>
               <button
                 type="button"
                 class="weather-refresh-btn"
@@ -2138,7 +2197,7 @@ const onConfirmResetSettings = async () => {
           <!-- ========== 远程服务与隐私 ========== -->
           <section class="settings-section">
             <h3 class="section-title">
-              <span>远程服务与隐私</span>
+              <span>远程服务与隐私 <small>所有视图</small></span>
               <span
                 class="remote-health-badge sched-badge"
                 :class="
@@ -2231,10 +2290,18 @@ const onConfirmResetSettings = async () => {
             </div>
           </section>
 
+          <section class="settings-section">
+            <h3 class="section-title">编辑草稿 <small>所有视图</small></h3>
+            <p>
+              未保存内容在本机暂存，重新打开对应新建面板或编辑器即可恢复。附件过大或存储空间不足时，请先保存再退出。
+            </p>
+            <BaseButton size="sm" @click="exportEditingDrafts">导出未保存草稿</BaseButton>
+          </section>
           <!-- ========== 调度器诊断 ========== -->
           <section v-if="schedulerHealth" class="settings-section">
             <h3 class="section-title">
-              调度器诊断
+              调度器诊断 <small>所有视图</small>
+              <BaseButton size="sm" @click="retryScheduler">重试核心任务</BaseButton>
               <button class="sched-refresh-btn" title="刷新" @click="loadSchedulerHealth">↻</button>
             </h3>
 
@@ -2360,6 +2427,9 @@ const onConfirmResetSettings = async () => {
                   >
                     ⚠ 已熔断
                   </span>
+                  <span v-else-if="task.nextRetryAt" class="sched-badge sched-badge--warn"
+                    >等待重试 {{ formatTickTime(task.nextRetryAt) }}</span
+                  >
                   <span v-else class="sched-badge sched-badge--ok">正常</span>
                 </div>
                 <div class="sched-task-meta">失败次数：{{ task.failures }}</div>
@@ -2398,6 +2468,54 @@ const onConfirmResetSettings = async () => {
 </template>
 
 <style scoped>
+.setting-scope-row {
+  flex-basis: 100%;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+}
+.setting-label small,
+.section-title small {
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  font-weight: 400;
+}
+.settings-search {
+  padding: 0 20rem 10rem;
+}
+.settings-search input {
+  width: 100%;
+  padding: 7rem 10rem;
+  border: 1px solid var(--ui-border-control);
+  border-radius: 8rem;
+  background: var(--ui-surface-control);
+  color: var(--text-color);
+  font: inherit;
+}
+.settings-search p {
+  margin-top: 6rem;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+}
+.settings-search-results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6rem;
+  max-height: 90px;
+  margin-top: 8rem;
+}
+.settings-search-results button {
+  padding: 5rem 8rem;
+  border: 0;
+  border-radius: 6rem;
+  background: var(--ui-fill-passive);
+  color: var(--text-color);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-search-results button:hover {
+  background: var(--ui-fill-hover);
+}
+
 /* ---- 外层容器 ---- */
 .settings-wrapper {
   position: fixed;

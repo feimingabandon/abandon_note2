@@ -14,9 +14,9 @@ const emit = defineEmits(['update:visible'])
 const { showMessage } = useMessage()
 
 const STATUS_OPTIONS = [
-  { value: 'initialized', label: '初始化', color: '#0a84ff' },
-  { value: 'in_progress', label: '进行中', color: '#ff9f0a' },
-  { value: 'completed', label: '已完成', color: '#30d158' }
+  { value: 'initialized', label: '待开始', color: 'var(--ui-status-pending)' },
+  { value: 'in_progress', label: '进行中', color: 'var(--ui-status-progress)' },
+  { value: 'completed', label: '已完成', color: 'var(--ui-status-completed)' }
 ]
 const STATUS_BY_VALUE = new Map(STATUS_OPTIONS.map((status) => [status.value, status]))
 const EXPORT_FORMAT_OPTIONS = [
@@ -533,7 +533,7 @@ onBeforeUnmount(() => {
   border: 0;
   border-radius: 7rem;
   background: transparent;
-  color: #0a84ff;
+  color: var(--ui-status-pending);
   font: inherit;
   font-size: var(--fs-secondary);
   cursor: pointer;
@@ -570,13 +570,13 @@ onBeforeUnmount(() => {
 }
 .daily-report__state.is-error {
   flex-direction: column;
-  color: #ff453a;
+  color: var(--ui-danger);
 }
 .daily-report__spinner {
   width: 15rem;
   height: 15rem;
-  border: 2px solid color-mix(in srgb, #0a84ff 20%, transparent);
-  border-top-color: #0a84ff;
+  border: 2px solid color-mix(in srgb, var(--ui-status-pending) 20%, transparent);
+  border-top-color: var(--ui-status-pending);
   border-radius: 50%;
   animation: daily-report-spin 650ms linear infinite;
 }
@@ -621,8 +621,8 @@ onBeforeUnmount(() => {
   transform: scale(0.94);
 }
 .daily-report-note.is-selected .daily-report-note__checkbox {
-  border-color: #0a84ff;
-  background: #0a84ff;
+  border-color: var(--ui-status-pending);
+  background: var(--ui-status-pending);
 }
 .daily-report-note__checkbox svg {
   width: 12rem;

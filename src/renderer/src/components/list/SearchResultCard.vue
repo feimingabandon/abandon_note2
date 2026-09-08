@@ -16,10 +16,10 @@ const emit = defineEmits(['edit', 'deleted'])
 const { showMessage } = useMessage()
 
 const STATUS_META = {
-  initialized: { label: '初始化', color: '#0A84FF' },
-  in_progress: { label: '进行中', color: '#FF9F0A' },
-  completed: { label: '已完成', color: '#30D158' },
-  deleted: { label: '已删除', color: '#FF453A' }
+  initialized: { label: '待开始', color: 'var(--ui-status-pending)' },
+  in_progress: { label: '进行中', color: 'var(--ui-status-progress)' },
+  completed: { label: '已完成', color: 'var(--ui-status-completed)' },
+  deleted: { label: '已删除', color: 'var(--ui-danger)' }
 }
 
 const status = computed(() =>
@@ -153,9 +153,11 @@ const contextMenuVisible = ref(false)
 const contextMenuRef = ref(null)
 const contextMenuStyle = ref({})
 const deleting = ref(false)
+let menuTrigger = null
 const showPurgeDialog = ref(false)
 
-function closeContextMenu() {
+function closeContextMenu(restoreFocus = false) {
+  if (restoreFocus === true && menuTrigger?.isConnected) menuTrigger.focus({ preventScroll: true })
   contextMenuVisible.value = false
   document.removeEventListener('pointerdown', onContextMenuOutside)
   document.removeEventListener('keydown', onContextMenuKeydown)
@@ -169,13 +171,39 @@ function onContextMenuOutside(event) {
 }
 
 function onContextMenuKeydown(event) {
-  if (event.key === 'Escape') closeContextMenu()
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeContextMenu(true)
+    return
+  }
+  const buttons = [...(contextMenuRef.value?.querySelectorAll('button:not(:disabled)') || [])]
+  const index = buttons.indexOf(document.activeElement)
+  if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault()
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? buttons.length - 1
+          : (index + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length
+    buttons[next]?.focus()
+  }
+  if (event.key === 'Tab') {
+    event.preventDefault()
+    closeContextMenu(true)
+  }
 }
 
 async function openContextMenu(event) {
   event.preventDefault()
   closeContextMenu()
-  contextMenuStyle.value = { left: `${event.clientX}px`, top: `${event.clientY}px` }
+  menuTrigger = event.currentTarget.matches('button')
+    ? event.currentTarget
+    : event.currentTarget.querySelector('.src-actions-trigger')
+  const anchor = event.currentTarget.getBoundingClientRect()
+  const x = event.clientX || anchor.left
+  const y = event.clientY || anchor.bottom
+  contextMenuStyle.value = { left: `${x}px`, top: `${y}px` }
   contextMenuVisible.value = true
   await nextTick()
 
@@ -183,9 +211,10 @@ async function openContextMenu(event) {
   if (!rect) return
   const gap = 8
   contextMenuStyle.value = {
-    left: `${Math.max(gap, Math.min(event.clientX, window.innerWidth - rect.width - gap))}px`,
-    top: `${Math.max(gap, Math.min(event.clientY, window.innerHeight - rect.height - gap))}px`
+    left: `${Math.max(gap, Math.min(x, window.innerWidth - rect.width - gap))}px`,
+    top: `${Math.max(gap, Math.min(y, window.innerHeight - rect.height - gap))}px`
   }
+  contextMenuRef.value?.querySelector('button:not(:disabled)')?.focus({ preventScroll: true })
   document.addEventListener('pointerdown', onContextMenuOutside)
   document.addEventListener('keydown', onContextMenuKeydown)
   window.addEventListener('resize', closeContextMenu)
@@ -193,10 +222,25 @@ async function openContextMenu(event) {
 }
 
 async function onContextMenuAction(action) {
-  closeContextMenu()
+  closeContextMenu(true)
   if (action === 'edit') {
     if (props.note.is_deleted) return
     emit('edit', props.note)
+    return
+  }
+  if (action === 'restore') {
+    if (deleting.value) return
+    deleting.value = true
+    try {
+      const restored = await window.api.restoreNote(props.note.id)
+      if (!restored) throw new Error('便签不存在或已恢复')
+      showMessage('success', '便签已恢复，提醒保持关闭')
+      emit('deleted', props.note)
+    } catch (error) {
+      showMessage('error', error.message || '恢复失败')
+    } finally {
+      deleting.value = false
+    }
     return
   }
   if (action !== 'purge' || deleting.value) return
@@ -264,6 +308,16 @@ onUnmounted(() => {
       </div>
 
       <div class="src-meta">
+        <button
+          class="src-actions-trigger"
+          type="button"
+          aria-label="便签操作"
+          aria-haspopup="menu"
+          :aria-expanded="contextMenuVisible"
+          @click="openContextMenu"
+        >
+          操作
+        </button>
         <div class="src-context">
           <span class="src-status" :class="{ 'src-status--deleted': note.is_deleted }">
             {{ status.label }}
@@ -307,6 +361,14 @@ onUnmounted(() => {
             >
               修改
             </button>
+            <button
+              v-if="note.is_deleted"
+              role="menuitem"
+              :disabled="deleting"
+              @click="onContextMenuAction('restore')"
+            >
+              恢复便签
+            </button>
             <div class="src-context-menu__divider" role="separator" />
             <button
               class="src-context-menu__delete"
@@ -334,6 +396,19 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.src-actions-trigger {
+  padding: 3rem 6rem;
+  border: 0;
+  border-radius: 5rem;
+  background: var(--ui-fill-passive);
+  color: var(--text-color);
+  font: inherit;
+  cursor: pointer;
+}
+.src-actions-trigger:hover {
+  background: var(--ui-fill-hover);
+}
+
 .src-card {
   --card-surface-opacity: 0.08;
   display: grid;
@@ -418,7 +493,7 @@ onUnmounted(() => {
   font-weight: 500;
 }
 .src-status--deleted {
-  color: #ff453a;
+  color: var(--ui-danger);
 }
 .src-time {
   min-width: 0;
@@ -505,11 +580,11 @@ onUnmounted(() => {
   cursor: default;
 }
 .src-context-menu .src-context-menu__delete {
-  color: #ff453a;
+  color: var(--ui-danger);
 }
 .src-context-menu .src-context-menu__delete:hover:not(:disabled),
 .src-context-menu .src-context-menu__delete:focus-visible:not(:disabled) {
-  background: color-mix(in srgb, #ff453a 11%, transparent);
+  background: color-mix(in srgb, var(--ui-danger) 11%, transparent);
 }
 .src-context-menu-enter-active,
 .src-context-menu-leave-active {

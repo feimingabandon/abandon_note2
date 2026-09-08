@@ -47,7 +47,11 @@ function populateCalendarRange(
   const visibleEndExclusiveKey = addCalendarDays(rangeEnd, 1)
   const candidates = queryCalendarNotes({
     candidateFrom: localMidnightTimestamp(candidateFromKey),
-    visibleEndExclusive: localMidnightTimestamp(visibleEndExclusiveKey)
+    visibleEndExclusive: localMidnightTimestamp(visibleEndExclusiveKey),
+    filter: (note) => {
+      const range = noteDateRange(note)
+      return range.startOrdinal <= visibleEndOrdinal && range.endOrdinal >= visibleStartOrdinal
+    }
   })
   const notes = candidates.filter((note) => {
     const range = noteDateRange(note)

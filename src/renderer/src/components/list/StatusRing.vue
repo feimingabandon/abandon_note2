@@ -11,10 +11,10 @@ const props = defineProps({
 const emit = defineEmits(['activate'])
 
 const STATUS_META = {
-  initialized: { label: '初始化', action: '提前开始', color: '#0A84FF' },
-  in_progress: { label: '进行中', action: '标记完成', color: '#FF9F0A' },
-  completed: { label: '已完成', action: '重新进行', color: '#30D158' },
-  deleted: { label: '已删除', action: '', color: '#FF453A' }
+  initialized: { label: '待开始', action: '提前开始', color: 'var(--ui-status-pending)' },
+  in_progress: { label: '进行中', action: '标记完成', color: 'var(--ui-status-progress)' },
+  completed: { label: '已完成', action: '重新进行', color: 'var(--ui-status-completed)' },
+  deleted: { label: '已删除', action: '', color: 'var(--ui-danger)' }
 }
 
 const meta = computed(() => STATUS_META[props.status] || STATUS_META.initialized)
@@ -154,7 +154,7 @@ function activate() {
     clip-path 300ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 .sr-complete-fill {
-  fill: #30d158;
+  fill: var(--ui-status-completed);
   opacity: 0;
   transform-origin: 10px 10px;
   clip-path: inset(0);
@@ -163,7 +163,7 @@ function activate() {
     clip-path 300ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 .sr-control--completed .sr-track {
-  stroke: color-mix(in srgb, #30d158 72%, #8a8a8a);
+  stroke: color-mix(in srgb, var(--ui-status-completed) 72%, #8a8a8a);
 }
 .sr-control--completed .sr-complete-fill,
 .sr-control--completed .sr-icon--complete {
@@ -229,7 +229,7 @@ function activate() {
 }
 .sr-reopen-preview-track {
   fill: none;
-  stroke: #ff9f0a;
+  stroke: var(--ui-status-progress);
   stroke-width: 2.25;
   stroke-linecap: butt;
   stroke-dasharray: 0 100;
@@ -252,12 +252,12 @@ function activate() {
   transition-delay: 0ms;
 }
 .sr-success-wave {
-  stroke: #30d158;
+  stroke: var(--ui-status-completed);
   stroke-width: 1.15;
   opacity: 0;
 }
 .sr-error-flash {
-  stroke: #ff453a;
+  stroke: var(--ui-danger);
   stroke-width: 2.4;
   stroke-linecap: round;
   stroke-dasharray: 18 82;
@@ -265,7 +265,7 @@ function activate() {
   transform: rotate(-90deg);
 }
 
-/* 初始化 → 进行中：三角先蓄力再向右推动，橙色从右上接触点向整环闭合。 */
+/* 待开始 → 进行中：三角先蓄力再向右推动，橙色从右上接触点向整环闭合。 */
 .sr-control--playing.sr-control--initialized-to-in_progress .sr-icon--play {
   opacity: 1;
   animation: sr-play-launch 420ms cubic-bezier(0.32, 0.72, 0, 1) both;
@@ -315,7 +315,7 @@ function activate() {
   0% {
     transform: translateX(-0.8px) scale(0.92);
     opacity: 1;
-    color: #0a84ff;
+    color: var(--ui-status-pending);
   }
   35% {
     transform: translateX(-1.1px) scale(0.96);

@@ -230,6 +230,19 @@ export function deleteNote(id) {
   return result.changes === 1
 }
 
+/** Restore keeps tags/files, disables notifications, and activates overdue scheduled notes. */
+export function restoreNote(id) {
+  const ts = now()
+  const result = getDb()
+    .prepare(
+      `UPDATE notes SET is_deleted = 0, notify_enabled = 0,
+    status = CASE WHEN status = 'initialized' AND effective_at <= ? THEN 'in_progress' ELSE status END,
+    updated_at = ? WHERE id = ? AND is_deleted = 1`
+    )
+    .run(ts, ts, id)
+  return result.changes === 1 ? getNoteById(id) : null
+}
+
 /** 所有未删除便签总数，不受当前列表筛选条件影响。 */
 export function countActiveNotes() {
   return getDb().prepare('SELECT COUNT(*) AS total FROM notes WHERE is_deleted = 0').get().total
@@ -504,36 +517,30 @@ export function toNoteListItems(notes) {
   if (!notes?.length) return []
 
   const db = getDb()
-  const ids = notes.map((note) => note.id)
-  const placeholders = ids.map(() => '?').join(',')
   const tagsByNote = new Map()
-
-  const tagRows = db
-    .prepare(
-      `SELECT nt.note_id, t.id, t.name, t.color
-       FROM note_tags nt
-       INNER JOIN tags t ON t.id = nt.tag_id
-       WHERE nt.note_id IN (${placeholders})
-       ORDER BY nt.rowid ASC`
-    )
-    .all(...ids)
-
-  for (const tag of tagRows) {
-    if (!tagsByNote.has(tag.note_id)) tagsByNote.set(tag.note_id, [])
-    tagsByNote.get(tag.note_id).push({ id: tag.id, name: tag.name, color: tag.color })
-  }
-
-  const attachmentCounts = new Map(
-    db
+  const attachmentCounts = new Map()
+  const ids = [...new Set(notes.map((note) => note.id))]
+  for (let offset = 0; offset < ids.length; offset += 500) {
+    const batch = ids.slice(offset, offset + 500)
+    const placeholders = batch.map(() => '?').join(',')
+    const tags = db
       .prepare(
-        `SELECT note_id, COUNT(*) AS count
-         FROM note_attachments
-         WHERE note_id IN (${placeholders})
-         GROUP BY note_id`
+        `SELECT nt.note_id, t.id, t.name, t.color FROM note_tags nt
+      INNER JOIN tags t ON t.id = nt.tag_id WHERE nt.note_id IN (${placeholders}) ORDER BY nt.rowid ASC`
       )
-      .all(...ids)
-      .map((row) => [row.note_id, row.count])
-  )
+      .all(...batch)
+    for (const tag of tags) {
+      if (!tagsByNote.has(tag.note_id)) tagsByNote.set(tag.note_id, [])
+      tagsByNote.get(tag.note_id).push({ id: tag.id, name: tag.name, color: tag.color })
+    }
+    const counts = db
+      .prepare(
+        `SELECT note_id, COUNT(*) AS count FROM note_attachments
+      WHERE note_id IN (${placeholders}) GROUP BY note_id`
+      )
+      .all(...batch)
+    for (const row of counts) attachmentCounts.set(row.note_id, row.count)
+  }
 
   return notes.map((note) => {
     const attachmentCount = attachmentCounts.get(note.id) || 0
@@ -562,7 +569,12 @@ export function toNoteListItems(notes) {
  * 查询可能与当前月份相交的真实便签。candidateFrom 已按最大持续天数
  * 向前扩展，避免 SQLite 对每行做本地日期运算；精确区间相交由日历服务统一判断。
  */
-export function queryCalendarNotes({ candidateFrom, visibleEndExclusive } = {}) {
+export function queryCalendarNotes({
+  candidateFrom,
+  visibleEndExclusive,
+  filter = () => true,
+  hydrate = true
+} = {}) {
   const from = Number(candidateFrom)
   const end = Number(visibleEndExclusive)
   if (!Number.isFinite(from) || !Number.isFinite(end) || from >= end) {
@@ -575,7 +587,8 @@ export function queryCalendarNotes({ candidateFrom, visibleEndExclusive } = {}) 
        ORDER BY n.is_pinned DESC, n.effective_at ASC, n.duration_days DESC, n.id ASC`
     )
     .all(from, end)
-  return toNoteListItems(notes)
+  const matching = notes.filter(filter)
+  return hydrate ? toNoteListItems(matching) : matching
 }
 
 // ============================================================

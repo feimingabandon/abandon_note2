@@ -52,7 +52,8 @@ function getDraftChanges() {
   return imagePickerRef.value?.getDraftChanges() || { addedImages: [], deletedImageIds: [] }
 }
 
-defineExpose({ getImages, getDraftChanges, clearImages })
+const restoreDraft = (draft) => imagePickerRef.value?.restoreDraft(draft)
+defineExpose({ restoreDraft, getImages, getDraftChanges, clearImages })
 </script>
 
 <template>

@@ -33,9 +33,9 @@ const systemNotificationsSupported =
   window.api.runtimeCapabilities?.systemNotifications?.supported ?? true
 
 const STATUS_META = {
-  initialized: { label: '初始化', color: '#0A84FF', action: '提前开始' },
-  in_progress: { label: '进行中', color: '#FF9F0A', action: '标记完成' },
-  completed: { label: '已完成', color: '#30D158', action: '重新进行' }
+  initialized: { label: '待开始', color: 'var(--ui-status-pending)', action: '提前开始' },
+  in_progress: { label: '进行中', color: 'var(--ui-status-progress)', action: '标记完成' },
+  completed: { label: '已完成', color: 'var(--ui-status-completed)', action: '重新进行' }
 }
 
 const status = computed(() => STATUS_META[props.note.status] || STATUS_META.initialized)
@@ -787,13 +787,13 @@ async function toggleTags() {
   will-change: transform, opacity;
 }
 .nl-card--status-playing.nl-card--initialized-to-in_progress {
-  --status-sweep-color: #ff9f0a;
+  --status-sweep-color: var(--ui-status-progress);
 }
 .nl-card--status-playing.nl-card--in_progress-to-completed {
-  --status-sweep-color: #30d158;
+  --status-sweep-color: var(--ui-status-completed);
 }
 .nl-card--status-playing.nl-card--completed-to-in_progress {
-  --status-sweep-color: #ff9f0a;
+  --status-sweep-color: var(--ui-status-progress);
 }
 .nl-card--status-playing.nl-card--initialized-to-in_progress::before {
   animation:
@@ -1275,11 +1275,11 @@ async function toggleTags() {
   cursor: default;
 }
 .nl-context-menu .nl-context-menu__delete {
-  color: #ff453a;
+  color: var(--ui-danger);
 }
 .nl-context-menu .nl-context-menu__delete:hover,
 .nl-context-menu .nl-context-menu__delete:focus-visible {
-  background: color-mix(in srgb, #ff453a 11%, transparent);
+  background: color-mix(in srgb, var(--ui-danger) 11%, transparent);
 }
 .nl-context-menu-enter-active,
 .nl-context-menu-leave-active {

@@ -198,12 +198,14 @@ export class Scheduler {
 
     try {
       for (const task of this.tasks) {
-        if (task._disabled) continue
+        if (task._disabled || (task.nextRetryAt && task.nextRetryAt > tickStartedAt)) continue
         stats.total++
 
         try {
           if (task.shouldRun(context)) {
             task.execute(context)
+            task.nextRetryAt = null
+            task.lastError = null
             task.failures = 0 // 执行成功，重置失败计数
             stats.ran++
             stats.ok.push(task.name)
@@ -213,6 +215,9 @@ export class Scheduler {
         } catch (err) {
           task.failures++
           task.lastError = err.message
+          if (task.retryBackoff)
+            task.nextRetryAt =
+              tickStartedAt + Math.min(15 * 60_000, 60_000 * 2 ** Math.min(task.failures - 1, 4))
           stats.ran++
           stats.fail.push(`${task.name}(${err.message})`)
           console.error(`[scheduler] "${task.name}" 失败 (${task.failures}次):`, err)
@@ -249,6 +254,15 @@ export class Scheduler {
    * @returns {{ status: string, tasks: Array, lastTickAt: number|null, recoveryFailures: number,
    *             watchdogRunning: boolean, mainGeneration: number, tickStuck: boolean }}
    */
+  retryFailed() {
+    for (const task of this.tasks) {
+      if (!task.retryBackoff) continue
+      task.nextRetryAt = null
+      task._disabled = false
+    }
+    this.tick({ reason: 'manual-retry' })
+  }
+
   getHealth() {
     return {
       status: this._mainTimerId ? 'running' : 'stopped',
@@ -256,7 +270,8 @@ export class Scheduler {
         name: t.name,
         failures: t.failures,
         disabled: !!t._disabled,
-        lastError: t.lastError
+        lastError: t.lastError,
+        nextRetryAt: t.nextRetryAt || null
       })),
       lastTickAt: this.lastTickAt,
       recoveryFailures: this._recoveryFailures,

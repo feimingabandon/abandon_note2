@@ -1,4 +1,5 @@
 <script setup>
+import { defineAsyncComponent } from 'vue'
 /**
  * App.vue — 应用根组件
  *
@@ -20,7 +21,7 @@ import TitlebarActions from './components/system/TitlebarActions.vue'
 import ViewSwitcher from './components/system/ViewSwitcher.vue'
 import CompactWindowScene from './components/system/CompactWindowScene.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue' // 自定义窗口缩放手柄
-import SettingsPanel from './components/system/SettingsPanel.vue' // 底部弹出式设置面板
+const SettingsPanel = defineAsyncComponent(() => import('./components/system/SettingsPanel.vue'))
 import MessageToast from './components/system/MessageToast.vue'
 import UpdateDialog from './components/system/UpdateDialog.vue'
 import RemoteNoticeDialog from './components/system/RemoteNoticeDialog.vue'
@@ -32,8 +33,8 @@ import AppIcon from './components/ui/AppIcon.vue'
 import NoteList from './components/list/NoteList.vue'
 import NoteEditor from './components/note/NoteEditor.vue'
 import ActionBar from './components/list/ActionBar.vue'
-import TemplatePage from './components/template/TemplatePage.vue'
-import HelpPage from './components/help/HelpPage.vue'
+const TemplatePage = defineAsyncComponent(() => import('./components/template/TemplatePage.vue'))
+const HelpPage = defineAsyncComponent(() => import('./components/help/HelpPage.vue'))
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'

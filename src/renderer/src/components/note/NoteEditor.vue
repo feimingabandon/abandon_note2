@@ -1,4 +1,5 @@
 <script setup>
+import { useDraftProtection } from '../../composables/useDraftProtection.js'
 /**
  * NoteEditor.vue — 便签修改草稿。
  * 所有可编辑字段和附件只修改前端草稿，点击保存后统一持久化。
@@ -102,7 +103,7 @@ onMounted(async () => {
 const statusLabel = computed(
   () =>
     ({
-      initialized: '初始化',
+      initialized: '待开始',
       in_progress: '进行中',
       completed: '已完成'
     })[status.value] || status.value
@@ -198,6 +199,7 @@ function requestClose() {
 }
 
 function handleConfirm() {
+  protectedDraft.clear()
   emit('cancel')
 }
 
@@ -256,6 +258,7 @@ async function handleSave() {
       ...attachmentChanges
     })
     showMessage('success', '便签已保存')
+    protectedDraft.clear()
     emit('saved', updated)
   } catch (error) {
     console.error('[NoteEditor] 保存失败:', error)
@@ -266,6 +269,23 @@ async function handleSave() {
 }
 
 defineExpose({ requestClose })
+const protectedDraft = useDraftProtection({
+  key: 'note:' + props.note.id,
+  fields: {
+    content,
+    status,
+    effectiveAt,
+    durationDays,
+    notifyEnabled,
+    isPinned,
+    tagIds,
+    initialVersion
+  },
+  dirty: () => hasChanges.value,
+  busy: () => saving.value,
+  extra: () => ({ attachments: imagePickerRef.value?.getDraftChanges() }),
+  restoreExtra: (data) => imagePickerRef.value?.restoreDraft(data.attachments)
+})
 </script>
 
 <template>
@@ -499,11 +519,11 @@ defineExpose({ requestClose })
 .ne-submit {
   flex: 1;
   min-width: 104rem;
-  background: #0071e3;
-  color: #fff;
+  background: var(--ui-primary);
+  color: var(--ui-on-primary);
 }
 .ne-submit:hover:not(:disabled) {
-  background: #0077ed;
+  background: var(--ui-primary-hover);
 }
 .ne-dismiss:active:not(:disabled),
 .ne-submit:active:not(:disabled) {
