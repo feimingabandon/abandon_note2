@@ -8,9 +8,14 @@ import { app, BrowserWindow } from 'electron'
 
 const require = createRequire(import.meta.url)
 const WAIT_STEP_MS = 25
+const RESPONSIVE_TEST_WIDTH = 256
 
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
+}
+
+function isCloseTo(actual, expected, tolerance = 0.1) {
+  return Math.abs(actual - expected) < tolerance
 }
 
 async function waitUntil(predicate, message, timeoutMs = 5000) {
@@ -63,12 +68,14 @@ async function titlebarMetrics(window) {
     const header = document.querySelector('.app-titlebar')
     const button = document.querySelector('.traffic-lights .light-close')
     const icon = button?.querySelector('.light-icon')
+    const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 0
     return {
       headerHeight: header?.getBoundingClientRect().height ?? 0,
       buttonWidth: button?.getBoundingClientRect().width ?? 0,
       buttonHeight: button?.getBoundingClientRect().height ?? 0,
       iconWidth: icon?.getBoundingClientRect().width ?? 0,
       iconHeight: icon?.getBoundingClientRect().height ?? 0,
+      rootFontSize,
       microsoft: header?.classList.contains('app-titlebar--microsoft') ?? false,
       iconSources: Array.from(header?.querySelectorAll('img') || [], (image) => image.src)
     }
@@ -179,8 +186,23 @@ async function runTitlebarIconScaleTest() {
         ),
       '列表导航栏没有设置入口'
     )
+    const [, initialWindowHeight] = listWindow.getSize()
+    listWindow.setSize(RESPONSIVE_TEST_WIDTH, initialWindowHeight)
+    await waitUntil(
+      () => listWindow.getContentBounds().width === RESPONSIVE_TEST_WIDTH,
+      '列表窗口没有进入响应式缩放测试宽度'
+    )
 
-    const appleInitial = await titlebarMetrics(listWindow)
+    const appleInitial = await waitForTitlebarMetrics(
+      listWindow,
+      (metrics) =>
+        isCloseTo(metrics.buttonWidth, 18 * metrics.rootFontSize) &&
+        isCloseTo(metrics.buttonHeight, 18 * metrics.rootFontSize) &&
+        isCloseTo(metrics.iconWidth, 14 * metrics.rootFontSize) &&
+        isCloseTo(metrics.iconHeight, 14 * metrics.rootFontSize),
+      'Apple 100% 响应式尺寸没有完成窗口缩放过渡',
+      null
+    )
     assert.equal(appleInitial.microsoft, false)
     assert.ok(appleInitial.iconSources.length > 0)
     assert.ok(
@@ -206,8 +228,10 @@ async function runTitlebarIconScaleTest() {
     const appleLarge = await waitForTitlebarMetrics(
       listWindow,
       (metrics) =>
-        metrics.buttonWidth > appleInitial.buttonWidth &&
-        metrics.iconWidth > appleInitial.iconWidth,
+        isCloseTo(metrics.buttonWidth, 27 * metrics.rootFontSize) &&
+        isCloseTo(metrics.buttonHeight, 27 * metrics.rootFontSize) &&
+        isCloseTo(metrics.iconWidth, 21 * metrics.rootFontSize) &&
+        isCloseTo(metrics.iconHeight, 21 * metrics.rootFontSize),
       'Apple 圆形按钮或图标没有随设置放大',
       appleInitial
     )
@@ -234,7 +258,10 @@ async function runTitlebarIconScaleTest() {
     const microsoftInitial = await waitForTitlebarMetrics(
       listWindow,
       (metrics) =>
-        Math.abs(metrics.buttonWidth - 32) < 0.1 && Math.abs(metrics.buttonHeight - 30) < 0.1,
+        isCloseTo(metrics.buttonWidth, 32 * metrics.rootFontSize) &&
+        isCloseTo(metrics.buttonHeight, 30 * metrics.rootFontSize) &&
+        isCloseTo(metrics.iconWidth, 15 * metrics.rootFontSize) &&
+        isCloseTo(metrics.iconHeight, 15 * metrics.rootFontSize),
       'Microsoft 固定按钮盒没有完成样式过渡',
       appleLarge
     )
@@ -243,7 +270,11 @@ async function runTitlebarIconScaleTest() {
     await waitForTitlebarScale(listWindow, 150, 'Microsoft 放大设置没有完整应用')
     const microsoftLarge = await waitForTitlebarMetrics(
       listWindow,
-      (metrics) => metrics.iconWidth > microsoftInitial.iconWidth,
+      (metrics) =>
+        isCloseTo(metrics.buttonWidth, 32 * metrics.rootFontSize) &&
+        isCloseTo(metrics.buttonHeight, 30 * metrics.rootFontSize) &&
+        isCloseTo(metrics.iconWidth, 22.5 * metrics.rootFontSize) &&
+        isCloseTo(metrics.iconHeight, 22.5 * metrics.rootFontSize),
       'Microsoft 图标没有在固定按钮盒内放大',
       microsoftInitial
     )
