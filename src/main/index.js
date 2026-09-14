@@ -5447,26 +5447,30 @@ const startupPromise = app.whenReady().then(async () => {
     getWeatherSettings: () => structuredClone(resolvedSettings.weather),
     logger
   })
-  void weatherRuntime.refreshAtStartup().catch((error) => {
-    logger.warn('weather.startup-refresh', error?.message || '启动时天气更新失败')
-  })
-  // 3.8 每天 09:00 后最多更新一次。若 09:00 时系统休眠，恢复后的首次 tick 补执行；
-  // 若应用在 09:00 后启动，启动更新已经覆盖当天，不再额外请求。
-  let lastWeatherDailyRefreshKey = weatherDailyRefreshKey(Date.now())
-  scheduler.register({
-    name: 'weatherDailyRefreshTask',
-    maxFailures: Infinity,
-    shouldRun: (context) => {
-      const dateKey = weatherDailyRefreshKey(context.now)
-      return Boolean(dateKey && dateKey !== lastWeatherDailyRefreshKey)
-    },
-    execute: (context) => {
-      lastWeatherDailyRefreshKey = weatherDailyRefreshKey(context.now)
-      void weatherRuntime.refreshDaily().catch((error) => {
-        logger.warn('weather.daily-refresh', error?.message || '每日天气更新失败')
-      })
-    }
-  })
+  // 完整 Electron 集成测试使用固定天气缓存断言界面，不能让真实网络结果异步覆盖夹具。
+  // 天气服务与刷新协调由独立单元测试覆盖；普通运行仍保持启动刷新和每日刷新。
+  if (process.env.ABANDON_INTEGRATION_TEST !== '1') {
+    void weatherRuntime.refreshAtStartup().catch((error) => {
+      logger.warn('weather.startup-refresh', error?.message || '启动时天气更新失败')
+    })
+    // 3.8 每天 09:00 后最多更新一次。若 09:00 时系统休眠，恢复后的首次 tick 补执行；
+    // 若应用在 09:00 后启动，启动更新已经覆盖当天，不再额外请求。
+    let lastWeatherDailyRefreshKey = weatherDailyRefreshKey(Date.now())
+    scheduler.register({
+      name: 'weatherDailyRefreshTask',
+      maxFailures: Infinity,
+      shouldRun: (context) => {
+        const dateKey = weatherDailyRefreshKey(context.now)
+        return Boolean(dateKey && dateKey !== lastWeatherDailyRefreshKey)
+      },
+      execute: (context) => {
+        lastWeatherDailyRefreshKey = weatherDailyRefreshKey(context.now)
+        void weatherRuntime.refreshDaily().catch((error) => {
+          logger.warn('weather.daily-refresh', error?.message || '每日天气更新失败')
+        })
+      }
+    })
+  }
 
   screenshotService = new ScreenshotService({
     ipcMain,

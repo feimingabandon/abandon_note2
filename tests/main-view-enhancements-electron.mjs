@@ -253,15 +253,23 @@ async function runMainViewEnhancementsTest() {
       return {
         x: Math.round(rect.left + rect.width / 2),
         y: Math.round(rect.top + rect.height / 2),
+        hitTarget: document.elementFromPoint(
+          Math.round(rect.left + rect.width / 2),
+          Math.round(rect.top + rect.height / 2)
+        )?.closest('.view-switcher__trigger') === trigger,
         initialOpacity: getComputedStyle(icon).opacity,
         expectedInitialOpacity: microsoft ? '0.72' : '0'
       }
     })()`)
+    assert.equal(triggerHoverTarget.hitTarget, true, '视图切换按钮中心被其他图层遮挡')
     assert.equal(
       triggerHoverTarget.initialOpacity,
       triggerHoverTarget.expectedInitialOpacity,
       '视图文字常态应与其他标题栏图标保持相同透明度'
     )
+    listWindow.focus()
+    listWindow.webContents.sendInputEvent({ type: 'mouseMove', x: 1, y: listWindow.getBounds().height - 1 })
+    await wait(50)
     listWindow.webContents.sendInputEvent({
       type: 'mouseMove',
       x: triggerHoverTarget.x,
