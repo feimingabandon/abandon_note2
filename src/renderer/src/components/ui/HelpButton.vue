@@ -125,6 +125,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
     ref="triggerRef"
     type="button"
     class="setting-help-btn"
+    :data-search-text="text"
     :class="{ 'is-active': visible }"
     aria-label="查看帮助"
     :aria-expanded="visible"

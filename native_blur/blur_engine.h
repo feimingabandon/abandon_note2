@@ -35,6 +35,7 @@
 #include <mutex>
 #include <thread>
 #include <memory>
+#include <string>
 
 namespace BlurEngine {
 
@@ -153,6 +154,7 @@ public:
     }
     bool IsZOrderSynchronized() const { return IsZOrderAdjacent(); }
     BlurErrorCode GetLastError() const { return m_lastError.load(); }
+    const char* GetLastFailureJson() const;
     void SetLastError(BlurErrorCode error) { m_lastError.store(error); }
     HWND GetParentWindow() const { return m_parentHwnd.load(); }
     HWND GetOverlayWindow() const { return m_messageHwnd.load(); }
@@ -194,6 +196,9 @@ private:
     void HandleDpiChanged(WPARAM wParam, LPARAM lParam);
     bool SyncGeometryFromParent();
     bool SyncAndShow();
+    void RecordNativeFailure(const char* stage, long long nativeCode);
+    mutable std::mutex m_failureMutex;
+    std::string m_failureJson = "{}";
     bool SyncZOrder();
     bool IsZOrderAdjacent() const;
     void QueueZOrderSync();

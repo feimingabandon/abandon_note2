@@ -1,4 +1,6 @@
 <script setup>
+import EditingDraftDialog from './components/system/EditingDraftDialog.vue'
+import { editingDataGeneration } from './composables/useDraftProtection.js'
 import { defineAsyncComponent } from 'vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
@@ -466,6 +468,7 @@ onUnmounted(() => {
             :aria-label="`${viewLabel}内容区域`"
           >
             <MonthWorkspace
+              :key="editingDataGeneration"
               :view-mode="viewMode"
               @modal-state-change="calendarBusinessModalOpen = $event"
               @ready="onCalendarWorkspaceReady"
@@ -487,7 +490,7 @@ onUnmounted(() => {
               @transitionend="onTemplateTransitionEnd"
               @transitioncancel="onTemplateTransitionCancel"
             >
-              <TemplatePage />
+              <TemplatePage :key="editingDataGeneration" />
             </div>
           </div>
 
@@ -545,6 +548,7 @@ onUnmounted(() => {
       @open-settings="dismissHolidayDataNotice({ openSettingsAfter: true })"
     />
     <DailyReportDialog v-model:visible="showDailyReportDialog" />
+    <EditingDraftDialog />
     <MessageToast />
   </div>
 </template>

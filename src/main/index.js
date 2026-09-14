@@ -42,12 +42,15 @@ import {
   runWindowTransition,
   prepareWindowTransitionShell,
   warmWindowTransitionShell,
-  finishWindowTransitionShell
+  finishWindowTransitionShell,
+  getWindowTransitionStatus
 } from './bridge/blur_bridge.js'
 import { createWindowMotionBackend } from './window-motion/index.js'
 import { prepareCompactTargetFrame } from './windows/compact-target-frame.js'
 import { CompactPresentationWaiters } from './windows/compact-presentation-waiters.js'
 import { settleCompactPresentation } from './windows/compact-transition-settle.js'
+import { createCompactHandoffDiagnostics } from './logging/compact-handoff-diagnostics.js'
+import { createDeferredWindowRestore } from './windows/deferred-window-restore.js'
 import { compactMotionDuration } from './windows/compact-motion-policy.js'
 import { CompactIntent } from './windows/compact-intent.js'
 import { DockTransitionState } from './window-motion/dock-transition-state.js'
@@ -215,6 +218,7 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'wallpaper.blurRadius',
   'ui.settingsPanelSize',
   'ui.dayPanelSize',
+  'calendar.recurringPreviewEnabled',
   'interaction.doubleClickQuickEdit',
   'notes.autoMoveYesterday',
   'weather.enabled',
@@ -231,6 +235,7 @@ const APPLICATION_SETTING_IDS = new Set([
   'appearance.titlebarIconScale',
   'appearance.iconColor',
   'shortcuts.viewVisibility',
+  'calendar.recurringPreviewEnabled',
   'interaction.doubleClickQuickEdit',
   'remote.receiveNotices',
   'remote.uploadDeviceInfo',
@@ -699,6 +704,8 @@ function ensureCompactNativeTransitionSucceeded(nativeResult) {
   throw error
 }
 
+let activeCompactHandoffDiagnostics = null
+
 async function runCompactNativeTransition({ window, from, target, phase }) {
   const duration = compactMotionDuration(phase)
   const operationWindow = window
@@ -709,6 +716,23 @@ async function runCompactNativeTransition({ window, from, target, phase }) {
   let shellPrepared = false
   let presentationSuppressed = false
   let presentationCompleted = false
+  activeCompactHandoffDiagnostics?.finish('replaced')
+  const handoffDiagnostics = createCompactHandoffDiagnostics({
+    window: operationWindow,
+    readNative: getWindowTransitionStatus,
+    report: (details) => {
+      if (activeCompactHandoffDiagnostics === handoffDiagnostics)
+        activeCompactHandoffDiagnostics = null
+      logger.info('compact-window.handoff-diagnostics', '灵动岛窗口与材质交接采样', {
+        generation,
+        phase,
+        from,
+        target,
+        ...details
+      })
+    }
+  })
+  activeCompactHandoffDiagnostics = handoffDiagnostics
   try {
     const result = await compactWindowController.run(
       operationWindow,
@@ -809,6 +833,7 @@ async function runCompactNativeTransition({ window, from, target, phase }) {
             frameSize: targetFrame
           })
         })
+        handoffDiagnostics.sample('before-handoff')
         operationWindow.setOpacity(originalOpacity)
         // 原生运动和目标帧均已完成。先通知内容淡入，让 Renderer 与原生材质
         // 提交确认并行；外壳保持终点坐标，输入仍要等交接成功才恢复。
@@ -833,11 +858,13 @@ async function runCompactNativeTransition({ window, from, target, phase }) {
         shellPrepared = false
         operationWindow.setIgnoreMouseEvents(false)
         presentationSuppressed = false
+        handoffDiagnostics.sample('shell-released')
         stageTimings.push({
           stage: 'shell-released',
           elapsedMs: Date.now() - diagnosticStartedAt
         })
         await rendererContentEnter
+        handoffDiagnostics.sample('content-enter-ready')
         stageTimings.push({
           stage: 'content-enter-ready',
           elapsedMs: Date.now() - diagnosticStartedAt
@@ -862,6 +889,8 @@ async function runCompactNativeTransition({ window, from, target, phase }) {
       operationWindow.setIgnoreMouseEvents(false)
     }
     if (shellPrepared) await finishWindowTransitionShell()
+    handoffDiagnostics.sample(presentationCompleted ? 'transition-completed' : 'transition-failed')
+    handoffDiagnostics.tail()
     logger.info('compact-window.stage-diagnostics', '灵动岛呈现阶段采样', {
       generation,
       phase,
@@ -1414,6 +1443,7 @@ function refreshResolvedSettings({ incrementRevision = false } = {}) {
   nextSettings.appearance.titlebarIconScale = applicationSettings.appearance.titlebarIconScale
   nextSettings.appearance.iconColor = applicationSettings.appearance.iconColor
   nextSettings.shortcuts = { ...applicationSettings.shortcuts }
+  nextSettings.calendar = { ...applicationSettings.calendar }
   nextSettings.interaction = { ...applicationSettings.interaction }
   nextSettings.notes = { ...applicationSettings.notes }
   nextSettings.window = { ...applicationSettings.window }
@@ -1810,6 +1840,7 @@ function restoreBlurForVisibleWindow(window, source) {
   if (
     !window ||
     window.isDestroyed() ||
+    !window.isVisible() ||
     compactWindowController.activePromise() ||
     window !== getActiveVisualWindow() ||
     !blurConfig.enabled
@@ -1827,6 +1858,22 @@ function restoreBlurForVisibleWindow(window, source) {
   }
   runBlurRuntimeOperation(blurReSyncZOrder, `${source} 重同步毛玻璃窗口层级`)
 }
+
+const scheduleVisibleBlurRestore = createDeferredWindowRestore({
+  canRestore: (window) => !window.isDestroyed() && window.isVisible() && window === mainWindow,
+  restore: (window, source) => {
+    const startedAt = performance.now()
+    restoreBlurForVisibleWindow(window, source)
+    logger.info('blur.visible-restore', '窗口显示后恢复毛玻璃', {
+      source,
+      deferred: true,
+      elapsedMs: performance.now() - startedAt,
+      enabled: blurConfig.enabled,
+      initialized: blurInitialized,
+      failed: blurRuntimeFailed
+    })
+  }
+})
 
 function applyResolvedWindowRuntime() {
   isLocked = resolvedSettings.window.lockState
@@ -2528,7 +2575,7 @@ function createWindow({ preferredDisplay = null } = {}) {
 
   // 窗口显示时恢复模糊（从托盘恢复）
   mainWindow.on('show', () => {
-    restoreBlurForVisibleWindow(mainWindow, 'main-window-show')
+    scheduleVisibleBlurRestore(mainWindow, 'main-window-show')
   })
 
   // 启动恢复、托盘/通知唤醒和视图切换都可能直接把窗口放回已保存的
@@ -3917,7 +3964,15 @@ function prepareCompactWindowForReplacement(window) {
 }
 
 /** 销毁当前唯一主视图并使用另一套独立设置创建目标视图。 */
-const confirmEditingDrafts = createEditingDraftGuard({ dialog, logger })
+const confirmEditingDrafts = createEditingDraftGuard({
+  logger,
+  reveal: async (window) => {
+    await expandCompactWindowForNotification()
+    if (window !== mainWindow || window.isDestroyed()) throw new Error('主窗口已变化')
+    if (window.isMinimized()) window.restore()
+    openMainWindow()
+  }
+})
 let checkingViewDrafts = false
 let quitDraftsApproved = false
 let checkingQuitDrafts = false
@@ -4298,7 +4353,22 @@ const startupPromise = app.whenReady().then(async () => {
     if (switchingMainView || compactWindowController.activePromise() || nativeEdgeCleanupPending) {
       return false
     }
-    setImmediate(() => switchMainView(mode))
+    setImmediate(async () => {
+      try {
+        await switchMainView(mode)
+      } catch (error) {
+        logger.error('view.switch', error)
+        if (!_event.sender.isDestroyed())
+          _event.sender.send('app:message', {
+            type: 'error',
+            text: '切换视图失败，请重试'
+          })
+      } finally {
+        // The IPC reply only acknowledged the request. Cancellation must also
+        // release the renderer's busy state when the original window survives.
+        if (!_event.sender.isDestroyed()) _event.sender.send('view:switch-finished')
+      }
+    })
     return true
   })
 
@@ -5085,6 +5155,16 @@ const startupPromise = app.whenReady().then(async () => {
       .get()
     await clearNoteData()
     stickyService?.discardAllRuntime()
+    let draftClearError
+    try {
+      const cleared = await mainWindow.webContents.executeJavaScript(
+        'window.__clearEditingDrafts?.()'
+      )
+      if (cleared !== true) throw new Error('草稿清理接口不可用')
+    } catch (error) {
+      draftClearError = error
+      logger.error('data.clear-drafts', error)
+    }
     for (const window of getApplicationWindows()) {
       window.webContents.send('notes:changed', { reason: 'note-data-cleared' })
     }
@@ -5092,6 +5172,7 @@ const startupPromise = app.whenReady().then(async () => {
       viewMode: activeViewMode,
       ...counts
     })
+    if (draftClearError) throw new Error('便签业务数据已清空，但编辑草稿清理失败，请重试清空操作。')
     return true
   })
 

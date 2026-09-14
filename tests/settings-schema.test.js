@@ -419,6 +419,21 @@ describe('sticky default settings schema', () => {
   })
 })
 
+describe('calendar recurring preview settings schema', () => {
+  it('defaults to disabled and serializes as a shared boolean setting row', () => {
+    expect(DEFAULT_SETTINGS.calendar.recurringPreviewEnabled).toBe(false)
+    expect(serializeSetting('calendar.recurringPreviewEnabled', true)).toMatchObject({
+      type: 'calendar',
+      key: 'recurring_preview_enabled',
+      value: '1'
+    })
+    expect(
+      resolveSettingsRows([{ type: 'calendar', key: 'recurring_preview_enabled', value: 'true' }])
+        .calendar.recurringPreviewEnabled
+    ).toBe(true)
+  })
+})
+
 describe('quick note edit settings schema', () => {
   it('defaults to enabled and serializes as a stable setting row', () => {
     expect(DEFAULT_SETTINGS.interaction.doubleClickQuickEdit).toBe(true)

@@ -1,4 +1,10 @@
-const STAGES = new Set(['content-exit', 'shell-transform', 'shell-settle', 'content-enter'])
+const STAGES = new Set([
+  'content-exit',
+  'shell-transform',
+  'shell-settle',
+  'content-enter',
+  'stable'
+])
 const EVENTS = new Set(['stage', 'raf', 'resize', 'end'])
 const finite = (value, min, max) =>
   typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max
@@ -33,13 +39,45 @@ export function normalizeCompactRendererDiagnostics(payload, currentGeneration) 
     )
       return null
     previous = f.elapsedMs
+    const extra = {}
+    for (const key of ['screenX', 'screenY', 'outerWidth', 'outerHeight', 'readMs']) {
+      if (f[key] === undefined) continue
+      if (!finite(f[key], ['screenX', 'screenY'].includes(key) ? -100000 : 0, 100000)) return null
+      extra[key] = f[key]
+    }
+    if (f.layers !== undefined) {
+      if (!f.layers || typeof f.layers !== 'object' || Array.isArray(f.layers)) return null
+      extra.layers = {}
+      for (const key of ['expanded', 'compact', 'island']) {
+        const layer = f.layers[key]
+        if (!layer) continue
+        if (
+          !finite(layer.x, -100000, 100000) ||
+          !finite(layer.y, -100000, 100000) ||
+          !finite(layer.width, 0, 100000) ||
+          !finite(layer.height, 0, 100000) ||
+          !finite(layer.opacity, 0, 1) ||
+          !['visible', 'hidden', 'collapse'].includes(layer.visibility)
+        )
+          return null
+        extra.layers[key] = {
+          x: layer.x,
+          y: layer.y,
+          width: layer.width,
+          height: layer.height,
+          opacity: layer.opacity,
+          visibility: layer.visibility
+        }
+      }
+    }
     frames.push({
       event: f.event,
       stage: f.stage,
       elapsedMs: f.elapsedMs,
       width: f.width,
       height: f.height,
-      devicePixelRatio: f.devicePixelRatio
+      devicePixelRatio: f.devicePixelRatio,
+      ...extra
     })
   }
   return {

@@ -56,6 +56,7 @@ BLUR_API int Blur_IsZOrderSynchronized(void);
 BLUR_API int Blur_IsSupported(void);
 BLUR_API int Blur_GetLastErrorCode(void);
 BLUR_API const char* Blur_GetLastErrorMessage(void);
+BLUR_API const char* Blur_GetLastFailureJson(void);
 
 // ---- Windows 窗口物理移动（无回调、绝不修改宽高）----
 BLUR_API int WindowMotion_MoveWindow(void* hwnd, int physicalX, int physicalY);

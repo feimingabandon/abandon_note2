@@ -57,6 +57,24 @@ Engine& Engine::Instance() {
 
 bool Engine::s_classRegistered = false;
 
+void Engine::RecordNativeFailure(const char* stage, long long nativeCode) {
+    // stage 仅来自固定 ASCII 常量，不含用户数据。必须在其他 Win32 调用之前捕获错误码。
+    try {
+        std::lock_guard<std::mutex> lock(m_failureMutex);
+        m_failureJson = std::string("{\"stage\":\"") + stage +
+            "\",\"nativeCode\":" + std::to_string(nativeCode) +
+            ",\"threadId\":" + std::to_string(GetCurrentThreadId()) +
+            ",\"parentVisible\":" + (IsWindowVisible(m_parentHwnd.load()) ? "true" : "false") + "}";
+    } catch (...) { /* 诊断分配失败不能穿透 FFI/窗口过程。 */ }
+}
+
+const char* Engine::GetLastFailureJson() const {
+    thread_local std::string snapshot;
+    std::lock_guard<std::mutex> lock(m_failureMutex);
+    snapshot = m_failureJson;
+    return snapshot.c_str();
+}
+
 namespace {
 
 BlurConfig NormalizeBlurConfig(const BlurConfig& config) {
@@ -149,12 +167,15 @@ void Engine::SetConfig(const BlurConfig& config) {
 }
 
 bool Engine::ApplyConfigAndWait(const BlurConfig& config, DWORD syncTimeoutMs) {
+    { std::lock_guard<std::mutex> lock(m_failureMutex); m_failureJson = "{}"; }
     if (!m_initialized.load() || m_windowTransitioning.load()) {
+        RecordNativeFailure("apply-config-not-ready", 0);
         m_lastError.store(BlurErrorCode::UnknownFailure);
         return false;
     }
     const HWND overlayHwnd = m_messageHwnd.load();
     if (!overlayHwnd || !IsWindow(overlayHwnd)) {
+        RecordNativeFailure("apply-config-invalid-overlay", 0);
         m_lastError.store(BlurErrorCode::OverlayWindowFailed);
         m_runtimeHealthy.store(false);
         return false;
@@ -167,6 +188,7 @@ bool Engine::ApplyConfigAndWait(const BlurConfig& config, DWORD syncTimeoutMs) {
     }
 
     DWORD_PTR syncResult = 0;
+    ::SetLastError(ERROR_SUCCESS);
     if (!SendMessageTimeoutW(
             overlayHwnd,
             WM_BLUR_APPLY_CONFIG,
@@ -175,6 +197,7 @@ bool Engine::ApplyConfigAndWait(const BlurConfig& config, DWORD syncTimeoutMs) {
             SMTO_ABORTIFHUNG | SMTO_BLOCK,
             std::max<DWORD>(1, syncTimeoutMs),
             &syncResult)) {
+        RecordNativeFailure("apply-config-send-timeout-or-failure", ::GetLastError());
         m_lastError.store(BlurErrorCode::UnknownFailure);
         m_runtimeHealthy.store(false);
         return false;
@@ -512,15 +535,33 @@ bool Engine::PrepareShellOnSta() {
     std::shared_ptr<ShellCompletion> completion;
     { std::lock_guard<std::mutex> lock(m_shellMutex); completion = m_shellPrepareCompletion; }
     m_shellPrepareBatch = m_compositor.GetCommitBatch(CompositionBatchTypes::Animation);
-    m_shellPrepareBatchToken = m_shellPrepareBatch.Completed([this, completion](auto&&, auto&&) {
+    m_shellPrepareBatchToken = m_shellPrepareBatch.Completed([this, completion, glassEnabled = cfg.enabled](auto&&, auto&&) {
         try {
             m_shellPrepareBatch.Completed(m_shellPrepareBatchToken);
             m_shellPrepareBatch = nullptr;
+            // Prepare 从 worker 调用，Electron 消息泵仍可运行。在首次真实窗口
+            // 隐藏前等待可见外壳的 DWM 提交，避免 Win10 上先露出桌面的空档。
+            if (glassEnabled) {
+                const HRESULT presented = DwmFlush();
+                if (FAILED(presented)) {
+                    m_shellError.store(presented);
+                    CancelShellOnSta();
+                    return;
+                }
+            }
             std::lock_guard<std::mutex> lock(completion->mutex);
             completion->completed = true;
             completion->changed.notify_all();
         } catch (...) { CancelShellOnSta(); }
     });
+    // 内容已经退出；在同一个 Compositor 提交内用起点外壳接替普通材质。
+    // 必须先完成这一交接，调用者才能把真实窗口变透明、搬到目标位置。
+    // 关闭毛玻璃时底色来自 Renderer，无法与原生 Visual 同批撤下；保留原来
+    // 的 Start 接管时机，避免准备期间两层半透明底色叠加。
+    if (cfg.enabled) {
+        m_rootVisual.IsVisible(false);
+        m_shellRoot.IsVisible(true);
+    }
     return true;
 }
 
@@ -537,9 +578,15 @@ bool Engine::StartShellOnSta(int durationMs) {
     // 普通底色直到原窗口退出后才显示，避免准备阶段两层半透明底色叠加。
     if (!SetWindowPos(m_shellHwnd.load(), m_parentHwnd.load(), 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)) return false;
-    // 两棵 Visual 树共用同一个 Compositor，材质交接只改变可见性。
+    // 真实 HWND 已经到达目标。普通材质在不可见时提前准备目标坐标和尺寸，
+    // 让其提交与整段外壳动画重叠；结束时不能再把旧 Overlay 搬到新位置。
     m_rootVisual.IsVisible(false);
     m_shellRoot.IsVisible(true);
+    if (GetConfig().enabled) {
+        if (!SyncAndShow()) return false;
+    } else if (!SyncGeometryFromParent()) {
+        return false;
+    }
     const auto animate = [&](const wchar_t* property,
         winrt::Windows::Foundation::Numerics::float2 from,
         winrt::Windows::Foundation::Numerics::float2 to) {
@@ -571,14 +618,20 @@ bool Engine::FinishShellOnSta() {
     { std::lock_guard<std::mutex> lock(m_shellMutex); completion = m_shellReleaseCompletion; }
     if (!completion) return false;
     if (m_blurVisual) m_blurVisual.IsVisible(cfg.enabled);
-    // 普通材质仍不可见时提交目标 HWND 几何。动画外壳保持原承载区域和
-    // 终点裁剪，直到撤下也不清零局部坐标，因此不存在可见的坐标换算过程。
-    if (cfg.enabled) {
-        if (!SyncAndShow()) { CancelShellOnSta(); return false; }
-    } else {
-        ShowWindow(m_overlayHwnd, SW_HIDE);
-        if (!SyncGeometryFromParent()) { CancelShellOnSta(); return false; }
+    // 成功路径只换可见性：目标 Overlay 在 Start 阶段已经就绪。
+    // 失败回滚可能把父窗口改回起点，此时保持外壳、重新同步恢复几何。
+    RECT parentRect{}, overlayRect{};
+    const bool destinationReady = GetWindowRect(m_parentHwnd.load(), &parentRect) &&
+        GetWindowRect(m_overlayHwnd, &overlayRect) && EqualRect(&parentRect, &overlayRect) &&
+        m_visualWidth.load() == parentRect.right - parentRect.left &&
+        m_visualHeight.load() == parentRect.bottom - parentRect.top;
+    if (!destinationReady) {
+        if (!(cfg.enabled ? SyncAndShow() : SyncGeometryFromParent())) {
+            CancelShellOnSta();
+            return false;
+        }
     }
+    if (!cfg.enabled) ShowWindow(m_overlayHwnd, SW_HIDE);
     m_shellReleaseBatch = m_compositor.GetCommitBatch(CompositionBatchTypes::Animation);
     m_shellReleaseBatchToken = m_shellReleaseBatch.Completed([this, completion](auto&&, auto&&) {
         try {
@@ -1256,6 +1309,7 @@ bool Engine::SyncAndShow() {
 
     RECT rect{};
     if (!GetWindowRect(parentHwnd, &rect)) {
+        RecordNativeFailure("show-read-parent-rect", ::GetLastError());
         m_lastError.store(BlurErrorCode::UnknownFailure);
         m_runtimeHealthy.store(false);
         return false;
@@ -1273,6 +1327,7 @@ bool Engine::SyncAndShow() {
     if (parentTopmost != overlayTopmost) {
         if (!SetWindowPos(m_overlayHwnd, parentTopmost ? HWND_TOPMOST : HWND_NOTOPMOST,
             0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) {
+            RecordNativeFailure("show-match-zorder-band", ::GetLastError());
             m_lastError.store(BlurErrorCode::UnknownFailure);
             m_runtimeHealthy.store(false);
             return false;
@@ -1282,6 +1337,7 @@ bool Engine::SyncAndShow() {
     if (!SetWindowPos(m_overlayHwnd, parentHwnd,
         rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
         SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
+        RecordNativeFailure("show-position-overlay", ::GetLastError());
         m_lastError.store(BlurErrorCode::UnknownFailure);
         m_runtimeHealthy.store(false);
         return false;
@@ -1500,11 +1556,15 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         // 冷启动父窗口尚不可见，或已经隐藏了禁用的 Overlay 时，没有可见帧
         // 需要等待。Win10 在此等待可能耗尽首次配置的 500ms 同步期限。
         if (self->GetConfig().enabled && IsWindowVisible(hwnd) &&
-            IsWindowVisible(self->m_parentHwnd.load()) && FAILED(DwmFlush())) {
-            self->m_lastError.store(BlurErrorCode::UnknownFailure);
-            self->m_runtimeHealthy.store(false);
-            ShowWindow(hwnd, SW_HIDE);
-            return 0;
+            IsWindowVisible(self->m_parentHwnd.load())) {
+            const HRESULT presented = DwmFlush();
+            if (FAILED(presented)) {
+                self->RecordNativeFailure("apply-config-dwm-flush", presented);
+                self->m_lastError.store(BlurErrorCode::UnknownFailure);
+                self->m_runtimeHealthy.store(false);
+                ShowWindow(hwnd, SW_HIDE);
+                return 0;
+            }
         }
         return 1;
 

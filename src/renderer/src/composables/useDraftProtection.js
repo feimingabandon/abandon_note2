@@ -1,8 +1,21 @@
-import { nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useMessage } from './useMessage.js'
 
 const PREFIX = 'abandon:editing-draft:v1:'
 const active = new Set()
+export const editingDataGeneration = ref(0)
+
+// Invalidate mounted forms before unmounting them so their final flush cannot
+// recreate data the user has explicitly cleared. Unrelated local settings stay intact.
+window.__clearEditingDrafts = async () => {
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith(PREFIX)) localStorage.removeItem(key)
+  }
+  for (const entry of active) entry.discard()
+  editingDataGeneration.value++
+  await nextTick()
+  return true
+}
 
 // A fixed main-process query uses this function before replacing the renderer.
 // Failed persistence is blocking: never report an in-memory draft as durable.
@@ -46,9 +59,12 @@ export function useDraftProtection({
     ...extra()
   })
   const entry = {
+    discard() {
+      discarded = true
+    },
     flush() {
-      if (!ready) return { dirty: dirty(), blocked: dirty() || busy() }
       if (discarded) return { dirty: false, blocked: busy() }
+      if (!ready) return { dirty: dirty(), blocked: dirty() || busy() }
       const changed = dirty()
       try {
         if (changed)
@@ -69,7 +85,7 @@ export function useDraftProtection({
   active.add(entry)
   onMounted(async () => {
     await nextTick()
-    if (disposed) return
+    if (disposed || discarded) return
     try {
       const saved = JSON.parse(localStorage.getItem(storageKey) || 'null')
       if (saved?.data) {

@@ -468,6 +468,15 @@ const definitions = [
     remark: '日历视图日期侧栏宽度百分比（25~50）'
   },
   {
+    id: 'calendar.recurringPreviewEnabled',
+    path: ['calendar', 'recurringPreviewEnabled'],
+    db: { type: 'calendar', key: 'recurring_preview_enabled' },
+    defaultValue: false,
+    parse: parseBoolean,
+    serialize: (value) => (value ? '1' : '0'),
+    remark: '月视图和周视图共享的未来循环便签只读预览开关'
+  },
+  {
     id: 'interaction.doubleClickQuickEdit',
     path: ['interaction', 'doubleClickQuickEdit'],
     db: { type: 'interaction', key: 'double_click_quick_edit' },

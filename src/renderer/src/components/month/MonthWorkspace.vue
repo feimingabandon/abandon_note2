@@ -49,7 +49,9 @@ const firstWeekDateKey = buildWeekGrid(MIN_CALENDAR_DATE).weekStart
 const lastWeekDateKey = buildWeekGrid(MAX_CALENDAR_DATE).weekEnd
 const todayKey = useTodayKey()
 const defaultDayPanelSize = createDefaultSettings(props.viewMode).ui.dayPanelSize
-const calendarData = ref({ days: [], notes: [] })
+const calendarData = ref({ days: [], notes: [], recurringPreviews: [] })
+const recurringPreviewEnabled = ref(false)
+const recurringPreviewSaving = ref(false)
 const weatherEnabled = ref(false)
 const weatherForecast = ref(null)
 const weatherLoading = ref(false)
@@ -77,6 +79,7 @@ const deleteConfirmVisible = ref(false)
 const deleteTargetNote = ref(null)
 const deletingNote = ref(false)
 let stopNotesListener = null
+let stopTemplatesListener = null
 let stopHolidayDataListener = null
 let stopWeatherSettingsListener = null
 let stopWeatherForecastListener = null
@@ -114,6 +117,10 @@ const toolbarWeatherLocation = computed(() =>
     ? weatherLocationLabel(weatherForecast.value.location)
     : ''
 )
+
+function calendarRequestOptions() {
+  return { includeRecurringPreviews: recurringPreviewEnabled.value }
+}
 
 async function loadWeather({ quiet = false } = {}) {
   const sequence = ++weatherLoadSequence
@@ -282,7 +289,7 @@ async function loadMonth(year = viewYear.value, month = viewMonth.value) {
   loading.value = true
   loadError.value = ''
   try {
-    const data = await window.api.getMonthCalendarData(year, month)
+    const data = await window.api.getMonthCalendarData(year, month, calendarRequestOptions())
     if (sequence !== loadSequence) return
     calendarData.value = data
     syncCalendarPeriod(data)
@@ -300,7 +307,7 @@ async function loadWeek(anchorDate = weekAnchorKey.value) {
   loading.value = true
   loadError.value = ''
   try {
-    const data = await window.api.getWeekCalendarData(anchorDate)
+    const data = await window.api.getWeekCalendarData(anchorDate, calendarRequestOptions())
     if (sequence !== loadSequence) return
     calendarData.value = data
     syncCalendarPeriod(data)
@@ -337,7 +344,11 @@ async function navigateMonth(year, month, { shiftSelection = true, selectionKey 
   loading.value = true
   loadError.value = ''
   try {
-    const data = await window.api.getMonthCalendarData(targetYear, targetMonth)
+    const data = await window.api.getMonthCalendarData(
+      targetYear,
+      targetMonth,
+      calendarRequestOptions()
+    )
     if (sequence !== loadSequence) return false
     await replaceCalendarData(data, { direction, nextSelection })
     return true
@@ -384,7 +395,7 @@ async function navigateWeek(
   loading.value = true
   loadError.value = ''
   try {
-    const data = await window.api.getWeekCalendarData(anchorDate)
+    const data = await window.api.getWeekCalendarData(anchorDate, calendarRequestOptions())
     if (sequence !== loadSequence) return false
     await replaceCalendarData(data, { direction, nextSelection: selectionKey })
     return true
@@ -455,8 +466,12 @@ async function refreshCalendarContent({ manual = false } = {}) {
   loadError.value = ''
   try {
     const data = isWeekView.value
-      ? await window.api.getWeekCalendarData(weekAnchorKey.value)
-      : await window.api.getMonthCalendarData(viewYear.value, viewMonth.value)
+      ? await window.api.getWeekCalendarData(weekAnchorKey.value, calendarRequestOptions())
+      : await window.api.getMonthCalendarData(
+          viewYear.value,
+          viewMonth.value,
+          calendarRequestOptions()
+        )
     if (sequence !== loadSequence) return
     const outgoing = manual ? startRefreshContentAnimation('out') : []
     if (manual) await waitForAnimations(outgoing)
@@ -481,6 +496,27 @@ async function refreshCalendarContent({ manual = false } = {}) {
 
 function refreshCalendar() {
   void refreshCalendarContent({ manual: true })
+}
+
+async function updateRecurringPreviewEnabled(nextValue) {
+  if (recurringPreviewSaving.value) return
+  const next = Boolean(nextValue)
+  const previous = recurringPreviewEnabled.value
+  if (next === previous) return
+
+  recurringPreviewEnabled.value = next
+  recurringPreviewSaving.value = true
+  try {
+    await window.api.setSettingValue('calendar.recurringPreviewEnabled', next)
+    await refreshCalendarContent()
+  } catch (error) {
+    recurringPreviewEnabled.value = previous
+    console.error('[MonthWorkspace] 保存循环便签预览设置失败:', error)
+    showMessage('error', error?.message || '无法切换循环便签预览')
+    await refreshCalendarContent()
+  } finally {
+    recurringPreviewSaving.value = false
+  }
 }
 
 function statusTimerKey(noteId, kind) {
@@ -826,6 +862,7 @@ onMounted(async () => {
   try {
     const snapshot = await window.api.getSettingsSnapshot()
     weatherEnabled.value = Boolean(snapshot?.values?.weather?.enabled)
+    recurringPreviewEnabled.value = Boolean(snapshot?.values?.calendar?.recurringPreviewEnabled)
     dayPanelSize.value = Math.min(
       50,
       Math.max(25, Number(snapshot?.values?.ui?.dayPanelSize) || defaultDayPanelSize)
@@ -834,8 +871,14 @@ onMounted(async () => {
     console.warn('[MonthWorkspace] 读取日期侧栏设置失败:', error)
   }
   stopNotesListener = window.api.onNotesChanged?.(queueNotesRefresh)
+  stopTemplatesListener = window.api.onTemplatesChanged?.(queueNotesRefresh)
   stopHolidayDataListener = window.api.onHolidayDataChanged?.(queueNotesRefresh)
   stopWeatherSettingsListener = window.api.onSettingsChanged?.((snapshot) => {
+    const nextRecurringPreviewEnabled = Boolean(snapshot?.values?.calendar?.recurringPreviewEnabled)
+    if (nextRecurringPreviewEnabled !== recurringPreviewEnabled.value) {
+      recurringPreviewEnabled.value = nextRecurringPreviewEnabled
+      queueNotesRefresh()
+    }
     weatherEnabled.value = Boolean(snapshot?.values?.weather?.enabled)
     if (weatherEnabled.value && snapshot?.values?.weather?.location) {
       void loadWeather({ quiet: true })
@@ -874,6 +917,7 @@ watch(
 
 onBeforeUnmount(() => {
   stopNotesListener?.()
+  stopTemplatesListener?.()
   stopHolidayDataListener?.()
   stopWeatherSettingsListener?.()
   stopWeatherForecastListener?.()
@@ -923,12 +967,15 @@ onBeforeUnmount(() => {
           :refreshing="refreshing"
           :busy="transitioning"
           :weather-location-label="toolbarWeatherLocation"
+          :recurring-preview-enabled="recurringPreviewEnabled"
+          :recurring-preview-saving="recurringPreviewSaving"
           @previous="goPrevious"
           @next="goNext"
           @today="goToday"
           @jump="jumpTo"
           @jump-date="jumpToDate"
           @refresh="refreshCalendar"
+          @update:recurring-preview-enabled="updateRecurringPreviewEnabled"
           @toggle-day-panel="toggleDayPanel"
           @historical-notes-moved="onHistoricalNotesMoved"
         />
@@ -937,6 +984,7 @@ onBeforeUnmount(() => {
             :view-mode="viewMode"
             :days="calendarData.days"
             :notes="calendarData.notes"
+            :recurring-previews="calendarData.recurringPreviews || []"
             :selected-key="selectedKey"
             :today-key="todayKey"
             :weather-by-date="weatherByDate"

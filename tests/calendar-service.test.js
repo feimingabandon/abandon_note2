@@ -6,7 +6,8 @@ import {
 
 const mocks = vi.hoisted(() => ({
   queryCalendarNotes: vi.fn(),
-  buildCalendarDayMetadata: vi.fn()
+  buildCalendarDayMetadata: vi.fn(),
+  buildRecurringNotePreviews: vi.fn()
 }))
 
 vi.mock('../src/main/db/db-notes.js', () => ({
@@ -15,6 +16,10 @@ vi.mock('../src/main/db/db-notes.js', () => ({
 
 vi.mock('../src/main/calendar/calendar-metadata.js', () => ({
   buildCalendarDayMetadata: mocks.buildCalendarDayMetadata
+}))
+
+vi.mock('../src/main/calendar/recurring-note-preview.js', () => ({
+  buildRecurringNotePreviews: mocks.buildRecurringNotePreviews
 }))
 
 let getMonthCalendarData
@@ -45,6 +50,12 @@ beforeEach(() => {
   mocks.queryCalendarNotes.mockReset()
   mocks.buildCalendarDayMetadata.mockReset()
   mocks.buildCalendarDayMetadata.mockImplementation(metadataRange)
+  mocks.buildRecurringNotePreviews.mockReset()
+  mocks.buildRecurringNotePreviews.mockReturnValue({
+    items: [],
+    truncated: false,
+    skippedTemplateIds: []
+  })
 })
 
 describe('calendar service ranges', () => {
@@ -139,5 +150,30 @@ describe('calendar service ranges', () => {
       detailLabel: '',
       holiday: null
     })
+  })
+
+  it('adds future recurring previews only when the caller enables them', () => {
+    mocks.queryCalendarNotes.mockReturnValue([])
+    const preview = candidate('recurrence-preview:2:1', '2026-08-12')
+    mocks.buildRecurringNotePreviews.mockReturnValue({
+      items: [preview],
+      truncated: false,
+      skippedTemplateIds: []
+    })
+
+    const disabled = getWeekCalendarData('2026-08-12')
+    const enabled = getWeekCalendarData('2026-08-12', {
+      includeRecurringPreviews: true,
+      now: localMidnightTimestamp('2026-08-10')
+    })
+
+    expect(disabled.recurringPreviews).toEqual([])
+    expect(mocks.buildRecurringNotePreviews).toHaveBeenCalledTimes(1)
+    expect(mocks.buildRecurringNotePreviews).toHaveBeenCalledWith({
+      rangeStart: '2026-08-10',
+      rangeEnd: '2026-08-16',
+      now: localMidnightTimestamp('2026-08-10')
+    })
+    expect(enabled.recurringPreviews).toEqual([preview])
   })
 })

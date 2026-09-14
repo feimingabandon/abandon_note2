@@ -18,14 +18,24 @@ export function registerCalendarIpcHandlers({ ipcMain, dialog, shell, getMainWin
       window.webContents.send('calendar:holiday-data-changed', payload)
   }
 
-  ipcMain.handle('calendar:get-month', (event, { year, month } = {}) => {
-    assertAuthorized(event)
-    return getMonthCalendarData(year, month)
-  })
-  ipcMain.handle('calendar:get-week', (event, { anchorDate } = {}) => {
-    assertAuthorized(event)
-    return getWeekCalendarData(anchorDate)
-  })
+  ipcMain.handle(
+    'calendar:get-month',
+    (event, { year, month, includeRecurringPreviews = false } = {}) => {
+      assertAuthorized(event)
+      return getMonthCalendarData(year, month, {
+        includeRecurringPreviews: !!includeRecurringPreviews
+      })
+    }
+  )
+  ipcMain.handle(
+    'calendar:get-week',
+    (event, { anchorDate, includeRecurringPreviews = false } = {}) => {
+      assertAuthorized(event)
+      return getWeekCalendarData(anchorDate, {
+        includeRecurringPreviews: !!includeRecurringPreviews
+      })
+    }
+  )
   ipcMain.handle('calendar:holiday-data-status', (event, { year } = {}) => {
     assertAuthorized(event)
     return getHolidayDataStatus(year)

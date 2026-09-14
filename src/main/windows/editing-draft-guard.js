@@ -1,50 +1,89 @@
-/** All destructive main-view lifecycle paths share this negotiation. */
-export function createEditingDraftGuard({ dialog, logger }) {
+/** Negotiate with the application's own dialog; never lock the native parent window. */
+export function createEditingDraftGuard({ logger, reveal = () => {} }) {
   let pending = null
   return (window, action) => {
     if (pending) return pending
     pending = (async () => {
       if (!window || window.isDestroyed() || window.webContents.isCrashed()) return true
-      let timer
-      try {
-        const state = await Promise.race([
-          window.webContents.executeJavaScript(
-            'window.__prepareEditingDrafts?.() ?? { dirty: false, blocked: false }'
-          ),
-          new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error('草稿检查超时')), 3000)
-          })
-        ])
-        if (state.blocked) {
-          await dialog.showMessageBox(window, {
-            type: 'warning',
-            message: '请先完成保存，再' + action,
-            detail: '正在提交内容，或草稿暂存失败。当前窗口将保持打开。',
-            buttons: ['返回编辑']
-          })
+      const contents = window.webContents
+      let cancelled = false
+      let cancelRequest
+      const cancellation = new Promise((resolve) => {
+        cancelRequest = resolve
+      })
+      function cancel() {
+        cancelled = true
+        cancelRequest(false)
+        if (!window.isDestroyed() && !contents.isDestroyed?.() && !contents.isCrashed()) {
+          void contents
+            .executeJavaScript('window.__cancelEditingDraftConfirmation?.()')
+            .catch(() => {})
+        }
+      }
+      function onNavigation(_event, _url, _inPlace, isMainFrame) {
+        if (isMainFrame) cancel()
+      }
+      function notify(text) {
+        if (!cancelled && !window.isDestroyed())
+          contents.send?.('app:message', { type: 'warning', text })
+      }
+      async function readState() {
+        let timer
+        try {
+          return await Promise.race([
+            contents.executeJavaScript(
+              'window.__prepareEditingDrafts?.() ?? { dirty: false, blocked: false }'
+            ),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error('草稿检查超时')), 3000)
+            })
+          ])
+        } finally {
+          clearTimeout(timer)
+        }
+      }
+      async function negotiate() {
+        try {
+          const state = await readState()
+          if (cancelled) return false
+          if (!state.dirty && !state.blocked) return true
+          await reveal(window)
+          if (cancelled) return false
+          if (state.blocked) {
+            notify('正在保存或草稿暂存失败，请先完成保存，再' + action + '。')
+            return false
+          }
+          const accepted = await contents.executeJavaScript(
+            'window.__confirmEditingDrafts(' + JSON.stringify(action) + ')'
+          )
+          if (!accepted || cancelled) return false
+          // Attachments or another save may finish while the dialog is open.
+          const latest = await readState()
+          if (cancelled) return false
+          if (latest.blocked) {
+            notify('草稿尚未安全暂存，请先保存内容后重试。')
+            return false
+          }
+          return true
+        } catch (error) {
+          if (!cancelled) {
+            logger.error('editing-draft.guard', error)
+            notify('暂时无法确认草稿已安全暂存，本次操作已取消，请保存内容后重试。')
+          }
           return false
         }
-        if (!state.dirty) return true
-        const { response } = await dialog.showMessageBox(window, {
-          type: 'question',
-          message: '有尚未保存的编辑内容',
-          detail: '草稿已在本机暂存。继续后，重新打开对应编辑器即可恢复；也可以在设置中导出草稿。',
-          buttons: ['返回编辑', '保留草稿并' + action],
-          defaultId: 0,
-          cancelId: 0
-        })
-        return response === 1
-      } catch (error) {
-        logger.error('editing-draft.guard', error)
-        await dialog.showMessageBox(window, {
-          type: 'warning',
-          message: '暂时无法确认编辑内容已安全保存',
-          detail: '本次操作已取消，请返回窗口保存内容后重试。',
-          buttons: ['返回']
-        })
-        return false
+      }
+      window.on?.('closed', cancel)
+      window.on?.('hide', cancel)
+      contents.on?.('render-process-gone', cancel)
+      contents.on?.('did-start-navigation', onNavigation)
+      try {
+        return await Promise.race([negotiate(), cancellation])
       } finally {
-        clearTimeout(timer)
+        window.removeListener?.('closed', cancel)
+        window.removeListener?.('hide', cancel)
+        contents.removeListener?.('render-process-gone', cancel)
+        contents.removeListener?.('did-start-navigation', onNavigation)
       }
     })().finally(() => {
       pending = null

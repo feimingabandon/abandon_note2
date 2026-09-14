@@ -9,13 +9,30 @@ const props = defineProps({
 })
 const emit = defineEmits(['open-context-menu'])
 const { enabled: doubleClickQuickEditEnabled } = useQuickNoteEditSetting()
+const isRecurringPreview = computed(() => props.note.preview_kind === 'recurrence')
 const accent = computed(() => {
+  if (isRecurringPreview.value) return props.note.tags?.[0]?.color || '#0a84ff'
   if (props.note.status === 'completed') return '#8e8e93'
   const tagColor = props.note.tags?.[0]?.color
   if (tagColor) return tagColor
   return { initialized: '#0a84ff', in_progress: '#ff9f0a' }[props.note.status]
 })
-const fullTitle = computed(() => String(props.note.content || '').trim())
+const scheduledTimeLabel = computed(() =>
+  new Date(Number(props.note.effective_at)).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })
+)
+const fullTitle = computed(() => {
+  const content = String(props.note.content || '').trim()
+  return isRecurringPreview.value
+    ? `循环便签预览 · 预计 ${scheduledTimeLabel.value} 生成 · 只读\n${content}`
+    : content
+})
 const previewText = computed(() => {
   const lines = String(props.note.content || '').split(/\r?\n/)
   return lines.map((line) => line.trim()).find(Boolean) || ''
@@ -96,7 +113,7 @@ async function toggleTooltip() {
 
 function scheduleTooltipToggle(event) {
   clearScheduledTooltipToggle()
-  if (!doubleClickQuickEditEnabled.value || event.detail === 0) {
+  if (isRecurringPreview.value || !doubleClickQuickEditEnabled.value || event.detail === 0) {
     void toggleTooltip()
     return
   }
@@ -113,7 +130,8 @@ function clearScheduledTooltipToggle() {
 }
 
 function openQuickEditor(event) {
-  if (!doubleClickQuickEditEnabled.value || quickEditorVisible.value) return
+  if (isRecurringPreview.value || !doubleClickQuickEditEnabled.value || quickEditorVisible.value)
+    return
   clearScheduledTooltipToggle()
   event.preventDefault()
   event.stopPropagation()
@@ -142,6 +160,7 @@ function closeTooltip() {
 
 function openContextMenu(event) {
   closeTooltip()
+  if (isRecurringPreview.value) return
   emit('open-context-menu', { event, note: props.note })
 }
 
@@ -178,7 +197,11 @@ onBeforeUnmount(() => {
     class="month-event-bar"
     :class="[
       `is-${note.status}`,
-      { 'continues-before': segment.continuesBefore, 'continues-after': segment.continuesAfter }
+      {
+        'is-recurring-preview': isRecurringPreview,
+        'continues-before': segment.continuesBefore,
+        'continues-after': segment.continuesAfter
+      }
     ]"
     :style="{
       '--event-accent': accent,
@@ -202,7 +225,7 @@ onBeforeUnmount(() => {
   </button>
 
   <QuickNoteContentEditor
-    v-if="quickEditorVisible && quickEditorAnchor"
+    v-if="!isRecurringPreview && quickEditorVisible && quickEditorAnchor"
     :note="note"
     :anchor-rect="quickEditorAnchor"
     @close="closeQuickEditor"
@@ -269,6 +292,25 @@ onBeforeUnmount(() => {
 }
 .month-event-bar.is-completed {
   opacity: 0.72;
+}
+.month-event-bar.is-recurring-preview {
+  background: color-mix(in srgb, var(--event-accent) 24%, var(--ui-surface-subtle));
+  box-shadow: none;
+  color: var(--text-color-secondary);
+  cursor: help;
+  opacity: 0.72;
+}
+.month-event-bar.is-recurring-preview:hover {
+  filter: none;
+  opacity: 0.88;
+}
+.month-event-bar.is-recurring-preview:active {
+  filter: none;
+}
+.month-event-bar.is-recurring-preview .month-event-bar__dot {
+  box-sizing: border-box;
+  border: 1px solid currentColor;
+  background: transparent;
 }
 .month-event-bar__dot {
   width: 5rem;

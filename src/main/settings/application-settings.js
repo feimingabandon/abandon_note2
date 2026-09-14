@@ -43,6 +43,7 @@ const APPLICATION_SETTING_DB_KEYS = new Set([
   'remote:upload_device_info',
   'weather:enabled',
   'weather:location',
+  'calendar:recurring_preview_enabled',
   'interaction:double_click_quick_edit',
   'notes:auto_move_yesterday',
   'notes:auto_move_last_date',
@@ -86,6 +87,7 @@ export function readApplicationSettings() {
     },
     shortcuts: { ...applicationResolved.shortcuts },
     interaction: { ...applicationResolved.interaction },
+    calendar: { ...applicationResolved.calendar },
     notes: { ...applicationResolved.notes },
     window: { ...applicationResolved.window },
     weather: applicationResolved.weather,
@@ -233,6 +235,7 @@ export function writeApplicationSetting(id, value) {
     id !== 'appearance.titlebarIconScale' &&
     id !== 'appearance.iconColor' &&
     id !== 'shortcuts.viewVisibility' &&
+    id !== 'calendar.recurringPreviewEnabled' &&
     id !== 'interaction.doubleClickQuickEdit' &&
     id !== 'notes.autoMoveYesterday' &&
     id !== 'window.lockState' &&

@@ -137,6 +137,24 @@ describe('month multi-day event layout', () => {
     expect(segments.find((item) => item.noteId === 22).lane).toBe(0)
   })
 
+  it('places read-only recurring previews after every real note and supports stable string ids', () => {
+    const real = note(25, 2026, 8, 12, 1, { status: 'completed' })
+    const preview = note('recurrence-preview:4:1', 2026, 8, 12, 1, {
+      preview_kind: 'recurrence',
+      read_only: true,
+      is_pinned: 1
+    })
+
+    const segments = buildCalendarEventSegments(days, [preview, real])
+
+    expect(segments.find((item) => item.noteId === 25).lane).toBe(0)
+    expect(segments.find((item) => item.noteId === preview.id).lane).toBe(1)
+    expect(notesCoveringDate([preview, real], '2026-08-12').map((item) => item.id)).toEqual([
+      25,
+      preview.id
+    ])
+  })
+
   it('reports overflow even when no event lane fits in the date cell', () => {
     expect(hasHiddenCalendarNotes(4, 0)).toBe(true)
     expect(hasHiddenCalendarNotes(4, 4)).toBe(false)

@@ -198,6 +198,23 @@ describe('application view settings', () => {
     )
   })
 
+  it('shares the recurring note preview switch between month and week', () => {
+    expect(readApplicationSettings().calendar.recurringPreviewEnabled).toBe(false)
+
+    writeApplicationSetting('calendar.recurringPreviewEnabled', true)
+
+    expect(readApplicationSettings().calendar.recurringPreviewEnabled).toBe(true)
+    expect(db.rowsByScope.get('application')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'calendar',
+          key: 'recurring_preview_enabled',
+          value: '1'
+        })
+      ])
+    )
+  })
+
   it('writes compact geometry atomically and rejects unrelated batch entries', () => {
     writeApplicationSettings([
       { id: 'window.compact.enabled', value: true },

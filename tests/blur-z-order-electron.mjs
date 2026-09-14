@@ -72,6 +72,9 @@ app.once('ready', async () => {
       'float'
     ])
     const blurReSyncOrder = blurLibrary.func('Blur_ReSyncOrder', 'void', [])
+    const blurFailureDetails = blurLibrary.func('Blur_GetLastFailureJson', 'str', [])
+    assert.equal(blurApplyConfig(1, 20, 1.8, 12, 255, 255, 255, 0.3), 0)
+    assert.equal(JSON.parse(blurFailureDetails()).stage, 'apply-config-not-ready')
     const blurIsZOrderSynchronized = blurLibrary.func('Blur_IsZOrderSynchronized', 'int', [])
     const moveWindowPhysical = blurLibrary.func('WindowMotion_MoveWindow', 'int', [
       'intptr_t',

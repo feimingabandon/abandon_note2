@@ -129,11 +129,21 @@ async function run() {
     await until(() => js('window.__prepareEditingDrafts().dirty'), 'dirty state')
     const first = current
     await js("window.api.switchMainView('month')")
-    await until(() => dialogs > 0, 'cancel dialog')
+    await until(
+      () => js("Boolean(document.querySelector('.confirm-card.active'))"),
+      'cancel dialog'
+    )
+    await js("document.querySelector('.confirm-actions button').click()")
+    await until(() => js("!document.querySelector('.confirm-card')"), 'cancelled dialog')
     assert.equal(first.isDestroyed(), false)
     results.push('view cancellation preserves window')
     response = 1
     await js("window.api.switchMainView('month')")
+    await until(
+      () => js("Boolean(document.querySelector('.confirm-card.active'))"),
+      'confirm dialog'
+    )
+    await js("document.querySelector('.confirm-actions button:last-child').click()")
     await until(() => first.isDestroyed(), 'old window replaced')
     await view('month')
     await js("window.api.switchMainView('list')")
@@ -256,7 +266,10 @@ async function run() {
       'settings search results'
     )
     await js("document.querySelector('.settings-search-results button').click()")
-    assert.equal(await js("Boolean(document.activeElement.closest('.settings-section'))"), true)
+    await until(
+      () => js("Boolean(document.activeElement.closest('.settings-section'))"),
+      'animated settings navigation'
+    )
     for (const theme of ['white', 'black', 'wallpaper']) {
       await js(
         "(()=>{const e=document.documentElement;e.style.setProperty('--bg-color'," +
@@ -327,10 +340,14 @@ async function run() {
     assert.equal(await js("document.activeElement.matches('.ts-more')"), true)
     results.push('tag popover narrow-window bounds and focus restoration')
     await fill('.app-editor textarea', 'exit cancellation draft')
-    const previousDialogs = dialogs
     response = 0
     app.quit()
-    await until(() => dialogs > previousDialogs, 'quit confirmation')
+    await until(
+      () => js("Boolean(document.querySelector('.confirm-card.active'))"),
+      'quit confirmation'
+    )
+    await js("document.querySelector('.confirm-actions button').click()")
+    await until(() => js("!document.querySelector('.confirm-card')"), 'quit cancelled')
     assert.equal(current.isDestroyed(), false)
     assert.equal(
       await js("document.querySelector('.app-editor textarea').value"),

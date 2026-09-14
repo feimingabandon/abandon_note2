@@ -1,4 +1,6 @@
 <script setup>
+import EditingDraftDialog from './components/system/EditingDraftDialog.vue'
+import { editingDataGeneration } from './composables/useDraftProtection.js'
 import { defineAsyncComponent } from 'vue'
 /**
  * App.vue — 应用根组件
@@ -642,12 +644,18 @@ onUnmounted(() => {
             :inert="templateInteractive || helpInteractive"
           >
             <ActionBar
+              :key="'create:' + editingDataGeneration"
               ref="actionBarRef"
               class="app-search"
               @create="onCreateNote"
               @edit="onEditNote"
             />
-            <NoteList ref="noteListRef" class="app-list" @edit="onEditNote" />
+            <NoteList
+              :key="'list:' + editingDataGeneration"
+              ref="noteListRef"
+              class="app-list"
+              @edit="onEditNote"
+            />
           </main>
 
           <div
@@ -665,7 +673,7 @@ onUnmounted(() => {
               @transitionend="onTemplateTransitionEnd"
               @transitioncancel="onTemplateTransitionCancel"
             >
-              <TemplatePage />
+              <TemplatePage :key="editingDataGeneration" />
             </div>
           </div>
 
@@ -766,6 +774,7 @@ onUnmounted(() => {
     <DailyReportDialog v-model:visible="showDailyReportDialog" />
 
     <!-- 应用内消息弹窗（Apple 风格 Toast，固定顶部居中） -->
+    <EditingDraftDialog />
     <MessageToast />
   </div>
 </template>

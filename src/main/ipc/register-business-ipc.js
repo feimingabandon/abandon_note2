@@ -130,6 +130,16 @@ export function registerBusinessIpcHandlers({
     sendToWindows(getBroadcastWindows, 'tags:changed', { reason, ...payload })
     return result
   }
+  const broadcastTemplateChange = (reason, result, payload = {}) => {
+    if (!result) return result
+    const id = Number(result?.id ?? payload.id)
+    sendToWindows(getBroadcastWindows, 'templates:changed', {
+      reason,
+      ...(Number.isInteger(id) && id > 0 ? { ids: [id] } : {}),
+      ...payload
+    })
+    return result
+  }
 
   ipcMain.handle('notes:create', (_event, options) => {
     return broadcastNoteChange('create', createNote(normalizeUserCreateOptions(options)))
@@ -457,19 +467,27 @@ export function registerBusinessIpcHandlers({
   ipcMain.handle('note-tags:list', (_event, { noteId }) => getNoteTags(noteId))
 
   ipcMain.handle('templates:create', (_event, options) => {
-    return createTemplate(enforceNotificationPolicy(options))
+    return broadcastTemplateChange('create', createTemplate(enforceNotificationPolicy(options)))
   })
   ipcMain.handle('templates:update', (_event, { id, fields }) => {
-    return updateTemplate(id, enforceNotificationPolicy(fields))
+    return broadcastTemplateChange('update', updateTemplate(id, enforceNotificationPolicy(fields)))
   })
-  ipcMain.handle('templates:delete', (_event, { id }) => deleteTemplate(id))
+  ipcMain.handle('templates:delete', (_event, { id }) =>
+    broadcastTemplateChange('delete', deleteTemplate(id), { id: Number(id) })
+  )
   ipcMain.handle('templates:list', (_event, options) => listTemplates(options || {}))
   ipcMain.handle('templates:get', (_event, { id, includeDeleted }) =>
     getTemplateById(id, { includeDeleted: !!includeDeleted })
   )
-  ipcMain.handle('templates:pause', (_event, { id }) => pauseTemplate(id))
-  ipcMain.handle('templates:resume', (_event, { id }) => resumeTemplate(id))
-  ipcMain.handle('templates:restore', (_event, { id }) => restoreTemplate(id))
+  ipcMain.handle('templates:pause', (_event, { id }) =>
+    broadcastTemplateChange('pause', pauseTemplate(id))
+  )
+  ipcMain.handle('templates:resume', (_event, { id }) =>
+    broadcastTemplateChange('resume', resumeTemplate(id))
+  )
+  ipcMain.handle('templates:restore', (_event, { id }) =>
+    broadcastTemplateChange('restore', restoreTemplate(id))
+  )
   ipcMain.handle('templates:purge', (_event, { id }) => {
     const templateId = Number(id)
     const purged = purgeTemplate(templateId)
@@ -478,6 +496,7 @@ export function registerBusinessIpcHandlers({
         templateId,
         viewMode: getViewMode()
       })
+      broadcastTemplateChange('purge', true, { id: templateId })
     }
     return purged
   })

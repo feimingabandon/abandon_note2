@@ -52,7 +52,22 @@ describe('calendar IPC', () => {
     expect(
       harness.handlers.get('calendar:get-week')(harness.event, { anchorDate: '2026-08-12' })
     ).toBe(expected)
-    expect(mocks.getWeekCalendarData).toHaveBeenCalledWith('2026-08-12')
+    expect(mocks.getWeekCalendarData).toHaveBeenCalledWith('2026-08-12', {
+      includeRecurringPreviews: false
+    })
+  })
+
+  it('forwards the recurring preview switch to the calendar service', () => {
+    const harness = createHarness()
+
+    harness.handlers.get('calendar:get-week')(harness.event, {
+      anchorDate: '2026-08-12',
+      includeRecurringPreviews: true
+    })
+
+    expect(mocks.getWeekCalendarData).toHaveBeenCalledWith('2026-08-12', {
+      includeRecurringPreviews: true
+    })
   })
 
   it('rejects week requests from a different renderer', () => {

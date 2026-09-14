@@ -22,6 +22,7 @@ const props = defineProps({
   viewMode: { type: String, default: 'month' },
   days: { type: Array, default: () => [] },
   notes: { type: Array, default: () => [] },
+  recurringPreviews: { type: Array, default: () => [] },
   selectedKey: { type: String, default: '' },
   todayKey: { type: String, required: true },
   weatherByDate: { type: Map, default: () => new Map() }
@@ -68,20 +69,27 @@ function isActiveDay(day) {
 }
 
 const activeDays = computed(() => props.days.filter(isActiveDay))
+const calendarItems = computed(() => [...props.notes, ...props.recurringPreviews])
 const segments = computed(() =>
-  buildCalendarEventSegments(props.days, props.notes, {
+  buildCalendarEventSegments(props.days, calendarItems.value, {
     activeStartKey: activeDays.value[0]?.key,
     activeEndKey: activeDays.value.at(-1)?.key
   })
 )
-const noteById = computed(() => new Map(props.notes.map((note) => [Number(note.id), note])))
-const noteCounts = computed(() => noteCountsByDate(activeDays.value, props.notes))
+const noteById = computed(() => new Map(calendarItems.value.map((note) => [String(note.id), note])))
+const noteCounts = computed(() => noteCountsByDate(activeDays.value, calendarItems.value))
+const recurringPreviewCounts = computed(() =>
+  noteCountsByDate(activeDays.value, props.recurringPreviews)
+)
 const dayPreviewNotes = computed(() =>
-  dayPreviewKey.value ? notesCoveringDate(props.notes, dayPreviewKey.value) : []
+  dayPreviewKey.value ? notesCoveringDate(calendarItems.value, dayPreviewKey.value) : []
+)
+const dayPreviewRealNoteCount = computed(() =>
+  dayPreviewKey.value ? notesCoveringDate(props.notes, dayPreviewKey.value).length : 0
 )
 const contextMenuNote = computed(() => {
   if (contextMenuTarget.value?.type !== 'note') return null
-  return noteById.value.get(Number(contextMenuTarget.value.noteId)) || null
+  return noteById.value.get(String(contextMenuTarget.value.noteId)) || null
 })
 const visibleNoteCounts = computed(() => {
   const counts = new Map()
@@ -148,9 +156,11 @@ function dayHasHiddenNotes(day) {
 
 function dayCountLabel(day) {
   const total = noteCounts.value.get(day.key) || 0
+  const previewCount = recurringPreviewCounts.value.get(day.key) || 0
+  const previewSuffix = previewCount ? `，其中 ${previewCount} 条循环便签预览` : ''
   return dayHasHiddenNotes(day)
-    ? `${day.key} 共 ${total} 条便签，已显示 ${visibleNoteCounts.value.get(day.key) || 0} 条，点击预览全部`
-    : `${day.key} 共 ${total} 条便签`
+    ? `${day.key} 共 ${total} 条便签${previewSuffix}，已显示 ${visibleNoteCounts.value.get(day.key) || 0} 条，点击预览全部`
+    : `${day.key} 共 ${total} 条便签${previewSuffix}`
 }
 
 function toggleCountPreview(day, event) {
@@ -272,7 +282,17 @@ function previewNoteText(note) {
   return Number(note?.attachment_count) > 0 ? '图片便签' : '空便签'
 }
 
+function previewScheduleLabel(note) {
+  if (note?.preview_kind !== 'recurrence') return ''
+  return `循环便签预览 · 预计 ${new Date(Number(note.effective_at)).toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })} 生成`
+}
+
 function previewNoteAccent(note) {
+  if (note?.preview_kind === 'recurrence') return note.tags?.[0]?.color || '#0a84ff'
   if (note?.status === 'completed') return '#8e8e93'
   if (note?.status === 'in_progress') return '#ff9f0a'
   return '#0a84ff'
@@ -314,7 +334,7 @@ async function openDayPreview(day, trigger = null) {
   dayPreviewKey.value = day.key
   dayPreviewVisible.value = true
   await positionDayPreview()
-  dayPreviewRef.value?.querySelector('button')?.focus()
+  dayPreviewRef.value?.querySelector('button:not(:disabled)')?.focus()
 }
 
 function openPreviewDayPanel() {
@@ -369,9 +389,9 @@ function openDayContextMenu(event, day) {
 }
 
 function openNoteContextMenu({ event, note }) {
-  if (!event || !note) return
+  if (!event || !note || note.read_only) return
   if (activeQuickCreateKey.value) closeQuickCreator()
-  void openContextMenu(event, { type: 'note', noteId: Number(note.id) })
+  void openContextMenu(event, { type: 'note', noteId: note.id })
 }
 
 function runContextMenuAction(action) {
@@ -628,7 +648,7 @@ watch([segments, () => props.days], async () => {
 })
 
 watch(
-  [() => props.notes, () => props.days.map((day) => day.key).join('|')],
+  [calendarItems, () => props.days.map((day) => day.key).join('|')],
   async ([nextNotes, nextDayRange], [previousNotes, previousDayRange]) => {
     if (nextNotes === previousNotes) return
     if (nextDayRange !== previousDayRange) {
@@ -892,7 +912,7 @@ useDraftProtection({
             )"
             :key="`${segment.noteId}-${segment.weekIndex}`"
             :segment="segment"
-            :note="noteById.get(Number(segment.noteId))"
+            :note="noteById.get(String(segment.noteId))"
             @open-context-menu="openNoteContextMenu"
           />
         </div>
@@ -960,8 +980,11 @@ useDraftProtection({
           <header class="month-day-preview__header">
             <button
               type="button"
-              title="展开左侧操作列表"
-              aria-label="展开左侧操作列表"
+              :disabled="dayPreviewRealNoteCount === 0"
+              :title="dayPreviewRealNoteCount ? '展开左侧操作列表' : '当天没有可操作的真实便签'"
+              :aria-label="
+                dayPreviewRealNoteCount ? '展开左侧操作列表' : '当天没有可操作的真实便签'
+              "
               @click="openPreviewDayPanel"
             >
               <svg viewBox="0 0 18 18" aria-hidden="true">
@@ -985,10 +1008,14 @@ useDraftProtection({
               v-for="note in dayPreviewNotes"
               :key="note.id"
               class="month-day-preview__note"
+              :class="{ 'is-recurring-preview': note.preview_kind === 'recurrence' }"
               :style="{ '--preview-note-accent': previewNoteAccent(note) }"
             >
               <span aria-hidden="true" />
-              <p>{{ previewNoteText(note) }}</p>
+              <p>
+                <small v-if="previewScheduleLabel(note)">{{ previewScheduleLabel(note) }}</small>
+                {{ previewNoteText(note) }}
+              </p>
             </article>
             <p v-if="!dayPreviewNotes.length" class="month-day-preview__empty">这一天还没有便签</p>
           </div>
@@ -1540,6 +1567,14 @@ useDraftProtection({
   background: var(--ui-fill-hover);
   color: var(--text-color);
 }
+.month-day-preview__header button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+.month-day-preview__header button:disabled:hover {
+  background: transparent;
+  color: var(--text-color-secondary);
+}
 .month-day-preview__header svg {
   width: 16rem;
   height: 16rem;
@@ -1578,6 +1613,16 @@ useDraftProtection({
   font-size: var(--fs-secondary);
   line-height: 1.48;
   white-space: pre-wrap;
+}
+.month-day-preview__note p small {
+  display: block;
+  margin-bottom: 3rem;
+  color: var(--text-color-secondary);
+  font-size: calc(var(--fs-secondary) * 0.82);
+  font-weight: 500;
+}
+.month-day-preview__note.is-recurring-preview {
+  opacity: 0.78;
 }
 .month-day-preview__empty {
   margin: 0;

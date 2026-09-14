@@ -1,6 +1,9 @@
 import { dateKeyFromOrdinal, dateOrdinal, noteDateRange } from './calendar-date-rules.js'
 
 function compareNotes(left, right) {
+  const previewDifference =
+    Number(left.preview_kind === 'recurrence') - Number(right.preview_kind === 'recurrence')
+  if (previewDifference) return previewDifference
   const completionDifference =
     Number(left.status === 'completed') - Number(right.status === 'completed')
   if (completionDifference) return completionDifference
@@ -12,7 +15,8 @@ function compareNotes(left, right) {
   const pinDifference = Number(Boolean(right.is_pinned)) - Number(Boolean(left.is_pinned))
   if (pinDifference) return pinDifference
   const timeDifference = Number(left.effective_at) - Number(right.effective_at)
-  return timeDifference || Number(left.id) - Number(right.id)
+  if (timeDifference) return timeDifference
+  return String(left.id).localeCompare(String(right.id), 'zh-CN', { numeric: true })
 }
 
 function laneIsFree(weekLanes, lane, columnStart, columnSpan) {
@@ -46,6 +50,7 @@ export function buildCalendarEventSegments(days, notes, { activeStartKey, active
   const segments = []
 
   for (const note of [...notes].sort(compareNotes)) {
+    const itemId = note.id
     const range = noteDateRange(note)
     const clippedStart = Math.max(range.startOrdinal, visibleStartOrdinal)
     const clippedEnd = Math.min(range.endOrdinal, visibleEndOrdinal)
@@ -59,7 +64,7 @@ export function buildCalendarEventSegments(days, notes, { activeStartKey, active
       const segmentEnd = Math.min(clippedEnd, weekStart + 6)
       const columnStart = segmentStart - weekStart + 1
       const columnSpan = segmentEnd - segmentStart + 1
-      const preferredLane = previousLaneByNote.get(note.id)
+      const preferredLane = previousLaneByNote.get(itemId)
       let lane = 0
       if (
         Number.isInteger(preferredLane) &&
@@ -70,9 +75,9 @@ export function buildCalendarEventSegments(days, notes, { activeStartKey, active
         while (!laneIsFree(weekLanes[weekIndex], lane, columnStart, columnSpan)) lane += 1
       }
       occupyLane(weekLanes[weekIndex], lane, columnStart, columnSpan)
-      previousLaneByNote.set(note.id, lane)
+      previousLaneByNote.set(itemId, lane)
       segments.push({
-        noteId: note.id,
+        noteId: itemId,
         weekIndex,
         columnStart,
         columnSpan,
@@ -89,7 +94,7 @@ export function buildCalendarEventSegments(days, notes, { activeStartKey, active
       left.weekIndex - right.weekIndex ||
       left.lane - right.lane ||
       left.columnStart - right.columnStart ||
-      Number(left.noteId) - Number(right.noteId)
+      String(left.noteId).localeCompare(String(right.noteId), 'zh-CN', { numeric: true })
   )
 }
 

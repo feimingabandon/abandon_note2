@@ -10,6 +10,7 @@ import {
   noteDateRange
 } from '../../shared/calendar/calendar-date-rules.js'
 import { buildCalendarDayMetadata } from './calendar-metadata.js'
+import { buildRecurringNotePreviews } from './recurring-note-preview.js'
 
 function emptyCalendarDayMetadata() {
   return {
@@ -38,7 +39,8 @@ function populateCalendarRange(
   rangeStart,
   rangeEnd,
   hasMetadata,
-  missingMetadata = () => ({})
+  missingMetadata = () => ({}),
+  { includeRecurringPreviews = false, now = Date.now() } = {}
 ) {
   const metadataByDate = buildSupportedRangeMetadata(rangeStart, rangeEnd)
   const visibleStartOrdinal = dateOrdinal(rangeStart)
@@ -57,34 +59,41 @@ function populateCalendarRange(
     const range = noteDateRange(note)
     return range.startOrdinal <= visibleEndOrdinal && range.endOrdinal >= visibleStartOrdinal
   })
+  const recurringPreviewResult = includeRecurringPreviews
+    ? buildRecurringNotePreviews({ rangeStart, rangeEnd, now })
+    : { items: [], truncated: false, skippedTemplateIds: [] }
   return {
     ...grid,
     days: grid.days.map((day) => ({
       ...day,
       metadata: hasMetadata(day) ? metadataByDate.get(day.key) || missingMetadata() : {}
     })),
-    notes
+    notes,
+    recurringPreviews: recurringPreviewResult.items,
+    recurringPreviewsTruncated: recurringPreviewResult.truncated
   }
 }
 
-export function getMonthCalendarData(year, month) {
+export function getMonthCalendarData(year, month, options = {}) {
   const grid = buildMonthGrid(year, month)
   return populateCalendarRange(
     grid,
     grid.visibleStart,
     grid.visibleEnd,
     () => true,
-    emptyCalendarDayMetadata
+    emptyCalendarDayMetadata,
+    options
   )
 }
 
-export function getWeekCalendarData(anchorDate) {
+export function getWeekCalendarData(anchorDate, options = {}) {
   const grid = buildWeekGrid(anchorDate)
   return populateCalendarRange(
     grid,
     grid.weekStart,
     grid.weekEnd,
     () => true,
-    emptyCalendarDayMetadata
+    emptyCalendarDayMetadata,
+    options
   )
 }

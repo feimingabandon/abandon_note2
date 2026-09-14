@@ -95,7 +95,13 @@ function getNativeError(fallback) {
   if (!lib) return { code: null, key: null, message: fallback }
   const code = lib.Blur_GetLastErrorCode()
   const key = lib.Blur_GetLastErrorMessage()
-  return { code, key, message: NATIVE_ERROR_MESSAGES[code] || fallback }
+  let details = null
+  try {
+    details = JSON.parse(lib.Blur_GetLastFailureJson())
+  } catch {
+    /* 诊断不可覆盖原始错误。 */
+  }
+  return { code, key, message: NATIVE_ERROR_MESSAGES[code] || fallback, details }
 }
 
 export function detectCapabilities() {
@@ -191,6 +197,7 @@ function initNative() {
     loaded.Blur_IsSupported = loaded.func('Blur_IsSupported', 'int', [])
     loaded.Blur_GetLastErrorCode = loaded.func('Blur_GetLastErrorCode', 'int', [])
     loaded.Blur_GetLastErrorMessage = loaded.func('Blur_GetLastErrorMessage', 'str', [])
+    loaded.Blur_GetLastFailureJson = loaded.func('Blur_GetLastFailureJson', 'str', [])
     loaded.WindowMotion_MoveWindow = loaded.func('WindowMotion_MoveWindow', 'int', [
       'intptr_t',
       'int',
@@ -496,6 +503,15 @@ export function finishWindowTransitionShell() {
     return lib.WindowTransition_FinishShell() === 1
   } catch {
     return false
+  }
+}
+
+export function getWindowTransitionStatus(window) {
+  if (process.platform !== 'win32' || !window || window.isDestroyed() || !lib) return null
+  try {
+    return JSON.parse(lib.WindowTransition_GetStatusJson(getWindowHandleValue(window)))
+  } catch {
+    return null
   }
 }
 

@@ -1333,7 +1333,7 @@ const onConfirmClearNoteData = async () => {
     showMessage('success', '便签数据已清空，设置已保留')
   } catch (e) {
     console.warn('[SettingsPanel] 清空便签数据失败:', e)
-    showMessage('error', '清空便签数据失败，请重试', 4000)
+    showMessage('error', e.message || '清空便签数据失败，请重试', 4000)
   }
 }
 
@@ -1372,6 +1372,12 @@ const onConfirmResetSettings = async () => {
   }
 }
 const settingsSearch = useSettingsSearch(panelRef)
+watch(
+  () => props.visible,
+  (visible) => {
+    if (!visible) settingsSearch.cancel()
+  }
+)
 async function retryScheduler() {
   try {
     schedulerHealth.value = await window.api.retryScheduler()
@@ -1495,6 +1501,9 @@ function exportEditingDrafts() {
           :class="{ 'is-resetting': isResetting }"
           :disabled="isResetting"
           :inert="isResetting"
+          @wheel.passive="settingsSearch.cancel"
+          @pointerdown="settingsSearch.cancel"
+          @keydown="settingsSearch.cancel"
         >
           <!-- ========== 基础样式 ========== -->
           <section class="settings-section">
@@ -2445,7 +2454,7 @@ function exportEditingDrafts() {
     <ConfirmDialog
       v-model:visible="showClearNoteDataDialog"
       title="清空便签数据"
-      message="此操作将清空所有便签、模板、标签和附件数据，设置不受影响。此操作不可撤销。"
+      message="此操作将清空所有便签、模板、标签、附件和未保存草稿，设置不受影响。此操作不可撤销。"
       confirm-text="清空"
       cancel-text="取消"
       variant="danger"

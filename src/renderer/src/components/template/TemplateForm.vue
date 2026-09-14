@@ -292,7 +292,11 @@ const protectedDraft = useDraftProtection({
     tagIds
   },
   dirty: () => hasChanges.value,
-  busy: () => props.submitting
+  busy: () => props.submitting,
+  restoreExtra: () => {
+    // Restored time is already a user choice; first expansion must not replace it.
+    hasActivated = true
+  }
 })
 </script>
 

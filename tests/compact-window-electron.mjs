@@ -763,7 +763,7 @@ async function assertDiagnosticExport(window) {
   // 单次事务采样应在本地日志里完整保留，不依赖开发者工具或逐帧 IPC。
   const native = await waitUntil(async () => {
     const result = await window.webContents.executeJavaScript(
-      `window.api.queryLogs({ scope: 'compact-window.native-diagnostics', limit: 10 })`
+      `window.api.queryLogs({ search: 'compact-window.native-diagnostics', limit: 10 })`
     )
     return result.items.find(
       (item) =>
@@ -793,7 +793,7 @@ async function assertDiagnosticExport(window) {
   }
   await waitUntil(async () => {
     const result = await window.webContents.executeJavaScript(
-      `window.api.queryLogs({ scope: 'compact-window.renderer-diagnostics', limit: 10 })`
+      `window.api.queryLogs({ search: 'compact-window.renderer-diagnostics', limit: 10 })`
     )
     return result.items.find(
       (item) =>
@@ -1308,7 +1308,7 @@ async function runViewReplacementTest(window) {
   const oldId = window.id
   const compactBounds = window.getBounds()
   const hooks = globalThis.__ABANDON_COMPACT_TEST_HOOKS__
-  assert.equal(hooks.switchMainView('month'), true, '胶囊状态下切换月视图失败')
+  assert.equal(await hooks.switchMainView('month'), true, '胶囊状态下切换月视图失败')
   const replacement = await waitUntil(
     () => getMainWindow('month.html'),
     '胶囊状态下没有创建新的月视图'
@@ -1392,6 +1392,98 @@ async function runCompactWindowTest() {
     const startupRenderer = await assertCompactContent(mainWindow, startupCompactBounds)
     await assertZOrderMode(mainWindow, '胶囊冷启动')
     assertBlurRuntimeHealthy('胶囊冷启动')
+
+    if (process.argv.includes('diagnostics-only')) {
+      await mainWindow.webContents.executeJavaScript('window.api.exitCompactWindow()')
+      const area = screen.getDisplayMatching(mainWindow.getBounds()).workArea
+      mainWindow.setBounds({
+        x: area.x + 100,
+        y: area.y + 56,
+        width: 480,
+        height: Math.min(936, area.height - 60)
+      })
+      await mainWindow.webContents.executeJavaScript(`Promise.all([
+        window.api.setSettingValue('window.compact.width', 192),
+        window.api.setSettingValue('window.compact.height', 69)
+      ])`)
+      await wait(300)
+      for (const enabled of [false, true]) {
+        await mainWindow.webContents.executeJavaScript(
+          `window.api.setBlurConfig({ enabled: ${enabled} })`
+        )
+        for (const [action, phase] of [
+          ['enter', 'collapsing'],
+          ['exit', 'expanding']
+        ]) {
+          await mainWindow.webContents.executeJavaScript(`window.api.${action}CompactWindow()`)
+          const handoff = await waitUntil(async () => {
+            const logs = await mainWindow.webContents.executeJavaScript(
+              "window.api.queryLogs({ search: 'compact-window.handoff-diagnostics', limit: 1 })"
+            )
+            const item = logs.items[0]?.metadata
+            return item?.phase === phase &&
+              item.reason === 'settled' &&
+              item.samples.at(-1)?.native?.overlayExpected === enabled
+              ? item
+              : null
+          }, `missing ${phase} handoff diagnostics (blur ${enabled})`)
+          const samples = handoff.samples
+          assert.equal(samples[0].stage, 'before-handoff')
+          assert.equal(samples[0].opacity, 0)
+          assert.equal(samples[0].native.shellPrepared, true)
+          assert.deepEqual(
+            samples[0].native.overlayRect,
+            samples[0].native.parentRect,
+            '普通材质到交接前仍然停留在旧坐标'
+          )
+          assert.equal(samples[0].native.visualWidth, handoff.target.width)
+          assert.equal(samples[0].native.visualHeight, handoff.target.height)
+          const released = samples.find((sample) => sample.stage === 'shell-released')
+          assert.equal(released.opacity, 1)
+          assert.equal(released.native.shellPrepared, false)
+          assert.equal(released.native.shellVisible, false)
+          assert.equal(samples.at(-1).stage, 'tail-200')
+          assert.ok(
+            samples.every((sample) => !sample.native.timing && Number.isFinite(sample.readMs))
+          )
+          const renderer = await waitUntil(async () => {
+            const logs = await mainWindow.webContents.executeJavaScript(
+              "window.api.queryLogs({ search: 'compact-window.renderer-diagnostics', limit: 5 })"
+            )
+            return logs.items.find((item) => item.metadata.generation === handoff.generation)
+              ?.metadata
+          }, 'missing corresponding renderer tail')
+          const tail = renderer.frames.filter(
+            (frame) => frame.stage === 'stable' && frame.event === 'raf'
+          )
+          assert.ok(tail.length > 0)
+          assert.ok(tail.every((frame) => Number.isFinite(frame.screenX) && frame.layers?.island))
+          assert.ok(renderer.frames.length <= 256)
+          assert.equal(renderer.reason, 'stable')
+          report(
+            `${requestedView} ${phase} handoff/tail diagnostics passed (blur ${enabled}), max read ${Math.max(...samples.map((s) => s.readMs)).toFixed(2)}ms`
+          )
+        }
+      }
+      // 与首次显示走相同的延后恢复入口，且不需要用户再点毛玻璃开关。
+      for (let cycle = 0; cycle < 3; cycle++) {
+        mainWindow.hide()
+        mainWindow.show()
+        await waitUntil(async () => {
+          const logs = await mainWindow.webContents.executeJavaScript(
+            "window.api.queryLogs({ search: 'blur.visible-restore', limit: 1 })"
+          )
+          return (
+            logs.items[0]?.metadata?.deferred &&
+            !logs.items[0].metadata.failed &&
+            readNativeTransitionStatus(mainWindow).overlayVisible
+          )
+        }, '窗口重新显示后毛玻璃未恢复')
+        assertBlurRuntimeHealthy('延后恢复')
+      }
+      await assertDiagnosticExport(mainWindow)
+      return
+    }
 
     if (process.argv.includes('layout-only')) {
       await runCompactLayoutTest(mainWindow)

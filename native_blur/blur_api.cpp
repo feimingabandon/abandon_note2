@@ -13,7 +13,7 @@
 #include <winternl.h>
 
 namespace {
-constexpr int kNativeAbiVersion = 12;
+constexpr int kNativeAbiVersion = 13;
 }
 
 int AbandonNative_GetAbiVersion(void) {
@@ -170,6 +170,10 @@ int Blur_IsZOrderSynchronized(void) {
 
 int Blur_GetLastErrorCode(void) {
     return static_cast<int>(BlurEngine::Engine::Instance().GetLastError());
+}
+
+const char* Blur_GetLastFailureJson(void) {
+    return BlurEngine::Engine::Instance().GetLastFailureJson();
 }
 
 const char* Blur_GetLastErrorMessage(void) {

@@ -60,16 +60,20 @@ describe('Windows maturity boundaries', () => {
   })
   it('never leaves on failed persistence, cancellation, or active save', async () => {
     const state = { dirty: true, blocked: true }
-    const dialog = { showMessageBox: vi.fn(async () => ({ response: 0 })) }
+    let accepted = false
     const window = {
       isDestroyed: () => false,
-      webContents: { isCrashed: () => false, executeJavaScript: async () => state }
+      webContents: {
+        isCrashed: () => false,
+        executeJavaScript: async (code) =>
+          code.includes('__prepareEditingDrafts') ? state : accepted
+      }
     }
-    const guard = createEditingDraftGuard({ dialog, logger: { error: vi.fn() } })
+    const guard = createEditingDraftGuard({ logger: { error: vi.fn() } })
     expect(await guard(window, '退出')).toBe(false)
     state.blocked = false
     expect(await guard(window, '退出')).toBe(false)
-    dialog.showMessageBox.mockResolvedValue({ response: 1 })
+    accepted = true
     expect(await guard(window, '退出')).toBe(true)
   })
   it('keeps core tasks retryable with bounded backoff and explicit recovery', () => {

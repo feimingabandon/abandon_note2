@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import AppIcon from '../ui/AppIcon.vue'
+import AppToggle from '../ui/AppToggle.vue'
 import NumberStepper from '../ui/NumberStepper.vue'
 import HistoricalNoteMoveControl from './HistoricalNoteMoveControl.vue'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
@@ -24,6 +25,8 @@ const props = defineProps({
   dayPanelOpen: { type: Boolean, default: false },
   refreshing: { type: Boolean, default: false },
   busy: { type: Boolean, default: false },
+  recurringPreviewEnabled: { type: Boolean, default: false },
+  recurringPreviewSaving: { type: Boolean, default: false },
   weatherLocationLabel: { type: String, default: '' }
 })
 const emit = defineEmits([
@@ -33,6 +36,7 @@ const emit = defineEmits([
   'jump',
   'jump-date',
   'refresh',
+  'update:recurring-preview-enabled',
   'toggle-day-panel',
   'historical-notes-moved'
 ])
@@ -505,6 +509,21 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
     </div>
 
     <div class="month-toolbar__trailing">
+      <div
+        class="month-toolbar__recurring-preview"
+        title="显示未来会生成的循环便签；预览内容为只读，不会提前创建便签"
+      >
+        <span id="calendar-recurring-preview-label">循环便签预览</span>
+        <AppToggle
+          class="month-toolbar__recurring-preview-toggle"
+          :model-value="recurringPreviewEnabled"
+          :disabled="busy || recurringPreviewSaving"
+          role="switch"
+          :aria-checked="recurringPreviewEnabled"
+          aria-labelledby="calendar-recurring-preview-label"
+          @update:model-value="emit('update:recurring-preview-enabled', $event)"
+        />
+      </div>
       <HistoricalNoteMoveControl
         :open="historicalMoveOpen"
         :disabled="busy"
@@ -564,6 +583,50 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 }
 .month-toolbar__trailing {
   justify-self: end;
+}
+.month-toolbar__recurring-preview {
+  display: inline-flex;
+  height: 30rem;
+  align-items: center;
+  gap: 7rem;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  white-space: nowrap;
+}
+.month-toolbar :deep(.month-toolbar__recurring-preview-toggle.switch) {
+  width: 36rem;
+  min-width: 36rem;
+  height: 20rem;
+  padding: 0;
+  border-radius: 10rem;
+  background-color: var(--ui-fill-pressed);
+}
+.month-toolbar :deep(.month-toolbar__recurring-preview-toggle .switch-thumb) {
+  top: 2rem;
+  width: 16rem;
+  height: 16rem;
+  transform: none;
+}
+.month-toolbar :deep(.month-toolbar__recurring-preview-toggle.switch.on .switch-thumb) {
+  transform: translateX(16rem);
+}
+.month-toolbar :deep(.month-toolbar__recurring-preview-toggle.switch:active:not(:disabled)) {
+  transform: none;
+}
+.month-toolbar
+  :deep(.month-toolbar__recurring-preview-toggle.switch:active:not(:disabled) .switch-thumb) {
+  transform: none;
+}
+.month-toolbar
+  :deep(.month-toolbar__recurring-preview-toggle.switch.on:active:not(:disabled) .switch-thumb) {
+  transform: translateX(16rem);
+}
+.month-toolbar :deep(.month-toolbar__recurring-preview-toggle.switch:hover:not(:disabled)) {
+  background-color: var(--ui-fill-pressed);
+}
+.month-toolbar :deep(.month-toolbar__recurring-preview-toggle.switch.on),
+.month-toolbar :deep(.month-toolbar__recurring-preview-toggle.switch.on:hover:not(:disabled)) {
+  background-color: var(--ui-accent);
 }
 .month-toolbar__day-panel-toggle {
   display: inline-flex !important;
@@ -992,6 +1055,9 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   }
   .month-toolbar__title {
     min-width: 0 !important;
+  }
+  .month-toolbar__recurring-preview > span {
+    display: none;
   }
 }
 @media (max-width: 520px) {

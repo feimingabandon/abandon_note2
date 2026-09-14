@@ -29,6 +29,9 @@ const menuRef = ref(null)
 const menuOpen = ref(false)
 const menuStyle = ref({})
 const switching = ref(false)
+const stopSwitchListener = window.api.onMainViewSwitchFinished?.(() => {
+  switching.value = false
+})
 const { showMessage } = useMessage()
 
 const activeOption = computed(
@@ -125,6 +128,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopSwitchListener?.()
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
   window.removeEventListener('resize', updateMenuPosition)
   window.removeEventListener('scroll', updateMenuPosition, true)
