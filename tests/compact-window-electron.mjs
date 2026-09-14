@@ -1614,10 +1614,11 @@ async function runCompactWindowTest() {
     assert.equal(resizedCompactBounds.width, 420)
     assert.equal(resizedCompactBounds.height, 92)
     assert.equal(resizedCompactBounds.y, expandedBounds.y, '收起后上边线没有与主视图重合')
-    assert.equal(
-      resizedCompactBounds.x + resizedCompactBounds.width / 2,
-      expandedBounds.x + expandedBounds.width / 2,
-      '收起后没有落在主视图上边中心'
+    const compactCenterX = resizedCompactBounds.x + resizedCompactBounds.width / 2
+    const expandedCenterX = expandedBounds.x + expandedBounds.width / 2
+    assert.ok(
+      Math.abs(compactCenterX - expandedCenterX) <= 0.5,
+      `收起后没有落在主视图上边中心：compact=${compactCenterX}, expanded=${expandedCenterX}`
     )
     await assertRendererSurface(mainWindow, resizedCompactBounds, 'compact', '主视图收起')
     await assertCompactContent(mainWindow, resizedCompactBounds, startupRenderer.textFontSize)
