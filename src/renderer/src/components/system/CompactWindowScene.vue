@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { getTransitionTotalMs } from '../../composables/useSlidingWorkspace.js'
 import CompactIsland from './CompactIsland.vue'
+import { pollCompactStageEndpoint } from './compact-stage-completion.js'
 
 const props = defineProps({
   phase: { type: String, default: 'expanded' },
@@ -27,13 +28,13 @@ const compactInteractive = computed(
 )
 
 let completionRevision = 0
-let completionTimer = null
+let stopEndpointPolling = null
 let lastNotifiedStageKey = ''
 
 function clearCompletion() {
   completionRevision += 1
-  if (completionTimer !== null) clearTimeout(completionTimer)
-  completionTimer = null
+  stopEndpointPolling?.()
+  stopEndpointPolling = null
 }
 
 function currentStageLayer(currentStage) {
@@ -59,8 +60,8 @@ function notifyReady(generation, expectedStage) {
 
 async function armStageCompletion(expectedStage, generation) {
   const revision = ++completionRevision
-  if (completionTimer !== null) clearTimeout(completionTimer)
-  completionTimer = null
+  stopEndpointPolling?.()
+  stopEndpointPolling = null
 
   await nextTick()
   // 仅最终尺寸交接需要布局帧；内容动画依靠 transitionend，外壳接管时
@@ -81,19 +82,22 @@ async function armStageCompletion(expectedStage, generation) {
     return
   }
 
-  const layer = currentStageLayer(expectedStage)
-  const duration = getTransitionTotalMs(layer, 'opacity')
+  const duration = getTransitionTotalMs(currentStageLayer(expectedStage), 'opacity')
   if (duration <= 0) {
     notifyReady(generation, expectedStage)
     return
   }
-  completionTimer = setTimeout(() => {
-    completionTimer = null
-    // 取消事件或丢失的 transitionend 不能把仍在运动的页面误判为完成。
-    if (revision === completionRevision && isLayerAtEndpoint(layer, expectedStage)) {
+  stopEndpointPolling = pollCompactStageEndpoint({
+    initialDelayMs: duration + 100,
+    isCurrent: () =>
+      revision === completionRevision && isCurrentTransition(generation, expectedStage),
+    // 窗口缩放可能替换布局引用，每次复查都读取当前阶段层，不能保留旧元素。
+    isAtEndpoint: () => isLayerAtEndpoint(currentStageLayer(expectedStage), expectedStage),
+    onReady: () => {
+      stopEndpointPolling = null
       notifyReady(generation, expectedStage)
     }
-  }, duration + 100)
+  })
 }
 
 function isLayerAtEndpoint(layer, expectedStage) {
@@ -109,8 +113,8 @@ function onLayerTransitionComplete(event) {
   const expectedLayer = currentStageLayer(expectedStage)
   if (event.currentTarget !== expectedLayer) return
   if (!isLayerAtEndpoint(expectedLayer, expectedStage)) return
-  if (completionTimer !== null) clearTimeout(completionTimer)
-  completionTimer = null
+  stopEndpointPolling?.()
+  stopEndpointPolling = null
   notifyReady(Number(props.transition?.generation), expectedStage)
 }
 

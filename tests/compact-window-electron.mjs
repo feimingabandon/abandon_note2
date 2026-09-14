@@ -1693,10 +1693,11 @@ async function runCompactWindowTest() {
 
     const originalSetBounds = mainWindow.setBounds.bind(mainWindow)
     let injectedResizeFailure = false
+    report('expected fault injection: compact resize rollback begins')
     mainWindow.setBounds = (bounds, animate) => {
       if (!injectedResizeFailure && bounds.width > resizedCompactBounds.width) {
         injectedResizeFailure = true
-        throw new Error('injected compact resize failure')
+        throw new Error('injected:test-only compact resize failure')
       }
       return originalSetBounds(bounds, animate)
     }
@@ -1708,8 +1709,9 @@ async function runCompactWindowTest() {
     )
     mainWindow.setBounds = originalSetBounds
     assert.equal(failedResize.rejected, true, '胶囊 setBounds 失败后设置仍提交成功')
-    assert.match(failedResize.message, /injected compact resize failure|尺寸调整失败/)
+    assert.match(failedResize.message, /injected:test-only compact resize failure|尺寸调整失败/)
     assert.deepEqual(mainWindow.getBounds(), resizedCompactBounds, '尺寸失败后没有回滚')
+    report('expected fault injection passed: compact resize rolled back')
 
     await mainWindow.webContents.executeJavaScript(
       `Promise.all([
