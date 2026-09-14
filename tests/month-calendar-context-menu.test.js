@@ -27,8 +27,10 @@ describe('月历日期格右键菜单', () => {
     expect(grid).toContain('@open-context-menu="openNoteContextMenu"')
     expect(grid).toContain('@contextmenu.stop')
     expect(grid).toContain("event.target.closest?.('.month-day-cell__quick-create input')")
-    expect(grid).toContain('noteId: Number(note.id)')
+    expect(grid).toContain('if (!event || !note || note.read_only) return')
+    expect(grid).toContain('noteId: note.id')
     expect(grid).toContain('const contextMenuNote = computed(')
+    expect(grid).toContain('noteById.value.get(String(contextMenuTarget.value.noteId))')
     expect(grid).toContain('if (dayPreviewRef.value?.contains(event.target)) return')
   })
 

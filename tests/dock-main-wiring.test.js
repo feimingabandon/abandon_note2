@@ -132,7 +132,7 @@ describe('dock main-process wiring', () => {
     expect(hide).not.toContain("applyDockPersistentHandlePosition(dockMotionSession, 'hide')")
   })
 
-  it('records actionable hide and wake latency without logging animation frames', () => {
+  it('records actionable hide and wake latency plus low-noise native status transitions', () => {
     const source = readFileSync(MAIN_PATH, 'utf8')
     const hide = source.slice(
       source.indexOf('function doHide()'),
@@ -150,11 +150,16 @@ describe('dock main-process wiring', () => {
     expect(hide).toContain('preparationMs:')
     expect(hide).toContain('animationMs:')
     expect(hide).toContain('totalElapsedMs:')
-    expect(hide).toContain('edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor')
+    expect(hide).toContain("dockNativeStatusObserver.start(generation, 'arm-succeeded')")
+    expect(hide).toContain('snapshot: getDockDiagnosticSnapshot()')
+    expect(hide).toContain("dockNativeStatusObserver.capture('persistent-handle-activated'")
     expect(show).toContain('monitorStopMs')
     expect(show).toContain('animationMs:')
     expect(show).toContain('totalElapsedMs:')
-    expect(show).toContain('edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor')
+    expect(show).toContain("dockNativeStatusObserver.capture('show-before-disarm'")
+    expect(show).toContain("dockNativeStatusObserver.stop('show-after-disarm')")
+    expect(show).toContain('terminalMatchesTarget')
+    expect(show).toContain('display: getDockDiagnosticSnapshot().display')
     expect(source).not.toContain("logger.info('dock.slide-frame'")
   })
 
@@ -171,9 +176,25 @@ describe('dock main-process wiring', () => {
 
     expect(health).toContain('mainWindowMinimized')
     expect(health).toContain('mainElectronBounds')
+    expect(health).toContain('mainContentBounds')
+    expect(health).toContain("electronBounds: 'DIP'")
+    expect(health).toContain('scalePercent:')
+    expect(health).toContain('visibleTarget:')
+    expect(health).toContain('hiddenTarget:')
     expect(health).toContain('{ skipRecoveryLog: true }')
     expect(source).toContain("mainWindow.on('minimize'")
     expect(source).toContain("mainWindow.on('restore'")
     expect(power).toContain("recoveryLogLevel: 'info'")
+  })
+
+  it('records startup presentation timing and display topology before/after snapshots', () => {
+    const source = readFileSync(MAIN_PATH, 'utf8')
+
+    expect(source).toContain("logger.info('startup.window-presentation'")
+    expect(source).toContain('createdToRendererReadyMs:')
+    expect(source).toContain('loadRequestedToRendererReadyMs:')
+    expect(source).toContain('showCallToSnapshotMs:')
+    expect(source).toContain("logger.info('window.display-topology', '开始处理显示器参数变化'")
+    expect(source).toContain("logger.info('window.display-topology', '显示器参数变化处理完成'")
   })
 })

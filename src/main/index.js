@@ -143,6 +143,7 @@ import {
 import { getRecentCrashDumps } from './logging/process-capture.js'
 import { collectSystemDiagnostics } from './logging/system-diagnostics.js'
 import { normalizeCompactRendererDiagnostics } from './logging/compact-diagnostics.js'
+import { DockNativeStatusObserver } from './logging/dock-native-status-observer.js'
 import { enforceNativeRuntimeCompatibility } from './native-runtime-gate.js'
 import {
   DEFAULT_SETTINGS,
@@ -337,6 +338,7 @@ function getDockRuntimeCapability() {
 /** 主窗口实例引用 */
 let mainWindow = null
 let mainRendererReady = false
+let mainWindowPresentationTiming = null
 
 function getActiveVisualWindow() {
   return mainWindow
@@ -2036,6 +2038,7 @@ const DOCK_GEOMETRY_SUPPRESSION_MS = 1000
 const MAX_DOCK_SLIDE_AGE_MS = 5000
 const NATIVE_EDGE_CLEANUP_INITIAL_RETRY_MS = 1000
 const NATIVE_EDGE_CLEANUP_MAX_RETRY_MS = 30_000
+const DOCK_NATIVE_STATUS_OBSERVER_INTERVAL_MS = 250
 
 /** 默认窗口尺寸比例（相对屏幕工作区），改一个地方即可全局生效 */
 let dockSide = null // null | 'left' | 'right' | 'top' | 'bottom' 当前吸附方向
@@ -2055,6 +2058,12 @@ let windowMotionBackend = null
 let nativeEdgeCleanupPending = null
 let nativeEdgeCleanupTimer = null
 let dockInteractionSuspendCount = 0
+const dockNativeStatusObserver = new DockNativeStatusObserver({
+  getStatus: () => windowMotionBackend?.getEdgeMonitorStatus() || {},
+  getContext: getDockNativeObserverContext,
+  logger,
+  intervalMs: DOCK_NATIVE_STATUS_OBSERVER_INTERVAL_MS
+})
 
 function scheduleNativeEdgeCleanup() {
   if (!nativeEdgeCleanupPending || nativeEdgeCleanupTimer || isQuitting) return
@@ -2189,6 +2198,7 @@ function handleNativeEdgeMonitorMessage(window) {
   const currentGeneration = dockMotionSession?.generation || 0
   const accepted = isCurrentDockMonitorEvent(event, dockMotionSession)
   if (event.kind !== 'handle-moved') {
+    dockNativeStatusObserver.capture('native-event-received', { force: true })
     logger.info('dock.native-edge-event', '收到 Windows 原生边缘监视事件', {
       event,
       accepted,
@@ -2361,6 +2371,7 @@ function createStableDockBounds(bounds, side, workArea) {
  * - 窗口无边框 + 透明背景，用于实现自定义外观
  */
 function createWindow({ preferredDisplay = null } = {}) {
+  const creationStartedAt = Date.now()
   mainRendererReady = false
   // 日历视图首次创建优先沿用列表所在显示器；已有几何信息时仍以持久化位置为准。
   const display = preferredDisplay || screen.getPrimaryDisplay()
@@ -2435,6 +2446,15 @@ function createWindow({ preferredDisplay = null } = {}) {
     }
   })
   const createdWindow = mainWindow
+  mainWindowPresentationTiming = {
+    creationStartedAt,
+    createdAt: Date.now(),
+    loadRequestedAt: null,
+    loadStartedAt: null,
+    rendererReadyAt: null,
+    displayId: targetDisplay.id,
+    displayScaleFactor: targetDisplay.scaleFactor
+  }
   installRendererRecovery(createdWindow, {
     dialog,
     logger,
@@ -2472,16 +2492,36 @@ function createWindow({ preferredDisplay = null } = {}) {
   lastVisibleMainWindowBounds = { ...normalBounds }
   windowMotionBackend = createWindowMotionBackend(mainWindow, screen)
   attachNativeEdgeMonitorMessageHook(mainWindow)
-  logger.info('startup', '主窗口已创建', {
-    viewMode: activeViewMode,
-    bounds,
-    savedGeometry: Boolean(saved)
-  })
 
   // 固定缩放因子为 1.0，防止系统 DPI 缩放影响布局
   mainWindow.webContents.setZoomFactor(1.0)
+  logger.info('startup.window-presentation', '主窗口已创建并等待渲染就绪', {
+    viewMode: activeViewMode,
+    creationMs: mainWindowPresentationTiming.createdAt - creationStartedAt,
+    savedGeometry: Boolean(saved),
+    requestedBounds,
+    constrainedExpandedBounds: normalBounds,
+    initialBounds: mainWindow.getBounds(),
+    initialContentBounds: mainWindow.getContentBounds(),
+    initialDisplay: {
+      id: targetDisplay.id,
+      scaleFactor: targetDisplay.scaleFactor,
+      scalePercent: targetDisplay.scaleFactor * 100,
+      bounds: targetDisplay.bounds,
+      workArea: targetDisplay.workArea
+    },
+    rendererZoomFactor: mainWindow.webContents.getZoomFactor(),
+    compactAtCreation: createCompact,
+    blur: {
+      configuredEnabled: blurConfig.enabled,
+      supported: blurCaps.supported
+    }
+  })
   mainWindow.webContents.on('did-start-loading', () => {
-    if (mainWindow === createdWindow) mainRendererReady = false
+    if (mainWindow === createdWindow) {
+      mainRendererReady = false
+      if (mainWindowPresentationTiming) mainWindowPresentationTiming.loadStartedAt = Date.now()
+    }
   })
 
   // 从完整设置快照恢复锁定状态
@@ -2612,9 +2652,11 @@ function createWindow({ preferredDisplay = null } = {}) {
     mainWindow = null
     windowMotionBackend = null
     lastVisibleMainWindowBounds = null
+    mainWindowPresentationTiming = null
   })
 
   // 根据环境加载页面：开发模式用 HMR URL，生产模式加载本地 HTML 文件
+  if (mainWindowPresentationTiming) mainWindowPresentationTiming.loadRequestedAt = Date.now()
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     const rendererFile = getActiveWindowProfile().rendererFile
     mainWindow.loadURL(
@@ -2694,10 +2736,16 @@ function setDockPosition(position, motionPlan) {
   return after
 }
 
-/** 生成纯数据快照，供每分钟健康任务和托盘诊断日志复用。 */
-function getDockDiagnosticSnapshot() {
+/** 生成纯数据快照，供状态观察器、健康任务、托盘和导出诊断复用。 */
+function getDockDiagnosticSnapshot({ edgeMonitorOverride } = {}) {
   const mainWindowExists = Boolean(mainWindow && !mainWindow.isDestroyed())
   const mainWindowMinimized = mainWindowExists ? mainWindow.isMinimized() : false
+  let mainElectronBounds = null
+  let mainContentBounds = null
+  let mainWindowVisible = false
+  let mainWindowFocused = false
+  let mainWindowOpacity = null
+  let rendererZoomFactor = null
   let mainMotionBounds = null
   let mainAtHiddenTarget = null
   let edgeMonitor = {
@@ -2709,34 +2757,121 @@ function getDockDiagnosticSnapshot() {
     lastPollAgeMs: 0
   }
 
-  try {
-    if (windowMotionBackend) edgeMonitor = windowMotionBackend.getEdgeMonitorStatus()
-  } catch (error) {
-    logger.error('dock.health-snapshot', error, { stage: 'capture-edge-monitor' })
+  if (edgeMonitorOverride !== undefined) {
+    edgeMonitor = edgeMonitorOverride || edgeMonitor
+  } else {
+    try {
+      if (windowMotionBackend) edgeMonitor = windowMotionBackend.getEdgeMonitorStatus()
+    } catch (error) {
+      logger.error('dock.health-snapshot', error, { stage: 'capture-edge-monitor' })
+    }
   }
 
-  if (
-    !mainWindowMinimized &&
-    isDockHidden &&
-    !isSliding &&
-    dockMotionSession?.motionPlan &&
-    windowMotionBackend
-  ) {
+  if (mainWindowExists) {
+    try {
+      mainElectronBounds = mainWindow.getBounds()
+      mainContentBounds = mainWindow.getContentBounds()
+      mainWindowVisible = mainWindow.isVisible()
+      mainWindowFocused = mainWindow.isFocused()
+      mainWindowOpacity = mainWindow.getOpacity()
+      rendererZoomFactor = mainWindow.webContents.getZoomFactor()
+    } catch (error) {
+      logger.error('dock.health-snapshot', error, { stage: 'capture-electron-window' })
+    }
+  }
+
+  if (!mainWindowMinimized && mainWindowExists && windowMotionBackend) {
     try {
       mainMotionBounds = windowMotionBackend.capture()
-      mainAtHiddenTarget =
-        Math.abs(mainMotionBounds.x - dockMotionSession.motionPlan.hiddenX) <= 1 &&
-        Math.abs(mainMotionBounds.y - dockMotionSession.motionPlan.hiddenY) <= 1
     } catch (error) {
       logger.error('dock.health-snapshot', error, { stage: 'capture-main-window' })
     }
   }
 
+  if (isDockHidden && !isSliding && dockMotionSession?.motionPlan && mainMotionBounds) {
+    try {
+      mainAtHiddenTarget =
+        Math.abs(mainMotionBounds.x - dockMotionSession.motionPlan.hiddenX) <= 1 &&
+        Math.abs(mainMotionBounds.y - dockMotionSession.motionPlan.hiddenY) <= 1
+    } catch (error) {
+      logger.error('dock.health-snapshot', error, { stage: 'compare-hidden-target' })
+    }
+  }
+
+  let matchedDisplay = null
+  try {
+    const allDisplays = screen.getAllDisplays()
+    matchedDisplay =
+      allDisplays.find(
+        (display) =>
+          dockMotionSession?.displayId != null &&
+          String(display.id) === String(dockMotionSession.displayId)
+      ) || (mainElectronBounds ? screen.getDisplayMatching(mainElectronBounds) : null)
+  } catch (error) {
+    logger.error('dock.health-snapshot', error, { stage: 'capture-display' })
+  }
+
+  const display = matchedDisplay
+    ? {
+        id: matchedDisplay.id,
+        label: matchedDisplay.label || null,
+        scaleFactor: matchedDisplay.scaleFactor,
+        scalePercent: Number.isFinite(matchedDisplay.scaleFactor)
+          ? matchedDisplay.scaleFactor * 100
+          : null,
+        bounds: matchedDisplay.bounds,
+        workArea: matchedDisplay.workArea,
+        rotation: matchedDisplay.rotation,
+        displayFrequency: matchedDisplay.displayFrequency
+      }
+    : null
+  const session = dockMotionSession
+    ? {
+        generation: dockMotionSession.generation,
+        side: dockMotionSession.side,
+        revealHandleMode: dockMotionSession.revealHandleMode,
+        handlePositionPermille: dockMotionSession.handlePositionPermille,
+        displayId: dockMotionSession.displayId,
+        stableBounds: dockMotionSession.stableBounds,
+        workArea: dockMotionSession.workArea,
+        motionPlan: dockMotionSession.motionPlan
+          ? {
+              coordinateSpace: dockMotionSession.motionPlan.coordinateSpace,
+              initial: dockMotionSession.motionPlan.initial,
+              expectedSize: dockMotionSession.motionPlan.expectedSize,
+              expectedElectronContentSize: dockMotionSession.motionPlan.expectedElectronContentSize,
+              visibleTarget: {
+                x: dockMotionSession.motionPlan.visibleX,
+                y: dockMotionSession.motionPlan.visibleY
+              },
+              hiddenTarget: {
+                x: dockMotionSession.motionPlan.hiddenX,
+                y: dockMotionSession.motionPlan.hiddenY
+              },
+              workArea: dockMotionSession.motionPlan.workArea,
+              overshoot: dockMotionSession.motionPlan.overshoot
+            }
+          : null
+      }
+    : null
+
   const dockConfig = getDockRuntimeConfig()
   return {
     mainWindowExists,
     mainWindowMinimized,
-    mainElectronBounds: mainWindowExists ? mainWindow.getBounds() : null,
+    mainElectronBounds,
+    mainContentBounds,
+    mainWindowVisible,
+    mainWindowFocused,
+    mainWindowOpacity,
+    rendererZoomFactor,
+    coordinateSpaces: {
+      electronBounds: 'DIP',
+      motionBounds:
+        mainMotionBounds?.coordinateSpace || session?.motionPlan?.coordinateSpace || null,
+      nativeHandleBounds: edgeMonitor?.supported ? 'physical-pixel' : null
+    },
+    display,
     viewMode: activeViewMode,
     supportedDockEdges: dockConfig.supportedEdges,
     enabledDockEdges: dockConfig.enabledEdges,
@@ -2748,14 +2883,29 @@ function getDockDiagnosticSnapshot() {
     sessionSide: dockMotionSession?.side || null,
     sessionGeneration: dockMotionSession?.generation || 0,
     sessionRevealHandleMode: dockMotionSession?.revealHandleMode ?? null,
+    session,
     mainMotionBounds,
     mainAtHiddenTarget,
     isSliding,
     slideAgeMs: isSliding && dockSlideStartedAt ? Date.now() - dockSlideStartedAt : 0,
     maxSlideAgeMs: MAX_DOCK_SLIDE_AGE_MS,
     maxMonitorPollAgeMs: MAX_EDGE_MONITOR_POLL_AGE_MS,
+    blur: {
+      configuredEnabled: blurConfig.enabled,
+      initialized: blurInitialized,
+      runtimeFailed: blurRuntimeFailed,
+      diagnostic: { ...blurDiagnostic }
+    },
     edgeMonitor
   }
+}
+
+function getDockNativeObserverContext(status) {
+  const dock = getDockDiagnosticSnapshot({
+    edgeMonitorOverride: status
+  })
+  delete dock.edgeMonitor
+  return { dock }
 }
 
 function runDockHealthCheck() {
@@ -2777,6 +2927,7 @@ function runDockHealthCheck() {
 function resetDockState({ source = 'reset-dock-state', skipNativeDisarm = false } = {}) {
   const generation = dockMotionSession?.generation || nativeEdgeCleanupPending?.generation || 0
   const cleanupBackend = nativeEdgeCleanupPending?.backend || windowMotionBackend
+  dockNativeStatusObserver.capture(`${source}:before-disarm`, { force: true })
   if (cleanupBackend && !skipNativeDisarm) {
     try {
       if (!cleanupBackend.disarmEdgeMonitor(generation)) {
@@ -2790,6 +2941,7 @@ function resetDockState({ source = 'reset-dock-state', skipNativeDisarm = false 
       beginNativeEdgeCleanup(generation, cleanupBackend, source)
     }
   }
+  dockNativeStatusObserver.stop(`${source}:after-disarm`)
   // 非隐藏可见态没有原生会话。此处只清理由启动超时显式登记的资源，绝不把
   // generation=0 的普通 reset 误登记成 cleanup-pending。
   if (slideAnimTimer) {
@@ -2952,6 +3104,7 @@ function rebuildFullscreenDockSessionAfterDisplayChange(change) {
     return false
   }
 
+  dockNativeStatusObserver.capture('fullscreen-display-rebuild:before-disarm', { force: true })
   if (
     !stopEdgeMonitorForFullscreenRebuild({
       backend: windowMotionBackend,
@@ -2962,6 +3115,7 @@ function rebuildFullscreenDockSessionAfterDisplayChange(change) {
   ) {
     return true
   }
+  dockNativeStatusObserver.stop('fullscreen-display-rebuild:after-disarm')
 
   try {
     cachedWorkArea = { ...display.workArea }
@@ -3002,6 +3156,7 @@ function rebuildFullscreenDockSessionAfterDisplayChange(change) {
       }
       throw new Error(armResult.error || '重新启动边缘监视器失败')
     }
+    dockNativeStatusObserver.start(generation, 'fullscreen-display-rebuild:arm-succeeded')
     applyDockPersistentHandlePosition(dockMotionSession, 'fullscreen-display-rebuild')
     if (previousSession.revealHandleMode === DOCK_REVEAL_HANDLE_MODES.PERSISTENT) {
       const revealResult = windowMotionBackend.showPersistentHandle(generation)
@@ -3013,7 +3168,8 @@ function rebuildFullscreenDockSessionAfterDisplayChange(change) {
       generation,
       side: previousSession.side,
       displayId: display.id,
-      handlePositionPermille
+      handlePositionPermille,
+      snapshot: getDockDiagnosticSnapshot()
     })
     return true
   } catch (error) {
@@ -3153,7 +3309,21 @@ function attachDockDisplayListeners() {
           [...candidates].reverse().find((item) => item.eventName === 'display-metrics-changed') ||
           candidates.at(-1) ||
           null
+        logger.info('window.display-topology', '开始处理显示器参数变化', {
+          changes,
+          selectedChange: change,
+          compact: compactWindowStateSnapshot(),
+          before: getDockDiagnosticSnapshot()
+        })
         handleDockDisplayTopologyChange(change)
+        setImmediate(() => {
+          if (!mainWindow || mainWindow.isDestroyed()) return
+          logger.info('window.display-topology', '显示器参数变化处理完成', {
+            selectedChange: change,
+            compact: compactWindowStateSnapshot(),
+            after: getDockDiagnosticSnapshot()
+          })
+        })
       }, 250)
       dockDisplayChangeTimer.unref?.()
     }
@@ -3434,13 +3604,15 @@ function doHide() {
     return
   }
   isDockHidden = true
+  dockNativeStatusObserver.start(generation, 'arm-succeeded')
   logger.info('dock.lifecycle', '开始贴边隐藏', {
     generation,
     side: dockSide,
     revealHandleMode: dockMotionSession.revealHandleMode,
     stableBounds,
     requestDelayMs: hideRequestedAt ? hideStartedAt - hideRequestedAt : null,
-    preparationMs: Date.now() - hideStartedAt
+    preparationMs: Date.now() - hideStartedAt,
+    snapshot: getDockDiagnosticSnapshot()
   })
 
   const target = { x: motionPlan.hiddenX, y: motionPlan.hiddenY }
@@ -3471,7 +3643,7 @@ function doHide() {
       totalElapsedMs: Date.now() - (hideRequestedAt || hideStartedAt),
       persistentHandlePending:
         dockMotionSession?.revealHandleMode === DOCK_REVEAL_HANDLE_MODES.PERSISTENT,
-      edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor
+      snapshot: getDockDiagnosticSnapshot()
     })
     if (dockTransitionState.consumeQueuedShow()) {
       doShow('queued-during-hide')
@@ -3499,8 +3671,9 @@ function doHide() {
       logger.info('dock.lifecycle', '常显小黑条已在隐藏终点激活', {
         generation,
         side: dockSide,
-        edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor
+        snapshot: getDockDiagnosticSnapshot()
       })
+      dockNativeStatusObserver.capture('persistent-handle-activated', { force: true })
     }
   })
 }
@@ -3523,7 +3696,7 @@ function doShow(source = 'unknown') {
     isSliding,
     hasDockMotionSession: Boolean(dockMotionSession),
     generation: dockMotionSession?.generation || 0,
-    edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor
+    snapshot: getDockDiagnosticSnapshot()
   })
   if (showAction !== 'start') return
 
@@ -3541,6 +3714,7 @@ function doShow(source = 'unknown') {
 
   let monitorStopped = false
   const monitorStopStartedAt = Date.now()
+  dockNativeStatusObserver.capture('show-before-disarm', { force: true })
   try {
     monitorStopped = windowMotionBackend.disarmEdgeMonitor(session.generation)
   } catch (error) {
@@ -3556,6 +3730,7 @@ function doShow(source = 'unknown') {
     return
   }
   const monitorStopMs = Date.now() - monitorStopStartedAt
+  dockNativeStatusObserver.stop('show-after-disarm')
 
   const { stableBounds, motionPlan } = session
   const target = { x: motionPlan.visibleX, y: motionPlan.visibleY }
@@ -3568,6 +3743,8 @@ function doShow(source = 'unknown') {
   }
   const showAnimationStartedAt = Date.now()
   slideTo(target, motionPlan, () => {
+    let terminal = null
+    let terminalMatchesTarget = null
     try {
       suppressDockGeometryPersistence()
       const visibleElectronBounds = mainWindow.getBounds()
@@ -3578,9 +3755,10 @@ function doShow(source = 'unknown') {
       }
       dockMotionSession = null
       try {
-        const terminal = windowMotionBackend.capture()
+        terminal = windowMotionBackend.capture()
         const expectedVisible = { x: motionPlan.visibleX, y: motionPlan.visibleY }
-        if (terminal.x !== expectedVisible.x || terminal.y !== expectedVisible.y) {
+        terminalMatchesTarget = terminal.x === expectedVisible.x && terminal.y === expectedVisible.y
+        if (!terminalMatchesTarget) {
           console.error('[dock] 显示终点未回到冻结位置:', {
             expectedVisible,
             terminal,
@@ -3600,7 +3778,20 @@ function doShow(source = 'unknown') {
         generation: session.generation,
         monitorStopMs,
         animationMs: Date.now() - showAnimationStartedAt,
-        totalElapsedMs: Date.now() - showStartedAt
+        totalElapsedMs: Date.now() - showStartedAt,
+        expectedVisible: target,
+        terminal,
+        terminalMatchesTarget,
+        electronBounds: mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : null,
+        contentBounds:
+          mainWindow && !mainWindow.isDestroyed() ? mainWindow.getContentBounds() : null,
+        display: getDockDiagnosticSnapshot().display,
+        blur: {
+          configuredEnabled: blurConfig.enabled,
+          initialized: blurInitialized,
+          runtimeFailed: blurRuntimeFailed,
+          diagnostic: { ...blurDiagnostic }
+        }
       })
     }
   })
@@ -4307,9 +4498,24 @@ const startupPromise = app.whenReady().then(async () => {
   // 【渲染就绪】渲染进程初始化完成后发送此消息，主进程收到后显示窗口
   ipcMain.on('renderer-ready', (event) => {
     if (event.sender !== mainWindow?.webContents) return
-    logger.info('startup', '渲染进程就绪')
+    const rendererReadyAt = Date.now()
+    const timing = mainWindowPresentationTiming
+    if (timing) timing.rendererReadyAt = rendererReadyAt
+    logger.info('startup.window-presentation', '渲染进程就绪，准备显示主窗口', {
+      viewMode: activeViewMode,
+      createdToRendererReadyMs: timing?.createdAt ? rendererReadyAt - timing.createdAt : null,
+      loadRequestedToRendererReadyMs: timing?.loadRequestedAt
+        ? rendererReadyAt - timing.loadRequestedAt
+        : null,
+      loadStartedToRendererReadyMs: timing?.loadStartedAt
+        ? rendererReadyAt - timing.loadStartedAt
+        : null,
+      beforeShow: getDockDiagnosticSnapshot()
+    })
     markRendererReady()
     if (mainWindow && !mainWindow.isDestroyed()) {
+      const presentedWindow = mainWindow
+      const showCalledAt = Date.now()
       mainWindow.show()
       mainWindow.focus()
       if (isCompactWindowActive()) syncCompactWindowRuntime('renderer-ready-compact')
@@ -4317,6 +4523,17 @@ const startupPromise = app.whenReady().then(async () => {
       broadcastCompactWindowState()
       revealPendingNotificationApplication()
       scheduleCompactShellWarmup(mainWindow)
+      setImmediate(() => {
+        if (mainWindow !== presentedWindow || presentedWindow.isDestroyed()) return
+        logger.info('startup.window-presentation', '主窗口首次显示调用已完成', {
+          viewMode: activeViewMode,
+          rendererReadyToShowCallMs: showCalledAt - rendererReadyAt,
+          showCallToSnapshotMs: Date.now() - showCalledAt,
+          visible: presentedWindow.isVisible(),
+          focused: presentedWindow.isFocused(),
+          snapshot: getDockDiagnosticSnapshot()
+        })
+      })
     }
   })
 

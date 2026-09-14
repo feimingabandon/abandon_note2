@@ -144,19 +144,30 @@ export async function collectSystemDiagnostics(
     windows: await attempt('windows', () =>
       windows
         .filter((window) => !window.isDestroyed())
-        .map((window) => ({
-          id: window.id,
-          bounds: window.getBounds(),
-          contentBounds: window.getContentBounds(),
-          visible: window.isVisible(),
-          minimized: window.isMinimized(),
-          maximized: window.isMaximized(),
-          focused: window.isFocused(),
-          alwaysOnTop: window.isAlwaysOnTop(),
-          opacity: window.getOpacity(),
-          zoomFactor: window.webContents.getZoomFactor(),
-          rendererPid: window.webContents.getOSProcessId()
-        }))
+        .map((window) => {
+          const bounds = window.getBounds()
+          const display = screen.getDisplayMatching(bounds)
+          return {
+            id: window.id,
+            bounds,
+            contentBounds: window.getContentBounds(),
+            visible: window.isVisible(),
+            minimized: window.isMinimized(),
+            maximized: window.isMaximized(),
+            focused: window.isFocused(),
+            alwaysOnTop: window.isAlwaysOnTop(),
+            opacity: window.getOpacity(),
+            zoomFactor: window.webContents.getZoomFactor(),
+            rendererPid: window.webContents.getOSProcessId(),
+            displayId: display?.id ?? null,
+            displayScaleFactor: display?.scaleFactor ?? null,
+            displayScalePercent: Number.isFinite(display?.scaleFactor)
+              ? display.scaleFactor * 100
+              : null,
+            displayBounds: display?.bounds ?? null,
+            displayWorkArea: display?.workArea ?? null
+          }
+        })
     ),
     processes: await attempt('processes', () =>
       app.getAppMetrics().map((metric) => pick(metric, ['pid', 'type', 'cpu', 'memory']))

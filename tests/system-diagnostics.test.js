@@ -16,7 +16,13 @@ const fixture = () => ({
   },
   screen: {
     getPrimaryDisplay: () => ({ id: 7 }),
-    getAllDisplays: () => [{ id: 7, scaleFactor: 1.25, displayFrequency: 60 }]
+    getAllDisplays: () => [{ id: 7, scaleFactor: 1.25, displayFrequency: 60 }],
+    getDisplayMatching: () => ({
+      id: 7,
+      scaleFactor: 1.25,
+      bounds: { x: 0, y: 0, width: 1536, height: 864 },
+      workArea: { x: 0, y: 0, width: 1536, height: 824 }
+    })
   },
   windows: [],
   runtime: { activeViewMode: 'month' }
@@ -63,5 +69,40 @@ describe('export system diagnostics', () => {
         { field: 'windowsVersion', message: 'unavailable' }
       ])
     )
+  })
+
+  it('matches every exported window to its display and records DPI scale explicitly', async () => {
+    const providers = fixture()
+    providers.windows = [
+      {
+        id: 19,
+        isDestroyed: () => false,
+        getBounds: () => ({ x: 10, y: 20, width: 320, height: 480 }),
+        getContentBounds: () => ({ x: 10, y: 20, width: 320, height: 480 }),
+        isVisible: () => true,
+        isMinimized: () => false,
+        isMaximized: () => false,
+        isFocused: () => true,
+        isAlwaysOnTop: () => false,
+        getOpacity: () => 0.92,
+        webContents: {
+          getZoomFactor: () => 1,
+          getOSProcessId: () => 1234
+        }
+      }
+    ]
+
+    const snapshot = await collectSystemDiagnostics(providers, {
+      readWindowsVersion: async () => null
+    })
+    expect(snapshot.windows[0]).toMatchObject({
+      id: 19,
+      displayId: 7,
+      displayScaleFactor: 1.25,
+      displayScalePercent: 125,
+      displayBounds: { width: 1536, height: 864 },
+      displayWorkArea: { width: 1536, height: 824 },
+      zoomFactor: 1
+    })
   })
 })
