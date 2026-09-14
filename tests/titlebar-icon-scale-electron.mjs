@@ -75,6 +75,69 @@ async function titlebarMetrics(window) {
   })()`)
 }
 
+async function titlebarScaleState(window) {
+  return window.webContents.executeJavaScript(`(() => {
+    const item = Array.from(document.querySelectorAll('.settings-panel .setting-item')).find(
+      (node) => node.querySelector('.setting-label')?.textContent.includes('导航栏图标大小')
+    )
+    const slider = item?.querySelector('[role="slider"]')
+    const rootStyle = document.documentElement.style
+    return {
+      sliderValue: Number(slider?.getAttribute('aria-valuenow')),
+      appleControlSize: rootStyle.getPropertyValue('--titlebar-apple-control-size').trim(),
+      appleIconSize: rootStyle.getPropertyValue('--titlebar-apple-icon-size').trim(),
+      microsoftIconSize: rootStyle.getPropertyValue('--titlebar-microsoft-icon-size').trim()
+    }
+  })()`)
+}
+
+async function waitForTitlebarScale(window, expectedValue, message) {
+  const scale = expectedValue / 100
+  const expected = {
+    sliderValue: expectedValue,
+    appleControlSize: `${18 * scale}rem`,
+    appleIconSize: `${14 * scale}rem`,
+    microsoftIconSize: `${15 * scale}rem`
+  }
+  let latest = null
+  try {
+    return await waitUntil(
+      async () => {
+        latest = await titlebarScaleState(window)
+        return Object.entries(expected).every(([key, value]) => latest[key] === value)
+          ? latest
+          : false
+      },
+      message,
+      10000
+    )
+  } catch (error) {
+    throw new Error(
+      `${message}: expected=${JSON.stringify(expected)}, latest=${JSON.stringify(latest)}`,
+      { cause: error }
+    )
+  }
+}
+
+async function waitForTitlebarMetrics(window, predicate, message, initial) {
+  let latest = null
+  try {
+    return await waitUntil(
+      async () => {
+        latest = await titlebarMetrics(window)
+        return predicate(latest) ? latest : false
+      },
+      message,
+      10000
+    )
+  } catch (error) {
+    throw new Error(
+      `${message}: initial=${JSON.stringify(initial)}, latest=${JSON.stringify(latest)}`,
+      { cause: error }
+    )
+  }
+}
+
 async function setSliderTo(window, key) {
   return window.webContents.executeJavaScript(`(() => {
     const item = Array.from(document.querySelectorAll('.settings-panel .setting-item')).find(
@@ -82,6 +145,7 @@ async function setSliderTo(window, key) {
     )
     const slider = item?.querySelector('[role="slider"]')
     if (!slider) return false
+    slider.focus()
     slider.dispatchEvent(new KeyboardEvent('keydown', { key: '${key}', bubbles: true }))
     return true
   })()`)
@@ -138,16 +202,22 @@ async function runTitlebarIconScaleTest() {
     )
 
     assert.equal(await setSliderTo(listWindow, 'End'), true, '没有找到导航栏图标大小滑块')
-    await wait(260)
-    const appleLarge = await titlebarMetrics(listWindow)
-    assert.ok(appleLarge.buttonWidth > appleInitial.buttonWidth, 'Apple 圆形按钮没有随设置放大')
-    assert.ok(appleLarge.iconWidth > appleInitial.iconWidth, 'Apple 图标没有随设置放大')
+    await waitForTitlebarScale(listWindow, 150, 'Apple 放大设置没有完整应用')
+    const appleLarge = await waitForTitlebarMetrics(
+      listWindow,
+      (metrics) =>
+        metrics.buttonWidth > appleInitial.buttonWidth &&
+        metrics.iconWidth > appleInitial.iconWidth,
+      'Apple 圆形按钮或图标没有随设置放大',
+      appleInitial
+    )
     assert.ok(
       Math.abs(appleLarge.headerHeight - appleInitial.headerHeight) < 0.1,
       'Apple 图标放大改变了导航栏高度'
     )
 
     assert.equal(await setSliderTo(listWindow, 'Home'), true)
+    await waitForTitlebarScale(listWindow, 100, '导航栏图标大小没有恢复到 100%')
     await listWindow.webContents.executeJavaScript(`(() => {
       const button = Array.from(document.querySelectorAll('.titlebar-style-selector button')).find(
         (node) => node.textContent.trim() === 'Microsoft'
@@ -161,20 +231,26 @@ async function runTitlebarIconScaleTest() {
         ),
       '导航栏没有切换为 Microsoft 风格'
     )
-    await wait(220)
-    const microsoftInitial = await titlebarMetrics(listWindow)
+    const microsoftInitial = await waitForTitlebarMetrics(
+      listWindow,
+      (metrics) =>
+        Math.abs(metrics.buttonWidth - 32) < 0.1 && Math.abs(metrics.buttonHeight - 30) < 0.1,
+      'Microsoft 固定按钮盒没有完成样式过渡',
+      appleLarge
+    )
 
     assert.equal(await setSliderTo(listWindow, 'End'), true)
-    await wait(260)
-    const microsoftLarge = await titlebarMetrics(listWindow)
+    await waitForTitlebarScale(listWindow, 150, 'Microsoft 放大设置没有完整应用')
+    const microsoftLarge = await waitForTitlebarMetrics(
+      listWindow,
+      (metrics) => metrics.iconWidth > microsoftInitial.iconWidth,
+      'Microsoft 图标没有在固定按钮盒内放大',
+      microsoftInitial
+    )
     assert.ok(
       Math.abs(microsoftLarge.buttonWidth - microsoftInitial.buttonWidth) < 0.1 &&
         Math.abs(microsoftLarge.buttonHeight - microsoftInitial.buttonHeight) < 0.1,
-      'Microsoft 按钮盒不应随图标设置变化'
-    )
-    assert.ok(
-      microsoftLarge.iconWidth > microsoftInitial.iconWidth,
-      'Microsoft 图标没有在固定按钮盒内放大'
+      `Microsoft 按钮盒不应随图标设置变化：initial=${JSON.stringify(microsoftInitial)}, large=${JSON.stringify(microsoftLarge)}`
     )
 
     const renderedIconNames = await listWindow.webContents.executeJavaScript(
