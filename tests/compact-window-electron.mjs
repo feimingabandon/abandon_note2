@@ -14,6 +14,8 @@ import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow, dialog, screen, desktopCapturer } from 'electron'
 import koffi from 'koffi'
+import { constrainMainWindowBounds } from '../src/main/window-bounds.js'
+import { createDefaultSettings } from '../src/shared/settings-schema.js'
 import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
 
 const require = createRequire(import.meta.url)
@@ -55,6 +57,21 @@ function report(message) {
   } catch {
     // 测试宿主提前关闭输出管道不影响窗口断言及进程退出码。
   }
+}
+
+function getDefaultExpandedSize() {
+  const display = screen.getPrimaryDisplay()
+  const defaults = createDefaultSettings(requestedView)
+  const constrained = constrainMainWindowBounds(
+    {
+      x: display.workArea.x,
+      y: display.workArea.y,
+      width: Math.round(display.workAreaSize.width * defaults.geometry.widthRatio),
+      height: Math.round(display.workAreaSize.height * defaults.geometry.heightRatio)
+    },
+    display.workArea
+  )
+  return { width: constrained.width, height: constrained.height }
 }
 
 async function waitUntil(predicate, message, timeoutMs = 10_000) {
@@ -1348,7 +1365,12 @@ async function runCompactWindowTest() {
         12_000
       )
       assertOnlyOneBrowserWindow(mainWindow, '通知冷启动')
-      assert.ok(mainWindow.getBounds().width > 360)
+      const expandedBounds = mainWindow.getBounds()
+      assert.deepEqual(
+        { width: expandedBounds.width, height: expandedBounds.height },
+        getDefaultExpandedSize(),
+        '通知冷启动没有恢复当前工作区对应的默认展开尺寸'
+      )
       await assertRendererSurface(mainWindow, mainWindow.getBounds(), 'expanded', '通知冷启动')
       report('compact single-window notification cold-start integration passed')
       return
