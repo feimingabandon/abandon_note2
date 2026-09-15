@@ -33,11 +33,14 @@ try {
       .all()
       .map((row) => row.name)
   )
+  const isValidTableName = (table) => businessTables.includes(table)
   const nonEmpty = businessTables
     .filter((table) => existing.has(table))
     .map((table) => ({
       table,
-      count: db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count
+      count: isValidTableName(table)
+        ? db.prepare('SELECT COUNT(*) AS count FROM "' + table + '"').get().count
+        : 0
     }))
     .filter(({ count }) => count > 0)
   if (nonEmpty.length > 0) {
@@ -46,7 +49,10 @@ try {
 
   db.pragma('foreign_keys = OFF')
   db.transaction(() => {
-    for (const table of businessTables) db.exec(`DROP TABLE IF EXISTS ${table}`)
+    for (const table of businessTables) {
+      if (!isValidTableName(table)) throw new Error(`invalid table name: ${table}`)
+      db.exec('DROP TABLE IF EXISTS "' + table + '"')
+    }
     createNotesSchema(db)
   })()
   db.pragma('foreign_keys = ON')
