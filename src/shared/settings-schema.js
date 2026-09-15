@@ -513,15 +513,6 @@ const definitions = [
     remark: '主窗口层级（top / normal / bottom）'
   },
   {
-    id: 'window.compact.enabled',
-    path: ['window', 'compact', 'enabled'],
-    db: { type: 'compact', key: 'enabled' },
-    defaultValue: false,
-    parse: parseBoolean,
-    serialize: String,
-    remark: '兼容旧版本的灵动岛启动恢复标记（启动时固定清除）'
-  },
-  {
     id: 'window.compact.x',
     path: ['window', 'compact', 'x'],
     db: { type: 'compact', key: 'x' },

@@ -1,138 +1,161 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { getTransitionTotalMs } from '../../composables/useSlidingWorkspace.js'
+import { COMPACT_PRESENTATION } from '../../../../shared/compact-presentation.js'
 import CompactIsland from './CompactIsland.vue'
-import { pollCompactStageEndpoint } from './compact-stage-completion.js'
 
 const props = defineProps({
+  mode: { type: String, default: 'expanded' },
   phase: { type: String, default: 'expanded' },
-  transition: { type: Object, default: null }
+  transition: { type: Object, default: null },
+  presentation: { type: Object, default: null }
 })
 
+const hostRef = ref(null)
 const expandedLayerRef = ref(null)
 const compactLayerRef = ref(null)
-const stage = computed(() => props.transition?.stage || 'stable')
-const direction = computed(() =>
-  props.phase === 'collapsing' ? 'collapse' : props.phase === 'expanding' ? 'expand' : 'none'
-)
-const sourceMode = computed(() => (direction.value === 'expand' ? 'compact' : 'expanded'))
-const targetMode = computed(() => (direction.value === 'collapse' ? 'compact' : 'expanded'))
-const stableMode = computed(() =>
-  ['compact', 'dragging'].includes(props.phase) ? 'compact' : 'expanded'
-)
-const expandedInteractive = computed(
-  () => stage.value === 'stable' && stableMode.value === 'expanded'
-)
-const compactInteractive = computed(
-  () => stage.value === 'stable' && stableMode.value === 'compact'
-)
+const changing = computed(() => Boolean(props.transition))
+const expandedInteractive = computed(() => props.mode === 'expanded' && !changing.value)
+const compactInteractive = computed(() => props.mode === 'compact' && !changing.value)
+const compactStyle = computed(() => {
+  const rect = props.presentation?.compact
+  if (!rect) return null
+  return {
+    left: `${rect.x}px`,
+    top: `${rect.y}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`
+  }
+})
 
-let completionRevision = 0
-let stopEndpointPolling = null
-let lastNotifiedStageKey = ''
+let animationRevision = 0
+let animations = []
+let watchdog = null
+let notifiedGeneration = null
 
-function clearCompletion() {
-  completionRevision += 1
-  stopEndpointPolling?.()
-  stopEndpointPolling = null
+function cancelAnimations() {
+  animationRevision += 1
+  if (watchdog) clearTimeout(watchdog)
+  watchdog = null
+  for (const animation of animations) animation.cancel()
+  animations = []
 }
 
-function currentStageLayer(currentStage) {
-  const mode = currentStage === 'content-exit' ? sourceMode.value : targetMode.value
-  return mode === 'compact' ? compactLayerRef.value : expandedLayerRef.value
+function clipPath(rect, carrier, radius) {
+  const right = Math.max(0, carrier.width - rect.x - rect.width)
+  const bottom = Math.max(0, carrier.height - rect.y - rect.height)
+  return `inset(${rect.y}px ${right}px ${bottom}px ${rect.x}px round ${radius}px)`
 }
 
-function isCurrentTransition(generation, expectedStage) {
-  return (
-    Number(props.transition?.generation) === generation &&
-    stage.value === expectedStage &&
-    ['collapsing', 'expanding'].includes(props.phase)
-  )
+function opacityFrames(fromMode, toMode, layerMode) {
+  const startsVisible = fromMode === layerMode
+  const endsVisible = toMode === layerMode
+  if (startsVisible && !endsVisible) {
+    return [
+      { opacity: 1, offset: 0 },
+      { opacity: 0, offset: 0.48 },
+      { opacity: 0, offset: 1 }
+    ]
+  }
+  if (!startsVisible && endsVisible) {
+    return [
+      { opacity: 0, offset: 0 },
+      { opacity: 0, offset: 0.38 },
+      { opacity: 1, offset: 1 }
+    ]
+  }
+  return [{ opacity: endsVisible ? 1 : 0 }, { opacity: endsVisible ? 1 : 0 }]
 }
 
-function notifyReady(generation, expectedStage) {
-  if (!isCurrentTransition(generation, expectedStage)) return
-  const stageKey = `${generation}:${expectedStage}`
-  if (lastNotifiedStageKey === stageKey) return
-  lastNotifiedStageKey = stageKey
-  window.api.notifyCompactTransitionReady?.(generation, expectedStage)
+function notifyFinished(generation) {
+  if (notifiedGeneration === generation) return
+  notifiedGeneration = generation
+  window.api.notifyCompactPresentationFinished?.(generation)
 }
 
-async function armStageCompletion(expectedStage, generation) {
-  const revision = ++completionRevision
-  stopEndpointPolling?.()
-  stopEndpointPolling = null
+async function runPresentation(transition) {
+  const generation = Number(transition?.generation)
+  const presentation = props.presentation
+  if (!Number.isInteger(generation) || !presentation) return
 
+  cancelAnimations()
+  const revision = animationRevision
   await nextTick()
-  // 仅最终尺寸交接需要布局帧；内容动画依靠 transitionend，外壳接管时
-  // 旧内容已经退完，不能在每个阶段再固定串行等待两帧。
-  if (expectedStage === 'shell-settle') {
-    do {
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-      if (revision !== completionRevision || !isCurrentTransition(generation, expectedStage)) return
-    } while (
-      window.innerWidth !== props.transition.target.width ||
-      window.innerHeight !== props.transition.target.height
-    )
-  }
-  if (revision !== completionRevision || !isCurrentTransition(generation, expectedStage)) return
+  if (revision !== animationRevision || Number(props.transition?.generation) !== generation) return
 
-  if (['shell-transform', 'shell-settle'].includes(expectedStage)) {
-    notifyReady(generation, expectedStage)
+  const root = hostRef.value?.closest('.app-root, .month-root')
+  const expandedLayer = expandedLayerRef.value
+  const compactLayer = compactLayerRef.value
+  const carrier = presentation.carrier
+  const fromRect = presentation[transition.from]
+  const toRect = presentation[transition.to]
+  if (!root || !expandedLayer || !compactLayer || !carrier || !fromRect || !toRect) {
+    notifyFinished(generation)
     return
   }
 
-  const duration = getTransitionTotalMs(currentStageLayer(expectedStage), 'opacity')
-  if (duration <= 0) {
-    notifyReady(generation, expectedStage)
+  const duration = Math.max(0, Number(presentation.durationMs) || COMPACT_PRESENTATION.durationMs)
+  const easing = presentation.easing || COMPACT_PRESENTATION.easing
+  const radius = Math.max(0, Number(presentation.cornerRadius) || 0)
+  const options = { duration, easing, fill: 'forwards' }
+
+  try {
+    animations = [
+      root.animate(
+        [
+          { clipPath: clipPath(fromRect, carrier, radius) },
+          { clipPath: clipPath(toRect, carrier, radius) }
+        ],
+        options
+      ),
+      expandedLayer.animate(opacityFrames(transition.from, transition.to, 'expanded'), options),
+      compactLayer.animate(opacityFrames(transition.from, transition.to, 'compact'), options)
+    ]
+  } catch (error) {
+    console.warn('[CompactWindowScene] 呈现动画不可用，直接提交目标状态:', error)
+    notifyFinished(generation)
     return
   }
-  stopEndpointPolling = pollCompactStageEndpoint({
-    initialDelayMs: duration + 100,
-    isCurrent: () =>
-      revision === completionRevision && isCurrentTransition(generation, expectedStage),
-    // 窗口缩放可能替换布局引用，每次复查都读取当前阶段层，不能保留旧元素。
-    isAtEndpoint: () => isLayerAtEndpoint(currentStageLayer(expectedStage), expectedStage),
-    onReady: () => {
-      stopEndpointPolling = null
-      notifyReady(generation, expectedStage)
-    }
+
+  const completion = Promise.allSettled(animations.map((animation) => animation.finished))
+  const timeout = new Promise((resolve) => {
+    watchdog = setTimeout(resolve, duration + 300)
   })
-}
-
-function isLayerAtEndpoint(layer, expectedStage) {
-  if (!layer) return false
-  const targetOpacity = expectedStage === 'content-exit' ? 0 : 1
-  return Math.abs(Number(getComputedStyle(layer).opacity) - targetOpacity) < 0.001
-}
-
-function onLayerTransitionComplete(event) {
-  if (event.target !== event.currentTarget || event.propertyName !== 'opacity') return
-  const expectedStage = stage.value
-  if (!['content-exit', 'content-enter'].includes(expectedStage)) return
-  const expectedLayer = currentStageLayer(expectedStage)
-  if (event.currentTarget !== expectedLayer) return
-  if (!isLayerAtEndpoint(expectedLayer, expectedStage)) return
-  stopEndpointPolling?.()
-  stopEndpointPolling = null
-  notifyReady(Number(props.transition?.generation), expectedStage)
+  await Promise.race([completion, timeout])
+  if (revision !== animationRevision || Number(props.transition?.generation) !== generation) return
+  notifyFinished(generation)
 }
 
 watch(
-  () => [props.transition?.generation, props.transition?.stage],
-  ([generation, nextStage]) => {
-    if (!Number.isInteger(Number(generation))) {
-      clearCompletion()
-      return
-    }
-    if (['content-exit', 'shell-transform', 'shell-settle', 'content-enter'].includes(nextStage)) {
-      void armStageCompletion(nextStage, Number(generation))
+  () => props.transition,
+  (transition) => {
+    if (transition?.generation) void runPresentation(transition)
+  },
+  { immediate: true, flush: 'post' }
+)
+
+watch(
+  () => [props.mode, props.presentation],
+  async () => {
+    if (props.transition) return
+    cancelAnimations()
+    await nextTick()
+    const root = hostRef.value?.closest('.app-root, .month-root')
+    const carrier = props.presentation?.carrier
+    const rect = props.presentation?.[props.mode]
+    if (root && carrier && rect) {
+      root.style.clipPath = clipPath(
+        rect,
+        carrier,
+        Math.max(0, Number(props.presentation.cornerRadius) || 0)
+      )
+    } else if (root) {
+      root.style.clipPath = ''
     }
   },
   { immediate: true, flush: 'post' }
 )
 
-onBeforeUnmount(clearCompletion)
+onBeforeUnmount(cancelAnimations)
 
 function requestOppositeMode() {
   void window.api.toggleCompactWindow().catch((error) => {
@@ -143,22 +166,15 @@ function requestOppositeMode() {
 
 <template>
   <section
+    ref="hostRef"
     class="compact-presentation-host"
-    :class="[
-      `is-${phase}`,
-      `is-stage-${stage}`,
-      `is-direction-${direction}`,
-      `is-source-${sourceMode}`,
-      `is-target-${targetMode}`,
-      `is-stable-${stableMode}`
-    ]"
+    :class="[`is-${phase}`, `is-mode-${mode}`, { 'is-changing': changing }]"
   >
     <div
       ref="expandedLayerRef"
       class="compact-presentation-layer compact-presentation-layer--expanded"
       :aria-hidden="!expandedInteractive"
       :inert="!expandedInteractive"
-      @transitionend="onLayerTransitionComplete"
     >
       <slot />
     </div>
@@ -166,15 +182,15 @@ function requestOppositeMode() {
     <aside
       ref="compactLayerRef"
       class="compact-presentation-layer compact-presentation-layer--compact compact-window-scene"
+      :style="compactStyle"
       :aria-hidden="!compactInteractive"
       :inert="!compactInteractive"
-      @transitionend="onLayerTransitionComplete"
     >
       <CompactIsland :phase="phase" />
     </aside>
-    <!-- 内容交接期间只接收再次双击，业务控件继续 inert，防止误触。 -->
+
     <div
-      v-if="['content-exit', 'content-enter'].includes(stage)"
+      v-if="changing"
       class="compact-transition-input"
       aria-hidden="true"
       @dblclick.stop="requestOppositeMode"
@@ -194,25 +210,36 @@ function requestOppositeMode() {
 
 .compact-presentation-layer {
   position: absolute;
-  inset: 0;
   display: flex;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  border-radius: inherit;
-  opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transform: translateY(0);
 }
 
 .compact-presentation-layer--expanded {
   z-index: var(--z-local-content);
+  inset: 0;
   flex-direction: column;
+  opacity: 0;
 }
 
 .compact-presentation-layer--compact {
   z-index: var(--z-local-raised);
+  opacity: 0;
+}
+
+.compact-presentation-host.is-mode-expanded:not(.is-changing) .compact-presentation-layer--expanded,
+.compact-presentation-host.is-mode-compact:not(.is-changing) .compact-presentation-layer--compact {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.compact-presentation-host.is-changing .compact-presentation-layer {
+  visibility: visible;
+  will-change: opacity;
 }
 
 .compact-transition-input {
@@ -220,44 +247,5 @@ function requestOppositeMode() {
   inset: 0;
   z-index: var(--z-local-top);
   pointer-events: auto;
-}
-
-.compact-presentation-host.is-stage-stable.is-stable-expanded .compact-presentation-layer--expanded,
-.compact-presentation-host.is-stage-stable.is-stable-compact .compact-presentation-layer--compact {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-}
-
-.compact-presentation-host.is-stage-content-exit.is-source-expanded
-  .compact-presentation-layer--expanded,
-.compact-presentation-host.is-stage-content-exit.is-source-compact
-  .compact-presentation-layer--compact {
-  opacity: 0;
-  visibility: visible;
-  transition: opacity var(--compact-content-exit) var(--ease-standard);
-  will-change: opacity;
-}
-
-.compact-presentation-host.is-stage-content-enter.is-target-expanded
-  .compact-presentation-layer--expanded {
-  opacity: 1;
-  visibility: visible;
-  transition: opacity var(--compact-content-expand) var(--ease-standard);
-  will-change: opacity;
-}
-
-.compact-presentation-host.is-stage-content-enter.is-target-compact
-  .compact-presentation-layer--compact {
-  opacity: 1;
-  visibility: visible;
-  transition: opacity var(--compact-content-collapse) var(--ease-standard);
-  will-change: opacity;
-}
-
-.compact-presentation-host.is-stage-shell-transform .compact-presentation-layer,
-.compact-presentation-host.is-stage-shell-settle .compact-presentation-layer {
-  opacity: 0;
-  visibility: hidden;
 }
 </style>

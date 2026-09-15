@@ -8,11 +8,6 @@ export const COMPACT_WINDOW_LIMITS = Object.freeze({
   screenMargin: 0
 })
 
-export const COMPACT_WINDOW_ANCHORS = Object.freeze({
-  TOP: 'top',
-  BOTTOM: 'bottom'
-})
-
 function finite(value, fallback = 0) {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
@@ -49,7 +44,7 @@ export function normalizeCompactSize(size = {}, workArea = null) {
   }
 }
 
-export function insetWorkArea(workArea, margin = COMPACT_WINDOW_LIMITS.screenMargin) {
+function insetWorkArea(workArea, margin = COMPACT_WINDOW_LIMITS.screenMargin) {
   const x = finite(workArea?.x)
   const y = finite(workArea?.y)
   const width = Math.max(1, finite(workArea?.width, 1))
@@ -68,21 +63,6 @@ export function boundsCenter(bounds) {
     x: finite(bounds?.x) + finite(bounds?.width) / 2,
     y: finite(bounds?.y) + finite(bounds?.height) / 2
   }
-}
-
-export function compactBoundsFromCenter({ center, size, workArea, margin } = {}) {
-  const safeArea = insetWorkArea(workArea, margin)
-  const normalizedSize = normalizeCompactSize(size, workArea)
-  const width = Math.min(normalizedSize.width, safeArea.width)
-  const height = Math.min(normalizedSize.height, safeArea.height)
-  const idealX = finite(center?.x, safeArea.x + safeArea.width / 2) - width / 2
-  const idealY = finite(center?.y, safeArea.y + safeArea.height / 2) - height / 2
-  return roundBounds({
-    x: clamp(idealX, safeArea.x, safeArea.x + safeArea.width - width),
-    y: clamp(idealY, safeArea.y, safeArea.y + safeArea.height - height),
-    width,
-    height
-  })
 }
 
 /**
@@ -119,79 +99,6 @@ export function compactBoundsFromExpandedTop({ expandedBounds, size, workArea } 
     width: normalizedSize.width,
     height: normalizedSize.height
   })
-}
-
-export function expandedBoundsFromCompact({ compactBounds, expandedSize, workArea, margin } = {}) {
-  const safeArea = insetWorkArea(workArea, margin)
-  const center = boundsCenter(compactBounds)
-  const width = Math.min(Math.max(1, finite(expandedSize?.width, safeArea.width)), safeArea.width)
-  const height = Math.min(
-    Math.max(1, finite(expandedSize?.height, safeArea.height)),
-    safeArea.height
-  )
-  const compactTop = finite(compactBounds?.y)
-  const compactBottom = compactTop + finite(compactBounds?.height)
-  const safeBottom = safeArea.y + safeArea.height
-  const topAnchoredY = compactTop
-  const bottomAnchoredY = compactBottom - height
-  const fitsBelow = topAnchoredY >= safeArea.y && topAnchoredY + height <= safeBottom
-  const fitsAbove = bottomAnchoredY >= safeArea.y && bottomAnchoredY + height <= safeBottom
-  const idealY = fitsBelow
-    ? topAnchoredY
-    : fitsAbove
-      ? bottomAnchoredY
-      : clamp(topAnchoredY, safeArea.y, safeBottom - height)
-  return roundBounds({
-    x: clamp(center.x - width / 2, safeArea.x, safeArea.x + safeArea.width - width),
-    y: clamp(idealY, safeArea.y, safeArea.y + safeArea.height - height),
-    width,
-    height
-  })
-}
-
-/**
- * 展开方向严格按“下方完整容纳 → 上方完整容纳 → 以下方为主混合展开”选择。
- */
-export function compactAnchorFromPosition({ compactBounds, expandedSize, workArea, margin } = {}) {
-  const safeArea = insetWorkArea(workArea, margin)
-  const height = Math.min(
-    Math.max(1, finite(expandedSize?.height, safeArea.height)),
-    safeArea.height
-  )
-  const compactTop = finite(compactBounds?.y)
-  const compactBottom = compactTop + finite(compactBounds?.height)
-  const safeBottom = safeArea.y + safeArea.height
-  if (compactTop >= safeArea.y && compactTop + height <= safeBottom) {
-    return COMPACT_WINDOW_ANCHORS.TOP
-  }
-  if (compactBottom - height >= safeArea.y && compactBottom <= safeBottom) {
-    return COMPACT_WINDOW_ANCHORS.BOTTOM
-  }
-  return COMPACT_WINDOW_ANCHORS.TOP
-}
-
-export function interpolateWindowBounds(from, to, progress) {
-  const t = clamp(finite(progress), 0, 1)
-  const fromRight = finite(from?.x) + finite(from?.width)
-  const fromBottom = finite(from?.y) + finite(from?.height)
-  const toRight = finite(to?.x) + finite(to?.width)
-  const toBottom = finite(to?.y) + finite(to?.height)
-  const left = finite(from?.x) + (finite(to?.x) - finite(from?.x)) * t
-  const top = finite(from?.y) + (finite(to?.y) - finite(from?.y)) * t
-  const right = fromRight + (toRight - fromRight) * t
-  const bottom = fromBottom + (toBottom - fromBottom) * t
-  return roundBounds({ x: left, y: top, width: right - left, height: bottom - top })
-}
-
-export function mapCompactCenterToWorkArea({ center, previousWorkArea, nextWorkArea } = {}) {
-  const previousSafe = insetWorkArea(previousWorkArea)
-  const nextSafe = insetWorkArea(nextWorkArea)
-  const ratioX = clamp((finite(center?.x) - previousSafe.x) / previousSafe.width, 0, 1)
-  const ratioY = clamp((finite(center?.y) - previousSafe.y) / previousSafe.height, 0, 1)
-  return {
-    x: nextSafe.x + nextSafe.width * ratioX,
-    y: nextSafe.y + nextSafe.height * ratioY
-  }
 }
 
 export function mapCompactPositionToWorkArea({ position, previousWorkArea, nextWorkArea } = {}) {

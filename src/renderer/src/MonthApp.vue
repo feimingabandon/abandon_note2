@@ -374,11 +374,7 @@ onUnmounted(() => {
 <template>
   <div
     class="month-root app-bg"
-    :class="[
-      `is-compact-${compactWindow.phase.value}`,
-      `is-compact-stage-${compactWindow.stage.value}`,
-      { 'is-week-view': isWeekView }
-    ]"
+    :class="[`is-compact-${compactWindow.phase.value}`, { 'is-week-view': isWeekView }]"
   >
     <Transition name="month-wallpaper">
       <div v-if="wallpaperVisible" :key="wallpaperRenderKey" class="month-wallpaper">
@@ -392,8 +388,10 @@ onUnmounted(() => {
       </div>
     </Transition>
     <CompactWindowScene
+      :mode="compactWindow.mode.value"
       :phase="compactWindow.phase.value"
       :transition="compactWindow.transition.value"
+      :presentation="compactWindow.presentation.value"
     >
       <div
         class="month-scene"
@@ -401,7 +399,8 @@ onUnmounted(() => {
           'is-ui-background-blurred': showSettings || calendarBusinessModalOpen
         }"
         :inert="
-          compactWindow.phase.value !== 'expanded' ||
+          compactWindow.mode.value !== 'expanded' ||
+          compactWindow.changing.value ||
           showSettings ||
           calendarBusinessModalOpen ||
           showFirstUseNotice ||

@@ -18,7 +18,6 @@ vi.mock('../src/main/db/db.js', () => ({
 
 let ensureViewSettingsInitialized
 let ensureApplicationWindowSettingsInitialized
-let clearPersistedCompactWindowMode
 let getViewSettingsScope
 let prepareViewSettingsForSwitch
 let readApplicationSettings
@@ -28,7 +27,6 @@ let writeApplicationSettings
 
 beforeAll(async () => {
   ;({
-    clearPersistedCompactWindowMode,
     ensureApplicationWindowSettingsInitialized,
     ensureViewSettingsInitialized,
     getViewSettingsScope,
@@ -71,7 +69,7 @@ describe('application view settings', () => {
     expect(readApplicationSettings().window).toEqual({
       lockState: true,
       zOrderMode: 'normal',
-      compact: expect.objectContaining({ enabled: false, width: 200, height: 40 })
+      compact: expect.objectContaining({ width: 200, height: 40 })
     })
     expect(ensureApplicationWindowSettingsInitialized('month')).toBe(false)
 
@@ -80,7 +78,7 @@ describe('application view settings', () => {
     expect(readApplicationSettings().window).toEqual({
       lockState: false,
       zOrderMode: 'bottom',
-      compact: expect.objectContaining({ enabled: false, width: 200, height: 40 })
+      compact: expect.objectContaining({ width: 200, height: 40 })
     })
   })
 
@@ -219,7 +217,6 @@ describe('application view settings', () => {
 
   it('writes compact geometry atomically and rejects unrelated batch entries', () => {
     writeApplicationSettings([
-      { id: 'window.compact.enabled', value: true },
       { id: 'window.compact.x', value: 440 },
       { id: 'window.compact.y', value: 364 },
       { id: 'window.compact.width', value: 420 },
@@ -233,7 +230,6 @@ describe('application view settings', () => {
 
     expect(db.setSettingsBatch).toHaveBeenCalledTimes(1)
     expect(readApplicationSettings().window.compact).toEqual({
-      enabled: true,
       x: 440,
       y: 364,
       width: 420,
@@ -244,23 +240,6 @@ describe('application view settings', () => {
     expect(() => writeApplicationSettings([{ id: 'window.zOrderMode', value: 'normal' }])).toThrow(
       /未授权/
     )
-    expect(db.setSettingsBatch).toHaveBeenCalledTimes(1)
-  })
-
-  it('clears a legacy compact startup flag without discarding compact geometry', () => {
-    db.rowsByScope.set('application', [
-      { type: 'compact', key: 'enabled', value: 'true' },
-      { type: 'compact', key: 'x', value: '440' },
-      { type: 'compact', key: 'y', value: '364' }
-    ])
-
-    expect(clearPersistedCompactWindowMode()).toBe(true)
-    expect(readApplicationSettings().window.compact).toMatchObject({
-      enabled: false,
-      x: 440,
-      y: 364
-    })
-    expect(clearPersistedCompactWindowMode()).toBe(false)
     expect(db.setSettingsBatch).toHaveBeenCalledTimes(1)
   })
 

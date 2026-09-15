@@ -167,9 +167,6 @@ html.month-view {
   --motion-fast: 120ms;
   --motion-control: 180ms;
   --motion-panel: 300ms;
-  --compact-content-exit: 100ms;
-  --compact-content-expand: 160ms;
-  --compact-content-collapse: 100ms;
   --ease-standard: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -226,56 +223,6 @@ html.is-system-glass-active .month-root.app-bg {
   border-radius: inherit;
   box-shadow: inset 0 0 0 var(--window-border-width) var(--window-border-inner-rim);
   pointer-events: none;
-}
-
-/* 外壳变形由原生圆角材质独占呈现。边框、壁纸与内容共享进退场时长；
- * 目标布局和合成帧准备完成后再淡入，避免交接时某一层突然出现。 */
-.app-bg.is-compact-stage-content-exit::after {
-  opacity: 0;
-  transition: opacity var(--compact-content-exit) var(--ease-standard);
-}
-
-.app-bg.is-compact-stage-shell-transform::after,
-.app-bg.is-compact-stage-shell-settle::after {
-  opacity: 0;
-}
-
-.app-bg.is-compact-expanding.is-compact-stage-content-enter::after {
-  opacity: 1;
-  transition: opacity var(--compact-content-expand) var(--ease-standard);
-}
-
-.app-bg.is-compact-collapsing.is-compact-stage-content-enter::after {
-  opacity: 1;
-  transition: opacity var(--compact-content-collapse) var(--ease-standard);
-}
-
-.app-root.is-compact-stage-content-exit .app-wallpaper,
-.month-root.is-compact-stage-content-exit .month-wallpaper {
-  opacity: 0;
-  transition: opacity var(--compact-content-exit) var(--ease-standard);
-}
-
-.app-root.is-compact-stage-shell-transform .app-wallpaper,
-.month-root.is-compact-stage-shell-transform .month-wallpaper,
-.app-root.is-compact-stage-shell-settle .app-wallpaper,
-.month-root.is-compact-stage-shell-settle .month-wallpaper {
-  opacity: 0;
-  visibility: hidden;
-}
-
-.app-root.is-compact-expanding.is-compact-stage-content-enter .app-wallpaper,
-.month-root.is-compact-expanding.is-compact-stage-content-enter .month-wallpaper {
-  opacity: 1;
-  visibility: visible;
-  transition: opacity var(--compact-content-expand) var(--ease-standard);
-}
-
-.app-root.is-compact-collapsing.is-compact-stage-content-enter .app-wallpaper,
-.month-root.is-compact-collapsing.is-compact-stage-content-enter .month-wallpaper {
-  opacity: 1;
-  visibility: visible;
-  transition: opacity var(--compact-content-collapse) var(--ease-standard);
 }
 
 /* 主窗口的旧模糊伪层继续禁用；可选边框由 .app-bg::after 统一绘制。 */

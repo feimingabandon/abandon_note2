@@ -555,13 +555,7 @@ onUnmounted(() => {
 
 <template>
   <!-- 应用根容器：同时承载背景样式（.app-bg）和布局（.app-root） -->
-  <div
-    class="app-root app-bg"
-    :class="[
-      `is-compact-${compactWindow.phase.value}`,
-      `is-compact-stage-${compactWindow.stage.value}`
-    ]"
-  >
+  <div class="app-root app-bg" :class="`is-compact-${compactWindow.phase.value}`">
     <Transition name="app-wallpaper">
       <div
         v-if="wallpaperVisible"
@@ -579,14 +573,17 @@ onUnmounted(() => {
       </div>
     </Transition>
     <CompactWindowScene
+      :mode="compactWindow.mode.value"
       :phase="compactWindow.phase.value"
       :transition="compactWindow.transition.value"
+      :presentation="compactWindow.presentation.value"
     >
       <!-- 设置打开时，底层场景不可点击且不可获取键盘焦点。 -->
       <div
         class="app-scene"
         :inert="
-          compactWindow.phase.value !== 'expanded' ||
+          compactWindow.mode.value !== 'expanded' ||
+          compactWindow.changing.value ||
           showSettings ||
           !!selectedNote ||
           showFirstUseNotice ||

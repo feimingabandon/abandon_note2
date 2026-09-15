@@ -80,6 +80,29 @@ assert.equal(
 )
 futureDb.close()
 
+const compactModeMigrationDb = new Database(':memory:')
+createDatabaseSchema(compactModeMigrationDb)
+compactModeMigrationDb.exec(`
+  INSERT INTO app_settings (window_name, type, key, value)
+  VALUES ('application', 'compact', 'enabled', 'true'),
+         ('application', 'compact', 'x', '440');
+  PRAGMA user_version = 9;
+`)
+createDatabaseSchema(compactModeMigrationDb)
+assert.equal(
+  compactModeMigrationDb
+    .prepare("SELECT value FROM app_settings WHERE type = 'compact' AND key = 'enabled'")
+    .get(),
+  undefined
+)
+assert.equal(
+  compactModeMigrationDb
+    .prepare("SELECT value FROM app_settings WHERE type = 'compact' AND key = 'x'")
+    .get().value,
+  '440'
+)
+compactModeMigrationDb.close()
+
 const backupRoot = mkdtempSync(join(tmpdir(), 'abandon-v0-backup-test-'))
 const backupSourcePath = join(backupRoot, 'app.db')
 const versionZeroDb = new Database(backupSourcePath)

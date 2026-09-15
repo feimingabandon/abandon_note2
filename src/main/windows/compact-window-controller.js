@@ -1,196 +1,145 @@
-const TRANSITION_STATUSES = Object.freeze({
-  COMPLETED: 'completed',
-  WINDOW_REPLACED: 'window-replaced',
-  FAILED: 'failed'
-})
-
-const PRESENTATION_STAGES = Object.freeze({
-  CONTENT_EXIT: 'content-exit',
-  SHELL_TRANSFORM: 'shell-transform',
-  SHELL_SETTLE: 'shell-settle',
-  CONTENT_ENTER: 'content-enter'
-})
-
-const NEXT_PRESENTATION_STAGE = Object.freeze({
-  [PRESENTATION_STAGES.CONTENT_EXIT]: PRESENTATION_STAGES.SHELL_TRANSFORM,
-  [PRESENTATION_STAGES.SHELL_TRANSFORM]: PRESENTATION_STAGES.SHELL_SETTLE,
-  [PRESENTATION_STAGES.SHELL_SETTLE]: PRESENTATION_STAGES.CONTENT_ENTER
+const MODES = Object.freeze({
+  EXPANDED: 'expanded',
+  COMPACT: 'compact'
 })
 
 function isUsableWindow(window) {
   return Boolean(window && !window.isDestroyed?.())
 }
 
+function normalizeMode(mode) {
+  if (mode === MODES.EXPANDED || mode === MODES.COMPACT) return mode
+  throw new Error(`未知的灵动岛目标状态：${mode}`)
+}
+
 /**
- * 单 BrowserWindow 胶囊事务状态机。
+ * 单窗口灵动岛协调器。
  *
- * 这里只保存 phase、generation 和当前原生事务；原生层负责把同一个 Electron
- * 外壳交给固定尺寸的 Composition Overlay，真实 HWND 在透明期间一次就位。
+ * 稳定状态只有 expanded / compact；动画步骤完全封装在一次 transition 中。
+ * 连续请求只更新 desiredMode，当前事务收口后再处理用户最后一次意图。
  */
 export class CompactWindowController {
-  constructor({ onPhaseChanged = () => {}, onError = () => {} } = {}) {
-    this.onPhaseChanged = onPhaseChanged
+  constructor({ onStateChanged = () => {}, onError = () => {} } = {}) {
+    this.onStateChanged = onStateChanged
     this.onError = onError
     this.window = null
-    this.phase = 'expanded'
+    this.committedMode = MODES.EXPANDED
+    this.desiredMode = MODES.EXPANDED
     this.generation = 0
     this.transition = null
+    this.requestPromise = null
   }
 
-  initializeForWindow(window, phase = 'expanded') {
-    if (this.transition) throw new Error('原生窗口过渡尚未结束，不能替换主视图窗口')
+  get phase() {
+    if (!this.transition) return this.committedMode
+    return this.transition.to === MODES.COMPACT ? 'collapsing' : 'expanding'
+  }
+
+  initializeForWindow(window) {
+    if (this.requestPromise) throw new Error('窗口呈现事务尚未结束，不能替换主视图窗口')
     this.generation += 1
     this.window = window
-    this.phase = phase
-    this.onPhaseChanged(this.snapshot())
+    this.committedMode = MODES.EXPANDED
+    this.desiredMode = MODES.EXPANDED
+    this.transition = null
+    this.onStateChanged(this.snapshot())
     return this.snapshot()
   }
 
   snapshot() {
     return {
-      window: this.window,
       phase: this.phase,
-      generation: this.generation,
-      transitioning: Boolean(this.transition),
+      committedMode: this.committedMode,
+      desiredMode: this.desiredMode,
       transition: this.transitionSnapshot()
     }
   }
 
   transitionSnapshot() {
-    const transition = this.transition
-    if (!transition) return null
-    return {
-      generation: transition.generation,
-      phase: transition.phase,
-      from: { ...transition.from },
-      target: { ...transition.target },
-      duration: transition.duration,
-      startedAt: transition.startedAt,
-      stage: transition.stage
-    }
+    return this.transition ? { ...this.transition } : null
   }
 
-  setTransitionStage(window, generation, stage) {
-    const transition = this.transition
-    if (
-      !transition ||
-      transition.window !== window ||
-      transition.generation !== generation ||
-      !Object.values(PRESENTATION_STAGES).includes(stage)
-    ) {
-      return false
-    }
-    if (stage === transition.stage) return true
-    if (NEXT_PRESENTATION_STAGE[transition.stage] !== stage) return false
-    transition.stage = stage
-    this.onPhaseChanged(this.snapshot())
-    return true
+  isCompact() {
+    return this.committedMode === MODES.COMPACT
   }
 
   isActive() {
-    return this.phase !== 'expanded'
-  }
-
-  setPhase(window, phase) {
-    if (window !== this.window || !isUsableWindow(window)) return false
-    this.phase = phase
-    this.onPhaseChanged(this.snapshot())
-    return true
+    return this.isCompact() || Boolean(this.transition)
   }
 
   activePromise() {
-    return this.transition?.promise || null
+    return this.requestPromise
   }
 
-  isCurrentResult(result) {
-    return Boolean(result && result.window === this.window && result.generation === this.generation)
-  }
-
-  complete(result, phase) {
-    if (result?.status !== TRANSITION_STATUSES.COMPLETED || !this.isCurrentResult(result)) {
+  publishTransition(window, generation) {
+    if (!this.transition || this.window !== window || this.transition.generation !== generation) {
       return false
     }
-    return this.setPhase(result.window, phase)
+    this.onStateChanged(this.snapshot())
+    return true
   }
 
-  /**
-   * 登记一个不可中途取消的原生事务。executor 只提交一次原生同步几何过渡；
-   * phase 和持久化由调用方在结果返回后收口。
-   */
-  run(window, { from, target, duration, phase }, executor) {
-    if (this.transition) return this.transition.promise
+  request(window, mode, perform) {
+    const targetMode = normalizeMode(mode)
     if (window !== this.window || !isUsableWindow(window)) {
-      return Promise.resolve({
-        status: TRANSITION_STATUSES.WINDOW_REPLACED,
-        generation: this.generation,
-        window,
-        from,
-        target,
-        phase,
-        error: null
-      })
+      return Promise.resolve({ changed: false, mode: this.committedMode })
     }
 
-    const generation = ++this.generation
-    const transition = {
-      generation,
-      window,
-      from: { ...from },
-      target: { ...target },
-      duration,
-      phase,
-      stage: PRESENTATION_STAGES.CONTENT_EXIT,
-      startedAt: Date.now(),
-      promise: null
-    }
-    this.transition = transition
-    this.phase = phase
-    transition.promise = Promise.resolve()
-      .then(executor)
-      .then((value) => ({
-        status: TRANSITION_STATUSES.COMPLETED,
-        generation,
-        window,
-        from: transition.from,
-        target: transition.target,
-        phase,
-        value,
-        error: null
-      }))
-      .catch((error) => {
-        // 诊断只传普通快照，不能遍历 BrowserWindow / WebContents 的原生属性。
-        this.onError(error, {
-          operation: 'native-transition',
-          transition: this.transitionSnapshot()
-        })
-        return {
-          status: TRANSITION_STATUSES.FAILED,
+    this.desiredMode = targetMode
+    this.onStateChanged(this.snapshot())
+    if (this.requestPromise) return this.requestPromise
+
+    const operationWindow = window
+    this.requestPromise = (async () => {
+      let changed = false
+      let value = null
+      while (
+        operationWindow === this.window &&
+        isUsableWindow(operationWindow) &&
+        this.desiredMode !== this.committedMode
+      ) {
+        const from = this.committedMode
+        const to = this.desiredMode
+        const generation = ++this.generation
+        this.transition = {
           generation,
-          window,
-          from: transition.from,
-          target: transition.target,
-          phase,
-          error
+          from,
+          to,
+          startedAt: Date.now()
         }
-      })
-      .finally(() => {
-        if (this.transition === transition) this.transition = null
-      })
-
-    this.onPhaseChanged(this.snapshot())
-    return transition.promise
+        try {
+          value = await perform({ window: operationWindow, generation, from, to })
+          this.committedMode = to
+          changed = true
+        } catch (error) {
+          this.desiredMode = this.committedMode
+          this.onError(error, { transition: this.transitionSnapshot() })
+          throw error
+        } finally {
+          this.transition = null
+          this.onStateChanged(this.snapshot())
+        }
+      }
+      return { changed, mode: this.committedMode, value }
+    })().finally(() => {
+      this.requestPromise = null
+    })
+    return this.requestPromise
   }
 
   cancelForWindowReplacement(window) {
-    if (this.transition) {
-      throw new Error('原生窗口过渡尚未结束，不能销毁参与过渡的窗口')
+    if (this.requestPromise) {
+      throw new Error('窗口呈现事务尚未结束，不能销毁参与过渡的窗口')
     }
     if (this.window !== window) return null
     this.generation += 1
     this.window = null
-    this.onPhaseChanged(this.snapshot())
-    return { status: TRANSITION_STATUSES.WINDOW_REPLACED, window }
+    this.committedMode = MODES.EXPANDED
+    this.desiredMode = MODES.EXPANDED
+    this.transition = null
+    this.onStateChanged(this.snapshot())
+    return { status: 'window-replaced', window }
   }
 }
 
-export { PRESENTATION_STAGES, TRANSITION_STATUSES }
+export { MODES as COMPACT_WINDOW_MODES }

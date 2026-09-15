@@ -35,14 +35,8 @@ namespace BlurEngine {
 #define WM_BLUR_HIDE             (WM_USER + 103)
 #define WM_BLUR_DESTROY          (WM_USER + 104)
 #define WM_BLUR_SYNC_ZORDER      (WM_USER + 105)
-#define WM_BLUR_BEGIN_TRANSITION (WM_USER + 106)
-#define WM_BLUR_END_TRANSITION   (WM_USER + 107)
-#define WM_BLUR_TRANSITION_VISUAL (WM_USER + 108)
-#define WM_BLUR_SHELL_PREPARE      (WM_USER + 109)
-#define WM_BLUR_SHELL_START        (WM_USER + 110)
-#define WM_BLUR_SHELL_FINISH       (WM_USER + 111)
-#define WM_BLUR_SHELL_CANCEL       (WM_USER + 112)
-#define WM_BLUR_SHELL_WARM         (WM_USER + 113)
+#define WM_BLUR_ANIMATE_PRESENTATION (WM_USER + 106)
+#define WM_BLUR_RESET_PRESENTATION   (WM_USER + 107)
 
 // ---- 效果管线硬编码参数 ----
 // 模糊优化: Balanced；边框模式: Hard
@@ -168,7 +162,7 @@ void Engine::SetConfig(const BlurConfig& config) {
 
 bool Engine::ApplyConfigAndWait(const BlurConfig& config, DWORD syncTimeoutMs) {
     { std::lock_guard<std::mutex> lock(m_failureMutex); m_failureJson = "{}"; }
-    if (!m_initialized.load() || m_windowTransitioning.load()) {
+    if (!m_initialized.load()) {
         RecordNativeFailure("apply-config-not-ready", 0);
         m_lastError.store(BlurErrorCode::UnknownFailure);
         return false;
@@ -249,7 +243,6 @@ BlurConfig Engine::GetConfig() const {
 }
 
 void Engine::UpdateGeometry() {
-    if (m_windowTransitioning.load()) return;
     if (HWND hwnd = m_messageHwnd.load()) {
         if (!m_geometryUpdatePending.exchange(true)) {
             if (!PostMessage(hwnd, WM_BLUR_UPDATE_GEOMETRY, 0, 0)) {
@@ -336,500 +329,196 @@ bool Engine::MoveParentAndOverlay(
     return true;
 }
 
-bool Engine::BeginWindowTransition(int initialWidth, int initialHeight, DWORD syncTimeoutMs) {
+bool Engine::AnimatePresentation(const RECT& from, const RECT& to, int durationMs) {
     const HWND overlayHwnd = m_messageHwnd.load();
-    if (!m_initialized.load() || !overlayHwnd || !IsWindow(overlayHwnd) ||
-        initialWidth <= 0 || initialHeight <= 0) {
+    const auto valid = [](const RECT& rect) {
+        return rect.left >= 0 && rect.top >= 0 &&
+            rect.right > rect.left && rect.bottom > rect.top;
+    };
+    if (!IsHealthy() || !overlayHwnd || !IsWindow(overlayHwnd) ||
+        !valid(from) || !valid(to) || m_presentationAnimating.exchange(true)) {
         return false;
     }
-    m_windowTransitioning.store(true);
-    DWORD_PTR syncResult = 0;
+
+    auto completion = std::make_shared<PresentationCompletion>();
+    {
+        std::lock_guard<std::mutex> lock(m_presentationMutex);
+        m_presentationFrom = from;
+        m_presentationTo = to;
+        m_presentationDurationMs = std::clamp(durationMs, 0, 2000);
+        m_presentationCompletion = completion;
+    }
+
+    DWORD_PTR result = 0;
     if (!SendMessageTimeoutW(
             overlayHwnd,
-            WM_BLUR_BEGIN_TRANSITION,
-            static_cast<WPARAM>(initialWidth),
-            static_cast<LPARAM>(initialHeight),
+            WM_BLUR_ANIMATE_PRESENTATION,
+            0,
+            0,
             SMTO_ABORTIFHUNG | SMTO_BLOCK,
-            std::max<DWORD>(1, syncTimeoutMs),
-            &syncResult) || syncResult != 1) {
-        m_windowTransitioning.store(false);
+            1000,
+            &result) || result != 1) {
+        m_presentationAnimating.store(false);
         return false;
     }
-    return true;
-}
 
-RECT Engine::GetShellCarrier() const {
-    std::lock_guard<std::mutex> lock(m_shellMutex);
-    return m_shellCarrier;
-}
-
-bool Engine::WarmShellResources(HWND parentHwnd) {
-    if (!IsHealthy() || parentHwnd != m_parentHwnd.load() || m_shellPrepared.load()) return false;
-    DWORD_PTR result = 0;
-    // 只创建隐藏 HWND 和 Visual，绝不更改实际窗口、毛玻璃配置或事务状态。
-    return SendMessageTimeoutW(m_messageHwnd.load(), WM_BLUR_SHELL_WARM,
-        reinterpret_cast<WPARAM>(parentHwnd), 0, SMTO_ABORTIFHUNG | SMTO_BLOCK,
-        1000, &result) && result == 1;
-}
-
-bool Engine::PrepareShellTransition(HWND parentHwnd, const RECT& target) {
-    if (!IsHealthy() || parentHwnd != m_parentHwnd.load() ||
-        target.right <= target.left || target.bottom <= target.top ||
-        m_shellPrepared.exchange(true)) return false;
-    RECT source{};
-    if (!GetWindowRect(parentHwnd, &source)) {
-        m_shellPrepared.store(false);
-        return false;
-    }
-    {
-        std::lock_guard<std::mutex> lock(m_shellMutex);
-        m_shellSource = source;
-        m_shellTarget = target;
-        UnionRect(&m_shellCarrier, &source, &target);
-        m_shellCompletion = std::make_shared<ShellCompletion>();
-        m_shellPrepareCompletion = std::make_shared<ShellCompletion>();
-        m_shellReleaseCompletion = std::make_shared<ShellCompletion>();
-    }
-    m_shellCompleted.store(false);
-    m_shellError.store(0);
-    m_windowTransitioning.store(true);
-    DWORD_PTR result = 0;
-    // 请求数据由 Engine 持有；超时后 STA 不会读取已销毁的栈指针。
-    bool ready = SendMessageTimeoutW(m_messageHwnd.load(), WM_BLUR_SHELL_PREPARE,
-        0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &result) && result == 1;
-    if (ready) {
-        std::shared_ptr<ShellCompletion> completion;
-        { std::lock_guard<std::mutex> lock(m_shellMutex); completion = m_shellPrepareCompletion; }
-        std::unique_lock<std::mutex> lock(completion->mutex);
-        ready = completion->changed.wait_for(lock, std::chrono::milliseconds(1000),
-            [&] { return completion->completed || completion->cancelled; }) &&
-            completion->completed && !completion->cancelled;
-    }
-    if (!ready) {
-        if (!m_shellError.load()) m_shellError.store(HRESULT_FROM_WIN32(ERROR_TIMEOUT));
-        FinishShellTransition();
-    }
-    return ready;
-}
-
-bool Engine::AnimateShellTransition(int durationMs) {
-    if (!m_shellPrepared.load()) return false;
-    std::shared_ptr<ShellCompletion> completion;
-    { std::lock_guard<std::mutex> lock(m_shellMutex); completion = m_shellCompletion; }
-    if (!completion) return false;
-    DWORD_PTR result = 0;
-    if (!SendMessageTimeoutW(m_messageHwnd.load(), WM_BLUR_SHELL_START,
-        std::clamp(durationMs, 120, 1200), 0,
-        SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &result) || result != 1) {
-        if (!m_shellError.load()) m_shellError.store(HRESULT_FROM_WIN32(ERROR_TIMEOUT));
-        return false;
-    }
     std::unique_lock<std::mutex> lock(completion->mutex);
-    const bool signalled = completion->changed.wait_for(lock,
-        std::chrono::milliseconds(std::clamp(durationMs, 120, 1200) + 1500),
+    const bool signalled = completion->changed.wait_for(
+        lock,
+        std::chrono::milliseconds(std::clamp(durationMs, 0, 2000) + 1000),
         [&] { return completion->completed || completion->cancelled; });
     const bool success = signalled && completion->completed && !completion->cancelled;
-    if (!success && !m_shellError.load()) m_shellError.store(HRESULT_FROM_WIN32(ERROR_TIMEOUT));
-    m_shellCompleted.store(success);
+    lock.unlock();
+    if (!success) ResetPresentation();
     return success;
 }
 
-bool Engine::FinishShellTransition() {
-    if (!m_shellPrepared.load()) return true;
-    std::shared_ptr<ShellCompletion> completion;
-    { std::lock_guard<std::mutex> lock(m_shellMutex); completion = m_shellReleaseCompletion; }
-    if (!completion) return false;
+void Engine::ResetPresentation() {
+    const HWND overlayHwnd = m_messageHwnd.load();
+    if (!overlayHwnd || !IsWindow(overlayHwnd)) {
+        m_presentationAnimating.store(false);
+        return;
+    }
     DWORD_PTR result = 0;
-    const bool success = SendMessageTimeoutW(m_messageHwnd.load(), WM_BLUR_SHELL_FINISH,
-        0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &result) && result == 1;
-    if (!success) {
-        // 最终清理仍可在 STA 恢复后执行，禁止留下永久占有窗口的状态。
-        PostMessageW(m_messageHwnd.load(), WM_BLUR_SHELL_CANCEL, 0, 0);
-    }
-    if (!success) return false;
-    // STA 必须继续分发 Composition 的提交完成事件；只在调用线程有界等待。
-    std::unique_lock<std::mutex> lock(completion->mutex);
-    const bool signalled = completion->changed.wait_for(lock, std::chrono::milliseconds(1000),
-        [&] { return completion->completed || completion->cancelled; });
-    const bool released = signalled && completion->completed && !completion->cancelled;
-    if (!released) {
-        if (!m_shellError.load()) m_shellError.store(HRESULT_FROM_WIN32(ERROR_TIMEOUT));
-        PostMessageW(m_messageHwnd.load(), WM_BLUR_SHELL_CANCEL, 0, 0);
-    }
-    return released;
-}
-
-bool Engine::EnsureShellVisuals() {
-    if (m_shellRoot) return true;
-    // 临时外壳用独立的原生承载窗口。不能在可见状态把同一个承载窗口
-    // 从大画布改为胶囊坐标，否则 Win10 会合成“新局部坐标 + 旧 HWND 原点”。
-    static constexpr const wchar_t* shellClass = L"AbandonTransitionShell";
-    WNDCLASSW wc{};
-    wc.lpfnWndProc = DefWindowProcW;
-    wc.hInstance = GetModuleHandle(nullptr);
-    wc.lpszClassName = shellClass;
-    if (!RegisterClassW(&wc) && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
-    HWND shell = CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP,
-        shellClass, L"AbandonTransitionShell", WS_POPUP,
-        0, 0, 1, 1, nullptr, nullptr, GetModuleHandle(nullptr), nullptr);
-    if (!shell) return false;
-    m_shellHwnd.store(shell);
-    try {
-        namespace abi = ABI::Windows::UI::Composition::Desktop;
-        auto interop = m_compositor.as<abi::ICompositorDesktopInterop>();
-        winrt::check_hresult(interop->CreateDesktopWindowTarget(shell, false,
-            reinterpret_cast<abi::IDesktopWindowTarget**>(winrt::put_abi(m_shellCompositionTarget))));
-        m_shellRoot = m_compositor.CreateContainerVisual();
-        m_shellRoot.IsVisible(false);
-        m_shellBlur = m_compositor.CreateSpriteVisual();
-        m_shellBlur.Brush(m_effectBrush);
-        m_shellTint = m_compositor.CreateSpriteVisual();
-        m_shellTint.Brush(m_tintBrush);
-        m_shellClipGeometry = m_compositor.CreateRoundedRectangleGeometry();
-        m_shellRoot.Clip(m_compositor.CreateGeometricClip(m_shellClipGeometry));
-        m_shellRoot.Children().InsertAtBottom(m_shellBlur);
-        m_shellRoot.Children().InsertAtTop(m_shellTint);
-        m_shellCompositionTarget.Root(m_shellRoot);
-        return true;
-    } catch (...) {
-        m_shellRoot = nullptr;
-        m_shellBlur = nullptr;
-        m_shellTint = nullptr;
-        m_shellClipGeometry = nullptr;
-        m_shellCompositionTarget = nullptr;
-        m_shellHwnd.store(nullptr);
-        DestroyWindow(shell);
-        return false;
-    }
-}
-
-bool Engine::PrepareShellOnSta() {
-    if (!m_rootVisual || !m_clipGeometry || !m_overlayHwnd || !EnsureShellVisuals()) return false;
-    RECT source, carrier;
-    { std::lock_guard<std::mutex> lock(m_shellMutex); source = m_shellSource; carrier = m_shellCarrier; }
-    const auto cfg = GetConfig();
-    const winrt::Windows::Foundation::Numerics::float2 size{
-        float(carrier.right - carrier.left), float(carrier.bottom - carrier.top) };
-    m_shellRoot.Size(size);
-    // 预热之后可能重建了材质图；使用本次事务的最新画刷。
-    m_shellBlur.Brush(m_effectBrush);
-    m_shellTint.Brush(m_tintBrush);
-    m_shellBlur.Size(size);
-    m_shellTint.Size(size);
-    m_shellClipGeometry.Offset({ float(source.left - carrier.left), float(source.top - carrier.top) });
-    m_shellClipGeometry.Size({ float(source.right - source.left), float(source.bottom - source.top) });
-    m_shellClipGeometry.CornerRadius({ cfg.cornerRadius, cfg.cornerRadius });
-    m_shellBlur.IsVisible(cfg.enabled);
-    m_shellTint.Opacity(cfg.tintOpacity);
-    const HWND shell = m_shellHwnd.load();
-    const HWND parent = m_parentHwnd.load();
-    const bool topmost = (GetWindowLongPtrW(parent, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
-    if (!SetWindowPos(shell, topmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) return false;
-    if (!SetWindowPos(shell, parent, carrier.left, carrier.top,
-        carrier.right - carrier.left, carrier.bottom - carrier.top,
-        SWP_NOACTIVATE | SWP_SHOWWINDOW)) return false;
-    // HWND 可见但 Visual 仍透明。先确认新承载表面和起点裁剪已提交，
-    // 再允许调用方隐藏真实窗口并启动动画，避免首次创建与播放争抢同一帧。
-    std::shared_ptr<ShellCompletion> completion;
-    { std::lock_guard<std::mutex> lock(m_shellMutex); completion = m_shellPrepareCompletion; }
-    m_shellPrepareBatch = m_compositor.GetCommitBatch(CompositionBatchTypes::Animation);
-    m_shellPrepareBatchToken = m_shellPrepareBatch.Completed([this, completion, glassEnabled = cfg.enabled](auto&&, auto&&) {
-        try {
-            m_shellPrepareBatch.Completed(m_shellPrepareBatchToken);
-            m_shellPrepareBatch = nullptr;
-            // Prepare 从 worker 调用，Electron 消息泵仍可运行。在首次真实窗口
-            // 隐藏前等待可见外壳的 DWM 提交，避免 Win10 上先露出桌面的空档。
-            if (glassEnabled) {
-                const HRESULT presented = DwmFlush();
-                if (FAILED(presented)) {
-                    m_shellError.store(presented);
-                    CancelShellOnSta();
-                    return;
-                }
-            }
-            std::lock_guard<std::mutex> lock(completion->mutex);
-            completion->completed = true;
-            completion->changed.notify_all();
-        } catch (...) { CancelShellOnSta(); }
-    });
-    // 内容已经退出；在同一个 Compositor 提交内用起点外壳接替普通材质。
-    // 必须先完成这一交接，调用者才能把真实窗口变透明、搬到目标位置。
-    // 关闭毛玻璃时底色来自 Renderer，无法与原生 Visual 同批撤下；保留原来
-    // 的 Start 接管时机，避免准备期间两层半透明底色叠加。
-    if (cfg.enabled) {
-        m_rootVisual.IsVisible(false);
-        m_shellRoot.IsVisible(true);
-    }
-    return true;
-}
-
-bool Engine::StartShellOnSta(int durationMs) {
-    if (!m_shellPrepared.load() || !m_shellClipGeometry || m_shellBatch) return false;
-    RECT source, target, carrier;
-    std::shared_ptr<ShellCompletion> completion;
-    {
-        std::lock_guard<std::mutex> lock(m_shellMutex);
-        source = m_shellSource; target = m_shellTarget; carrier = m_shellCarrier;
-        completion = m_shellCompletion;
-    }
-    const auto easing = m_compositor.CreateCubicBezierEasingFunction({ 0.2f, 0.0f }, { 0.2f, 1.0f });
-    // 普通底色直到原窗口退出后才显示，避免准备阶段两层半透明底色叠加。
-    if (!SetWindowPos(m_shellHwnd.load(), m_parentHwnd.load(), 0, 0, 0, 0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)) return false;
-    // 真实 HWND 已经到达目标。普通材质在不可见时提前准备目标坐标和尺寸，
-    // 让其提交与整段外壳动画重叠；结束时不能再把旧 Overlay 搬到新位置。
-    m_rootVisual.IsVisible(false);
-    m_shellRoot.IsVisible(true);
-    if (GetConfig().enabled) {
-        if (!SyncAndShow()) return false;
-    } else if (!SyncGeometryFromParent()) {
-        return false;
-    }
-    const auto animate = [&](const wchar_t* property,
-        winrt::Windows::Foundation::Numerics::float2 from,
-        winrt::Windows::Foundation::Numerics::float2 to) {
-        auto animation = m_compositor.CreateVector2KeyFrameAnimation();
-        animation.Duration(std::chrono::milliseconds(durationMs));
-        animation.StopBehavior(AnimationStopBehavior::SetToFinalValue);
-        animation.InsertKeyFrame(0.0f, from);
-        animation.InsertKeyFrame(1.0f, to, easing);
-        m_shellClipGeometry.StartAnimation(property, animation);
-    };
-    m_shellBatch = m_compositor.CreateScopedBatch(CompositionBatchTypes::Animation);
-    m_shellBatchToken = m_shellBatch.Completed([completion](auto&&, auto&&) {
-        std::lock_guard<std::mutex> lock(completion->mutex);
-        completion->completed = true;
-        completion->changed.notify_all();
-    });
-    animate(L"Offset", { float(source.left - carrier.left), float(source.top - carrier.top) },
-        { float(target.left - carrier.left), float(target.top - carrier.top) });
-    animate(L"Size", { float(source.right - source.left), float(source.bottom - source.top) },
-        { float(target.right - target.left), float(target.bottom - target.top) });
-    m_shellBatch.End();
-    return true;
-}
-
-bool Engine::FinishShellOnSta() {
-    if (m_shellReleaseBatch) return true;
-    const auto cfg = GetConfig();
-    std::shared_ptr<ShellCompletion> completion;
-    { std::lock_guard<std::mutex> lock(m_shellMutex); completion = m_shellReleaseCompletion; }
-    if (!completion) return false;
-    if (m_blurVisual) m_blurVisual.IsVisible(cfg.enabled);
-    // 成功路径只换可见性：目标 Overlay 在 Start 阶段已经就绪。
-    // 失败回滚可能把父窗口改回起点，此时保持外壳、重新同步恢复几何。
-    RECT parentRect{}, overlayRect{};
-    const bool destinationReady = GetWindowRect(m_parentHwnd.load(), &parentRect) &&
-        GetWindowRect(m_overlayHwnd, &overlayRect) && EqualRect(&parentRect, &overlayRect) &&
-        m_visualWidth.load() == parentRect.right - parentRect.left &&
-        m_visualHeight.load() == parentRect.bottom - parentRect.top;
-    if (!destinationReady) {
-        if (!(cfg.enabled ? SyncAndShow() : SyncGeometryFromParent())) {
-            CancelShellOnSta();
-            return false;
-        }
-    }
-    if (!cfg.enabled) ShowWindow(m_overlayHwnd, SW_HIDE);
-    m_shellReleaseBatch = m_compositor.GetCommitBatch(CompositionBatchTypes::Animation);
-    m_shellReleaseBatchToken = m_shellReleaseBatch.Completed([this, completion](auto&&, auto&&) {
-        try {
-            // 提交完成后再隐藏 HWND；不能先撤下承载窗口，留下材质空帧。
-            if (const HWND shell = m_shellHwnd.load()) ShowWindow(shell, SW_HIDE);
-            if (m_shellBatch) {
-                m_shellBatch.Completed(m_shellBatchToken);
-                m_shellBatch = nullptr;
-            }
-            if (m_shellClipGeometry) {
-                m_shellClipGeometry.StopAnimation(L"Offset");
-                m_shellClipGeometry.StopAnimation(L"Size");
-            }
-            m_shellReleaseBatch.Completed(m_shellReleaseBatchToken);
-            m_shellReleaseBatch = nullptr;
-            m_shellPrepared.store(false);
-            m_windowTransitioning.store(false);
-            std::lock_guard<std::mutex> lock(completion->mutex);
-            completion->completed = true;
-            completion->changed.notify_all();
-        } catch (...) {
-            CancelShellOnSta();
-        }
-    });
-    m_rootVisual.IsVisible(true);
-    if (m_shellRoot) m_shellRoot.IsVisible(false);
-    // CommitBatch 在本次合成提交结束时自动关闭，不人为 sleep，也不逐帧 DwmFlush。
-    return true;
-}
-
-void Engine::CancelShellOnSta() {
-    // 失败/销毁不依赖异步提交回调，必须释放两个阶段的等待器及临时窗口。
-    if (const HWND shell = m_shellHwnd.load()) ShowWindow(shell, SW_HIDE);
-    try {
-        if (m_shellPrepareBatch) m_shellPrepareBatch.Completed(m_shellPrepareBatchToken);
-        if (m_shellReleaseBatch) m_shellReleaseBatch.Completed(m_shellReleaseBatchToken);
-        if (m_shellBatch) m_shellBatch.Completed(m_shellBatchToken);
-        m_shellReleaseBatch = nullptr;
-        m_shellPrepareBatch = nullptr;
-        m_shellBatch = nullptr;
-        if (m_shellRoot) m_shellRoot.IsVisible(false);
-        if (m_rootVisual) m_rootVisual.IsVisible(true);
-        if (m_shellClipGeometry) {
-            m_shellClipGeometry.StopAnimation(L"Offset");
-            m_shellClipGeometry.StopAnimation(L"Size");
-        }
-    } catch (...) { /* 清理不能越过 WndProc/线程入口。 */ }
-    m_shellPrepared.store(false);
-    m_windowTransitioning.store(false);
-    std::lock_guard<std::mutex> lock(m_shellMutex);
-    for (const auto& completion : { m_shellCompletion, m_shellPrepareCompletion, m_shellReleaseCompletion }) {
-        if (!completion) continue;
-        std::lock_guard<std::mutex> doneLock(completion->mutex);
-        completion->cancelled = true;
-        completion->changed.notify_all();
-    }
-}
-
-bool Engine::SetWindowTransitionGeometry(
-    HWND parentHwnd,
-    int physicalX,
-    int physicalY,
-    int width,
-    int height,
-    WindowTransitionFrameTiming* timing) {
-    const auto batchStartedAt = std::chrono::steady_clock::now();
-    const HWND overlayHwnd = m_messageHwnd.load();
-    if (!m_windowTransitioning.load() || !overlayHwnd || !IsWindow(overlayHwnd) ||
-        parentHwnd != m_parentHwnd.load() || !parentHwnd || !IsWindow(parentHwnd) ||
-        width <= 0 || height <= 0) {
-        m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::InvalidState);
-        return false;
-    }
-    m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::None);
-    const auto config = GetConfig();
-    const bool showOverlay = config.enabled;
-    HDWP deferred = BeginDeferWindowPos(showOverlay ? 2 : 1);
-    if (!deferred) {
-        m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::BeginBatchFailed);
-        return false;
-    }
-    deferred = DeferWindowPos(
-        deferred,
-        parentHwnd,
-        nullptr,
-        physicalX,
-        physicalY,
-        width,
-        height,
-        SWP_NOZORDER | SWP_NOACTIVATE);
-    if (!deferred) {
-        m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::ParentBatchFailed);
-        return false;
-    }
-    if (showOverlay) {
-        deferred = DeferWindowPos(
-            deferred,
-            overlayHwnd,
-            parentHwnd,
-            physicalX,
-            physicalY,
-            width,
-            height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        if (!deferred) {
-            m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::OverlayBatchFailed);
-            return false;
-        }
-    }
-    const bool batchCommitted = EndDeferWindowPos(deferred) != FALSE;
-    if (timing) timing->batchMs = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - batchStartedAt).count();
-    if (!batchCommitted) {
-        m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::CommitBatchFailed);
-        return false;
-    }
-    if (!showOverlay) {
-        ShowWindow(overlayHwnd, SW_HIDE);
-    }
-
-    if (showOverlay) {
-        DWORD_PTR syncResult = 0;
-        const auto visualStartedAt = std::chrono::steady_clock::now();
-        const bool visualSynced = SendMessageTimeoutW(
-                overlayHwnd,
-                WM_BLUR_TRANSITION_VISUAL,
-                static_cast<WPARAM>(width),
-                static_cast<LPARAM>(height),
-                SMTO_ABORTIFHUNG | SMTO_BLOCK,
-                100,
-                &syncResult) && syncResult == 1;
-        if (timing) timing->visualSyncMs = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - visualStartedAt).count();
-        if (!visualSynced) {
-            m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::VisualSyncFailed);
-            return false;
-        }
-    }
-
-    RECT parentAfter{};
-    if (!GetWindowRect(parentHwnd, &parentAfter) ||
-        parentAfter.left != physicalX || parentAfter.top != physicalY ||
-        parentAfter.right - parentAfter.left != width ||
-        parentAfter.bottom - parentAfter.top != height) {
-        m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::ParentBoundsMismatch);
-        return false;
-    }
-    if (!showOverlay) return true;
-    RECT overlayAfter{};
-    const bool overlayMatches =
-        GetWindowRect(overlayHwnd, &overlayAfter) && EqualRect(&parentAfter, &overlayAfter);
-    if (!overlayMatches) {
-        m_lastWindowTransitionGeometryError.store(WindowTransitionGeometryError::OverlayBoundsMismatch);
-    }
-    return overlayMatches;
-}
-
-bool Engine::EndWindowTransition(HWND parentHwnd, DWORD syncTimeoutMs) {
-    const HWND overlayHwnd = m_messageHwnd.load();
-    if (!m_initialized.load() || !overlayHwnd || !IsWindow(overlayHwnd) ||
-        !parentHwnd || !IsWindow(parentHwnd)) {
-        m_windowTransitioning.store(false);
-        return false;
-    }
-    DWORD_PTR syncResult = 0;
-    const bool success = SendMessageTimeoutW(
+    SendMessageTimeoutW(
         overlayHwnd,
-        WM_BLUR_END_TRANSITION,
+        WM_BLUR_RESET_PRESENTATION,
         0,
-        reinterpret_cast<LPARAM>(parentHwnd),
+        0,
         SMTO_ABORTIFHUNG | SMTO_BLOCK,
-        std::max<DWORD>(1, syncTimeoutMs),
-        &syncResult) && syncResult == 1;
-    if (!success) m_windowTransitioning.store(false);
-    return success;
+        1000,
+        &result);
+    m_presentationAnimating.store(false);
 }
 
-bool Engine::AbortWindowTransition(
-    HWND parentHwnd,
-    int physicalX,
-    int physicalY,
-    int width,
-    int height,
-    DWORD syncTimeoutMs) {
-    // EndWindowTransition 的消息可能已经失败并清除了标志。回滚必须重新进入
-    // 受控状态，确保恢复几何仍通过同一个 parent/overlay 批次提交。
-    m_windowTransitioning.store(true);
-    const bool geometryRestored = SetWindowTransitionGeometry(
-        parentHwnd,
-        physicalX,
-        physicalY,
-        width,
-        height);
-    const bool finalized = EndWindowTransition(parentHwnd, syncTimeoutMs);
-    // SendMessageTimeout 失败、无效 HWND 等所有分支都必须解除标志。
-    m_windowTransitioning.store(false);
-    if (!finalized) UpdateGeometry();
-    return geometryRestored && finalized;
+bool Engine::AnimatePresentationOnSta() {
+    if (!m_compositor || !m_clipGeometry || !m_rootVisual) return false;
+
+    RECT from{}, to{};
+    int durationMs = 0;
+    std::shared_ptr<PresentationCompletion> completion;
+    {
+        std::lock_guard<std::mutex> lock(m_presentationMutex);
+        from = m_presentationFrom;
+        to = m_presentationTo;
+        durationMs = m_presentationDurationMs;
+        completion = m_presentationCompletion;
+    }
+    if (!completion) return false;
+
+    const auto fromOffset = winrt::Windows::Foundation::Numerics::float2{
+        static_cast<float>(from.left),
+        static_cast<float>(from.top)
+    };
+    const auto fromSize = winrt::Windows::Foundation::Numerics::float2{
+        static_cast<float>(from.right - from.left),
+        static_cast<float>(from.bottom - from.top)
+    };
+    const auto toOffset = winrt::Windows::Foundation::Numerics::float2{
+        static_cast<float>(to.left),
+        static_cast<float>(to.top)
+    };
+    const auto toSize = winrt::Windows::Foundation::Numerics::float2{
+        static_cast<float>(to.right - to.left),
+        static_cast<float>(to.bottom - to.top)
+    };
+
+    if (m_presentationBatch) {
+        m_presentationBatch.Completed(m_presentationBatchToken);
+        m_presentationBatch = nullptr;
+    }
+    m_clipGeometry.StopAnimation(L"Offset");
+    m_clipGeometry.StopAnimation(L"Size");
+    m_clipGeometry.Offset(fromOffset);
+    m_clipGeometry.Size(fromSize);
+
+    const auto complete = [this, completion, to, toOffset, toSize]() {
+        m_clipGeometry.Offset(toOffset);
+        m_clipGeometry.Size(toSize);
+        m_currentPresentationRect = to;
+        const auto carrier = m_rootVisual.Size();
+        m_presentationUsesFullCarrier =
+            to.left == 0 && to.top == 0 &&
+            to.right == static_cast<LONG>(carrier.x) &&
+            to.bottom == static_cast<LONG>(carrier.y);
+        m_presentationAnimating.store(false);
+        {
+            std::lock_guard<std::mutex> lock(completion->mutex);
+            completion->completed = true;
+        }
+        completion->changed.notify_all();
+    };
+
+    if (durationMs <= 0) {
+        complete();
+        return true;
+    }
+
+    m_presentationBatch = m_compositor.CreateScopedBatch(CompositionBatchTypes::Animation);
+    const auto easing = m_compositor.CreateCubicBezierEasingFunction(
+        { 0.2f, 0.0f },
+        { 0.0f, 1.0f });
+    const auto duration = std::chrono::milliseconds(durationMs);
+
+    auto offsetAnimation = m_compositor.CreateVector2KeyFrameAnimation();
+    offsetAnimation.Duration(duration);
+    offsetAnimation.InsertKeyFrame(1.0f, toOffset, easing);
+    auto sizeAnimation = m_compositor.CreateVector2KeyFrameAnimation();
+    sizeAnimation.Duration(duration);
+    sizeAnimation.InsertKeyFrame(1.0f, toSize, easing);
+
+    m_clipGeometry.StartAnimation(L"Offset", offsetAnimation);
+    m_clipGeometry.StartAnimation(L"Size", sizeAnimation);
+    m_presentationBatchToken = m_presentationBatch.Completed(
+        [this, complete](auto&&, auto&&) {
+            try {
+                if (m_presentationBatch) {
+                    m_presentationBatch.Completed(m_presentationBatchToken);
+                    m_presentationBatch = nullptr;
+                }
+                complete();
+            } catch (...) {
+                m_presentationAnimating.store(false);
+            }
+        });
+    m_presentationBatch.End();
+    return true;
+}
+
+void Engine::ResetPresentationOnSta() {
+    if (m_presentationBatch) {
+        m_presentationBatch.Completed(m_presentationBatchToken);
+        m_presentationBatch = nullptr;
+    }
+    if (m_clipGeometry && m_rootVisual) {
+        m_clipGeometry.StopAnimation(L"Offset");
+        m_clipGeometry.StopAnimation(L"Size");
+        const auto carrier = m_rootVisual.Size();
+        m_clipGeometry.Offset({ 0.0f, 0.0f });
+        m_clipGeometry.Size(carrier);
+        m_currentPresentationRect = {
+            0,
+            0,
+            static_cast<LONG>(carrier.x),
+            static_cast<LONG>(carrier.y)
+        };
+        m_presentationUsesFullCarrier = true;
+    }
+
+    std::shared_ptr<PresentationCompletion> completion;
+    {
+        std::lock_guard<std::mutex> lock(m_presentationMutex);
+        completion = m_presentationCompletion;
+        m_presentationCompletion.reset();
+    }
+    m_presentationAnimating.store(false);
+    if (completion) {
+        {
+            std::lock_guard<std::mutex> lock(completion->mutex);
+            if (!completion->completed) completion->cancelled = true;
+        }
+        completion->changed.notify_all();
+    }
 }
 
 void Engine::ReSyncZOrder() {
@@ -948,12 +637,12 @@ void Engine::SignalInitialization(bool success) {
 }
 
 void Engine::Cleanup() {
-    CancelShellOnSta();
+    ResetPresentationOnSta();
     m_messageHwnd.store(nullptr);
     m_configUpdatePending.store(false);
     m_geometryUpdatePending.store(false);
     m_zOrderSyncPending.store(false);
-    m_windowTransitioning.store(false);
+    m_presentationAnimating.store(false);
     m_visualWidth.store(0);
     m_visualHeight.store(0);
     m_parentHwnd.store(nullptr);
@@ -967,7 +656,6 @@ void Engine::Cleanup() {
     }
     try {
         if (m_rootVisual && m_target) m_target.Root(nullptr);
-        if (m_shellCompositionTarget) m_shellCompositionTarget.Root(nullptr);
     }
     catch (...) {
         // 清理路径绝不能让 WinRT 异常越过 STA 线程入口。
@@ -980,12 +668,6 @@ void Engine::Cleanup() {
     m_clip = nullptr;
     m_effectBrush = nullptr;
     m_target = nullptr;
-    m_shellRoot = nullptr;
-    m_shellBlur = nullptr;
-    m_shellTint = nullptr;
-    m_shellClipGeometry = nullptr;
-    m_shellCompositionTarget = nullptr;
-    if (const HWND shell = m_shellHwnd.exchange(nullptr)) DestroyWindow(shell);
     m_compositor = nullptr;
     if (m_overlayHwnd) { DestroyWindow(m_overlayHwnd); m_overlayHwnd = nullptr; }
     if (m_dispatcherQueueController) {
@@ -1212,7 +894,11 @@ void Engine::UpdateVisualSize(int width, int height) {
     m_rootVisual.Size(visualSize);
     m_blurVisual.Size(visualSize);
     m_tintVisual.Size(visualSize);
-    if (m_clipGeometry) m_clipGeometry.Size(visualSize);
+    if (m_clipGeometry && m_presentationUsesFullCarrier && !m_presentationAnimating.load()) {
+        m_clipGeometry.Offset({ 0.0f, 0.0f });
+        m_clipGeometry.Size(visualSize);
+        m_currentPresentationRect = { 0, 0, width, height };
+    }
     m_visualWidth.store(width);
     m_visualHeight.store(height);
 }
@@ -1234,9 +920,18 @@ void Engine::ApplyClip() {
 
     m_clipGeometry.CornerRadius({ cfg.cornerRadius, cfg.cornerRadius });
 
-    // 同步几何体尺寸与视觉尺寸一致
-    auto visSize = m_rootVisual.Size();
-    m_clipGeometry.Size(visSize);
+    // 展开态跟随载体尺寸；胶囊稳定态保留独立可见区域。
+    if (m_presentationUsesFullCarrier && !m_presentationAnimating.load()) {
+        auto visSize = m_rootVisual.Size();
+        m_clipGeometry.Offset({ 0.0f, 0.0f });
+        m_clipGeometry.Size(visSize);
+        m_currentPresentationRect = {
+            0,
+            0,
+            static_cast<LONG>(visSize.x),
+            static_cast<LONG>(visSize.y)
+        };
+    }
 
 }
 
@@ -1448,7 +1143,6 @@ bool Engine::IsZOrderAdjacent() const {
 }
 
 void Engine::QueueZOrderSync() {
-    if (m_windowTransitioning.load()) return;
     if (HWND hwnd = m_messageHwnd.load()) {
         if (m_zOrderSyncPending.exchange(true)) return;
         if (!PostMessage(hwnd, WM_BLUR_SYNC_ZORDER, 0, 0)) {
@@ -1488,7 +1182,6 @@ void CALLBACK Engine::WinEventProc(
 
     auto& engine = Engine::Instance();
     if (event != EVENT_SYSTEM_FOREGROUND && event != EVENT_OBJECT_REORDER) return;
-    if (engine.m_windowTransitioning.load()) return;
     if (event == EVENT_OBJECT_REORDER &&
         (objectId != OBJID_WINDOW || childId != CHILDID_SELF)) {
         return;
@@ -1523,7 +1216,6 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         // 越过已 Post 但尚未取出的异步消息，因此不能提前清除
         // pending；真正的队列消息取出时再清除。
         if (wParam == 0) self->m_geometryUpdatePending.store(false);
-        if (self->m_windowTransitioning.load()) return 1;
         // 在 HWND 所属的 DPI-aware STA 线程直接读取物理坐标，避免 JS DIP 换算和跨线程数据竞争。
         if (!self->SyncGeometryFromParent()) {
             ShowWindow(hwnd, SW_HIDE);
@@ -1541,7 +1233,6 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             ShowWindow(hwnd, SW_HIDE);
             return 0;
         }
-        if (self->m_windowTransitioning.load()) return 0;
         {
             auto cfg = self->GetConfig();
             if (cfg.enabled) {
@@ -1569,7 +1260,6 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         return 1;
 
     case WM_BLUR_SHOW:
-        if (self->m_windowTransitioning.load()) return 0;
         if (self->GetConfig().enabled) {
             if (!self->SyncAndShow()) {
                 ShowWindow(hwnd, SW_HIDE);
@@ -1578,86 +1268,31 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         return 0;
 
     case WM_BLUR_HIDE:
-        if (self->m_windowTransitioning.load()) return 0;
         ShowWindow(hwnd, SW_HIDE);
         return 0;
 
     case WM_BLUR_SYNC_ZORDER:
         self->m_zOrderSyncPending.store(false);
-        if (self->m_windowTransitioning.load()) return 0;
         self->SyncZOrder();
         return 0;
 
-    case WM_BLUR_SHELL_PREPARE:
-    case WM_BLUR_SHELL_START:
-    case WM_BLUR_SHELL_FINISH:
+    case WM_BLUR_ANIMATE_PRESENTATION:
         try {
-            if (msg == WM_BLUR_SHELL_PREPARE) return self->PrepareShellOnSta() ? 1 : 0;
-            if (msg == WM_BLUR_SHELL_START) return self->StartShellOnSta(static_cast<int>(wParam)) ? 1 : 0;
-            return self->FinishShellOnSta() ? 1 : 0;
-        } catch (const winrt::hresult_error& error) {
-            self->m_shellError.store(error.code());
-            self->CancelShellOnSta();
-            return 0;
+            return self->AnimatePresentationOnSta() ? 1 : 0;
         } catch (...) {
-            // Composition/驱动异常不允许越过 Win32 WndProc。
-            self->m_shellError.store(E_FAIL);
-            self->CancelShellOnSta();
-            return 0;
-        }
-
-    case WM_BLUR_SHELL_WARM:
-        if (reinterpret_cast<HWND>(wParam) != self->m_parentHwnd.load() ||
-            self->m_shellPrepared.load()) return 0;
-        try { return self->EnsureShellVisuals() ? 1 : 0; }
-        catch (...) { return 0; }
-
-    case WM_BLUR_SHELL_CANCEL:
-        self->CancelShellOnSta();
-        return 1;
-
-    case WM_BLUR_BEGIN_TRANSITION: {
-        const int initialWidth = static_cast<int>(wParam);
-        const int initialHeight = static_cast<int>(lParam);
-        if (initialWidth <= 0 || initialHeight <= 0 || !self->m_rootVisual) return 0;
-        try {
-            self->UpdateVisualSize(initialWidth, initialHeight);
-            return 1;
-        }
-        catch (...) {
+            self->ResetPresentationOnSta();
             self->m_lastError.store(BlurErrorCode::EffectGraphFailed);
-            self->m_runtimeHealthy.store(false);
             return 0;
         }
-    }
 
-    case WM_BLUR_TRANSITION_VISUAL: {
-        const int width = static_cast<int>(wParam);
-        const int height = static_cast<int>(lParam);
-        if (width <= 0 || height <= 0 || !self->m_rootVisual) return 0;
+    case WM_BLUR_RESET_PRESENTATION:
         try {
-            self->UpdateVisualSize(width, height);
+            self->ResetPresentationOnSta();
             return 1;
-        }
-        catch (...) {
-            self->m_lastError.store(BlurErrorCode::EffectGraphFailed);
-            self->m_runtimeHealthy.store(false);
+        } catch (...) {
+            self->m_presentationAnimating.store(false);
             return 0;
         }
-    }
-
-    case WM_BLUR_END_TRANSITION: {
-        const HWND parentHwnd = reinterpret_cast<HWND>(lParam);
-        if (!parentHwnd || !IsWindow(parentHwnd)) return 0;
-        self->m_parentHwnd.store(parentHwnd);
-        self->m_windowTransitioning.store(false);
-        const auto config = self->GetConfig();
-        if (!config.enabled) {
-            ShowWindow(hwnd, SW_HIDE);
-            return 1;
-        }
-        return self->SyncAndShow() ? 1 : 0;
-    }
 
     case WM_BLUR_DESTROY:
         self->m_running.store(false);

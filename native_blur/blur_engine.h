@@ -55,23 +55,6 @@ enum class BlurErrorCode : int {
     UnknownFailure = 9
 };
 
-enum class WindowTransitionGeometryError : int {
-    None = 0,
-    InvalidState = 1,
-    BeginBatchFailed = 2,
-    ParentBatchFailed = 3,
-    OverlayBatchFailed = 4,
-    CommitBatchFailed = 5,
-    ParentBoundsMismatch = 6,
-    OverlayBoundsMismatch = 7,
-    VisualSyncFailed = 8
-};
-
-struct WindowTransitionFrameTiming {
-    double batchMs = 0;
-    double visualSyncMs = 0;
-};
-
 // ============================================================
 // 模糊参数结构体
 // ============================================================
@@ -117,29 +100,9 @@ public:
     // 验证两者物理边界一致。Composition 对象仍只由 STA 线程访问。
     bool MoveParentAndOverlay(HWND parentHwnd, int physicalX, int physicalY,
         DWORD syncTimeoutMs = 50);
-    // 主视图/胶囊过渡专用：保持同一个父 HWND、Overlay、STA 线程和
-    // Effect Graph；每帧在同一个 BeginDeferWindowPos 批次中提交两者几何。
-    bool BeginWindowTransition(int initialWidth, int initialHeight, DWORD syncTimeoutMs = 100);
-    bool SetWindowTransitionGeometry(
-        HWND parentHwnd, int physicalX, int physicalY, int width, int height,
-        WindowTransitionFrameTiming* timing = nullptr);
-    bool EndWindowTransition(HWND parentHwnd, DWORD syncTimeoutMs = 100);
-    // 失败回滚专用：即使正常结束消息失败，也先把父窗口和 Overlay 一起恢复到
-    // 源边界，再无条件解除 transition 标志，禁止留下永久忽略 geometry update 的状态。
-    bool AbortWindowTransition(
-        HWND parentHwnd, int physicalX, int physicalY, int width, int height,
-        DWORD syncTimeoutMs = 100);
-
-    // 固定 Overlay 承载外壳；Composition 自行插值，不逐帧 resize HWND。
-    bool PrepareShellTransition(HWND parentHwnd, const RECT& target);
-    bool WarmShellResources(HWND parentHwnd);
-    bool AnimateShellTransition(int durationMs);
-    bool FinishShellTransition();
-    bool IsShellTransitionPrepared() const { return m_shellPrepared.load(); }
-    bool IsShellAnimationCompleted() const { return m_shellCompleted.load(); }
-    RECT GetShellCarrier() const;
-    HWND GetShellWindow() const { return m_shellHwnd.load(); }
-    int32_t GetShellError() const { return m_shellError.load(); }
+    // 只动画现有 Overlay 内的圆角裁剪，不创建窗口、不修改父 HWND 几何。
+    bool AnimatePresentation(const RECT& from, const RECT& to, int durationMs);
+    void ResetPresentation();
 
     // ---- Z-order 重同步（父窗口置顶层变化后调用） ----
     void ReSyncZOrder();
@@ -160,10 +123,6 @@ public:
     HWND GetOverlayWindow() const { return m_messageHwnd.load(); }
     int GetVisualWidth() const { return m_visualWidth.load(); }
     int GetVisualHeight() const { return m_visualHeight.load(); }
-    bool IsWindowTransitioning() const { return m_windowTransitioning.load(); }
-    WindowTransitionGeometryError GetLastWindowTransitionGeometryError() const {
-        return m_lastWindowTransitionGeometryError.load();
-    }
 
 private:
     Engine() = default;
@@ -186,11 +145,8 @@ private:
     void UpdateVisualSize();  // 使用 Overlay 完整客户区更新 SpriteVisual 尺寸
     void UpdateVisualSize(int width, int height);
     void ApplyClip();         // 应用/更新圆角裁剪
-    bool PrepareShellOnSta();
-    bool EnsureShellVisuals();
-    bool StartShellOnSta(int durationMs);
-    bool FinishShellOnSta();
-    void CancelShellOnSta();
+    bool AnimatePresentationOnSta();
+    void ResetPresentationOnSta();
 
     // ---- DPI 动态切换 ----
     void HandleDpiChanged(WPARAM wParam, LPARAM lParam);
@@ -223,40 +179,25 @@ private:
     std::atomic<bool> m_configUpdatePending{ false };
     std::atomic<bool> m_geometryUpdatePending{ false };
     std::atomic<bool> m_zOrderSyncPending{ false };
-    std::atomic<bool> m_windowTransitioning{ false };
-    std::atomic<bool> m_shellPrepared{ false };
-    std::atomic<bool> m_shellCompleted{ false };
-    mutable std::mutex m_shellMutex;
-    RECT m_shellSource{}, m_shellTarget{}, m_shellCarrier{};
-    struct ShellCompletion {
+    struct PresentationCompletion {
         std::mutex mutex;
         std::condition_variable changed;
         bool completed = false;
         bool cancelled = false;
     };
-    std::shared_ptr<ShellCompletion> m_shellCompletion;
-    std::shared_ptr<ShellCompletion> m_shellPrepareCompletion;
-    std::shared_ptr<ShellCompletion> m_shellReleaseCompletion;
-    CompositionCommitBatch m_shellPrepareBatch{ nullptr };
-    winrt::event_token m_shellPrepareBatchToken{};
-    CompositionScopedBatch m_shellBatch{ nullptr };
-    winrt::event_token m_shellBatchToken{};
-    CompositionCommitBatch m_shellReleaseBatch{ nullptr };
-    winrt::event_token m_shellReleaseBatchToken{};
-    std::atomic<HWND> m_shellHwnd{ nullptr };
-    std::atomic<int32_t> m_shellError{ 0 };
-    DesktopWindowTarget m_shellCompositionTarget{ nullptr };
-    ContainerVisual m_shellRoot{ nullptr };
-    SpriteVisual m_shellBlur{ nullptr };
-    SpriteVisual m_shellTint{ nullptr };
-    CompositionRoundedRectangleGeometry m_shellClipGeometry{ nullptr };
+    std::atomic<bool> m_presentationAnimating{ false };
+    std::mutex m_presentationMutex;
+    RECT m_presentationFrom{}, m_presentationTo{};
+    int m_presentationDurationMs = 0;
+    std::shared_ptr<PresentationCompletion> m_presentationCompletion;
+    CompositionScopedBatch m_presentationBatch{ nullptr };
+    winrt::event_token m_presentationBatchToken{};
+    RECT m_currentPresentationRect{};
+    bool m_presentationUsesFullCarrier = true;
     // 只读诊断快照。Composition 对象仍只在 STA 线程访问；集成测试通过
     // 原子尺寸确认重新启用毛玻璃后 Visual 已覆盖当前窗口客户区。
     std::atomic<int> m_visualWidth{ 0 };
     std::atomic<int> m_visualHeight{ 0 };
-    std::atomic<WindowTransitionGeometryError> m_lastWindowTransitionGeometryError{
-        WindowTransitionGeometryError::None
-    };
 
     std::mutex m_initMutex;
     std::condition_variable m_initCv;

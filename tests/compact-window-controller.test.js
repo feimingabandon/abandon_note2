@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   CompactWindowController,
-  PRESENTATION_STAGES,
-  TRANSITION_STATUSES
+  COMPACT_WINDOW_MODES
 } from '../src/main/windows/compact-window-controller.js'
 
 function createWindow() {
@@ -15,171 +14,99 @@ function createWindow() {
 }
 
 describe('CompactWindowController', () => {
-  it('tracks one native transaction without writing BrowserWindow bounds', async () => {
+  it('owns only committed mode, desired mode, and one presentation transaction', async () => {
     const window = createWindow()
-    const onPhaseChanged = vi.fn()
-    const controller = new CompactWindowController({ onPhaseChanged })
-    controller.initializeForWindow(window, 'expanded')
-    const executor = vi.fn(async () => ({ success: true }))
-    const from = { x: 0, y: 0, width: 480, height: 720 }
-    const target = { x: 60, y: 0, width: 360, height: 76 }
-
-    const pending = controller.run(
-      window,
-      { from, target, duration: 440, phase: 'collapsing' },
-      executor
-    )
-
-    expect(controller.phase).toBe('collapsing')
-    expect(controller.transitionSnapshot()).toMatchObject({
-      from,
-      target,
-      duration: 440,
-      stage: PRESENTATION_STAGES.CONTENT_EXIT
+    const changed = vi.fn()
+    const controller = new CompactWindowController({ onStateChanged: changed })
+    controller.initializeForWindow(window)
+    const perform = vi.fn(async ({ generation }) => {
+      controller.publishTransition(window, generation)
+      return { status: 'completed' }
     })
-    const result = await pending
-    expect(result.status).toBe(TRANSITION_STATUSES.COMPLETED)
-    expect(executor).toHaveBeenCalledTimes(1)
+
+    const result = await controller.request(window, COMPACT_WINDOW_MODES.COMPACT, perform)
+
+    expect(result).toMatchObject({ changed: true, mode: 'compact' })
+    expect(controller.snapshot()).toMatchObject({
+      phase: 'compact',
+      committedMode: 'compact',
+      desiredMode: 'compact',
+      transition: null
+    })
     expect(controller.transitionSnapshot()).toBeNull()
-    expect(controller.complete(result, 'compact')).toBe(true)
-    expect(controller.phase).toBe('compact')
-    expect(onPhaseChanged).toHaveBeenCalled()
+    expect(changed).toHaveBeenCalled()
   })
 
-  it('advances presentation stages without changing window identity or geometry ownership', async () => {
+  it('coalesces duplicate requests into the active transaction', async () => {
     const window = createWindow()
     const controller = new CompactWindowController()
-    controller.initializeForWindow(window, 'expanded')
+    controller.initializeForWindow(window)
     let release
-    const pending = controller.run(
+    const perform = vi.fn(() => new Promise((resolve) => (release = resolve)))
+
+    const first = controller.request(window, 'compact', perform)
+    const second = controller.request(window, 'compact', perform)
+    expect(second).toBe(first)
+    await Promise.resolve()
+    expect(perform).toHaveBeenCalledTimes(1)
+    release({ status: 'completed' })
+    await expect(first).resolves.toMatchObject({ changed: true, mode: 'compact' })
+  })
+
+  it('finishes the current transaction and then applies only the latest opposite intent', async () => {
+    const window = createWindow()
+    const controller = new CompactWindowController()
+    controller.initializeForWindow(window)
+    const releases = []
+    const perform = vi.fn(
+      ({ from, to }) =>
+        new Promise((resolve) => {
+          releases.push(() => resolve({ from, to }))
+        })
+    )
+
+    const first = controller.request(window, 'compact', perform)
+    await Promise.resolve()
+    const second = controller.request(window, 'expanded', perform)
+    expect(second).toBe(first)
+    releases.shift()()
+    await vi.waitFor(() => expect(perform).toHaveBeenCalledTimes(2))
+    expect(perform.mock.calls[1][0]).toMatchObject({ from: 'compact', to: 'expanded' })
+    releases.shift()()
+    await expect(first).resolves.toMatchObject({ changed: true, mode: 'expanded' })
+  })
+
+  it('rejects an invalid transition and keeps the last committed mode', async () => {
+    const window = createWindow()
+    const failure = new Error('presentation failed')
+    const onError = vi.fn()
+    const controller = new CompactWindowController({ onError })
+    controller.initializeForWindow(window)
+
+    await expect(controller.request(window, 'compact', () => Promise.reject(failure))).rejects.toBe(
+      failure
+    )
+    expect(controller.committedMode).toBe('expanded')
+    expect(controller.desiredMode).toBe('expanded')
+    expect(controller.transitionSnapshot()).toBeNull()
+    expect(onError).toHaveBeenCalledWith(failure, expect.any(Object))
+  })
+
+  it('never allows an active window transaction to be detached', async () => {
+    const window = createWindow()
+    const controller = new CompactWindowController()
+    controller.initializeForWindow(window)
+    let release
+    const pending = controller.request(
       window,
-      {
-        from: { x: 0, y: 0, width: 480, height: 720 },
-        target: { x: 60, y: 0, width: 360, height: 76 },
-        duration: 440,
-        phase: 'collapsing'
-      },
+      'compact',
       () => new Promise((resolve) => (release = resolve))
     )
     await Promise.resolve()
-    const generation = controller.transitionSnapshot().generation
 
-    expect(
-      controller.setTransitionStage(window, generation, PRESENTATION_STAGES.CONTENT_ENTER)
-    ).toBe(false)
-    expect(
-      controller.setTransitionStage(window, generation, PRESENTATION_STAGES.SHELL_TRANSFORM)
-    ).toBe(true)
-    expect(controller.transitionSnapshot().stage).toBe(PRESENTATION_STAGES.SHELL_TRANSFORM)
-    expect(
-      controller.setTransitionStage(window, generation, PRESENTATION_STAGES.CONTENT_EXIT)
-    ).toBe(false)
-    expect(
-      controller.setTransitionStage(window, generation, PRESENTATION_STAGES.SHELL_TRANSFORM)
-    ).toBe(true)
-    expect(
-      controller.setTransitionStage(window, generation, PRESENTATION_STAGES.CONTENT_ENTER)
-    ).toBe(false)
-    expect(
-      controller.setTransitionStage(window, generation, PRESENTATION_STAGES.SHELL_SETTLE)
-    ).toBe(true)
-    expect(
-      controller.setTransitionStage(window, generation, PRESENTATION_STAGES.CONTENT_ENTER)
-    ).toBe(true)
-    expect(
-      controller.setTransitionStage(window, generation, PRESENTATION_STAGES.SHELL_TRANSFORM)
-    ).toBe(false)
-    expect(controller.transitionSnapshot().stage).toBe(PRESENTATION_STAGES.CONTENT_ENTER)
-    expect(controller.setTransitionStage(window, generation + 1, 'content-exit')).toBe(false)
-
-    release({ success: true })
+    expect(() => controller.cancelForWindowReplacement(window)).toThrow('事务尚未结束')
+    release({ status: 'completed' })
     await pending
-  })
-
-  it('coalesces duplicate requests into the active native transaction', async () => {
-    const window = createWindow()
-    const controller = new CompactWindowController()
-    controller.initializeForWindow(window, 'expanded')
-    let resolveNative
-    const executor = vi.fn(
-      () =>
-        new Promise((resolve) => {
-          resolveNative = resolve
-        })
-    )
-    const metadata = {
-      from: { x: 0, y: 0, width: 480, height: 720 },
-      target: { x: 60, y: 0, width: 360, height: 76 },
-      duration: 440,
-      phase: 'collapsing'
-    }
-
-    const first = controller.run(window, metadata, executor)
-    const second = controller.run(window, metadata, executor)
-    expect(second).toBe(first)
-    expect(executor).toHaveBeenCalledTimes(0)
-    await Promise.resolve()
-    expect(executor).toHaveBeenCalledTimes(1)
-    resolveNative({ success: true })
-    await expect(first).resolves.toMatchObject({ status: TRANSITION_STATUSES.COMPLETED })
-  })
-
-  it('reports native failure without mutating window geometry', async () => {
-    const window = createWindow()
-    const onError = vi.fn()
-    const controller = new CompactWindowController({ onError })
-    controller.initializeForWindow(window, 'compact')
-    const failure = new Error('native transition failed')
-
-    const result = await controller.run(
-      window,
-      {
-        from: { x: 10, y: 10, width: 360, height: 76 },
-        target: { x: 0, y: 0, width: 480, height: 720 },
-        duration: 440,
-        phase: 'expanding'
-      },
-      () => Promise.reject(failure)
-    )
-
-    expect(result.status).toBe(TRANSITION_STATUSES.FAILED)
-    expect(result.error).toBe(failure)
-    expect(onError).toHaveBeenCalledWith(failure, expect.any(Object))
-    expect(onError.mock.calls[0][1].transition).not.toHaveProperty('window')
-    expect(onError.mock.calls[0][1].transition).not.toHaveProperty('promise')
-    expect(controller.setPhase(window, 'compact')).toBe(true)
-  })
-
-  it('refuses to replace a window while native composition still owns its HWND', async () => {
-    const oldWindow = createWindow()
-    const nextWindow = createWindow()
-    const controller = new CompactWindowController()
-    controller.initializeForWindow(oldWindow, 'expanded')
-    let resolveNative
-    const pending = controller.run(
-      oldWindow,
-      {
-        from: { x: 0, y: 0, width: 480, height: 720 },
-        target: { x: 60, y: 0, width: 360, height: 76 },
-        duration: 440,
-        phase: 'collapsing'
-      },
-      () =>
-        new Promise((resolve) => {
-          resolveNative = resolve
-        })
-    )
-    await Promise.resolve()
-
-    expect(() => controller.initializeForWindow(nextWindow, 'compact')).toThrow(
-      '原生窗口过渡尚未结束'
-    )
-    expect(() => controller.cancelForWindowReplacement(oldWindow)).toThrow('原生窗口过渡尚未结束')
-    resolveNative({ success: true })
-    await pending
-    expect(controller.cancelForWindowReplacement(oldWindow)?.status).toBe(
-      TRANSITION_STATUSES.WINDOW_REPLACED
-    )
-    expect(controller.initializeForWindow(nextWindow, 'compact').phase).toBe('compact')
+    expect(controller.cancelForWindowReplacement(window)?.status).toBe('window-replaced')
   })
 })

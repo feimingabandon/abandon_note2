@@ -24,7 +24,6 @@ set(SOURCES
     window_z_order.cpp
     window_motion_edge_monitor.cpp
     reveal_handle_renderer.cpp
-    transition_engine.cpp
     reveal_handle_resources.rc
 )
 
@@ -35,7 +34,6 @@ set(HEADERS
     blur_effects.h
     window_motion_edge_monitor.h
     reveal_handle_renderer.h
-    transition_engine.h
     reveal_handle_resource.h
 )
 

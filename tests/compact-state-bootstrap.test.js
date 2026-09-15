@@ -1,9 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('../src/renderer/src/composables/compact-transition-diagnostics.js', () => ({
-  createCompactTransitionDiagnostics: () => ({ update: vi.fn(), stop: vi.fn() })
-}))
-
 let broadcast
 let replies
 beforeEach(() => {
@@ -23,10 +19,11 @@ afterEach(() => vi.unstubAllGlobals())
 
 const createMode = async () =>
   (await import('../src/renderer/src/composables/useCompactWindowMode.js')).useCompactWindowMode()
-const stable = { phase: 'compact', transition: null, compact: true }
+const stable = { mode: 'compact', phase: 'compact', transition: null, compact: true }
 const moving = {
+  mode: 'compact',
   phase: 'expanding',
-  transition: { generation: 4, stage: 'content-exit' },
+  transition: { generation: 4, from: 'compact', to: 'expanded' },
   compact: true
 }
 
@@ -38,7 +35,7 @@ describe('compact renderer bootstrap ordering', () => {
     replies[0](stable)
     await started
     expect(mode.state.value).toEqual(moving)
-    expect(mode.stage.value).toBe('content-exit')
+    expect(mode.changing.value).toBe(true)
     mode.stop()
   })
 

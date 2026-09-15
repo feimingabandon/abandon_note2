@@ -96,22 +96,19 @@ BLUR_API int WindowZOrder_SetBottom(void* hwnd, int enabled);
 BLUR_API int WindowZOrder_Reassert(void* hwnd);
 BLUR_API const char* WindowZOrder_GetStatusJson(void* hwnd);
 
-// ---- 主视图 / 胶囊原生过渡 ----
-BLUR_API int WindowTransition_WarmShell(void* hwnd);
-BLUR_API int WindowTransition_PrepareShell(void* hwnd, int x, int y, int width, int height);
-BLUR_API int WindowTransition_FinishShell(void);
-// 真实 HWND 一次就位，独立 Composition 外壳插值；目标边界为物理屏幕坐标。
-BLUR_API int WindowTransition_Run(
-    void* hwnd,
-    int targetPhysicalX,
-    int targetPhysicalY,
-    int targetPhysicalWidth,
-    int targetPhysicalHeight,
+// ---- 同一 Overlay 内的主视图 / 胶囊可见区域 ----
+// 坐标均为 Overlay 客户区内的物理像素；不创建 HWND，不修改父窗口边界。
+BLUR_API int Blur_AnimatePresentation(
+    int fromX,
+    int fromY,
+    int fromWidth,
+    int fromHeight,
+    int toX,
+    int toY,
+    int toWidth,
+    int toHeight,
     int durationMs);
-BLUR_API int WindowTransition_IsRunning(void);
-BLUR_API const char* WindowTransition_GetLastErrorMessage(void);
-// 仅提供只读诊断数据，供 Windows 集成测试验证 parent/overlay 每帧零偏差。
-BLUR_API const char* WindowTransition_GetStatusJson(void* hwnd);
+BLUR_API void Blur_ResetPresentation(void);
 
 #ifdef __cplusplus
 }

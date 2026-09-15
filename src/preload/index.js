@@ -70,10 +70,8 @@ const api = {
     ipcRenderer.on('compact-window:state-changed', handler)
     return () => ipcRenderer.removeListener('compact-window:state-changed', handler)
   },
-  notifyCompactTransitionReady: (generation, stage) =>
-    ipcRenderer.send('compact-window:transition-ready', generation, stage),
-  reportCompactTransitionDiagnostics: (payload) =>
-    ipcRenderer.send('compact-window:diagnostics', payload),
+  notifyCompactPresentationFinished: (generation) =>
+    ipcRenderer.send('compact-window:presentation-finished', generation),
 
   // ---- 设置桥接（双向通信，均返回 Promise） ----
   /** 按共享 schema ID 写入设置；数据库键名和校验不暴露给 renderer */

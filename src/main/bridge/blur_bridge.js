@@ -257,34 +257,18 @@ function initNative() {
     loaded.WindowZOrder_GetStatusJson = loaded.func('WindowZOrder_GetStatusJson', 'str', [
       'intptr_t'
     ])
-    loaded.WindowTransition_WarmShell = loaded.func('WindowTransition_WarmShell', 'int', [
-      'intptr_t'
-    ])
-    loaded.WindowTransition_PrepareShell = loaded.func('WindowTransition_PrepareShell', 'int', [
-      'intptr_t',
+    loaded.Blur_AnimatePresentation = loaded.func('Blur_AnimatePresentation', 'int', [
       'int',
       'int',
       'int',
-      'int'
-    ])
-    loaded.WindowTransition_FinishShell = loaded.func('WindowTransition_FinishShell', 'int', [])
-    loaded.WindowTransition_Run = loaded.func('WindowTransition_Run', 'int', [
-      'intptr_t',
+      'int',
       'int',
       'int',
       'int',
       'int',
       'int'
     ])
-    loaded.WindowTransition_IsRunning = loaded.func('WindowTransition_IsRunning', 'int', [])
-    loaded.WindowTransition_GetLastErrorMessage = loaded.func(
-      'WindowTransition_GetLastErrorMessage',
-      'str',
-      []
-    )
-    loaded.WindowTransition_GetStatusJson = loaded.func('WindowTransition_GetStatusJson', 'str', [
-      'intptr_t'
-    ])
+    loaded.Blur_ResetPresentation = loaded.func('Blur_ResetPresentation', 'void', [])
     lib = loaded
     return true
   } catch (e) {
@@ -472,139 +456,54 @@ export function getWindowZOrderStatus(window) {
   }
 }
 
-export function warmWindowTransitionShell(window) {
-  if (!window || window.isDestroyed() || !initNative()) return Promise.resolve(false)
-  return new Promise((resolve) => {
-    lib.WindowTransition_WarmShell.async(getWindowHandleValue(window), (error, code) =>
-      resolve(!error && code === 1)
-    )
-  })
-}
-
-export function prepareWindowTransitionShell(window, bounds) {
-  if (!window || window.isDestroyed() || !initNative()) return Promise.resolve(false)
-  return new Promise((resolve) => {
-    lib.WindowTransition_PrepareShell.async(
-      getWindowHandleValue(window),
-      Math.round(bounds.x),
-      Math.round(bounds.y),
-      Math.round(bounds.width),
-      Math.round(bounds.height),
-      (error, code) => resolve(!error && code === 1)
-    )
-  })
-}
-
-export function finishWindowTransitionShell() {
-  if (!initNative()) return false
-  // 最终交接不再排到 Koffi worker：与恢复窗口透明度在同一主线程调用栈完成。
-  // 原生端仍有超时保护；连续动画本身继续在合成器执行。
-  try {
-    return lib.WindowTransition_FinishShell() === 1
-  } catch {
-    return false
-  }
-}
-
-export function getWindowTransitionStatus(window) {
-  if (process.platform !== 'win32' || !window || window.isDestroyed() || !lib) return null
-  try {
-    return JSON.parse(lib.WindowTransition_GetStatusJson(getWindowHandleValue(window)))
-  } catch {
-    return null
-  }
-}
-
-export function runWindowTransition(window, targetPhysicalBounds, { duration }) {
-  if (
-    process.platform !== 'win32' ||
-    !window ||
-    window.isDestroyed() ||
-    !targetPhysicalBounds ||
-    !initNative()
-  ) {
+export function animatePresentation(from, to, durationMs) {
+  if (process.platform !== 'win32' || !initialized || !from || !to || !initNative()) {
     return Promise.resolve({
       success: false,
       code: null,
-      error: 'Windows 原生窗口过渡组件不可用'
+      error: 'Windows 毛玻璃呈现组件不可用'
     })
   }
-  const hwnd = getWindowHandleValue(window)
+  const values = [
+    from.x,
+    from.y,
+    from.width,
+    from.height,
+    to.x,
+    to.y,
+    to.width,
+    to.height,
+    durationMs
+  ].map((value) => Math.round(Number(value)))
+  if (!values.every(Number.isFinite)) {
+    return Promise.resolve({ success: false, code: null, error: '毛玻璃呈现边界无效' })
+  }
+
   return new Promise((resolve) => {
-    // Koffi worker 线程执行同步 Win32 事务，避免逐帧 SetWindowPos 阻塞
-    // Electron 主线程、IPC 和托盘消息泵。
-    lib.WindowTransition_Run.async(
-      hwnd,
-      Math.round(targetPhysicalBounds.x),
-      Math.round(targetPhysicalBounds.y),
-      Math.round(targetPhysicalBounds.width),
-      Math.round(targetPhysicalBounds.height),
-      Math.round(duration),
-      (error, code) => {
-        if (error) {
-          resolve({ success: false, code: null, error: error.message || String(error) })
-          return
-        }
-        let diagnostics = null
-        try {
-          diagnostics = JSON.parse(lib.WindowTransition_GetStatusJson(hwnd))
-        } catch (diagnosticError) {
-          diagnostics = { collectionError: diagnosticError?.message || String(diagnosticError) }
-        }
-        resolve({
-          success: code === 1,
-          code,
-          diagnostics,
-          error: code === 1 ? null : lib.WindowTransition_GetLastErrorMessage()
-        })
+    lib.Blur_AnimatePresentation.async(...values, (error, code) => {
+      if (error) {
+        resolve({ success: false, code: null, error: error.message || String(error) })
+        return
       }
-    )
+      const nativeError = code === 1 ? null : getNativeError('毛玻璃呈现动画失败')
+      resolve({
+        success: code === 1,
+        code,
+        nativeError,
+        error: nativeError?.message || null
+      })
+    })
   })
 }
 
-/**
- * 异常回滚专用同步入口。duration=0 让 DLL 在一个 Win32 批次内立即恢复
- * Electron HWND、Overlay 和 DComp Visual，避免 JS setBounds 先走一帧。
- */
-export function setWindowBoundsSynchronized(window, targetPhysicalBounds) {
-  if (
-    process.platform !== 'win32' ||
-    !window ||
-    window.isDestroyed() ||
-    !targetPhysicalBounds ||
-    !initNative()
-  ) {
-    return {
-      success: false,
-      code: null,
-      error: 'Windows 原生窗口边界恢复组件不可用'
-    }
-  }
+export function resetPresentation() {
+  if (process.platform !== 'win32' || !initialized || !initNative()) return false
   try {
-    const code = lib.WindowTransition_Run(
-      getWindowHandleValue(window),
-      Math.round(targetPhysicalBounds.x),
-      Math.round(targetPhysicalBounds.y),
-      Math.round(targetPhysicalBounds.width),
-      Math.round(targetPhysicalBounds.height),
-      0
-    )
-    return {
-      success: code === 1,
-      code,
-      error: code === 1 ? null : lib.WindowTransition_GetLastErrorMessage()
-    }
-  } catch (error) {
-    return {
-      success: false,
-      code: null,
-      error: error?.message || String(error)
-    }
+    lib.Blur_ResetPresentation()
+    return true
+  } catch {
+    return false
   }
-}
-
-export function isWindowTransitionRunning() {
-  return Boolean(process.platform === 'win32' && initNative() && lib.WindowTransition_IsRunning())
 }
 
 export function isWindowDockEdgeExposed(window, side) {

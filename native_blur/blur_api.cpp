@@ -4,7 +4,6 @@
 
 #include "blur_api.h"
 #include "blur_engine.h"
-#include "transition_engine.h"
 #include "window_motion_edge_monitor.h"
 #include "window_z_order.h"
 #include <algorithm>
@@ -13,7 +12,7 @@
 #include <winternl.h>
 
 namespace {
-constexpr int kNativeAbiVersion = 13;
+constexpr int kNativeAbiVersion = 14;
 }
 
 int AbandonNative_GetAbiVersion(void) {
@@ -107,49 +106,27 @@ void Blur_UpdateGeometry(void) {
     BlurEngine::Engine::Instance().UpdateGeometry();
 }
 
-int WindowTransition_WarmShell(void* hwnd) {
-    try { return BlurEngine::Engine::Instance().WarmShellResources(static_cast<HWND>(hwnd)) ? 1 : 0; }
-    catch (...) { return 0; }
-}
-
-int WindowTransition_PrepareShell(void* hwnd, int x, int y, int width, int height) {
+int Blur_AnimatePresentation(
+    int fromX,
+    int fromY,
+    int fromWidth,
+    int fromHeight,
+    int toX,
+    int toY,
+    int toWidth,
+    int toHeight,
+    int durationMs) {
     try {
-        return BlurEngine::Engine::Instance().PrepareShellTransition(
-            static_cast<HWND>(hwnd), RECT{ x, y, x + width, y + height }) ? 1 : 0;
+        return BlurEngine::Engine::Instance().AnimatePresentation(
+            RECT{ fromX, fromY, fromX + fromWidth, fromY + fromHeight },
+            RECT{ toX, toY, toX + toWidth, toY + toHeight },
+            durationMs) ? 1 : 0;
     } catch (...) { return 0; }
 }
 
-int WindowTransition_FinishShell(void) {
-    try { return BlurEngine::Engine::Instance().FinishShellTransition() ? 1 : 0; }
-    catch (...) { return 0; }
-}
-
-int WindowTransition_Run(
-    void* hwnd,
-    int targetPhysicalX,
-    int targetPhysicalY,
-    int targetPhysicalWidth,
-    int targetPhysicalHeight,
-    int durationMs) {
-    return WindowTransition::Engine::Instance().Run(
-        static_cast<HWND>(hwnd),
-        targetPhysicalX,
-        targetPhysicalY,
-        targetPhysicalWidth,
-        targetPhysicalHeight,
-        durationMs);
-}
-
-int WindowTransition_IsRunning(void) {
-    return WindowTransition::Engine::Instance().IsRunning() ? 1 : 0;
-}
-
-const char* WindowTransition_GetLastErrorMessage(void) {
-    return WindowTransition::Engine::Instance().GetLastErrorMessage();
-}
-
-const char* WindowTransition_GetStatusJson(void* hwnd) {
-    return WindowTransition::Engine::Instance().GetStatusJson(static_cast<HWND>(hwnd));
+void Blur_ResetPresentation(void) {
+    try { BlurEngine::Engine::Instance().ResetPresentation(); }
+    catch (...) { }
 }
 
 void Blur_ReSyncOrder(void) {
