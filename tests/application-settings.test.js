@@ -18,6 +18,7 @@ vi.mock('../src/main/db/db.js', () => ({
 
 let ensureViewSettingsInitialized
 let ensureApplicationWindowSettingsInitialized
+let clearPersistedCompactWindowMode
 let getViewSettingsScope
 let prepareViewSettingsForSwitch
 let readApplicationSettings
@@ -27,6 +28,7 @@ let writeApplicationSettings
 
 beforeAll(async () => {
   ;({
+    clearPersistedCompactWindowMode,
     ensureApplicationWindowSettingsInitialized,
     ensureViewSettingsInitialized,
     getViewSettingsScope,
@@ -242,6 +244,23 @@ describe('application view settings', () => {
     expect(() => writeApplicationSettings([{ id: 'window.zOrderMode', value: 'normal' }])).toThrow(
       /未授权/
     )
+    expect(db.setSettingsBatch).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears a legacy compact startup flag without discarding compact geometry', () => {
+    db.rowsByScope.set('application', [
+      { type: 'compact', key: 'enabled', value: 'true' },
+      { type: 'compact', key: 'x', value: '440' },
+      { type: 'compact', key: 'y', value: '364' }
+    ])
+
+    expect(clearPersistedCompactWindowMode()).toBe(true)
+    expect(readApplicationSettings().window.compact).toMatchObject({
+      enabled: false,
+      x: 440,
+      y: 364
+    })
+    expect(clearPersistedCompactWindowMode()).toBe(false)
     expect(db.setSettingsBatch).toHaveBeenCalledTimes(1)
   })
 

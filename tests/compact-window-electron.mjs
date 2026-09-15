@@ -112,7 +112,8 @@ function seedSettings(userDataPath) {
     ['application', 'onboarding', 'first_use_notice_version', '1'],
     ['application', 'system', 'lock_state', 'true'],
     ['application', 'system', 'z_order_mode', expectedZOrderMode],
-    ['application', 'compact', 'enabled', coldBlurOff ? 'false' : 'true'],
+    // 模拟旧版本在退出前留下的灵动岛状态；新版启动必须主动清除并显示主视图。
+    ['application', 'compact', 'enabled', 'true'],
     ['application', 'compact', 'x', '130'],
     ['application', 'compact', 'y', '140'],
     ['application', 'compact', 'width', '360'],
@@ -331,10 +332,6 @@ function assertMonotonic(samples, key, label) {
     const delta = (samples[index][key] - samples[index - 1][key]) * direction
     assert.ok(delta >= -1, `${label} 的 ${key} 在第 ${index} 帧发生反向抖动`)
   }
-}
-
-function assertNear(actual, expected, message, tolerance = 1) {
-  assert.ok(Math.abs(actual - expected) <= tolerance, `${message}: ${actual} != ${expected}`)
 }
 
 function transitionGeometryProgress(bounds, transition) {
@@ -1323,27 +1320,43 @@ async function runActionBarAccessibilityTest(window) {
 async function runViewReplacementTest(window) {
   if (requestedView !== 'list') return { window, root: viewConfig.root, scene: viewConfig.scene }
   const oldId = window.id
-  const compactBounds = window.getBounds()
   const hooks = globalThis.__ABANDON_COMPACT_TEST_HOOKS__
-  assert.equal(await hooks.switchMainView('month'), true, '胶囊状态下切换月视图失败')
+  hooks.openExpandedMainWindowFromTray()
+  await waitUntil(
+    async () => (await readState(window)).phase === 'expanded' && window.isVisible(),
+    '托盘打开主窗口没有退出胶囊状态'
+  )
+  assert.equal(window.id, oldId, '托盘打开主窗口不应替换当前 HWND')
+  await window.webContents.executeJavaScript('window.api.enterCompactWindow()')
+  await waitUntil(
+    async () => (await readState(window)).phase === 'compact',
+    '托盘打开主窗口测试后无法再次进入胶囊'
+  )
+  assert.equal(await hooks.switchMainViewFromTray('month'), true, '托盘未能从胶囊切换月视图')
   const replacement = await waitUntil(
     () => getMainWindow('month.html'),
-    '胶囊状态下没有创建新的月视图'
+    '托盘切换后没有创建新的月视图'
   )
   await waitUntil(() => window.isDestroyed(), '旧列表主窗口没有销毁')
   await waitUntil(
-    async () => (await readState(replacement)).phase === 'compact' && replacement.isVisible(),
-    '替换后的月视图没有恢复胶囊状态'
+    async () => (await readState(replacement)).phase === 'expanded' && replacement.isVisible(),
+    '替换后的月视图没有恢复主视图状态'
   )
   assert.notEqual(replacement.id, oldId, '视图替换没有创建目标视图 HWND')
-  assert.deepEqual(replacement.getBounds(), compactBounds, '视图替换没有保留胶囊边界')
-  assertOnlyOneBrowserWindow(replacement, '胶囊视图替换')
-  await assertRendererSurface(replacement, compactBounds, 'compact', '胶囊视图替换', {
+  assert.ok(replacement.getBounds().width >= 240, '托盘视图切换后仍保留胶囊宽度')
+  assert.ok(replacement.getBounds().height >= 240, '托盘视图切换后仍保留胶囊高度')
+  assertOnlyOneBrowserWindow(replacement, '托盘视图替换')
+  await assertRendererSurface(replacement, replacement.getBounds(), 'expanded', '托盘视图替换', {
     root: '.month-root',
     scene: '.month-scene'
   })
-  await assertZOrderMode(replacement, '胶囊视图替换')
-  assertBlurRuntimeHealthy('胶囊视图替换')
+  await assertZOrderMode(replacement, '托盘视图替换')
+  assertBlurRuntimeHealthy('托盘视图替换')
+  await replacement.webContents.executeJavaScript('window.api.enterCompactWindow()')
+  await waitUntil(
+    async () => (await readState(replacement)).phase === 'compact',
+    '托盘视图切换测试后无法再次进入胶囊'
+  )
   return { window: replacement, root: '.month-root', scene: '.month-scene' }
 }
 
@@ -1376,11 +1389,28 @@ async function runCompactWindowTest() {
       return
     }
 
-    if (coldBlurOff) {
-      await waitUntil(
-        async () => (await readState(mainWindow)).phase === 'expanded' && mainWindow.isVisible(),
-        '关闭毛玻璃冷启动未显示主视图'
+    await waitUntil(
+      async () => (await readState(mainWindow)).phase === 'expanded' && mainWindow.isVisible(),
+      '旧灵动岛状态冷启动后没有显示主视图'
+    )
+    assertOnlyOneBrowserWindow(mainWindow, '主视图冷启动')
+    const startupExpandedBounds = mainWindow.getBounds()
+    assert.deepEqual(
+      { width: startupExpandedBounds.width, height: startupExpandedBounds.height },
+      getDefaultExpandedSize(),
+      '旧灵动岛状态冷启动后没有恢复展开尺寸'
+    )
+    await assertRendererSurface(mainWindow, startupExpandedBounds, 'expanded', '主视图冷启动')
+    const startupDb = new Database(join(testUserData, 'app.db'), { readonly: true })
+    const startupCompactEnabled = startupDb
+      .prepare(
+        `SELECT value FROM app_settings WHERE window_name = 'application' AND type = 'compact' AND key = 'enabled'`
       )
+      .get()?.value
+    startupDb.close()
+    assert.equal(startupCompactEnabled, 'false', '旧灵动岛启动标记没有被清除')
+
+    if (coldBlurOff) {
       // 不先调用 setBlurConfig；第一下直接收起，避免开关操作掩盖首次初始化错误。
       await runTransitionAndAssertSynchronizedGeometry({
         window: mainWindow,
@@ -1397,23 +1427,26 @@ async function runCompactWindowTest() {
         expectOverlay: false
       })
       report(`${requestedView} cold start with blur disabled: first double-click round-trip passed`)
-      await mainWindow.webContents.executeJavaScript('window.api.enterCompactWindow()')
     }
+
+    await mainWindow.webContents.executeJavaScript('window.api.enterCompactWindow()')
 
     await waitUntil(
       async () => (await readState(mainWindow)).phase === 'compact' && mainWindow.isVisible(),
-      '启动时没有在唯一主窗口恢复胶囊状态'
+      '主视图启动后无法手动进入胶囊状态'
     )
-    assertOnlyOneBrowserWindow(mainWindow, '胶囊冷启动')
+    assertOnlyOneBrowserWindow(mainWindow, '手动进入胶囊')
     const initialWindowId = mainWindow.id
     const startupCompactBounds = mainWindow.getBounds()
-    if (!coldBlurOff)
-      assert.deepEqual(startupCompactBounds, { x: 130, y: 140, width: 200, height: 40 })
+    assert.deepEqual(
+      { width: startupCompactBounds.width, height: startupCompactBounds.height },
+      { width: 200, height: 40 }
+    )
     assert.equal(mainWindow.isMovable(), true, '胶囊错误继承了主窗口锁定')
-    await assertRendererSurface(mainWindow, startupCompactBounds, 'compact', '胶囊冷启动')
+    await assertRendererSurface(mainWindow, startupCompactBounds, 'compact', '手动进入胶囊')
     const startupRenderer = await assertCompactContent(mainWindow, startupCompactBounds)
-    await assertZOrderMode(mainWindow, '胶囊冷启动')
-    assertBlurRuntimeHealthy('胶囊冷启动')
+    await assertZOrderMode(mainWindow, '手动进入胶囊')
+    assertBlurRuntimeHealthy('手动进入胶囊')
 
     if (process.argv.includes('diagnostics-only')) {
       await mainWindow.webContents.executeJavaScript('window.api.exitCompactWindow()')

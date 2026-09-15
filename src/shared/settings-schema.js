@@ -519,7 +519,7 @@ const definitions = [
     defaultValue: false,
     parse: parseBoolean,
     serialize: String,
-    remark: '主窗口是否处于灵动岛模式'
+    remark: '兼容旧版本的灵动岛启动恢复标记（启动时固定清除）'
   },
   {
     id: 'window.compact.x',

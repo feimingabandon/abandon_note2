@@ -162,6 +162,17 @@ export function writeActiveView(viewMode) {
 }
 
 /**
+ * 灵动岛只是一段运行时窗口形态，不再跨应用进程恢复。旧版本可能留下
+ * compact:enabled=true；启动时一次性归零，尺寸和位置仍保留给下次手动收起。
+ */
+export function clearPersistedCompactWindowMode() {
+  const applicationRows = rowMap(getAllSettings(APPLICATION_SETTINGS_SCOPE))
+  if (!parseStoredBoolean(applicationRows.get('compact:enabled'), false)) return false
+  setSettingsBatch(APPLICATION_SETTINGS_SCOPE, [serializeSetting('window.compact.enabled', false)])
+  return true
+}
+
+/**
  * 周视图第一次启用时，以月视图的持久化设置为起点。初始化标记保存在 application
  * 作用域，因此用户之后即使恢复周视图默认设置（清空 week 作用域），也不会再次继承。
  */

@@ -90,6 +90,33 @@ describe('compact single-window architecture', () => {
     expect(controller).not.toContain('.setBounds(')
   })
 
+  it('keeps compact mode runtime-only and expands tray main-view actions', () => {
+    const main = read('../src/main/index.js')
+    const persistBlock = main.slice(
+      main.indexOf('function persistCompactWindowBounds(bounds)'),
+      main.indexOf('function syncCompactWindowRuntime(source)')
+    )
+    const createBlock = main.slice(
+      main.indexOf('function createWindow({ preferredDisplay = null } = {})'),
+      main.indexOf('// ---- 初始化系统模糊 ----')
+    )
+    const trayBlock = main.slice(
+      main.indexOf('function openExpandedMainWindowFromTray()'),
+      main.indexOf('const startupPromise = app.whenReady()')
+    )
+
+    expect(main).toContain('clearPersistedCompactWindowMode()')
+    expect(persistBlock).not.toContain('window.compact.enabled')
+    expect(createBlock).toContain(
+      "compactWindowController.initializeForWindow(createdWindow, 'expanded')"
+    )
+    expect(createBlock).not.toContain('resolvedSettings.window.compact.enabled')
+    expect(trayBlock).toContain('await expandCompactWindowForNotification()')
+    expect(trayBlock).toContain('switchMainView: (targetMode) => {')
+    expect(trayBlock).toContain('switchMainViewFromTray(targetMode)')
+    expect(trayBlock).toContain('openMainWindow: openExpandedMainWindowFromTray')
+  })
+
   it('uses a compositor clock with a fixed carrier and one final HWND resize', () => {
     const transition = read('../native_blur/transition_engine.cpp')
     const blurEngine = read('../native_blur/blur_engine.cpp')
