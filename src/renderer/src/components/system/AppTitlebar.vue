@@ -6,7 +6,7 @@
  *   1. 提供关闭、三态窗口层级、锁定窗口控制，视觉风格不改变功能语义
  *   2. 展示窗口标题文字
  *   3. 通过 slot 支持在标题栏右侧插入自定义操作按钮
- *   4. 除窗口缩放带和交互控件外，整个标题栏通过统一指针事务支持拖动与双击
+ *   4. 除窗口缩放带和交互控件外，整个标题栏通过统一指针事务支持拖动
  *
  * Props:
  *   - title {String} 标题栏显示的文字，默认为空
@@ -41,7 +41,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:locked', 'update:zOrderMode', 'request:compact'])
+const emit = defineEmits(['update:locked', 'update:zOrderMode'])
 
 const WINDOW_CONTROL_GUARD_MS = 500
 const Z_ORDER_OPTIONS = Object.freeze([
@@ -77,13 +77,8 @@ let titlebarPointerMoved = false
 let titlebarDragStartPromise = null
 let titlebarDragging = false
 let titlebarDragGeneration = 0
-let lastTitlebarPress = null
-let suppressTitlebarDomDoubleClickUntil = 0
-
-const TITLEBAR_DOUBLE_CLICK_MS = 420
-const TITLEBAR_DOUBLE_CLICK_DISTANCE = 12
 const TITLEBAR_INTERACTIVE_SELECTOR =
-  'button, a, input, textarea, select, summary, [role="button"], [role="menu"], [contenteditable="true"], [data-no-compact]'
+  'button, a, input, textarea, select, summary, [role="button"], [role="menu"], [contenteditable="true"]'
 
 const activeZOrderOption = computed(
   () => Z_ORDER_OPTIONS.find((option) => option.value === props.zOrderMode) || Z_ORDER_OPTIONS[0]
@@ -204,14 +199,6 @@ const toggleLock = async () => {
   }
 }
 
-function onTitlebarDoubleClick(event) {
-  if (Date.now() < suppressTitlebarDomDoubleClickUntil) return
-  const target = event.target
-  if (!(target instanceof Element)) return
-  if (target.closest(TITLEBAR_INTERACTIVE_SELECTOR)) return
-  emit('request:compact')
-}
-
 function requestTitlebarDragUpdate() {
   if (titlebarDragFrame) return
   titlebarDragFrame = requestAnimationFrame(() => {
@@ -240,25 +227,6 @@ function onTitlebarPointerDown(event) {
   if (event.button !== 0 || titlebarDragPointerId !== null) return
   const target = event.target
   if (!(target instanceof Element) || target.closest(TITLEBAR_INTERACTIVE_SELECTOR)) return
-  const now = Date.now()
-  const press = { at: now, x: event.screenX, y: event.screenY }
-  const isDoublePress =
-    lastTitlebarPress &&
-    now - lastTitlebarPress.at <= TITLEBAR_DOUBLE_CLICK_MS &&
-    Math.hypot(press.x - lastTitlebarPress.x, press.y - lastTitlebarPress.y) <=
-      TITLEBAR_DOUBLE_CLICK_DISTANCE
-  lastTitlebarPress = isDoublePress ? null : press
-  if (isDoublePress) {
-    suppressTitlebarDomDoubleClickUntil = now + 500
-    event.preventDefault()
-    titlebarDragGeneration += 1
-    titlebarDragging = false
-    void window.api
-      .endTitlebarWindowDrag()
-      .catch(() => false)
-      .finally(() => emit('request:compact'))
-    return
-  }
   if (props.locked) return
   const generation = ++titlebarDragGeneration
   titlebarDragPointerId = event.pointerId
@@ -337,7 +305,6 @@ onBeforeUnmount(() => {
     class="app-titlebar"
     :class="[`app-titlebar--${styleVariant}`, { locked: locked }]"
     :data-style="styleVariant"
-    @dblclick="onTitlebarDoubleClick"
     @pointerdown="onTitlebarPointerDown"
     @pointermove="onTitlebarPointerMove"
     @pointerup="finishTitlebarPointer"

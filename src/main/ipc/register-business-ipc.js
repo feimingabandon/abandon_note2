@@ -10,7 +10,6 @@ import {
   moveHistoricalInProgressNotesToToday,
   previewHistoricalInProgressMove,
   queryCustomNormal,
-  queryCompactNote,
   queryCustomPinned,
   queryEarlierNotes,
   queryPinnedNotes,
@@ -373,11 +372,6 @@ export function registerBusinessIpcHandlers({
   ipcMain.handle('notes:get', (_event, { id }) => getNoteById(id))
   ipcMain.handle('notes:query-pinned', (_event, options) => queryPinnedNotes(options || {}))
   ipcMain.handle('notes:query-recent', (_event, options) => queryRecentNotes(options || {}))
-  // 视图替换时旧 renderer 可能已有一个只读查询在 IPC 队列中。此时返回空候选
-  // 即可，不能把正常的窗口销毁竞态记录为权限异常；所有写操作仍严格拒绝旧 sender。
-  ipcMain.handle('notes:query-compact', () => queryCompactNote(), {
-    onStaleSender: () => null
-  })
   ipcMain.handle('notes:query-earlier', (_event, options) => queryEarlierNotes(options || {}))
   ipcMain.handle('notes:query-custom-pinned', (_event, options) => queryCustomPinned(options || {}))
   ipcMain.handle('notes:query-custom-normal', (_event, options) => queryCustomNormal(options || {}))

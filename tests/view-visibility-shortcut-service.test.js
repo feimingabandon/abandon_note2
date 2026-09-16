@@ -40,6 +40,19 @@ describe('ViewVisibilityShortcutService', () => {
     expect(globalShortcut.register).toHaveBeenLastCalledWith('Control+Alt+N', expect.any(Function))
   })
 
+  it('cancels recording and unregisters the old shortcut when defaults are reapplied', () => {
+    const { callbacks, service } = createHarness()
+    service.initialize('Control+Alt+N')
+    service.beginCapture(7)
+
+    expect(service.initialize('')).toMatchObject({
+      configured: '',
+      registered: false,
+      capturing: false
+    })
+    expect(callbacks.size).toBe(0)
+  })
+
   it('records a stale trigger callback that arrives while shortcut capture is active', () => {
     const { logger, onTrigger, service } = createHarness()
     service.initialize('Control+Alt+N')

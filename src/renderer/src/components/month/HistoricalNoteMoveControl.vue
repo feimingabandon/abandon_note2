@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DateRangePicker from '../ui/DateRangePicker.vue'
 import AppToggle from '../ui/AppToggle.vue'
+import AppIcon from '../ui/AppIcon.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import {
   MIN_CALENDAR_DATE,
@@ -456,10 +457,7 @@ onBeforeUnmount(() => {
       title="将历史未完成便签移至今天"
       @click="requestOpen"
     >
-      <svg viewBox="0 0 20 20" aria-hidden="true">
-        <path d="M3.5 5h8.5M3.5 10h9M3.5 15h6.5M10 12l3 3 3-3M13 15V7" />
-      </svg>
-      <span class="historical-note-move__label">未完成移至今天</span>
+      <AppIcon name="move-to-today" class="historical-note-move__trigger-icon" />
     </button>
 
     <Teleport to="body">
@@ -666,17 +664,16 @@ onBeforeUnmount(() => {
 
 .historical-note-move__trigger {
   display: inline-flex;
+  width: 30rem;
   height: 30rem;
   align-items: center;
-  gap: 6rem;
-  padding: 0 9rem;
+  justify-content: center;
+  padding: 0;
   border: 0;
   border-radius: 8rem;
   background: transparent;
   color: var(--text-color-secondary);
   font: inherit;
-  font-size: var(--fs-secondary);
-  white-space: nowrap;
   cursor: pointer;
   transition:
     background-color var(--motion-fast) ease,
@@ -703,15 +700,10 @@ onBeforeUnmount(() => {
   opacity: 0.35;
 }
 
-.historical-note-move__trigger svg {
-  width: 17rem;
-  height: 17rem;
+.historical-note-move__trigger-icon {
+  width: var(--calendar-toolbar-icon-size, 17rem);
+  height: var(--calendar-toolbar-icon-size, 17rem);
   flex: 0 0 auto;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.55;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .historical-note-move__panel {
@@ -1103,17 +1095,5 @@ onBeforeUnmount(() => {
 .historical-note-move__execute:disabled {
   cursor: default;
   opacity: 0.34;
-}
-
-@media (max-width: 760px) {
-  .historical-note-move__trigger {
-    width: 30rem;
-    justify-content: center;
-    padding: 0;
-  }
-
-  .historical-note-move__label {
-    display: none;
-  }
 }
 </style>

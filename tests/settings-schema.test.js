@@ -72,6 +72,7 @@ describe('titlebar appearance setting', () => {
     expect(applied.get('--titlebar-apple-control-size')).toBe('27rem')
     expect(applied.get('--titlebar-apple-icon-size')).toBe('21rem')
     expect(applied.get('--titlebar-microsoft-icon-size')).toBe('22.5rem')
+    expect(applied.get('--calendar-toolbar-icon-size')).toBe('25.5rem')
     expect(attributes.get('data-icon-color')).toBe('black')
   })
 })
@@ -94,16 +95,7 @@ describe('global main-window controls', () => {
   it('uses a three-state z-order setting and normalizes the two legacy boolean values', () => {
     expect(DEFAULT_SETTINGS.window).toEqual({
       lockState: false,
-      zOrderMode: WINDOW_Z_ORDER_MODES.TOP,
-      compact: {
-        enabled: false,
-        x: null,
-        y: null,
-        width: 200,
-        height: 40,
-        displayId: null,
-        previousWorkArea: null
-      }
+      zOrderMode: WINDOW_Z_ORDER_MODES.TOP
     })
     expect(serializeSetting('window.zOrderMode', WINDOW_Z_ORDER_MODES.BOTTOM)).toMatchObject({
       type: 'system',
@@ -124,38 +116,6 @@ describe('global main-window controls', () => {
     ).toBe(WINDOW_Z_ORDER_MODES.TOP)
   })
 
-  it('persists and clamps application-wide compact window settings', () => {
-    expect(serializeSetting('window.compact.width', 999)).toMatchObject({
-      type: 'compact',
-      key: 'width',
-      value: '720'
-    })
-    expect(serializeSetting('window.compact.height', 20)).toMatchObject({
-      type: 'compact',
-      key: 'height',
-      value: '40'
-    })
-    expect(serializeSetting('window.compact.width', 20)).toMatchObject({
-      type: 'compact',
-      key: 'width',
-      value: '100'
-    })
-    expect(
-      resolveSettingsRows([
-        { type: 'compact', key: 'enabled', value: 'true' },
-        { type: 'compact', key: 'x', value: '630' },
-        {
-          type: 'compact',
-          key: 'previous_work_area',
-          value: '{"x":0,"y":0,"width":1920,"height":1040}'
-        }
-      ]).window.compact
-    ).toMatchObject({
-      enabled: true,
-      x: 630,
-      previousWorkArea: { x: 0, y: 0, width: 1920, height: 1040 }
-    })
-  })
 })
 
 describe('view-specific defaults', () => {

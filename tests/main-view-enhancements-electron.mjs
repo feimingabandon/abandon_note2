@@ -133,24 +133,145 @@ async function chooseView(window, mode) {
   )
 }
 
-async function assertWeatherLocationOnly(window) {
+async function assertTodayWeatherSummary(window) {
   const meta = await waitUntil(
     () =>
       window.webContents.executeJavaScript(`(() => {
     const element = document.querySelector('.month-toolbar__weather-meta')
-    return element?.textContent.includes('广州市') ? {
+    return element?.textContent.includes('☀️ 晴 18°～27°') ? {
       text: element.textContent.trim(),
       title: element.title,
       isButton: element.matches('button, [role="button"]'),
-      sourceCount: element.querySelectorAll('small, i').length
+      sourceCount: element.querySelectorAll('small, i').length,
+      weatherCenter: element.getBoundingClientRect().top + element.getBoundingClientRect().height / 2,
+      todayCenter: (() => {
+        const rect = document.querySelector('.month-toolbar__today').getBoundingClientRect()
+        return rect.top + rect.height / 2
+      })()
     } : null
   })()`),
-    '天气地点没有显示'
+    '当天天气概览没有显示'
   )
   assert.equal(meta.title, meta.text)
   assert.equal(meta.isButton, false)
   assert.equal(meta.sourceCount, 0)
+  assert.ok(
+    Math.abs(meta.weatherCenter - meta.todayCenter) < 0.25,
+    `天气信息与今天按钮没有垂直居中：${JSON.stringify(meta)}`
+  )
+  assert.doesNotMatch(meta.text, /广州市|广东省/)
   assert.doesNotMatch(meta.text, /数据来源|Open-Meteo|CMA/)
+}
+
+async function calendarToolbarAppearance(window) {
+  return window.webContents.executeJavaScript(`(() => {
+    const toolbar = document.querySelector('.month-toolbar')
+    const today = document.querySelector('.month-toolbar__today')
+    const expectedNames = ['locate-current', 'taiji', 'recurrence', 'move-to-today', 'date-panel']
+    const icons = expectedNames.map((name) =>
+      document.querySelector('.month-toolbar [data-icon-name="' + name + '"]')
+    )
+    const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize)
+    return {
+      toolbarHeight: toolbar?.getBoundingClientRect().height ?? 0,
+      rootFontSize,
+      todayText: today?.textContent.trim() ?? '',
+      todayLabel: today?.getAttribute('aria-label') ?? '',
+      iconNames: icons.map((icon) => icon?.dataset.iconName ?? ''),
+      iconWidths: icons.map((icon) => icon?.getBoundingClientRect().width ?? 0),
+      pairedAssets: icons.every(
+        (icon) =>
+          icon?.querySelector('.app-icon__asset--black') &&
+          icon?.querySelector('.app-icon__asset--white')
+      ),
+      whiteAssetsVisible: icons.every((icon) => {
+        const black = icon?.querySelector('.app-icon__asset--black')
+        const white = icon?.querySelector('.app-icon__asset--white')
+        return getComputedStyle(black).display === 'none' && getComputedStyle(white).display !== 'none'
+      })
+    }
+  })()`)
+}
+
+async function assertCalendarToolbarAppearance(window) {
+  const initial = await calendarToolbarAppearance(window)
+  assert.ok(
+    initial.toolbarHeight <= 36 * initial.rootFontSize + 0.1,
+    `日历工具栏高度没有收紧到 36rem：${JSON.stringify(initial)}`
+  )
+  assert.equal(initial.todayText, '', '定位到今天入口不应继续显示文字')
+  assert.equal(initial.todayLabel, '定位到今天')
+  assert.deepEqual(initial.iconNames, [
+    'locate-current',
+    'taiji',
+    'recurrence',
+    'move-to-today',
+    'date-panel'
+  ])
+  assert.equal(initial.pairedAssets, true, '日历工具栏操作图标必须同时提供黑白资源')
+  assert.ok(
+    initial.iconWidths.every((width) => Math.abs(width - 17 * initial.rootFontSize) < 0.1),
+    `日历工具栏默认图标大小不正确：${JSON.stringify(initial)}`
+  )
+
+  await window.webContents.executeJavaScript(
+    `window.api.setSettingValue('appearance.titlebarIconScale', 150)`
+  )
+  await window.webContents.executeJavaScript(
+    `window.api.setSettingValue('appearance.iconColor', 'white')`
+  )
+  const customized = await waitUntil(async () => {
+    const state = await calendarToolbarAppearance(window)
+    return state.whiteAssetsVisible &&
+      state.iconWidths.every((width) => Math.abs(width - 25.5 * state.rootFontSize) < 0.1)
+      ? state
+      : null
+  }, '日历工具栏图标没有响应设置中的颜色和大小')
+  assert.equal(customized.pairedAssets, true)
+
+  await window.webContents.executeJavaScript(
+    `window.api.setSettingValue('appearance.titlebarIconScale', 100)`
+  )
+  await window.webContents.executeJavaScript(
+    `window.api.setSettingValue('appearance.iconColor', 'black')`
+  )
+}
+
+async function assertDayPanelWeatherLayout(window) {
+  await window.webContents.executeJavaScript(
+    `document.querySelector('.month-toolbar__day-panel-toggle').click()`
+  )
+  const layout = await waitUntil(
+    () =>
+      window.webContents.executeJavaScript(`(() => {
+        const weather = document.querySelector('.month-day-panel__weather')
+        const main = weather?.querySelector('.month-day-panel__weather-main')
+        const details = weather?.querySelector('.month-day-panel__weather-details')
+        const place = main?.querySelector('span')
+        if (!weather || !main || !details || !place) return null
+        const mainRect = main.getBoundingClientRect()
+        const detailsRect = details.getBoundingClientRect()
+        return {
+          mainRight: mainRect.right,
+          detailsLeft: detailsRect.left,
+          placeOverflow: getComputedStyle(place).overflow,
+          placeEllipsis: getComputedStyle(place).textOverflow
+        }
+      })()`),
+    '日期侧栏天气没有显示'
+  )
+  assert.ok(
+    layout.mainRight <= layout.detailsLeft,
+    `日期侧栏天气主信息与详情发生重叠：${JSON.stringify(layout)}`
+  )
+  assert.deepEqual(
+    [layout.placeOverflow, layout.placeEllipsis],
+    ['hidden', 'ellipsis'],
+    '天气地区过长时必须单行省略'
+  )
+  await window.webContents.executeJavaScript(
+    `document.querySelector('.month-toolbar__day-panel-toggle').click()`
+  )
 }
 
 const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-main-view-enhancements-'))
@@ -220,7 +341,6 @@ async function runMainViewEnhancementsTest() {
       const blackAssetVisible = getComputedStyle(blackAsset).display !== 'none'
       const whiteAssetHidden = getComputedStyle(whiteAsset).display === 'none'
       return {
-        hasCompactTrigger: Boolean(document.querySelector('.compact-mode-trigger')),
         whiteAssetVisible,
         blackAssetHidden,
         blackAssetVisible,
@@ -233,7 +353,6 @@ async function runMainViewEnhancementsTest() {
         )
       }
     })()`)
-    assert.equal(listTitlebarState.hasCompactTrigger, false, '便签列表不应显示灵动岛入口')
     assert.equal(listTitlebarState.whiteAssetVisible, true, '视图图标没有切换到白色资源')
     assert.equal(listTitlebarState.blackAssetHidden, true, '白色模式仍显示黑色视图图标')
     assert.equal(listTitlebarState.blackAssetVisible, true, '视图图标没有切换到黑色资源')
@@ -268,7 +387,11 @@ async function runMainViewEnhancementsTest() {
       '视图文字常态应与其他标题栏图标保持相同透明度'
     )
     listWindow.focus()
-    listWindow.webContents.sendInputEvent({ type: 'mouseMove', x: 1, y: listWindow.getBounds().height - 1 })
+    listWindow.webContents.sendInputEvent({
+      type: 'mouseMove',
+      x: 1,
+      y: listWindow.getBounds().height - 1
+    })
     await wait(50)
     listWindow.webContents.sendInputEvent({
       type: 'mouseMove',
@@ -289,24 +412,12 @@ async function runMainViewEnhancementsTest() {
 
     await chooseView(listWindow, 'month')
     const monthWindow = await waitForView('month')
-    await assertWeatherLocationOnly(monthWindow)
-    assert.equal(
-      await monthWindow.webContents.executeJavaScript(
-        `Boolean(document.querySelector('.compact-mode-trigger'))`
-      ),
-      true,
-      '月视图应保留灵动岛入口'
-    )
+    await assertTodayWeatherSummary(monthWindow)
+    await assertCalendarToolbarAppearance(monthWindow)
+    await assertDayPanelWeatherLayout(monthWindow)
     await chooseView(monthWindow, 'week')
     const weekWindow = await waitForView('week')
-    await assertWeatherLocationOnly(weekWindow)
-    assert.equal(
-      await weekWindow.webContents.executeJavaScript(
-        `Boolean(document.querySelector('.compact-mode-trigger'))`
-      ),
-      true,
-      '周视图应保留灵动岛入口'
-    )
+    await assertTodayWeatherSummary(weekWindow)
     await chooseView(weekWindow, 'list')
     await waitForView('list')
 

@@ -400,12 +400,12 @@ async function runHistoricalNoteMoveTest() {
     assert.deepEqual(initial.selectedNoteIds, [notes.yesterdayId], '预览完成后应默认全选便签')
     assert.equal(initial.selectionText, '已选 1 / 1 条')
     const initialUi = await monthWindow.webContents.executeJavaScript(`(() => ({
-      triggerText: document.querySelector('.historical-note-move__trigger')?.textContent.trim(),
+      triggerLabel: document.querySelector('.historical-note-move__trigger')?.getAttribute('aria-label'),
       activePreset: document.querySelector('.historical-note-move__presets .is-active')?.dataset.preset,
       rangeText: document.querySelector('.historical-note-move__range .drp-trigger')?.textContent.trim(),
       titlePickerOpen: document.querySelector('.month-toolbar__title')?.getAttribute('aria-expanded')
     }))()`)
-    assert.equal(initialUi.triggerText, '未完成移至今天')
+    assert.equal(initialUi.triggerLabel, '将历史未完成便签移至今天')
     assert.equal(initialUi.activePreset, 'yesterday', '每次打开应默认选择昨天')
     assert.equal(initialUi.rangeText, `${dates.yesterday} — ${dates.yesterday}`)
     assert.equal(initialUi.titlePickerOpen, 'false', '打开移动面板时应关闭年月选择器')

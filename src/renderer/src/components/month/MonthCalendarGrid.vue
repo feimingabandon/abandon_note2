@@ -23,6 +23,7 @@ const props = defineProps({
   days: { type: Array, default: () => [] },
   notes: { type: Array, default: () => [] },
   recurringPreviews: { type: Array, default: () => [] },
+  statusTransitions: { type: Map, default: () => new Map() },
   selectedKey: { type: String, default: '' },
   todayKey: { type: String, required: true },
   weatherByDate: { type: Map, default: () => new Map() }
@@ -296,6 +297,18 @@ function previewNoteAccent(note) {
   if (note?.status === 'completed') return '#8e8e93'
   if (note?.status === 'in_progress') return '#ff9f0a'
   return '#0a84ff'
+}
+
+function previewStatusLabel(note) {
+  if (note?.status === 'initialized') return '提前开始'
+  if (note?.status === 'in_progress') return '标记完成'
+  if (note?.status === 'completed') return '重新进行'
+  return ''
+}
+
+function runPreviewStatusAction(note) {
+  if (!previewStatusLabel(note) || props.statusTransitions.has(note.id)) return
+  emit('context-status-action', note)
 }
 
 function positionDayPreviewElement(element) {
@@ -1016,6 +1029,30 @@ useDraftProtection({
                 <small v-if="previewScheduleLabel(note)">{{ previewScheduleLabel(note) }}</small>
                 {{ previewNoteText(note) }}
               </p>
+              <button
+                v-if="note.preview_kind !== 'recurrence' && previewStatusLabel(note)"
+                type="button"
+                class="month-day-preview__status-action"
+                :class="`is-${note.status}`"
+                :disabled="statusTransitions.has(note.id)"
+                :title="previewStatusLabel(note)"
+                :aria-label="`${previewStatusLabel(note)}：${previewNoteText(note)}`"
+                @click="runPreviewStatusAction(note)"
+              >
+                <svg v-if="note.status === 'completed'" viewBox="0 0 18 18" aria-hidden="true">
+                  <path d="M14.5 6.5A6 6 0 1 0 15 10M14.5 3.5v3h-3" />
+                </svg>
+                <svg
+                  v-else-if="note.status === 'initialized'"
+                  viewBox="0 0 18 18"
+                  aria-hidden="true"
+                >
+                  <path d="m7 5 5 4-5 4Z" />
+                </svg>
+                <svg v-else viewBox="0 0 18 18" aria-hidden="true">
+                  <path d="m4.5 9 3 3 6-6" />
+                </svg>
+              </button>
             </article>
             <p v-if="!dayPreviewNotes.length" class="month-day-preview__empty">这一天还没有便签</p>
           </div>
@@ -1591,7 +1628,7 @@ useDraftProtection({
 }
 .month-day-preview__note {
   display: grid;
-  grid-template-columns: 5rem minmax(0, 1fr);
+  grid-template-columns: 5rem minmax(0, 1fr) auto;
   align-items: start;
   gap: 8rem;
   padding: 9rem 8rem;
@@ -1620,6 +1657,41 @@ useDraftProtection({
   color: var(--text-color-secondary);
   font-size: calc(var(--fs-secondary) * 0.82);
   font-weight: 500;
+}
+.month-day-preview__status-action {
+  display: grid;
+  width: 27rem;
+  height: 27rem;
+  align-self: center;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7rem;
+  background: transparent;
+  color: var(--text-color-secondary);
+  cursor: pointer;
+}
+.month-day-preview__status-action:hover:not(:disabled),
+.month-day-preview__status-action:focus-visible {
+  outline: none;
+  background: var(--ui-fill-hover);
+  color: var(--text-color);
+}
+.month-day-preview__status-action:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+.month-day-preview__status-action.is-in_progress {
+  color: var(--ui-status-completed);
+}
+.month-day-preview__status-action svg {
+  width: 17rem;
+  height: 17rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
 }
 .month-day-preview__note.is-recurring-preview {
   opacity: 0.78;

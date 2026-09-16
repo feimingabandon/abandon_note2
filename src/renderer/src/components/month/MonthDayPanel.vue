@@ -387,7 +387,7 @@ onBeforeUnmount(() => {
 .month-day-panel__weather {
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
   gap: 8rem;
   padding: 9rem 13rem;
@@ -431,12 +431,19 @@ onBeforeUnmount(() => {
 }
 .month-day-panel__weather-main span,
 .month-day-panel__weather-details span {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   color: var(--text-color-secondary);
   font-size: calc(var(--fs-secondary) * 0.82);
+  line-height: 1.35;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .month-day-panel__weather-details {
   align-items: flex-end;
+  text-align: right;
 }
 .month-day-panel__empty {
   display: grid;

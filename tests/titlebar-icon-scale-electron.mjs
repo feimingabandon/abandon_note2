@@ -85,7 +85,7 @@ async function titlebarMetrics(window) {
 async function titlebarScaleState(window) {
   return window.webContents.executeJavaScript(`(() => {
     const item = Array.from(document.querySelectorAll('.settings-panel .setting-item')).find(
-      (node) => node.querySelector('.setting-label')?.textContent.includes('导航栏图标大小')
+      (node) => node.querySelector('.setting-label')?.textContent.includes('导航图标大小')
     )
     const slider = item?.querySelector('[role="slider"]')
     const rootStyle = document.documentElement.style
@@ -93,7 +93,8 @@ async function titlebarScaleState(window) {
       sliderValue: Number(slider?.getAttribute('aria-valuenow')),
       appleControlSize: rootStyle.getPropertyValue('--titlebar-apple-control-size').trim(),
       appleIconSize: rootStyle.getPropertyValue('--titlebar-apple-icon-size').trim(),
-      microsoftIconSize: rootStyle.getPropertyValue('--titlebar-microsoft-icon-size').trim()
+      microsoftIconSize: rootStyle.getPropertyValue('--titlebar-microsoft-icon-size').trim(),
+      calendarToolbarIconSize: rootStyle.getPropertyValue('--calendar-toolbar-icon-size').trim()
     }
   })()`)
 }
@@ -104,7 +105,8 @@ async function waitForTitlebarScale(window, expectedValue, message) {
     sliderValue: expectedValue,
     appleControlSize: `${18 * scale}rem`,
     appleIconSize: `${14 * scale}rem`,
-    microsoftIconSize: `${15 * scale}rem`
+    microsoftIconSize: `${15 * scale}rem`,
+    calendarToolbarIconSize: `${17 * scale}rem`
   }
   let latest = null
   try {
@@ -148,7 +150,7 @@ async function waitForTitlebarMetrics(window, predicate, message, initial) {
 async function setSliderTo(window, key) {
   return window.webContents.executeJavaScript(`(() => {
     const item = Array.from(document.querySelectorAll('.settings-panel .setting-item')).find(
-      (node) => node.querySelector('.setting-label')?.textContent.includes('导航栏图标大小')
+      (node) => node.querySelector('.setting-label')?.textContent.includes('导航图标大小')
     )
     const slider = item?.querySelector('[role="slider"]')
     if (!slider) return false
@@ -223,7 +225,7 @@ async function runTitlebarIconScaleTest() {
       '列表设置面板没有打开'
     )
 
-    assert.equal(await setSliderTo(listWindow, 'End'), true, '没有找到导航栏图标大小滑块')
+    assert.equal(await setSliderTo(listWindow, 'End'), true, '没有找到导航图标大小滑块')
     await waitForTitlebarScale(listWindow, 150, 'Apple 放大设置没有完整应用')
     const appleLarge = await waitForTitlebarMetrics(
       listWindow,
@@ -241,7 +243,7 @@ async function runTitlebarIconScaleTest() {
     )
 
     assert.equal(await setSliderTo(listWindow, 'Home'), true)
-    await waitForTitlebarScale(listWindow, 100, '导航栏图标大小没有恢复到 100%')
+    await waitForTitlebarScale(listWindow, 100, '导航图标大小没有恢复到 100%')
     await listWindow.webContents.executeJavaScript(`(() => {
       const button = Array.from(document.querySelectorAll('.titlebar-style-selector button')).find(
         (node) => node.textContent.trim() === 'Microsoft'
@@ -318,7 +320,7 @@ async function runTitlebarIconScaleTest() {
         `window.api.getSettingsSnapshot().then((snapshot) => snapshot.values.appearance.titlebarIconScale)`
       ),
       150,
-      '导航栏图标大小没有持久化到全局设置'
+      '导航图标大小没有持久化到全局设置'
     )
     assert.equal(
       await listWindow.webContents.executeJavaScript(
@@ -326,6 +328,34 @@ async function runTitlebarIconScaleTest() {
       ),
       'white',
       '图标颜色没有持久化到全局设置'
+    )
+
+    await listWindow.webContents.executeJavaScript(`(() => {
+      const button = Array.from(document.querySelectorAll('.settings-panel button')).find(
+        (candidate) => candidate.textContent.trim() === '恢复默认设置'
+      )
+      button?.click()
+    })()`)
+    await waitUntil(
+      () =>
+        listWindow.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.confirm-card.active[aria-label="恢复默认设置"]'))`
+        ),
+      '恢复默认确认弹窗没有打开'
+    )
+    await listWindow.webContents.executeJavaScript(`(() => {
+      const button = Array.from(document.querySelectorAll('.confirm-card.active button')).find(
+        (candidate) => candidate.textContent.trim() === '恢复'
+      )
+      button?.click()
+    })()`)
+    await waitForTitlebarScale(listWindow, 100, '恢复默认没有重置导航图标大小')
+    await waitUntil(
+      () =>
+        listWindow.webContents.executeJavaScript(
+          `document.documentElement.getAttribute('data-icon-color') === 'black'`
+        ),
+      '恢复默认没有重置图标颜色'
     )
 
     process.stderr.write('titlebar icon appearance integration passed\n')

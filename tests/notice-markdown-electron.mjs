@@ -146,6 +146,19 @@ async function run() {
       'Escape 没有关闭图片预览'
     )
     assert.ok(await evalJs(`Boolean(document.querySelector('[aria-label="软件通知"]'))`))
+    await evalJs(`document.querySelector('[aria-label="软件通知"]').parentElement.click()`)
+    assert.ok(
+      await evalJs(`Boolean(document.querySelector('[aria-label="软件通知"]'))`),
+      '点击通知弹窗遮罩空白处不应关闭'
+    )
+    await evalJs(`document.querySelector('[aria-label="软件通知"]').focus()`)
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+    await wait(100)
+    assert.ok(
+      await evalJs(`Boolean(document.querySelector('[aria-label="软件通知"]'))`),
+      '软件通知弹窗不应被 Escape 关闭'
+    )
     await evalJs(`document.querySelector('.notice-markdown a[href]').click()`)
     await until(() => opened === 'https://example.com/docs', 'Markdown 链接没有经过外部浏览器处理')
     await update({ body: '![失效图片](https://images.example/missing.png)' })
@@ -154,6 +167,17 @@ async function run() {
       '图片失败状态未显示'
     )
     assert.ok(await evalJs(`!document.querySelector('.markdown-image-error').hidden`))
+    await evalJs(`
+      window.noticePreviewExitCount = 0
+      window.addEventListener('message', (event) => {
+        if (event.data?.type === 'abandon-notice-preview-exit') window.noticePreviewExitCount += 1
+      })
+    `)
+    await evalJs(`document.querySelector('[aria-label="软件通知"] .app-modal-close').click()`)
+    await until(
+      () => evalJs(`window.noticePreviewExitCount === 1`),
+      '右上角 X 没有发出软件通知关闭请求'
+    )
     await update({ body, kind: 'update', theme: 'light' })
     await until(
       () =>
@@ -184,7 +208,7 @@ async function run() {
     }
     await writeFile(resolve(qa, 'update.png'), (await window.webContents.capturePage()).toPNG())
     console.log(
-      'NOTICE_MARKDOWN_ELECTRON_OK: list/month, 3 backgrounds, HTTPS image, zoom/Escape, overflow, links, XSS, failure, independent update UI'
+      'NOTICE_MARKDOWN_ELECTRON_OK: list/month, 3 backgrounds, HTTPS image, notification close policy, zoom/Escape, overflow, links, XSS, failure, independent update UI'
     )
   } catch (error) {
     console.error(error)

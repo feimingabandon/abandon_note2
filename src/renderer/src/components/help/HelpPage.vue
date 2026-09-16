@@ -32,8 +32,8 @@ const sections = helpGroups.map((group) => ({
     (article) => article.group === group.id && article.id !== 'safety-support'
   )
 }))
-const quickLinks = ['notes-create', 'notes-move', 'window-compact', 'safety-troubleshoot'].map(
-  (id) => helpArticles.find((article) => article.id === id)
+const quickLinks = ['notes-create', 'notes-move', 'window-dock', 'safety-troubleshoot'].map((id) =>
+  helpArticles.find((article) => article.id === id)
 )
 const query = ref('')
 const hasQuery = computed(() => Boolean(query.value.trim()))

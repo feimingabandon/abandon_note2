@@ -160,7 +160,7 @@ async function runViewVisibilityShortcutTest() {
       async () => (await shortcutSnapshot(listWindow)).runtime.capturing,
       '重新录制没有进入录制状态'
     )
-    globalThis.__ABANDON_COMPACT_TEST_HOOKS__.triggerViewVisibilityShortcut()
+    globalThis.__ABANDON_WINDOW_TEST_HOOKS__.triggerViewVisibilityShortcut()
     await wait(120)
     assert.equal(listWindow.isVisible(), true, '录制期间旧快捷键不应隐藏设置窗口')
 
@@ -172,22 +172,34 @@ async function runViewVisibilityShortcutTest() {
       'Esc 没有取消快捷键录制'
     )
 
-    globalThis.__ABANDON_COMPACT_TEST_HOOKS__.triggerViewVisibilityShortcut()
+    globalThis.__ABANDON_WINDOW_TEST_HOOKS__.triggerViewVisibilityShortcut()
     await waitUntil(() => !listWindow.isVisible(), '快捷键回调没有把当前视图隐藏到托盘')
-    globalThis.__ABANDON_COMPACT_TEST_HOOKS__.triggerViewVisibilityShortcut()
+    globalThis.__ABANDON_WINDOW_TEST_HOOKS__.triggerViewVisibilityShortcut()
     await waitUntil(() => listWindow.isVisible(), '快捷键回调没有从托盘恢复当前视图')
 
     await listWindow.webContents.executeJavaScript(`(() => {
-      const recorder = document.querySelector('.shortcut-recorder')
-      const clearButton = Array.from(recorder.querySelectorAll('button')).find(
-        (button) => button.textContent.trim() === '清除'
+      const button = Array.from(document.querySelectorAll('.settings-panel button')).find(
+        (candidate) => candidate.textContent.trim() === '恢复默认设置'
       )
-      clearButton?.click()
+      button?.click()
+    })()`)
+    await waitUntil(
+      () =>
+        listWindow.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.confirm-card.active[aria-label="恢复默认设置"]'))`
+        ),
+      '恢复默认确认弹窗没有打开'
+    )
+    await listWindow.webContents.executeJavaScript(`(() => {
+      const button = Array.from(document.querySelectorAll('.confirm-card.active button')).find(
+        (candidate) => candidate.textContent.trim() === '恢复'
+      )
+      button?.click()
     })()`)
     await waitUntil(async () => {
       const snapshot = await shortcutSnapshot(listWindow)
       return snapshot.value === '' && !snapshot.runtime.registered
-    }, '快捷键没有清除')
+    }, '恢复默认没有清除并注销视图显示快捷键')
 
     process.stderr.write('view visibility shortcut integration passed\n')
   } catch (error) {

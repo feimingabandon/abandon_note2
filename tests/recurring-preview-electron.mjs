@@ -185,11 +185,11 @@ async function run() {
     await ensureDateVisible(monthWindow, targetDateKey, 'month')
 
     const initialToggle = await monthWindow.webContents.executeJavaScript(`(() => ({
-      label: document.querySelector('.month-toolbar__recurring-preview')?.textContent?.trim(),
+      label: document.querySelector('.month-toolbar__recurring-preview')?.getAttribute('aria-label'),
       checked: document.querySelector('.month-toolbar__recurring-preview-toggle')?.getAttribute('aria-checked'),
       previewVisible: Array.from(document.querySelectorAll('.month-event-bar'), (node) => node.dataset.preview).includes(${JSON.stringify(content)})
     }))()`)
-    assert.equal(initialToggle.label, '循环便签预览')
+    assert.equal(initialToggle.label, '显示循环便签预览')
     assert.equal(initialToggle.checked, 'false', '循环便签预览必须默认关闭')
     assert.equal(initialToggle.previewVisible, false, '开关关闭时不得显示未来循环节点')
 

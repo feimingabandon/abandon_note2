@@ -226,6 +226,7 @@ async function runMonthViewTests() {
       const weekdaysRect = weekdays.getBoundingClientRect()
       return {
         text: toggle.textContent.trim(),
+        label: toggle.getAttribute('aria-label'),
         controls: toggle.getAttribute('aria-controls'),
         actionsLeftOfNavigation:
           todayRect.right <= navigationRect.left && refreshRect.right <= navigationRect.left,
@@ -265,7 +266,8 @@ async function runMonthViewTests() {
     assert.deepEqual(
       initialUi.dayPanelToggleLayout,
       {
-        text: '日期列表',
+        text: '',
+        label: '展开日期列表',
         controls: 'month-day-panel',
         actionsLeftOfNavigation: true,
         rightOfNavigation: true,
@@ -2171,11 +2173,6 @@ async function runMonthViewTests() {
       settingsUi.sectionTitles.includes('便利贴'),
       false,
       '月视图设置不应显示列表便签外观'
-    )
-    assert.equal(
-      settingsUi.sectionTitles.includes('灵动岛'),
-      false,
-      '设置页面不应提供灵动岛宽高设置'
     )
     assert.match(settingsUi.text, /设置主页面壁纸/, '月视图必须保留独立壁纸设置')
     assert.match(settingsUi.text, /窗口边框/, '月视图必须提供当前视图的窗口边框开关')

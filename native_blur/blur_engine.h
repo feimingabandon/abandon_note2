@@ -34,7 +34,6 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
-#include <memory>
 #include <string>
 
 namespace BlurEngine {
@@ -100,10 +99,6 @@ public:
     // 验证两者物理边界一致。Composition 对象仍只由 STA 线程访问。
     bool MoveParentAndOverlay(HWND parentHwnd, int physicalX, int physicalY,
         DWORD syncTimeoutMs = 50);
-    // 只动画现有 Overlay 内的圆角裁剪，不创建窗口、不修改父 HWND 几何。
-    bool AnimatePresentation(const RECT& from, const RECT& to, int durationMs);
-    void ResetPresentation();
-
     // ---- Z-order 重同步（父窗口置顶层变化后调用） ----
     void ReSyncZOrder();
 
@@ -145,8 +140,6 @@ private:
     void UpdateVisualSize();  // 使用 Overlay 完整客户区更新 SpriteVisual 尺寸
     void UpdateVisualSize(int width, int height);
     void ApplyClip();         // 应用/更新圆角裁剪
-    bool AnimatePresentationOnSta();
-    void ResetPresentationOnSta();
 
     // ---- DPI 动态切换 ----
     void HandleDpiChanged(WPARAM wParam, LPARAM lParam);
@@ -179,21 +172,6 @@ private:
     std::atomic<bool> m_configUpdatePending{ false };
     std::atomic<bool> m_geometryUpdatePending{ false };
     std::atomic<bool> m_zOrderSyncPending{ false };
-    struct PresentationCompletion {
-        std::mutex mutex;
-        std::condition_variable changed;
-        bool completed = false;
-        bool cancelled = false;
-    };
-    std::atomic<bool> m_presentationAnimating{ false };
-    std::mutex m_presentationMutex;
-    RECT m_presentationFrom{}, m_presentationTo{};
-    int m_presentationDurationMs = 0;
-    std::shared_ptr<PresentationCompletion> m_presentationCompletion;
-    CompositionScopedBatch m_presentationBatch{ nullptr };
-    winrt::event_token m_presentationBatchToken{};
-    RECT m_currentPresentationRect{};
-    bool m_presentationUsesFullCarrier = true;
     // 只读诊断快照。Composition 对象仍只在 STA 线程访问；集成测试通过
     // 原子尺寸确认重新启用毛玻璃后 Visual 已覆盖当前窗口客户区。
     std::atomic<int> m_visualWidth{ 0 };

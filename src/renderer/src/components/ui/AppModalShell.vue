@@ -21,6 +21,7 @@ const props = defineProps({
   showClose: { type: Boolean, default: true },
   closeDisabled: { type: Boolean, default: false },
   closeOnBackdrop: { type: Boolean, default: true },
+  closeOnEscape: { type: Boolean, default: true },
   flush: { type: Boolean, default: false }
 })
 
@@ -72,7 +73,7 @@ function scheduleFocusRestore() {
 function onKeydown(event) {
   if (event.key === 'Escape') {
     event.stopPropagation()
-    close()
+    if (props.closeOnEscape) close()
     return
   }
   trapModalTab(event, dialogRef.value)

@@ -1544,8 +1544,8 @@ function exportEditingDrafts() {
 
             <div class="setting-item setting-item-slider">
               <span class="setting-label"
-                >导航栏图标大小<HelpButton
-                  text="此设置由列表、月视图和周视图共同使用。Apple 风格会同步放大圆形按钮和内部图标；Microsoft 风格只放大图标，按钮大小保持不变。"
+                >导航图标大小<HelpButton
+                  text="此设置由列表、月视图和周视图共同使用。会同步调整窗口导航图标和日历工具栏操作图标；Apple 风格还会同步放大圆形按钮。"
               /></span>
               <span class="range-label-start" aria-hidden="true"></span>
               <AppSlider
@@ -1553,7 +1553,7 @@ function exportEditingDrafts() {
                 :min="TITLEBAR_ICON_SCALE_LIMITS.min"
                 :max="TITLEBAR_ICON_SCALE_LIMITS.max"
                 :step="TITLEBAR_ICON_SCALE_LIMITS.step"
-                aria-label="导航栏图标大小"
+                aria-label="导航图标大小"
               />
               <span class="range-label-end">放大</span>
               <span class="setting-value">{{ titlebarIconScale }}%</span>
@@ -1565,7 +1565,7 @@ function exportEditingDrafts() {
                 <span class="setting-label"
                   >图标颜色 <small>所有视图</small
                   ><HelpButton
-                    text="列表、月视图和周视图共同使用。控制顶部 8 个导航栏图标；列表视图还会同步控制标签、太极刷新和三叶草筛选图标。"
+                    text="列表、月视图和周视图共同使用。控制窗口导航、日历工具栏操作，以及列表中的标签、太极刷新和三叶草筛选图标。"
                 /></span>
               </div>
               <div class="titlebar-style-selector" role="radiogroup" aria-label="图标颜色">
@@ -2465,7 +2465,7 @@ function exportEditingDrafts() {
     <ConfirmDialog
       v-model:visible="showResetSettingsDialog"
       title="恢复默认设置"
-      message="此操作会恢复当前视图的独立设置，并将全局首次使用须知恢复为未阅读。另一个视图、视图显示快捷键、远程与隐私开关、开机自启及便签数据均不受影响。"
+      message="此操作会恢复当前视图的独立设置，以及图标颜色与大小、视图显示快捷键、天气、远程与隐私开关等所有视图共享设置。其他视图的独立设置、开机自启及便签数据不受影响。"
       confirm-text="恢复"
       cancel-text="取消"
       variant="default"

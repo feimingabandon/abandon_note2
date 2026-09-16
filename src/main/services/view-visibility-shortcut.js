@@ -26,6 +26,7 @@ export class ViewVisibilityShortcutService {
 
   initialize(value) {
     this.disposeRegistration()
+    this.captureOwners.clear()
     this.configuredAccelerator = normalizeViewVisibilityShortcut(value)
     this.runtimeError = null
     if (this.configuredAccelerator) this.restoreConfiguredRegistration('startup')

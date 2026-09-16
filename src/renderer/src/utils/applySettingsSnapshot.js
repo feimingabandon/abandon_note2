@@ -18,6 +18,7 @@ export function applyTitlebarIconScale(value, root = document.documentElement) {
   root.style.setProperty('--titlebar-apple-control-size', `${roundToken(18 * scale)}rem`)
   root.style.setProperty('--titlebar-apple-icon-size', `${roundToken(14 * scale)}rem`)
   root.style.setProperty('--titlebar-microsoft-icon-size', `${roundToken(15 * scale)}rem`)
+  root.style.setProperty('--calendar-toolbar-icon-size', `${roundToken(17 * scale)}rem`)
 }
 
 export function applyIconColor(value, root = document.documentElement) {

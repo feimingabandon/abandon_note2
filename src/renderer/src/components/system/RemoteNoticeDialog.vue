@@ -62,6 +62,8 @@ async function acknowledge() {
     aria-label="软件通知"
     width="min(540rem, calc(100vw - 40rem))"
     max-height="min(620rem, calc(100vh - 40rem))"
+    :close-on-backdrop="false"
+    :close-on-escape="false"
     @update:visible="emit('close')"
   >
     <MarkdownContent class="notice-body" :content="current?.body || ''" />

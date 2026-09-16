@@ -27,7 +27,7 @@ import {
 } from '../../../../shared/calendar/calendar-date-rules.js'
 import { createDefaultSettings, VIEW_MODES } from '../../../../shared/settings-schema.js'
 import { notesCoveringDate } from '../../../../shared/calendar/calendar-event-layout.js'
-import { isDisplayableWeatherDay, weatherLocationLabel } from '../../../../shared/weather-rules.js'
+import { isDisplayableWeatherDay } from '../../../../shared/weather-rules.js'
 
 const { showMessage } = useMessage()
 const props = defineProps({
@@ -105,6 +105,12 @@ const weatherByDate = computed(
     )
 )
 const selectedWeather = computed(() => weatherByDate.value.get(selectedKey.value) || null)
+const toolbarTodayWeather = computed(() => {
+  if (!weatherEnabled.value) return ''
+  const weather = weatherByDate.value.get(todayKey.value)
+  if (!weather) return ''
+  return `${weather.icon} ${weather.label} ${weather.temperatureMin}°～${weather.temperatureMax}°`
+})
 const earlyStartMessage = computed(() => {
   const durationDays = Math.max(1, Number(earlyStartNote.value?.duration_days) || 1)
   if (durationDays > 1) {
@@ -112,12 +118,6 @@ const earlyStartMessage = computed(() => {
   }
   return '该便签尚未到达生效时间。提前执行后，生效时间将改为当前时间。是否确认提前执行？'
 })
-const toolbarWeatherLocation = computed(() =>
-  weatherEnabled.value && weatherForecast.value?.location
-    ? weatherLocationLabel(weatherForecast.value.location)
-    : ''
-)
-
 function calendarRequestOptions() {
   return { includeRecurringPreviews: recurringPreviewEnabled.value }
 }
@@ -966,7 +966,7 @@ onBeforeUnmount(() => {
           :day-panel-open="panelOpen"
           :refreshing="refreshing"
           :busy="transitioning"
-          :weather-location-label="toolbarWeatherLocation"
+          :today-weather-label="toolbarTodayWeather"
           :recurring-preview-enabled="recurringPreviewEnabled"
           :recurring-preview-saving="recurringPreviewSaving"
           @previous="goPrevious"
@@ -988,6 +988,7 @@ onBeforeUnmount(() => {
             :selected-key="selectedKey"
             :today-key="todayKey"
             :weather-by-date="weatherByDate"
+            :status-transitions="statusTransitions"
             @select-date="selectDate"
             @quick-create-opened="onQuickCreateOpened"
             @quick-created="onQuickCreated"

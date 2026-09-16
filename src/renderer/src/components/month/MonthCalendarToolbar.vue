@@ -1,7 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import AppIcon from '../ui/AppIcon.vue'
-import AppToggle from '../ui/AppToggle.vue'
 import NumberStepper from '../ui/NumberStepper.vue'
 import HistoricalNoteMoveControl from './HistoricalNoteMoveControl.vue'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
@@ -27,7 +26,7 @@ const props = defineProps({
   busy: { type: Boolean, default: false },
   recurringPreviewEnabled: { type: Boolean, default: false },
   recurringPreviewSaving: { type: Boolean, default: false },
-  weatherLocationLabel: { type: String, default: '' }
+  todayWeatherLabel: { type: String, default: '' }
 })
 const emit = defineEmits([
   'previous',
@@ -280,8 +279,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 <template>
   <header class="month-toolbar" :class="{ 'is-busy': busy }">
     <div class="month-toolbar__leading">
-      <button type="button" class="month-toolbar__today" :disabled="busy" @click="goToday">
-        今天
+      <button
+        type="button"
+        class="month-toolbar__today"
+        :disabled="busy"
+        title="定位到今天"
+        aria-label="定位到今天"
+        @click="goToday"
+      >
+        <AppIcon name="locate-current" class="month-toolbar__action-icon" />
       </button>
       <button
         type="button"
@@ -298,12 +304,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
           @animationend="finishRefreshSpin"
         />
       </button>
-      <div
-        v-if="weatherLocationLabel"
-        class="month-toolbar__weather-meta"
-        :title="weatherLocationLabel"
-      >
-        <span>{{ weatherLocationLabel }}</span>
+      <div v-if="todayWeatherLabel" class="month-toolbar__weather-meta" :title="todayWeatherLabel">
+        <span>{{ todayWeatherLabel }}</span>
       </div>
     </div>
 
@@ -509,21 +511,19 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
     </div>
 
     <div class="month-toolbar__trailing">
-      <div
-        class="month-toolbar__recurring-preview"
-        title="显示未来会生成的循环便签；预览内容为只读，不会提前创建便签"
+      <button
+        type="button"
+        class="month-toolbar__recurring-preview month-toolbar__recurring-preview-toggle"
+        :class="{ 'is-active': recurringPreviewEnabled }"
+        :disabled="busy || recurringPreviewSaving"
+        :title="`${recurringPreviewEnabled ? '隐藏' : '显示'}循环便签预览`"
+        :aria-label="`${recurringPreviewEnabled ? '隐藏' : '显示'}循环便签预览`"
+        role="switch"
+        :aria-checked="recurringPreviewEnabled"
+        @click="emit('update:recurring-preview-enabled', !recurringPreviewEnabled)"
       >
-        <span id="calendar-recurring-preview-label">循环便签预览</span>
-        <AppToggle
-          class="month-toolbar__recurring-preview-toggle"
-          :model-value="recurringPreviewEnabled"
-          :disabled="busy || recurringPreviewSaving"
-          role="switch"
-          :aria-checked="recurringPreviewEnabled"
-          aria-labelledby="calendar-recurring-preview-label"
-          @update:model-value="emit('update:recurring-preview-enabled', $event)"
-        />
-      </div>
+        <AppIcon name="recurrence" class="month-toolbar__action-icon" />
+      </button>
       <HistoricalNoteMoveControl
         :open="historicalMoveOpen"
         :disabled="busy"
@@ -541,10 +541,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
         :title="dayPanelOpen ? '收起日期列表' : '展开日期列表'"
         @click="emit('toggle-day-panel')"
       >
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-          <path d="M3 4.5h14v11H3zM7.5 4.5v11" />
-        </svg>
-        <span>日期列表</span>
+        <AppIcon name="date-panel" class="month-toolbar__action-icon" />
       </button>
     </div>
   </header>
@@ -553,7 +550,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 <style scoped>
 .month-toolbar {
   display: grid;
-  min-height: 42rem;
+  min-height: 36rem;
   align-items: center;
   grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(max-content, 1fr);
   gap: 12rem;
@@ -585,70 +582,28 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   justify-self: end;
 }
 .month-toolbar__recurring-preview {
-  display: inline-flex;
+  display: grid !important;
+  width: 30rem;
   height: 30rem;
-  align-items: center;
-  gap: 7rem;
-  color: var(--text-color-secondary);
-  font-size: var(--fs-secondary);
-  white-space: nowrap;
-}
-.month-toolbar :deep(.month-toolbar__recurring-preview-toggle.switch) {
-  width: 36rem;
-  min-width: 36rem;
-  height: 20rem;
   padding: 0;
-  border-radius: 10rem;
-  background-color: var(--ui-fill-pressed);
+  place-items: center;
+  color: var(--text-color-secondary) !important;
 }
-.month-toolbar :deep(.month-toolbar__recurring-preview-toggle .switch-thumb) {
-  top: 2rem;
-  width: 16rem;
-  height: 16rem;
-  transform: none;
-}
-.month-toolbar :deep(.month-toolbar__recurring-preview-toggle.switch.on .switch-thumb) {
-  transform: translateX(16rem);
-}
-.month-toolbar :deep(.month-toolbar__recurring-preview-toggle.switch:active:not(:disabled)) {
-  transform: none;
-}
-.month-toolbar
-  :deep(.month-toolbar__recurring-preview-toggle.switch:active:not(:disabled) .switch-thumb) {
-  transform: none;
-}
-.month-toolbar
-  :deep(.month-toolbar__recurring-preview-toggle.switch.on:active:not(:disabled) .switch-thumb) {
-  transform: translateX(16rem);
-}
-.month-toolbar :deep(.month-toolbar__recurring-preview-toggle.switch:hover:not(:disabled)) {
-  background-color: var(--ui-fill-pressed);
-}
-.month-toolbar :deep(.month-toolbar__recurring-preview-toggle.switch.on),
-.month-toolbar :deep(.month-toolbar__recurring-preview-toggle.switch.on:hover:not(:disabled)) {
-  background-color: var(--ui-accent);
+.month-toolbar__recurring-preview.is-active {
+  background: var(--ui-fill-pressed);
+  color: var(--ui-accent) !important;
 }
 .month-toolbar__day-panel-toggle {
-  display: inline-flex !important;
-  width: auto;
+  display: grid !important;
+  width: 30rem;
   flex: 0 0 auto;
-  gap: 6rem;
-  padding: 0 9rem;
+  padding: 0;
+  place-items: center;
   color: var(--text-color-secondary) !important;
-  font-size: var(--fs-secondary) !important;
 }
 .month-toolbar__day-panel-toggle.is-open {
   background: var(--ui-fill-pressed);
   color: var(--ui-accent) !important;
-}
-.month-toolbar__day-panel-toggle svg {
-  width: 17rem;
-  height: 17rem;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.6;
 }
 .month-toolbar__weather-meta {
   display: flex;
@@ -712,13 +667,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   transform: scale(0.98);
 }
 .month-toolbar__today {
-  padding: 0 11rem;
-  background: var(--ui-surface-control);
-  font-size: var(--fs-secondary) !important;
+  width: 30rem;
+  padding: 0;
 }
 .month-toolbar__month-arrow {
-  width: 34rem;
-  height: 34rem !important;
+  width: 30rem;
+  height: 30rem !important;
   padding: 0;
 }
 .month-toolbar__arrow-icon {
@@ -837,10 +791,11 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 .month-toolbar__refresh:hover:not(:disabled) {
   color: var(--text-color) !important;
 }
+.month-toolbar__action-icon,
 .month-toolbar__refresh-icon {
   display: block;
-  width: 17rem;
-  height: 17rem;
+  width: var(--calendar-toolbar-icon-size, 17rem);
+  height: var(--calendar-toolbar-icon-size, 17rem);
 }
 .month-toolbar__refresh-icon.is-spinning {
   animation: month-toolbar-spin 520ms var(--ease-emphasized);
@@ -1056,20 +1011,10 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   .month-toolbar__title {
     min-width: 0 !important;
   }
-  .month-toolbar__recurring-preview > span {
-    display: none;
-  }
 }
 @media (max-width: 520px) {
   .month-toolbar__weather-meta {
     display: none !important;
-  }
-  .month-toolbar__day-panel-toggle {
-    width: 30rem;
-    padding: 0;
-  }
-  .month-toolbar__day-panel-toggle span {
-    display: none;
   }
 }
 @media (max-width: 420px) {

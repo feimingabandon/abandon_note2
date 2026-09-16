@@ -69,6 +69,8 @@ watch(visible, (value) => {
     :subtitle="subtitle"
     width="min(700rem, calc(100vw - 40rem))"
     height="min(640rem, calc(100vh - 40rem))"
+    :close-on-backdrop="false"
+    :close-on-escape="false"
     flush
     @update:visible="close"
   >

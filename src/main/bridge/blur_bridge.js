@@ -257,18 +257,6 @@ function initNative() {
     loaded.WindowZOrder_GetStatusJson = loaded.func('WindowZOrder_GetStatusJson', 'str', [
       'intptr_t'
     ])
-    loaded.Blur_AnimatePresentation = loaded.func('Blur_AnimatePresentation', 'int', [
-      'int',
-      'int',
-      'int',
-      'int',
-      'int',
-      'int',
-      'int',
-      'int',
-      'int'
-    ])
-    loaded.Blur_ResetPresentation = loaded.func('Blur_ResetPresentation', 'void', [])
     lib = loaded
     return true
   } catch (e) {
@@ -453,56 +441,6 @@ export function getWindowZOrderStatus(window) {
     })
     wrapped.code = 'WINDOW_Z_ORDER_STATUS_FAILED'
     throw wrapped
-  }
-}
-
-export function animatePresentation(from, to, durationMs) {
-  if (process.platform !== 'win32' || !initialized || !from || !to || !initNative()) {
-    return Promise.resolve({
-      success: false,
-      code: null,
-      error: 'Windows 毛玻璃呈现组件不可用'
-    })
-  }
-  const values = [
-    from.x,
-    from.y,
-    from.width,
-    from.height,
-    to.x,
-    to.y,
-    to.width,
-    to.height,
-    durationMs
-  ].map((value) => Math.round(Number(value)))
-  if (!values.every(Number.isFinite)) {
-    return Promise.resolve({ success: false, code: null, error: '毛玻璃呈现边界无效' })
-  }
-
-  return new Promise((resolve) => {
-    lib.Blur_AnimatePresentation.async(...values, (error, code) => {
-      if (error) {
-        resolve({ success: false, code: null, error: error.message || String(error) })
-        return
-      }
-      const nativeError = code === 1 ? null : getNativeError('毛玻璃呈现动画失败')
-      resolve({
-        success: code === 1,
-        code,
-        nativeError,
-        error: nativeError?.message || null
-      })
-    })
-  })
-}
-
-export function resetPresentation() {
-  if (process.platform !== 'win32' || !initialized || !initNative()) return false
-  try {
-    lib.Blur_ResetPresentation()
-    return true
-  } catch {
-    return false
   }
 }
 

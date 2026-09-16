@@ -6,7 +6,7 @@ defineProps({
 
 <template>
   <div class="mct-toolbar">
-    <div class="mct-weather"><strong>杭州</strong><span>· 和风天气</span></div>
+    <div class="mct-weather"><strong>☀️ 晴</strong><span>18°～27°</span></div>
     <div class="mct-navigation">
       <button aria-label="上一页">‹</button>
       <div class="mct-period">

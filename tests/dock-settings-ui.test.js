@@ -55,7 +55,7 @@ describe('dock settings UI', () => {
     )
   })
 
-  it('loads the saved panel size before opening and omits compact size controls', () => {
+  it('loads the saved panel size before opening', () => {
     const source = readFileSync(SETTINGS_PANEL_PATH, 'utf8')
     const mountedBlock = source.slice(
       source.indexOf('onMounted(async () => {'),
@@ -65,8 +65,5 @@ describe('dock settings UI', () => {
     expect(mountedBlock.indexOf('await loadSettingsSnapshot()')).toBeLessThan(
       mountedBlock.indexOf('openRaf = requestAnimationFrame')
     )
-    expect(source).not.toContain('<h3 class="section-title">灵动岛</h3>')
-    expect(source).not.toContain('compactWidth')
-    expect(source).not.toContain('compactHeight')
   })
 })

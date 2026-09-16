@@ -166,12 +166,18 @@ async function runContextMenuTests() {
       const leading = document.querySelector('.month-toolbar__leading').getBoundingClientRect()
       const navigation = document.querySelector('.month-toolbar__navigation').getBoundingClientRect()
       const trailing = document.querySelector('.month-toolbar__trailing').getBoundingClientRect()
-      const toggleLabel = document.querySelector('.month-toolbar__day-panel-toggle span')
+      const controls = Array.from(document.querySelectorAll(
+        '.month-toolbar__recurring-preview, .historical-note-move__trigger, .month-toolbar__day-panel-toggle'
+      ))
+      const controlWidths = controls.map((control) => control.getBoundingClientRect().width)
       return {
         controlsSeparated: leading.right <= trailing.left,
         navigationOnSecondRow:
           navigation.top >= Math.max(leading.bottom, trailing.bottom) - 1,
-        toggleLabelHidden: getComputedStyle(toggleLabel).display === 'none'
+        iconOnlyControls:
+          controls.length === 3 &&
+          controls.every((control) => control.textContent.trim() === '') &&
+          Math.max(...controlWidths) - Math.min(...controlWidths) < 0.25
       }
     })()`)
     assert.deepEqual(
@@ -179,7 +185,7 @@ async function runContextMenuTests() {
       {
         controlsSeparated: true,
         navigationOnSecondRow: true,
-        toggleLabelHidden: true
+        iconOnlyControls: true
       },
       '窄窗口下工具栏控件发生重叠或没有切换为紧凑双行布局'
     )
@@ -432,6 +438,34 @@ async function runContextMenuTests() {
     assert.equal(previewState.fullyVisible, true, '预览窗没有完整限制在窗口可视范围内')
     assert.equal(previewState.besideCell, true, '预览窗没有优先显示在日期格左侧或右侧')
     assert.equal(previewState.hasModalScrim, false, '当日便签预览不得显示蒙层')
+
+    await monthWindow.webContents.executeJavaScript(`(() => {
+      const button = Array.from(document.querySelectorAll('.month-day-preview__status-action')).find(
+        (item) => item.getAttribute('aria-label')?.includes('重新进行：右键菜单跨日便签')
+      )
+      if (!button) throw new Error('预览窗没有为已完成便签提供重新进行操作')
+      button.click()
+    })()`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Array.from(document.querySelectorAll('.month-day-preview__status-action')).some((button) => button.getAttribute('aria-label')?.includes('标记完成：右键菜单跨日便签') && !button.disabled)`
+        ),
+      '预览窗没有直接将已完成便签重新进行'
+    )
+    await monthWindow.webContents.executeJavaScript(`(() => {
+      const button = Array.from(document.querySelectorAll('.month-day-preview__status-action')).find(
+        (item) => item.getAttribute('aria-label')?.includes('标记完成：右键菜单跨日便签')
+      )
+      button?.click()
+    })()`)
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Array.from(document.querySelectorAll('.month-day-preview__status-action')).some((button) => button.getAttribute('aria-label')?.includes('重新进行：右键菜单跨日便签'))`
+        ),
+      '预览窗没有直接将进行中便签标记为已完成'
+    )
 
     const previewScrollState = await monthWindow.webContents.executeJavaScript(`(async () => {
       const list = document.querySelector('.month-day-preview__list')

@@ -40,9 +40,10 @@ describe('view visibility shortcut UI wiring', () => {
   it('uses dedicated IPC and the existing cross-mode window toggle path', () => {
     const main = read('src/main/index.js')
     const preload = read('src/preload/index.js')
+    const genericAllowlistStart = main.indexOf('const RENDERER_WRITABLE_SETTING_IDS')
     const genericAllowlist = main.slice(
-      main.indexOf('const RENDERER_WRITABLE_SETTING_IDS'),
-      main.indexOf('const APPLICATION_SETTING_IDS')
+      genericAllowlistStart,
+      main.indexOf('])', genericAllowlistStart) + 2
     )
     const shortcutHandler = main.slice(
       main.indexOf('function handleViewVisibilityShortcut()'),
@@ -71,7 +72,6 @@ describe('view visibility shortcut UI wiring', () => {
         'screenshotCaptureActive',
         'mainWindow',
         'isDockHidden',
-        'compactWindowController',
         'logger',
         'toggleWindow',
         `${shortcutHandler}; handleViewVisibilityShortcut()`
@@ -82,7 +82,6 @@ describe('view visibility shortcut UI wiring', () => {
         screenshotCaptureActive,
         null,
         false,
-        { phase: 'expanded' },
         { info: () => {} },
         () => calls.push('toggle')
       )
@@ -90,7 +89,6 @@ describe('view visibility shortcut UI wiring', () => {
         isQuitting || switchingMainView || screenshotCaptureActive ? [] : ['toggle']
       )
     }
-    expect(main).toContain('if (compactWindowController.activePromise()) return')
     expect(main).toContain('viewVisibilityShortcutService?.dispose()')
   })
 })

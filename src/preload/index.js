@@ -53,26 +53,9 @@ const api = {
   /** 设置窗口的位置和尺寸（单向通信） */
   setWindowBounds: (bounds) => ipcRenderer.send('window-set-bounds', bounds),
 
-  // ---- 灵动岛模式 ----
-  getCompactWindowState: () => ipcRenderer.invoke('compact-window:get-state'),
-  enterCompactWindow: () => ipcRenderer.invoke('compact-window:enter'),
-  exitCompactWindow: () => ipcRenderer.invoke('compact-window:exit'),
-  toggleCompactWindow: () => ipcRenderer.invoke('compact-window:toggle'),
-  beginCompactWindowDrag: (point) => ipcRenderer.invoke('compact-window:begin-drag', point),
-  updateCompactWindowDrag: (point) => ipcRenderer.send('compact-window:update-drag', point),
-  endCompactWindowDrag: () => ipcRenderer.invoke('compact-window:end-drag'),
   beginTitlebarWindowDrag: (point) => ipcRenderer.invoke('titlebar-window:begin-drag', point),
   updateTitlebarWindowDrag: (point) => ipcRenderer.send('titlebar-window:update-drag', point),
   endTitlebarWindowDrag: () => ipcRenderer.invoke('titlebar-window:end-drag'),
-  showCompactWindowContextMenu: () => ipcRenderer.invoke('compact-window:show-context-menu'),
-  onCompactWindowStateChanged: (callback) => {
-    const handler = (_event, state) => callback(state)
-    ipcRenderer.on('compact-window:state-changed', handler)
-    return () => ipcRenderer.removeListener('compact-window:state-changed', handler)
-  },
-  notifyCompactPresentationFinished: (generation) =>
-    ipcRenderer.send('compact-window:presentation-finished', generation),
-
   // ---- 设置桥接（双向通信，均返回 Promise） ----
   /** 按共享 schema ID 写入设置；数据库键名和校验不暴露给 renderer */
   setSettingValue: (id, value) => ipcRenderer.invoke('set-setting-value', id, value),
@@ -191,8 +174,6 @@ const api = {
   queryPinnedNotes: (options) => ipcRenderer.invoke('notes:query-pinned', options),
   /** 查询三天内非置顶便签（时间线模式） */
   queryRecentNotes: (options) => ipcRenderer.invoke('notes:query-recent', options),
-  /** 查询灵动岛当前应展示的一条待处理便签。 */
-  queryCompactNote: () => ipcRenderer.invoke('notes:query-compact'),
   /** 查询更早的非置顶便签（时间线模式，分页） */
   queryEarlierNotes: (options) => ipcRenderer.invoke('notes:query-earlier', options),
   /** 查询置顶便签（自定义模式，按 sort_order） */

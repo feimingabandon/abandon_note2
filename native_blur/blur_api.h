@@ -96,20 +96,6 @@ BLUR_API int WindowZOrder_SetBottom(void* hwnd, int enabled);
 BLUR_API int WindowZOrder_Reassert(void* hwnd);
 BLUR_API const char* WindowZOrder_GetStatusJson(void* hwnd);
 
-// ---- 同一 Overlay 内的主视图 / 胶囊可见区域 ----
-// 坐标均为 Overlay 客户区内的物理像素；不创建 HWND，不修改父窗口边界。
-BLUR_API int Blur_AnimatePresentation(
-    int fromX,
-    int fromY,
-    int fromWidth,
-    int fromHeight,
-    int toX,
-    int toY,
-    int toWidth,
-    int toHeight,
-    int durationMs);
-BLUR_API void Blur_ResetPresentation(void);
-
 #ifdef __cplusplus
 }
 #endif

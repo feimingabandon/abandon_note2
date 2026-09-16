@@ -15,6 +15,26 @@ export const VIEW_SETTINGS_SCOPES = Object.freeze({
   [VIEW_MODES.WEEK]: 'week'
 })
 
+/**
+ * 保存在 application 作用域的用户可配置项。新增应用级设置时只需在此
+ * 登记，持久化分流和“恢复默认设置”就会同步覆盖，避免新设置被漏掉。
+ */
+export const APPLICATION_SETTING_IDS = Object.freeze([
+  'notes.autoMoveYesterday',
+  'appearance.titlebarIconScale',
+  'appearance.iconColor',
+  'shortcuts.viewVisibility',
+  'calendar.recurringPreviewEnabled',
+  'interaction.doubleClickQuickEdit',
+  'remote.receiveNotices',
+  'remote.uploadDeviceInfo',
+  'weather.enabled',
+  'weather.location',
+  'onboarding.noticeVersion',
+  'window.lockState',
+  'window.zOrderMode'
+])
+
 const ACTIVE_VIEW_ROW = Object.freeze({
   type: 'application',
   key: 'active_view',
@@ -26,13 +46,6 @@ const WEEK_SETTINGS_INITIALIZED_ROW = Object.freeze({
   key: 'week_settings_initialized',
   value: 'true',
   remark: '周视图已完成首次设置继承'
-})
-
-const COMPACT_SIZE_DEFAULTS_ROW = Object.freeze({
-  type: 'compact',
-  key: 'compact_size_defaults_version',
-  value: '1',
-  remark: '灵动岛默认尺寸已更新为 200×40'
 })
 
 const APPLICATION_SETTING_DB_KEYS = new Set([
@@ -106,7 +119,6 @@ export function readApplicationSettings() {
  * 导航栏的锁定与窗口层级从历史分视图状态收敛为应用级状态。
  * 旧布尔置顶值天然映射为 top / normal；只在应用级记录缺失时读取一次当前视图，
  * 不保留锁定和层级的版本回退镜像或额外迁移标记。
- * 灵动岛尺寸另做一次默认值升级，只替换旧的完整默认尺寸，保留自定义尺寸。
  */
 export function ensureApplicationWindowSettingsInitialized(viewMode) {
   const normalizedViewMode = normalizeViewMode(viewMode)
@@ -115,28 +127,12 @@ export function ensureApplicationWindowSettingsInitialized(viewMode) {
   const zOrderDbKey = 'system:z_order_mode'
   const needsLockState = !applicationRows.has(lockDbKey)
   const needsZOrderMode = !applicationRows.has(zOrderDbKey)
-  const needsCompactSizeDefaults = !applicationRows.has(
-    `${COMPACT_SIZE_DEFAULTS_ROW.type}:${COMPACT_SIZE_DEFAULTS_ROW.key}`
-  )
-  if (!needsLockState && !needsZOrderMode && !needsCompactSizeDefaults) return false
+  if (!needsLockState && !needsZOrderMode) return false
 
   const legacyRows = getAllSettings(getViewSettingsScope(normalizedViewMode))
   const legacyRowMap = rowMap(legacyRows)
   const resolvedLegacy = resolveSettingsRows(legacyRows, normalizedViewMode)
   const entries = []
-
-  if (needsCompactSizeDefaults) {
-    if (
-      Number(applicationRows.get('compact:width')) === 360 &&
-      Number(applicationRows.get('compact:height')) === 76
-    ) {
-      entries.push(
-        serializeSetting('window.compact.width', DEFAULT_SETTINGS.window.compact.width),
-        serializeSetting('window.compact.height', DEFAULT_SETTINGS.window.compact.height)
-      )
-    }
-    entries.push(COMPACT_SIZE_DEFAULTS_ROW)
-  }
 
   if (needsLockState) {
     entries.push(serializeSetting('window.lockState', resolvedLegacy.window.lockState))
@@ -226,46 +222,23 @@ export function prepareViewSettingsForSwitch({
 }
 
 export function writeApplicationSetting(id, value) {
-  if (
-    id !== 'remote.receiveNotices' &&
-    id !== 'remote.uploadDeviceInfo' &&
-    id !== 'weather.enabled' &&
-    id !== 'weather.location' &&
-    id !== 'onboarding.noticeVersion' &&
-    id !== 'appearance.titlebarIconScale' &&
-    id !== 'appearance.iconColor' &&
-    id !== 'shortcuts.viewVisibility' &&
-    id !== 'calendar.recurringPreviewEnabled' &&
-    id !== 'interaction.doubleClickQuickEdit' &&
-    id !== 'notes.autoMoveYesterday' &&
-    id !== 'window.lockState' &&
-    id !== 'window.zOrderMode' &&
-    !id.startsWith('window.compact.')
-  ) {
+  if (!APPLICATION_SETTING_IDS.includes(id)) {
     throw new Error(`未知应用级设置项: ${id}`)
   }
   setSettingsBatch(APPLICATION_SETTINGS_SCOPE, [serializeSetting(id, value)])
 }
 
-export function writeApplicationSettings(entries) {
-  const normalized = Array.isArray(entries) ? entries : []
-  if (!normalized.length) return readApplicationSettings()
-  const allowed = new Set([
-    'window.compact.x',
-    'window.compact.y',
-    'window.compact.width',
-    'window.compact.height',
-    'window.compact.displayId',
-    'window.compact.previousWorkArea'
-  ])
-  if (normalized.some((entry) => !allowed.has(entry?.id))) {
-    throw new Error('应用级批量设置包含未授权项目')
-  }
-  setSettingsBatch(
-    APPLICATION_SETTINGS_SCOPE,
-    normalized.map((entry) => serializeSetting(entry.id, entry.value))
-  )
-  return readApplicationSettings()
+/** 原子地把全部用户可配置的应用级设置写回 schema 默认值。 */
+export function resetApplicationSettingsToDefaults() {
+  const entries = APPLICATION_SETTING_IDS.map((id) => {
+    const defaultValue = id
+      .split('.')
+      .reduce((value, segment) => value?.[segment], DEFAULT_SETTINGS)
+    if (defaultValue === undefined) throw new Error(`应用级设置缺少默认值: ${id}`)
+    return serializeSetting(id, defaultValue)
+  })
+  setSettingsBatch(APPLICATION_SETTINGS_SCOPE, entries)
+  return entries.length
 }
 
 export function getViewSettingsScope(viewMode) {

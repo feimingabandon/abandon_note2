@@ -17,6 +17,7 @@
 #include <shellscalingapi.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 
 #pragma comment(lib, "dwmapi.lib")
@@ -35,8 +36,6 @@ namespace BlurEngine {
 #define WM_BLUR_HIDE             (WM_USER + 103)
 #define WM_BLUR_DESTROY          (WM_USER + 104)
 #define WM_BLUR_SYNC_ZORDER      (WM_USER + 105)
-#define WM_BLUR_ANIMATE_PRESENTATION (WM_USER + 106)
-#define WM_BLUR_RESET_PRESENTATION   (WM_USER + 107)
 
 // ---- 效果管线硬编码参数 ----
 // 模糊优化: Balanced；边框模式: Hard
@@ -329,198 +328,6 @@ bool Engine::MoveParentAndOverlay(
     return true;
 }
 
-bool Engine::AnimatePresentation(const RECT& from, const RECT& to, int durationMs) {
-    const HWND overlayHwnd = m_messageHwnd.load();
-    const auto valid = [](const RECT& rect) {
-        return rect.left >= 0 && rect.top >= 0 &&
-            rect.right > rect.left && rect.bottom > rect.top;
-    };
-    if (!IsHealthy() || !overlayHwnd || !IsWindow(overlayHwnd) ||
-        !valid(from) || !valid(to) || m_presentationAnimating.exchange(true)) {
-        return false;
-    }
-
-    auto completion = std::make_shared<PresentationCompletion>();
-    {
-        std::lock_guard<std::mutex> lock(m_presentationMutex);
-        m_presentationFrom = from;
-        m_presentationTo = to;
-        m_presentationDurationMs = std::clamp(durationMs, 0, 2000);
-        m_presentationCompletion = completion;
-    }
-
-    DWORD_PTR result = 0;
-    if (!SendMessageTimeoutW(
-            overlayHwnd,
-            WM_BLUR_ANIMATE_PRESENTATION,
-            0,
-            0,
-            SMTO_ABORTIFHUNG | SMTO_BLOCK,
-            1000,
-            &result) || result != 1) {
-        m_presentationAnimating.store(false);
-        return false;
-    }
-
-    std::unique_lock<std::mutex> lock(completion->mutex);
-    const bool signalled = completion->changed.wait_for(
-        lock,
-        std::chrono::milliseconds(std::clamp(durationMs, 0, 2000) + 1000),
-        [&] { return completion->completed || completion->cancelled; });
-    const bool success = signalled && completion->completed && !completion->cancelled;
-    lock.unlock();
-    if (!success) ResetPresentation();
-    return success;
-}
-
-void Engine::ResetPresentation() {
-    const HWND overlayHwnd = m_messageHwnd.load();
-    if (!overlayHwnd || !IsWindow(overlayHwnd)) {
-        m_presentationAnimating.store(false);
-        return;
-    }
-    DWORD_PTR result = 0;
-    SendMessageTimeoutW(
-        overlayHwnd,
-        WM_BLUR_RESET_PRESENTATION,
-        0,
-        0,
-        SMTO_ABORTIFHUNG | SMTO_BLOCK,
-        1000,
-        &result);
-    m_presentationAnimating.store(false);
-}
-
-bool Engine::AnimatePresentationOnSta() {
-    if (!m_compositor || !m_clipGeometry || !m_rootVisual) return false;
-
-    RECT from{}, to{};
-    int durationMs = 0;
-    std::shared_ptr<PresentationCompletion> completion;
-    {
-        std::lock_guard<std::mutex> lock(m_presentationMutex);
-        from = m_presentationFrom;
-        to = m_presentationTo;
-        durationMs = m_presentationDurationMs;
-        completion = m_presentationCompletion;
-    }
-    if (!completion) return false;
-
-    const auto fromOffset = winrt::Windows::Foundation::Numerics::float2{
-        static_cast<float>(from.left),
-        static_cast<float>(from.top)
-    };
-    const auto fromSize = winrt::Windows::Foundation::Numerics::float2{
-        static_cast<float>(from.right - from.left),
-        static_cast<float>(from.bottom - from.top)
-    };
-    const auto toOffset = winrt::Windows::Foundation::Numerics::float2{
-        static_cast<float>(to.left),
-        static_cast<float>(to.top)
-    };
-    const auto toSize = winrt::Windows::Foundation::Numerics::float2{
-        static_cast<float>(to.right - to.left),
-        static_cast<float>(to.bottom - to.top)
-    };
-
-    if (m_presentationBatch) {
-        m_presentationBatch.Completed(m_presentationBatchToken);
-        m_presentationBatch = nullptr;
-    }
-    m_clipGeometry.StopAnimation(L"Offset");
-    m_clipGeometry.StopAnimation(L"Size");
-    m_clipGeometry.Offset(fromOffset);
-    m_clipGeometry.Size(fromSize);
-
-    const auto complete = [this, completion, to, toOffset, toSize]() {
-        m_clipGeometry.Offset(toOffset);
-        m_clipGeometry.Size(toSize);
-        m_currentPresentationRect = to;
-        const auto carrier = m_rootVisual.Size();
-        m_presentationUsesFullCarrier =
-            to.left == 0 && to.top == 0 &&
-            to.right == static_cast<LONG>(carrier.x) &&
-            to.bottom == static_cast<LONG>(carrier.y);
-        m_presentationAnimating.store(false);
-        {
-            std::lock_guard<std::mutex> lock(completion->mutex);
-            completion->completed = true;
-        }
-        completion->changed.notify_all();
-    };
-
-    if (durationMs <= 0) {
-        complete();
-        return true;
-    }
-
-    m_presentationBatch = m_compositor.CreateScopedBatch(CompositionBatchTypes::Animation);
-    const auto easing = m_compositor.CreateCubicBezierEasingFunction(
-        { 0.2f, 0.0f },
-        { 0.0f, 1.0f });
-    const auto duration = std::chrono::milliseconds(durationMs);
-
-    auto offsetAnimation = m_compositor.CreateVector2KeyFrameAnimation();
-    offsetAnimation.Duration(duration);
-    offsetAnimation.InsertKeyFrame(1.0f, toOffset, easing);
-    auto sizeAnimation = m_compositor.CreateVector2KeyFrameAnimation();
-    sizeAnimation.Duration(duration);
-    sizeAnimation.InsertKeyFrame(1.0f, toSize, easing);
-
-    m_clipGeometry.StartAnimation(L"Offset", offsetAnimation);
-    m_clipGeometry.StartAnimation(L"Size", sizeAnimation);
-    m_presentationBatchToken = m_presentationBatch.Completed(
-        [this, complete](auto&&, auto&&) {
-            try {
-                if (m_presentationBatch) {
-                    m_presentationBatch.Completed(m_presentationBatchToken);
-                    m_presentationBatch = nullptr;
-                }
-                complete();
-            } catch (...) {
-                m_presentationAnimating.store(false);
-            }
-        });
-    m_presentationBatch.End();
-    return true;
-}
-
-void Engine::ResetPresentationOnSta() {
-    if (m_presentationBatch) {
-        m_presentationBatch.Completed(m_presentationBatchToken);
-        m_presentationBatch = nullptr;
-    }
-    if (m_clipGeometry && m_rootVisual) {
-        m_clipGeometry.StopAnimation(L"Offset");
-        m_clipGeometry.StopAnimation(L"Size");
-        const auto carrier = m_rootVisual.Size();
-        m_clipGeometry.Offset({ 0.0f, 0.0f });
-        m_clipGeometry.Size(carrier);
-        m_currentPresentationRect = {
-            0,
-            0,
-            static_cast<LONG>(carrier.x),
-            static_cast<LONG>(carrier.y)
-        };
-        m_presentationUsesFullCarrier = true;
-    }
-
-    std::shared_ptr<PresentationCompletion> completion;
-    {
-        std::lock_guard<std::mutex> lock(m_presentationMutex);
-        completion = m_presentationCompletion;
-        m_presentationCompletion.reset();
-    }
-    m_presentationAnimating.store(false);
-    if (completion) {
-        {
-            std::lock_guard<std::mutex> lock(completion->mutex);
-            if (!completion->completed) completion->cancelled = true;
-        }
-        completion->changed.notify_all();
-    }
-}
-
 void Engine::ReSyncZOrder() {
     QueueZOrderSync();
 }
@@ -637,12 +444,10 @@ void Engine::SignalInitialization(bool success) {
 }
 
 void Engine::Cleanup() {
-    ResetPresentationOnSta();
     m_messageHwnd.store(nullptr);
     m_configUpdatePending.store(false);
     m_geometryUpdatePending.store(false);
     m_zOrderSyncPending.store(false);
-    m_presentationAnimating.store(false);
     m_visualWidth.store(0);
     m_visualHeight.store(0);
     m_parentHwnd.store(nullptr);
@@ -894,10 +699,9 @@ void Engine::UpdateVisualSize(int width, int height) {
     m_rootVisual.Size(visualSize);
     m_blurVisual.Size(visualSize);
     m_tintVisual.Size(visualSize);
-    if (m_clipGeometry && m_presentationUsesFullCarrier && !m_presentationAnimating.load()) {
+    if (m_clipGeometry) {
         m_clipGeometry.Offset({ 0.0f, 0.0f });
         m_clipGeometry.Size(visualSize);
-        m_currentPresentationRect = { 0, 0, width, height };
     }
     m_visualWidth.store(width);
     m_visualHeight.store(height);
@@ -920,18 +724,9 @@ void Engine::ApplyClip() {
 
     m_clipGeometry.CornerRadius({ cfg.cornerRadius, cfg.cornerRadius });
 
-    // 展开态跟随载体尺寸；胶囊稳定态保留独立可见区域。
-    if (m_presentationUsesFullCarrier && !m_presentationAnimating.load()) {
-        auto visSize = m_rootVisual.Size();
-        m_clipGeometry.Offset({ 0.0f, 0.0f });
-        m_clipGeometry.Size(visSize);
-        m_currentPresentationRect = {
-            0,
-            0,
-            static_cast<LONG>(visSize.x),
-            static_cast<LONG>(visSize.y)
-        };
-    }
+    auto visSize = m_rootVisual.Size();
+    m_clipGeometry.Offset({ 0.0f, 0.0f });
+    m_clipGeometry.Size(visSize);
 
 }
 
@@ -1275,24 +1070,6 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         self->m_zOrderSyncPending.store(false);
         self->SyncZOrder();
         return 0;
-
-    case WM_BLUR_ANIMATE_PRESENTATION:
-        try {
-            return self->AnimatePresentationOnSta() ? 1 : 0;
-        } catch (...) {
-            self->ResetPresentationOnSta();
-            self->m_lastError.store(BlurErrorCode::EffectGraphFailed);
-            return 0;
-        }
-
-    case WM_BLUR_RESET_PRESENTATION:
-        try {
-            self->ResetPresentationOnSta();
-            return 1;
-        } catch (...) {
-            self->m_presentationAnimating.store(false);
-            return 0;
-        }
 
     case WM_BLUR_DESTROY:
         self->m_running.store(false);

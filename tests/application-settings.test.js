@@ -21,9 +21,9 @@ let ensureApplicationWindowSettingsInitialized
 let getViewSettingsScope
 let prepareViewSettingsForSwitch
 let readApplicationSettings
+let resetApplicationSettingsToDefaults
 let writeActiveView
 let writeApplicationSetting
-let writeApplicationSettings
 
 beforeAll(async () => {
   ;({
@@ -32,9 +32,9 @@ beforeAll(async () => {
     getViewSettingsScope,
     prepareViewSettingsForSwitch,
     readApplicationSettings,
+    resetApplicationSettingsToDefaults,
     writeActiveView,
-    writeApplicationSetting,
-    writeApplicationSettings
+    writeApplicationSetting
   } = await import('../src/main/settings/application-settings.js'))
 })
 
@@ -68,8 +68,7 @@ describe('application view settings', () => {
     expect(ensureApplicationWindowSettingsInitialized('list')).toBe(true)
     expect(readApplicationSettings().window).toEqual({
       lockState: true,
-      zOrderMode: 'normal',
-      compact: expect.objectContaining({ width: 200, height: 40 })
+      zOrderMode: 'normal'
     })
     expect(ensureApplicationWindowSettingsInitialized('month')).toBe(false)
 
@@ -77,40 +76,8 @@ describe('application view settings', () => {
     writeApplicationSetting('window.lockState', false)
     expect(readApplicationSettings().window).toEqual({
       lockState: false,
-      zOrderMode: 'bottom',
-      compact: expect.objectContaining({ width: 200, height: 40 })
+      zOrderMode: 'bottom'
     })
-  })
-
-  it('upgrades the old compact default once without changing position or later size choices', () => {
-    writeApplicationSettings([
-      { id: 'window.compact.width', value: 360 },
-      { id: 'window.compact.height', value: 76 },
-      { id: 'window.compact.x', value: 130 },
-      { id: 'window.compact.y', value: 140 }
-    ])
-    ensureApplicationWindowSettingsInitialized('list')
-    expect(readApplicationSettings().window.compact).toMatchObject({
-      width: 200,
-      height: 40,
-      x: 130,
-      y: 140
-    })
-    writeApplicationSettings([
-      { id: 'window.compact.width', value: 360 },
-      { id: 'window.compact.height', value: 76 }
-    ])
-    expect(ensureApplicationWindowSettingsInitialized('list')).toBe(false)
-    expect(readApplicationSettings().window.compact).toMatchObject({ width: 360, height: 76 })
-  })
-
-  it('preserves customized compact dimensions during the default upgrade', () => {
-    writeApplicationSettings([
-      { id: 'window.compact.width', value: 280 },
-      { id: 'window.compact.height', value: 76 }
-    ])
-    ensureApplicationWindowSettingsInitialized('month')
-    expect(readApplicationSettings().window.compact).toMatchObject({ width: 280, height: 76 })
   })
 
   it('keeps the first-use notice version in the application scope', () => {
@@ -181,6 +148,31 @@ describe('application view settings', () => {
     )
   })
 
+  it('restores every user-configurable application setting without deleting runtime metadata', () => {
+    db.rowsByScope.set('application', [
+      { type: 'application', key: 'active_view', value: 'month' },
+      { type: 'application', key: 'week_settings_initialized', value: 'true' }
+    ])
+    writeApplicationSetting('appearance.titlebarIconScale', 145)
+    writeApplicationSetting('appearance.iconColor', 'white')
+    writeApplicationSetting('shortcuts.viewVisibility', 'Control+Alt+N')
+    writeApplicationSetting('weather.enabled', true)
+
+    expect(resetApplicationSettingsToDefaults()).toBeGreaterThan(3)
+    expect(readApplicationSettings()).toMatchObject({
+      activeView: 'month',
+      appearance: { titlebarIconScale: 100, iconColor: 'black' },
+      shortcuts: { viewVisibility: '' },
+      weather: { enabled: false, location: null }
+    })
+    expect(db.rowsByScope.get('application')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'active_view', value: 'month' }),
+        expect.objectContaining({ key: 'week_settings_initialized', value: 'true' })
+      ])
+    )
+  })
+
   it('keeps double-click quick edit in the application scope', () => {
     expect(readApplicationSettings().interaction.doubleClickQuickEdit).toBe(true)
 
@@ -213,34 +205,6 @@ describe('application view settings', () => {
         })
       ])
     )
-  })
-
-  it('writes compact geometry atomically and rejects unrelated batch entries', () => {
-    writeApplicationSettings([
-      { id: 'window.compact.x', value: 440 },
-      { id: 'window.compact.y', value: 364 },
-      { id: 'window.compact.width', value: 420 },
-      { id: 'window.compact.height', value: 92 },
-      { id: 'window.compact.displayId', value: 'display-2' },
-      {
-        id: 'window.compact.previousWorkArea',
-        value: { x: 0, y: 0, width: 1920, height: 1040 }
-      }
-    ])
-
-    expect(db.setSettingsBatch).toHaveBeenCalledTimes(1)
-    expect(readApplicationSettings().window.compact).toEqual({
-      x: 440,
-      y: 364,
-      width: 420,
-      height: 92,
-      displayId: 'display-2',
-      previousWorkArea: { x: 0, y: 0, width: 1920, height: 1040 }
-    })
-    expect(() => writeApplicationSettings([{ id: 'window.zOrderMode', value: 'normal' }])).toThrow(
-      /未授权/
-    )
-    expect(db.setSettingsBatch).toHaveBeenCalledTimes(1)
   })
 
   it('accepts week as the persisted active view and maps it to an independent scope', () => {

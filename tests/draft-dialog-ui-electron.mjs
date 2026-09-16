@@ -206,18 +206,6 @@ async function run() {
       )
       await js("document.querySelector('.confirm-actions button').click()")
       await waitCancelled()
-      if (mode === 'month') {
-        await js('window.api.enterCompactWindow()')
-        assert.equal(await js('window.api.getCompactWindowState().then(s=>s.phase)'), 'compact')
-        app.quit()
-        await until(
-          () => js("Boolean(document.querySelector('.confirm-card.active'))"),
-          'compact quit confirmation'
-        )
-        assert.equal(await js('window.api.getCompactWindowState().then(s=>s.phase)'), 'expanded')
-        await js("document.querySelector('.confirm-actions button').click()")
-        await waitCancelled()
-      }
       results.push(
         mode +
           ': app dialog, Escape, backdrop, cancel button and hide release busy state; hidden quit visible; drafts remain'

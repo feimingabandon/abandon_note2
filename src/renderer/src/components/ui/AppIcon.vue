@@ -1,6 +1,4 @@
 <script setup>
-import compactBlack from '@/resources/icons/compact.svg'
-import compactWhite from '@/resources/icons/compact-white.svg'
 import dailyReportBlack from '@/resources/icons/daily-report.svg'
 import dailyReportWhite from '@/resources/icons/daily-report-white.svg'
 import recurrenceBlack from '@/resources/icons/recurrence.svg'
@@ -23,9 +21,14 @@ import cloverBlack from '@/resources/icons/clover.svg'
 import cloverWhite from '@/resources/icons/clover-white.svg'
 import switchViewBlack from '@/resources/icons/switch-view.svg'
 import switchViewWhite from '@/resources/icons/switch-view-white.svg'
+import locateCurrentBlack from '@/resources/icons/locate-current.svg'
+import locateCurrentWhite from '@/resources/icons/locate-current-white.svg'
+import moveToTodayBlack from '@/resources/icons/move-to-today.svg'
+import moveToTodayWhite from '@/resources/icons/move-to-today-white.svg'
+import datePanelBlack from '@/resources/icons/date-panel.svg'
+import datePanelWhite from '@/resources/icons/date-panel-white.svg'
 
 const ICON_SOURCES = Object.freeze({
-  compact: { black: compactBlack, white: compactWhite },
   'daily-report': { black: dailyReportBlack, white: dailyReportWhite },
   recurrence: { black: recurrenceBlack, white: recurrenceWhite },
   settings: { black: settingsBlack, white: settingsWhite },
@@ -36,7 +39,10 @@ const ICON_SOURCES = Object.freeze({
   tag: { black: tagBlack, white: tagWhite },
   taiji: { black: taijiBlack, white: taijiWhite },
   clover: { black: cloverBlack, white: cloverWhite },
-  'switch-view': { black: switchViewBlack, white: switchViewWhite }
+  'switch-view': { black: switchViewBlack, white: switchViewWhite },
+  'locate-current': { black: locateCurrentBlack, white: locateCurrentWhite },
+  'move-to-today': { black: moveToTodayBlack, white: moveToTodayWhite },
+  'date-panel': { black: datePanelBlack, white: datePanelWhite }
 })
 
 defineProps({
@@ -45,7 +51,6 @@ defineProps({
     required: true,
     validator: (value) =>
       [
-        'compact',
         'daily-report',
         'recurrence',
         'settings',
@@ -56,7 +61,10 @@ defineProps({
         'tag',
         'taiji',
         'clover',
-        'switch-view'
+        'switch-view',
+        'locate-current',
+        'move-to-today',
+        'date-panel'
       ].includes(value)
   },
   alt: { type: String, default: '' }

@@ -7,7 +7,7 @@ describe('titlebar icon scale UI wiring', () => {
   it('shows the requested shared setting name and range', () => {
     const source = read('src/renderer/src/components/system/SettingsPanel.vue')
 
-    expect(source).toContain('导航栏图标大小')
+    expect(source).toContain('导航图标大小')
     expect(source).toContain('appearance.titlebarIconScale')
     expect(source).toContain(':min="TITLEBAR_ICON_SCALE_LIMITS.min"')
     expect(source).toContain(':max="TITLEBAR_ICON_SCALE_LIMITS.max"')
@@ -35,13 +35,12 @@ describe('titlebar icon scale UI wiring', () => {
     expect(actions).toContain('var(--titlebar-microsoft-icon-size, 15rem)')
   })
 
-  it('uses one themed component with black and white SVG files for all 12 icon types', () => {
+  it('uses one themed component with black and white SVG files for all 14 icon types', () => {
     const appIcon = read('src/renderer/src/components/ui/AppIcon.vue')
     const filterTabs = read('src/renderer/src/components/ui/FilterTabs.vue')
     const calendarToolbar = read('src/renderer/src/components/month/MonthCalendarToolbar.vue')
     const viewSwitcher = read('src/renderer/src/components/system/ViewSwitcher.vue')
     const names = [
-      'compact',
       'daily-report',
       'recurrence',
       'settings',
@@ -52,7 +51,10 @@ describe('titlebar icon scale UI wiring', () => {
       'tag',
       'taiji',
       'clover',
-      'switch-view'
+      'switch-view',
+      'locate-current',
+      'move-to-today',
+      'date-panel'
     ]
 
     expect(appIcon).toContain("html[data-icon-color='white']")
@@ -61,7 +63,10 @@ describe('titlebar icon scale UI wiring', () => {
     expect(filterTabs).toContain("'clover'")
     expect(calendarToolbar).toContain("import AppIcon from '../ui/AppIcon.vue'")
     expect(calendarToolbar).toContain('name="taiji"')
+    expect(calendarToolbar).toContain('name="locate-current"')
+    expect(calendarToolbar).toContain('name="date-panel"')
     expect(calendarToolbar).toContain('class="month-toolbar__refresh-icon"')
+    expect(calendarToolbar).toContain('var(--calendar-toolbar-icon-size, 17rem)')
     expect(viewSwitcher).toContain('<AppIcon class="btn-icon view-switcher__trigger-icon"')
     expect(viewSwitcher).toContain('name="switch-view"')
     expect(viewSwitcher).not.toContain('view-switcher__trigger-label')

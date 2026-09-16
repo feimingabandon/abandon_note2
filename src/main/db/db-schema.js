@@ -1,5 +1,5 @@
 /** 数据库结构版本。公开版本只能通过显式迁移递增。 */
-export const DATABASE_SCHEMA_VERSION = 10
+export const DATABASE_SCHEMA_VERSION = 11
 
 function hasTable(db, tableName) {
   return Boolean(
@@ -216,9 +216,14 @@ function migrateToVersion9(db) {
                         WHERE last_generated_note_id IS NOT NULL);`)
 }
 
-/** V10 移除旧灵动岛启动模式；窗口形态只属于当前进程运行时。 */
+/** V10 移除旧的窗口形态启动标记。 */
 function migrateToVersion10(db) {
   db.prepare("DELETE FROM app_settings WHERE type = 'compact' AND key = 'enabled'").run()
+}
+
+/** V11 清理已经移除的小窗口功能留下的全部设置。 */
+function migrateToVersion11(db) {
+  db.prepare("DELETE FROM app_settings WHERE type = 'compact'").run()
 }
 
 function ensureTagRelationIndexes(db) {
@@ -247,10 +252,8 @@ function migrateDatabaseSchema(db, existingVersion) {
       )
       .get()
   )
-  const hasObsoleteCompactEnabled = Boolean(
-    db
-      .prepare("SELECT 1 FROM app_settings WHERE type = 'compact' AND key = 'enabled' LIMIT 1")
-      .get()
+  const hasRemovedWindowModeSettings = Boolean(
+    db.prepare("SELECT 1 FROM app_settings WHERE type = 'compact' LIMIT 1").get()
   )
   if (
     existingVersion >= DATABASE_SCHEMA_VERSION &&
@@ -262,7 +265,7 @@ function migrateDatabaseSchema(db, existingVersion) {
     !missingDesktopStickies &&
     !hasObsoleteDockRevealHandlePositions &&
     !missingTemplateOrigin &&
-    !hasObsoleteCompactEnabled
+    !hasRemovedWindowModeSettings
   )
     return
   db.transaction(() => {
@@ -278,7 +281,8 @@ function migrateDatabaseSchema(db, existingVersion) {
     if (existingVersion < 7 || missingDesktopStickies) migrateToVersion7(db)
     if (existingVersion < 8 || hasObsoleteDockRevealHandlePositions) migrateToVersion8(db)
     if (existingVersion < 9 || missingTemplateOrigin) migrateToVersion9(db)
-    if (existingVersion < 10 || hasObsoleteCompactEnabled) migrateToVersion10(db)
+    if (existingVersion < 10) migrateToVersion10(db)
+    if (existingVersion < 11 || hasRemovedWindowModeSettings) migrateToVersion11(db)
     if (existingVersion < DATABASE_SCHEMA_VERSION) {
       db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
     }
