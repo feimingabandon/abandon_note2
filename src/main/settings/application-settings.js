@@ -20,19 +20,23 @@ export const VIEW_SETTINGS_SCOPES = Object.freeze({
  * 登记，持久化分流和“恢复默认设置”就会同步覆盖，避免新设置被漏掉。
  */
 export const APPLICATION_SETTING_IDS = Object.freeze([
-  'notes.autoMoveYesterday',
   'appearance.titlebarIconScale',
   'appearance.iconColor',
   'shortcuts.viewVisibility',
   'calendar.recurringPreviewEnabled',
+  'notes.tagColorEnabled',
   'interaction.doubleClickQuickEdit',
+  'interaction.hideMainViewDuringScreenshot',
   'remote.receiveNotices',
   'remote.uploadDeviceInfo',
   'weather.enabled',
   'weather.location',
   'onboarding.noticeVersion',
   'window.lockState',
-  'window.zOrderMode'
+  'window.zOrderMode',
+  'window.compactWidth',
+  'window.compactHeight',
+  'window.compactFontSize'
 ])
 
 const ACTIVE_VIEW_ROW = Object.freeze({
@@ -57,9 +61,9 @@ const APPLICATION_SETTING_DB_KEYS = new Set([
   'weather:enabled',
   'weather:location',
   'calendar:recurring_preview_enabled',
+  'notes:tag_color_enabled',
   'interaction:double_click_quick_edit',
-  'notes:auto_move_yesterday',
-  'notes:auto_move_last_date',
+  'interaction:hide_main_view_during_screenshot',
   'onboarding:first_use_notice_version'
 ])
 
@@ -222,10 +226,18 @@ export function prepareViewSettingsForSwitch({
 }
 
 export function writeApplicationSetting(id, value) {
-  if (!APPLICATION_SETTING_IDS.includes(id)) {
-    throw new Error(`未知应用级设置项: ${id}`)
-  }
-  setSettingsBatch(APPLICATION_SETTINGS_SCOPE, [serializeSetting(id, value)])
+  writeApplicationSettings([{ id, value }])
+}
+
+/** 将一组相关的应用级设置作为同一个数据库事务提交。 */
+export function writeApplicationSettings(entries) {
+  const serialized = entries.map(({ id, value }) => {
+    if (!APPLICATION_SETTING_IDS.includes(id)) {
+      throw new Error(`未知应用级设置项: ${id}`)
+    }
+    return serializeSetting(id, value)
+  })
+  if (serialized.length > 0) setSettingsBatch(APPLICATION_SETTINGS_SCOPE, serialized)
 }
 
 /** 原子地把全部用户可配置的应用级设置写回 schema 默认值。 */

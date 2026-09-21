@@ -12,6 +12,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { getSystemNotificationCapability } from '../shared/notification-policy.js'
 
+const editingDraftSessionId =
+  process.argv
+    .find((argument) => argument.startsWith('--editing-draft-session='))
+    ?.slice('--editing-draft-session='.length) || ''
+
 /**
  * 自定义 API 对象
  * 包含渲染进程需要调用的所有主进程功能
@@ -20,8 +25,14 @@ import { getSystemNotificationCapability } from '../shared/notification-policy.j
 const api = {
   runtimeCapabilities: {
     platform: process.platform,
-    systemNotifications: getSystemNotificationCapability(process.platform)
+    systemNotifications: getSystemNotificationCapability(process.platform),
+    editingDraftSessionId
   },
+
+  // ---- 系统剪贴板 ----
+  /** 请求主进程写入纯文本，避免本地页面的 Web Clipboard 权限限制。 */
+  writeClipboardText: (value) =>
+    ipcRenderer.invoke('clipboard:write-text', { text: String(value ?? '') }),
 
   // ---- 本地日志与诊断 ----
   /** 上报 renderer 结构化日志；主进程负责落盘。 */
@@ -52,6 +63,30 @@ const api = {
   getWindowBounds: () => ipcRenderer.invoke('window-get-bounds'),
   /** 设置窗口的位置和尺寸（单向通信） */
   setWindowBounds: (bounds) => ipcRenderer.send('window-set-bounds', bounds),
+  finishWindowResize: () => ipcRenderer.invoke('window-resize:end'),
+
+  // ---- 窗口展示模式（主视图 / 灵动岛） ----
+  getPresentationModeState: () => ipcRenderer.invoke('presentation-mode:get-state'),
+  enterCompactPresentation: (anchor) =>
+    ipcRenderer.invoke('presentation-mode:enter-compact', { anchor }),
+  exitCompactPresentation: (anchor) =>
+    ipcRenderer.invoke('presentation-mode:exit-compact', { anchor }),
+  beginCompactWindowDrag: (point) => ipcRenderer.invoke('presentation-mode:begin-drag', point),
+  updateCompactWindowDrag: (point) => ipcRenderer.send('presentation-mode:update-drag', point),
+  endCompactWindowDrag: () => ipcRenderer.invoke('presentation-mode:end-drag'),
+  showCompactWindowContextMenu: () => ipcRenderer.invoke('presentation-mode:show-context-menu'),
+  notifyPresentationRendererReady: (operationId) =>
+    ipcRenderer.send('presentation-mode:renderer-ready', { operationId }),
+  onPresentationModeStateChanged: (callback) => {
+    const handler = (_event, state) => callback(state)
+    ipcRenderer.on('presentation-mode:state-changed', handler)
+    return () => ipcRenderer.removeListener('presentation-mode:state-changed', handler)
+  },
+  onPresentationModeForceExpanded: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('presentation-mode:force-expanded', handler)
+    return () => ipcRenderer.removeListener('presentation-mode:force-expanded', handler)
+  },
 
   beginTitlebarWindowDrag: (point) => ipcRenderer.invoke('titlebar-window:begin-drag', point),
   updateTitlebarWindowDrag: (point) => ipcRenderer.send('titlebar-window:update-drag', point),
@@ -102,7 +137,7 @@ const api = {
 
   // ---- 生命周期通知 ----
   /** 通知主进程渲染已就绪，可以显示窗口了 */
-  rendererReady: () => ipcRenderer.send('renderer-ready'),
+  rendererReady: (viewMode) => ipcRenderer.send('renderer-ready', { viewMode }),
 
   // ---- 应用内消息条（主进程降级提醒：系统通知发送失败时改用应用内 Toast） ----
   /** 监听主进程下发的应用内消息；返回取消监听函数。 */
@@ -157,8 +192,10 @@ const api = {
   createNoteWithAssets: ({ options, images, tagIds }) =>
     ipcRenderer.invoke('notes:create-with-assets', { options, images, tagIds }),
   /** 更新便签（部分字段） */
-  updateNote: (id, fields, expectedContent) =>
-    ipcRenderer.invoke('notes:update', { id, fields, expectedContent }),
+  updateNote: (id, fields, expectedContent, expectedRemark) =>
+    ipcRenderer.invoke('notes:update', { id, fields, expectedContent, expectedRemark }),
+  /** 设置或清除便签正文选区颜色。 */
+  setNoteTextColor: (payload) => ipcRenderer.invoke('notes:set-text-color', payload),
   /** 原子保存编辑草稿（字段、标签及附件变更） */
   saveNoteDraft: (payload) => ipcRenderer.invoke('notes:save-draft', payload),
   /** 逻辑删除便签（附件随记录保留，清空便签数据时物理清理） */
@@ -174,6 +211,8 @@ const api = {
   queryPinnedNotes: (options) => ipcRenderer.invoke('notes:query-pinned', options),
   /** 查询三天内非置顶便签（时间线模式） */
   queryRecentNotes: (options) => ipcRenderer.invoke('notes:query-recent', options),
+  /** 查询灵动岛当前应展示的一条进行中便签。 */
+  queryCompactNote: () => ipcRenderer.invoke('notes:query-compact'),
   /** 查询更早的非置顶便签（时间线模式，分页） */
   queryEarlierNotes: (options) => ipcRenderer.invoke('notes:query-earlier', options),
   /** 查询置顶便签（自定义模式，按 sort_order） */
@@ -198,12 +237,6 @@ const api = {
   completeNote: (id) => ipcRenderer.invoke('notes:complete', { id }),
   /** 将已完成便签重新恢复为进行中 */
   reopenNote: (id) => ipcRenderer.invoke('notes:reopen', { id }),
-  /** 统计所选历史日期范围中仍处于进行中的便签。 */
-  previewHistoricalNoteMove: (selection) =>
-    ipcRenderer.invoke('notes:preview-historical-move', selection),
-  /** 原子地将所选历史日期范围中的进行中便签移动到今天。 */
-  moveHistoricalNotesToToday: (selection) =>
-    ipcRenderer.invoke('notes:move-historical-to-today', selection),
   /** 查询指定日期范围和多选状态下的便签报表预览。 */
   previewDailyReport: (options) => ipcRenderer.invoke('daily-report:preview', options),
   /** 由系统保存对话框将选中的便签导出为 TXT 或 XLSX。 */
@@ -327,6 +360,9 @@ const api = {
   listImages: (noteId) => ipcRenderer.invoke('images:list', { noteId }),
   /** 获取图片 Base64 */
   getImageBase64: (relativePath) => ipcRenderer.invoke('images:get-base64', { relativePath }),
+  /** 获取原图像素尺寸 */
+  getImageDimensions: (relativePath) =>
+    ipcRenderer.invoke('images:get-dimensions', { relativePath }),
   /** 获取图片缩略图 */
   getImageThumbnail: (relativePath, maxSize = 240) =>
     ipcRenderer.invoke('images:get-thumbnail', { relativePath, maxSize }),

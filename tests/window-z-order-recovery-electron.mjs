@@ -92,7 +92,9 @@ async function run() {
   try {
     let previousWindow
     for (const view of ['month', 'list', 'week']) {
-      if (previousWindow)
+      const reusedWindow = previousWindow
+      const reusedNativeHandle = reusedWindow?.getNativeWindowHandle().toString('hex')
+      if (reusedWindow)
         await previousWindow.webContents.executeJavaScript(`window.api.switchMainView('${view}')`)
       const file = view === 'list' ? 'index' : view
       let window
@@ -102,6 +104,15 @@ async function run() {
         )
         return window?.isVisible()
       }, `${view}: window missing`)
+      if (reusedWindow) {
+        assert.equal(window, reusedWindow, `${view}: view switch replaced BrowserWindow`)
+        assert.equal(window.isDestroyed(), false, `${view}: reused BrowserWindow was destroyed`)
+        assert.equal(
+          window.getNativeWindowHandle().toString('hex'),
+          reusedNativeHandle,
+          `${view}: view switch replaced native HWND`
+        )
+      }
       previousWindow = window
       debugWindow = window
       const js = (code) => window.webContents.executeJavaScript(code)

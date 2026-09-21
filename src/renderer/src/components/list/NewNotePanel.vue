@@ -17,9 +17,10 @@ import ScreenshotPicker from '../note/ScreenshotPicker.vue'
 import NoteDurationField from '../note/NoteDurationField.vue'
 import AppToggle from '../ui/AppToggle.vue'
 import HelpButton from '../ui/HelpButton.vue'
-import ResizableTextarea from '../ui/ResizableTextarea.vue'
+import ColoredTextEditor from '../note/ColoredTextEditor.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
+import { NOTE_DURATION_KINDS } from '../../../../shared/calendar/calendar-date-rules.js'
 import {
   assertCreatableNoteEffectiveTime,
   canScheduleNoteNotification,
@@ -144,7 +145,9 @@ onBeforeUnmount(() => {
 // 表单状态
 // ============================================================
 const content = ref('')
+const contentColorRanges = ref([])
 const effectiveAt = ref('') // "YYYY-MM-DD HH:mm:ss" 或空（空 = 立即生效）
+const durationKind = ref(NOTE_DURATION_KINDS.SINGLE_DAY)
 const durationDays = ref(1)
 const tagIds = ref([]) // 仅保存用户自定义标签 ID；内容类型由正文和附件推导
 const notifyEnabled = ref(false) // 启用系统提醒开关
@@ -152,6 +155,7 @@ const isPinned = ref(false) // 置顶开关
 const submitState = ref('idle') // idle | creating | success
 /** ScreenshotPicker 组件引用 */
 const imagePickerRef = ref(null)
+const draftImageCount = ref(0)
 let successTimer = null
 let successHoldResolve = null
 
@@ -168,12 +172,13 @@ const canEnableNotify = computed(
     systemNotificationsSupported &&
     canScheduleNoteNotification(effectiveTimestamp.value, Date.now())
 )
+const canCreate = computed(() => Boolean(content.value.trim()) || draftImageCount.value > 0)
 const submitLabel = computed(() => {
   if (submitState.value === 'creating') return '创建中…'
   if (submitState.value === 'success') return '✓ 已创建'
   return '创建便签'
 })
-const submitEmpty = computed(() => submitState.value === 'idle' && !content.value.trim())
+const submitEmpty = computed(() => submitState.value === 'idle' && !canCreate.value)
 
 function dateAtDefaultScheduleTime(dayOffset = 0) {
   const date = new Date()
@@ -190,10 +195,7 @@ const dateShortcuts = [
 ]
 
 // 立即生效、历史补录或提前量不足时，强制关闭系统提醒。
-watch(effectiveAt, (val) => {
-  if (!val) {
-    durationDays.value = 1
-  }
+watch(effectiveAt, () => {
   if (!canEnableNotify.value && notifyEnabled.value) notifyEnabled.value = false
 })
 
@@ -204,7 +206,9 @@ const SUCCESS_HOLD = 550
 
 function resetForm() {
   content.value = ''
+  contentColorRanges.value = []
   effectiveAt.value = ''
+  durationKind.value = NOTE_DURATION_KINDS.SINGLE_DAY
   durationDays.value = 1
   tagIds.value = []
   notifyEnabled.value = false
@@ -234,9 +238,8 @@ function finishSuccessHold() {
 async function handleCreate() {
   const text = content.value
 
-  // 校验：内容不能为空
-  if (!text.trim()) {
-    showMessage('warning', '请输入便签内容')
+  if (!canCreate.value) {
+    showMessage('warning', '请输入便签内容或添加图片')
     return
   }
 
@@ -263,6 +266,8 @@ async function handleCreate() {
   try {
     const options = {
       content: text,
+      contentColorRanges: contentColorRanges.value,
+      durationKind: durationKind.value,
       durationDays: durationDays.value,
       notifyEnabled: canEnableNotify.value && notifyEnabled.value ? 1 : 0,
       isPinned: isPinned.value ? 1 : 0
@@ -307,11 +312,20 @@ async function handleCreate() {
 }
 const protectedDraft = useDraftProtection({
   key: 'new:list',
-  fields: { content, effectiveAt, durationDays, notifyEnabled, isPinned, tagIds },
+  fields: {
+    content,
+    contentColorRanges,
+    effectiveAt,
+    durationKind,
+    durationDays,
+    notifyEnabled,
+    isPinned,
+    tagIds
+  },
   dirty: () =>
     !!content.value ||
     !!effectiveAt.value ||
-    durationDays.value !== 1 ||
+    durationKind.value !== NOTE_DURATION_KINDS.SINGLE_DAY ||
     notifyEnabled.value ||
     isPinned.value ||
     tagIds.value.length > 0 ||
@@ -327,9 +341,10 @@ const protectedDraft = useDraftProtection({
     <!-- 可滚动表单区域 -->
     <div ref="entranceBodyRef" class="nnp-body scroll-y" :inert="submitState !== 'idle'">
       <!-- 便签内容 -->
-      <ResizableTextarea
+      <ColoredTextEditor
         ref="textareaRef"
         v-model="content"
+        v-model:color-ranges="contentColorRanges"
         placeholder="请新建一次性便签内容…（Enter 换行）"
         :rows="4"
       />
@@ -350,7 +365,7 @@ const protectedDraft = useDraftProtection({
         历史补录将直接进入进行中，不发送系统提醒。
       </p>
 
-      <NoteDurationField v-model="durationDays" :visible="!!effectiveAt" />
+      <NoteDurationField v-model:kind="durationKind" v-model:days="durationDays" visible />
 
       <!-- 启用系统提醒 -->
       <div class="nnp-notification-field">
@@ -396,7 +411,11 @@ const protectedDraft = useDraftProtection({
           >图片<HelpButton
             text="支持截图、拖拽或点击上传图片附件。单张最大 50MB，单条便签最多 50 张"
         /></label>
-        <ScreenshotPicker ref="imagePickerRef" mode="memory" />
+        <ScreenshotPicker
+          ref="imagePickerRef"
+          mode="memory"
+          @count-change="draftImageCount = $event"
+        />
       </div>
     </div>
 
@@ -409,7 +428,7 @@ const protectedDraft = useDraftProtection({
         'is-creating': submitState === 'creating',
         'is-success': submitState === 'success'
       }"
-      :disabled="submitState !== 'idle' || !content.trim()"
+      :disabled="submitState !== 'idle' || !canCreate"
       @click="handleCreate"
     >
       <Transition name="nnp-submit-label">

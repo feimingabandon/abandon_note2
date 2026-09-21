@@ -37,7 +37,7 @@ onBeforeUnmount(() => {
   <ConfirmDialog
     v-model:visible="visible"
     title="保留草稿后继续？"
-    message="未保存的内容已在本机暂存，重新打开对应编辑器即可继续编辑。"
+    message="未保存内容只在本次软件启动期间暂存，重新打开对应编辑器即可继续编辑。退出软件后不会恢复。"
     :confirm-text="action === '退出' ? '保留并退出' : '保留并切换'"
     cancel-text="继续编辑"
     @confirm="finish(true)"

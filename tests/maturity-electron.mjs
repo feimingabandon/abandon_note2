@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -50,9 +50,7 @@ assert.ok(chunk)
 require(resolve('out/main/chunks', chunk))
 
 let response = 0
-let dialogs = 0
 dialog.showMessageBox = async () => {
-  dialogs++
   return { response }
 }
 const resultPath = resolve('tmp/maturity-electron-results.json')
@@ -144,8 +142,17 @@ async function run() {
       'confirm dialog'
     )
     await js("document.querySelector('.confirm-actions button:last-child').click()")
-    await until(() => first.isDestroyed(), 'old window replaced')
+    await until(
+      () => first.webContents.getURL().includes('/month.html'),
+      'existing window navigated to month'
+    )
+    assert.equal(first.isDestroyed(), false)
     await view('month')
+    assert.equal(current, first)
+    await until(
+      () => js("!document.querySelector('.view-switcher__trigger').disabled"),
+      'month view switch finished'
+    )
     await js("window.api.switchMainView('list')")
     await view('list')
     await openEditor(id)
@@ -167,7 +174,9 @@ async function run() {
     await until(() => js("!document.querySelector('.app-editor textarea')"), 'editor closed')
 
     assert.equal(await js('window.api.getNote(' + id + ').then(n=>n.attachments.length)'), 1)
-    results.push('view replacement restores draft and attachment without automatic database writes')
+    results.push(
+      'view navigation reuses the window and restores drafts without automatic database writes'
+    )
     await js(
       'document.querySelector(\'.nl-card[data-note-id="' +
         id +
@@ -211,7 +220,9 @@ async function run() {
     )
     assert.equal(
       await js(
-        "JSON.parse(localStorage.getItem('abandon:editing-draft:v1:quick:" + id + "')).data.draft"
+        'JSON.parse(localStorage.getItem(`abandon:editing-draft:v2:${window.api.runtimeCapabilities.editingDraftSessionId}:quick:' +
+          id +
+          '`)).data.draft'
       ),
       'stale quick draft'
     )

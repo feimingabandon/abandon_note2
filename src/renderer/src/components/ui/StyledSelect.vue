@@ -107,9 +107,10 @@ function onPanelKeydown(event) {
     options[target]?.focus()
   }
   if (event.key === 'Tab') {
-    event.preventDefault()
     open.value = false
-    wrapperRef.value?.querySelector('button')?.focus()
+    // Teleport 中的选项位于 body 末尾。先把焦点还给触发器，再让浏览器执行
+    // 默认 Tab 顺序，才能前往表单中的上一个/下一个控件而不是困在下拉框里。
+    wrapperRef.value?.querySelector('button')?.focus({ preventScroll: true })
   }
 }
 function onTriggerKeydown(event) {
@@ -217,7 +218,8 @@ onBeforeUnmount(() => {
                 :disabled="opt.disabled"
                 @click="select(opt)"
               >
-                {{ opt.label }}
+                <span class="sel-option-check" aria-hidden="true">✓</span>
+                <span class="sel-option-label">{{ opt.label }}</span>
               </button>
             </div>
           </div>
@@ -249,12 +251,19 @@ onBeforeUnmount(() => {
   border-radius: 6rem;
   cursor: pointer;
   outline: none;
+  -webkit-user-select: none;
+  user-select: none;
   transition:
     background-color var(--motion-control) ease,
-    border-color 160ms ease;
+    border-color 160ms ease,
+    box-shadow 160ms ease;
 }
 .sel-trigger:hover:not(.is-disabled) {
   border-color: var(--ui-border-hover);
+}
+.sel-trigger:focus-visible {
+  border-color: var(--ui-accent);
+  box-shadow: 0 0 0 3rem var(--ui-accent-subtle);
 }
 .sel-trigger.is-open {
   border-color: var(--ui-border-hover);
@@ -293,8 +302,10 @@ onBeforeUnmount(() => {
 
 /* ============ 下拉面板 ============ */
 .sel-panel-wrap {
-  border-radius: 10rem;
-  box-shadow: 0 10rem 30rem rgba(0, 0, 0, 0.24);
+  border-radius: 12rem;
+  box-shadow:
+    0 12rem 32rem rgba(0, 0, 0, 0.18),
+    0 2rem 8rem rgba(0, 0, 0, 0.08);
   overflow: hidden;
   transform-origin: top center;
   will-change: clip-path;
@@ -306,36 +317,68 @@ onBeforeUnmount(() => {
   border-radius: inherit;
 }
 .sel-panel {
-  padding: 4rem 0;
+  display: grid;
+  min-width: max-content;
+  gap: 1rem;
+  padding: 5rem;
   max-height: calc(var(--popover-available-height) - 2px);
 }
 
 .sel-option {
-  display: block;
+  display: grid;
+  grid-template-columns: 18rem minmax(0, 1fr);
+  align-items: center;
+  gap: 6rem;
   width: 100%;
-  padding: 7rem 14rem;
+  min-height: 34rem;
+  padding: 5rem 8rem;
   font-size: inherit;
   font-family: inherit;
-  color: var(--text-color);
+  color: inherit;
   background: transparent;
   border: none;
-  text-align: left;
+  border-radius: 7rem;
   cursor: pointer;
-  white-space: nowrap;
   outline: none;
-  transition: background-color var(--motion-fast) ease;
+  -webkit-user-select: none;
+  user-select: none;
+  transition:
+    color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease;
 }
-.sel-option:hover {
-  background-color: var(--ui-fill-hover);
+.sel-option:hover:not(.is-disabled),
+.sel-option:focus-visible:not(.is-disabled) {
+  color: var(--ui-on-primary);
+  background-color: var(--ui-accent);
 }
 .sel-option.is-active {
-  color: var(--ui-accent);
-  background-color: var(--ui-accent-subtle);
   font-weight: 600;
 }
 .sel-option.is-disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+.sel-option-check {
+  justify-self: start;
+  width: 14rem;
+  color: var(--ui-accent);
+  font-size: 13rem;
+  line-height: 1;
+  opacity: 0;
+}
+.sel-option.is-active .sel-option-check {
+  opacity: 1;
+}
+.sel-option:hover .sel-option-check,
+.sel-option:focus-visible .sel-option-check {
+  color: currentColor;
+}
+.sel-option-label {
+  overflow: hidden;
+  line-height: 1.2;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ============ 尺寸变体 ============ */

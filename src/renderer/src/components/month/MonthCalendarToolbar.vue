@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import AppIcon from '../ui/AppIcon.vue'
 import NumberStepper from '../ui/NumberStepper.vue'
-import HistoricalNoteMoveControl from './HistoricalNoteMoveControl.vue'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 import {
   MAX_CALENDAR_YEAR,
@@ -36,8 +35,7 @@ const emit = defineEmits([
   'jump-date',
   'refresh',
   'update:recurring-preview-enabled',
-  'toggle-day-panel',
-  'historical-notes-moved'
+  'toggle-day-panel'
 ])
 const isWeekView = computed(() => props.viewMode === 'week')
 const pickerOpen = ref(false)
@@ -52,7 +50,6 @@ const pickerMonth = ref(props.month)
 const pickerMonthDirection = ref('forward')
 const pickerPeriodOpen = ref(false)
 const refreshSpinActive = ref(false)
-const historicalMoveOpen = ref(false)
 let refreshSpinFinished = true
 
 watch(
@@ -175,7 +172,6 @@ async function togglePicker() {
     closePicker()
     return
   }
-  historicalMoveOpen.value = false
   if (isWeekView.value) {
     const selected = parseDateKey(props.selectedKey || props.weekStart)
     // 上限年份最后一周会自然跨到下一年；年月面板停留在可构建的 2100 年 12 月，
@@ -190,11 +186,6 @@ async function togglePicker() {
   pickerPanelRef.value
     ?.querySelector('button:not(:disabled), input:not(:disabled), [tabindex="0"]')
     ?.focus()
-}
-
-function updateHistoricalMoveOpen(open) {
-  if (open) closePicker()
-  historicalMoveOpen.value = open
 }
 
 function closePicker() {
@@ -524,12 +515,6 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
       >
         <AppIcon name="recurrence" class="month-toolbar__action-icon" />
       </button>
-      <HistoricalNoteMoveControl
-        :open="historicalMoveOpen"
-        :disabled="busy"
-        @update:open="updateHistoricalMoveOpen"
-        @moved="emit('historical-notes-moved', $event)"
-      />
       <button
         type="button"
         class="month-toolbar__day-panel-toggle"

@@ -218,6 +218,19 @@ export async function getImageBase64(relativePath) {
   }
 }
 
+/** 读取原图像素尺寸，供卡片按正文可视宽度计算等比展示尺寸。 */
+export function getImageDimensions(relativePath) {
+  try {
+    const image = nativeImage.createFromPath(resolveImagePath(relativePath))
+    if (image.isEmpty()) return null
+    const { width, height } = image.getSize()
+    return width > 0 && height > 0 ? { width, height } : null
+  } catch (error) {
+    console.warn('[images] 读取附件尺寸失败:', error, { relativePath })
+    return null
+  }
+}
+
 /** 生成列表展示用缩略图，原图只在大图预览时读取。 */
 const thumbnailCache = createThumbnailCache()
 const pendingThumbnails = new Map()
@@ -308,12 +321,17 @@ export async function deleteImageRecordAndFile(id) {
   const db = getDb()
   const row = db
     .prepare(
-      `SELECT a.* FROM note_attachments a
+      `SELECT a.*, n.content,
+              (SELECT COUNT(*) FROM note_attachments WHERE note_id = a.note_id) AS attachment_count
+       FROM note_attachments a
        INNER JOIN notes n ON n.id = a.note_id
        WHERE a.id = ? AND n.is_deleted = 0`
     )
     .get(id)
   if (!row) return false
+  if (!String(row.content || '').trim() && Number(row.attachment_count) <= 1) {
+    throw new Error('纯图片便签至少需要保留一张图片')
+  }
 
   const staged = stageImageDeletion(row.file_path)
   try {

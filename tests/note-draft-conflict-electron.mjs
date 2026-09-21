@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { app } from 'electron'
 import { initDatabase, closeDatabase, getDb } from '../src/main/db/db.js'
-import { createNote, getNoteById, updateNote } from '../src/main/db/db-notes.js'
+import {
+  completeNote,
+  createNote,
+  getNoteById,
+  updateNote,
+  updateNoteTextColor
+} from '../src/main/db/db-notes.js'
 import {
   addImageRecord,
   commitStagedImage,
@@ -13,7 +19,6 @@ import {
   cleanupStagedImage
 } from '../src/main/db/db-images.js'
 import { registerBusinessIpcHandlers } from '../src/main/ipc/register-business-ipc.js'
-import { runAutomaticNoteMove } from '../src/main/services/automatic-note-move.js'
 
 const testRoot = mkdtempSync(join(tmpdir(), 'abandon-note-draft-conflict-'))
 app.setPath('userData', testRoot)
@@ -43,6 +48,7 @@ app.whenReady().then(async () => {
             content: note.content,
             status: note.status,
             effectiveAt: note.effective_at,
+            durationKind: note.duration_kind,
             durationDays: note.duration_days,
             notifyEnabled: false,
             isPinned: true
@@ -54,11 +60,104 @@ app.whenReady().then(async () => {
         }
       )
 
+    await assert.rejects(
+      handlers.get('notes:create-with-assets')(
+        { sender: window.webContents },
+        { options: { content: '' }, images: [], tagIds: [] }
+      ),
+      /请输入便签内容/
+    )
+    const imageOnly = await handlers.get('notes:create-with-assets')(
+      { sender: window.webContents },
+      { options: { content: '' }, images: [image], tagIds: [] }
+    )
+    assert.equal(imageOnly.content, '')
+    assert.equal(imageOnly.attachments.length, 1)
+    const coloredCreated = await handlers.get('notes:create-with-assets')(
+      { sender: window.webContents },
+      {
+        options: {
+          content: '新建彩色便签',
+          contentColorRanges: [{ start: 2, end: 4, text: '彩色', color: '#34c759' }]
+        },
+        images: [],
+        tagIds: []
+      }
+    )
+    assert.deepEqual(coloredCreated.content_color_ranges, [
+      { start: 2, end: 4, text: '彩色', color: '#34c759' }
+    ])
+    await assert.rejects(
+      save(imageOnly, {
+        deletedImageIds: [imageOnly.attachments[0].id],
+        fields: {
+          content: '',
+          status: imageOnly.status,
+          effectiveAt: imageOnly.effective_at,
+          durationKind: imageOnly.duration_kind,
+          durationDays: imageOnly.duration_days,
+          notifyEnabled: false,
+          isPinned: false
+        }
+      }),
+      /请输入便签内容/
+    )
+
     const fresh = createNote({ content: 'original' })
     const saved = await save(fresh)
     assert.equal(saved.is_pinned, 1)
     assert.notEqual(saved.editVersion, fresh.editVersion)
     await assert.rejects(save(saved, { expectedVersion: undefined }), /缺少便签编辑版本/)
+
+    const colorBase = createNote({ content: '今天完成报告' })
+    const colored = updateNoteTextColor(colorBase.id, {
+      start: 2,
+      end: 4,
+      color: '#ff3b30',
+      expectedContent: colorBase.content,
+      expectedColorRanges: colorBase.content_color_ranges
+    })
+    const shiftedColor = await save(colored, {
+      fields: {
+        content: '请在今天完成报告',
+        status: colored.status,
+        effectiveAt: colored.effective_at,
+        durationKind: colored.duration_kind,
+        durationDays: colored.duration_days,
+        notifyEnabled: false,
+        isPinned: false
+      }
+    })
+    assert.deepEqual(shiftedColor.content_color_ranges, [
+      { start: 4, end: 6, text: '完成', color: '#ff3b30' }
+    ])
+
+    const explicitColorBase = createNote({ content: '修改界面选色' })
+    const explicitColor = await save(explicitColorBase, {
+      fields: {
+        content: explicitColorBase.content,
+        contentColorRanges: [{ start: 4, end: 6, text: '选色', color: '#af52de' }],
+        status: explicitColorBase.status,
+        effectiveAt: explicitColorBase.effective_at,
+        durationKind: explicitColorBase.duration_kind,
+        durationDays: explicitColorBase.duration_days,
+        notifyEnabled: false,
+        isPinned: false
+      }
+    })
+    assert.deepEqual(explicitColor.content_color_ranges, [
+      { start: 4, end: 6, text: '选色', color: '#af52de' }
+    ])
+
+    const staleColorDraft = createNote({ content: '颜色版本冲突' })
+    updateNoteTextColor(staleColorDraft.id, {
+      start: 0,
+      end: 2,
+      color: '#007aff',
+      expectedContent: staleColorDraft.content,
+      expectedColorRanges: staleColorDraft.content_color_ranges
+    })
+    await assert.rejects(save(staleColorDraft), /便签已发生变化/)
 
     updateNote(saved.id, { content: 'new content from another editor' })
     // Force an identical timestamp to prove the content comparison is not timestamp-only.
@@ -67,12 +166,10 @@ app.whenReady().then(async () => {
     assert.equal(getNoteById(saved.id).content, 'new content from another editor')
 
     const now = Date.now()
-    const yesterday = new Date(now)
-    yesterday.setDate(yesterday.getDate() - 1)
-    const old = createNote({ content: 'move yesterday', effectiveAt: yesterday.getTime() })
-    assert.equal(runAutomaticNoteMove({ enabled: true, now }).count, 1)
-    await assert.rejects(save(old), /便签已发生变化/)
-    assert.equal(getNoteById(old.id).effective_at, now)
+    const statusChanged = createNote({ content: 'status changed while editing' })
+    assert.equal(completeNote(statusChanged.id).status, 'completed')
+    await assert.rejects(save(statusChanged), /便签已发生变化/)
+    assert.equal(getNoteById(statusChanged.id).status, 'completed')
 
     const tagged = createNote({ content: 'tag conflict' })
     const tagId = getDb()
@@ -116,7 +213,7 @@ app.whenReady().then(async () => {
     assert.notEqual(retried.attachments[0].id, attachment.id)
     assert.equal(existsSync(resolveImagePath(committed.relativePath)), false)
     console.log(
-      'note draft conflicts: fresh save, missing version, same-ms content, automatic move, tags, attachments, staging race and retry passed'
+      'note draft conflicts: fresh save, missing version, same-ms content, concurrent status change, tags, attachments, staging race and retry passed'
     )
   } catch (error) {
     console.error(error)

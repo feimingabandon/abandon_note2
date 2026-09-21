@@ -73,6 +73,7 @@ describe('calendar service ranges', () => {
     expect(mocks.queryCalendarNotes).toHaveBeenCalledWith({
       filter: expect.any(Function),
       candidateFrom: localMidnightTimestamp(addCalendarDays('2026-08-10', -364)),
+      visibleStart: localMidnightTimestamp('2026-08-10'),
       visibleEndExclusive: localMidnightTimestamp('2026-08-17')
     })
     expect(result.notes.map((note) => note.id)).toEqual([1, 2])
@@ -94,6 +95,7 @@ describe('calendar service ranges', () => {
     expect(mocks.queryCalendarNotes).toHaveBeenCalledWith({
       filter: expect.any(Function),
       candidateFrom: localMidnightTimestamp(addCalendarDays('2026-07-27', -364)),
+      visibleStart: localMidnightTimestamp('2026-07-27'),
       visibleEndExclusive: localMidnightTimestamp('2026-09-07')
     })
     expect(result.notes.map((note) => note.id)).toEqual([10, 11])
@@ -118,6 +120,7 @@ describe('calendar service ranges', () => {
     expect(mocks.queryCalendarNotes).toHaveBeenCalledWith({
       filter: expect.any(Function),
       candidateFrom: localMidnightTimestamp(addCalendarDays('2026-08-31', -364)),
+      visibleStart: localMidnightTimestamp('2026-08-31'),
       visibleEndExclusive: localMidnightTimestamp('2026-10-05')
     })
     expect(result.notes.map((note) => note.id)).toEqual([20, 21])

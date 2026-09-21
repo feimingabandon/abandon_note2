@@ -266,7 +266,7 @@ onBeforeUnmount(() => {
           type="search"
           maxlength="200"
           aria-label="搜索全部帮助内容"
-          placeholder="搜索功能或问题，如：新建、自动移动"
+          placeholder="搜索功能或问题，如：新建、持续方式"
           @keydown.enter="onSearchEnter"
         />
         <button

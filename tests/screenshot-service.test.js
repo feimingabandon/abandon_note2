@@ -71,6 +71,19 @@ describe('ScreenshotService dock suspension', () => {
     expect(onCaptureEnd).not.toHaveBeenCalled()
   })
 
+  it('does not end the active capture lifecycle when capture is requested again', async () => {
+    const focus = vi.fn()
+    service.window = { isDestroyed: () => false, focus }
+    service.capture = vi.fn()
+
+    await expect(handler({ sender: webContents })).resolves.toBeNull()
+
+    expect(focus).toHaveBeenCalledOnce()
+    expect(service.capture).not.toHaveBeenCalled()
+    expect(onCaptureStart).not.toHaveBeenCalled()
+    expect(onCaptureEnd).not.toHaveBeenCalled()
+  })
+
   it('reports inline screenshot renderer errors without screenshot image data', () => {
     const source = readFileSync(
       new URL('../src/main/services/ScreenshotService.js', import.meta.url),
@@ -82,5 +95,34 @@ describe('ScreenshotService dock suspension', () => {
     expect(source).toContain("scope:'screenshot.renderer'")
     expect(source).toContain('displayId,viewport:')
     expect(source).not.toContain('screenshot.reportLog({image')
+  })
+
+  it('uses a real fullscreen overlay so selection and captured pixels share the full display', () => {
+    const source = readFileSync(
+      new URL('../src/main/services/ScreenshotService.js', import.meta.url),
+      'utf8'
+    )
+
+    expect(source).toContain('...targetDisplay.bounds')
+    expect(source).toContain('fullscreen: true')
+    expect(source).not.toContain('fullscreenable: false')
+  })
+
+  it('right-aligns screenshot actions with the selection and keeps them onscreen', () => {
+    const source = readFileSync(
+      new URL('../src/main/services/ScreenshotService.js', import.meta.url),
+      'utf8'
+    )
+
+    expect(source).toContain('let tx=r.x+r.w-actionWidth')
+    expect(source).toContain('Math.min(tx,window.innerWidth-actionWidth-8)')
+  })
+
+  it('hides and restores the main view only when the shared setting is enabled', () => {
+    const source = readFileSync(new URL('../src/main/index.js', import.meta.url), 'utf8')
+
+    expect(source).toContain('resolvedSettings.interaction.hideMainViewDuringScreenshot')
+    expect(source).toContain('hideMainWindowForViewNavigation(mainWindow)')
+    expect(source).toContain("reassertBottomWindowZOrder('screenshot-finished')")
   })
 })

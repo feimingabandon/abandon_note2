@@ -1,3 +1,4 @@
+import { clipboard } from 'electron'
 import { getDb } from '../db/db.js'
 import {
   completeNote,
@@ -5,12 +6,11 @@ import {
   createNote,
   deleteNote,
   getNoteById,
-  normalizeNoteDurationDays,
+  resolveNoteDurationUpdate,
   normalizeRequiredNoteContent,
-  moveHistoricalInProgressNotesToToday,
-  previewHistoricalInProgressMove,
   queryCustomNormal,
   queryCustomPinned,
+  queryCompactNote,
   queryEarlierNotes,
   queryPinnedNotes,
   queryRecentNotes,
@@ -22,7 +22,8 @@ import {
   searchNotes,
   startProgress,
   updateCustomSortOrders,
-  updateNote
+  updateNote,
+  updateNoteTextColor
 } from '../db/db-notes.js'
 import {
   bindTag,
@@ -56,6 +57,7 @@ import {
   deleteImageRecordAndFile,
   getImageBase64,
   getImageCount,
+  getImageDimensions,
   getImageThumbnail,
   listImageRecords,
   purgeNoteAndFiles,
@@ -74,6 +76,10 @@ import {
   assertCreatableNoteEffectiveTime,
   resolveNoteDraftSchedule
 } from '../../shared/note-scheduling-rules.js'
+import {
+  normalizeNoteTextColorRanges,
+  reconcileNoteTextColorRanges
+} from '../../shared/note-text-color-rules.js'
 import { createMainWindowIpc } from './ipc-authorization.js'
 
 function sendToWindows(getWindows, channel, payload) {
@@ -140,6 +146,13 @@ export function registerBusinessIpcHandlers({
     return result
   }
 
+  ipcMain.handle('clipboard:write-text', (_event, payload = {}) => {
+    const text = payload?.text
+    if (typeof text !== 'string') throw new Error('剪贴板内容必须是文本')
+    clipboard.writeText(text)
+    return true
+  })
+
   ipcMain.handle('notes:create', (_event, options) => {
     return broadcastNoteChange('create', createNote(normalizeUserCreateOptions(options)))
   })
@@ -160,7 +173,9 @@ export function registerBusinessIpcHandlers({
     }
 
     const transaction = db.transaction(() => {
-      const note = createNote(normalizeUserCreateOptions(options))
+      const note = createNote(normalizeUserCreateOptions(options), {
+        allowEmptyContent: stagedImages.length > 0
+      })
       if (!note?.id) throw new Error('创建便签失败')
 
       for (const staged of stagedImages) {
@@ -195,14 +210,22 @@ export function registerBusinessIpcHandlers({
     broadcastNoteChange('restore', restoreNote(id), { id })
   )
 
-  ipcMain.handle('notes:update', (_event, { id, fields, expectedContent }) => {
-    if (expectedContent !== undefined) {
+  ipcMain.handle('notes:update', (_event, { id, fields, expectedContent, expectedRemark }) => {
+    if (expectedContent !== undefined || expectedRemark !== undefined) {
       const current = getNoteById(id)
       if (!current) throw new Error('便签不存在或已被删除')
-      if (current.content !== expectedContent)
+      if (expectedContent !== undefined && current.content !== expectedContent)
         throw new Error('便签正文已被其他操作修改，草稿已保留。请复制草稿或加载最新正文后重试。')
+      if (expectedRemark !== undefined && current.remark !== expectedRemark)
+        throw new Error('便签备注已被其他操作修改，草稿已保留。请复制草稿或加载最新内容后重试。')
     }
     return broadcastNoteChange('update', updateNote(id, enforceNotificationPolicy(fields)), { id })
+  })
+
+  ipcMain.handle('notes:set-text-color', (_event, payload = {}) => {
+    const id = Number(payload.id)
+    if (!Number.isInteger(id) || id <= 0) throw new Error('无效的便签 ID')
+    return broadcastNoteChange('text-color', updateNoteTextColor(id, payload), { id })
   })
 
   ipcMain.handle('notes:save-draft', async (_event, payload = {}) => {
@@ -233,8 +256,7 @@ export function registerBusinessIpcHandlers({
     }
     assertDraftVersion(original)
 
-    const content = normalizeRequiredNoteContent(fields.content)
-    const durationDays = normalizeNoteDurationDays(fields.durationDays ?? original.duration_days)
+    const duration = resolveNoteDurationUpdate(original, fields)
     const requestedStatus = String(fields.status || original.status)
     if (requestedStatus !== original.status) {
       throw new Error(`不允许的状态修改：${original.status} → ${requestedStatus}`)
@@ -251,6 +273,12 @@ export function registerBusinessIpcHandlers({
     if (ownedDeletedRows.length !== deletedImageIds.length) {
       throw new Error('附件不存在或不属于当前便签')
     }
+
+    const finalAttachmentCount =
+      original.attachments.length - deletedImageIds.length + addedImages.length
+    const requestedContent = String(fields.content ?? '')
+    const content =
+      finalAttachmentCount > 0 ? requestedContent : normalizeRequiredNoteContent(requestedContent)
 
     const remaining =
       MAX_ATTACHMENTS_PER_NOTE - original.attachments.length + deletedImageIds.length
@@ -293,19 +321,26 @@ export function registerBusinessIpcHandlers({
         requestedNotifyEnabled: fields.notifyEnabled,
         currentTime: timestamp
       })
+      const submittedColorRanges = fields.contentColorRanges ?? fields.content_color_ranges
+      const contentColorRanges =
+        submittedColorRanges === undefined
+          ? reconcileNoteTextColorRanges(current.content_color_ranges, current.content, content)
+          : normalizeNoteTextColorRanges(submittedColorRanges, content)
 
       db.prepare(
         `UPDATE notes SET
-           content = ?, status = ?, is_pinned = ?, notify_enabled = ?, effective_at = ?, duration_days = ?,
+           content = ?, content_color_ranges = ?, status = ?, is_pinned = ?, notify_enabled = ?, effective_at = ?, duration_days = ?, duration_kind = ?,
            finished_at = ?, updated_at = ?
          WHERE id = ? AND is_deleted = 0`
       ).run(
         content,
+        JSON.stringify(contentColorRanges),
         schedule.status,
         fields.isPinned ? 1 : 0,
         schedule.notifyEnabled,
         schedule.effectiveAt,
-        durationDays,
+        duration.durationDays,
+        duration.durationKind,
         schedule.finishedAt,
         timestamp,
         id
@@ -372,6 +407,7 @@ export function registerBusinessIpcHandlers({
   ipcMain.handle('notes:get', (_event, { id }) => getNoteById(id))
   ipcMain.handle('notes:query-pinned', (_event, options) => queryPinnedNotes(options || {}))
   ipcMain.handle('notes:query-recent', (_event, options) => queryRecentNotes(options || {}))
+  ipcMain.handle('notes:query-compact', () => queryCompactNote())
   ipcMain.handle('notes:query-earlier', (_event, options) => queryEarlierNotes(options || {}))
   ipcMain.handle('notes:query-custom-pinned', (_event, options) => queryCustomPinned(options || {}))
   ipcMain.handle('notes:query-custom-normal', (_event, options) => queryCustomNormal(options || {}))
@@ -379,32 +415,6 @@ export function registerBusinessIpcHandlers({
   ipcMain.handle('notes:query-tag-group', (_event, options) => queryTagGroupNotes(options || {}))
   ipcMain.handle('notes:search', (_event, options) => searchNotes(options || {}))
   ipcMain.handle('notes:count-active', () => countActiveNotes())
-  ipcMain.handle('notes:preview-historical-move', (_event, selection) =>
-    previewHistoricalInProgressMove(selection || {})
-  )
-  ipcMain.handle('notes:move-historical-to-today', (_event, selection) => {
-    const result = moveHistoricalInProgressNotesToToday(selection || {})
-    diagnosticLogger?.info?.('notes.historical-move', '历史未完成便签移动操作已完成', {
-      scope: result.scope,
-      viewMode: getViewMode(),
-      startDateKey: result.startDateKey,
-      endDateKey: result.endDateKey,
-      targetDateKey: result.targetDateKey,
-      selectedCount: Array.isArray(selection?.noteIds) ? selection.noteIds.length : null,
-      excludedCount: Array.isArray(selection?.excludedNoteIds)
-        ? selection.excludedNoteIds.length
-        : null,
-      affectedCount: result.count
-    })
-    if (result.count > 0) {
-      sendToWindows(getBroadcastWindows, 'notes:changed', {
-        reason: 'historical-move',
-        count: result.count,
-        targetDateKey: result.targetDateKey
-      })
-    }
-    return result
-  })
   ipcMain.handle('notes:reorder-custom', () => reorderCustomSortOrder())
   ipcMain.handle('notes:update-custom-order', (_event, { items }) => updateCustomSortOrders(items))
   ipcMain.handle('notes:start-progress', (_event, { id }) =>
@@ -548,6 +558,9 @@ export function registerBusinessIpcHandlers({
   })
   ipcMain.handle('images:list', (_event, { noteId }) => listImageRecords(noteId))
   ipcMain.handle('images:get-base64', (_event, { relativePath }) => getImageBase64(relativePath))
+  ipcMain.handle('images:get-dimensions', (_event, { relativePath }) =>
+    getImageDimensions(relativePath)
+  )
   ipcMain.handle('images:get-thumbnail', (_event, { relativePath, maxSize }) =>
     getImageThumbnail(relativePath, maxSize)
   )

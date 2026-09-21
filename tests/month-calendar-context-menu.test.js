@@ -20,7 +20,7 @@ describe('月历日期格右键菜单', () => {
     const grid = readFileSync(GRID_PATH, 'utf8')
     const eventBar = readFileSync(EVENT_BAR_PATH, 'utf8')
 
-    expect(eventBar).toContain("const emit = defineEmits(['open-context-menu'])")
+    expect(eventBar).toContain("const emit = defineEmits(['open-context-menu', 'preview-images'])")
     expect(eventBar).toContain('@contextmenu.prevent.stop="openContextMenu"')
     expect(eventBar).toContain("emit('open-context-menu', { event, note: props.note })")
     expect(grid).toContain('@contextmenu="openDayContextMenu($event, day)"')

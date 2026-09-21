@@ -71,7 +71,9 @@ function inside(px,py){const r=selRect();return px>=r.x&&px<=r.x+r.w&&py>=r.y&&p
 
 function updateActions(){
   if(!has){actions.classList.remove('visible');return}
-  const r=selRect();let tx=r.x,ty=r.y+r.h+8
+  const r=selRect(),actionWidth=actions.offsetWidth
+  let tx=r.x+r.w-actionWidth,ty=r.y+r.h+8
+  tx=Math.max(8,Math.min(tx,window.innerWidth-actionWidth-8))
   if(ty+36>window.innerHeight)ty=r.y-44
   actions.style.left=tx+'px';actions.style.top=ty+'px';actions.classList.add('visible')
 }
@@ -157,6 +159,10 @@ export class ScreenshotService {
     this.initialized = true
     this.ipcMain.handle('screenshot:capture', async (event) => {
       if (event.sender !== this.getMainWindow?.()?.webContents) throw new Error('无权使用截图功能')
+      if (this.window && !this.window.isDestroyed()) {
+        this.window.focus()
+        return null
+      }
       try {
         this.onCaptureStart?.()
         return await this.capture(event)
@@ -192,13 +198,13 @@ export class ScreenshotService {
       const window = new BrowserWindow({
         ...targetDisplay.bounds,
         show: false,
+        fullscreen: true,
         transparent: true,
         backgroundColor: '#00000000',
         frame: false,
         alwaysOnTop: true,
         skipTaskbar: true,
         resizable: false,
-        fullscreenable: false,
         hasShadow: false,
         webPreferences: {
           preload: this.preloadPath,

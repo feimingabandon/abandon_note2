@@ -12,7 +12,7 @@
 #include <winternl.h>
 
 namespace {
-constexpr int kNativeAbiVersion = 16;
+constexpr int kNativeAbiVersion = 17;
 }
 
 int AbandonNative_GetAbiVersion(void) {
@@ -104,6 +104,11 @@ void Blur_SetCornerRadius(float radiusDip) {
 
 void Blur_UpdateGeometry(void) {
     BlurEngine::Engine::Instance().UpdateGeometry();
+}
+
+int Blur_SyncGeometryAndWait(int timeoutMs) {
+    const DWORD boundedTimeout = static_cast<DWORD>(std::clamp(timeoutMs, 1, 5'000));
+    return BlurEngine::Engine::Instance().SyncGeometryAndWait(boundedTimeout) ? 1 : 0;
 }
 
 void Blur_ReSyncOrder(void) {

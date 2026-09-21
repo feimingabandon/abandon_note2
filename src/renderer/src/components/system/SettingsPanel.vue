@@ -1,6 +1,5 @@
 <script setup>
 import { useSettingsSearch } from '../../composables/useSettingsSearch.js'
-import { listEditingDrafts } from '../../composables/useDraftProtection.js'
 /**
  * SettingsPanel.vue — 底部弹出式设置面板
  *
@@ -54,6 +53,18 @@ import {
 // ---- 调度器健康数据 ----
 const schedulerHealth = ref(null)
 let _schedulerTimer = null
+
+const SCHEDULER_TASK_LABELS = Object.freeze({
+  activationTask: '便签生效与提醒',
+  noteGenerationTask: '循环便签生成',
+  blurRuntimeDiagnosticTask: '窗口模糊运行诊断',
+  dockHealthTask: '贴边隐藏健康检查',
+  weatherDailyRefreshTask: '天气每日更新'
+})
+
+function schedulerTaskLabel(name) {
+  return SCHEDULER_TASK_LABELS[name] || name
+}
 
 async function loadSchedulerHealth() {
   try {
@@ -304,12 +315,16 @@ const viewVisibilityShortcutRuntime = ref({
 const bgColor = ref(DEFAULT_SETTINGS.css.bgColor)
 const windowBorder = ref(DEFAULT_SETTINGS.css.windowBorder)
 const fontSizeBase = ref(viewDefaults.value.css.fontSizeBase)
+const noteRemarkFontSize = ref(viewDefaults.value.css.noteRemarkFontSize)
+const compactFontSize = ref(DEFAULT_SETTINGS.window.compactFontSize)
 const textColor = ref(DEFAULT_SETTINGS.css.textColor)
 const stickyFontSize = ref(DEFAULT_SETTINGS.sticky.fontSize)
 const stickyBackgroundColor = ref(DEFAULT_SETTINGS.sticky.backgroundColor)
 const stickyCornerRadius = ref(DEFAULT_SETTINGS.sticky.cornerRadius)
 const stickyAlwaysOnTop = ref(DEFAULT_SETTINGS.sticky.alwaysOnTop)
 const doubleClickQuickEdit = ref(DEFAULT_SETTINGS.interaction.doubleClickQuickEdit)
+const tagColorEnabled = ref(DEFAULT_SETTINGS.notes.tagColorEnabled)
+const hideMainViewDuringScreenshot = ref(DEFAULT_SETTINGS.interaction.hideMainViewDuringScreenshot)
 const receiveRemoteNotices = ref(DEFAULT_SETTINGS.remote.receiveNotices)
 const uploadDeviceInfo = ref(DEFAULT_SETTINGS.remote.uploadDeviceInfo)
 const remoteHealthStatus = ref('checking')
@@ -359,6 +374,7 @@ const fontSizeMax = computed(() => (isCalendarView.value ? 28 : 22))
 const fontSizePresets = computed(() =>
   Array.from({ length: fontSizeMax.value - 13 }, (_, index) => index + 14)
 )
+const noteRemarkFontSizePresets = Array.from({ length: 17 }, (_, index) => index + 12)
 const stickyFontSizePresets = [12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
 const stickyColorPresets = [
   { label: '便签黄', value: '#fff2a8' },
@@ -970,6 +986,18 @@ watch(fontSizeBase, (v) => {
   debouncedSave('css.fontSizeBase', v)
 })
 
+// 备注字号独立于辅助文字字号，颜色仍由 --text-color-secondary 统一派生。
+watch(noteRemarkFontSize, (v) => {
+  el.style.setProperty('--note-remark-font-size', v + 'rem')
+  debouncedSave('css.noteRemarkFontSize', v)
+})
+
+// 灵动岛是三个主视图共用的展示模式，使用固定像素字号避免窄窗口缩放根 rem。
+watch(compactFontSize, (v) => {
+  el.style.setProperty('--compact-content-font-size', v + 'px')
+  debouncedSave('window.compactFontSize', v)
+})
+
 // 文字颜色 → CSS --text-color
 watch(textColor, (v) => {
   el.style.setProperty('--text-color', v)
@@ -994,6 +1022,14 @@ watch(stickyAlwaysOnTop, (v) => {
 
 watch(doubleClickQuickEdit, (v) => {
   debouncedSave('interaction.doubleClickQuickEdit', v)
+})
+
+watch(tagColorEnabled, (v) => {
+  debouncedSave('notes.tagColorEnabled', v)
+})
+
+watch(hideMainViewDuringScreenshot, (v) => {
+  debouncedSave('interaction.hideMainViewDuringScreenshot', v)
 })
 
 // 同步文字颜色输入显示值
@@ -1134,6 +1170,9 @@ function assignSettingsSnapshot(snapshot) {
   windowOpacity.value = css.windowOpacity
   windowBorder.value = css.windowBorder
   fontSizeBase.value = css.fontSizeBase
+  noteRemarkFontSize.value = css.noteRemarkFontSize
+  compactFontSize.value =
+    snapshot.values.window?.compactFontSize ?? DEFAULT_SETTINGS.window.compactFontSize
   textColor.value = css.textColor
   stickyFontSize.value = sticky.fontSize
   stickyBackgroundColor.value = sticky.backgroundColor
@@ -1142,9 +1181,13 @@ function assignSettingsSnapshot(snapshot) {
   doubleClickQuickEdit.value =
     snapshot.values.interaction?.doubleClickQuickEdit ??
     DEFAULT_SETTINGS.interaction.doubleClickQuickEdit
+  tagColorEnabled.value =
+    snapshot.values.notes?.tagColorEnabled ?? DEFAULT_SETTINGS.notes.tagColorEnabled
+  hideMainViewDuringScreenshot.value =
+    snapshot.values.interaction?.hideMainViewDuringScreenshot ??
+    DEFAULT_SETTINGS.interaction.hideMainViewDuringScreenshot
   receiveRemoteNotices.value = remote.receiveNotices
   uploadDeviceInfo.value = remote.uploadDeviceInfo
-
   // “用户希望开启”与“当前确实生效”分开：支持平台初始化失败时，开关必须
   // 显示为关闭，同时保留错误信息，让用户可以再次主动开启并触发重试。
   blurEnabled.value = runtimeBlur?.supported
@@ -1386,22 +1429,6 @@ async function retryScheduler() {
     showMessage('error', error.message || '重试失败')
   }
 }
-function exportEditingDrafts() {
-  window.__prepareEditingDrafts?.()
-  const drafts = listEditingDrafts()
-  if (!drafts.length) {
-    showMessage('info', '没有暂存的编辑草稿')
-    return
-  }
-  const url = URL.createObjectURL(
-    new Blob([JSON.stringify(drafts, null, 2)], { type: 'application/json' })
-  )
-  const link = document.createElement('a')
-  link.href = url
-  link.download = 'Abandon-未保存草稿.json'
-  link.click()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
 </script>
 
 <template>
@@ -1474,9 +1501,7 @@ function exportEditingDrafts() {
             aria-label="搜索设置"
             placeholder="搜索设置：字号、提醒、窗口…"
           />
-          <p>
-            当前{{ currentViewLabel }}的窗口与外观独立保存；标注“所有视图”的项目由三个视图共用。
-          </p>
+          <p>当前{{ currentViewLabel }}的窗口与外观独立保存；标注“所有”的项目由三个视图共用。</p>
           <div
             v-if="settingsSearch.query.value.trim()"
             class="settings-search-results scroll-y"
@@ -1557,13 +1582,13 @@ function exportEditingDrafts() {
               />
               <span class="range-label-end">放大</span>
               <span class="setting-value">{{ titlebarIconScale }}%</span>
-              <small class="setting-scope-row">所有视图</small>
+              <small class="setting-scope-row">所有</small>
             </div>
 
             <div class="setting-item">
               <div class="setting-left">
                 <span class="setting-label"
-                  >图标颜色 <small>所有视图</small
+                  >图标颜色 <small>所有</small
                   ><HelpButton
                     text="列表、月视图和周视图共同使用。控制窗口导航、日历工具栏操作，以及列表中的标签、太极刷新和三叶草筛选图标。"
                 /></span>
@@ -1667,6 +1692,42 @@ function exportEditingDrafts() {
                   :presets="fontSizePresets"
                   :min="14"
                   :max="fontSizeMax"
+                  width="90rem"
+                />
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >备注字号<HelpButton
+                    text="单独调整便签卡片中备注文字的大小；备注颜色仍跟随辅助文字颜色。"
+                /></span>
+              </div>
+              <div class="setting-right">
+                <FontSizeInput
+                  v-model="noteRemarkFontSize"
+                  :presets="noteRemarkFontSizePresets"
+                  :min="12"
+                  :max="28"
+                  width="90rem"
+                />
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >灵动岛字号 <small>所有</small
+                  ><HelpButton text="调整灵动岛中便签正文的字号，三个主视图共用。"
+                /></span>
+              </div>
+              <div class="setting-right">
+                <FontSizeInput
+                  v-model="compactFontSize"
+                  :presets="noteRemarkFontSizePresets"
+                  :min="12"
+                  :max="28"
                   width="90rem"
                 />
               </div>
@@ -2026,7 +2087,19 @@ function exportEditingDrafts() {
 
           <!-- ========== 便签交互 ========== -->
           <section class="settings-section">
-            <h3 class="section-title">便签交互 <small>所有视图</small></h3>
+            <h3 class="section-title">便签交互 <small>所有</small></h3>
+
+            <div class="setting-item has-hint">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >标签颜色<HelpButton
+                    text="开启后，有标签的便签正文使用标签颜色，月视图和周视图横条也使用标签颜色；关闭后分别使用文字颜色和便签状态颜色。"
+                /></span>
+              </div>
+              <div class="setting-right">
+                <AppToggle v-model="tagColorEnabled" />
+              </div>
+            </div>
 
             <div class="setting-item has-hint">
               <div class="setting-left">
@@ -2034,10 +2107,21 @@ function exportEditingDrafts() {
                   >双击快速编辑正文<HelpButton
                     text="双击便签卡片或日历便签横条，只快速修改正文；失去焦点后自动保存。右键“修改”仍可打开完整编辑器。"
                 /></span>
-                <span class="setting-hint-caption">列表、月视图和周视图共用</span>
               </div>
               <div class="setting-right">
                 <AppToggle v-model="doubleClickQuickEdit" />
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-left">
+                <span class="setting-label"
+                  >截图时隐藏主视图<HelpButton
+                    text="开启后，进入截图选区前会暂时隐藏当前主视图，截图完成或取消后自动恢复；关闭后可以把主视图一并截入图片。"
+                /></span>
+              </div>
+              <div class="setting-right">
+                <AppToggle v-model="hideMainViewDuringScreenshot" />
               </div>
             </div>
           </section>
@@ -2049,7 +2133,7 @@ function exportEditingDrafts() {
             <div class="setting-item">
               <div class="setting-left">
                 <span class="setting-label"
-                  >开机自启 <small>所有视图</small
+                  >开机自启 <small>所有</small
                   ><HelpButton
                     text="控制应用是否随系统登录自动启动。此状态直接读取并写入操作系统，不保存在应用数据库中。"
                 /></span>
@@ -2079,14 +2163,13 @@ function exportEditingDrafts() {
               </div>
             </div>
 
-            <div class="setting-item has-hint shortcut-setting">
+            <div class="setting-item setting-item-full shortcut-setting">
               <div class="setting-left">
                 <span class="setting-label"
-                  >视图显示快捷键 <small>所有视图</small
+                  >视图显示快捷键 <small>所有</small
                   ><HelpButton
                     text="点击录制后直接按下组合键，无需输入或再次保存。用于显示或隐藏当前视图，窗口隐藏到托盘后仍可使用。"
                 /></span>
-                <span class="setting-hint-caption">列表、月视图和周视图共用</span>
               </div>
               <div class="setting-right">
                 <ShortcutRecorder
@@ -2103,7 +2186,7 @@ function exportEditingDrafts() {
           <!-- ========== 天气 ========== -->
           <section class="settings-section">
             <h3 class="section-title">
-              <span>天气 <small>所有视图</small></span>
+              <span>天气 <small>所有</small></span>
               <button
                 type="button"
                 class="weather-refresh-btn"
@@ -2151,35 +2234,24 @@ function exportEditingDrafts() {
               {{ holidayDataError }}
             </p>
 
-            <div class="setting-item">
-              <div class="setting-left">
+            <div class="setting-item holiday-summary-row">
+              <div
+                class="holiday-summary-item"
+                :title="`可用年份 ${holidayCoveredYearsLabel}；农历与节气支持至 2100 年`"
+              >
                 <span class="setting-label"
                   >当前年份<HelpButton
                     text="程序检查当前年份最终生效的数据。用户导入或下载的数据优先，缺失时回退应用内置数据。"
                 /></span>
-                <span class="setting-hint-caption"
-                  >可用年份 {{ holidayCoveredYearsLabel }}；农历自 1900-01-31、节气自 1900
-                  年起支持至 2100 年</span
-                >
-              </div>
-              <div class="setting-right">
                 <span class="setting-value">{{ currentHolidayYear }}</span>
               </div>
-            </div>
-
-            <div class="setting-item">
-              <div class="setting-left">
+              <div class="holiday-summary-item" :title="holidayDataSourceDetail">
                 <span class="setting-label">当前数据源</span>
-                <span class="setting-hint-caption">
-                  {{ holidayDataSourceDetail }}
-                </span>
-              </div>
-              <div class="setting-right">
                 <span class="setting-value">{{ holidayDataSourceLabel }}</span>
               </div>
             </div>
 
-            <div class="setting-item setting-item-full setting-button-row">
+            <div class="setting-item setting-item-full setting-button-row holiday-action-row">
               <BaseButton
                 variant="primary"
                 :disabled="Boolean(holidayDataBusy)"
@@ -2190,15 +2262,12 @@ function exportEditingDrafts() {
               <BaseButton :disabled="Boolean(holidayDataBusy)" @click="importHolidayData">
                 {{ holidayDataBusy === 'import' ? '正在导入…' : '导入 JSON' }}
               </BaseButton>
-            </div>
-            <div class="setting-item setting-item-full">
               <BaseButton
                 variant="default"
-                style="width: 100%"
                 :disabled="Boolean(holidayDataBusy)"
                 @click="openHolidayDataLink"
               >
-                在浏览器中打开 {{ currentHolidayYear }} 年 JSON
+                浏览器打开
               </BaseButton>
             </div>
           </section>
@@ -2206,7 +2275,7 @@ function exportEditingDrafts() {
           <!-- ========== 远程服务与隐私 ========== -->
           <section class="settings-section">
             <h3 class="section-title">
-              <span>远程服务与隐私 <small>所有视图</small></span>
+              <span>远程服务与隐私 <small>所有</small></span>
               <span
                 class="remote-health-badge sched-badge"
                 :class="
@@ -2299,17 +2368,10 @@ function exportEditingDrafts() {
             </div>
           </section>
 
-          <section class="settings-section">
-            <h3 class="section-title">编辑草稿 <small>所有视图</small></h3>
-            <p>
-              未保存内容在本机暂存，重新打开对应新建面板或编辑器即可恢复。附件过大或存储空间不足时，请先保存再退出。
-            </p>
-            <BaseButton size="sm" @click="exportEditingDrafts">导出未保存草稿</BaseButton>
-          </section>
           <!-- ========== 调度器诊断 ========== -->
           <section v-if="schedulerHealth" class="settings-section">
             <h3 class="section-title">
-              调度器诊断 <small>所有视图</small>
+              调度器诊断 <small>所有</small>
               <BaseButton size="sm" @click="retryScheduler">重试核心任务</BaseButton>
               <button class="sched-refresh-btn" title="刷新" @click="loadSchedulerHealth">↻</button>
             </h3>
@@ -2428,7 +2490,9 @@ function exportEditingDrafts() {
                 :class="{ 'sched-task-card--disabled': task.disabled }"
               >
                 <div class="sched-task-header">
-                  <span class="sched-task-name">{{ task.name }}</span>
+                  <span class="sched-task-name" :title="task.name">
+                    {{ schedulerTaskLabel(task.name) }}
+                  </span>
                   <span
                     v-if="task.disabled"
                     class="sched-badge sched-badge--danger"
@@ -2828,10 +2892,30 @@ function exportEditingDrafts() {
 
 .shortcut-setting .setting-right {
   min-width: 0;
-  flex: 1 1 360rem;
-  justify-content: flex-end;
+  flex: 1 0 100%;
+  justify-content: flex-start;
 }
-
+.shortcut-setting .setting-left {
+  flex: 1 0 100%;
+}
+.holiday-summary-row {
+  flex-wrap: nowrap;
+  gap: 12rem;
+}
+.holiday-summary-item {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8rem;
+}
+.holiday-action-row .base-btn {
+  white-space: nowrap;
+}
+.holiday-action-row {
+  flex-wrap: nowrap;
+}
 .titlebar-style-selector {
   display: grid;
   grid-template-columns: repeat(2, minmax(78rem, 1fr));

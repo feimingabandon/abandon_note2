@@ -3,14 +3,19 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import StatusRing from './StatusRing.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import { useMessage } from '../../composables/useMessage.js'
+import { useTagColorSetting } from '../../composables/useTagColorSetting.js'
 import { getNoteTextColor } from '../../utils/noteAppearance.js'
+import { buildNoteTextColorSegments } from '../../../../shared/note-text-color-rules.js'
 
 const props = defineProps({
   note: { type: Object, required: true },
   query: { type: String, default: '' }
 })
 
-const noteTextColor = computed(() => getNoteTextColor(props.note))
+const { enabled: tagColorEnabled } = useTagColorSetting()
+const noteTextColor = computed(() =>
+  getNoteTextColor(props.note, { tagColorEnabled: tagColorEnabled.value })
+)
 
 const emit = defineEmits(['edit', 'deleted'])
 const { showMessage } = useMessage()
@@ -35,22 +40,49 @@ const displayContent = computed(() => {
 
 const contentParts = computed(() => {
   const content = displayContent.value
+  const colorSegments = buildNoteTextColorSegments(content, props.note.content_color_ranges)
   const needle = props.query.trim()
-  if (!needle) return [{ text: content, match: false }]
+  if (!needle) return colorSegments.map((segment) => ({ ...segment, match: false }))
 
-  const parts = []
+  const matches = []
   const haystack = content.toLocaleLowerCase()
   const normalizedNeedle = needle.toLocaleLowerCase()
   let cursor = 0
   let index = haystack.indexOf(normalizedNeedle, cursor)
   while (index !== -1) {
-    if (index > cursor) parts.push({ text: content.slice(cursor, index), match: false })
-    parts.push({ text: content.slice(index, index + needle.length), match: true })
+    matches.push({ start: index, end: index + needle.length })
     cursor = index + needle.length
     index = haystack.indexOf(normalizedNeedle, cursor)
   }
-  if (cursor < content.length) parts.push({ text: content.slice(cursor), match: false })
-  return parts.length ? parts : [{ text: content, match: false }]
+  if (!matches.length) return colorSegments.map((segment) => ({ ...segment, match: false }))
+
+  const boundaries = new Set([0, content.length])
+  for (const segment of colorSegments) {
+    boundaries.add(segment.start)
+    boundaries.add(segment.end)
+  }
+  for (const match of matches) {
+    boundaries.add(match.start)
+    boundaries.add(match.end)
+  }
+  const sorted = [...boundaries].sort((left, right) => left - right)
+  const parts = []
+  for (let partIndex = 0; partIndex < sorted.length - 1; partIndex += 1) {
+    const start = sorted[partIndex]
+    const end = sorted[partIndex + 1]
+    if (end <= start) continue
+    const color = colorSegments.find(
+      (segment) => segment.color && segment.start <= start && segment.end >= end
+    )?.color
+    parts.push({
+      start,
+      end,
+      text: content.slice(start, end),
+      color,
+      match: matches.some((match) => match.start <= start && match.end >= end)
+    })
+  }
+  return parts
 })
 
 function formatDateTime(timestamp) {
@@ -300,9 +332,20 @@ onUnmounted(() => {
         :style="{ height: contentShellHeight }"
       >
         <p ref="contentTextRef" class="src-content">
-          <template v-for="(part, index) in contentParts" :key="index">
-            <mark v-if="part.match" class="src-highlight">{{ part.text }}</mark>
-            <template v-else>{{ part.text }}</template>
+          <template v-for="part in contentParts" :key="`${part.start}:${part.end}`">
+            <mark
+              v-if="part.match"
+              class="src-highlight"
+              :class="{ 'src-content__colored': part.color }"
+              :style="part.color ? { '--note-range-color': part.color } : undefined"
+              >{{ part.text }}</mark
+            >
+            <span
+              v-else
+              :class="{ 'src-content__colored': part.color }"
+              :style="part.color ? { '--note-range-color': part.color } : undefined"
+              >{{ part.text }}</span
+            >
           </template>
         </p>
       </div>
@@ -463,6 +506,9 @@ onUnmounted(() => {
   overflow-wrap: anywhere;
   user-select: text;
   cursor: text;
+}
+.src-content__colored {
+  color: color-mix(in srgb, var(--note-range-color) 92%, transparent);
 }
 .src-highlight {
   padding: 0 1rem;

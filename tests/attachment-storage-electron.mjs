@@ -115,6 +115,30 @@ app.once('ready', async () => {
       0
     )
 
+    const imageOnlyNoteId = insertNote(db, '')
+    const imageOnlyRelativePath = join(
+      'attachments',
+      'images',
+      String(imageOnlyNoteId),
+      'only-image.png'
+    )
+    const imageOnlyPath = writeAttachment(imageOnlyRelativePath)
+    const imageOnlyAttachmentId = insertAttachment(db, imageOnlyNoteId, imageOnlyRelativePath)
+    await assert.rejects(
+      () => deleteImageRecordAndFile(imageOnlyAttachmentId),
+      /纯图片便签至少需要保留一张图片/
+    )
+    assert.equal(existsSync(imageOnlyPath), true)
+    assert.equal(
+      db
+        .prepare('SELECT COUNT(*) AS count FROM note_attachments WHERE id = ?')
+        .get(imageOnlyAttachmentId).count,
+      1
+    )
+    db.prepare('UPDATE notes SET content = ? WHERE id = ?').run('补充正文后可删除', imageOnlyNoteId)
+    assert.equal(await deleteImageRecordAndFile(imageOnlyAttachmentId), true)
+    assert.equal(existsSync(imageOnlyPath), false)
+
     const purgeFailureNoteId = insertNote(db, '彻底删除失败恢复测试')
     const purgeFailureRelativePath = join(
       'attachments',

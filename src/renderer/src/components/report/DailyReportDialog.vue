@@ -326,8 +326,14 @@ onBeforeUnmount(() => {
                   <span>{{ statusDetails(note.status).label }}</span>
                   <span aria-hidden="true">·</span>
                   <time>{{ noteTime(note) }}</time>
-                  <span v-if="note.duration_days > 1" class="daily-report-note__duration">
-                    持续 {{ note.duration_days }} 天
+                  <span
+                    v-if="note.duration_kind === 'until_completed'"
+                    class="daily-report-note__duration"
+                  >
+                    持续到完成 · {{ note.calendar_duration_days }} 天
+                  </span>
+                  <span v-else-if="note.duration_days > 1" class="daily-report-note__duration">
+                    指定 {{ note.duration_days }} 天
                   </span>
                 </span>
                 <span class="daily-report-note__content">{{ note.content }}</span>

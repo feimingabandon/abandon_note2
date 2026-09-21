@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   constrainMainWindowBounds,
   getPersistableWindowBounds,
-  getWindowBoundsUpdate
+  getWindowBoundsUpdate,
+  mainWindowBoundsFromTitlebarAnchor
 } from '../src/main/window-bounds.js'
 
 describe('constrainMainWindowBounds', () => {
@@ -30,6 +31,23 @@ describe('constrainMainWindowBounds', () => {
         { x: 10, y: 20, width: 200, height: 180 }
       )
     ).toEqual({ x: 10, y: 20, width: 200, height: 180 })
+  })
+})
+
+describe('mainWindowBoundsFromTitlebarAnchor', () => {
+  const workArea = { x: 1920, y: 40, width: 1600, height: 900 }
+  const expandedBounds = { x: 40, y: 50, width: 480, height: 720 }
+
+  it('places the navigation center exactly at the double-click point when space is available', () => {
+    expect(
+      mainWindowBoundsFromTitlebarAnchor(expandedBounds, { x: 2600, y: 200 }, 24, workArea)
+    ).toEqual({ x: 2360, y: 176, width: 480, height: 720 })
+  })
+
+  it('moves the complete main window inside the target display work area near an edge', () => {
+    expect(
+      mainWindowBoundsFromTitlebarAnchor(expandedBounds, { x: 3500, y: 920 }, 24, workArea)
+    ).toEqual({ x: 3040, y: 220, width: 480, height: 720 })
   })
 })
 

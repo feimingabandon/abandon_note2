@@ -95,6 +95,9 @@ public:
 
     // ---- 位置/尺寸同步 ----
     void UpdateGeometry();
+    // 灵动岛和视图切换的最终提交屏障：等待 STA 更新 HWND/Visual，
+    // 并在返回前验证物理边界与可见帧。
+    bool SyncGeometryAndWait(DWORD syncTimeoutMs = 500);
     // 贴边动画专用：同批提交父窗口与 Overlay，并在有界等待后
     // 验证两者物理边界一致。Composition 对象仍只由 STA 线程访问。
     bool MoveParentAndOverlay(HWND parentHwnd, int physicalX, int physicalY,
@@ -144,6 +147,7 @@ private:
     // ---- DPI 动态切换 ----
     void HandleDpiChanged(WPARAM wParam, LPARAM lParam);
     bool SyncGeometryFromParent();
+    bool VerifyGeometrySynchronized() const;
     bool SyncAndShow();
     void RecordNativeFailure(const char* stage, long long nativeCode);
     mutable std::mutex m_failureMutex;

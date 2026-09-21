@@ -53,7 +53,6 @@ describe('titlebar icon scale UI wiring', () => {
       'clover',
       'switch-view',
       'locate-current',
-      'move-to-today',
       'date-panel'
     ]
 

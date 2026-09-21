@@ -5,15 +5,14 @@
  */
 import { getDb } from './db-connection.js'
 import { createHash } from 'node:crypto'
-import { localDateKey } from '../../shared/calendar/calendar-date-rules.js'
+import { NOTE_DURATION_KINDS } from '../../shared/calendar/calendar-date-rules.js'
 import { normalizeAssignedTagIds } from '../../shared/tag-rules.js'
 import {
-  HISTORICAL_NOTE_MOVE_PREVIEW_MAX_CONTENT_LENGTH,
-  HISTORICAL_NOTE_MOVE_SCOPES,
-  normalizeHistoricalNoteMoveIds,
-  normalizeHistoricalNoteMovePreviewPage,
-  normalizeHistoricalNoteMoveSelection
-} from '../../shared/historical-note-move-rules.js'
+  applyNoteTextColorRange,
+  normalizeNoteTextColorRanges,
+  reconcileNoteTextColorRanges,
+  serializeNoteTextColorRanges
+} from '../../shared/note-text-color-rules.js'
 
 const now = () => Date.now()
 export const MIN_NOTE_DURATION_DAYS = 1
@@ -44,6 +43,59 @@ export function normalizeNoteDurationDays(value = MIN_NOTE_DURATION_DAYS) {
   return durationDays
 }
 
+export function normalizeNoteDuration({ durationKind, durationDays } = {}) {
+  const normalizedDays = normalizeNoteDurationDays(durationDays ?? MIN_NOTE_DURATION_DAYS)
+  if (durationKind === undefined || durationKind === null || durationKind === '') {
+    return {
+      durationKind:
+        normalizedDays > 1 ? NOTE_DURATION_KINDS.FIXED_DAYS : NOTE_DURATION_KINDS.SINGLE_DAY,
+      durationDays: normalizedDays
+    }
+  }
+  if (!Object.values(NOTE_DURATION_KINDS).includes(durationKind)) {
+    throw new Error('持续方式无效')
+  }
+  if (durationKind === NOTE_DURATION_KINDS.FIXED_DAYS) {
+    if (normalizedDays < 2) throw new Error('指定天数必须是 2~365 之间的整数')
+    return { durationKind, durationDays: normalizedDays }
+  }
+  return { durationKind, durationDays: MIN_NOTE_DURATION_DAYS }
+}
+
+/**
+ * 合并持续方式的部分更新。
+ *
+ * 旧调用方可能只回传 durationDays；当该值没有变化时必须保留原有
+ * duration_kind，避免把“持续到完成”（其持久化天数固定为 1）误降级成单日。
+ */
+export function resolveNoteDurationUpdate(original = {}, fields = {}) {
+  const requestedDurationKind = fields.durationKind ?? fields.duration_kind
+  const requestedDurationDays = fields.durationDays ?? fields.duration_days
+  if (requestedDurationKind === undefined && requestedDurationDays === undefined) {
+    return {
+      durationKind: original.duration_kind,
+      durationDays: original.duration_days
+    }
+  }
+  if (
+    requestedDurationKind === undefined &&
+    Number(requestedDurationDays) === Number(original.duration_days)
+  ) {
+    return {
+      durationKind: original.duration_kind,
+      durationDays: original.duration_days
+    }
+  }
+  return normalizeNoteDuration({
+    durationKind: requestedDurationKind,
+    durationDays:
+      requestedDurationDays ??
+      (requestedDurationKind === NOTE_DURATION_KINDS.FIXED_DAYS
+        ? Math.max(2, Number(original.duration_days) || 2)
+        : 1)
+  })
+}
+
 function normalizeQueryLimit(value, fallback) {
   const parsed = Math.trunc(Number(value))
   if (parsed === 0) return 0
@@ -65,18 +117,26 @@ function normalizeQueryOffset(value) {
  * 只有未来生效的便签进入 initialized，且仅此状态可以保留待触发提醒。
  * finished_at 按当前产品语义记录最近一次状态写入时间，创建时同步初始化。
  */
-export function createNote({
-  content = '',
-  effectiveAt = null,
-  durationDays = MIN_NOTE_DURATION_DAYS,
-  noteType = 'one_time',
-  notifyEnabled = 0,
-  isPinned = 0,
-  sortOrder = 0
-} = {}) {
+export function createNote(
+  {
+    content = '',
+    contentColorRanges = [],
+    effectiveAt = null,
+    durationDays = MIN_NOTE_DURATION_DAYS,
+    durationKind,
+    noteType = 'one_time',
+    notifyEnabled = 0,
+    isPinned = 0,
+    sortOrder = 0
+  } = {},
+  { allowEmptyContent = false } = {}
+) {
   const ts = now()
-  const normalizedContent = normalizeRequiredNoteContent(content)
-  const normalizedDurationDays = normalizeNoteDurationDays(durationDays)
+  const normalizedContent = allowEmptyContent
+    ? String(content ?? '')
+    : normalizeRequiredNoteContent(content)
+  const normalizedDuration = normalizeNoteDuration({ durationKind, durationDays })
+  const normalizedColorRanges = normalizeNoteTextColorRanges(contentColorRanges, normalizedContent)
   const parsedEffectiveAt = Number(effectiveAt)
   const hasExplicitTime = Number.isFinite(parsedEffectiveAt) && parsedEffectiveAt > 0
   const effAt = hasExplicitTime ? parsedEffectiveAt : ts
@@ -87,18 +147,20 @@ export function createNote({
   const result = getDb()
     .prepare(
       `INSERT INTO notes (
-         note_type, content, status, is_pinned, notify_enabled,
-         effective_at, duration_days, finished_at, sort_order, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         note_type, content, content_color_ranges, status, is_pinned, notify_enabled,
+         effective_at, duration_days, duration_kind, finished_at, sort_order, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       noteType,
       normalizedContent,
+      JSON.stringify(normalizedColorRanges),
       status,
       isPinned ? 1 : 0,
       pendingNotification,
       effAt,
-      normalizedDurationDays,
+      normalizedDuration.durationDays,
+      normalizedDuration.durationKind,
       ts,
       sortOrder,
       ts,
@@ -151,22 +213,29 @@ export function updateNote(id, fields = {}) {
   if (!old) return null
 
   const ts = now()
-  const content =
-    fields.content === undefined ? old.content : normalizeRequiredNoteContent(fields.content)
-  const durationDays =
-    fields.durationDays === undefined && fields.duration_days === undefined
-      ? old.duration_days
-      : normalizeNoteDurationDays(fields.durationDays ?? fields.duration_days)
+  const requestedContent = fields.content === undefined ? old.content : String(fields.content ?? '')
+  const content = old.attachments.length
+    ? requestedContent
+    : normalizeRequiredNoteContent(requestedContent)
+  const contentColorRanges =
+    content === old.content
+      ? normalizeNoteTextColorRanges(old.content_color_ranges, content)
+      : reconcileNoteTextColorRanges(old.content_color_ranges, old.content, content)
+  const remark = fields.remark === undefined ? old.remark : String(fields.remark ?? '')
+  const duration = resolveNoteDurationUpdate(old, fields)
   getDb()
     .prepare(
       `UPDATE notes SET
-         content = ?, is_pinned = ?, duration_days = ?, sort_order = ?, updated_at = ?
+         content = ?, content_color_ranges = ?, remark = ?, is_pinned = ?, duration_days = ?, duration_kind = ?, sort_order = ?, updated_at = ?
        WHERE id = ?`
     )
     .run(
       content,
+      JSON.stringify(contentColorRanges),
+      remark,
       fields.is_pinned ?? old.is_pinned,
-      durationDays,
+      duration.durationDays,
+      duration.durationKind,
       fields.sort_order ?? old.sort_order,
       ts,
       id
@@ -178,6 +247,8 @@ export function updateNote(id, fields = {}) {
 export function getNoteById(id) {
   const note = getDb().prepare('SELECT * FROM notes WHERE id = ? AND is_deleted = 0').get(id)
   if (!note) return null
+
+  note.content_color_ranges = normalizeNoteTextColorRanges(note.content_color_ranges, note.content)
 
   note.attachments = getDb()
     .prepare('SELECT * FROM note_attachments WHERE note_id = ? ORDER BY sort_order')
@@ -199,9 +270,12 @@ export function getNoteById(id) {
     .update(
       JSON.stringify({
         content: note.content,
+        contentColorRanges: note.content_color_ranges,
+        remark: note.remark,
         status: note.status,
         effectiveAt: note.effective_at,
         durationDays: note.duration_days,
+        durationKind: note.duration_kind,
         notifyEnabled: note.notify_enabled,
         isPinned: note.is_pinned,
         finishedAt: note.finished_at,
@@ -215,6 +289,40 @@ export function getNoteById(id) {
     .digest('hex')
 
   return note
+}
+
+/**
+ * 设置或清除一个正文选区的颜色。正文和旧区间均参与冲突校验，避免跨视图静默覆盖。
+ */
+export function updateNoteTextColor(
+  id,
+  { start, end, color = null, expectedContent, expectedColorRanges } = {}
+) {
+  const db = getDb()
+  return db.transaction(() => {
+    const current = getNoteById(id)
+    if (!current) throw new Error('便签不存在或已被删除')
+    if (typeof expectedContent !== 'string' || current.content !== expectedContent) {
+      throw new Error('便签正文已发生变化，请重新选择文字后再设置颜色')
+    }
+    const expected = normalizeNoteTextColorRanges(expectedColorRanges, current.content)
+    if (JSON.stringify(expected) !== JSON.stringify(current.content_color_ranges)) {
+      throw new Error('便签文字颜色已发生变化，请重新选择后再试')
+    }
+
+    const nextRanges = applyNoteTextColorRange(current.content_color_ranges, {
+      content: current.content,
+      start,
+      end,
+      color
+    })
+    db.prepare(
+      `UPDATE notes
+       SET content_color_ranges = ?, updated_at = ?
+       WHERE id = ? AND is_deleted = 0`
+    ).run(serializeNoteTextColorRanges(nextRanges, current.content), now(), id)
+    return getNoteById(id)
+  })()
 }
 
 /** 逻辑删除：保留便签、标签关联和附件文件，物理清理由“清空便签数据”统一执行。 */
@@ -336,124 +444,6 @@ export function activateNotes() {
   })()
 }
 
-function historicalInProgressWhere(selection) {
-  if (selection.scope === HISTORICAL_NOTE_MOVE_SCOPES.ALL) {
-    return {
-      clause: "status = 'in_progress' AND is_deleted = 0 AND effective_at < ?",
-      params: [selection.todayStart]
-    }
-  }
-  return {
-    clause: "status = 'in_progress' AND is_deleted = 0 AND effective_at >= ? AND effective_at < ?",
-    params: [selection.rangeStart, selection.rangeEndExclusive]
-  }
-}
-
-/** 统计所选历史自然日中仍处于进行中的便签。 */
-export function previewHistoricalInProgressMove(selection = {}, currentTime = Date.now()) {
-  const normalized = normalizeHistoricalNoteMoveSelection(selection, currentTime)
-  const page = normalizeHistoricalNoteMovePreviewPage(selection)
-  const where = historicalInProgressWhere(normalized)
-  const count = Number(
-    getDb()
-      .prepare(`SELECT COUNT(*) AS total FROM notes WHERE ${where.clause}`)
-      .get(...where.params).total
-  )
-  const notes = getDb()
-    .prepare(
-      `SELECT id,
-              CASE WHEN length(content) > ? THEN substr(content, 1, ?) ELSE content END
-                AS content_preview,
-              length(content) AS content_length,
-              effective_at
-       FROM notes
-       WHERE ${where.clause}
-       ORDER BY effective_at DESC, id DESC
-       LIMIT ? OFFSET ?`
-    )
-    .all(
-      HISTORICAL_NOTE_MOVE_PREVIEW_MAX_CONTENT_LENGTH,
-      HISTORICAL_NOTE_MOVE_PREVIEW_MAX_CONTENT_LENGTH - 1,
-      ...where.params,
-      page.limit,
-      page.offset
-    )
-    .map((note) => ({
-      id: Number(note.id),
-      content:
-        Number(note.content_length) > HISTORICAL_NOTE_MOVE_PREVIEW_MAX_CONTENT_LENGTH
-          ? `${String(note.content_preview || '')}…`
-          : String(note.content_preview || ''),
-      contentTruncated:
-        Number(note.content_length) > HISTORICAL_NOTE_MOVE_PREVIEW_MAX_CONTENT_LENGTH,
-      dateKey: localDateKey(note.effective_at)
-    }))
-  return {
-    count,
-    notes,
-    offset: page.offset,
-    limit: page.limit,
-    hasMore: page.offset + notes.length < count,
-    scope: normalized.scope,
-    startDateKey: normalized.startDateKey,
-    endDateKey: normalized.endDateKey,
-    targetDateKey: normalized.todayDateKey
-  }
-}
-
-/**
- * 将所选历史自然日中的进行中便签原子移动到操作发生时刻。
- * created_at、finished_at、持续天数及其他业务字段保持不变。
- */
-export function moveHistoricalInProgressNotesToToday(selection = {}, currentTime = Date.now()) {
-  const timestamp = Number(currentTime)
-  const normalized = normalizeHistoricalNoteMoveSelection(selection, timestamp)
-  const selectedNoteIds = normalizeHistoricalNoteMoveIds(selection?.noteIds)
-  const excludedNoteIds = normalizeHistoricalNoteMoveIds(selection?.excludedNoteIds)
-  if (selectedNoteIds !== null && excludedNoteIds !== null) {
-    throw new Error('不能同时指定待移动和排除的便签列表')
-  }
-  const where = historicalInProgressWhere(normalized)
-  const db = getDb()
-  return db.transaction(() => {
-    let changes = 0
-    if (selectedNoteIds === null && (!excludedNoteIds || excludedNoteIds.length === 0)) {
-      changes = db
-        .prepare(
-          `UPDATE notes
-           SET effective_at = ?, notify_enabled = 0, updated_at = ?
-           WHERE ${where.clause}`
-        )
-        .run(timestamp, timestamp, ...where.params).changes
-    } else if (selectedNoteIds === null) {
-      changes = db
-        .prepare(
-          `UPDATE notes
-           SET effective_at = ?, notify_enabled = 0, updated_at = ?
-           WHERE ${where.clause} AND id NOT IN (${excludedNoteIds.map(() => '?').join(',')})`
-        )
-        .run(timestamp, timestamp, ...where.params, ...excludedNoteIds).changes
-    } else if (selectedNoteIds.length > 0) {
-      const updateSelected = db.prepare(
-        `UPDATE notes
-         SET effective_at = ?, notify_enabled = 0, updated_at = ?
-         WHERE ${where.clause} AND id = ?`
-      )
-      for (const noteId of selectedNoteIds) {
-        changes += updateSelected.run(timestamp, timestamp, ...where.params, noteId).changes
-      }
-    }
-    return {
-      count: changes,
-      scope: normalized.scope,
-      startDateKey: normalized.startDateKey,
-      endDateKey: normalized.endDateKey,
-      targetDateKey: normalized.todayDateKey,
-      movedAt: timestamp
-    }
-  })()
-}
-
 // ============================================================
 // 列表 DTO
 // ============================================================
@@ -462,12 +452,15 @@ export function moveHistoricalInProgressNotesToToday(selection = {}, currentTime
  * @typedef {Object} NoteListItem
  * @property {number} id
  * @property {string} content
+ * @property {Array<{start:number,end:number,text:string,color:string}>} content_color_ranges
+ * @property {string} remark
  * @property {'initialized'|'in_progress'|'completed'} status
  * @property {number} is_pinned
  * @property {number} is_deleted
  * @property {number} notify_enabled
  * @property {number} effective_at
  * @property {number} duration_days
+ * @property {'single_day'|'fixed_days'|'until_completed'} duration_kind
  * @property {number|null} finished_at
  * @property {number} sort_order
  * @property {Array<{id:number,name:string,color:string|null}>} tags
@@ -547,12 +540,15 @@ export function toNoteListItems(notes) {
     return {
       id: note.id,
       content: note.content,
+      content_color_ranges: normalizeNoteTextColorRanges(note.content_color_ranges, note.content),
+      remark: note.remark,
       status: note.status,
       is_pinned: note.is_pinned,
       is_deleted: note.is_deleted,
       notify_enabled: note.notify_enabled,
       effective_at: note.effective_at,
       duration_days: note.duration_days,
+      duration_kind: note.duration_kind,
       finished_at: note.finished_at,
       sort_order: note.sort_order,
       created_at: note.created_at,
@@ -566,27 +562,44 @@ export function toNoteListItems(notes) {
 }
 
 /**
- * 查询可能与当前月份相交的真实便签。candidateFrom 已按最大持续天数
- * 向前扩展，避免 SQLite 对每行做本地日期运算；精确区间相交由日历服务统一判断。
+ * 查询可能与当前日期范围相交的真实便签。固定天数便签从 candidateFrom 开始筛选；
+ * 进行中的“持续到完成”始终保留，已完成项按完成时间排除与可见范围无交集的历史数据。
  */
 export function queryCalendarNotes({
   candidateFrom,
+  visibleStart = candidateFrom,
   visibleEndExclusive,
   filter = () => true,
   hydrate = true
 } = {}) {
   const from = Number(candidateFrom)
+  const start = Number(visibleStart)
   const end = Number(visibleEndExclusive)
-  if (!Number.isFinite(from) || !Number.isFinite(end) || from >= end) {
+  if (
+    !Number.isFinite(from) ||
+    !Number.isFinite(start) ||
+    !Number.isFinite(end) ||
+    from > start ||
+    start >= end
+  ) {
     throw new Error('无效的月历查询范围')
   }
   const notes = getDb()
     .prepare(
       `SELECT n.* FROM notes n
-       WHERE n.is_deleted = 0 AND n.effective_at >= ? AND n.effective_at < ?
+       WHERE n.is_deleted = 0 AND n.effective_at < ?
+         AND (
+           n.effective_at >= ?
+           OR (n.duration_kind = 'until_completed' AND n.status = 'in_progress')
+           OR (
+             n.duration_kind = 'until_completed'
+             AND n.status = 'completed'
+             AND n.finished_at >= ?
+           )
+         )
        ORDER BY n.is_pinned DESC, n.effective_at ASC, n.duration_days DESC, n.id ASC`
     )
-    .all(from, end)
+    .all(end, from, start)
   const matching = notes.filter(filter)
   return hydrate ? toNoteListItems(matching) : matching
 }
@@ -626,6 +639,19 @@ export function queryRecentNotes({ statuses, tagIds, search, cutoffTime } = {}) 
     )
     .all(...params)
   return toNoteListItems(notes)
+}
+
+/** 灵动岛只展示最近进入进行中的一条真实便签。 */
+export function queryCompactNote() {
+  const note = getDb()
+    .prepare(
+      `SELECT n.* FROM notes n
+       WHERE n.is_deleted = 0 AND n.status = 'in_progress'
+       ORDER BY n.effective_at DESC, n.id DESC
+       LIMIT 1`
+    )
+    .get()
+  return note ? toNoteListItems([note])[0] : null
 }
 
 export function queryEarlierNotes({

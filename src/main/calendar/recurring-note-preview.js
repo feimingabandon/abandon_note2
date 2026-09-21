@@ -69,6 +69,7 @@ export function buildRecurringNotePreviews({
             notify_enabled: 0,
             effective_at: scheduledAt,
             duration_days: 1,
+            duration_kind: 'single_day',
             attachment_count: 0,
             from_template: 1,
             tags: Array.isArray(template.tags) ? template.tags : []

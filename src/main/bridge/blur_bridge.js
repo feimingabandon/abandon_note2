@@ -190,6 +190,7 @@ function initNative() {
       'float'
     ])
     loaded.Blur_UpdateGeometry = loaded.func('Blur_UpdateGeometry', 'void', [])
+    loaded.Blur_SyncGeometryAndWait = loaded.func('Blur_SyncGeometryAndWait', 'int', ['int'])
     loaded.Blur_ReSyncOrder = loaded.func('Blur_ReSyncOrder', 'void', [])
     loaded.Blur_IsInitialized = loaded.func('Blur_IsInitialized', 'int', [])
     loaded.Blur_IsHealthy = loaded.func('Blur_IsHealthy', 'int', [])
@@ -337,6 +338,21 @@ export function setConfig(config) {
 export function updateGeometry() {
   if (!initialized) return
   lib.Blur_UpdateGeometry()
+}
+
+export function syncGeometryAndWait(timeoutMs = 500) {
+  if (!initialized || process.platform !== 'win32') return true
+  const synchronized = lib.Blur_SyncGeometryAndWait(
+    Math.max(1, Math.min(5_000, Math.round(Number(timeoutMs) || 500)))
+  )
+  if (synchronized !== 1) {
+    const nativeError = getNativeError('原生毛玻璃几何同步未完成')
+    const error = new Error(nativeError.message)
+    error.code = 'NATIVE_BLUR_GEOMETRY_SYNC_FAILED'
+    error.nativeError = nativeError
+    throw error
+  }
+  return true
 }
 
 export function reSyncZOrder() {

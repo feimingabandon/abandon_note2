@@ -142,6 +142,24 @@ export function createTemplateFormSnapshot(payload = {}) {
   })
 }
 
+export function createTemplateRuleSnapshot(rule) {
+  return JSON.stringify(rule || null)
+}
+
+export function resolveStoredTemplatePreviewAt({
+  initialTemplate,
+  initialRuleSnapshot,
+  currentRuleSnapshot
+} = {}) {
+  if (!initialTemplate || !initialRuleSnapshot || initialRuleSnapshot !== currentRuleSnapshot)
+    return null
+
+  const storedValue = initialTemplate.next_run_at ?? initialTemplate.nextRunAt
+  if (storedValue === null || storedValue === undefined || storedValue === '') return null
+  const storedNextRunAt = Number(storedValue)
+  return Number.isFinite(storedNextRunAt) && storedNextRunAt > 0 ? storedNextRunAt : null
+}
+
 export function isTemplateEditTarget(template, id) {
   if (!template || id === null || id === undefined) return false
   return String(template.id) === String(id)

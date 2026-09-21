@@ -1,9 +1,18 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useMessage } from './useMessage.js'
 
-const PREFIX = 'abandon:editing-draft:v1:'
+const DRAFT_PREFIX = 'abandon:editing-draft:'
+const sessionId =
+  String(window.api?.runtimeCapabilities?.editingDraftSessionId || '').trim() || crypto.randomUUID()
+const PREFIX = `${DRAFT_PREFIX}v2:${sessionId}:`
 const active = new Set()
 export const editingDataGeneration = ref(0)
+
+// localStorage 只充当同一次应用启动内跨页面重载的草稿日志。启动标识变化后，先清理
+// 旧会话记录，确保正常退出或崩溃退出后再次启动都不会恢复上次草稿。
+for (const key of Object.keys(localStorage)) {
+  if (key.startsWith(DRAFT_PREFIX) && !key.startsWith(PREFIX)) localStorage.removeItem(key)
+}
 
 // Invalidate mounted forms before unmounting them so their final flush cannot
 // recreate data the user has explicitly cleared. Unrelated local settings stay intact.
@@ -25,18 +34,6 @@ window.__prepareEditingDrafts = () => {
     dirty: entries.some((entry) => entry.dirty),
     blocked: entries.some((entry) => entry.blocked)
   }
-}
-
-export function listEditingDrafts() {
-  return Object.keys(localStorage)
-    .filter((key) => key.startsWith(PREFIX))
-    .flatMap((key) => {
-      try {
-        return [{ key, ...JSON.parse(localStorage.getItem(key)) }]
-      } catch {
-        return []
-      }
-    })
 }
 
 /** Rehydrate only the form; saving remains an explicit, version-checked business action. */
@@ -93,10 +90,10 @@ export function useDraftProtection({
           if (Object.hasOwn(saved.data, name)) value.value = saved.data[name]
         }
         await restoreExtra(saved.data)
-        showMessage('info', '已恢复上次未保存的草稿，请核对后保存。')
+        showMessage('info', '已恢复本次启动期间未保存的草稿，请核对后保存。')
       }
     } catch (error) {
-      showMessage('error', '草稿恢复失败，原始草稿仍保留，请从设置导出检查。')
+      showMessage('error', '草稿恢复失败，原始草稿仍保留，请重新打开编辑器核对。')
       console.error('[editing-draft] 恢复失败', error)
       return
     }

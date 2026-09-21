@@ -10,17 +10,23 @@ import ImagePicker from '../note/ImagePicker.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import StatusRing from './StatusRing.vue'
 import QuickNoteContentEditor from '../note/QuickNoteContentEditor.vue'
+import NoteTextColorPopover from '../note/NoteTextColorPopover.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { useQuickNoteEditSetting } from '../../composables/useQuickNoteEditSetting.js'
 import { useSharedMinuteClock } from '../../composables/useSharedMinuteClock.js'
+import { useTagColorSetting } from '../../composables/useTagColorSetting.js'
 import { getNoteTextColor } from '../../utils/noteAppearance.js'
+import { readTextSelection } from '../../utils/textSelection.js'
+import {
+  buildNoteTextColorSegments,
+  normalizeNoteTextColorRanges
+} from '../../../../shared/note-text-color-rules.js'
 
 const props = defineProps({
   note: { type: Object, required: true },
   weather: { type: Object, default: null },
   draggable: { type: Boolean, default: false },
   muted: { type: Boolean, default: false },
-  colorByTag: { type: Boolean, default: true },
   allowCreateTag: { type: Boolean, default: false },
   statusTransition: { type: Object, default: null }
 })
@@ -28,6 +34,7 @@ const props = defineProps({
 const emit = defineEmits(['status-action', 'edit', 'create-tag'])
 const { showMessage } = useMessage()
 const { enabled: doubleClickQuickEditEnabled } = useQuickNoteEditSetting()
+const { enabled: tagColorEnabled } = useTagColorSetting()
 const sharedNow = useSharedMinuteClock()
 const systemNotificationsSupported =
   window.api.runtimeCapabilities?.systemNotifications?.supported ?? true
@@ -52,11 +59,14 @@ const showReminder = computed(
 
 const tags = computed(() => (Array.isArray(props.note.tags) ? props.note.tags : []))
 const noteTextColor = computed(() =>
-  props.colorByTag ? getNoteTextColor(props.note) : 'var(--text-color)'
+  getNoteTextColor(props.note, { tagColorEnabled: tagColorEnabled.value })
 )
 const visibleTags = computed(() => tags.value.slice(0, 2))
 const hiddenTagCount = computed(() => Math.max(0, tags.value.length - 2))
 const attachmentCount = computed(() => Number(props.note.attachment_count) || 0)
+const isImageOnly = computed(
+  () => !String(props.note.content || '').trim() && attachmentCount.value > 0
+)
 const imagesExpanded = ref(false)
 const imagesMounted = ref(false)
 const tagsExpanded = ref(false)
@@ -65,12 +75,15 @@ const tagPopoverStyle = ref({})
 const contextMenuVisible = ref(false)
 const contextMenuRef = ref(null)
 const contextMenuStyle = ref({})
+const cardRef = ref(null)
 const contentShellRef = ref(null)
 const contentTextRef = ref(null)
 const contentExpanded = ref(false)
 const contentOverflows = ref(false)
 const contentAnimating = ref(false)
 const contentShellHeight = ref('auto')
+const imageExpanded = ref(false)
+const imageOverflows = ref(false)
 const deleting = ref(false)
 const creatingSticky = ref(false)
 const togglingPinned = ref(false)
@@ -82,19 +95,93 @@ let contentResizeObserver = null
 let contentAnimation = null
 const quickEditorVisible = ref(false)
 const quickEditorAnchor = ref(null)
+const textColorPopoverVisible = ref(false)
+const textColorPopoverAnchor = ref(null)
+const selectedTextRange = ref(null)
+const savingTextColor = ref(false)
 
-function openQuickEditor(event) {
-  if (!doubleClickQuickEditEnabled.value || quickEditorVisible.value) return
+function readSelectedTextRange() {
+  return readTextSelection(contentTextRef.value, String(props.note.content || ''))
+}
+
+function closeTextColorPopover() {
+  textColorPopoverVisible.value = false
+  selectedTextRange.value = null
+}
+
+async function showTextColorPopover() {
+  const selected = readSelectedTextRange()
+  if (!selected) {
+    closeTextColorPopover()
+    return false
+  }
+  closeTags()
+  closeContextMenu()
+  selectedTextRange.value = selected
+  textColorPopoverAnchor.value = selected.rect
+  textColorPopoverVisible.value = true
+  return true
+}
+
+function onContentPointerUp(event) {
+  if (event.button !== 0) return
+  void showTextColorPopover()
+}
+
+async function saveTextColor(start, end, color, successMessage = '') {
+  if (savingTextColor.value) return
+  savingTextColor.value = true
+  try {
+    const updated = await window.api.setNoteTextColor({
+      id: props.note.id,
+      start,
+      end,
+      color,
+      expectedContent: String(props.note.content || ''),
+      expectedColorRanges: effectiveColorRanges.value
+    })
+    if (!updated) throw new Error('便签不存在或已被删除')
+    colorRangeOverride.value = updated.content_color_ranges || []
+    window.getSelection?.()?.removeAllRanges()
+    closeTextColorPopover()
+    showMessage('success', successMessage || (color ? '文字颜色已保存' : '已清除所选文字颜色'))
+  } catch (error) {
+    console.error('[NoteCard] 保存文字颜色失败:', props.note.id, error)
+    showMessage('error', error.message || '文字颜色保存失败，请重试')
+  } finally {
+    savingTextColor.value = false
+  }
+}
+
+function applySelectedTextColor(color) {
+  const selected = selectedTextRange.value
+  if (!selected) return
+  void saveTextColor(selected.start, selected.end, color)
+}
+
+function clearAllTextColors() {
+  const content = String(props.note.content || '')
+  if (!content.trim()) return
+  void saveTextColor(0, content.length, null, '已清除当前便签的全部文字颜色')
+}
+
+function openQuickEditor(event, force = false) {
+  if ((!force && !doubleClickQuickEditEnabled.value) || quickEditorVisible.value) return
+  if (!force && readSelectedTextRange()) {
+    void showTextColorPopover()
+    return
+  }
   if (
+    !force &&
     event.target.closest?.(
-      'button, input, textarea, select, a, [contenteditable], [role="button"], .nl-drag-handle, .nl-image-panel-shell'
+      'button, input, textarea, select, a, [contenteditable], [role="button"], .nl-drag-handle, .nl-image-panel-shell, .nl-card-primary-images'
     )
   ) {
     return
   }
   event.preventDefault()
   event.stopPropagation()
-  const rect = event.currentTarget.getBoundingClientRect()
+  const rect = cardRef.value?.getBoundingClientRect() || event.currentTarget.getBoundingClientRect()
   quickEditorAnchor.value = {
     left: rect.left,
     top: rect.top,
@@ -129,6 +216,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', closeTags)
   window.removeEventListener('scroll', closeTags, true)
   closeContextMenu()
+  closeTextColorPopover()
 })
 
 const displayContent = computed(() => {
@@ -136,6 +224,32 @@ const displayContent = computed(() => {
   if (text.trim()) return text
   return attachmentCount.value > 0 ? '图片便签' : '空白便签'
 })
+const colorRangeOverride = ref(null)
+const effectiveColorRanges = computed(() =>
+  normalizeNoteTextColorRanges(
+    colorRangeOverride.value ?? props.note.content_color_ranges,
+    String(props.note.content || '')
+  )
+)
+const contentSegments = computed(() =>
+  buildNoteTextColorSegments(displayContent.value, effectiveColorRanges.value)
+)
+const selectedTextColor = computed(() => {
+  const selected = selectedTextRange.value
+  if (!selected) return ''
+  return (
+    effectiveColorRanges.value.find(
+      (range) => range.start <= selected.start && range.end >= selected.end
+    )?.color || ''
+  )
+})
+
+watch(
+  () => [props.note.id, props.note.updated_at],
+  () => {
+    colorRangeOverride.value = null
+  }
+)
 
 function measureContentOverflow() {
   const element = contentTextRef.value
@@ -188,6 +302,21 @@ async function toggleContent() {
   animation.onfinish = () => finishContentAnimation(animation)
 }
 
+function togglePrimaryContent() {
+  if (isImageOnly.value) {
+    if (imageOverflows.value) imageExpanded.value = !imageExpanded.value
+    return
+  }
+  void toggleContent()
+}
+
+const primaryContentOverflows = computed(() =>
+  isImageOnly.value ? imageOverflows.value : contentOverflows.value
+)
+const primaryContentExpanded = computed(() =>
+  isImageOnly.value ? imageExpanded.value : contentExpanded.value
+)
+
 watch(displayContent, async () => {
   contentAnimation?.cancel()
   contentAnimation = null
@@ -197,6 +326,14 @@ watch(displayContent, async () => {
   await nextTick()
   measureContentOverflow()
 })
+
+watch(
+  () => props.note.id,
+  () => {
+    imageExpanded.value = false
+    imageOverflows.value = false
+  }
+)
 
 function formatDateTime(timestamp) {
   if (!timestamp) return ''
@@ -312,6 +449,12 @@ function onContextMenuKeydown(event) {
 }
 
 async function openContextMenu(event) {
+  if (readSelectedTextRange()) {
+    event.preventDefault()
+    event.stopPropagation()
+    void showTextColorPopover()
+    return
+  }
   event.preventDefault()
   event.stopPropagation()
   closeTags()
@@ -404,7 +547,7 @@ async function copyContent() {
   const text = String(props.note.content || '')
   if (!text.trim()) return
   try {
-    await navigator.clipboard.writeText(text)
+    await window.api.writeClipboardText(text)
     showMessage('success', '便签正文已复制')
   } catch (error) {
     console.error('[NoteCard] 复制便签失败:', props.note.id, error)
@@ -436,6 +579,7 @@ async function toggleTags() {
 
 <template>
   <article
+    ref="cardRef"
     class="nl-card"
     :class="[
       `nl-card--${note.status}`,
@@ -472,6 +616,7 @@ async function toggleTags() {
 
     <div class="nl-card-body">
       <div
+        v-if="!isImageOnly"
         ref="contentShellRef"
         class="nl-card-text-shell"
         :class="{
@@ -481,8 +626,32 @@ async function toggleTags() {
         }"
         :style="{ height: contentShellHeight }"
       >
-        <p ref="contentTextRef" class="nl-card-text">{{ displayContent }}</p>
+        <p ref="contentTextRef" class="nl-card-text" @pointerup="onContentPointerUp">
+          <span
+            v-for="segment in contentSegments"
+            :key="`${segment.start}:${segment.end}:${segment.color || 'default'}`"
+            :class="{ 'nl-card-text__colored': segment.color }"
+            :style="segment.color ? { '--note-range-color': segment.color } : undefined"
+            >{{ segment.text }}</span
+          >
+        </p>
       </div>
+      <ImagePicker
+        v-else
+        class="nl-card-primary-images"
+        :note-id="note.id"
+        mode="persist"
+        readonly
+        carousel
+        :refresh-key="note.updated_at"
+        :expanded="imageExpanded"
+        :collapsed-height="160"
+        :readonly-max-size="260"
+        @overflow-change="imageOverflows = $event"
+      />
+      <p v-if="String(note.remark || '').trim()" class="nl-card-remark-text">
+        {{ note.remark }}
+      </p>
       <div class="nl-card-meta">
         <div class="nl-card-context">
           <span class="nl-card-status">{{ status.label }}</span>
@@ -505,18 +674,7 @@ async function toggleTags() {
           </template>
         </div>
 
-        <div
-          v-if="
-            visibleTags.length ||
-            hiddenTagCount ||
-            note.is_pinned ||
-            showReminder ||
-            attachmentCount ||
-            contentOverflows ||
-            String(note.content || '').trim()
-          "
-          class="nl-card-utilities"
-        >
+        <div class="nl-card-utilities">
           <span
             v-for="tag in visibleTags"
             :key="tag.id || tag.name"
@@ -570,6 +728,26 @@ async function toggleTags() {
           </span>
 
           <button
+            class="nl-card-remark-toggle"
+            type="button"
+            title="编辑正文和备注"
+            aria-label="编辑便签正文和备注"
+            @click.stop="openQuickEditor($event, true)"
+          >
+            <svg
+              viewBox="0 0 20 20"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path d="M4 3.5h12v10H9l-4 3v-3H4Z" />
+              <path d="M7 7h6M7 10h4" />
+            </svg>
+          </button>
+
+          <button
             v-if="String(note.content || '').trim()"
             class="nl-card-copy"
             type="button"
@@ -591,7 +769,7 @@ async function toggleTags() {
           </button>
 
           <button
-            v-if="attachmentCount"
+            v-if="attachmentCount && !isImageOnly"
             class="nl-card-attachment"
             title="展开图片附件"
             :aria-expanded="imagesExpanded"
@@ -613,14 +791,14 @@ async function toggleTags() {
           </button>
 
           <button
-            v-if="contentOverflows"
+            v-if="primaryContentOverflows"
             class="nl-card-disclosure"
             type="button"
-            :class="{ 'nl-card-disclosure--expanded': contentExpanded }"
-            :aria-expanded="contentExpanded"
-            :aria-label="contentExpanded ? '收起正文' : '展开正文'"
-            :title="contentExpanded ? '收起正文' : '展开正文'"
-            @click.stop="toggleContent"
+            :class="{ 'nl-card-disclosure--expanded': primaryContentExpanded }"
+            :aria-expanded="primaryContentExpanded"
+            :aria-label="primaryContentExpanded ? '收起内容' : '展开内容'"
+            :title="primaryContentExpanded ? '收起内容' : '展开内容'"
+            @click.stop="togglePrimaryContent"
             @keydown.enter.stop
           >
             <svg viewBox="0 0 16 10" aria-hidden="true">
@@ -630,6 +808,16 @@ async function toggleTags() {
         </div>
       </div>
     </div>
+
+    <NoteTextColorPopover
+      v-model:visible="textColorPopoverVisible"
+      :anchor-rect="textColorPopoverAnchor"
+      :selected-color="selectedTextColor"
+      :has-colors="effectiveColorRanges.length > 0"
+      :busy="savingTextColor"
+      @apply="applySelectedTextColor"
+      @clear-all="clearAllTextColors"
+    />
 
     <Teleport to="body">
       <Transition name="nl-tag-popover">
@@ -709,14 +897,20 @@ async function toggleTags() {
     />
 
     <div
-      v-if="attachmentCount"
+      v-if="attachmentCount && !isImageOnly"
       class="nl-image-panel-shell"
       :class="{ 'nl-image-panel-shell--expanded': imagesExpanded }"
       @click.stop
     >
       <div class="nl-image-panel-clip">
         <div class="nl-image-panel-content">
-          <ImagePicker v-if="imagesMounted" :note-id="note.id" mode="persist" readonly />
+          <ImagePicker
+            v-if="imagesMounted"
+            :note-id="note.id"
+            :refresh-key="note.updated_at"
+            mode="persist"
+            readonly
+          />
         </div>
       </div>
     </div>
@@ -957,6 +1151,9 @@ async function toggleTags() {
   user-select: text;
   cursor: text;
 }
+.nl-card-text__colored {
+  color: color-mix(in srgb, var(--note-range-color) var(--content-strength), transparent);
+}
 .nl-card-text-shell {
   overflow: hidden;
 }
@@ -968,6 +1165,16 @@ async function toggleTags() {
 }
 .nl-card-text-shell--animating {
   will-change: height;
+}
+.nl-card-primary-images {
+  margin-bottom: 7rem;
+}
+.nl-card-primary-images :deep(.ip-root--readonly) {
+  align-items: flex-start;
+  gap: 8rem;
+}
+.nl-card-primary-images :deep(.ip-thumb) {
+  max-width: 100%;
 }
 .nl-card-disclosure {
   display: grid;
@@ -1083,7 +1290,8 @@ async function toggleTags() {
 }
 .nl-card-utilities,
 .nl-card-copy,
-.nl-card-attachment {
+.nl-card-attachment,
+.nl-card-remark-toggle {
   display: flex;
   align-items: center;
 }
@@ -1129,7 +1337,8 @@ async function toggleTags() {
 }
 .nl-card-icon,
 .nl-card-copy,
-.nl-card-attachment {
+.nl-card-attachment,
+.nl-card-remark-toggle {
   appearance: none;
   gap: 2rem;
   padding: 2rem 3rem;
@@ -1146,14 +1355,32 @@ async function toggleTags() {
 }
 .nl-card-copy:hover,
 .nl-card-attachment:hover,
-.nl-card-attachment[aria-expanded='true'] {
+.nl-card-attachment[aria-expanded='true'],
+.nl-card-remark-toggle:hover {
   color: var(--text-color);
   background: var(--ui-fill-hover);
 }
 .nl-card-icon svg,
 .nl-card-copy svg,
-.nl-card-attachment svg {
+.nl-card-attachment svg,
+.nl-card-remark-toggle svg {
   display: block;
+}
+
+.nl-card-remark-text {
+  display: block;
+  width: 100%;
+  max-height: none;
+  margin: 4rem 0 0;
+  overflow: visible;
+  color: var(--text-color-secondary);
+  font-size: var(--note-remark-font-size);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: pre-wrap;
+  user-select: text;
+  cursor: text;
 }
 
 .nl-image-panel-shell {

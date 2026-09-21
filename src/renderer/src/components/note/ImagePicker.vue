@@ -16,7 +16,7 @@
  *   getImages()    → { base64, ext, name, size }[]
  *   clearImages()  → void
  */
-import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import ImagePreview from './ImagePreview.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import {
@@ -31,10 +31,15 @@ const { showMessage } = useMessage()
 const props = defineProps({
   noteId: { type: Number, default: null },
   mode: { type: String, default: 'persist' },
-  readonly: { type: Boolean, default: false }
+  readonly: { type: Boolean, default: false },
+  readonlyMaxSize: { type: Number, default: 92 },
+  carousel: { type: Boolean, default: false },
+  expanded: { type: Boolean, default: false },
+  collapsedHeight: { type: Number, default: 160 },
+  refreshKey: { type: [String, Number], default: '' }
 })
 
-const emit = defineEmits(['count-change', 'draft-change'])
+const emit = defineEmits(['count-change', 'draft-change', 'overflow-change'])
 
 /** 图片列表（统一数据格式） */
 const images = ref([])
@@ -58,7 +63,37 @@ const pendingAddedBytes = computed(() =>
 
 /** 大图预览 */
 const previewVisible = ref(false)
-const previewSrc = ref('')
+const previewSources = ref([])
+const previewIndex = ref(0)
+const carouselIndex = ref(0)
+const carouselDirection = ref('next')
+const carouselRef = ref(null)
+const carouselNaturalHeight = ref(0)
+let carouselResizeObserver = null
+const carouselActiveImage = computed(() => images.value[carouselIndex.value] || null)
+const carouselTransitionName = computed(() =>
+  carouselDirection.value === 'previous' ? 'ip-carousel-previous' : 'ip-carousel-next'
+)
+const carouselStageStyle = computed(() => {
+  const width = Number(carouselActiveImage.value?._naturalWidth)
+  const height = Number(carouselActiveImage.value?._naturalHeight)
+  return {
+    '--ip-carousel-image-width': Number.isFinite(width) && width > 0 ? `${width}px` : '100%',
+    '--ip-carousel-image-aspect':
+      Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0
+        ? String(width / height)
+        : '1'
+  }
+})
+const carouselViewportStyle = computed(() => {
+  const naturalHeight = carouselNaturalHeight.value
+  if (!naturalHeight) return { height: `${props.collapsedHeight}rem` }
+  return {
+    height: props.expanded
+      ? `${naturalHeight}px`
+      : `min(${naturalHeight}px, ${props.collapsedHeight}rem)`
+  }
+})
 
 // ============================================================
 // 从 DB 加载已有图片
@@ -72,7 +107,10 @@ async function loadImages() {
     // 列表只加载缩略图；原图在用户点击预览时按需读取。
     const items = await Promise.all(
       records.map(async (rec) => {
-        const thumbnail = await window.api.getImageThumbnail(rec.file_path, 240)
+        const [thumbnail, dimensions] = await Promise.all([
+          window.api.getImageThumbnail(rec.file_path, 512),
+          window.api.getImageDimensions(rec.file_path)
+        ])
         return {
           id: rec.id,
           name: rec.file_path.split(/[\\/]/).pop(),
@@ -80,18 +118,59 @@ async function loadImages() {
           filePath: rec.file_path,
           dataUrl: thumbnail || '',
           fullDataUrl: null,
+          _naturalWidth: Number(dimensions?.width) || null,
+          _naturalHeight: Number(dimensions?.height) || null,
+          _thumbnailAspect:
+            Number(dimensions?.width) > 0 && Number(dimensions?.height) > 0
+              ? Number(dimensions.width) / Number(dimensions.height)
+              : null,
           saved: true
         }
       })
     )
     if (seq !== imageLoadSeq) return
     images.value = items
+    carouselIndex.value = 0
     deletedImageIds.value = []
+    await nextTick()
+    observeCarouselSize()
   } catch (e) {
     console.error('[ImagePicker] 加载图片失败:', e)
   }
   if (seq !== imageLoadSeq) return
   emitCount()
+}
+
+function collapsedHeightPixels() {
+  const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
+  return props.collapsedHeight * rem
+}
+
+function renderedImageHeight(image, availableWidth) {
+  const width = Number(image?._naturalWidth)
+  const height = Number(image?._naturalHeight)
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) return 0
+  const renderedWidth = Math.min(width, Math.max(0, availableWidth))
+  return renderedWidth * (height / width)
+}
+
+function measureCarouselLayout() {
+  if (!props.carousel || !carouselRef.value) return
+  const availableWidth = carouselRef.value.clientWidth
+  const limit = collapsedHeightPixels()
+  carouselNaturalHeight.value = renderedImageHeight(carouselActiveImage.value, availableWidth)
+  emit(
+    'overflow-change',
+    images.value.some((image) => renderedImageHeight(image, availableWidth) > limit + 1)
+  )
+}
+
+function observeCarouselSize() {
+  carouselResizeObserver?.disconnect()
+  if (!props.carousel || !carouselRef.value) return
+  carouselResizeObserver = new ResizeObserver(measureCarouselLayout)
+  carouselResizeObserver.observe(carouselRef.value)
+  measureCarouselLayout()
 }
 
 // ============================================================
@@ -247,6 +326,7 @@ async function handleDelete(img, index) {
         await window.api.deleteImage(img.id)
       } catch (e) {
         console.error('[ImagePicker] 删除图片失败:', e)
+        showMessage('warning', e.message || '图片删除失败，请重试')
         return
       }
     }
@@ -257,20 +337,75 @@ async function handleDelete(img, index) {
 }
 
 /** 打开大图预览 */
-async function handlePreview(img) {
-  if (img._loading) return
+async function loadPreviewSource(index) {
+  const img = images.value[index]
+  if (!img || img._loading) return
   let source = img.fullDataUrl || img.dataUrl
   if (img.saved && img.filePath && !img.fullDataUrl) {
     source = await window.api.getImageBase64(img.filePath)
+    if (source) img.fullDataUrl = source
   }
   if (!source) return
-  previewSrc.value = source
+  previewSources.value[index] = source
+}
+
+async function handlePreview(img) {
+  if (img._loading) return
+  const index = images.value.indexOf(img)
+  if (index < 0) return
+  previewSources.value = images.value.map((image) => image.fullDataUrl || image.dataUrl || '')
+  previewIndex.value = index
+  await loadPreviewSource(index)
+  if (!previewSources.value[index]) return
   previewVisible.value = true
+}
+
+function onPreviewChange(index) {
+  previewIndex.value = index
+  void loadPreviewSource(index)
 }
 
 function closePreview() {
   previewVisible.value = false
-  previewSrc.value = ''
+  previewSources.value = []
+}
+
+function changeCarouselImage(index, direction) {
+  if (images.value.length <= 1) return
+  carouselDirection.value = direction
+  carouselIndex.value = (index + images.value.length) % images.value.length
+  nextTick(measureCarouselLayout)
+}
+
+function showPreviousCarouselImage() {
+  changeCarouselImage(carouselIndex.value - 1, 'previous')
+}
+
+function showNextCarouselImage() {
+  changeCarouselImage(carouselIndex.value + 1, 'next')
+}
+
+function updateThumbnailAspect(image, event) {
+  const width = Number(event?.target?.naturalWidth)
+  const height = Number(event?.target?.naturalHeight)
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return
+  image._thumbnailAspect = width / height
+  if (!image._naturalWidth || !image._naturalHeight) {
+    image._naturalWidth = width
+    image._naturalHeight = height
+  }
+  nextTick(measureCarouselLayout)
+}
+
+function thumbnailStyle(image) {
+  const aspect = Number(image?._thumbnailAspect)
+  if (!Number.isFinite(aspect) || aspect <= 0) return null
+  const widthFactor = Math.min(1, aspect)
+  return {
+    '--ip-thumb-aspect': String(aspect),
+    '--ip-thumb-width': `${widthFactor * 100}%`,
+    '--ip-thumb-readonly-width': `${widthFactor * props.readonlyMaxSize}rem`
+  }
 }
 
 function emitCount() {
@@ -305,6 +440,7 @@ function getImages() {
 function clearImages() {
   images.value = []
   deletedImageIds.value = []
+  emitCount()
   emitDraftChange()
 }
 
@@ -378,10 +514,11 @@ defineExpose({ restoreDraft, getImages, getDraftChanges, clearImages, addImage, 
 // ============================================================
 // noteId 变化时重新加载
 // ============================================================
-watch(() => props.noteId, loadImages)
+watch(() => [props.noteId, props.refreshKey], loadImages)
 onMounted(loadImages)
 onUnmounted(() => {
   imageLoadSeq++
+  carouselResizeObserver?.disconnect()
 })
 
 // ============================================================
@@ -428,12 +565,55 @@ function formatSize(bytes) {
       <span class="ip-dropzone__text ip-dropzone__text--full">已满</span>
     </div>
 
+    <div
+      v-if="readonly && carousel && carouselActiveImage"
+      ref="carouselRef"
+      class="ip-carousel"
+      :class="{ 'is-multiple': images.length > 1 }"
+      :style="carouselViewportStyle"
+    >
+      <Transition :name="carouselTransitionName">
+        <div :key="carouselIndex" class="ip-carousel__stage" :style="carouselStageStyle">
+          <img
+            :src="carouselActiveImage.dataUrl"
+            class="ip-carousel__image"
+            :alt="carouselActiveImage.name"
+            @load="updateThumbnailAspect(carouselActiveImage, $event)"
+            @click.stop="handlePreview(carouselActiveImage)"
+          />
+          <span class="ip-thumb__size">{{ formatSize(carouselActiveImage.size) }}</span>
+        </div>
+      </Transition>
+      <template v-if="images.length > 1">
+        <button
+          type="button"
+          class="ip-carousel__nav ip-carousel__nav--previous"
+          title="上一张"
+          aria-label="上一张卡片图片"
+          @click.stop="showPreviousCarouselImage"
+        >
+          ‹
+        </button>
+        <button
+          type="button"
+          class="ip-carousel__nav ip-carousel__nav--next"
+          title="下一张"
+          aria-label="下一张卡片图片"
+          @click.stop="showNextCarouselImage"
+        >
+          ›
+        </button>
+        <span class="ip-carousel__count">{{ carouselIndex + 1 }} / {{ images.length }}</span>
+      </template>
+    </div>
+
     <!-- 缩略图列表：新增、删除与补位保持连续 -->
-    <TransitionGroup name="ip-thumb" tag="div" class="ip-thumb-list">
+    <TransitionGroup v-else name="ip-thumb" tag="div" class="ip-thumb-list">
       <div
         v-for="(img, idx) in images"
         :key="img._key || img.id || `memory-${idx}`"
         class="ip-thumb"
+        :style="thumbnailStyle(img)"
       >
         <Transition name="ip-content" mode="out-in">
           <div v-if="img._loading" key="loading" class="ip-thumb__spinner">
@@ -445,6 +625,7 @@ function formatSize(bytes) {
             :src="img.dataUrl"
             class="ip-thumb__img"
             :alt="img.name"
+            @load="updateThumbnailAspect(img, $event)"
             @click.stop="handlePreview(img)"
           />
         </Transition>
@@ -461,7 +642,13 @@ function formatSize(bytes) {
     </TransitionGroup>
 
     <!-- 大图预览 -->
-    <ImagePreview :visible="previewVisible" :src="previewSrc" @close="closePreview" />
+    <ImagePreview
+      :visible="previewVisible"
+      :sources="previewSources"
+      :initial-index="previewIndex"
+      @change="onPreviewChange"
+      @close="closePreview"
+    />
   </div>
 </template>
 
@@ -477,11 +664,116 @@ function formatSize(bytes) {
 .ip-root--readonly {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .ip-root--readonly .ip-thumb {
-  width: 92rem;
-  background: rgb(var(--bg-color) / 0.08);
+  width: var(--ip-thumb-readonly-width, 92rem);
+}
+
+.ip-carousel {
+  position: relative;
+  display: grid;
+  width: 100%;
+  place-items: start;
+  overflow: hidden;
+  transition: height 240ms var(--ease-standard);
+}
+.ip-carousel__stage {
+  position: relative;
+  display: grid;
+  grid-area: 1 / 1;
+  width: min(100%, var(--ip-carousel-image-width));
+  aspect-ratio: var(--ip-carousel-image-aspect);
+  place-items: start;
+}
+.ip-carousel__image {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8rem;
+  object-fit: contain;
+  cursor: zoom-in;
+}
+.ip-carousel__stage:hover .ip-thumb__size {
+  opacity: 1;
+}
+.ip-carousel__nav {
+  position: absolute;
+  z-index: var(--z-local-raised);
+  top: 50%;
+  display: grid;
+  width: 28rem;
+  height: 38rem;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 8rem;
+  background: rgba(0, 0, 0, 0.38);
+  color: #fff;
+  cursor: pointer;
+  font-size: 24rem;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition:
+    opacity 140ms ease,
+    background-color 140ms ease;
+}
+.ip-carousel:hover .ip-carousel__nav,
+.ip-carousel:focus-within .ip-carousel__nav {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ip-carousel__nav:hover {
+  background: rgba(0, 0, 0, 0.58);
+}
+.ip-carousel__nav:active {
+  transform: translateY(-50%) scale(0.98);
+}
+.ip-carousel__nav--previous {
+  left: 6rem;
+}
+.ip-carousel__nav--next {
+  right: 6rem;
+}
+.ip-carousel__count {
+  position: absolute;
+  z-index: var(--z-local-raised);
+  right: 7rem;
+  bottom: 6rem;
+  padding: 3rem 6rem;
+  border-radius: 980px;
+  background: rgba(0, 0, 0, 0.52);
+  color: #fff;
+  font-size: calc(var(--fs-secondary) * 0.76);
+  line-height: 1;
+  pointer-events: none;
+}
+.ip-carousel-next-enter-active,
+.ip-carousel-next-leave-active,
+.ip-carousel-previous-enter-active,
+.ip-carousel-previous-leave-active {
+  transition:
+    opacity 180ms ease,
+    transform 220ms var(--ease-standard);
+}
+.ip-carousel-next-enter-from {
+  opacity: 0;
+  transform: translateX(18rem);
+}
+.ip-carousel-next-leave-to {
+  opacity: 0;
+  transform: translateX(-18rem);
+}
+.ip-carousel-previous-enter-from {
+  opacity: 0;
+  transform: translateX(-18rem);
+}
+.ip-carousel-previous-leave-to {
+  opacity: 0;
+  transform: translateX(18rem);
 }
 
 /* 拖拽区域 — 正方形 */
@@ -547,17 +839,15 @@ function formatSize(bytes) {
   display: none;
 }
 
-/* 缩略图 — 固定宽度方块 */
+/* 缩略图按原始宽高比放进同一最大边长，横图限宽、竖图限高。 */
 .ip-thumb {
   position: relative;
   display: block;
-  width: 100%;
+  width: var(--ip-thumb-width, 100%);
   min-width: 0;
-  aspect-ratio: 1;
-  padding: 6rem;
-  border-radius: 6rem;
-  background: var(--ui-surface-subtle);
-  border: 1px solid var(--ui-border-divider);
+  aspect-ratio: var(--ip-thumb-aspect, 1);
+  justify-self: center;
+  align-self: center;
   flex-shrink: 0;
   transition:
     transform var(--motion-control) var(--ease-standard),
@@ -592,10 +882,11 @@ function formatSize(bytes) {
 }
 
 .ip-thumb__img {
+  display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  border-radius: 4rem;
+  border-radius: 8rem;
+  object-fit: contain;
   cursor: zoom-in;
   transition: transform var(--motion-control) var(--ease-standard);
 }

@@ -9,10 +9,12 @@ import TimePicker from '../ui/TimePicker.vue'
 import TemplateFrequencySelector from './TemplateFrequencySelector.vue'
 import {
   createTemplateFormSnapshot,
+  createTemplateRuleSnapshot,
   formatTemplateTime,
   MAX_DAILY_INTERVAL,
   normalizeYearDates,
-  parseTemplateRule
+  parseTemplateRule,
+  resolveStoredTemplatePreviewAt
 } from '../../utils/templateRules.js'
 import { useMessage } from '../../composables/useMessage.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
@@ -54,6 +56,7 @@ const tagIds = ref([])
 const previewAt = ref(null)
 const previewError = ref('')
 const initialSnapshot = ref('')
+const initialRuleSnapshot = ref('')
 let previewTimer = null
 let previewSequence = 0
 const formRootRef = ref(null)
@@ -181,6 +184,7 @@ const currentSnapshot = computed(() =>
     tagIds: tagIds.value
   })
 )
+const currentRuleSnapshot = computed(() => createTemplateRuleSnapshot(recurrenceRule.value))
 const hasChanges = computed(
   () => initialSnapshot.value !== '' && currentSnapshot.value !== initialSnapshot.value
 )
@@ -191,7 +195,10 @@ watch(
     const sequence = ++initialLoadSequence
     loadInitial(template)
     await nextTick()
-    if (sequence === initialLoadSequence) initialSnapshot.value = currentSnapshot.value
+    if (sequence === initialLoadSequence) {
+      initialSnapshot.value = currentSnapshot.value
+      initialRuleSnapshot.value = currentRuleSnapshot.value
+    }
   },
   { immediate: true }
 )
@@ -222,13 +229,28 @@ const previewText = computed(
 )
 
 watch(
-  recurrenceRule,
+  [
+    recurrenceRule,
+    () => props.initial?.id,
+    () => props.initial?.next_run_at,
+    () => props.initial?.nextRunAt,
+    initialRuleSnapshot
+  ],
   () => {
     const sequence = ++previewSequence
     clearTimeout(previewTimer)
     previewError.value = ''
     if (!ruleComplete.value) {
       previewAt.value = null
+      return
+    }
+    const storedPreviewAt = resolveStoredTemplatePreviewAt({
+      initialTemplate: props.initial,
+      initialRuleSnapshot: initialRuleSnapshot.value,
+      currentRuleSnapshot: currentRuleSnapshot.value
+    })
+    if (storedPreviewAt !== null) {
+      previewAt.value = storedPreviewAt
       return
     }
     previewTimer = setTimeout(async () => {
@@ -267,7 +289,10 @@ function reset() {
   const sequence = ++initialLoadSequence
   loadInitial(null)
   nextTick(() => {
-    if (sequence === initialLoadSequence) initialSnapshot.value = currentSnapshot.value
+    if (sequence === initialLoadSequence) {
+      initialSnapshot.value = currentSnapshot.value
+      initialRuleSnapshot.value = currentRuleSnapshot.value
+    }
   })
 }
 defineExpose({ reset, hasChanges, clearDraft: () => protectedDraft.clear() })

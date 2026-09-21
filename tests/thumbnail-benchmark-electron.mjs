@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { performance } from 'node:perf_hooks'
-import { getImageThumbnail } from '../src/main/db/db-images.js'
+import { getImageDimensions, getImageThumbnail } from '../src/main/db/db-images.js'
 
 app.setPath('userData', mkdtempSync(join(tmpdir(), 'abandon-thumbnail-bench-')))
 app.commandLine.appendSwitch('disable-gpu')
@@ -15,6 +15,7 @@ app.whenReady().then(async () => {
     const pixels = Buffer.alloc(1600 * 1200 * 4, 130)
     const png = nativeImage.createFromBitmap(pixels, { width: 1600, height: 1200 }).toPNG()
     writeFileSync(join(folder, 'fixture.png'), png)
+    assert.deepEqual(getImageDimensions('attachments/fixture.png'), { width: 1600, height: 1200 })
     const start = performance.now()
     for (let i = 0; i < 100; i++) await getImageThumbnail('attachments/fixture.png', 240)
     const result = {

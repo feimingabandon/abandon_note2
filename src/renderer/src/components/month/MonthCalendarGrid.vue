@@ -3,6 +3,7 @@ import { isComposingInput } from '../../utils/inputComposition.js'
 import { useDraftProtection } from '../../composables/useDraftProtection.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import MonthEventBar from './MonthEventBar.vue'
+import NoteImagePreview from '../note/NoteImagePreview.vue'
 import { animateCalendarPreview, calendarPreviewPosition } from './calendar-day-preview.js'
 import {
   buildCalendarEventSegments,
@@ -15,6 +16,8 @@ import {
   calendarGridTabKey
 } from '../../utils/calendar-grid-navigation.js'
 import { useMessage } from '../../composables/useMessage.js'
+import { useTagColorSetting } from '../../composables/useTagColorSetting.js'
+import { getCalendarNoteAccent } from '../../utils/noteAppearance.js'
 import { combineLocalDateAndTime } from '../../../../shared/calendar/calendar-date-rules.js'
 import { defaultMonthNoteEffectiveTime } from '../../../../shared/note-scheduling-rules.js'
 
@@ -40,6 +43,7 @@ const emit = defineEmits([
   'preview-open-day-panel'
 ])
 const { showMessage } = useMessage()
+const { enabled: tagColorEnabled } = useTagColorSetting()
 const gridRef = ref(null)
 const weekRefs = ref([])
 const dayCellRefs = new Map()
@@ -58,6 +62,8 @@ const dayPreviewVisible = ref(false)
 const dayPreviewKey = ref('')
 const dayPreviewPlacement = ref('right')
 const dayPreviewStyle = reactive({ left: '-9999px', top: '-9999px' })
+const imagePreviewVisible = ref(false)
+const imagePreviewNoteId = ref(null)
 const detachedEventBars = new Set()
 const rowCount = computed(() => Math.ceil(props.days.length / 7))
 const capacityByWeek = ref(Array.from({ length: rowCount.value }, () => 0))
@@ -74,19 +80,26 @@ const calendarItems = computed(() => [...props.notes, ...props.recurringPreviews
 const segments = computed(() =>
   buildCalendarEventSegments(props.days, calendarItems.value, {
     activeStartKey: activeDays.value[0]?.key,
-    activeEndKey: activeDays.value.at(-1)?.key
+    activeEndKey: activeDays.value.at(-1)?.key,
+    referenceDate: props.todayKey
   })
 )
 const noteById = computed(() => new Map(calendarItems.value.map((note) => [String(note.id), note])))
-const noteCounts = computed(() => noteCountsByDate(activeDays.value, calendarItems.value))
+const noteCounts = computed(() =>
+  noteCountsByDate(activeDays.value, calendarItems.value, props.todayKey)
+)
 const recurringPreviewCounts = computed(() =>
-  noteCountsByDate(activeDays.value, props.recurringPreviews)
+  noteCountsByDate(activeDays.value, props.recurringPreviews, props.todayKey)
 )
 const dayPreviewNotes = computed(() =>
-  dayPreviewKey.value ? notesCoveringDate(calendarItems.value, dayPreviewKey.value) : []
+  dayPreviewKey.value
+    ? notesCoveringDate(calendarItems.value, dayPreviewKey.value, props.todayKey)
+    : []
 )
 const dayPreviewRealNoteCount = computed(() =>
-  dayPreviewKey.value ? notesCoveringDate(props.notes, dayPreviewKey.value).length : 0
+  dayPreviewKey.value
+    ? notesCoveringDate(props.notes, dayPreviewKey.value, props.todayKey).length
+    : 0
 )
 const contextMenuNote = computed(() => {
   if (contextMenuTarget.value?.type !== 'note') return null
@@ -138,7 +151,8 @@ function segmentIsVisible(segment) {
 function visibleEventLayoutSignature(notes) {
   return buildCalendarEventSegments(props.days, notes, {
     activeStartKey: activeDays.value[0]?.key,
-    activeEndKey: activeDays.value.at(-1)?.key
+    activeEndKey: activeDays.value.at(-1)?.key,
+    referenceDate: props.todayKey
   })
     .filter(segmentIsVisible)
     .map(
@@ -280,7 +294,26 @@ function closeDayPreview({ restoreFocus = false } = {}) {
 function previewNoteText(note) {
   const content = String(note?.content || '').trim()
   if (content) return content
-  return Number(note?.attachment_count) > 0 ? '图片便签' : '空便签'
+  return Number(note?.attachment_count) > 0 ? '查看图片' : '空便签'
+}
+
+function isImageOnlyNote(note) {
+  return (
+    note?.preview_kind !== 'recurrence' &&
+    !String(note?.content || '').trim() &&
+    Number(note?.attachment_count) > 0
+  )
+}
+
+function openImagePreview(note) {
+  if (!isImageOnlyNote(note)) return
+  imagePreviewNoteId.value = Number(note.id)
+  imagePreviewVisible.value = true
+}
+
+function closeImagePreview() {
+  imagePreviewVisible.value = false
+  imagePreviewNoteId.value = null
 }
 
 function previewScheduleLabel(note) {
@@ -293,7 +326,9 @@ function previewScheduleLabel(note) {
 }
 
 function previewNoteAccent(note) {
-  if (note?.preview_kind === 'recurrence') return note.tags?.[0]?.color || '#0a84ff'
+  if (note?.preview_kind === 'recurrence') {
+    return getCalendarNoteAccent(note, { tagColorEnabled: tagColorEnabled.value })
+  }
   if (note?.status === 'completed') return '#8e8e93'
   if (note?.status === 'in_progress') return '#ff9f0a'
   return '#0a84ff'
@@ -927,6 +962,7 @@ useDraftProtection({
             :segment="segment"
             :note="noteById.get(String(segment.noteId))"
             @open-context-menu="openNoteContextMenu"
+            @preview-images="openImagePreview"
           />
         </div>
       </div>
@@ -1027,7 +1063,15 @@ useDraftProtection({
               <span aria-hidden="true" />
               <p>
                 <small v-if="previewScheduleLabel(note)">{{ previewScheduleLabel(note) }}</small>
-                {{ previewNoteText(note) }}
+                <button
+                  v-if="isImageOnlyNote(note)"
+                  type="button"
+                  class="month-day-preview__image-link"
+                  @click="openImagePreview(note)"
+                >
+                  查看图片
+                </button>
+                <template v-else>{{ previewNoteText(note) }}</template>
               </p>
               <button
                 v-if="note.preview_kind !== 'recurrence' && previewStatusLabel(note)"
@@ -1059,6 +1103,12 @@ useDraftProtection({
         </aside>
       </Transition>
     </Teleport>
+
+    <NoteImagePreview
+      :visible="imagePreviewVisible"
+      :note-id="imagePreviewNoteId"
+      @close="closeImagePreview"
+    />
   </section>
 </template>
 
@@ -1657,6 +1707,16 @@ useDraftProtection({
   color: var(--text-color-secondary);
   font-size: calc(var(--fs-secondary) * 0.82);
   font-weight: 500;
+}
+.month-day-preview__image-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ui-accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2rem;
 }
 .month-day-preview__status-action {
   display: grid;

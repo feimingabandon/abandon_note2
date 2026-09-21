@@ -50,6 +50,11 @@ export function applySettingsSnapshot(snapshot, root = document.documentElement)
   if (titlebarIconScale !== undefined) applyTitlebarIconScale(titlebarIconScale, root)
   applyIconColor(snapshot?.values?.appearance?.iconColor, root)
 
+  const compactFontSize = snapshot?.values?.window?.compactFontSize
+  if (compactFontSize !== undefined) {
+    root.style.setProperty('--compact-content-font-size', `${compactFontSize}px`)
+  }
+
   const css = snapshot?.values?.css
   if (!css) return
 
@@ -62,6 +67,7 @@ export function applySettingsSnapshot(snapshot, root = document.documentElement)
   root.style.setProperty('--window-opacity', String(css.windowOpacity))
   root.style.setProperty('--window-border-width', css.windowBorder ? '1px' : '0px')
   root.style.setProperty('--font-size-base', `${css.fontSizeBase}rem`)
+  root.style.setProperty('--note-remark-font-size', `${css.noteRemarkFontSize}rem`)
   root.style.setProperty('--text-color', css.textColor)
 
   const cornerRadius = snapshot?.values?.blur?.cornerRadius

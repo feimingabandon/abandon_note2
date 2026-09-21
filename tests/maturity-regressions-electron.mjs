@@ -127,7 +127,7 @@ async function run() {
         await fill('.month-day-cell__quick-create input', 'unsaved calendar draft')
       }
       await js(
-        "localStorage.setItem('review-unrelated-setting','keep');localStorage.setItem('abandon:editing-draft:v1:template:new',JSON.stringify({updatedAt:Date.now(),data:{content:'restored template',timeOfDay:'23:47'}}));localStorage.setItem('abandon:editing-draft:v1:note:999',JSON.stringify({data:{content:'old private body',attachments:{addedImages:[{base64:'old-image'}]}}}));localStorage.setItem('abandon:editing-draft:v1:broken','invalid json')"
+        "(()=>{const prefix=`abandon:editing-draft:v2:${window.api.runtimeCapabilities.editingDraftSessionId}:`;localStorage.setItem('review-unrelated-setting','keep');localStorage.setItem(prefix+'template:new',JSON.stringify({updatedAt:Date.now(),data:{content:'restored template',timeOfDay:'23:47'}}));localStorage.setItem(prefix+'note:999',JSON.stringify({data:{content:'old private body',attachments:{addedImages:[{base64:'old-image'}]}}}));localStorage.setItem(prefix+'broken','invalid json')})()"
       )
       await js("document.querySelector('.titlebar-btn-template').click()")
       await until(
@@ -169,7 +169,7 @@ async function run() {
       await until(
         () =>
           js(
-            "localStorage.getItem('abandon:editing-draft:v1:template:new')?.includes('new draft after clearing')"
+            "localStorage.getItem(`abandon:editing-draft:v2:${window.api.runtimeCapabilities.editingDraftSessionId}:template:new`)?.includes('new draft after clearing')"
           ),
         'new drafts still persist'
       )
@@ -182,7 +182,7 @@ async function run() {
         await until(
           () =>
             js(
-              "localStorage.getItem('abandon:editing-draft:v1:template:new')?.includes('draft remains protected')"
+              "localStorage.getItem(`abandon:editing-draft:v2:${window.api.runtimeCapabilities.editingDraftSessionId}:template:new`)?.includes('draft remains protected')"
             ),
           'failed clear keeps protection'
         )
@@ -213,8 +213,16 @@ async function run() {
       await until(() => js("!document.querySelector('.settings-panel')"), 'settings closed')
       if (mode !== 'week') {
         const oldWindow = current
-        await js("window.api.switchMainView('" + (mode === 'list' ? 'month' : 'week') + "')")
-        await until(() => oldWindow.isDestroyed(), 'switch')
+        const targetMode = mode === 'list' ? 'month' : 'week'
+        await js("window.api.switchMainView('" + targetMode + "')")
+        await until(
+          () =>
+            oldWindow.webContents
+              .getURL()
+              .includes('/' + (targetMode === 'list' ? 'index' : targetMode) + '.html'),
+          'switch'
+        )
+        assert.equal(oldWindow.isDestroyed(), false)
       }
     }
     writeFileSync(resultPath, JSON.stringify({ status: 'passed', results }, null, 2))

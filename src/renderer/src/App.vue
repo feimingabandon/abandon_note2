@@ -17,11 +17,12 @@ import { defineAsyncComponent } from 'vue'
  *     └── main.content（主内容区域，可滚动）
  */
 
-import { nextTick, ref, onMounted, onUnmounted, watch } from 'vue'
+import { computed, nextTick, ref, onMounted, onUnmounted, watch } from 'vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
 import ViewSwitcher from './components/system/ViewSwitcher.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue' // 自定义窗口缩放手柄
+import WindowPresentation from './components/system/WindowPresentation.vue'
 const SettingsPanel = defineAsyncComponent(() => import('./components/system/SettingsPanel.vue'))
 import MessageToast from './components/system/MessageToast.vue'
 import UpdateDialog from './components/system/UpdateDialog.vue'
@@ -41,7 +42,9 @@ import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
 import { useTodayKey } from './composables/useTodayKey.js'
+import { usePresentationMode } from './composables/usePresentationMode.js'
 import { createQuickNoteEditSettingProvider } from './composables/useQuickNoteEditSetting.js'
+import { createTagColorSettingProvider } from './composables/useTagColorSetting.js'
 import {
   captureFocusedElement,
   focusModal,
@@ -57,6 +60,8 @@ import {
 // 注册全局应用内消息通知能力（子孙组件通过 useMessage() 获取）
 const { showMessage } = createMessageProvider()
 const quickNoteEditSetting = createQuickNoteEditSettingProvider()
+const tagColorSetting = createTagColorSettingProvider()
+const presentationMode = usePresentationMode()
 
 /** 设置面板显隐状态 */
 const showSettings = ref(false)
@@ -296,6 +301,35 @@ const zOrderMode = ref(DEFAULT_SETTINGS.window.zOrderMode)
 /** 自定义导航栏视觉风格；窗口操作逻辑不随风格变化。 */
 const titlebarStyle = ref(DEFAULT_SETTINGS.appearance.titlebarStyle)
 
+const compactBlocked = computed(
+  () =>
+    showSettings.value ||
+    Boolean(selectedNote.value) ||
+    showFirstUseNotice.value ||
+    showUpdateDialog.value ||
+    showRemoteNoticeDialog.value ||
+    showHolidayDataNoticeDialog.value ||
+    showDailyReportDialog.value ||
+    templateInteractive.value ||
+    helpInteractive.value
+)
+
+async function requestCompactPresentation(anchor) {
+  if (locked.value) {
+    showMessage('warning', '窗口已锁定：切换为灵动岛会改变窗口位置和尺寸，请先解锁')
+    return
+  }
+  if (compactBlocked.value) {
+    showMessage('warning', '请先完成或关闭当前操作，再收起为灵动岛')
+    return
+  }
+  try {
+    await presentationMode.enter(anchor)
+  } catch (error) {
+    showMessage('error', `收起为灵动岛失败：${error.message}`)
+  }
+}
+
 /** 主页面壁纸只在原生毛玻璃未实际运行时进入渲染树。 */
 const wallpaperUrl = ref('')
 const wallpaperVisible = ref(false)
@@ -316,6 +350,7 @@ let startupUpdateTimer = null
 function applyAppSettingsSnapshot(snapshot) {
   applySettingsSnapshot(snapshot)
   quickNoteEditSetting.applySnapshot(snapshot)
+  tagColorSetting.applySnapshot(snapshot)
   titlebarStyle.value =
     snapshot?.values?.appearance?.titlebarStyle ?? DEFAULT_SETTINGS.appearance.titlebarStyle
   const windowSettings = snapshot?.values?.window
@@ -395,6 +430,7 @@ async function syncWallpaperFromSnapshot(snapshot) {
 }
 
 onMounted(async () => {
+  await presentationMode.start()
   try {
     // 主进程始终返回“数据库值覆盖共享默认值”后的完整快照。
     const snapshot = await window.api.getSettingsSnapshot()
@@ -429,7 +465,7 @@ onMounted(async () => {
 
   // 通知主进程渲染已完成，可以安全地显示窗口了
   // 主进程收到后会调用 mainWindow.show()
-  window.api.rendererReady()
+  window.api.rendererReady(VIEW_MODES.LIST)
   // 启动检查只在确有新版本时打扰用户；网络失败可在设置页手动查看和重试。
   startupUpdateTimer = setTimeout(() => {
     startupUpdateTimer = null
@@ -510,6 +546,7 @@ async function onCreateNote() {
 }
 
 onUnmounted(() => {
+  presentationMode.stop()
   stopSettingsListener?.()
   stopNotesChangedListener?.()
   stopAppMessageListener?.()
@@ -542,119 +579,125 @@ onUnmounted(() => {
         />
       </div>
     </Transition>
-    <!-- 设置打开时，底层场景不可点击且不可获取键盘焦点。 -->
-    <div
-      class="app-scene"
-      :inert="
-        showSettings ||
-        !!selectedNote ||
-        showFirstUseNotice ||
-        showUpdateDialog ||
-        showRemoteNoticeDialog ||
-        showHolidayDataNoticeDialog ||
-        showDailyReportDialog
-      "
+    <ResizeHandles :locked="locked" :mode="presentationMode.displayMode.value" />
+    <WindowPresentation
+      :mode="presentationMode.mode.value"
+      :operation="presentationMode.operation.value"
+      :locked="locked"
     >
-      <!-- 自定义缩放手柄，absolute 定位覆盖整个窗口，z-index 最高 -->
-      <ResizeHandles :locked="locked" />
-      <!-- 同一套窗口功能通过 style 属性切换 Apple / Microsoft 视觉。 -->
-      <AppTitlebar
-        v-model:locked="locked"
-        v-model:z-order-mode="zOrderMode"
-        :style-variant="titlebarStyle"
+      <!-- 设置打开时，底层场景不可点击且不可获取键盘焦点。 -->
+      <div
+        class="app-scene"
+        :inert="
+          showSettings ||
+          !!selectedNote ||
+          showFirstUseNotice ||
+          showUpdateDialog ||
+          showRemoteNoticeDialog ||
+          showHolidayDataNoticeDialog ||
+          showDailyReportDialog
+        "
       >
-        <!-- 设置和帮助按钮组 -->
-        <TitlebarActions :style-variant="titlebarStyle">
-          <ViewSwitcher :active-view="VIEW_MODES.LIST" :style-variant="titlebarStyle" />
-          <DailyReportButton @open="openDailyReport" />
-          <button
-            class="titlebar-btn titlebar-btn-template"
-            :class="{ 'is-active': templatePanelActive }"
-            :title="templatePanelActive ? '关闭循环模板' : '打开循环模板'"
-            aria-controls="template-workspace"
-            :aria-expanded="templatePanelActive"
-            @click="toggleTemplates"
-          >
-            <AppIcon class="btn-icon" name="recurrence" alt="循环模板" />
-          </button>
-          <!-- 设置按钮 -->
-          <button class="titlebar-btn titlebar-btn-settings" title="设置" @click="openSettings">
-            <AppIcon class="btn-icon" name="settings" alt="设置" />
-          </button>
-          <!-- 帮助按钮：从右滑入帮助中心（与循环模版互斥） -->
-          <button
-            class="titlebar-btn titlebar-btn-help"
-            :class="{ 'is-active': helpPanelActive }"
-            :title="helpPanelActive ? '关闭帮助' : '帮助'"
-            aria-controls="help-workspace"
-            :aria-expanded="helpPanelActive"
-            @click="toggleHelp"
-          >
-            <AppIcon class="btn-icon" name="help" alt="帮助" />
-          </button>
-        </TitlebarActions>
-      </AppTitlebar>
-      <div class="app-content-stage">
-        <!-- 主内容区域，flex:1 占据导航栏下方空间。 -->
-        <main
-          class="content"
-          :class="{ 'is-ui-background-blurred': templateInteractive || helpInteractive }"
-          :inert="templateInteractive || helpInteractive"
+        <!-- 同一套窗口功能通过 style 属性切换 Apple / Microsoft 视觉。 -->
+        <AppTitlebar
+          v-model:locked="locked"
+          v-model:z-order-mode="zOrderMode"
+          :style-variant="titlebarStyle"
+          @request:compact="requestCompactPresentation"
         >
-          <ActionBar
-            :key="'create:' + editingDataGeneration"
-            ref="actionBarRef"
-            class="app-search"
-            @create="onCreateNote"
-            @edit="onEditNote"
-          />
-          <NoteList
-            :key="'list:' + editingDataGeneration"
-            ref="noteListRef"
-            class="app-list"
-            @edit="onEditNote"
-          />
-        </main>
+          <!-- 设置和帮助按钮组 -->
+          <TitlebarActions :style-variant="titlebarStyle">
+            <ViewSwitcher :active-view="VIEW_MODES.LIST" :style-variant="titlebarStyle" />
+            <DailyReportButton @open="openDailyReport" />
+            <button
+              class="titlebar-btn titlebar-btn-template"
+              :class="{ 'is-active': templatePanelActive }"
+              :title="templatePanelActive ? '关闭循环模板' : '打开循环模板'"
+              aria-controls="template-workspace"
+              :aria-expanded="templatePanelActive"
+              @click="toggleTemplates"
+            >
+              <AppIcon class="btn-icon" name="recurrence" alt="循环模板" />
+            </button>
+            <!-- 设置按钮 -->
+            <button class="titlebar-btn titlebar-btn-settings" title="设置" @click="openSettings">
+              <AppIcon class="btn-icon" name="settings" alt="设置" />
+            </button>
+            <!-- 帮助按钮：从右滑入帮助中心（与循环模版互斥） -->
+            <button
+              class="titlebar-btn titlebar-btn-help"
+              :class="{ 'is-active': helpPanelActive }"
+              :title="helpPanelActive ? '关闭帮助' : '帮助'"
+              aria-controls="help-workspace"
+              :aria-expanded="helpPanelActive"
+              @click="toggleHelp"
+            >
+              <AppIcon class="btn-icon" name="help" alt="帮助" />
+            </button>
+          </TitlebarActions>
+        </AppTitlebar>
+        <div class="app-content-stage">
+          <!-- 主内容区域，flex:1 占据导航栏下方空间。 -->
+          <main
+            class="content"
+            :class="{ 'is-ui-background-blurred': templateInteractive || helpInteractive }"
+            :inert="templateInteractive || helpInteractive"
+          >
+            <ActionBar
+              :key="'create:' + editingDataGeneration"
+              ref="actionBarRef"
+              class="app-search"
+              @create="onCreateNote"
+              @edit="onEditNote"
+            />
+            <NoteList
+              :key="'list:' + editingDataGeneration"
+              ref="noteListRef"
+              class="app-list"
+              @edit="onEditNote"
+            />
+          </main>
 
-        <div
-          v-if="templatesRendered"
-          class="app-template-wrapper"
-          :class="{ 'is-interactive': templateInteractive }"
-        >
           <div
-            id="template-workspace"
-            ref="templatePanelRef"
-            class="app-template-panel"
-            :class="{ active: templatePanelActive }"
-            role="region"
-            aria-label="循环便签模版设置"
-            @transitionend="onTemplateTransitionEnd"
-            @transitioncancel="onTemplateTransitionCancel"
+            v-if="templatesRendered"
+            class="app-template-wrapper"
+            :class="{ 'is-interactive': templateInteractive }"
           >
-            <TemplatePage :key="editingDataGeneration" />
+            <div
+              id="template-workspace"
+              ref="templatePanelRef"
+              class="app-template-panel"
+              :class="{ active: templatePanelActive }"
+              role="region"
+              aria-label="循环便签模版设置"
+              @transitionend="onTemplateTransitionEnd"
+              @transitioncancel="onTemplateTransitionCancel"
+            >
+              <TemplatePage :key="editingDataGeneration" />
+            </div>
           </div>
-        </div>
 
-        <div
-          v-if="helpRendered"
-          class="app-help-wrapper"
-          :class="{ 'is-interactive': helpInteractive }"
-        >
           <div
-            id="help-workspace"
-            ref="helpPanelRef"
-            class="app-help-panel"
-            :class="{ active: helpPanelActive }"
-            role="region"
-            aria-label="帮助中心"
-            @transitionend="onHelpTransitionEnd"
-            @transitioncancel="onHelpTransitionCancel"
+            v-if="helpRendered"
+            class="app-help-wrapper"
+            :class="{ 'is-interactive': helpInteractive }"
           >
-            <HelpPage @close="closeHelp" />
+            <div
+              id="help-workspace"
+              ref="helpPanelRef"
+              class="app-help-panel"
+              :class="{ active: helpPanelActive }"
+              role="region"
+              aria-label="帮助中心"
+              @transitionend="onHelpTransitionEnd"
+              @transitioncancel="onHelpTransitionCancel"
+            >
+              <HelpPage @close="closeHelp" />
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </WindowPresentation>
     <!-- 便签编辑弹窗：复用 NoteEditor，底层列表保持可见但不可交互。 -->
     <Transition name="app-editor-modal" @after-leave="finishEditorClose">
       <div

@@ -1,6 +1,6 @@
 {
   "name": "abandon_note2",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Abandon便签（Abandon Note）是一款适用于 Windows 10 / 11 的本地桌面便签应用。",
   "main": "./out/main/index.js",
   "author": "feimingzou",
@@ -23,8 +23,7 @@
     "test:main-view-enhancements:win": "npm run build && electron tests/main-view-enhancements-electron.mjs",
     "test:wallpaper-storage": "node scripts/run-electron-wallpaper-tests.cjs",
     "test:attachment-storage": "node scripts/run-electron-attachment-tests.cjs",
-    "test:window-frame:win": "npm run build:native:win && npm run build && electron tests/window-frame-electron.mjs && electron tests/dock-trigger-electron.mjs && electron tests/blur-z-order-electron.mjs && electron tests/window-z-order-electron.mjs && electron tests/window-border-electron.mjs && electron tests/note-duration-electron.mjs && electron tests/main-view-enhancements-electron.mjs && electron tests/daily-report-electron.mjs && electron tests/template-quarterly-electron.mjs && electron tests/month-view-electron.mjs && electron tests/week-view-electron.mjs && electron tests/weather-settings-electron.mjs && electron tests/sticky-persistence-electron.mjs && electron tests/historical-note-move-electron.mjs && electron tests/quick-note-edit-electron.mjs && electron tests/titlebar-icon-scale-electron.mjs && electron tests/view-visibility-shortcut-electron.mjs && electron tests/note-draft-conflict-electron.mjs && electron tests/note-draft-conflict-ui-electron.mjs",
-    "test:historical-note-move:win": "npm run build && electron tests/historical-note-move-electron.mjs",
+    "test:window-frame:win": "npm run build:native:win && npm run build && electron tests/window-frame-electron.mjs && electron tests/dock-trigger-electron.mjs && electron tests/blur-z-order-electron.mjs && electron tests/window-z-order-electron.mjs && electron tests/window-border-electron.mjs && electron tests/note-duration-electron.mjs && electron tests/main-view-enhancements-electron.mjs && electron tests/daily-report-electron.mjs && electron tests/template-quarterly-electron.mjs && electron tests/month-view-electron.mjs && electron tests/week-view-electron.mjs && electron tests/weather-settings-electron.mjs && electron tests/sticky-persistence-electron.mjs && electron tests/quick-note-edit-electron.mjs && electron tests/titlebar-icon-scale-electron.mjs && electron tests/view-visibility-shortcut-electron.mjs && electron tests/note-draft-conflict-electron.mjs && electron tests/note-draft-conflict-ui-electron.mjs",
     "test:quick-note-edit:win": "npm run build && electron tests/quick-note-edit-electron.mjs",
     "test:template-quarterly:win": "npm run build && electron tests/template-quarterly-electron.mjs",
     "test:window-z-order:win": "npm run build:native:win && electron tests/window-z-order-electron.mjs",

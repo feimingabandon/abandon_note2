@@ -35,6 +35,7 @@ import {
   getNoteById,
   normalizeNoteDurationDays,
   normalizeRequiredNoteContent,
+  queryCompactNote,
   queryCustomNormal,
   queryEarlierNotes,
   queryPinnedNotes,
@@ -431,6 +432,7 @@ try {
     .map((column) => column.name)
   assert.equal(noteColumns.includes('template_id'), false)
   assert.equal(noteColumns.includes('duration_days'), true)
+  assert.equal(noteColumns.includes('duration_kind'), true)
   assert.equal(noteColumns.includes('remind_again_at'), false)
   assert.deepEqual(
     db
@@ -556,6 +558,10 @@ try {
   assert.equal(listRemoteNotices().total, 0)
   assert.equal(normalizeRequiredNoteContent('  保留首尾空白\n'), '  保留首尾空白\n')
   assert.throws(() => normalizeRequiredNoteContent(' \n\t '), /请输入便签内容/)
+  assert.throws(() => createNote({ content: '' }), /请输入便签内容/)
+  const imageOnlyDraft = createNote({ content: '' }, { allowEmptyContent: true })
+  assert.equal(imageOnlyDraft.content, '')
+  db.prepare('DELETE FROM notes WHERE id = ?').run(imageOnlyDraft.id)
   assert.equal(normalizeNoteDurationDays(1), 1)
   assert.equal(normalizeNoteDurationDays('365'), 365)
   assert.throws(() => normalizeNoteDurationDays(0), /持续天数/)
@@ -711,6 +717,8 @@ try {
 
   const firstNote = db.prepare('SELECT * FROM notes WHERE is_deleted = 0').get()
   assert.equal(firstNote.status, 'in_progress')
+  assert.equal(queryCompactNote().id, firstNote.id)
+  assert.equal(queryCompactNote().content, '生成快照')
   assert.equal(firstNote.is_pinned, 1)
   assert.equal(firstNote.notify_enabled, 0)
   assert.deepEqual(
@@ -961,7 +969,9 @@ try {
   const defaultDurationNote = createNote({ content: '默认单日便签' })
   const multiDayNote = createNote({ content: '跨日便签', durationDays: 7 })
   assert.equal(defaultDurationNote.duration_days, 1)
+  assert.equal(defaultDurationNote.duration_kind, 'single_day')
   assert.equal(multiDayNote.duration_days, 7)
+  assert.equal(multiDayNote.duration_kind, 'fixed_days')
   assert.throws(() => createNote({ content: '无效持续时间', durationDays: 366 }), /持续天数/)
 
   const historicalEffectiveAt = Date.now() - 7 * 24 * 60 * 60 * 1000
@@ -1099,8 +1109,8 @@ try {
   const calendarInsert = db.prepare(`
     INSERT INTO notes (
       content, status, is_deleted, is_pinned, notify_enabled, effective_at,
-      duration_days, finished_at, sort_order, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?)
+      duration_days, duration_kind, finished_at, sort_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, ?, ?)
   `)
   const calendarCreatedAt = localTs(2026, 7, 1)
   calendarInsert.run(
@@ -1110,6 +1120,7 @@ try {
     1,
     localTs(2026, 7, 30, 9),
     5,
+    'fixed_days',
     localTs(2026, 7, 31, 10),
     calendarCreatedAt,
     calendarCreatedAt
@@ -1121,6 +1132,7 @@ try {
     0,
     localTs(2026, 8, 3, 9),
     1,
+    'single_day',
     calendarCreatedAt,
     calendarCreatedAt,
     calendarCreatedAt
@@ -1132,6 +1144,7 @@ try {
     0,
     localTs(2026, 10, 1, 9),
     1,
+    'single_day',
     calendarCreatedAt,
     calendarCreatedAt,
     calendarCreatedAt

@@ -16,6 +16,7 @@ const { app, shell, BrowserWindow, screen, powerMonitor, Tray, Menu, dialog, glo
   Electron
 
 import { join, resolve } from 'path'
+import { randomUUID } from 'crypto'
 import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
 import icon from '../../resources/icon.png?asset' // 应用图标（Vite asset 导入）
 import {
@@ -33,6 +34,7 @@ import {
   initialize as blurInit,
   setConfig as blurSetConfig,
   updateGeometry as blurUpdateGeometry,
+  syncGeometryAndWait as blurSyncGeometryAndWait,
   destroy as blurDestroy,
   reSyncZOrder as blurReSyncZOrder,
   getRuntimeHealth as getBlurRuntimeHealth,
@@ -97,7 +99,6 @@ import {
   saveWallpaperVersion
 } from './db/db-wallpapers.js'
 import { Scheduler } from './services/scheduler.js'
-import { runAutomaticNoteMove } from './services/automatic-note-move.js'
 import { runRecurringTemplates } from './services/recurrence.js'
 import { TemplateSchedulerGuard } from './services/template-scheduler-guard.js'
 import { inspectDockHealth } from './window-motion/dock-health.js'
@@ -110,7 +111,8 @@ import { buildStickyTrayTemplate } from './sticky/StickyTrayMenu.js'
 import {
   constrainMainWindowBounds,
   getPersistableWindowBounds,
-  getWindowBoundsUpdate
+  getWindowBoundsUpdate,
+  mainWindowBoundsFromTitlebarAnchor
 } from './window-bounds.js'
 import { ipcMain } from './logging/ipc-main.js'
 import {
@@ -160,9 +162,22 @@ import {
   readApplicationSettings,
   resetApplicationSettingsToDefaults,
   writeActiveView,
-  writeApplicationSetting
+  writeApplicationSetting,
+  writeApplicationSettings
 } from './settings/application-settings.js'
 import { getWindowProfile } from './windows/window-profiles.js'
+import {
+  PRESENTATION_MODES,
+  PresentationModeController
+} from './windows/presentation-mode-controller.js'
+import {
+  COMPACT_WINDOW_LIMITS,
+  compactBoundsFromAnchor
+} from '../shared/window-compact-geometry.js'
+
+// 草稿只在本次应用进程中有效。主窗口即使切换页面或因崩溃重载，仍使用同一会话标识；
+// 应用重启后会生成新标识，渲染层因此不会恢复上一次启动留下的草稿。
+const editingDraftSessionId = randomUUID()
 
 /** 窗口标识常量，用于在数据库中区分不同窗口的设置 */
 const APP_ID = 'com.abandon.note'
@@ -196,13 +211,17 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'ui.settingsPanelSize',
   'ui.dayPanelSize',
   'calendar.recurringPreviewEnabled',
+  'notes.tagColorEnabled',
   'interaction.doubleClickQuickEdit',
-  'notes.autoMoveYesterday',
+  'interaction.hideMainViewDuringScreenshot',
   'weather.enabled',
   'weather.location',
   'remote.receiveNotices',
   'remote.uploadDeviceInfo',
   'onboarding.noticeVersion',
+  'window.compactWidth',
+  'window.compactHeight',
+  'window.compactFontSize',
   'listFilter'
 ])
 const APPLICATION_SETTING_ID_SET = new Set(APPLICATION_SETTING_IDS)
@@ -237,6 +256,7 @@ let weatherRuntime = null
 /** 当前只允许存在一个主视图；值持久化在 application 设置作用域。 */
 let activeViewMode = VIEW_MODES.LIST
 let switchingMainView = false
+let pendingMainViewRendererReady = null
 
 function getActiveWindowName() {
   return getViewSettingsScope(activeViewMode)
@@ -311,6 +331,7 @@ let stickyService = null
 let viewVisibilityShortcutService = null
 const viewVisibilityShortcutCaptureSenders = new WeakSet()
 let screenshotCaptureActive = false
+let screenshotMainViewWasHidden = false
 
 /** 是否正在执行退出流程（托盘菜单「退出」触发） */
 let isQuitting = false
@@ -374,12 +395,19 @@ function revealPendingNotificationApplication() {
     queuedMs: revealContext.requestedAt ? Date.now() - revealContext.requestedAt : null,
     ...notificationWindowSnapshot()
   })
-  openMainWindow()
-  logger.info('notification.reveal', '通知唤醒与主视图显示完成', {
-    ...revealContext,
-    result: 'shown',
-    ...notificationWindowSnapshot()
-  })
+  void exitCompactPresentation({ source: 'notification', showWhenDone: true })
+    .then(() => {
+      openMainWindow()
+      logger.info('notification.reveal', '通知唤醒与主视图显示完成', {
+        ...revealContext,
+        result: 'shown',
+        ...notificationWindowSnapshot()
+      })
+    })
+    .catch((error) => {
+      logger.error('presentation-mode.notification-expand', error, revealContext)
+      openMainWindow()
+    })
   return true
 }
 
@@ -415,7 +443,9 @@ function handleProtocolArgs(argv, source = 'startup') {
 if (gotSingleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
     if (handleProtocolArgs(argv, 'second-instance')) return
-    openMainWindow()
+    void openMainWindowFromTray().catch((error) =>
+      logger.error('presentation-mode.second-instance-expand', error)
+    )
   })
 }
 
@@ -428,6 +458,87 @@ let isLocked = DEFAULT_SETTINGS.window.lockState
 let titlebarDragSession = null
 let titlebarDockSuspended = false
 const MAIN_WINDOW_MIN_SIZE = 240
+const MAIN_VIEW_RENDERER_READY_TIMEOUT_MS = 15000
+const PRESENTATION_RENDERER_READY_TIMEOUT_MS = 3000
+let compactExpandedBounds = null
+let compactExpandedTitlebarCenterOffsetY = null
+let stableCompactBounds = null
+let compactDragSession = null
+let compactDockSuspended = false
+const presentationRendererWaiters = new Map()
+const acknowledgedPresentationOperations = new Set()
+
+const presentationModeController = new PresentationModeController({
+  onStateChanged: () => broadcastPresentationModeState(),
+  onError: (error, context) => logger.error('presentation-mode.controller', error, context)
+})
+
+function isCompactPresentationSupported() {
+  return process.platform === 'win32'
+}
+
+function isCompactPresentationActive() {
+  return presentationModeController.isCompact() || presentationModeController.isBusy()
+}
+
+function presentationModeSnapshot() {
+  const window = mainWindow
+  return {
+    supported: isCompactPresentationSupported(),
+    mode: presentationModeController.committedMode,
+    desiredMode: presentationModeController.desiredMode,
+    operation: presentationModeController.operation
+      ? { ...presentationModeController.operation }
+      : null,
+    bounds: window && !window.isDestroyed() ? window.getBounds() : null
+  }
+}
+
+function broadcastPresentationModeState() {
+  // 当前事务收口后，迟到的 Renderer ACK 不得留在下一次事务之外。
+  if (!presentationModeController.operation) acknowledgedPresentationOperations.clear()
+  if (
+    !mainWindow ||
+    mainWindow.isDestroyed() ||
+    mainWindow.webContents.isDestroyed() ||
+    mainWindow.webContents.isLoadingMainFrame()
+  ) {
+    return
+  }
+  mainWindow.webContents.send('presentation-mode:state-changed', presentationModeSnapshot())
+}
+
+function acknowledgePresentationRenderer(operationId) {
+  const normalized = Number(operationId)
+  if (!Number.isInteger(normalized) || presentationModeController.operation?.id !== normalized) {
+    return false
+  }
+  const waiter = presentationRendererWaiters.get(normalized)
+  if (waiter) waiter.resolve()
+  else acknowledgedPresentationOperations.add(normalized)
+  return true
+}
+
+function waitForPresentationRenderer(operationId) {
+  if (acknowledgedPresentationOperations.delete(operationId)) return Promise.resolve()
+  return new Promise((resolveReady, rejectReady) => {
+    const cleanup = () => {
+      clearTimeout(timer)
+      presentationRendererWaiters.delete(operationId)
+      acknowledgedPresentationOperations.delete(operationId)
+    }
+    const timer = setTimeout(() => {
+      cleanup()
+      rejectReady(new Error(`等待窗口展示模式 ${operationId} 渲染就绪超时`))
+    }, PRESENTATION_RENDERER_READY_TIMEOUT_MS)
+    presentationRendererWaiters.set(operationId, {
+      resolve: () => {
+        cleanup()
+        resolveReady()
+      }
+    })
+  })
+}
 
 function dipBoundsToPhysical(window, bounds) {
   // A rectangle touching a mixed-DPI display boundary must use one display's
@@ -445,7 +556,13 @@ function resolvedDragPoint(point) {
 }
 
 function beginTitlebarWindowDrag(pointerOrigin) {
-  if (isLocked || !mainWindow || mainWindow.isDestroyed() || titlebarDragSession) {
+  if (
+    isLocked ||
+    isCompactPresentationActive() ||
+    !mainWindow ||
+    mainWindow.isDestroyed() ||
+    titlebarDragSession
+  ) {
     return false
   }
   let motionBounds
@@ -582,6 +699,8 @@ let settingsRevision = 0
 
 /** 防抖定时器，用于延迟保存窗口位置/尺寸 */
 let geometryTimer = null
+let compactResizePersistenceTimer = null
+let pendingCompactResizeBounds = null
 let dockGeometryReconcileTimer = null
 let dockDisplayChangeTimer = null
 const pendingDockDisplayChanges = []
@@ -594,6 +713,7 @@ let geometryDirty = false
 /** 高频 resize/move 和自定义拖动结束统一经过此入口持久化主视图几何。 */
 function debouncedSaveGeometry() {
   if (switchingMainView) return
+  if (isCompactPresentationActive()) return
   if (Date.now() < suppressGeometryPersistenceUntil) return
   if (isDockGeometryPersistenceSuppressed()) return
   if (!mainWindow || mainWindow.isDestroyed()) return
@@ -859,8 +979,16 @@ function sendAppMessage(type, text, duration = 2200) {
 }
 
 function broadcastBlurDiagnosticChanged() {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('blur:diagnostic-changed', { ...blurDiagnostic })
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const contents = mainWindow.webContents
+  if (contents.isDestroyed() || contents.isCrashed() || contents.isLoadingMainFrame()) return
+  try {
+    contents.send('blur:diagnostic-changed', { ...blurDiagnostic })
+  } catch (error) {
+    // 页面导航或 renderer 异常退出可能发生在状态检查与 send 之间。
+    logger.debug('blur.diagnostic-broadcast-skipped', '渲染帧不可用，已跳过毛玻璃诊断广播', {
+      error: error?.message
+    })
   }
 }
 
@@ -1081,6 +1209,415 @@ function restoreBlurForVisibleWindow(window, source) {
   runBlurRuntimeOperation(blurReSyncZOrder, `${source} 重同步毛玻璃窗口层级`)
 }
 
+function persistStableExpandedBounds(bounds) {
+  const normalized = Object.fromEntries(
+    Object.entries(bounds).map(([key, value]) => [key, Math.round(Number(value))])
+  )
+  setSettingsBatch(getActiveWindowName(), [
+    serializeSetting('geometry.posX', normalized.x),
+    serializeSetting('geometry.posY', normalized.y),
+    serializeSetting('geometry.width', normalized.width),
+    serializeSetting('geometry.height', normalized.height)
+  ])
+  compactExpandedBounds = normalized
+  lastVisibleMainWindowBounds = { ...normalized }
+  geometryDirty = false
+}
+
+function persistAnchoredExpandedBounds(bounds, source) {
+  try {
+    persistStableExpandedBounds(bounds)
+  } catch (error) {
+    const normalized = Object.fromEntries(
+      Object.entries(bounds).map(([key, value]) => [key, Math.round(Number(value))])
+    )
+    compactExpandedBounds = normalized
+    lastVisibleMainWindowBounds = { ...normalized }
+    geometryDirty = true
+    logger.warn('presentation-mode.anchor-persist', '定位后的主视图边界暂未写入数据库', {
+      source,
+      error: error?.message
+    })
+  }
+}
+
+function hideWindowForPresentationCommit(window, source) {
+  if (!window || window.isDestroyed()) return
+  if (blurInitialized) {
+    try {
+      blurSetConfig({ ...blurConfig, enabled: false })
+    } catch (error) {
+      logger.error('presentation-mode.blur-hide', error, { source })
+    }
+  }
+  window.hide()
+}
+
+/**
+ * 真实窗口尺寸提交后的原生毛玻璃屏障。首次失败会重建同一个父 HWND
+ * 的 Overlay；第二次失败才进入既有的明确 CSS 背景回退。
+ */
+function synchronizePresentationBlur(window, source) {
+  if (!blurConfig.enabled || process.platform !== 'win32' || !window || window.isDestroyed()) {
+    return true
+  }
+
+  const synchronize = () => {
+    if (!blurInitialized) {
+      const initialized = initializeBlurRuntime()
+      if (!initialized.success) {
+        const error = new Error(initialized.error || '原生毛玻璃重新初始化失败')
+        error.nativeError = initialized.nativeError || null
+        throw error
+      }
+    }
+    blurSetConfig(blurConfig)
+    blurSyncGeometryAndWait(800)
+    blurReSyncZOrder()
+  }
+
+  try {
+    synchronize()
+    return true
+  } catch (firstError) {
+    logger.warn('presentation-mode.blur-rebuild', '最终几何同步失败，正在重建 Overlay', {
+      source,
+      error: firstError?.message
+    })
+    try {
+      blurDestroy()
+    } catch (destroyError) {
+      logger.error('presentation-mode.blur-rebuild-destroy', destroyError, { source })
+    }
+    blurInitialized = false
+    try {
+      synchronize()
+      return true
+    } catch (secondError) {
+      handleBlurRuntimeFailure(secondError)
+      return false
+    }
+  }
+}
+
+function showCommittedPresentation(window, source, showWhenDone) {
+  if (!showWhenDone || !window || window.isDestroyed()) return
+  window.show()
+  synchronizePresentationBlur(window, source)
+  if (zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM) reassertBottomWindowZOrder(source)
+  else applyWindowZOrder()
+  window.focus()
+}
+
+function normalizedScreenPoint(point) {
+  const x = Number(point?.x)
+  const y = Number(point?.y)
+  return Number.isFinite(x) && Number.isFinite(y) ? { x: Math.round(x), y: Math.round(y) } : null
+}
+
+function resolveExpandedBoundsForRecovery(anchor = null) {
+  const storedBounds =
+    compactExpandedBounds ||
+    (lastVisibleMainWindowBounds && !presentationModeController.isCompact()
+      ? lastVisibleMainWindowBounds
+      : resolveActiveViewWindowBounds().bounds)
+  const normalizedAnchor = normalizedScreenPoint(anchor)
+  if (normalizedAnchor) {
+    const display = screen.getDisplayNearestPoint(normalizedAnchor)
+    const fallbackTitlebarCenter = Math.min(24, Math.max(0, storedBounds.height / 2))
+    return mainWindowBoundsFromTitlebarAnchor(
+      storedBounds,
+      normalizedAnchor,
+      compactExpandedTitlebarCenterOffsetY ?? fallbackTitlebarCenter,
+      display.workArea
+    )
+  }
+  const display = screen.getDisplayMatching(storedBounds)
+  return constrainMainWindowBounds(storedBounds, display.workArea)
+}
+
+async function performPresentationModeCommit({ window, operation }) {
+  if (!window || window.isDestroyed()) throw new Error('主窗口不可用')
+  const showWhenDone = operation.context?.showWhenDone !== false
+
+  if (operation.to === PRESENTATION_MODES.COMPACT) {
+    if (!isCompactPresentationSupported()) throw new Error('灵动岛目前仅支持 Windows 10/11')
+    restoreDockWindowToVisiblePosition()
+    resetDockState({ source: 'presentation-compact' })
+    endTitlebarWindowDrag()
+    const expandedBounds = mainWindow.getBounds()
+    persistStableExpandedBounds(expandedBounds)
+    const titlebarCenterOffsetY = Number(operation.context?.titlebarCenterOffsetY)
+    compactExpandedTitlebarCenterOffsetY = Number.isFinite(titlebarCenterOffsetY)
+      ? Math.max(0, Math.round(titlebarCenterOffsetY))
+      : null
+    if (!compactDockSuspended) {
+      beginDockInteractionSuspension('presentation-compact')
+      compactDockSuspended = true
+    }
+    const anchor = resolvedDragPoint(operation.context?.anchor)
+    const display = screen.getDisplayNearestPoint(anchor)
+    stableCompactBounds = compactBoundsFromAnchor({
+      anchor,
+      size: {
+        width: resolvedSettings.window.compactWidth,
+        height: resolvedSettings.window.compactHeight
+      },
+      workArea: display.workArea
+    })
+    presentationModeController.operation.targetBounds = { ...stableCompactBounds }
+    broadcastPresentationModeState()
+    hideWindowForPresentationCommit(window, 'compact')
+    await waitForPresentationRenderer(operation.id)
+    window.setMinimumSize(COMPACT_WINDOW_LIMITS.minWidth, COMPACT_WINDOW_LIMITS.minHeight)
+    window.setBounds(stableCompactBounds, false)
+    stableCompactBounds = { ...window.getBounds() }
+    showCommittedPresentation(window, 'presentation-compact', showWhenDone)
+    return { bounds: { ...stableCompactBounds } }
+  }
+
+  const expandedAnchor = normalizedScreenPoint(operation.context?.anchor)
+  const expandedBounds = resolveExpandedBoundsForRecovery(expandedAnchor)
+  presentationModeController.operation.targetBounds = { ...expandedBounds }
+  broadcastPresentationModeState()
+  hideWindowForPresentationCommit(window, 'expanded')
+  await waitForPresentationRenderer(operation.id)
+  window.setBounds(expandedBounds, false)
+  window.setMinimumSize(MAIN_WINDOW_MIN_SIZE, MAIN_WINDOW_MIN_SIZE)
+  lastVisibleMainWindowBounds = { ...window.getBounds() }
+  if (expandedAnchor) persistAnchoredExpandedBounds(lastVisibleMainWindowBounds, 'expanded')
+  stableCompactBounds = null
+  compactExpandedTitlebarCenterOffsetY = null
+  if (compactDockSuspended) {
+    compactDockSuspended = false
+    endDockInteractionSuspension('presentation-expanded')
+  }
+  showCommittedPresentation(window, 'presentation-expanded', showWhenDone)
+  return { bounds: { ...lastVisibleMainWindowBounds } }
+}
+
+async function recoverExpandedPresentation({ window, operation, error }) {
+  if (!window || window.isDestroyed()) return
+  logger.warn('presentation-mode.recover', '展示模式切换失败，强制恢复主视图', {
+    operationId: operation.id,
+    from: operation.from,
+    to: operation.to,
+    error: error?.message
+  })
+  presentationRendererWaiters.get(operation.id)?.resolve()
+  try {
+    if (!window.webContents.isDestroyed()) {
+      window.webContents.send('presentation-mode:force-expanded', { operationId: operation.id })
+    }
+  } catch (rendererError) {
+    logger.warn('presentation-mode.recover-renderer', '渲染进程恢复通知发送失败', {
+      operationId: operation.id,
+      error: rendererError?.message
+    })
+  }
+  hideWindowForPresentationCommit(window, 'recovery')
+  const expandedAnchor =
+    operation.to === PRESENTATION_MODES.EXPANDED
+      ? normalizedScreenPoint(operation.context?.anchor)
+      : null
+  const expandedBounds = resolveExpandedBoundsForRecovery(expandedAnchor)
+  window.setBounds(expandedBounds, false)
+  window.setMinimumSize(MAIN_WINDOW_MIN_SIZE, MAIN_WINDOW_MIN_SIZE)
+  lastVisibleMainWindowBounds = { ...window.getBounds() }
+  if (expandedAnchor) persistAnchoredExpandedBounds(lastVisibleMainWindowBounds, 'recovery')
+  stableCompactBounds = null
+  compactExpandedTitlebarCenterOffsetY = null
+  if (compactDockSuspended) {
+    compactDockSuspended = false
+    endDockInteractionSuspension('presentation-recovery')
+  }
+  window.show()
+  synchronizePresentationBlur(window, 'presentation-recovery')
+  applyResolvedWindowRuntime()
+  window.focus()
+}
+
+function requestPresentationMode(mode, context = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return Promise.resolve({ changed: false, mode: PRESENTATION_MODES.EXPANDED })
+  }
+  return presentationModeController.request(mainWindow, mode, context, {
+    perform: performPresentationModeCommit,
+    recover: recoverExpandedPresentation
+  })
+}
+
+function enterCompactPresentation(anchor) {
+  if (isLocked) {
+    return Promise.reject(new Error('窗口已锁定：切换为灵动岛会改变窗口位置和尺寸，请先解锁'))
+  }
+  const titlebarCenterOffsetY = Number(anchor?.titlebarCenterOffsetY)
+  return requestPresentationMode(PRESENTATION_MODES.COMPACT, {
+    source: 'titlebar-double-click',
+    anchor: resolvedDragPoint(anchor),
+    titlebarCenterOffsetY: Number.isFinite(titlebarCenterOffsetY)
+      ? Math.max(0, Math.round(titlebarCenterOffsetY))
+      : null,
+    showWhenDone: true
+  })
+}
+
+function exitCompactPresentation({
+  source = 'compact-double-click',
+  showWhenDone = true,
+  anchor = null
+} = {}) {
+  if (compactDragSession) endCompactWindowDrag()
+  return requestPresentationMode(PRESENTATION_MODES.EXPANDED, {
+    source,
+    showWhenDone,
+    anchor: normalizedScreenPoint(anchor)
+  })
+}
+
+function beginCompactWindowDrag(pointerOrigin) {
+  if (
+    isLocked ||
+    !presentationModeController.isCompact() ||
+    presentationModeController.isBusy() ||
+    compactDragSession ||
+    !mainWindow ||
+    mainWindow.isDestroyed()
+  ) {
+    return false
+  }
+  let motionBounds
+  try {
+    motionBounds = windowMotionBackend?.capture()
+  } catch (error) {
+    logger.error('presentation-mode.drag-start', error)
+    return false
+  }
+  if (!motionBounds) return false
+  const bounds = mainWindow.getBounds()
+  const contentBounds = mainWindow.getContentBounds()
+  compactDragSession = {
+    cursor: resolvedDragPoint(pointerOrigin),
+    bounds,
+    lastPosition: { x: bounds.x, y: bounds.y },
+    moved: false,
+    motionPlan: {
+      initial: motionBounds,
+      expectedSize: { width: motionBounds.width, height: motionBounds.height },
+      expectedElectronContentSize: {
+        width: contentBounds.width,
+        height: contentBounds.height
+      }
+    }
+  }
+  return true
+}
+
+function updateCompactWindowDrag(pointerPosition) {
+  if (!compactDragSession || !mainWindow || mainWindow.isDestroyed()) return false
+  const session = compactDragSession
+  const cursor = resolvedDragPoint(pointerPosition)
+  const position = {
+    x: Math.round(session.bounds.x + cursor.x - session.cursor.x),
+    y: Math.round(session.bounds.y + cursor.y - session.cursor.y)
+  }
+  if (position.x === session.lastPosition.x && position.y === session.lastPosition.y) return false
+  const display = screen.getDisplayNearestPoint(cursor)
+  const constrained = compactBoundsFromAnchor({
+    anchor: {
+      x: position.x + session.bounds.width / 2,
+      y: position.y + session.bounds.height / 2
+    },
+    size: session.bounds,
+    workArea: display.workArea
+  })
+  const motionPosition =
+    session.motionPlan.initial.coordinateSpace === 'physical'
+      ? dipBoundsToPhysical(mainWindow, { ...session.bounds, ...constrained })
+      : constrained
+  try {
+    setDockPosition(motionPosition, session.motionPlan)
+    session.lastPosition = { x: constrained.x, y: constrained.y }
+    stableCompactBounds = { ...constrained }
+    session.moved = true
+    return true
+  } catch (error) {
+    logger.error('presentation-mode.drag-move', error, { position: constrained })
+    return false
+  }
+}
+
+function endCompactWindowDrag() {
+  const session = compactDragSession
+  if (!session) return false
+  compactDragSession = null
+  if (session.moved && mainWindow && !mainWindow.isDestroyed()) {
+    stableCompactBounds = { ...mainWindow.getBounds() }
+    synchronizePresentationBlur(mainWindow, 'presentation-drag-end')
+  }
+  if (zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM) {
+    reassertBottomWindowZOrder('presentation-drag-end')
+  }
+  return session.moved
+}
+
+function persistCompactWindowSize(bounds, source) {
+  const width = Math.round(Number(bounds?.width))
+  const height = Math.round(Number(bounds?.height))
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return false
+  persistSettingValues([
+    { id: 'window.compactWidth', value: width },
+    { id: 'window.compactHeight', value: height }
+  ])
+  pendingCompactResizeBounds = null
+  if (compactResizePersistenceTimer) {
+    clearTimeout(compactResizePersistenceTimer)
+    compactResizePersistenceTimer = null
+  }
+  logger.info('presentation-mode.resize-persist', '灵动岛尺寸已保存', {
+    source,
+    width: resolvedSettings.window.compactWidth,
+    height: resolvedSettings.window.compactHeight
+  })
+  return true
+}
+
+function flushCompactWindowSizePersistence(source = 'resize-idle') {
+  const bounds = pendingCompactResizeBounds
+  if (!bounds) return false
+  try {
+    return persistCompactWindowSize(bounds, source)
+  } catch (error) {
+    logger.error('presentation-mode.resize-persist', error, { source, bounds })
+    return false
+  }
+}
+
+function scheduleCompactWindowSizePersistence(bounds) {
+  pendingCompactResizeBounds = { ...bounds }
+  if (compactResizePersistenceTimer) clearTimeout(compactResizePersistenceTimer)
+  compactResizePersistenceTimer = setTimeout(() => {
+    compactResizePersistenceTimer = null
+    flushCompactWindowSizePersistence('resize-idle')
+  }, 300)
+}
+
+function finishCompactWindowResize() {
+  if (
+    !presentationModeController.isCompact() ||
+    presentationModeController.isBusy() ||
+    !mainWindow ||
+    mainWindow.isDestroyed()
+  ) {
+    return false
+  }
+  stableCompactBounds = { ...mainWindow.getBounds() }
+  pendingCompactResizeBounds = { ...stableCompactBounds }
+  flushCompactWindowSizePersistence('pointer-finish')
+  synchronizePresentationBlur(mainWindow, 'presentation-resize-end')
+  return true
+}
+
 const scheduleVisibleBlurRestore = createDeferredWindowRestore({
   canRestore: (window) => !window.isDestroyed() && window.isVisible() && window === mainWindow,
   restore: (window, source) => {
@@ -1160,7 +1697,6 @@ function reconcileDockRuntimeConfig(previousConfig, source = 'settings') {
  * 返回广播出去的同一份完整快照。
  */
 function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
-  const previousAutoMove = resolvedSettings.notes.autoMoveYesterday
   const changesDockConfig = entries.some(({ id }) => id.startsWith('dock.'))
   const previousDockConfig = changesDockConfig ? getDockRuntimeConfig() : null
   const normalizedEntries = entries.map(({ id, value }) => ({ id, ...serializeSetting(id, value) }))
@@ -1169,7 +1705,9 @@ function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
   )
   const viewEntries = normalizedEntries.filter(({ id }) => !APPLICATION_SETTING_ID_SET.has(id))
   if (viewEntries.length) setSettingsBatch(getActiveWindowName(), viewEntries)
-  applicationEntries.forEach(({ id, value }) => writeApplicationSetting(id, value))
+  if (applicationEntries.length) {
+    writeApplicationSettings(applicationEntries.map(({ id, value }) => ({ id, value })))
+  }
   refreshResolvedSettings({ incrementRevision: true })
 
   if (normalizedEntries.some(({ id }) => id.startsWith('window.'))) {
@@ -1185,34 +1723,7 @@ function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
 
   const snapshot = getResolvedSettingsSnapshot()
   broadcastSettingsChanged(snapshot)
-  if (!previousAutoMove && resolvedSettings.notes.autoMoveYesterday) {
-    try {
-      checkAutomaticNoteMove({ reason: 'enabled', force: true })
-    } catch (error) {
-      logger.error('notes.auto-move', error, { reason: 'enabled' })
-    }
-  }
   return snapshot
-}
-
-function checkAutomaticNoteMove({ now = Date.now(), reason = 'scheduled', force = false } = {}) {
-  const result = runAutomaticNoteMove({
-    enabled: resolvedSettings.notes.autoMoveYesterday,
-    now,
-    force
-  })
-  if (!result.skipped)
-    logger.info('notes.auto-move', '昨日未完成便签自动移动检查完成', { ...result, reason })
-  if (result.count > 0) {
-    for (const window of getApplicationWindows()) {
-      window.webContents.send('notes:changed', {
-        reason: 'automatic-historical-move',
-        count: result.count,
-        targetDateKey: result.targetDateKey
-      })
-    }
-  }
-  return result
 }
 
 function persistSettingValue(id, value) {
@@ -1505,6 +2016,7 @@ function suppressDockGeometryPersistence() {
 
 function isDockGeometryPersistenceSuppressed() {
   return (
+    isCompactPresentationActive() ||
     isSliding ||
     isDockHidden ||
     Boolean(dockMotionSession) ||
@@ -1538,6 +2050,9 @@ function scheduleDockGeometryReconciliation() {
   const delay = Math.max(0, suppressDockGeometryPersistenceUntil - Date.now()) + 50
   dockGeometryReconcileTimer = setTimeout(() => {
     dockGeometryReconcileTimer = null
+    // 灵动岛拖动复用原生窗口移动后端，也会触发这条贴边补偿链路。
+    // 此时真实窗口边界属于灵动岛，绝不能写入主视图 geometry。
+    if (isCompactPresentationActive()) return
     if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) return
     if (isSliding || isDockHidden || dockMotionSession) return
     if (
@@ -1585,29 +2100,20 @@ function createStableDockBounds(bounds, side, workArea) {
 }
 
 /**
- * 创建主窗口
- * - 根据数据库中保存的位置/尺寸恢复窗口状态
- * - 若无保存记录，则使用默认值（屏幕左侧 25% 宽度、90% 高度）
- * - 窗口无边框 + 透明背景，用于实现自定义外观
+ * 根据当前视图的独立设置解析真实窗口边界。
+ * 视图切换与首次创建必须共用同一套规则，避免复用窗口后出现尺寸或显示器选择差异。
  */
-function createWindow({ preferredDisplay = null } = {}) {
-  const creationStartedAt = Date.now()
-  // 日历视图首次创建优先沿用列表所在显示器；已有几何信息时仍以持久化位置为准。
+function resolveActiveViewWindowBounds({ preferredDisplay = null } = {}) {
   const display = preferredDisplay || screen.getPrimaryDisplay()
-  const screenW = display.workAreaSize.width // 可用工作区宽度（排除任务栏）
-  const screenH = display.workAreaSize.height // 可用工作区高度
-
-  // 计算默认窗口尺寸（比例见顶部常量）
+  const screenW = display.workAreaSize.width
+  const screenH = display.workAreaSize.height
   const defaultW = Math.round(screenW * resolvedSettings.geometry.widthRatio)
   const defaultH = Math.round(screenH * resolvedSettings.geometry.heightRatio)
-  // 计算上下边距，使窗口垂直居中
   const margin = Math.round((screenH - defaultH) / 2)
   const defaultX = getActiveWindowProfile().defaultCentered
     ? display.workArea.x + Math.round((screenW - defaultW) / 2)
     : display.workArea.x + margin
   const defaultY = display.workArea.y + Math.round((screenH - defaultH) / 2)
-
-  // 完整快照已经统一完成“数据库值优先、缺失/非法时回退默认”的解析。
   const geometry = resolvedSettings.geometry
   const hasSavedGeometry =
     [geometry.posX, geometry.posY, geometry.width, geometry.height].every(Number.isFinite) &&
@@ -1628,7 +2134,119 @@ function createWindow({ preferredDisplay = null } = {}) {
     height: defaultH
   }
   const targetDisplay = saved ? screen.getDisplayMatching(saved) : display
-  const normalBounds = constrainMainWindowBounds(requestedBounds, targetDisplay.workArea)
+  const bounds = constrainMainWindowBounds(requestedBounds, targetDisplay.workArea)
+
+  return {
+    bounds,
+    requestedBounds,
+    targetDisplay,
+    saved: Boolean(saved)
+  }
+}
+
+function getActiveRendererLocation() {
+  const rendererFile = getActiveWindowProfile().rendererFile
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    return {
+      rendererFile,
+      type: 'url',
+      value:
+        rendererFile === 'index.html'
+          ? process.env['ELECTRON_RENDERER_URL']
+          : `${process.env['ELECTRON_RENDERER_URL']}/${rendererFile}`
+    }
+  }
+  return {
+    rendererFile,
+    type: 'file',
+    value: join(RENDERER_ROOT, rendererFile)
+  }
+}
+
+function beginMainViewRendererReadyWait(window, viewMode) {
+  if (pendingMainViewRendererReady) {
+    pendingMainViewRendererReady.reject(new Error('新的主视图加载覆盖了尚未完成的等待'))
+  }
+
+  let resolvePromise
+  let rejectPromise
+  const promise = new Promise((resolveReady, rejectReady) => {
+    resolvePromise = resolveReady
+    rejectPromise = rejectReady
+  })
+  const pending = {
+    window,
+    viewMode,
+    timer: null,
+    resolve: () => {
+      if (pendingMainViewRendererReady !== pending) return
+      clearTimeout(pending.timer)
+      pendingMainViewRendererReady = null
+      resolvePromise()
+    },
+    reject: (error) => {
+      if (pendingMainViewRendererReady !== pending) return
+      clearTimeout(pending.timer)
+      pendingMainViewRendererReady = null
+      rejectPromise(error)
+    }
+  }
+  pending.timer = setTimeout(() => {
+    pending.reject(new Error(`等待${viewMode}视图渲染完成超时`))
+  }, MAIN_VIEW_RENDERER_READY_TIMEOUT_MS)
+  pending.timer.unref?.()
+  pendingMainViewRendererReady = pending
+  return promise
+}
+
+function acknowledgeMainViewRendererReady(sender, viewMode) {
+  const pending = pendingMainViewRendererReady
+  if (!pending || pending.window.isDestroyed()) return
+  if (
+    sender !== pending.window.webContents ||
+    pending.viewMode !== activeViewMode ||
+    viewMode !== pending.viewMode
+  )
+    return
+  pending.resolve()
+}
+
+function cancelMainViewRendererReadyWait(error) {
+  pendingMainViewRendererReady?.reject(error)
+}
+
+async function loadActiveViewIntoWindow(window) {
+  if (!window || window.isDestroyed()) throw new Error('主窗口不可用')
+  const location = getActiveRendererLocation()
+  const readyPromise = beginMainViewRendererReadyWait(window, activeViewMode)
+  if (mainWindowPresentationTiming) mainWindowPresentationTiming.loadRequestedAt = Date.now()
+
+  try {
+    const loadPromise =
+      location.type === 'url' ? window.loadURL(location.value) : window.loadFile(location.value)
+    await Promise.all([loadPromise, readyPromise])
+  } catch (error) {
+    cancelMainViewRendererReadyWait(error)
+    await readyPromise.catch(() => {})
+    throw error
+  }
+}
+
+/**
+ * 创建主窗口
+ * - 根据数据库中保存的位置/尺寸恢复窗口状态
+ * - 若无保存记录，则使用默认值（屏幕左侧 25% 宽度、90% 高度）
+ * - 窗口无边框 + 透明背景，用于实现自定义外观
+ */
+function createWindow({ preferredDisplay = null } = {}) {
+  const creationStartedAt = Date.now()
+  // 日历视图首次创建优先沿用列表所在显示器；已有几何信息时仍以持久化位置为准。
+  const {
+    bounds: normalBounds,
+    requestedBounds,
+    targetDisplay,
+    saved
+  } = resolveActiveViewWindowBounds({ preferredDisplay })
   const bounds = normalBounds
 
   // 创建主窗口实例（透明背景 + CSS 圆角）
@@ -1650,6 +2268,7 @@ function createWindow({ preferredDisplay = null } = {}) {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(PRELOAD_ROOT, 'index.js'),
+      additionalArguments: [`--editing-draft-session=${editingDraftSessionId}`],
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -1658,6 +2277,9 @@ function createWindow({ preferredDisplay = null } = {}) {
     }
   })
   const createdWindow = mainWindow
+  presentationModeController.initialize(mainWindow)
+  compactExpandedBounds = { ...normalBounds }
+  stableCompactBounds = null
   mainWindowPresentationTiming = {
     creationStartedAt,
     createdAt: Date.now(),
@@ -1709,7 +2331,7 @@ function createWindow({ preferredDisplay = null } = {}) {
   logger.info('startup.window-presentation', '主窗口已创建并等待渲染就绪', {
     viewMode: activeViewMode,
     creationMs: mainWindowPresentationTiming.createdAt - creationStartedAt,
-    savedGeometry: Boolean(saved),
+    savedGeometry: saved,
     requestedBounds,
     constrainedExpandedBounds: normalBounds,
     initialBounds: mainWindow.getBounds(),
@@ -1776,6 +2398,11 @@ function createWindow({ preferredDisplay = null } = {}) {
   // 监听窗口大小变化和移动事件，触发防抖保存
   mainWindow.on('resize', () => {
     if (windowMotionBackend?.isMoving()) return
+    if (presentationModeController.isCompact() && !presentationModeController.isBusy()) {
+      stableCompactBounds = { ...mainWindow.getBounds() }
+      scheduleCompactWindowSizePersistence(stableCompactBounds)
+      return
+    }
     debouncedSaveGeometry()
     syncVisibleDockSide({ source: 'window-resize' })
   })
@@ -1839,8 +2466,12 @@ function createWindow({ preferredDisplay = null } = {}) {
 
   // 窗口销毁时清除引用和贴边资源
   mainWindow.on('closed', () => {
-    // 视图切换会紧接着创建新窗口；旧窗口的延迟 closed 事件不能清空新引用。
+    // 只清理由 createWindow 创建并仍被主进程持有的唯一主窗口。
     if (mainWindow !== createdWindow) return
+    cancelMainViewRendererReadyWait(new Error('主窗口已关闭'))
+    for (const waiter of presentationRendererWaiters.values()) waiter.resolve()
+    presentationRendererWaiters.clear()
+    acknowledgedPresentationOperations.clear()
     cancelBottomWindowZOrderRetry()
     resetDockState()
     detachNativeEdgeMonitorMessageHook(createdWindow)
@@ -1850,23 +2481,17 @@ function createWindow({ preferredDisplay = null } = {}) {
     mainWindowPresentationTiming = null
   })
 
-  // 根据环境加载页面：开发模式用 HMR URL，生产模式加载本地 HTML 文件
+  // 根据环境加载页面：开发模式用 HMR URL，生产模式加载本地 HTML 文件。
+  // 首次启动无需阻塞 createWindow；renderer-ready 仍负责最终显示窗口。
+  const rendererLocation = getActiveRendererLocation()
   if (mainWindowPresentationTiming) mainWindowPresentationTiming.loadRequestedAt = Date.now()
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    const rendererFile = getActiveWindowProfile().rendererFile
-    void mainWindow
-      .loadURL(
-        rendererFile === 'index.html'
-          ? process.env['ELECTRON_RENDERER_URL']
-          : `${process.env['ELECTRON_RENDERER_URL']}/${rendererFile}`
-      )
-      .catch((error) => logger.error('startup.renderer-load', error, { rendererFile }))
-  } else {
-    const rendererFile = getActiveWindowProfile().rendererFile
-    void mainWindow
-      .loadFile(join(RENDERER_ROOT, rendererFile))
-      .catch((error) => logger.error('startup.renderer-load', error, { rendererFile }))
-  }
+  const initialLoad =
+    rendererLocation.type === 'url'
+      ? mainWindow.loadURL(rendererLocation.value)
+      : mainWindow.loadFile(rendererLocation.value)
+  void initialLoad.catch((error) =>
+    logger.error('startup.renderer-load', error, { rendererFile: rendererLocation.rendererFile })
+  )
 }
 
 // ============================================================
@@ -2543,6 +3168,7 @@ function detectDockSide() {
  * 真正收起仍由鼠标离开事件决定，避免系统恢复后窗口立即消失。
  */
 function syncVisibleDockSide({ source = 'unknown', snap = false, forceSnap = false } = {}) {
+  if (isCompactPresentationActive()) return null
   if (
     !mainWindow ||
     mainWindow.isDestroyed() ||
@@ -2669,6 +3295,7 @@ function slideTo(target, motionPlan, onFinish) {
  * 前置条件：dockSide 非空且 isDockHidden === false
  */
 function doHide() {
+  if (isCompactPresentationActive()) return
   if (!mainWindow || mainWindow.isDestroyed() || isDockHidden || !dockSide) return
   if (isSliding || nativeEdgeCleanupPending || dockInteractionSuspendCount > 0) return
   const hideRequestedAt = pendingDockHideRequestedAt
@@ -3244,27 +3871,79 @@ function openMainWindow() {
   reassertBottomWindowZOrder('open-main-window')
 }
 
-function openMainWindowFromTray() {
+async function openMainWindowFromTray() {
+  await exitCompactPresentation({ source: 'tray-open', showWhenDone: true })
   openMainWindow()
 }
 
 /**
- * 主窗口被替换前销毁与旧 HWND 绑定的毛玻璃资源，并同步清空 JS 运行态。
- * 调用者可以据此安全地为新窗口重新初始化；即使原生销毁抛错，状态清理也会完成。
+ * 视图导航期间只隐藏现有 BrowserWindow，并暂时隐藏原生毛玻璃 Overlay。
+ * BrowserWindow、HWND、Overlay 与窗口事件监听器都会继续复用。
  */
-function destroyBlurRuntimeForWindowReplacement() {
-  cancelBottomWindowZOrderRetry()
-  try {
-    blurDestroy()
-  } finally {
-    blurInitialized = false
-    blurRuntimeFailed = false
-    blurInitializationError = null
-    blurInitializationNativeError = null
+function hideMainWindowForViewNavigation(window) {
+  if (!window || window.isDestroyed()) return
+  if (blurInitialized) {
+    runBlurRuntimeOperation(
+      () => blurSetConfig({ ...blurConfig, enabled: false }),
+      '视图切换前暂时隐藏毛玻璃层'
+    )
+  }
+  window.hide()
+}
+
+function prepareMainWindowPresentationForView(window, targetDisplay) {
+  const startedAt = Date.now()
+  mainWindowPresentationTiming = {
+    creationStartedAt: startedAt,
+    createdAt: startedAt,
+    loadRequestedAt: null,
+    loadStartedAt: null,
+    rendererReadyAt: null,
+    displayId: targetDisplay.id,
+    displayScaleFactor: targetDisplay.scaleFactor
+  }
+  setWindowLogContext(window, { role: getActiveWindowProfile().logRole })
+}
+
+function prepareBlurRuntimeForActiveViewNavigation() {
+  if (!blurCaps.supported) return
+
+  if (blurConfig.enabled && !blurInitialized) {
+    const result = initializeBlurRuntime()
+    if (!result.success) {
+      setSettingsBatch(getActiveWindowName(), [serializeSetting('blur.enabled', false)])
+      refreshResolvedSettings({ incrementRevision: true })
+      return
+    }
+  }
+
+  if (blurInitialized && blurConfig.enabled && resolvedSettings.wallpaper.enabled) {
+    setSettingsBatch(getActiveWindowName(), [serializeSetting('wallpaper.enabled', false)])
+    refreshResolvedSettings({ incrementRevision: true })
+  }
+
+  if (blurInitialized) {
+    runBlurRuntimeOperation(
+      () => blurSetConfig({ ...blurConfig, enabled: false }),
+      '视图导航期间保持毛玻璃层隐藏'
+    )
   }
 }
 
-/** 销毁当前唯一主视图并使用另一套独立设置创建目标视图。 */
+async function presentActiveViewInExistingWindow(window, { preferredDisplay = null } = {}) {
+  if (!window || window.isDestroyed()) throw new Error('主窗口不可用')
+  prepareBlurRuntimeForActiveViewNavigation()
+  const { bounds, targetDisplay } = resolveActiveViewWindowBounds({ preferredDisplay })
+  prepareMainWindowPresentationForView(window, targetDisplay)
+  window.setBounds(bounds, false)
+  lastVisibleMainWindowBounds = { ...window.getBounds() }
+  cachedWorkArea = { ...targetDisplay.workArea }
+  applyResolvedWindowRuntime()
+  await loadActiveViewIntoWindow(window)
+  return bounds
+}
+
+/** 在同一个 BrowserWindow 中加载另一套视图内容与独立设置。 */
 const confirmEditingDrafts = createEditingDraftGuard({
   logger,
   reveal: async (window) => {
@@ -3279,7 +3958,14 @@ let checkingQuitDrafts = false
 
 async function switchMainView(targetMode) {
   if (checkingViewDrafts || checkingQuitDrafts) return false
-  if (normalizeViewMode(targetMode) === activeViewMode) return false
+  const requestedMode = normalizeViewMode(targetMode)
+  if (isCompactPresentationActive()) {
+    await exitCompactPresentation({ source: 'view-switch', showWhenDone: false })
+  }
+  if (requestedMode === activeViewMode) {
+    openMainWindow()
+    return false
+  }
   checkingViewDrafts = true
   let allowed
   try {
@@ -3308,11 +3994,15 @@ async function switchMainView(targetMode) {
   const previousMode = activeViewMode
   switchingMainView = true
   let sourceDisplay = null
+  let sourceBounds = null
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      sourceDisplay = screen.getDisplayMatching(
-        dockMotionSession?.stableBounds || lastVisibleMainWindowBounds || mainWindow.getBounds()
-      )
+      sourceBounds = getPersistableWindowBounds({
+        dockStableBounds: dockMotionSession?.stableBounds,
+        lastVisibleBounds: lastVisibleMainWindowBounds,
+        currentBounds: mainWindow.getBounds()
+      })
+      sourceDisplay = screen.getDisplayMatching(sourceBounds || mainWindow.getBounds())
       restoreDockWindowToVisiblePosition()
       resetDockState({ source: 'view-switch' })
       if (nativeEdgeCleanupPending) {
@@ -3344,43 +4034,44 @@ async function switchMainView(targetMode) {
     })
     if (switchPreparation.geometryPersisted) geometryDirty = false
 
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide()
-    // 任何视图替换都销毁旧 HWND，再为目标视图创建普通主窗口。
-    destroyBlurRuntimeForWindowReplacement()
-
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      const previousWindow = mainWindow
-      detachNativeEdgeMonitorMessageHook(previousWindow)
-      previousWindow.destroy()
-      if (mainWindow === previousWindow) mainWindow = null
-    }
+    const reusedWindow = mainWindow
+    if (!reusedWindow || reusedWindow.isDestroyed()) throw new Error('主窗口不可用')
+    hideMainWindowForViewNavigation(reusedWindow)
     activeViewMode = normalized
     resolvedSettings = createDefaultSettings(activeViewMode)
     refreshResolvedSettings({ incrementRevision: true })
-    createWindow({ preferredDisplay: sourceDisplay })
-    applyResolvedWindowRuntime()
+    await presentActiveViewInExistingWindow(reusedWindow, { preferredDisplay: sourceDisplay })
     writeActiveView(activeViewMode)
     rebuildTrayMenu()
-    logger.info('view.switch', '主视图已切换', { activeViewMode })
+    logger.info('view.switch', '已在现有窗口中切换主视图', {
+      activeViewMode,
+      reusedBrowserWindow: true,
+      browserWindowId: reusedWindow.id
+    })
     return true
   } catch (error) {
     logger.error('view.switch', error, { previousMode, targetMode: normalized })
     try {
-      // 目标窗口可能已经完成毛玻璃初始化后才在后续步骤失败。必须先清理其
-      // HWND/Overlay 绑定，再恢复原视图，否则 initializeBlurRuntime 会被旧状态短路。
-      try {
-        destroyBlurRuntimeForWindowReplacement()
-      } catch (destroyError) {
-        logger.error('view.switch-restore-blur-destroy', destroyError, { previousMode })
-      }
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
+      cancelMainViewRendererReadyWait(error)
+      if (!mainWindow || mainWindow.isDestroyed()) throw new Error('原主窗口已经不可恢复')
+      hideMainWindowForViewNavigation(mainWindow)
       activeViewMode = previousMode
       resolvedSettings = createDefaultSettings(activeViewMode)
       refreshResolvedSettings({ incrementRevision: true })
-      createWindow({ preferredDisplay: sourceDisplay })
-      applyResolvedWindowRuntime()
-      // 目标视图持久化后若托盘重建等尾部步骤失败，也要把“下次启动视图”
-      // 一并回滚；持久化自身失败不应阻止已经重建的原窗口继续可用。
+      const restoreDisplay = sourceBounds ? screen.getDisplayMatching(sourceBounds) : sourceDisplay
+      if (sourceBounds) {
+        prepareMainWindowPresentationForView(mainWindow, restoreDisplay)
+        mainWindow.setBounds(
+          constrainMainWindowBounds(sourceBounds, restoreDisplay.workArea),
+          false
+        )
+        lastVisibleMainWindowBounds = { ...mainWindow.getBounds() }
+        cachedWorkArea = { ...restoreDisplay.workArea }
+        applyResolvedWindowRuntime()
+        await loadActiveViewIntoWindow(mainWindow)
+      } else {
+        await presentActiveViewInExistingWindow(mainWindow, { preferredDisplay: sourceDisplay })
+      }
       try {
         writeActiveView(previousMode)
       } catch (persistRestoreError) {
@@ -3389,6 +4080,7 @@ async function switchMainView(targetMode) {
       rebuildTrayMenu()
     } catch (restoreError) {
       logger.fatal('view.switch-restore', restoreError, { previousMode })
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
     }
     return false
   } finally {
@@ -3397,7 +4089,6 @@ async function switchMainView(targetMode) {
 }
 
 async function switchMainViewFromTray(targetMode) {
-  openMainWindow()
   return switchMainView(targetMode)
 }
 
@@ -3407,7 +4098,11 @@ function rebuildTrayMenu() {
     Menu.buildFromTemplate(
       buildStickyTrayTemplate({
         stickyService,
-        openMainWindow: openMainWindowFromTray,
+        openMainWindow: () => {
+          void openMainWindowFromTray().catch((error) =>
+            logger.error('presentation-mode.tray-open', error)
+          )
+        },
         activeViewMode,
         switchMainView: (targetMode) => {
           void switchMainViewFromTray(targetMode).catch((error) =>
@@ -3429,6 +4124,9 @@ if (process.env.ABANDON_INTEGRATION_TEST === '1') {
     switchMainView,
     switchMainViewFromTray,
     openMainWindowFromTray,
+    enterCompactPresentation,
+    exitCompactPresentation,
+    getPresentationModeState: presentationModeSnapshot,
     handleDisplayTopologyChange: handleDockDisplayTopologyChange,
     getBlurRuntimeHealth: () => (blurInitialized ? getBlurRuntimeHealth() : null),
     triggerViewVisibilityShortcut: () => viewVisibilityShortcutService?.handleTrigger()
@@ -3596,8 +4294,15 @@ const startupPromise = app.whenReady().then(async () => {
   })
 
   // 【渲染就绪】渲染进程初始化完成后发送此消息，主进程收到后显示窗口
-  ipcMain.on('renderer-ready', (event) => {
+  ipcMain.on('renderer-ready', (event, { viewMode } = {}) => {
     if (event.sender !== mainWindow?.webContents) return
+    if (!Object.values(VIEW_MODES).includes(viewMode) || viewMode !== activeViewMode) {
+      logger.warn('renderer.ready-stale', '忽略与当前主视图不一致的渲染就绪消息', {
+        activeViewMode,
+        reportedViewMode: viewMode
+      })
+      return
+    }
     const rendererReadyAt = Date.now()
     const timing = mainWindowPresentationTiming
     if (timing) timing.rendererReadyAt = rendererReadyAt
@@ -3616,6 +4321,9 @@ const startupPromise = app.whenReady().then(async () => {
       const presentedWindow = mainWindow
       const showCalledAt = Date.now()
       mainWindow.show()
+      // 视图导航会暂时隐藏 Overlay；窗口重新显示后立即恢复目标视图配置，
+      // show 事件中的延迟恢复继续作为 Win10 可见性提交后的幂等兜底。
+      restoreBlurForVisibleWindow(mainWindow, 'renderer-ready')
       mainWindow.focus()
       reassertBottomWindowZOrder('renderer-ready')
       revealPendingNotificationApplication()
@@ -3631,6 +4339,12 @@ const startupPromise = app.whenReady().then(async () => {
         })
       })
     }
+    acknowledgeMainViewRendererReady(event.sender, viewMode)
+  })
+
+  ipcMain.on('presentation-mode:renderer-ready', (event, { operationId } = {}) => {
+    if (event.sender !== mainWindow?.webContents) return
+    acknowledgePresentationRenderer(operationId)
   })
 
   // 【窗口控制 - 关闭】渲染进程请求关闭窗口 → 最小化到托盘
@@ -3639,7 +4353,7 @@ const startupPromise = app.whenReady().then(async () => {
     hideToTray()
   })
 
-  // 主视图切换会销毁当前 sender；先回复渲染进程，再在下一轮事件循环替换窗口。
+  // 先回复当前页面，再在下一轮事件循环中使用同一个 BrowserWindow 加载目标页面。
   mainWindowIpc.handle('view:switch', (_event, { mode } = {}) => {
     if (!Object.values(VIEW_MODES).includes(mode)) throw new Error('无效的主视图')
     if (mode === activeViewMode) return false
@@ -3724,6 +4438,45 @@ const startupPromise = app.whenReady().then(async () => {
     return win ? win.getBounds() : null
   })
 
+  mainWindowIpc.handle('presentation-mode:get-state', () => presentationModeSnapshot())
+  mainWindowIpc.handle('presentation-mode:enter-compact', (_event, { anchor } = {}) =>
+    enterCompactPresentation(anchor)
+  )
+  mainWindowIpc.handle('presentation-mode:exit-compact', (_event, { anchor } = {}) =>
+    exitCompactPresentation({ source: 'renderer', showWhenDone: true, anchor })
+  )
+  mainWindowIpc.handle('presentation-mode:begin-drag', (_event, point) =>
+    beginCompactWindowDrag(point)
+  )
+  ipcMain.on('presentation-mode:update-drag', (event, point) => {
+    if (event.sender !== mainWindow?.webContents) return
+    updateCompactWindowDrag(point)
+  })
+  mainWindowIpc.handle('presentation-mode:end-drag', () => endCompactWindowDrag())
+  mainWindowIpc.handle('presentation-mode:show-context-menu', () => {
+    if (!presentationModeController.isCompact()) return false
+    Menu.buildFromTemplate([
+      {
+        label: '展开主视图',
+        click: () =>
+          void exitCompactPresentation({ source: 'context-menu', showWhenDone: true }).catch(
+            (error) => logger.error('presentation-mode.context-expand', error)
+          )
+      },
+      { label: '隐藏到托盘', click: hideToTray },
+      { type: 'separator' },
+      {
+        label: '退出软件',
+        click: () => {
+          shutdownTrigger = 'compact-context-menu'
+          isQuitting = true
+          app.quit()
+        }
+      }
+    ]).popup({ window: mainWindow })
+    return true
+  })
+
   mainWindowIpc.handle('titlebar-window:begin-drag', (_event, point) =>
     beginTitlebarWindowDrag(point)
   )
@@ -3732,20 +4485,27 @@ const startupPromise = app.whenReady().then(async () => {
     updateTitlebarWindowDrag(point)
   })
   mainWindowIpc.handle('titlebar-window:end-drag', () => endTitlebarWindowDrag())
+  mainWindowIpc.handle('window-resize:end', () => finishCompactWindowResize())
   // 【缩放手柄 - 设置边界】根据渲染进程传入的 bounds 调整窗口大小/位置
   ipcMain.on('window-set-bounds', (event, bounds) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     const values = bounds && [bounds.x, bounds.y, bounds.width, bounds.height].map(Number)
+    const compact = presentationModeController.isCompact()
+    const minWidth = compact ? COMPACT_WINDOW_LIMITS.minWidth : MAIN_WINDOW_MIN_SIZE
+    const minHeight = compact ? COMPACT_WINDOW_LIMITS.minHeight : MAIN_WINDOW_MIN_SIZE
+    const maxWidth = compact ? COMPACT_WINDOW_LIMITS.maxWidth : 16_384
+    const maxHeight = compact ? COMPACT_WINDOW_LIMITS.maxHeight : 16_384
     if (
       win &&
       win === mainWindow &&
       !isLocked &&
+      !presentationModeController.isBusy() &&
       !isDockTransitionActive() &&
       values?.every(Number.isFinite) &&
-      values[2] >= MAIN_WINDOW_MIN_SIZE &&
-      values[3] >= MAIN_WINDOW_MIN_SIZE &&
-      values[2] <= 16_384 &&
-      values[3] <= 16_384
+      values[2] >= minWidth &&
+      values[3] >= minHeight &&
+      values[2] <= maxWidth &&
+      values[3] <= maxHeight
     ) {
       // Math.round 确保像素值为整数，避免亚像素渲染问题
       win.setBounds({
@@ -3754,6 +4514,10 @@ const startupPromise = app.whenReady().then(async () => {
         width: Math.round(values[2]),
         height: Math.round(values[3])
       })
+      if (compact) {
+        stableCompactBounds = { ...win.getBounds() }
+        scheduleCompactWindowSizePersistence(stableCompactBounds)
+      }
     }
   })
 
@@ -3909,6 +4673,7 @@ const startupPromise = app.whenReady().then(async () => {
   // 【贴边隐藏 - 鼠标悬停】渲染进程报告鼠标进入/离开主窗口
   ipcMain.on('window-hover', (event, isHovering) => {
     if (event.sender !== mainWindow?.webContents) return
+    if (isCompactPresentationActive()) return
     if (isHovering) {
       // 鼠标进入窗口 —— 取消待执行的隐藏定时器
       cancelPendingDockHide('window-hover-enter')
@@ -4331,13 +5096,6 @@ const startupPromise = app.whenReady().then(async () => {
     }
   })
 
-  scheduler.register({
-    name: 'automaticNoteMoveTask',
-    maxFailures: Infinity,
-    shouldRun: () => resolvedSettings.notes.autoMoveYesterday,
-    execute: (context) => checkAutomaticNoteMove(context)
-  })
-
   // 3.6 原生毛玻璃运行诊断：随统一调度器启动即检查，之后每分钟检查一次。
   scheduler.register({
     name: 'blurRuntimeDiagnosticTask',
@@ -4498,10 +5256,23 @@ const startupPromise = app.whenReady().then(async () => {
     onCaptureStart: () => {
       screenshotCaptureActive = true
       beginDockInteractionSuspension('screenshot')
+      screenshotMainViewWasHidden = Boolean(
+        resolvedSettings.interaction.hideMainViewDuringScreenshot &&
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        mainWindow.isVisible()
+      )
+      if (screenshotMainViewWasHidden) hideMainWindowForViewNavigation(mainWindow)
     },
     onCaptureEnd: () => {
       screenshotCaptureActive = false
       endDockInteractionSuspension('screenshot')
+      if (screenshotMainViewWasHidden && !isQuitting && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show()
+        mainWindow.focus()
+        reassertBottomWindowZOrder('screenshot-finished')
+      }
+      screenshotMainViewWasHidden = false
     }
   })
   screenshotService.initialize()
@@ -4608,6 +5379,11 @@ app.on('before-quit', (event) => {
     clearTimeout(geometryTimer)
     geometryTimer = null
   }
+  if (compactResizePersistenceTimer) {
+    clearTimeout(compactResizePersistenceTimer)
+    compactResizePersistenceTimer = null
+  }
+  flushCompactWindowSizePersistence('before-quit')
   if (mainWindow && !mainWindow.isDestroyed()) {
     endTitlebarWindowDrag()
   }

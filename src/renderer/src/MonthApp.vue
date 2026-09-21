@@ -7,6 +7,7 @@ import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
 import ViewSwitcher from './components/system/ViewSwitcher.vue'
 import ResizeHandles from './components/system/ResizeHandles.vue'
+import WindowPresentation from './components/system/WindowPresentation.vue'
 const SettingsPanel = defineAsyncComponent(() => import('./components/system/SettingsPanel.vue'))
 import MessageToast from './components/system/MessageToast.vue'
 import MonthWorkspace from './components/month/MonthWorkspace.vue'
@@ -22,7 +23,9 @@ const HelpPage = defineAsyncComponent(() => import('./components/help/HelpPage.v
 import { createMessageProvider } from './composables/useMessage.js'
 import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
 import { useTodayKey } from './composables/useTodayKey.js'
+import { usePresentationMode } from './composables/usePresentationMode.js'
 import { createQuickNoteEditSettingProvider } from './composables/useQuickNoteEditSetting.js'
+import { createTagColorSettingProvider } from './composables/useTagColorSetting.js'
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
 import {
@@ -43,6 +46,8 @@ const viewLabel = computed(() => (isWeekView.value ? '周视图' : '月视图'))
 const defaults = createDefaultSettings(props.viewMode)
 const { showMessage } = createMessageProvider()
 const quickNoteEditSetting = createQuickNoteEditSettingProvider()
+const tagColorSetting = createTagColorSettingProvider()
+const presentationMode = usePresentationMode()
 const locked = ref(defaults.window.lockState)
 const zOrderMode = ref(defaults.window.zOrderMode)
 const titlebarStyle = ref(defaults.appearance.titlebarStyle)
@@ -93,6 +98,35 @@ let resolveCalendarWorkspaceReady = null
 const calendarWorkspaceReady = new Promise((resolve) => {
   resolveCalendarWorkspaceReady = resolve
 })
+
+const compactBlocked = computed(
+  () =>
+    showSettings.value ||
+    calendarBusinessModalOpen.value ||
+    showFirstUseNotice.value ||
+    showUpdateDialog.value ||
+    showRemoteNoticeDialog.value ||
+    showHolidayDataNoticeDialog.value ||
+    showDailyReportDialog.value ||
+    templateInteractive.value ||
+    helpInteractive.value
+)
+
+async function requestCompactPresentation(anchor) {
+  if (locked.value) {
+    showMessage('warning', '窗口已锁定：切换为灵动岛会改变窗口位置和尺寸，请先解锁')
+    return
+  }
+  if (compactBlocked.value) {
+    showMessage('warning', '请先完成或关闭当前操作，再收起为灵动岛')
+    return
+  }
+  try {
+    await presentationMode.enter(anchor)
+  } catch (error) {
+    showMessage('error', `收起为灵动岛失败：${error.message}`)
+  }
+}
 
 function onCalendarWorkspaceReady() {
   resolveCalendarWorkspaceReady?.()
@@ -179,6 +213,7 @@ async function syncWallpaper(snapshot) {
 function applySnapshot(snapshot) {
   applySettingsSnapshot(snapshot)
   quickNoteEditSetting.applySnapshot(snapshot)
+  tagColorSetting.applySnapshot(snapshot)
   titlebarStyle.value =
     snapshot?.values?.appearance?.titlebarStyle ?? defaults.appearance.titlebarStyle
   locked.value = snapshot?.values?.window?.lockState ?? defaults.window.lockState
@@ -302,6 +337,7 @@ const onMouseEnter = () => window.api.windowHover(true)
 const onMouseLeave = () => window.api.windowHover(false)
 
 onMounted(async () => {
+  await presentationMode.start()
   try {
     const snapshot = await window.api.getSettingsSnapshot()
     applySnapshot(snapshot)
@@ -328,10 +364,11 @@ onMounted(async () => {
   await loadPendingRemoteNotices({ show: true })
   await loadHolidayDataNotice()
   await calendarWorkspaceReady
-  window.api.rendererReady()
+  window.api.rendererReady(props.viewMode)
 })
 
 onUnmounted(() => {
+  presentationMode.stop()
   stopSettingsListener?.()
   stopAppMessageListener?.()
   stopRemoteNoticesListener?.()
@@ -354,113 +391,120 @@ onUnmounted(() => {
         />
       </div>
     </Transition>
-    <div
-      class="month-scene"
-      :class="{
-        'is-ui-background-blurred': showSettings || calendarBusinessModalOpen
-      }"
-      :inert="
-        showSettings ||
-        calendarBusinessModalOpen ||
-        showFirstUseNotice ||
-        showUpdateDialog ||
-        showRemoteNoticeDialog ||
-        showHolidayDataNoticeDialog ||
-        showDailyReportDialog
-      "
+    <ResizeHandles :locked="locked" :mode="presentationMode.displayMode.value" />
+    <WindowPresentation
+      :mode="presentationMode.mode.value"
+      :operation="presentationMode.operation.value"
+      :locked="locked"
     >
-      <ResizeHandles :locked="locked" />
-      <AppTitlebar
-        v-model:locked="locked"
-        v-model:z-order-mode="zOrderMode"
-        :style-variant="titlebarStyle"
+      <div
+        class="month-scene"
+        :class="{
+          'is-ui-background-blurred': showSettings || calendarBusinessModalOpen
+        }"
+        :inert="
+          showSettings ||
+          calendarBusinessModalOpen ||
+          showFirstUseNotice ||
+          showUpdateDialog ||
+          showRemoteNoticeDialog ||
+          showHolidayDataNoticeDialog ||
+          showDailyReportDialog
+        "
       >
-        <TitlebarActions :style-variant="titlebarStyle">
-          <ViewSwitcher :active-view="viewMode" :style-variant="titlebarStyle" />
-          <DailyReportButton month-view @open="openDailyReport" />
-          <button
-            class="titlebar-btn titlebar-btn-template month-titlebar-btn"
-            :class="{ 'is-active': templatePanelActive }"
-            :title="templatePanelActive ? '关闭循环模板' : '打开循环模板'"
-            aria-controls="template-workspace"
-            :aria-expanded="templatePanelActive"
-            @click="toggleTemplates"
-          >
-            <AppIcon class="btn-icon" name="recurrence" alt="循环模板" />
-          </button>
-          <button
-            class="titlebar-btn titlebar-btn-settings month-titlebar-btn"
-            title="设置"
-            @click="openSettings"
-          >
-            <AppIcon class="btn-icon" name="settings" alt="设置" />
-          </button>
-          <button
-            class="titlebar-btn titlebar-btn-help month-titlebar-btn"
-            :class="{ 'is-active': helpPanelActive }"
-            :title="helpPanelActive ? '关闭帮助' : '帮助'"
-            aria-controls="help-workspace"
-            :aria-expanded="helpPanelActive"
-            @click="toggleHelp"
-          >
-            <AppIcon class="btn-icon" name="help" alt="帮助" />
-          </button>
-        </TitlebarActions>
-      </AppTitlebar>
-      <div class="month-content-stage">
-        <main
-          class="month-content"
-          :class="{ 'is-ui-background-blurred': templateInteractive || helpInteractive }"
-          :inert="templateInteractive || helpInteractive"
-          :aria-label="`${viewLabel}内容区域`"
+        <AppTitlebar
+          v-model:locked="locked"
+          v-model:z-order-mode="zOrderMode"
+          :style-variant="titlebarStyle"
+          @request:compact="requestCompactPresentation"
         >
-          <MonthWorkspace
-            :key="editingDataGeneration"
-            :view-mode="viewMode"
-            @modal-state-change="calendarBusinessModalOpen = $event"
-            @ready="onCalendarWorkspaceReady"
-          />
-        </main>
+          <TitlebarActions :style-variant="titlebarStyle">
+            <ViewSwitcher :active-view="viewMode" :style-variant="titlebarStyle" />
+            <DailyReportButton month-view @open="openDailyReport" />
+            <button
+              class="titlebar-btn titlebar-btn-template month-titlebar-btn"
+              :class="{ 'is-active': templatePanelActive }"
+              :title="templatePanelActive ? '关闭循环模板' : '打开循环模板'"
+              aria-controls="template-workspace"
+              :aria-expanded="templatePanelActive"
+              @click="toggleTemplates"
+            >
+              <AppIcon class="btn-icon" name="recurrence" alt="循环模板" />
+            </button>
+            <button
+              class="titlebar-btn titlebar-btn-settings month-titlebar-btn"
+              title="设置"
+              @click="openSettings"
+            >
+              <AppIcon class="btn-icon" name="settings" alt="设置" />
+            </button>
+            <button
+              class="titlebar-btn titlebar-btn-help month-titlebar-btn"
+              :class="{ 'is-active': helpPanelActive }"
+              :title="helpPanelActive ? '关闭帮助' : '帮助'"
+              aria-controls="help-workspace"
+              :aria-expanded="helpPanelActive"
+              @click="toggleHelp"
+            >
+              <AppIcon class="btn-icon" name="help" alt="帮助" />
+            </button>
+          </TitlebarActions>
+        </AppTitlebar>
+        <div class="month-content-stage">
+          <main
+            class="month-content"
+            :class="{ 'is-ui-background-blurred': templateInteractive || helpInteractive }"
+            :inert="templateInteractive || helpInteractive"
+            :aria-label="`${viewLabel}内容区域`"
+          >
+            <MonthWorkspace
+              :key="editingDataGeneration"
+              :view-mode="viewMode"
+              @modal-state-change="calendarBusinessModalOpen = $event"
+              @ready="onCalendarWorkspaceReady"
+            />
+          </main>
 
-        <div
-          v-if="templatesRendered"
-          class="month-template-wrapper"
-          :class="{ 'is-interactive': templateInteractive }"
-        >
           <div
-            id="template-workspace"
-            ref="templatePanelRef"
-            class="month-template-panel"
-            :class="{ active: templatePanelActive }"
-            role="region"
-            aria-label="循环便签模板设置"
-            @transitionend="onTemplateTransitionEnd"
-            @transitioncancel="onTemplateTransitionCancel"
+            v-if="templatesRendered"
+            class="month-template-wrapper"
+            :class="{ 'is-interactive': templateInteractive }"
           >
-            <TemplatePage :key="editingDataGeneration" />
+            <div
+              id="template-workspace"
+              ref="templatePanelRef"
+              class="month-template-panel"
+              :class="{ active: templatePanelActive }"
+              role="region"
+              aria-label="循环便签模板设置"
+              @transitionend="onTemplateTransitionEnd"
+              @transitioncancel="onTemplateTransitionCancel"
+            >
+              <TemplatePage :key="editingDataGeneration" />
+            </div>
           </div>
-        </div>
 
-        <div
-          v-if="helpRendered"
-          class="month-help-wrapper"
-          :class="{ 'is-interactive': helpInteractive }"
-        >
           <div
-            id="help-workspace"
-            ref="helpPanelRef"
-            class="month-help-panel"
-            :class="{ active: helpPanelActive }"
-            role="region"
-            :aria-label="`${viewLabel}帮助中心`"
-            @transitionend="onHelpTransitionEnd"
-            @transitioncancel="onHelpTransitionCancel"
+            v-if="helpRendered"
+            class="month-help-wrapper"
+            :class="{ 'is-interactive': helpInteractive }"
           >
-            <HelpPage :view-mode="viewMode" @close="closeHelp" />
+            <div
+              id="help-workspace"
+              ref="helpPanelRef"
+              class="month-help-panel"
+              :class="{ active: helpPanelActive }"
+              role="region"
+              :aria-label="`${viewLabel}帮助中心`"
+              @transitionend="onHelpTransitionEnd"
+              @transitioncancel="onHelpTransitionCancel"
+            >
+              <HelpPage :view-mode="viewMode" @close="closeHelp" />
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </WindowPresentation>
     <SettingsPanel
       v-if="showSettings"
       v-model:visible="showSettings"

@@ -64,8 +64,8 @@ export function registerCalendarIpcHandlers({ ipcMain, dialog, shell, getMainWin
     await shell.openExternal(holidayDataDownloadUrl(year))
     return true
   })
-  // 视图替换期间旧 renderer 可能已发出这项只读启动请求。sender 过期时返回空结果，
-  // 避免把正常的窗口销毁竞态记录成权限错误；其他日历读写接口仍严格拒绝旧 sender。
+  // 页面导航期间旧 renderer 可能已发出这项只读启动请求。sender 过期时返回空结果，
+  // 避免把正常的 renderer 卸载竞态记录成权限错误；其他日历读写接口仍严格拒绝旧 sender。
   mainWindowIpc.handle('calendar:holiday-data-notice', () => getMissingHolidayDataNotice(), {
     onStaleSender: () => null
   })

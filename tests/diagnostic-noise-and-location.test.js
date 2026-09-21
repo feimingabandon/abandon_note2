@@ -10,7 +10,10 @@ const WEATHER_SETTINGS_PATH = new URL(
 const MAIN_PATH = new URL('../src/main/index.js', import.meta.url)
 const BUSINESS_IPC_PATH = new URL('../src/main/ipc/register-business-ipc.js', import.meta.url)
 const WEATHER_SERVICE_PATH = new URL('../src/main/services/weather-service.js', import.meta.url)
-const SCREENSHOT_SERVICE_PATH = new URL('../src/main/services/ScreenshotService.js', import.meta.url)
+const SCREENSHOT_SERVICE_PATH = new URL(
+  '../src/main/services/ScreenshotService.js',
+  import.meta.url
+)
 const ATTACHMENT_DB_PATH = new URL('../src/main/db/db.js', import.meta.url)
 const WALLPAPER_DB_PATH = new URL('../src/main/db/db-wallpapers.js', import.meta.url)
 
@@ -75,7 +78,7 @@ describe('high-value diagnostic coverage', () => {
     ]) {
       expect(main).toContain(scope)
     }
-    for (const scope of ['note.purge', 'template.purge', 'notes.historical-move']) {
+    for (const scope of ['note.purge', 'template.purge']) {
       expect(businessIpc).toContain(scope)
     }
   })
@@ -93,5 +96,18 @@ describe('high-value diagnostic coverage', () => {
     expect(screenshot).toContain("window.addEventListener('unhandledrejection'")
     expect(attachments).toContain('onRecovery({')
     expect(wallpapers).toContain('onRecovery({')
+  })
+
+  it('does not broadcast blur diagnostics into a disposed renderer frame', () => {
+    const main = readFileSync(MAIN_PATH, 'utf8')
+    const broadcaster = main.slice(
+      main.indexOf('function broadcastBlurDiagnosticChanged()'),
+      main.indexOf('function updateBlurDiagnostic')
+    )
+
+    expect(broadcaster).toContain('contents.isDestroyed()')
+    expect(broadcaster).toContain('contents.isCrashed()')
+    expect(broadcaster).toContain('contents.isLoadingMainFrame()')
+    expect(broadcaster).toContain('blur.diagnostic-broadcast-skipped')
   })
 })

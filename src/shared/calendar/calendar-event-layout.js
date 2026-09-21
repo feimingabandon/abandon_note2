@@ -1,14 +1,14 @@
 import { dateKeyFromOrdinal, dateOrdinal, noteDateRange } from './calendar-date-rules.js'
 
-function compareNotes(left, right) {
+function compareNotes(left, right, referenceDate) {
   const previewDifference =
     Number(left.preview_kind === 'recurrence') - Number(right.preview_kind === 'recurrence')
   if (previewDifference) return previewDifference
   const completionDifference =
     Number(left.status === 'completed') - Number(right.status === 'completed')
   if (completionDifference) return completionDifference
-  const leftRange = noteDateRange(left)
-  const rightRange = noteDateRange(right)
+  const leftRange = noteDateRange(left, referenceDate)
+  const rightRange = noteDateRange(right, referenceDate)
   if (leftRange.durationDays !== rightRange.durationDays) {
     return rightRange.durationDays - leftRange.durationDays
   }
@@ -33,7 +33,11 @@ function occupyLane(weekLanes, lane, columnStart, columnSpan) {
  * 把真实便签区间裁剪到当前日历网格，并按自然周拆为横条。横条只保存布局信息，
  * 不复制或改写便签数据。lane 在各周之间尽量连续，且分配顺序稳定可测试。
  */
-export function buildCalendarEventSegments(days, notes, { activeStartKey, activeEndKey } = {}) {
+export function buildCalendarEventSegments(
+  days,
+  notes,
+  { activeStartKey, activeEndKey, referenceDate = Date.now() } = {}
+) {
   if (!days?.length || !notes?.length) return []
   const gridStartOrdinal = dateOrdinal(days[0].key)
   const gridEndOrdinal = dateOrdinal(days[days.length - 1].key)
@@ -49,9 +53,9 @@ export function buildCalendarEventSegments(days, notes, { activeStartKey, active
   const previousLaneByNote = new Map()
   const segments = []
 
-  for (const note of [...notes].sort(compareNotes)) {
+  for (const note of [...notes].sort((left, right) => compareNotes(left, right, referenceDate))) {
     const itemId = note.id
-    const range = noteDateRange(note)
+    const range = noteDateRange(note, referenceDate)
     const clippedStart = Math.max(range.startOrdinal, visibleStartOrdinal)
     const clippedEnd = Math.min(range.endOrdinal, visibleEndOrdinal)
     if (clippedStart > clippedEnd) continue
@@ -98,20 +102,20 @@ export function buildCalendarEventSegments(days, notes, { activeStartKey, active
   )
 }
 
-export function notesCoveringDate(notes, dateKey) {
+export function notesCoveringDate(notes, dateKey, referenceDate = Date.now()) {
   const target = dateOrdinal(dateKey)
   return (notes || [])
     .filter((note) => {
-      const range = noteDateRange(note)
+      const range = noteDateRange(note, referenceDate)
       return range.startOrdinal <= target && range.endOrdinal >= target
     })
-    .sort(compareNotes)
+    .sort((left, right) => compareNotes(left, right, referenceDate))
 }
 
-export function noteCountsByDate(days, notes) {
+export function noteCountsByDate(days, notes, referenceDate = Date.now()) {
   return new Map(
     (days || [])
-      .map((day) => [day.key, notesCoveringDate(notes, day.key).length])
+      .map((day) => [day.key, notesCoveringDate(notes, day.key, referenceDate).length])
       .filter(([, count]) => count > 0)
   )
 }

@@ -45,6 +45,8 @@ BLUR_API void Blur_SetOpacity(float opacity);
 
 // ---- 位置同步 ----
 BLUR_API void Blur_UpdateGeometry(void);
+// 在有界时间内等待 Overlay HWND、Composition Visual 与父窗口最终几何一致。
+BLUR_API int Blur_SyncGeometryAndWait(int timeoutMs);
 
 // ---- Z-order 重同步 ----
 BLUR_API void Blur_ReSyncOrder(void);

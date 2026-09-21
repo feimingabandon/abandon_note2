@@ -1,5 +1,5 @@
 /** 数据库结构版本。公开版本只能通过显式迁移递增。 */
-export const DATABASE_SCHEMA_VERSION = 11
+export const DATABASE_SCHEMA_VERSION = 14
 
 function hasTable(db, tableName) {
   return Boolean(
@@ -226,6 +226,35 @@ function migrateToVersion11(db) {
   db.prepare("DELETE FROM app_settings WHERE type = 'compact'").run()
 }
 
+/** V12 为便签增加独立备注；旧便签默认没有备注。 */
+function migrateToVersion12(db) {
+  if (!hasColumn(db, 'notes', 'remark')) {
+    db.exec("ALTER TABLE notes ADD COLUMN remark TEXT NOT NULL DEFAULT '';")
+  }
+}
+
+/** V13 增加三态持续方式，并清理已经移除的历史便签移动设置。 */
+function migrateToVersion13(db) {
+  if (!hasColumn(db, 'notes', 'duration_kind')) {
+    db.exec(`
+      ALTER TABLE notes
+      ADD COLUMN duration_kind TEXT NOT NULL DEFAULT 'single_day'
+                 CHECK(duration_kind IN ('single_day', 'fixed_days', 'until_completed'));
+      UPDATE notes SET duration_kind = 'fixed_days' WHERE duration_days > 1;
+    `)
+  }
+  db.prepare(
+    "DELETE FROM app_settings WHERE type = 'notes' AND key IN ('auto_move_yesterday', 'auto_move_last_date')"
+  ).run()
+}
+
+/** V14 为便签正文增加多段局部文字颜色；正文仍保持纯文本。 */
+function migrateToVersion14(db) {
+  if (!hasColumn(db, 'notes', 'content_color_ranges')) {
+    db.exec("ALTER TABLE notes ADD COLUMN content_color_ranges TEXT NOT NULL DEFAULT '[]';")
+  }
+}
+
 function ensureTagRelationIndexes(db) {
   if (hasColumn(db, 'note_tags', 'tag_id')) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id ON note_tags(tag_id);')
@@ -235,6 +264,18 @@ function ensureTagRelationIndexes(db) {
   }
 }
 
+function ensureCalendarNoteIndexes(db) {
+  if (!hasColumn(db, 'notes', 'duration_kind')) return
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_notes_calendar_until_progress
+      ON notes(effective_at)
+      WHERE is_deleted = 0 AND duration_kind = 'until_completed' AND status = 'in_progress';
+    CREATE INDEX IF NOT EXISTS idx_notes_calendar_until_completed
+      ON notes(finished_at, effective_at)
+      WHERE is_deleted = 0 AND duration_kind = 'until_completed' AND status = 'completed';
+  `)
+}
+
 function migrateDatabaseSchema(db, existingVersion) {
   const missingDurationDays = !hasColumn(db, 'notes', 'duration_days')
   const missingTagIds =
@@ -242,6 +283,9 @@ function migrateDatabaseSchema(db, existingVersion) {
   const missingTagSortOrder = !hasColumn(db, 'tags', 'sort_order')
   const missingDesktopStickies = !hasTable(db, 'desktop_stickies')
   const missingTemplateOrigin = !hasColumn(db, 'notes', 'from_template')
+  const missingNoteRemark = !hasColumn(db, 'notes', 'remark')
+  const missingDurationKind = !hasColumn(db, 'notes', 'duration_kind')
+  const missingContentColorRanges = !hasColumn(db, 'notes', 'content_color_ranges')
   const hasObsoleteTagPinning =
     hasColumn(db, 'tags', 'is_pinned') || hasColumn(db, 'tags', 'pinned_at')
   const hasObsoleteSnoozeColumn = hasColumn(db, 'notes', 'remind_again_at')
@@ -255,6 +299,13 @@ function migrateDatabaseSchema(db, existingVersion) {
   const hasRemovedWindowModeSettings = Boolean(
     db.prepare("SELECT 1 FROM app_settings WHERE type = 'compact' LIMIT 1").get()
   )
+  const hasRemovedHistoricalMoveSettings = Boolean(
+    db
+      .prepare(
+        "SELECT 1 FROM app_settings WHERE type = 'notes' AND key IN ('auto_move_yesterday', 'auto_move_last_date') LIMIT 1"
+      )
+      .get()
+  )
   if (
     existingVersion >= DATABASE_SCHEMA_VERSION &&
     !missingDurationDays &&
@@ -265,7 +316,11 @@ function migrateDatabaseSchema(db, existingVersion) {
     !missingDesktopStickies &&
     !hasObsoleteDockRevealHandlePositions &&
     !missingTemplateOrigin &&
-    !hasRemovedWindowModeSettings
+    !missingNoteRemark &&
+    !missingDurationKind &&
+    !missingContentColorRanges &&
+    !hasRemovedWindowModeSettings &&
+    !hasRemovedHistoricalMoveSettings
   )
     return
   db.transaction(() => {
@@ -283,6 +338,11 @@ function migrateDatabaseSchema(db, existingVersion) {
     if (existingVersion < 9 || missingTemplateOrigin) migrateToVersion9(db)
     if (existingVersion < 10) migrateToVersion10(db)
     if (existingVersion < 11 || hasRemovedWindowModeSettings) migrateToVersion11(db)
+    if (existingVersion < 12 || missingNoteRemark) migrateToVersion12(db)
+    if (existingVersion < 13 || missingDurationKind || hasRemovedHistoricalMoveSettings) {
+      migrateToVersion13(db)
+    }
+    if (existingVersion < 14 || missingContentColorRanges) migrateToVersion14(db)
     if (existingVersion < DATABASE_SCHEMA_VERSION) {
       db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
     }
@@ -319,6 +379,7 @@ export function createDatabaseSchema(db) {
   createRemoteServiceSchema(db)
   migrateDatabaseSchema(db, existingVersion)
   ensureTagRelationIndexes(db)
+  ensureCalendarNoteIndexes(db)
   if (existingVersion < DATABASE_SCHEMA_VERSION) {
     console.log(
       `[db-schema] 数据库结构版本 ${existingVersion} → ${DATABASE_SCHEMA_VERSION}` +
@@ -383,6 +444,8 @@ export function createNotesSchema(db) {
       note_type           TEXT    NOT NULL DEFAULT 'one_time'
                           CHECK(note_type IN ('one_time')),
       content             TEXT    NOT NULL DEFAULT '',
+      content_color_ranges TEXT  NOT NULL DEFAULT '[]',
+      remark              TEXT    NOT NULL DEFAULT '',
       status              TEXT    NOT NULL DEFAULT 'initialized'
                           CHECK(status IN ('initialized','in_progress','completed')),
       is_deleted          INTEGER NOT NULL DEFAULT 0 CHECK(is_deleted IN (0, 1)),
@@ -391,6 +454,8 @@ export function createNotesSchema(db) {
       effective_at        INTEGER NOT NULL,
       duration_days       INTEGER NOT NULL DEFAULT 1
                           CHECK(duration_days >= 1 AND duration_days <= 365),
+      duration_kind       TEXT    NOT NULL DEFAULT 'single_day'
+                          CHECK(duration_kind IN ('single_day', 'fixed_days', 'until_completed')),
       from_template       INTEGER NOT NULL DEFAULT 0 CHECK(from_template IN (0, 1)),
       finished_at         INTEGER,
       sort_order          INTEGER NOT NULL DEFAULT 0,

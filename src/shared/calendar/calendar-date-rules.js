@@ -5,6 +5,11 @@ export const MAX_CALENDAR_DATE = `${MAX_CALENDAR_YEAR}-12-31`
 export const CALENDAR_COLUMN_COUNT = 7
 export const MIN_CALENDAR_ROW_COUNT = 5
 export const WEEK_CALENDAR_CELL_COUNT = CALENDAR_COLUMN_COUNT
+export const NOTE_DURATION_KINDS = Object.freeze({
+  SINGLE_DAY: 'single_day',
+  FIXED_DAYS: 'fixed_days',
+  UNTIL_COMPLETED: 'until_completed'
+})
 
 function pad(value) {
   return String(value).padStart(2, '0')
@@ -180,14 +185,50 @@ export function buildWeekGrid(anchorDate) {
   }
 }
 
-export function noteDateRange(note) {
+function noteReferenceDateKey(value) {
+  if (typeof value === 'string') {
+    parseDateKey(value)
+    return value
+  }
+  return localDateKey(value)
+}
+
+/**
+ * 计算便签在日历中的实际覆盖范围。
+ * 旧数据没有 duration_kind 时继续按固定天数解释，避免升级改变历史布局。
+ */
+export function noteDateRange(note, referenceDate = Date.now()) {
   const startKey = localDateKey(note?.effective_at)
-  const durationDays = Math.min(365, Math.max(1, Math.trunc(Number(note?.duration_days) || 1)))
+  const startOrdinal = dateOrdinal(startKey)
+  const inferredKind =
+    Number(note?.duration_days) > 1
+      ? NOTE_DURATION_KINDS.FIXED_DAYS
+      : NOTE_DURATION_KINDS.SINGLE_DAY
+  const durationKind = Object.values(NOTE_DURATION_KINDS).includes(note?.duration_kind)
+    ? note.duration_kind
+    : inferredKind
+  let endOrdinal = startOrdinal
+
+  if (durationKind === NOTE_DURATION_KINDS.FIXED_DAYS) {
+    const fixedDays = Math.min(365, Math.max(1, Math.trunc(Number(note?.duration_days) || 1)))
+    endOrdinal = startOrdinal + fixedDays - 1
+  } else if (durationKind === NOTE_DURATION_KINDS.UNTIL_COMPLETED) {
+    const endKey =
+      note?.status === 'completed' && Number(note?.finished_at) > 0
+        ? localDateKey(note.finished_at)
+        : note?.status === 'in_progress'
+          ? noteReferenceDateKey(referenceDate)
+          : startKey
+    endOrdinal = Math.max(startOrdinal, dateOrdinal(endKey))
+  }
+
+  const durationDays = endOrdinal - startOrdinal + 1
   return {
     startKey,
-    endKey: addCalendarDays(startKey, durationDays - 1),
-    startOrdinal: dateOrdinal(startKey),
-    endOrdinal: dateOrdinal(startKey) + durationDays - 1,
-    durationDays
+    endKey: dateKeyFromOrdinal(endOrdinal),
+    startOrdinal,
+    endOrdinal,
+    durationDays,
+    durationKind
   }
 }

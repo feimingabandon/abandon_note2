@@ -1,7 +1,7 @@
 <script setup>
 import { useDraftProtection } from '../../composables/useDraftProtection.js'
 import { computed, onBeforeUnmount, ref } from 'vue'
-import ResizableTextarea from '../ui/ResizableTextarea.vue'
+import ColoredTextEditor from '../note/ColoredTextEditor.vue'
 import TimePicker from '../ui/TimePicker.vue'
 import AppToggle from '../ui/AppToggle.vue'
 import TagSelector from '../ui/TagSelector.vue'
@@ -11,7 +11,10 @@ import ScreenshotPicker from '../note/ScreenshotPicker.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { useTodayKey } from '../../composables/useTodayKey.js'
-import { combineLocalDateAndTime } from '../../../../shared/calendar/calendar-date-rules.js'
+import {
+  combineLocalDateAndTime,
+  NOTE_DURATION_KINDS
+} from '../../../../shared/calendar/calendar-date-rules.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 import {
   assertCreatableNoteEffectiveTime,
@@ -30,13 +33,16 @@ const todayKey = useTodayKey()
 const now = new Date()
 const initialTime = defaultMonthNoteEffectiveTime(props.dateKey, todayKey.value, now)
 const content = ref('')
+const contentColorRanges = ref([])
 const time = ref(initialTime)
 const timeDirty = ref(false)
+const durationKind = ref(NOTE_DURATION_KINDS.SINGLE_DAY)
 const durationDays = ref(1)
 const notifyEnabled = ref(false)
 const isPinned = ref(false)
 const tagIds = ref([])
 const imagePickerRef = ref(null)
+const draftImageCount = ref(0)
 const saving = ref(false)
 const discardVisible = ref(false)
 const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
@@ -63,12 +69,13 @@ const dirty = computed(
   () =>
     Boolean(content.value.trim()) ||
     timeDirty.value ||
-    durationDays.value !== 1 ||
+    durationKind.value !== NOTE_DURATION_KINDS.SINGLE_DAY ||
     notifyEnabled.value ||
     isPinned.value ||
     tagIds.value.length > 0 ||
     (imagePickerRef.value?.getImages?.().length || 0) > 0
 )
+const canCreate = computed(() => Boolean(content.value.trim()) || draftImageCount.value > 0)
 
 function onTimeChange() {
   timeDirty.value = true
@@ -88,8 +95,8 @@ function discardDraft() {
 
 async function create() {
   if (saving.value) return
-  if (!content.value.trim()) {
-    showMessage('warning', '请输入便签内容')
+  if (!canCreate.value) {
+    showMessage('warning', '请输入便签内容或添加图片')
     return
   }
   if (tagIds.value.length > MAX_ASSIGNED_TAGS) {
@@ -99,6 +106,8 @@ async function create() {
 
   const options = {
     content: content.value,
+    contentColorRanges: contentColorRanges.value,
+    durationKind: durationKind.value,
     durationDays: durationDays.value,
     notifyEnabled: canNotify.value && notifyEnabled.value,
     isPinned: isPinned.value
@@ -139,7 +148,17 @@ onBeforeUnmount(() => {
 defineExpose({ requestClose })
 const protectedDraft = useDraftProtection({
   key: 'new:calendar:' + props.dateKey,
-  fields: { content, time, timeDirty, durationDays, notifyEnabled, isPinned, tagIds },
+  fields: {
+    content,
+    contentColorRanges,
+    time,
+    timeDirty,
+    durationKind,
+    durationDays,
+    notifyEnabled,
+    isPinned,
+    tagIds
+  },
   dirty: () => dirty.value,
   busy: () => saving.value,
   extra: () => ({ attachments: imagePickerRef.value?.getDraftChanges() }),
@@ -161,8 +180,9 @@ const protectedDraft = useDraftProtection({
       <button type="button" aria-label="关闭新建便签" title="关闭" @click="requestClose">×</button>
     </header>
     <div class="month-creator__body scroll-y">
-      <ResizableTextarea
+      <ColoredTextEditor
         v-model="content"
+        v-model:color-ranges="contentColorRanges"
         initial-focus
         placeholder="输入便签内容…（Enter 换行）"
         :rows="5"
@@ -189,7 +209,7 @@ const protectedDraft = useDraftProtection({
         历史补录将直接进入进行中，不发送系统提醒。
       </p>
 
-      <NoteDurationField v-model="durationDays" visible />
+      <NoteDurationField v-model:kind="durationKind" v-model:days="durationDays" visible />
 
       <div class="month-creator__row">
         <label
@@ -221,17 +241,16 @@ const protectedDraft = useDraftProtection({
           >图片<HelpButton
             text="支持截图、拖拽或点击上传图片附件。单张最大 50MB，单条便签最多 50 张"
         /></label>
-        <ScreenshotPicker ref="imagePickerRef" mode="memory" />
+        <ScreenshotPicker
+          ref="imagePickerRef"
+          mode="memory"
+          @count-change="draftImageCount = $event"
+        />
       </div>
     </div>
     <footer>
       <button type="button" :disabled="saving" @click="requestClose">取消</button>
-      <button
-        type="button"
-        class="is-primary"
-        :disabled="saving || !content.trim()"
-        @click="create"
-      >
+      <button type="button" class="is-primary" :disabled="saving || !canCreate" @click="create">
         {{ saving ? '创建中…' : '创建便签' }}
       </button>
     </footer>

@@ -6,6 +6,7 @@ import {
   buildMonthGrid,
   buildWeekGrid,
   dateOrdinal,
+  localDateKey,
   localMidnightTimestamp,
   noteDateRange
 } from '../../shared/calendar/calendar-date-rules.js'
@@ -45,18 +46,20 @@ function populateCalendarRange(
   const metadataByDate = buildSupportedRangeMetadata(rangeStart, rangeEnd)
   const visibleStartOrdinal = dateOrdinal(rangeStart)
   const visibleEndOrdinal = dateOrdinal(rangeEnd)
+  const referenceDateKey = localDateKey(now)
   const candidateFromKey = addCalendarDays(rangeStart, -364)
   const visibleEndExclusiveKey = addCalendarDays(rangeEnd, 1)
   const candidates = queryCalendarNotes({
     candidateFrom: localMidnightTimestamp(candidateFromKey),
+    visibleStart: localMidnightTimestamp(rangeStart),
     visibleEndExclusive: localMidnightTimestamp(visibleEndExclusiveKey),
     filter: (note) => {
-      const range = noteDateRange(note)
+      const range = noteDateRange(note, referenceDateKey)
       return range.startOrdinal <= visibleEndOrdinal && range.endOrdinal >= visibleStartOrdinal
     }
   })
   const notes = candidates.filter((note) => {
-    const range = noteDateRange(note)
+    const range = noteDateRange(note, referenceDateKey)
     return range.startOrdinal <= visibleEndOrdinal && range.endOrdinal >= visibleStartOrdinal
   })
   const recurringPreviewResult = includeRecurringPreviews

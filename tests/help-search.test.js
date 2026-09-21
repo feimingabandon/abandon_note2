@@ -11,10 +11,10 @@ describe('帮助全文搜索', () => {
   it('正文与多关键词跨字段匹配，并优先返回标题命中', () => {
     expect(searchHelp(helpArticles, '新建便签')[0].id).toBe('notes-create')
     expect(searchHelp(helpArticles, '00:01')[0].id).toBe('notes-create')
-    expect(searchHelp(helpArticles, '自动移动 跨日').map((result) => result.id)).toContain(
-      'notes-move'
+    expect(searchHelp(helpArticles, '持续到完成 跨日').map((result) => result.id)).toContain(
+      'note-duration'
     )
-    expect(searchHelp(helpArticles, '自动移动 不存在的关键词')).toEqual([])
+    expect(searchHelp(helpArticles, '持续方式 不存在的关键词')).toEqual([])
     expect(searchHelp(helpArticles, '　ｘｌｓｘ　')[0].id).toBe('tools-report')
     expect(searchHelp(helpArticles, '1160653906')[0].id).toBe('safety-support')
     expect(searchHelp(helpArticles, '   ')).toEqual([])
@@ -32,7 +32,7 @@ describe('帮助全文搜索', () => {
       'XLSX'
     ])
   })
-  it('全部功能入口唯一，功能文档覆盖新建方式和自动移动边界', () => {
+  it('全部功能入口唯一，功能文档覆盖新建方式和持续方式边界', () => {
     expect(new Set(helpArticles.map((article) => article.id)).size).toBe(helpArticles.length)
     for (const article of helpArticles)
       expect(helpGroups.some((group) => group.id === article.group)).toBe(true)
@@ -45,9 +45,9 @@ describe('帮助全文搜索', () => {
       '按周期自动生成'
     ])
       expect(create).toContain(entry)
-    const move = articleText(helpArticles.find((article) => article.id === 'notes-move'))
-    for (const rule of ['默认关闭', '跨日便签和循环便签不适用', '只检查昨天', '无法可靠识别'])
-      expect(move).toContain(rule)
+    const duration = articleText(helpArticles.find((article) => article.id === 'note-duration'))
+    for (const rule of ['默认选择「仅当天」', '2～365 天', '完成日期固定结束日', '旧便签'])
+      expect(duration).toContain(rule)
     expect(articleText(helpArticles.find((article) => article.id === 'tools-report'))).toContain(
       '366'
     )

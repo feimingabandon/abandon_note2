@@ -6,6 +6,9 @@ import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
 
+app.commandLine.appendSwitch('disable-gpu')
+app.disableHardwareAcceleration()
+
 const WAIT_STEP_MS = 25
 const require = createRequire(import.meta.url)
 const report = (message) => process.stderr.write(`[duration-e2e] ${message}\n`)
@@ -146,7 +149,9 @@ async function runTests() {
     )
     await wait(300)
     assert.equal(
-      await window.webContents.executeJavaScript(`Boolean(document.querySelector('.app-editor-dialog'))`),
+      await window.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.app-editor-dialog'))`
+      ),
       false,
       '点击通知只应显示主视图，不应打开便签编辑器'
     )
@@ -167,7 +172,10 @@ async function runTests() {
       button.click()
     })()`)
     await waitUntil(
-      () => window.webContents.executeJavaScript(`Boolean(document.querySelector('.app-editor-dialog textarea'))`),
+      () =>
+        window.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.app-editor-dialog textarea'))`
+        ),
       '便签编辑器未打开'
     )
     const draftContent = '通知点击期间保留的未保存草稿'
@@ -185,9 +193,14 @@ async function runTests() {
       draftContent,
       '点击通知不应关闭编辑器或覆盖未保存草稿'
     )
-    await window.webContents.executeJavaScript(`document.querySelector('.app-editor-close').click()`)
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.app-editor-close').click()`
+    )
     await waitUntil(
-      () => window.webContents.executeJavaScript(`Boolean(document.querySelector('.confirm-overlay.active'))`),
+      () =>
+        window.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.confirm-overlay.active'))`
+        ),
       '未出现放弃编辑确认框'
     )
     await window.webContents.executeJavaScript(`(() => {
@@ -293,8 +306,8 @@ async function runTests() {
       await window.webContents.executeJavaScript(
         `Boolean(document.querySelector('.nnp-body .note-duration-field'))`
       ),
-      false,
-      '未选生效时间时不应显示持续天数'
+      true,
+      '完整新建器必须始终显示持续方式'
     )
 
     await window.webContents.executeJavaScript(
@@ -317,41 +330,23 @@ async function runTests() {
       shortcut.click()
       document.querySelector('.dt-btn--confirm').click()
     })()`)
-    await waitUntil(
-      () =>
-        window.webContents.executeJavaScript(
-          `document.querySelector('.note-duration-field')?.classList.contains('note-duration-enter-active')`
-        ),
-      '持续天数显示时未执行展开动画'
-    )
-    await waitUntil(
-      () =>
-        window.webContents.executeJavaScript(
-          `Boolean(document.querySelector('.note-duration-field:not(.note-duration-enter-active)'))`
-        ),
-      '持续天数展开动画未完成'
-    )
     assert.equal(
       await window.webContents.executeJavaScript(
-        `document.querySelector('.note-duration-field input').value`
+        `document.querySelector('.note-duration-field .sel-trigger').textContent.trim()`
       ),
-      '1',
-      '持续天数默认值必须为 1'
+      '仅当天',
+      '持续方式默认值必须为仅当天'
     )
 
     await window.webContents.executeJavaScript(
       `document.querySelector('.nnp-body .dt-clear-btn').click()`
     )
-    await waitUntil(
-      () =>
-        window.webContents.executeJavaScript(
-          `document.querySelector('.note-duration-field')?.classList.contains('note-duration-leave-active')`
-        ),
-      '持续天数隐藏时未执行收起动画'
-    )
-    await waitUntil(
-      () => window.webContents.executeJavaScript(`!document.querySelector('.note-duration-field')`),
-      '持续天数收起动画未完成'
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.note-duration-field'))`
+      ),
+      true,
+      '立即生效便签也必须可以选择持续方式'
     )
 
     await window.webContents.executeJavaScript(
@@ -367,12 +362,26 @@ async function runTests() {
       shortcut.click()
       document.querySelector('.dt-btn--confirm').click()
     })()`)
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.note-duration-field .sel-trigger').click()`
+    )
     await waitUntil(
       () =>
         window.webContents.executeJavaScript(
-          `Boolean(document.querySelector('.note-duration-field:not(.note-duration-enter-active)'))`
+          `Boolean(Array.from(document.querySelectorAll('.sel-panel button')).find((node) => node.textContent.trim() === '指定天数'))`
         ),
-      '持续天数重新展开动画未完成'
+      '持续方式下拉框未打开'
+    )
+    await window.webContents.executeJavaScript(`(() => {
+      const option = Array.from(document.querySelectorAll('.sel-panel button')).find((node) => node.textContent.trim() === '指定天数')
+      option.click()
+    })()`)
+    await waitUntil(
+      () =>
+        window.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.note-duration-field input'))`
+        ),
+      '选择指定天数后未显示数字控件'
     )
 
     await window.webContents.executeJavaScript(`(() => {
@@ -402,6 +411,7 @@ async function runTests() {
       '新建便签未持久化'
     )
     assert.equal(created.duration_days, 3, '新建便签未保存持续天数')
+    assert.equal(created.duration_kind, 'fixed_days', '新建便签未保存指定天数模式')
 
     await waitUntil(
       () =>
@@ -429,15 +439,24 @@ async function runTests() {
     )
     assert.equal(
       await window.webContents.executeJavaScript(
-        `document.querySelector('.ne-root .note-duration-field input').value`
+        `document.querySelector('.ne-root .note-duration-field .sel-trigger').textContent.trim()`
       ),
-      '3',
-      '修改器未读取持续天数'
+      '指定天数',
+      '修改器未读取持续方式'
+    )
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.ne-root .note-duration-field .sel-trigger').click()`
+    )
+    await waitUntil(
+      () =>
+        window.webContents.executeJavaScript(
+          `Boolean(Array.from(document.querySelectorAll('.sel-panel button')).find((node) => node.textContent.trim() === '持续到完成'))`
+        ),
+      '修改器持续方式下拉框未打开'
     )
     await window.webContents.executeJavaScript(`(() => {
-      const duration = document.querySelector('.ne-root .note-duration-field input')
-      duration.value = '5'
-      duration.dispatchEvent(new Event('input', { bubbles: true }))
+      const option = Array.from(document.querySelectorAll('.sel-panel button')).find((node) => node.textContent.trim() === '持续到完成')
+      option.click()
     })()`)
     await waitUntil(
       () => window.webContents.executeJavaScript(`!document.querySelector('.ne-submit').disabled`),
@@ -447,9 +466,9 @@ async function runTests() {
     await waitUntil(
       () =>
         window.webContents.executeJavaScript(
-          `window.api.getNote(${created.id}).then((note) => note.duration_days === 5)`
+          `window.api.getNote(${created.id}).then((note) => note.duration_kind === 'until_completed' && note.duration_days === 1)`
         ),
-      '修改器未保存持续天数'
+      '修改器未保存持续到完成模式'
     )
 
     await waitUntil(

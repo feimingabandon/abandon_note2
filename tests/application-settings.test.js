@@ -24,6 +24,7 @@ let readApplicationSettings
 let resetApplicationSettingsToDefaults
 let writeActiveView
 let writeApplicationSetting
+let writeApplicationSettings
 
 beforeAll(async () => {
   ;({
@@ -34,7 +35,8 @@ beforeAll(async () => {
     readApplicationSettings,
     resetApplicationSettingsToDefaults,
     writeActiveView,
-    writeApplicationSetting
+    writeApplicationSetting,
+    writeApplicationSettings
   } = await import('../src/main/settings/application-settings.js'))
 })
 
@@ -45,20 +47,6 @@ beforeEach(() => {
 })
 
 describe('application view settings', () => {
-  it('persists automatic movement once for all views and defaults to disabled', () => {
-    expect(readApplicationSettings().notes.autoMoveYesterday).toBe(false)
-    writeApplicationSetting('notes.autoMoveYesterday', true)
-    expect(readApplicationSettings().notes.autoMoveYesterday).toBe(true)
-    expect(db.rowsByScope.get('application')).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: 'notes', key: 'auto_move_yesterday', value: '1' })
-      ])
-    )
-    ensureViewSettingsInitialized('week')
-    expect(readApplicationSettings().notes.autoMoveYesterday).toBe(true)
-    writeApplicationSetting('notes.autoMoveYesterday', false)
-    expect(readApplicationSettings().notes.autoMoveYesterday).toBe(false)
-  })
   it('initializes lock and z-order once from the active legacy view, then shares them globally', () => {
     db.rowsByScope.set('main', [
       { type: 'system', key: 'lock_state', value: 'true' },
@@ -68,7 +56,10 @@ describe('application view settings', () => {
     expect(ensureApplicationWindowSettingsInitialized('list')).toBe(true)
     expect(readApplicationSettings().window).toEqual({
       lockState: true,
-      zOrderMode: 'normal'
+      zOrderMode: 'normal',
+      compactWidth: 180,
+      compactHeight: 48,
+      compactFontSize: 17
     })
     expect(ensureApplicationWindowSettingsInitialized('month')).toBe(false)
 
@@ -76,8 +67,53 @@ describe('application view settings', () => {
     writeApplicationSetting('window.lockState', false)
     expect(readApplicationSettings().window).toEqual({
       lockState: false,
-      zOrderMode: 'bottom'
+      zOrderMode: 'bottom',
+      compactWidth: 180,
+      compactHeight: 48,
+      compactFontSize: 17
     })
+  })
+
+  it('persists compact presentation size and font in the application scope', () => {
+    writeApplicationSettings([
+      { id: 'window.compactWidth', value: 356 },
+      { id: 'window.compactHeight', value: 88 },
+      { id: 'window.compactFontSize', value: 22 }
+    ])
+
+    expect(readApplicationSettings().window).toMatchObject({
+      compactWidth: 356,
+      compactHeight: 88,
+      compactFontSize: 22
+    })
+    expect(db.setSettingsBatch).toHaveBeenCalledTimes(1)
+    expect(db.setSettingsBatch).toHaveBeenCalledWith(
+      'application',
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'compact_width', value: '356' }),
+        expect.objectContaining({ key: 'compact_height', value: '88' }),
+        expect.objectContaining({ key: 'compact_font_size', value: '22' })
+      ])
+    )
+    expect(db.rowsByScope.get('application')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'presentation',
+          key: 'compact_width',
+          value: '356'
+        }),
+        expect.objectContaining({
+          type: 'presentation',
+          key: 'compact_height',
+          value: '88'
+        }),
+        expect.objectContaining({
+          type: 'presentation',
+          key: 'compact_font_size',
+          value: '22'
+        })
+      ])
+    )
   })
 
   it('keeps the first-use notice version in the application scope', () => {
@@ -185,6 +221,40 @@ describe('application view settings', () => {
           type: 'interaction',
           key: 'double_click_quick_edit',
           value: '0'
+        })
+      ])
+    )
+  })
+
+  it('shares the tag color switch across every main view', () => {
+    expect(readApplicationSettings().notes.tagColorEnabled).toBe(true)
+
+    writeApplicationSetting('notes.tagColorEnabled', false)
+
+    expect(readApplicationSettings().notes.tagColorEnabled).toBe(false)
+    expect(db.rowsByScope.get('application')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'notes',
+          key: 'tag_color_enabled',
+          value: '0'
+        })
+      ])
+    )
+  })
+
+  it('keeps screenshot main-view visibility in the application scope', () => {
+    expect(readApplicationSettings().interaction.hideMainViewDuringScreenshot).toBe(false)
+
+    writeApplicationSetting('interaction.hideMainViewDuringScreenshot', true)
+
+    expect(readApplicationSettings().interaction.hideMainViewDuringScreenshot).toBe(true)
+    expect(db.rowsByScope.get('application')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'interaction',
+          key: 'hide_main_view_during_screenshot',
+          value: '1'
         })
       ])
     )

@@ -167,7 +167,7 @@ async function calendarToolbarAppearance(window) {
   return window.webContents.executeJavaScript(`(() => {
     const toolbar = document.querySelector('.month-toolbar')
     const today = document.querySelector('.month-toolbar__today')
-    const expectedNames = ['locate-current', 'taiji', 'recurrence', 'move-to-today', 'date-panel']
+    const expectedNames = ['locate-current', 'taiji', 'recurrence', 'date-panel']
     const icons = expectedNames.map((name) =>
       document.querySelector('.month-toolbar [data-icon-name="' + name + '"]')
     )
@@ -205,7 +205,6 @@ async function assertCalendarToolbarAppearance(window) {
     'locate-current',
     'taiji',
     'recurrence',
-    'move-to-today',
     'date-panel'
   ])
   assert.equal(initial.pairedAssets, true, '日历工具栏操作图标必须同时提供黑白资源')

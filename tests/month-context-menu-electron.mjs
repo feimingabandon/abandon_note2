@@ -167,7 +167,7 @@ async function runContextMenuTests() {
       const navigation = document.querySelector('.month-toolbar__navigation').getBoundingClientRect()
       const trailing = document.querySelector('.month-toolbar__trailing').getBoundingClientRect()
       const controls = Array.from(document.querySelectorAll(
-        '.month-toolbar__recurring-preview, .historical-note-move__trigger, .month-toolbar__day-panel-toggle'
+        '.month-toolbar__recurring-preview, .month-toolbar__day-panel-toggle'
       ))
       const controlWidths = controls.map((control) => control.getBoundingClientRect().width)
       return {
@@ -175,7 +175,7 @@ async function runContextMenuTests() {
         navigationOnSecondRow:
           navigation.top >= Math.max(leading.bottom, trailing.bottom) - 1,
         iconOnlyControls:
-          controls.length === 3 &&
+          controls.length === 2 &&
           controls.every((control) => control.textContent.trim() === '') &&
           Math.max(...controlWidths) - Math.min(...controlWidths) < 0.25
       }

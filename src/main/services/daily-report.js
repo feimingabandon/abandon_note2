@@ -60,6 +60,7 @@ export function normalizeDailyReportStatuses(statuses = DAILY_REPORT_STATUSES) {
 }
 
 function dailyReportNoteSummary(note) {
+  const range = noteDateRange(note)
   return {
     id: note.id,
     content: note.content,
@@ -67,6 +68,8 @@ function dailyReportNoteSummary(note) {
     is_pinned: note.is_pinned,
     effective_at: note.effective_at,
     duration_days: note.duration_days,
+    duration_kind: note.duration_kind,
+    calendar_duration_days: range.durationDays,
     finished_at: note.finished_at
   }
 }
@@ -85,6 +88,7 @@ export function queryDailyReportNotes({
   const candidates = queryCalendarNotes({
     hydrate: false,
     candidateFrom: localMidnightTimestamp(addCalendarDays(range.startDateKey, -364)),
+    visibleStart: localMidnightTimestamp(range.startDateKey),
     visibleEndExclusive: localMidnightTimestamp(addCalendarDays(range.endDateKey, 1))
   })
   const allowedStatuses = new Set(normalizedStatuses)

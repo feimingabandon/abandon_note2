@@ -93,7 +93,9 @@ let pendingWeekNavigation = null
 let activeWeekNavigationSelection = ''
 
 const selectedNotes = computed(() =>
-  selectedKey.value ? notesCoveringDate(calendarData.value.notes, selectedKey.value) : []
+  selectedKey.value
+    ? notesCoveringDate(calendarData.value.notes, selectedKey.value, todayKey.value)
+    : []
 )
 const modalOpen = computed(() => Boolean(creatorDate.value || editingNote.value))
 const weatherByDate = computed(
@@ -112,6 +114,9 @@ const toolbarTodayWeather = computed(() => {
   return `${weather.icon} ${weather.label} ${weather.temperatureMin}°～${weather.temperatureMax}°`
 })
 const earlyStartMessage = computed(() => {
+  if (earlyStartNote.value?.duration_kind === 'until_completed') {
+    return '该便签设置为持续到完成。提前执行后，生效时间将改为当前时间，并从今天开始连续显示，直到标记完成。是否确认提前执行？'
+  }
   const durationDays = Math.max(1, Number(earlyStartNote.value?.duration_days) || 1)
   if (durationDays > 1) {
     return `该便签设置了持续 ${durationDays} 天。提前执行后，生效时间将改为当前时间，日历视图中的连续显示日期也会从今天重新计算。是否确认提前执行？`
@@ -697,11 +702,6 @@ async function goToday() {
   })
 }
 
-async function onHistoricalNotesMoved() {
-  await goToday()
-  await refreshCalendarContent()
-}
-
 async function selectDate(day) {
   if (!(day?.isActive ?? day?.inCurrentMonth)) return
   selectedKey.value = day.key
@@ -900,6 +900,9 @@ onMounted(async () => {
 })
 
 watch(modalOpen, (open) => emit('modal-state-change', open), { immediate: true })
+watch(todayKey, (next, previous) => {
+  if (next !== previous) queueNotesRefresh()
+})
 watch(
   () => [creatorDate.value, editingNote.value?.id || null],
   async ([nextCreator, nextEditor], [previousCreator, previousEditor]) => {
@@ -977,7 +980,6 @@ onBeforeUnmount(() => {
           @refresh="refreshCalendar"
           @update:recurring-preview-enabled="updateRecurringPreviewEnabled"
           @toggle-day-panel="toggleDayPanel"
-          @historical-notes-moved="onHistoricalNotesMoved"
         />
         <div ref="calendarSurfaceRef" class="month-workspace__calendar-body">
           <MonthCalendarGrid

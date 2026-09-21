@@ -112,7 +112,7 @@ async function exportLogs() {
 
 async function copyRecord(record) {
   try {
-    await navigator.clipboard.writeText(formatLogRecordText(record))
+    await window.api.writeClipboardText(formatLogRecordText(record))
   } catch (error) {
     console.error('[LogViewerDialog] 复制日志记录失败:', error)
     errorMessage.value = error?.message || '复制日志失败'

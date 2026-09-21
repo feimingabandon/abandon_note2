@@ -2,15 +2,52 @@ import { describe, expect, it } from 'vitest'
 import {
   MAX_CALENDAR_YEAR,
   MIN_CALENDAR_YEAR,
+  NOTE_DURATION_KINDS,
   addCalendarDays,
   buildMonthGrid,
   buildWeekGrid,
   combineLocalDateAndTime,
   dateOrdinal,
-  localDateKey
+  localDateKey,
+  noteDateRange
 } from '../src/shared/calendar/calendar-date-rules.js'
 
 describe('month calendar date rules', () => {
+  it('calculates single, fixed and until-completed note ranges', () => {
+    const effectiveAt = combineLocalDateAndTime('2024-01-01', '09:00')
+    expect(
+      noteDateRange({ effective_at: effectiveAt, duration_kind: NOTE_DURATION_KINDS.SINGLE_DAY })
+    ).toMatchObject({ startKey: '2024-01-01', endKey: '2024-01-01', durationDays: 1 })
+    expect(
+      noteDateRange({
+        effective_at: effectiveAt,
+        duration_kind: NOTE_DURATION_KINDS.FIXED_DAYS,
+        duration_days: 3
+      })
+    ).toMatchObject({ endKey: '2024-01-03', durationDays: 3 })
+    expect(
+      noteDateRange(
+        {
+          effective_at: effectiveAt,
+          duration_kind: NOTE_DURATION_KINDS.UNTIL_COMPLETED,
+          status: 'in_progress'
+        },
+        '2026-01-01'
+      )
+    ).toMatchObject({ endKey: '2026-01-01', durationDays: 732 })
+    expect(
+      noteDateRange(
+        {
+          effective_at: effectiveAt,
+          duration_kind: NOTE_DURATION_KINDS.UNTIL_COMPLETED,
+          status: 'completed',
+          finished_at: combineLocalDateAndTime('2024-01-05', '18:00')
+        },
+        '2026-01-01'
+      )
+    ).toMatchObject({ endKey: '2024-01-05', durationDays: 5 })
+  })
+
   it('builds six Monday-first rows when the month needs them', () => {
     const grid = buildMonthGrid(2026, 8)
     expect(grid.days).toHaveLength(42)

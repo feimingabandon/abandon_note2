@@ -986,6 +986,9 @@ const statusTransitionTimers = new Map()
 const earlyStartConfirmVisible = ref(false)
 const earlyStartNote = ref(null)
 const earlyStartMessage = computed(() => {
+  if (earlyStartNote.value?.duration_kind === 'until_completed') {
+    return '该便签设置为持续到完成。提前执行后，生效时间将改为当前时间，并从今天开始连续显示，直到标记完成。是否确认提前执行？'
+  }
   const durationDays = Math.max(1, Number(earlyStartNote.value?.duration_days) || 1)
   if (durationDays > 1) {
     return `该便签设置了持续 ${durationDays} 天。提前执行后，生效时间将改为当前时间，日历视图中的连续显示日期也会从今天重新计算。是否确认提前执行？`
@@ -1812,7 +1815,6 @@ defineExpose({
                         :key="note.id"
                         :note="note"
                         :weather="weatherForNote(note)"
-                        :color-by-tag="false"
                         allow-create-tag
                         :status-transition="statusTransitionFor(note.id)"
                         @edit="emit('edit', $event)"

@@ -213,18 +213,18 @@ async function run() {
         ),
         '同一功能未包含跨视图入口'
       )
-      await search(window, '自动移动 跨日')
+      await search(window, '持续到完成 跨日')
       assert.ok(
         await evaluate(
           window,
-          `Boolean(document.querySelector('[data-help-result="notes-move"] mark'))`
+          `Boolean(document.querySelector('[data-help-result="note-duration"] mark'))`
         ),
         '搜索未命中正文或未高亮'
       )
       assertScrollMotion(
         await recordScrollMotion(
           window,
-          `document.querySelector('[data-help-result="notes-move"]').click()`
+          `document.querySelector('[data-help-result="note-duration"]').click()`
         ),
         '搜索结果导航'
       )
@@ -232,14 +232,11 @@ async function run() {
         () =>
           evaluate(
             window,
-            `(() => { const container = document.querySelector('.help-content'); const article = document.querySelector('[data-anchor-id="notes-move"]'); return !document.querySelector('.help-results') && Math.abs(article.getBoundingClientRect().top-container.getBoundingClientRect().top-16) < 5; })()`
+            `(() => { const container = document.querySelector('.help-content'); const article = document.querySelector('[data-anchor-id="note-duration"]'); return !document.querySelector('.help-results') && Math.abs(article.getBoundingClientRect().top-container.getBoundingClientRect().top-16) < 5; })()`
           ),
         '搜索结果未准确跳转正文'
       )
-      assert.equal(
-        await evaluate(window, `document.activeElement.textContent`),
-        '未完成便签移至今天'
-      )
+      assert.equal(await evaluate(window, `document.activeElement.textContent`), '便签持续方式')
       const readingTop = await evaluate(window, `document.querySelector('.help-content').scrollTop`)
       await search(window, '不可能有的关键词12345')
       assert.ok(
@@ -358,7 +355,7 @@ async function run() {
           'hidden'
         )
       }
-      await search(window, '自动移动')
+      await search(window, '持续到完成')
       writeFileSync(join(qaDir, `${mode}-search.png`), (await window.capturePage()).toPNG())
       await closeHelp(window)
     }

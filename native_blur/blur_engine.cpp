@@ -256,6 +256,39 @@ void Engine::UpdateGeometry() {
     }
 }
 
+bool Engine::SyncGeometryAndWait(DWORD syncTimeoutMs) {
+    { std::lock_guard<std::mutex> lock(m_failureMutex); m_failureJson = "{}"; }
+    if (!m_initialized.load()) {
+        RecordNativeFailure("sync-geometry-not-ready", 0);
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        return false;
+    }
+    const HWND overlayHwnd = m_messageHwnd.load();
+    if (!overlayHwnd || !IsWindow(overlayHwnd)) {
+        RecordNativeFailure("sync-geometry-invalid-overlay", 0);
+        m_lastError.store(BlurErrorCode::OverlayWindowFailed);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
+
+    DWORD_PTR syncResult = 0;
+    ::SetLastError(ERROR_SUCCESS);
+    if (!SendMessageTimeoutW(
+            overlayHwnd,
+            WM_BLUR_UPDATE_GEOMETRY,
+            2,
+            0,
+            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+            std::max<DWORD>(1, syncTimeoutMs),
+            &syncResult)) {
+        RecordNativeFailure("sync-geometry-send-timeout-or-failure", ::GetLastError());
+        m_lastError.store(BlurErrorCode::UnknownFailure);
+        m_runtimeHealthy.store(false);
+        return false;
+    }
+    return syncResult == 1;
+}
+
 bool Engine::MoveParentAndOverlay(
     HWND parentHwnd,
     int physicalX,
@@ -776,6 +809,28 @@ bool Engine::SyncGeometryFromParent() {
     return true;
 }
 
+bool Engine::VerifyGeometrySynchronized() const {
+    const HWND parentHwnd = m_parentHwnd.load();
+    const HWND overlayHwnd = m_messageHwnd.load();
+    if (!parentHwnd || !overlayHwnd || !IsWindow(parentHwnd) || !IsWindow(overlayHwnd)) {
+        return false;
+    }
+    RECT parentRect{};
+    RECT overlayRect{};
+    RECT overlayClient{};
+    if (!GetWindowRect(parentHwnd, &parentRect) ||
+        !GetWindowRect(overlayHwnd, &overlayRect) ||
+        !GetClientRect(overlayHwnd, &overlayClient)) {
+        return false;
+    }
+    const int clientWidth = overlayClient.right - overlayClient.left;
+    const int clientHeight = overlayClient.bottom - overlayClient.top;
+    return EqualRect(&parentRect, &overlayRect) &&
+        clientWidth > 0 && clientHeight > 0 &&
+        m_visualWidth.load() == clientWidth &&
+        m_visualHeight.load() == clientHeight;
+}
+
 bool Engine::SyncAndShow() {
     if (!m_overlayHwnd || !IsWindow(m_overlayHwnd)) {
         m_lastError.store(BlurErrorCode::OverlayWindowFailed);
@@ -1015,6 +1070,26 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         if (!self->SyncGeometryFromParent()) {
             ShowWindow(hwnd, SW_HIDE);
             return 0;
+        }
+        if (wParam == 2) {
+            if (self->GetConfig().enabled && IsWindowVisible(hwnd) &&
+                IsWindowVisible(self->m_parentHwnd.load())) {
+                const HRESULT presented = DwmFlush();
+                if (FAILED(presented)) {
+                    self->RecordNativeFailure("sync-geometry-dwm-flush", presented);
+                    self->m_lastError.store(BlurErrorCode::UnknownFailure);
+                    self->m_runtimeHealthy.store(false);
+                    ShowWindow(hwnd, SW_HIDE);
+                    return 0;
+                }
+            }
+            if (!self->VerifyGeometrySynchronized()) {
+                self->RecordNativeFailure("sync-geometry-verification", 0);
+                self->m_lastError.store(BlurErrorCode::UnknownFailure);
+                self->m_runtimeHealthy.store(false);
+                ShowWindow(hwnd, SW_HIDE);
+                return 0;
+            }
         }
         return 1;
 

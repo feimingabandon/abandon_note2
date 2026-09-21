@@ -3,8 +3,7 @@ const electronPath = require('electron')
 
 const testFiles = [
   'tests/backend-integration.mjs',
-  'tests/historical-note-move-db.mjs',
-  'tests/automatic-note-move-db.mjs'
+  'tests/note-duration-db.mjs'
 ]
 
 for (const testFile of testFiles) {

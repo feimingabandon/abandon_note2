@@ -363,12 +363,6 @@ onMounted(() =>
 
     <p v-if="busy === 'save'" class="weather-settings__message">正在确认地区坐标并保存…</p>
     <p v-if="error" class="weather-settings__message is-error">{{ error }}</p>
-    <p class="weather-settings__message">
-      “设备位置”只在点击后请求系统权限，并将当前坐标发送给 BigDataCloud
-      转换为中文城市名；系统定位不可用时，会由 BigDataCloud
-      根据网络地址返回大致地区。手动地区使用本地中国行政区划数据，不保存位置轨迹。中国地区天气由
-      Open-Meteo 提供 CMA GRAPES 模型数据。
-    </p>
   </div>
 </template>
 
@@ -426,6 +420,8 @@ onMounted(() =>
 }
 .weather-settings__picker :deep(.base-btn) {
   min-height: 34rem;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 .weather-settings__message {
   margin: 7rem 0 0;
@@ -435,11 +431,5 @@ onMounted(() =>
 }
 .weather-settings__message.is-error {
   color: #ff453a;
-}
-@media (max-width: 560px) {
-  .weather-settings__picker {
-    align-items: stretch;
-    flex-direction: column;
-  }
 }
 </style>

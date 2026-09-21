@@ -9,7 +9,9 @@ describe('view visibility shortcut UI wiring', () => {
     const recorder = read('src/renderer/src/components/ui/ShortcutRecorder.vue')
 
     expect(panel).toContain('视图显示快捷键')
-    expect(panel).toContain('列表、月视图和周视图共用')
+    expect(panel).toMatch(/视图显示快捷键\s*<small>所有<\/small\s*>/)
+    expect(panel).toContain('class="setting-item setting-item-full shortcut-setting"')
+    expect(panel).toContain('justify-content: flex-start')
     expect(panel).toContain('<ShortcutRecorder')
     expect(recorder).toContain('readonly')
     expect(recorder).toContain('@beforeinput.prevent')

@@ -11,10 +11,12 @@ import ScreenshotPicker from './ScreenshotPicker.vue'
 import AppToggle from '../ui/AppToggle.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
-import ResizableTextarea from '../ui/ResizableTextarea.vue'
+import ColoredTextEditor from './ColoredTextEditor.vue'
 import NoteDurationField from './NoteDurationField.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
+import { NOTE_DURATION_KINDS } from '../../../../shared/calendar/calendar-date-rules.js'
+import { normalizeNoteTextColorRanges } from '../../../../shared/note-text-color-rules.js'
 import {
   assertCreatableNoteEffectiveTime,
   canScheduleNoteNotification,
@@ -36,8 +38,10 @@ const systemNotificationsSupported = systemNotificationCapability.supported
 const systemNotificationUnavailableReason = systemNotificationCapability.reason
 
 const content = ref('')
+const contentColorRanges = ref([])
 const status = ref('initialized')
 const effectiveAt = ref('')
+const durationKind = ref(NOTE_DURATION_KINDS.SINGLE_DAY)
 const durationDays = ref(1)
 const notifyEnabled = ref(false)
 const isPinned = ref(false)
@@ -45,6 +49,7 @@ const tagIds = ref([])
 const saving = ref(false)
 const mounted = ref(false)
 const imagePickerRef = ref(null)
+const draftImageCount = ref(0)
 const attachmentDirty = ref(false)
 const initialSnapshot = ref(null)
 const initialVersion = ref(null)
@@ -67,8 +72,14 @@ function normalizedTags(tags) {
 function createSnapshot(note) {
   return {
     content: note.content || '',
+    contentColorRanges: normalizeNoteTextColorRanges(note.content_color_ranges, note.content || ''),
     status: note.status,
     effectiveAt: formatDateTime(note.effective_at),
+    durationKind:
+      note.duration_kind ||
+      (Number(note.duration_days) > 1
+        ? NOTE_DURATION_KINDS.FIXED_DAYS
+        : NOTE_DURATION_KINDS.SINGLE_DAY),
     durationDays: Number(note.duration_days) || 1,
     notifyEnabled: systemNotificationsSupported && !!note.notify_enabled,
     isPinned: !!note.is_pinned,
@@ -82,13 +93,16 @@ function resetFromNote(note) {
   initialSnapshot.value = snapshot
   initialVersion.value = note.editVersion
   content.value = snapshot.content
+  contentColorRanges.value = snapshot.contentColorRanges.map((range) => ({ ...range }))
   status.value = snapshot.status
   effectiveAt.value = snapshot.effectiveAt
+  durationKind.value = snapshot.durationKind
   durationDays.value = snapshot.durationDays
   notifyEnabled.value = snapshot.notifyEnabled
   isPinned.value = snapshot.isPinned
   tagIds.value = [...snapshot.tagIds]
   attachmentDirty.value = false
+  draftImageCount.value = Number(note.attachment_count) || 0
 }
 
 watch(() => props.note, resetFromNote, { immediate: true })
@@ -176,14 +190,17 @@ const hasChanges = computed(() => {
   return (
     attachmentDirty.value ||
     content.value !== initial.content ||
+    JSON.stringify(contentColorRanges.value) !== JSON.stringify(initial.contentColorRanges) ||
     status.value !== initial.status ||
     effectiveAt.value !== initial.effectiveAt ||
+    durationKind.value !== initial.durationKind ||
     durationDays.value !== initial.durationDays ||
     notifyEnabled.value !== initial.notifyEnabled ||
     isPinned.value !== initial.isPinned ||
     JSON.stringify(normalizedTags(tagIds.value)) !== JSON.stringify(initial.tagIds)
   )
 })
+const canSave = computed(() => Boolean(content.value.trim()) || draftImageCount.value > 0)
 
 function onAttachmentDraftChange(changes) {
   attachmentDirty.value = !!changes?.dirty
@@ -206,8 +223,8 @@ function handleConfirm() {
 async function handleSave() {
   if (saving.value || !hasChanges.value) return
   const text = content.value
-  if (!text.trim()) {
-    showMessage('warning', '请输入便签内容')
+  if (!canSave.value) {
+    showMessage('warning', '请输入便签内容或保留至少一张图片')
     return
   }
 
@@ -248,8 +265,10 @@ async function handleSave() {
       expectedVersion: initialVersion.value,
       fields: {
         content: text,
+        contentColorRanges: contentColorRanges.value,
         status: status.value,
         effectiveAt: requestedEffectiveAt,
+        durationKind: durationKind.value,
         durationDays: durationDays.value,
         notifyEnabled: canEditNotify.value && notifyEnabled.value,
         isPinned: isPinned.value
@@ -273,8 +292,10 @@ const protectedDraft = useDraftProtection({
   key: 'note:' + props.note.id,
   fields: {
     content,
+    contentColorRanges,
     status,
     effectiveAt,
+    durationKind,
     durationDays,
     notifyEnabled,
     isPinned,
@@ -291,8 +312,9 @@ const protectedDraft = useDraftProtection({
 <template>
   <div class="ne-root" :class="{ 'ne-enter': mounted }">
     <div class="ne-body scroll-y">
-      <ResizableTextarea
+      <ColoredTextEditor
         v-model="content"
+        v-model:color-ranges="contentColorRanges"
         class="ne-stagger"
         initial-focus
         style="animation-delay: 0ms"
@@ -321,7 +343,11 @@ const protectedDraft = useDraftProtection({
         保存后将直接进入进行中，并关闭系统提醒。
       </p>
 
-      <NoteDurationField v-model="durationDays" :visible="!!effectiveAt" />
+      <NoteDurationField
+        v-model:kind="durationKind"
+        v-model:days="durationDays"
+        :visible="!!effectiveAt"
+      />
 
       <div class="ne-notification-field ne-stagger" style="animation-delay: 100ms">
         <div class="ne-field-row">
@@ -357,6 +383,7 @@ const protectedDraft = useDraftProtection({
           ref="imagePickerRef"
           :note-id="note.id"
           mode="draft"
+          @count-change="draftImageCount = $event"
           @draft-change="onAttachmentDraftChange"
         />
       </div>
@@ -366,11 +393,7 @@ const protectedDraft = useDraftProtection({
       <button class="ne-dismiss" :disabled="saving" @click="requestClose">
         {{ hasChanges ? '放弃修改' : '关闭' }}
       </button>
-      <button
-        class="ne-submit"
-        :disabled="!content.trim() || !hasChanges || saving"
-        @click="handleSave"
-      >
+      <button class="ne-submit" :disabled="!canSave || !hasChanges || saving" @click="handleSave">
         {{ saving ? '保存中…' : '保存修改' }}
       </button>
     </div>

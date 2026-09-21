@@ -11,6 +11,7 @@ import {
   normalizeViewVisibilityShortcut,
   VIEW_VISIBILITY_SHORTCUT_DEFAULT
 } from './view-visibility-shortcut.js'
+import { COMPACT_WINDOW_LIMITS } from './window-compact-geometry.js'
 
 const VALID_NOTE_STATUSES = new Set(['initialized', 'in_progress', 'completed'])
 export const DOCK_EDGES = Object.freeze(['top', 'left', 'right'])
@@ -357,6 +358,15 @@ const definitions = [
     remark: '基准字号（rem 单位数值）'
   },
   {
+    id: 'css.noteRemarkFontSize',
+    path: ['css', 'noteRemarkFontSize'],
+    db: { type: 'css', key: 'note_remark_font_size' },
+    defaultValue: 16,
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 12, max: 28, integer: true }),
+    serialize: String,
+    remark: '便签卡片备注字号（rem 单位数值）'
+  },
+  {
     id: 'css.textColor',
     path: ['css', 'textColor'],
     db: { type: 'css', key: 'text_color' },
@@ -456,6 +466,15 @@ const definitions = [
     remark: '月视图和周视图共享的未来循环便签只读预览开关'
   },
   {
+    id: 'notes.tagColorEnabled',
+    path: ['notes', 'tagColorEnabled'],
+    db: { type: 'notes', key: 'tag_color_enabled' },
+    defaultValue: true,
+    parse: parseBoolean,
+    serialize: (value) => (value ? '1' : '0'),
+    remark: '便签正文及月周视图横条使用标签颜色'
+  },
+  {
     id: 'interaction.doubleClickQuickEdit',
     path: ['interaction', 'doubleClickQuickEdit'],
     db: { type: 'interaction', key: 'double_click_quick_edit' },
@@ -465,13 +484,13 @@ const definitions = [
     remark: '列表、月视图和周视图双击便签快速编辑正文'
   },
   {
-    id: 'notes.autoMoveYesterday',
-    path: ['notes', 'autoMoveYesterday'],
-    db: { type: 'notes', key: 'auto_move_yesterday' },
+    id: 'interaction.hideMainViewDuringScreenshot',
+    path: ['interaction', 'hideMainViewDuringScreenshot'],
+    db: { type: 'interaction', key: 'hide_main_view_during_screenshot' },
     defaultValue: false,
     parse: parseBoolean,
     serialize: (value) => (value ? '1' : '0'),
-    remark: '自动将昨天普通单日未完成便签移至今天，排除循环实例'
+    remark: '截图选区期间隐藏主视图，截图结束后恢复'
   },
   {
     id: 'window.lockState',
@@ -490,6 +509,43 @@ const definitions = [
     parse: normalizeWindowZOrderMode,
     serialize: String,
     remark: '主窗口层级（top / normal / bottom）'
+  },
+  {
+    id: 'window.compactWidth',
+    path: ['window', 'compactWidth'],
+    db: { type: 'presentation', key: 'compact_width' },
+    defaultValue: COMPACT_WINDOW_LIMITS.defaultWidth,
+    parse: (value, fallback) =>
+      parseNumber(value, fallback, {
+        min: COMPACT_WINDOW_LIMITS.minWidth,
+        max: COMPACT_WINDOW_LIMITS.maxWidth,
+        integer: true
+      }),
+    serialize: String,
+    remark: `灵动岛宽度（${COMPACT_WINDOW_LIMITS.minWidth}~${COMPACT_WINDOW_LIMITS.maxWidth} DIP）`
+  },
+  {
+    id: 'window.compactHeight',
+    path: ['window', 'compactHeight'],
+    db: { type: 'presentation', key: 'compact_height' },
+    defaultValue: COMPACT_WINDOW_LIMITS.defaultHeight,
+    parse: (value, fallback) =>
+      parseNumber(value, fallback, {
+        min: COMPACT_WINDOW_LIMITS.minHeight,
+        max: COMPACT_WINDOW_LIMITS.maxHeight,
+        integer: true
+      }),
+    serialize: String,
+    remark: `灵动岛高度（${COMPACT_WINDOW_LIMITS.minHeight}~${COMPACT_WINDOW_LIMITS.maxHeight} DIP）`
+  },
+  {
+    id: 'window.compactFontSize',
+    path: ['window', 'compactFontSize'],
+    db: { type: 'presentation', key: 'compact_font_size' },
+    defaultValue: 17,
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 12, max: 28, integer: true }),
+    serialize: String,
+    remark: '灵动岛便签文字字号（12~28px）'
   },
   {
     id: 'dock.revealHandleMode',
@@ -682,6 +738,7 @@ function buildDefaults(viewMode = VIEW_MODES.LIST) {
   })
   if ([VIEW_MODES.MONTH, VIEW_MODES.WEEK].includes(normalizeViewMode(viewMode))) {
     defaults.css.fontSizeBase = 20
+    defaults.css.noteRemarkFontSize = 19
     defaults.geometry.widthRatio = 0.7
     defaults.geometry.heightRatio = 0.7
     defaults.ui.settingsPanelSize = 40

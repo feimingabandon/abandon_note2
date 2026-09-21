@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
-import { app, BrowserWindow, dialog, nativeImage } from 'electron'
+import { app, BrowserWindow, dialog } from 'electron'
 
 const root = mkdtempSync(join(tmpdir(), 'abandon-draft-conflict-ui-'))
 app.setPath('userData', root)
@@ -80,22 +80,6 @@ async function view(mode) {
       ),
     'ready ' + mode
   )
-}
-async function openEditor(id) {
-  await until(
-    () => js('Boolean(document.querySelector(\'.nl-card[data-note-id="' + id + '"]\'))'),
-    'card'
-  )
-  await js(
-    'document.querySelector(\'.nl-card[data-note-id="' +
-      id +
-      "\"]').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:120,clientY:180}))"
-  )
-  await until(() => js("Boolean(document.querySelector('.nl-context-menu'))"), 'menu')
-  await js(
-    "Array.from(document.querySelectorAll('.nl-context-menu button')).find(b=>b.textContent.trim()==='修改').click()"
-  )
-  await until(() => js("Boolean(document.querySelector('.app-editor textarea'))"), 'editor')
 }
 async function fill(selector, text) {
   await js(
@@ -212,7 +196,7 @@ async function run() {
       )
       await js("document.querySelector('.titlebar-btn-settings').click()")
       await until(() => js("Boolean(document.querySelector('.settings-search input'))"), 'settings')
-      await fill('.settings-search input', '编辑草稿')
+      await fill('.settings-search input', '调度器诊断')
       await until(
         () => js("document.querySelectorAll('.settings-search-results button').length > 0"),
         'search result'
@@ -222,7 +206,10 @@ async function run() {
       )
       assert.ok(new Set(scroll.samples.map(Math.round)).size > 8, JSON.stringify(scroll))
       assert.ok(scroll.samples.at(-1) > 100)
-      assert.equal(scroll.focused, true)
+      await until(
+        () => js("Boolean(document.activeElement.closest('.settings-section'))"),
+        'settings search focuses target section after scroll animation'
+      )
       results.push(
         mode + ': settings search has intermediate animation frames and focuses target section'
       )
@@ -231,7 +218,12 @@ async function run() {
       const old = current
       await switchFromButton(target)
       await js("document.querySelector('.confirm-actions button:last-child').click()")
-      await until(() => old.isDestroyed(), 'accepted switch replaces window')
+      await until(
+        () =>
+          old.webContents.getURL().includes('/' + (target === 'list' ? 'index' : target) + '.html'),
+        'accepted switch navigates existing window'
+      )
+      assert.equal(old.isDestroyed(), false)
     }
     writeFileSync(resultPath, JSON.stringify({ status: 'passed', results }, null, 2))
     app.exit(0)

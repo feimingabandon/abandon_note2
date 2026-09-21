@@ -95,7 +95,10 @@ describe('global main-window controls', () => {
   it('uses a three-state z-order setting and normalizes the two legacy boolean values', () => {
     expect(DEFAULT_SETTINGS.window).toEqual({
       lockState: false,
-      zOrderMode: WINDOW_Z_ORDER_MODES.TOP
+      zOrderMode: WINDOW_Z_ORDER_MODES.TOP,
+      compactWidth: 180,
+      compactHeight: 48,
+      compactFontSize: 17
     })
     expect(serializeSetting('window.zOrderMode', WINDOW_Z_ORDER_MODES.BOTTOM)).toMatchObject({
       type: 'system',
@@ -116,6 +119,42 @@ describe('global main-window controls', () => {
     ).toBe(WINDOW_Z_ORDER_MODES.TOP)
   })
 
+  it('persists compact presentation size and clamps damaged values', () => {
+    expect(serializeSetting('window.compactWidth', 999)).toMatchObject({
+      type: 'presentation',
+      key: 'compact_width',
+      value: '720'
+    })
+    expect(serializeSetting('window.compactHeight', 12)).toMatchObject({
+      type: 'presentation',
+      key: 'compact_height',
+      value: '48'
+    })
+    expect(
+      resolveSettingsRows([
+        { type: 'presentation', key: 'compact_width', value: '356' },
+        { type: 'presentation', key: 'compact_height', value: '88' }
+      ]).window
+    ).toMatchObject({ compactWidth: 356, compactHeight: 88 })
+    expect(
+      resolveSettingsRows([
+        { type: 'presentation', key: 'compact_width', value: '-1' },
+        { type: 'presentation', key: 'compact_height', value: '9999' }
+      ]).window
+    ).toMatchObject({ compactWidth: 180, compactHeight: 180 })
+  })
+
+  it('persists one shared compact presentation font size', () => {
+    expect(serializeSetting('window.compactFontSize', 24)).toMatchObject({
+      type: 'presentation',
+      key: 'compact_font_size',
+      value: '24'
+    })
+    expect(
+      resolveSettingsRows([{ type: 'presentation', key: 'compact_font_size', value: '99' }]).window
+        .compactFontSize
+    ).toBe(28)
+  })
 })
 
 describe('view-specific defaults', () => {
@@ -315,6 +354,8 @@ describe('CSS blur setting', () => {
 
     applySettingsSnapshot({ values }, root)
     expect(applied.get('--window-border-width')).toBe('0px')
+    expect(applied.get('--note-remark-font-size')).toBe('19rem')
+    expect(applied.get('--compact-content-font-size')).toBe('17px')
     expect(classes.has('is-system-glass-active')).toBe(false)
 
     applySettingsSnapshot(
@@ -394,6 +435,21 @@ describe('calendar recurring preview settings schema', () => {
   })
 })
 
+describe('tag color settings schema', () => {
+  it('defaults to enabled and serializes as a shared boolean setting row', () => {
+    expect(DEFAULT_SETTINGS.notes.tagColorEnabled).toBe(true)
+    expect(serializeSetting('notes.tagColorEnabled', false)).toMatchObject({
+      type: 'notes',
+      key: 'tag_color_enabled',
+      value: '0'
+    })
+    expect(
+      resolveSettingsRows([{ type: 'notes', key: 'tag_color_enabled', value: 'false' }]).notes
+        .tagColorEnabled
+    ).toBe(false)
+  })
+})
+
 describe('quick note edit settings schema', () => {
   it('defaults to enabled and serializes as a stable setting row', () => {
     expect(DEFAULT_SETTINGS.interaction.doubleClickQuickEdit).toBe(true)
@@ -406,6 +462,20 @@ describe('quick note edit settings schema', () => {
       resolveSettingsRows([{ type: 'interaction', key: 'double_click_quick_edit', value: 'false' }])
         .interaction.doubleClickQuickEdit
     ).toBe(false)
+  })
+
+  it('keeps screenshot main-view visibility configurable across views', () => {
+    expect(DEFAULT_SETTINGS.interaction.hideMainViewDuringScreenshot).toBe(false)
+    expect(serializeSetting('interaction.hideMainViewDuringScreenshot', true)).toMatchObject({
+      type: 'interaction',
+      key: 'hide_main_view_during_screenshot',
+      value: '1'
+    })
+    expect(
+      resolveSettingsRows([
+        { type: 'interaction', key: 'hide_main_view_during_screenshot', value: 'true' }
+      ]).interaction.hideMainViewDuringScreenshot
+    ).toBe(true)
   })
 })
 
@@ -525,5 +595,21 @@ describe('calendar font settings', () => {
       ).toBe(28)
     }
     expect(serializeSetting('css.fontSizeBase', 40).value).toBe('28')
+  })
+
+  it('keeps note remark size independent and slightly smaller than body by default', () => {
+    expect(createDefaultSettings(VIEW_MODES.LIST).css.noteRemarkFontSize).toBe(16)
+    for (const mode of [VIEW_MODES.MONTH, VIEW_MODES.WEEK]) {
+      expect(createDefaultSettings(mode).css.noteRemarkFontSize).toBe(19)
+      expect(
+        resolveSettingsRows([{ type: 'css', key: 'note_remark_font_size', value: '17' }], mode).css
+          .noteRemarkFontSize
+      ).toBe(17)
+    }
+    expect(serializeSetting('css.noteRemarkFontSize', 40)).toMatchObject({
+      type: 'css',
+      key: 'note_remark_font_size',
+      value: '28'
+    })
   })
 })

@@ -8,15 +8,17 @@
  *   - 放大/缩小/旋转按钮
  *   - ESC / 点击遮罩关闭
  */
-import { nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { retainModalBlur } from '../../utils/modalBlur.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
-  src: { type: String, default: '' }
+  src: { type: String, default: '' },
+  sources: { type: Array, default: () => [] },
+  initialIndex: { type: Number, default: 0 }
 })
 
-const emit = defineEmits(['close'])
+const emit = defineEmits(['close', 'change'])
 
 /** 缩放比例（1 = 100%） */
 const scale = ref(1)
@@ -26,7 +28,24 @@ const rotate = ref(0)
 const translateX = ref(0)
 const translateY = ref(0)
 const overlayRef = ref(null)
+const activeIndex = ref(0)
+const navigationDirection = ref('next')
+const availableSources = computed(() =>
+  props.sources.length ? props.sources : props.src ? [props.src] : []
+)
+const activeSrc = computed(() => availableSources.value[activeIndex.value] || '')
+const hasMultiple = computed(() => availableSources.value.length > 1)
+const imageTransitionName = computed(() =>
+  navigationDirection.value === 'previous' ? 'ipv-image-previous' : 'ipv-image-next'
+)
 let releaseBackgroundBlur = null
+
+function resetTransform() {
+  scale.value = 1
+  rotate.value = 0
+  translateX.value = 0
+  translateY.value = 0
+}
 
 function acquireModalBlur() {
   if (releaseBackgroundBlur) return
@@ -51,11 +70,15 @@ watch(
   (v) => {
     if (v) {
       acquireModalBlur()
-      scale.value = 1
-      rotate.value = 0
-      translateX.value = 0
-      translateY.value = 0
+      activeIndex.value = Math.max(
+        0,
+        Math.min(availableSources.value.length - 1, Number(props.initialIndex) || 0)
+      )
+      resetTransform()
       nextTick(() => overlayRef.value?.focus({ preventScroll: true }))
+    } else {
+      // 预览可能在拖拽途中被 ESC、遮罩或父组件关闭；立即释放 document 监听。
+      onMouseUp()
     }
   },
   { immediate: true }
@@ -70,6 +93,16 @@ function onKeydown(e) {
     e.preventDefault()
     e.stopPropagation()
     onClose()
+    return
+  }
+  if (e.key === 'ArrowLeft' && hasMultiple.value) {
+    e.preventDefault()
+    showPrevious()
+    return
+  }
+  if (e.key === 'ArrowRight' && hasMultiple.value) {
+    e.preventDefault()
+    showNext()
     return
   }
   if (e.key !== 'Tab') return
@@ -110,10 +143,23 @@ function rotate90() {
 }
 /** 重置 */
 function reset() {
-  scale.value = 1
-  rotate.value = 0
-  translateX.value = 0
-  translateY.value = 0
+  resetTransform()
+}
+
+function changeImage(index, direction) {
+  if (!availableSources.value.length) return
+  navigationDirection.value = direction
+  activeIndex.value = (index + availableSources.value.length) % availableSources.value.length
+  resetTransform()
+  emit('change', activeIndex.value)
+}
+
+function showPrevious() {
+  changeImage(activeIndex.value - 1, 'previous')
+}
+
+function showNext() {
+  changeImage(activeIndex.value + 1, 'next')
 }
 
 // ============================================================
@@ -224,7 +270,12 @@ onUnmounted(() => {
             </svg>
           </button>
           <div class="ipv-spacer" />
-          <span class="ipv-info">{{ Math.round(scale * 100) }}%</span>
+          <span class="ipv-info">
+            <template v-if="hasMultiple"
+              >{{ activeIndex + 1 }} / {{ availableSources.length }} ·
+            </template>
+            {{ Math.round(scale * 100) }}%
+          </span>
           <button class="ipv-btn ipv-btn--close" title="关闭 (ESC)" @click="onClose">
             <svg
               viewBox="0 0 24 24"
@@ -241,16 +292,41 @@ onUnmounted(() => {
 
         <!-- 图片容器 -->
         <div class="ipv-viewport" @wheel="onWheel">
-          <img
-            :src="src"
-            class="ipv-image"
-            :class="{ 'ipv-image--dragging': isDragging }"
-            :style="{
-              transform: `translate(${translateX}px, ${translateY}px) scale(${scale}) rotate(${rotate}deg)`
-            }"
-            @mousedown="onMouseDown"
-            @click.stop
-          />
+          <button
+            v-if="hasMultiple"
+            class="ipv-nav ipv-nav--previous"
+            type="button"
+            title="上一张（←）"
+            aria-label="上一张图片"
+            @click.stop="showPrevious"
+          >
+            ‹
+          </button>
+          <div class="ipv-image-stage">
+            <Transition :name="imageTransitionName">
+              <img
+                :key="activeIndex"
+                :src="activeSrc"
+                class="ipv-image"
+                :class="{ 'ipv-image--dragging': isDragging }"
+                :style="{
+                  transform: `translate(${translateX}px, ${translateY}px) scale(${scale}) rotate(${rotate}deg)`
+                }"
+                @mousedown="onMouseDown"
+                @click.stop
+              />
+            </Transition>
+          </div>
+          <button
+            v-if="hasMultiple"
+            class="ipv-nav ipv-nav--next"
+            type="button"
+            title="下一张（→）"
+            aria-label="下一张图片"
+            @click.stop="showNext"
+          >
+            ›
+          </button>
         </div>
       </div>
     </Transition>
@@ -362,9 +438,17 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+.ipv-image-stage {
+  display: grid;
+  width: 90vw;
+  height: 90vh;
+  place-items: center;
+}
+
 .ipv-image {
-  max-width: 90vw;
-  max-height: 90vh;
+  grid-area: 1 / 1;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
   border-radius: 8rem;
   box-shadow: 0 8rem 40rem rgba(0, 0, 0, 0.5);
@@ -376,5 +460,57 @@ onUnmounted(() => {
 .ipv-image--dragging {
   transition: none;
   cursor: grabbing;
+}
+.ipv-image-next-enter-active,
+.ipv-image-next-leave-active,
+.ipv-image-previous-enter-active,
+.ipv-image-previous-leave-active {
+  transition:
+    opacity 200ms ease,
+    transform 240ms var(--ease-standard) !important;
+}
+.ipv-image-next-enter-from {
+  opacity: 0;
+  transform: translateX(36rem) scale(0.985) !important;
+}
+.ipv-image-next-leave-to {
+  opacity: 0;
+  transform: translateX(-36rem) scale(0.985) !important;
+}
+.ipv-image-previous-enter-from {
+  opacity: 0;
+  transform: translateX(-36rem) scale(0.985) !important;
+}
+.ipv-image-previous-leave-to {
+  opacity: 0;
+  transform: translateX(36rem) scale(0.985) !important;
+}
+.ipv-nav {
+  position: absolute;
+  z-index: var(--z-local-top);
+  top: 50%;
+  width: 42rem;
+  height: 54rem;
+  border: 0;
+  border-radius: 10rem;
+  background: rgba(0, 0, 0, 0.38);
+  color: #fff;
+  cursor: pointer;
+  font-size: 34rem;
+  line-height: 1;
+  transform: translateY(-50%);
+  transition: background-color 140ms ease;
+}
+.ipv-nav:hover {
+  background: rgba(0, 0, 0, 0.58);
+}
+.ipv-nav:active {
+  transform: translateY(-50%) scale(0.98);
+}
+.ipv-nav--previous {
+  left: 18rem;
+}
+.ipv-nav--next {
+  right: 18rem;
 }
 </style>

@@ -6,7 +6,7 @@
  *   1. 提供关闭、三态窗口层级、锁定窗口控制，视觉风格不改变功能语义
  *   2. 展示窗口标题文字
  *   3. 通过 slot 支持在标题栏右侧插入自定义操作按钮
- *   4. 除窗口缩放带和交互控件外，整个标题栏通过统一指针事务支持拖动
+ *   4. 除窗口缩放带和交互控件外，整个标题栏通过统一指针事务支持拖动与双击
  *
  * Props:
  *   - title {String} 标题栏显示的文字，默认为空
@@ -41,7 +41,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:locked', 'update:zOrderMode'])
+const emit = defineEmits(['update:locked', 'update:zOrderMode', 'request:compact'])
 
 const WINDOW_CONTROL_GUARD_MS = 500
 const Z_ORDER_OPTIONS = Object.freeze([
@@ -77,8 +77,13 @@ let titlebarPointerMoved = false
 let titlebarDragStartPromise = null
 let titlebarDragging = false
 let titlebarDragGeneration = 0
+let titlebarDragCaptureTarget = null
+let lastTitlebarPress = null
+let suppressTitlebarDomDoubleClickUntil = 0
+const TITLEBAR_DOUBLE_CLICK_MS = 420
+const TITLEBAR_DOUBLE_CLICK_DISTANCE = 12
 const TITLEBAR_INTERACTIVE_SELECTOR =
-  'button, a, input, textarea, select, summary, [role="button"], [role="menu"], [contenteditable="true"]'
+  'button, a, input, textarea, select, summary, [role="button"], [role="menu"], [contenteditable="true"], [data-no-compact]'
 
 const activeZOrderOption = computed(
   () => Z_ORDER_OPTIONS.find((option) => option.value === props.zOrderMode) || Z_ORDER_OPTIONS[0]
@@ -207,6 +212,24 @@ function requestTitlebarDragUpdate() {
   })
 }
 
+function compactAnchor(event) {
+  const titlebarRect = event.currentTarget?.getBoundingClientRect?.()
+  return {
+    x: Math.round(event.screenX),
+    y: Math.round(event.screenY),
+    titlebarCenterOffsetY: titlebarRect
+      ? Math.round(titlebarRect.top + titlebarRect.height / 2)
+      : null
+  }
+}
+
+function onTitlebarDoubleClick(event) {
+  if (Date.now() < suppressTitlebarDomDoubleClickUntil) return
+  const target = event.target
+  if (!(target instanceof Element) || target.closest(TITLEBAR_INTERACTIVE_SELECTOR)) return
+  emit('request:compact', compactAnchor(event))
+}
+
 function setTitlebarPointerCapture(target, pointerId) {
   try {
     target.setPointerCapture?.(pointerId)
@@ -223,16 +246,54 @@ function releaseTitlebarPointerCapture(target, pointerId) {
   }
 }
 
+function addTitlebarPointerListeners() {
+  window.addEventListener('pointermove', onTitlebarPointerMove, true)
+  window.addEventListener('pointerup', onTitlebarPointerUp, true)
+  window.addEventListener('pointercancel', onTitlebarPointerCancel, true)
+  // 不使用捕获阶段：否则编辑器等子元素失焦也会被误判为整个窗口失焦，
+  // 导致一次正常拖动刚开始就被收口。
+  window.addEventListener('blur', onTitlebarWindowBlur)
+}
+
+function removeTitlebarPointerListeners() {
+  window.removeEventListener('pointermove', onTitlebarPointerMove, true)
+  window.removeEventListener('pointerup', onTitlebarPointerUp, true)
+  window.removeEventListener('pointercancel', onTitlebarPointerCancel, true)
+  window.removeEventListener('blur', onTitlebarWindowBlur)
+}
+
 function onTitlebarPointerDown(event) {
   if (event.button !== 0 || titlebarDragPointerId !== null) return
   const target = event.target
   if (!(target instanceof Element) || target.closest(TITLEBAR_INTERACTIVE_SELECTOR)) return
+  const now = Date.now()
+  const press = { at: now, x: event.screenX, y: event.screenY }
+  const isDoublePress =
+    lastTitlebarPress &&
+    now - lastTitlebarPress.at <= TITLEBAR_DOUBLE_CLICK_MS &&
+    Math.hypot(press.x - lastTitlebarPress.x, press.y - lastTitlebarPress.y) <=
+      TITLEBAR_DOUBLE_CLICK_DISTANCE
+  lastTitlebarPress = isDoublePress ? null : press
+  if (isDoublePress) {
+    const anchor = compactAnchor(event)
+    suppressTitlebarDomDoubleClickUntil = now + 500
+    event.preventDefault()
+    titlebarDragGeneration += 1
+    titlebarDragging = false
+    void window.api
+      .endTitlebarWindowDrag()
+      .catch(() => false)
+      .finally(() => emit('request:compact', anchor))
+    return
+  }
   if (props.locked) return
   const generation = ++titlebarDragGeneration
   titlebarDragPointerId = event.pointerId
   titlebarDragLatestPoint = { x: event.screenX, y: event.screenY }
   titlebarPointerMoved = false
-  setTitlebarPointerCapture(event.currentTarget, event.pointerId)
+  titlebarDragCaptureTarget = event.currentTarget
+  setTitlebarPointerCapture(titlebarDragCaptureTarget, event.pointerId)
+  addTitlebarPointerListeners()
   const task = window.api.beginTitlebarWindowDrag(titlebarDragLatestPoint).catch(() => false)
   titlebarDragStartPromise = task
   void task.then(async (started) => {
@@ -258,11 +319,51 @@ function onTitlebarPointerMove(event) {
   if (titlebarDragging) requestTitlebarDragUpdate()
 }
 
-async function finishTitlebarPointer(event) {
-  if (titlebarDragPointerId !== event.pointerId) return
+function onTitlebarLostPointerCapture(event) {
+  if (titlebarDragPointerId === null || titlebarDragPointerId !== event.pointerId) return
+  // Windows 置底层级和毛玻璃 Overlay 可能在移动 HWND 时短暂重排 Z 序。
+  // Chromium 偶发因此释放 DOM pointer capture；实际左键尚未松开时必须继续
+  // 使用 window 级监听，否则一次长拖只会留下捕获丢失前的很短位移。
+  console.warn('[AppTitlebar] 标题栏拖动期间指针捕获丢失，继续使用窗口级监听', {
+    pointerId: event.pointerId,
+    buttons: event.buttons,
+    dragging: titlebarDragging,
+    moved: titlebarPointerMoved
+  })
+}
+
+function onTitlebarPointerUp(event) {
+  void finishTitlebarPointer(event)
+}
+
+function onTitlebarPointerCancel(event) {
+  if (titlebarDragPointerId === null || titlebarDragPointerId !== event.pointerId) return
+  console.warn('[AppTitlebar] 标题栏拖动收到 pointercancel，正在安全结束事务', {
+    pointerId: event.pointerId,
+    buttons: event.buttons,
+    dragging: titlebarDragging,
+    moved: titlebarPointerMoved
+  })
+  void finishTitlebarPointer(event)
+}
+
+function onTitlebarWindowBlur() {
+  void finishTitlebarPointer()
+}
+
+async function finishTitlebarPointer(event = null) {
+  const pointerId = titlebarDragPointerId
+  if (pointerId === null) return
+  if (event?.pointerId !== undefined && event.pointerId !== pointerId) return
   titlebarDragPointerId = null
   titlebarDragGeneration += 1
-  releaseTitlebarPointerCapture(event.currentTarget, event.pointerId)
+  removeTitlebarPointerListeners()
+  releaseTitlebarPointerCapture(titlebarDragCaptureTarget, pointerId)
+  titlebarDragCaptureTarget = null
+  if (titlebarDragFrame) {
+    cancelAnimationFrame(titlebarDragFrame)
+    titlebarDragFrame = null
+  }
   if (titlebarDragStartPromise) await titlebarDragStartPromise.catch(() => false)
   if (titlebarDragging) {
     if (titlebarPointerMoved && titlebarDragLatestPoint) {
@@ -290,10 +391,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
   window.removeEventListener('resize', updateZOrderMenuPosition)
-  if (titlebarDragFrame) cancelAnimationFrame(titlebarDragFrame)
-  if (titlebarDragging || titlebarDragStartPromise) {
-    void window.api.endTitlebarWindowDrag().catch(() => false)
-  }
+  if (titlebarDragPointerId !== null) void finishTitlebarPointer()
+  else removeTitlebarPointerListeners()
   if (zOrderGuardTimer) clearTimeout(zOrderGuardTimer)
   if (lockGuardTimer) clearTimeout(lockGuardTimer)
 })
@@ -305,11 +404,9 @@ onBeforeUnmount(() => {
     class="app-titlebar"
     :class="[`app-titlebar--${styleVariant}`, { locked: locked }]"
     :data-style="styleVariant"
+    @dblclick="onTitlebarDoubleClick"
     @pointerdown="onTitlebarPointerDown"
-    @pointermove="onTitlebarPointerMove"
-    @pointerup="finishTitlebarPointer"
-    @pointercancel="finishTitlebarPointer"
-    @lostpointercapture="finishTitlebarPointer"
+    @lostpointercapture="onTitlebarLostPointerCapture"
   >
     <!-- 红绿灯按钮组：设置 no-drag 使按钮可点击 -->
     <div class="traffic-lights">
