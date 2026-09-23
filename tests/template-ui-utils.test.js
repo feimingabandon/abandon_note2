@@ -3,9 +3,11 @@ import {
   createTemplateFormSnapshot,
   filterAndSortTemplates,
   formatRuleSummary,
+  formatTemplateDateTime,
   formatTemplateNextRun,
   isTemplateEditTarget,
   normalizeYearDates,
+  parseTemplateDateTime,
   parseTemplateRule,
   templateState
 } from '../src/renderer/src/utils/templateRules.js'
@@ -74,6 +76,14 @@ describe('template UI rule formatting', () => {
     expect(formatTemplateNextRun(null, now)).toBe('')
     expect(formatTemplateNextRun('invalid', now)).toBe('')
   })
+
+  it('round-trips local template time boundaries', () => {
+    const timestamp = new Date(2026, 8, 22, 9, 30, 15).getTime()
+    expect(formatTemplateDateTime(timestamp)).toBe('2026-09-22 09:30:15')
+    expect(parseTemplateDateTime('2026-09-22 09:30:15')).toBe(timestamp)
+    expect(Number.isNaN(parseTemplateDateTime('2026-02-30 09:30:15'))).toBe(true)
+    expect(parseTemplateDateTime('')).toBeNull()
+  })
 })
 
 describe('template UI state and filtering', () => {
@@ -118,6 +128,21 @@ describe('template UI state and filtering', () => {
     expect(templateState(rows[2]).key).toBe('deleted')
   })
 
+  it('recognizes templates that exhausted their configured end time', () => {
+    expect(templateState({ is_paused: 1, is_deleted: 0, next_run_at: null, end_at: 123 }).key).toBe(
+      'ended'
+    )
+    expect(
+      templateState({
+        is_paused: 1,
+        is_deleted: 0,
+        pause_reason: 'manual',
+        next_run_at: null,
+        end_at: 123
+      }).key
+    ).toBe('paused')
+  })
+
   it('combines text, frequency, tags and switches', () => {
     const result = filterAndSortTemplates(rows, {
       text: '早餐',
@@ -133,6 +158,21 @@ describe('template UI state and filtering', () => {
   it('sorts null next-run values last', () => {
     const result = filterAndSortTemplates(rows, { frequency: 'all', tags: [], sort: 'next' })
     expect(result.map((row) => row.id)).toEqual([3, 1, 2])
+  })
+
+  it('combines selected template states and treats an empty selection as all', () => {
+    const filters = { frequency: 'all', tags: [], sort: 'next' }
+    expect(filterAndSortTemplates(rows, { ...filters, states: [] }).map((row) => row.id)).toEqual([
+      3, 1, 2
+    ])
+    expect(
+      filterAndSortTemplates(rows, { ...filters, states: ['running', 'deleted'] }).map(
+        (row) => row.id
+      )
+    ).toEqual([3, 1])
+    expect(
+      filterAndSortTemplates(rows, { ...filters, states: ['paused'] }).map((row) => row.id)
+    ).toEqual([2])
   })
 
   it('matches any selected tag when filters contain multiple tags', () => {
@@ -174,7 +214,9 @@ describe('template editor state guards', () => {
     },
     notifyEnabled: true,
     isPinned: false,
-    tagIds: [8, 3]
+    tagIds: [8, 3],
+    startAt: 1000,
+    endAt: 2000
   }
 
   it('detects semantic form changes while ignoring tag order', () => {
@@ -184,6 +226,7 @@ describe('template editor state guards', () => {
       initial
     )
     expect(createTemplateFormSnapshot({ ...basePayload, notifyEnabled: false })).not.toBe(initial)
+    expect(createTemplateFormSnapshot({ ...basePayload, endAt: 3000 })).not.toBe(initial)
     expect(
       createTemplateFormSnapshot({
         ...basePayload,

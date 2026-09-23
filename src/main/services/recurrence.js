@@ -2,18 +2,21 @@
 import { getDueTemplates, recordTemplateFailure } from '../db/db-templates.js'
 import { createRecurringNoteSnapshot, deleteNote } from '../db/db-notes.js'
 import { getDb } from '../db/db-connection.js'
-import { calculateNextRun, normalizeRecurrenceRule } from './recurrence-rules.js'
+import { calculateNextRunInRange, normalizeRecurrenceRule } from './recurrence-rules.js'
 
 export { calculateNextRun, normalizeRecurrenceRule } from './recurrence-rules.js'
 
 function advanceWithoutGenerating(db, template, rule, timestamp) {
-  const nextRunAt = calculateNextRun(rule, timestamp, template.schedule_anchor_at)
+  const nextRunAt = calculateNextRunInRange(rule, timestamp, template.schedule_anchor_at, {
+    startAt: template.start_at ?? template.schedule_anchor_at,
+    endAt: template.end_at
+  })
   db.prepare(
     `UPDATE note_templates SET
-       next_run_at = ?, consecutive_failures = 0, last_error = NULL,
+       next_run_at = ?, is_paused = ?, consecutive_failures = 0, last_error = NULL,
        last_failed_at = NULL, updated_at = ?
      WHERE id = ? AND is_deleted = 0 AND is_paused = 0`
-  ).run(nextRunAt, timestamp, template.id)
+  ).run(nextRunAt, nextRunAt === null ? 1 : 0, timestamp, template.id)
   return nextRunAt
 }
 
@@ -31,10 +34,28 @@ function resolveTodayDueAt(template, rule, timestamp) {
   if (!Number.isFinite(scheduledAt)) throw new Error('模板 next_run_at 无效')
 
   const todayStart = startOfLocalDay(timestamp)
-  if (scheduledAt >= todayStart) return scheduledAt
+  const startAt = Number(template.start_at ?? template.schedule_anchor_at)
+  const endAt =
+    template.end_at === null || template.end_at === undefined ? null : Number(template.end_at)
+  if (!Number.isFinite(startAt) || startAt <= 0) throw new Error('模板开始时间无效')
+  if (endAt !== null && (!Number.isFinite(endAt) || endAt <= startAt)) {
+    throw new Error('模板结束时间无效')
+  }
+  const range = { startAt, endAt }
+  if (scheduledAt >= todayStart) {
+    if (endAt !== null && scheduledAt > endAt) return null
+    return scheduledAt
+  }
 
-  const todayCandidate = calculateNextRun(rule, todayStart - 1, template.schedule_anchor_at)
-  return todayCandidate >= scheduledAt && todayCandidate <= timestamp ? todayCandidate : null
+  const todayCandidate = calculateNextRunInRange(
+    rule,
+    todayStart - 1,
+    template.schedule_anchor_at,
+    range
+  )
+  return todayCandidate !== null && todayCandidate >= scheduledAt && todayCandidate <= timestamp
+    ? todayCandidate
+    : null
 }
 
 /**
@@ -95,15 +116,19 @@ export function runRecurringTemplates({ now = Date.now() } = {}) {
           isPinned: template.is_pinned,
           tagIds
         })
-        const nextRunAt = calculateNextRun(rule, scheduledAt, template.schedule_anchor_at)
+        const nextRunAt = calculateNextRunInRange(rule, scheduledAt, template.schedule_anchor_at, {
+          startAt: template.start_at ?? template.schedule_anchor_at,
+          endAt: template.end_at
+        })
 
         db.prepare(
           `UPDATE note_templates SET
              last_generated_note_id = ?, last_generated_at = ?, next_run_at = ?,
+             is_paused = ?,
              consecutive_failures = 0, last_error = NULL, last_failed_at = NULL,
              updated_at = ?
            WHERE id = ? AND is_deleted = 0 AND is_paused = 0`
-        ).run(note.id, scheduledAt, nextRunAt, timestamp, template.id)
+        ).run(note.id, scheduledAt, nextRunAt, nextRunAt === null ? 1 : 0, timestamp, template.id)
 
         return {
           type: 'generated',

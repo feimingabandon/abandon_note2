@@ -1,5 +1,5 @@
 import { listTemplates } from '../db/db-templates.js'
-import { calculateNextRun, normalizeRecurrenceRule } from '../services/recurrence-rules.js'
+import { calculateNextRunInRange, normalizeRecurrenceRule } from '../services/recurrence-rules.js'
 import {
   addCalendarDays,
   localMidnightTimestamp
@@ -43,6 +43,9 @@ export function buildRecurringNotePreviews({
       const templateId = Number(template.id)
       const nextRunAt = Number(template.next_run_at)
       const scheduleAnchorAt = Number(template.schedule_anchor_at)
+      const startAt = Number(template.start_at ?? template.schedule_anchor_at)
+      const endAt =
+        template.end_at === null || template.end_at === undefined ? null : Number(template.end_at)
       if (!Number.isInteger(templateId) || templateId <= 0) throw new Error('模板 ID 无效')
       if (!Number.isFinite(nextRunAt) || !Number.isFinite(scheduleAnchorAt)) {
         throw new Error('模板调度时间无效')
@@ -53,7 +56,11 @@ export function buildRecurringNotePreviews({
       let generatedForTemplate = 0
 
       while (generatedForTemplate < MAX_PREVIEWS_PER_TEMPLATE) {
-        const scheduledAt = calculateNextRun(rule, cursor, scheduleAnchorAt)
+        const scheduledAt = calculateNextRunInRange(rule, cursor, scheduleAnchorAt, {
+          startAt,
+          endAt
+        })
+        if (scheduledAt === null) break
         if (scheduledAt >= rangeEndExclusive) break
         if (scheduledAt <= cursor) throw new Error('循环规则没有向未来推进')
 

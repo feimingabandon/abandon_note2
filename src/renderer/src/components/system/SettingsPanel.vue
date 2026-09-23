@@ -1,4 +1,5 @@
 <script setup>
+import { reportEvidence } from '../../utils/diagnosticEvidence.js'
 import { useSettingsSearch } from '../../composables/useSettingsSearch.js'
 /**
  * SettingsPanel.vue — 底部弹出式设置面板
@@ -879,6 +880,7 @@ const pendingSaves = {}
 const inFlightSettingSaves = new Set()
 
 function persistSetting(pending) {
+  reportEvidence('settings.save-requested', { id: pending.id, source: 'settings-panel' })
   const request = window.api.setSettingValue(pending.id, pending.value)
   inFlightSettingSaves.add(request)
   request.then(
@@ -890,6 +892,11 @@ function persistSetting(pending) {
 
 function debouncedSave(id, value) {
   if (!_settingsSynced || isResetting.value) return
+  reportEvidence('settings.save-queued', {
+    id,
+    delayMs: 300,
+    replacesPending: Boolean(pendingSaves[id])
+  })
   if (debounceTimers[id]) clearTimeout(debounceTimers[id])
   pendingSaves[id] = { id, value }
   debounceTimers[id] = setTimeout(() => {
@@ -904,6 +911,11 @@ function debouncedSave(id, value) {
 }
 
 function clearPendingSettingSaves() {
+  if (Object.keys(pendingSaves).length)
+    reportEvidence('settings.queue-cleared', {
+      ids: Object.keys(pendingSaves),
+      reason: 'flush-or-reset'
+    })
   Object.values(debounceTimers).forEach((timer) => clearTimeout(timer))
   Object.keys(debounceTimers).forEach((key) => delete debounceTimers[key])
   Object.keys(pendingSaves).forEach((key) => delete pendingSaves[key])
@@ -1575,6 +1587,7 @@ async function retryScheduler() {
               <span class="range-label-start" aria-hidden="true"></span>
               <AppSlider
                 v-model="titlebarIconScale"
+                data-diagnostic-action="settings.titlebarIconScale"
                 :min="TITLEBAR_ICON_SCALE_LIMITS.min"
                 :max="TITLEBAR_ICON_SCALE_LIMITS.max"
                 :step="TITLEBAR_ICON_SCALE_LIMITS.step"
@@ -1674,7 +1687,7 @@ async function retryScheduler() {
                 <span class="setting-hint-caption">仅作用于当前{{ currentViewLabel }}</span>
               </div>
               <div class="setting-right">
-                <AppToggle v-model="windowBorder" />
+                <AppToggle v-model="windowBorder" data-diagnostic-action="settings.windowBorder" />
               </div>
             </div>
 
@@ -1689,6 +1702,7 @@ async function retryScheduler() {
               <div class="setting-right">
                 <FontSizeInput
                   v-model="fontSizeBase"
+                  data-diagnostic-action="settings.fontSizeBase"
                   :presets="fontSizePresets"
                   :min="14"
                   :max="fontSizeMax"
@@ -1707,6 +1721,7 @@ async function retryScheduler() {
               <div class="setting-right">
                 <FontSizeInput
                   v-model="noteRemarkFontSize"
+                  data-diagnostic-action="settings.noteRemarkFontSize"
                   :presets="noteRemarkFontSizePresets"
                   :min="12"
                   :max="28"
@@ -1725,6 +1740,7 @@ async function retryScheduler() {
               <div class="setting-right">
                 <FontSizeInput
                   v-model="compactFontSize"
+                  data-diagnostic-action="settings.compactFontSize"
                   :presets="noteRemarkFontSizePresets"
                   :min="12"
                   :max="28"
@@ -1856,6 +1872,7 @@ async function retryScheduler() {
               <div class="setting-right">
                 <FontSizeInput
                   v-model="stickyFontSize"
+                  data-diagnostic-action="settings.stickyFontSize"
                   :presets="stickyFontSizePresets"
                   :min="12"
                   :max="32"
@@ -1905,7 +1922,13 @@ async function retryScheduler() {
                   text="设置新建便利贴的窗口圆角。0 为直角；圆角便利贴会使用透明窗口裁切。"
               /></span>
               <span class="range-label-start">直角</span>
-              <AppSlider v-model="stickyCornerRadius" :min="0" :max="32" :step="1" />
+              <AppSlider
+                v-model="stickyCornerRadius"
+                data-diagnostic-action="settings.stickyCornerRadius"
+                :min="0"
+                :max="32"
+                :step="1"
+              />
               <span class="range-label-end">圆润</span>
               <span class="setting-value">{{ stickyCornerRadius }}px</span>
             </div>
@@ -1918,7 +1941,10 @@ async function retryScheduler() {
                 /></span>
               </div>
               <div class="setting-right">
-                <AppToggle v-model="stickyAlwaysOnTop" />
+                <AppToggle
+                  v-model="stickyAlwaysOnTop"
+                  data-diagnostic-action="settings.stickyAlwaysOnTop"
+                />
               </div>
             </div>
           </section>
@@ -1956,7 +1982,7 @@ async function retryScheduler() {
                 </span>
               </div>
               <div class="setting-right">
-                <AppToggle v-model="blurEnabled" />
+                <AppToggle v-model="blurEnabled" data-diagnostic-action="settings.blurEnabled" />
               </div>
             </div>
 
@@ -1997,7 +2023,13 @@ async function retryScheduler() {
                   text="控制主窗口背景颜色的覆盖强度。0=完全通透，1=不透明纯色底；不改变原生模糊强度。默认30%"
               /></span>
               <span class="range-label-start">通透</span>
-              <AppSlider v-model="windowOpacity" :min="0" :max="1" :step="0.01" />
+              <AppSlider
+                v-model="windowOpacity"
+                data-diagnostic-action="settings.windowOpacity"
+                :min="0"
+                :max="1"
+                :step="0.01"
+              />
               <span class="range-label-end">浓厚</span>
               <span class="setting-value">{{ Math.round(windowOpacity * 100) }}%</span>
             </div>
@@ -2019,7 +2051,13 @@ async function retryScheduler() {
                       >模糊半径<HelpButton text="控制背景被打散的程度。推荐值10–20"
                     /></span>
                     <span class="range-label-start">清晰</span>
-                    <AppSlider v-model="blurRadius" :min="0" :max="40" :step="1" />
+                    <AppSlider
+                      v-model="blurRadius"
+                      data-diagnostic-action="settings.blurRadius"
+                      :min="0"
+                      :max="40"
+                      :step="1"
+                    />
                     <span class="range-label-end">模糊</span>
                     <span class="setting-value">{{ blurRadius }} DIP</span>
                   </div>
@@ -2031,7 +2069,13 @@ async function retryScheduler() {
                         text="模糊会让颜色变灰，提高饱和度能把鲜艳度补回来。推荐1.6–2.0（苹果用1.8）"
                     /></span>
                     <span class="range-label-start">黑白</span>
-                    <AppSlider v-model="blurSaturation" :min="0" :max="2" :step="0.1" />
+                    <AppSlider
+                      v-model="blurSaturation"
+                      data-diagnostic-action="settings.blurSaturation"
+                      :min="0"
+                      :max="2"
+                      :step="0.1"
+                    />
                     <span class="range-label-end">鲜艳</span>
                     <span class="setting-value">{{ blurSaturation.toFixed(1) }}x</span>
                   </div>
@@ -2046,7 +2090,13 @@ async function retryScheduler() {
                   text="四个角的圆润程度。0=直角，数值越大越圆。推荐8–16（苹果原生风格）"
               /></span>
               <span class="range-label-start">直角</span>
-              <AppSlider v-model="blurCornerRadius" :min="0" :max="30" :step="1" />
+              <AppSlider
+                v-model="blurCornerRadius"
+                data-diagnostic-action="settings.blurCornerRadius"
+                :min="0"
+                :max="30"
+                :step="1"
+              />
               <span class="range-label-end">圆润</span>
               <span class="setting-value">{{ blurCornerRadius }}px</span>
             </div>
@@ -2067,7 +2117,13 @@ async function retryScheduler() {
                   text="所有界面内毛玻璃和弹窗背景按此值失焦，最低5px；C++原生窗口毛玻璃不受影响。推荐10px"
               /></span>
               <span class="range-label-start">清晰</span>
-              <AppSlider v-model="cssBlur" :min="5" :max="30" :step="1" />
+              <AppSlider
+                v-model="cssBlur"
+                data-diagnostic-action="settings.cssBlur"
+                :min="5"
+                :max="30"
+                :step="1"
+              />
               <span class="range-label-end">模糊</span>
               <span class="setting-value">{{ cssBlur }}px</span>
             </div>
@@ -2079,7 +2135,13 @@ async function retryScheduler() {
                   text="设置面板按此浓度显示；使用玻璃材质的浮层会按组件类型成比例调整并限制最大值。推荐20%"
               /></span>
               <span class="range-label-start">通透</span>
-              <AppSlider v-model="cssOpacity" :min="0" :max="1" :step="0.01" />
+              <AppSlider
+                v-model="cssOpacity"
+                data-diagnostic-action="settings.cssOpacity"
+                :min="0"
+                :max="1"
+                :step="0.01"
+              />
               <span class="range-label-end">不透</span>
               <span class="setting-value">{{ Math.round(cssOpacity * 100) }}%</span>
             </div>
@@ -2097,7 +2159,10 @@ async function retryScheduler() {
                 /></span>
               </div>
               <div class="setting-right">
-                <AppToggle v-model="tagColorEnabled" />
+                <AppToggle
+                  v-model="tagColorEnabled"
+                  data-diagnostic-action="settings.tagColorEnabled"
+                />
               </div>
             </div>
 
@@ -2109,7 +2174,10 @@ async function retryScheduler() {
                 /></span>
               </div>
               <div class="setting-right">
-                <AppToggle v-model="doubleClickQuickEdit" />
+                <AppToggle
+                  v-model="doubleClickQuickEdit"
+                  data-diagnostic-action="settings.doubleClickQuickEdit"
+                />
               </div>
             </div>
 
@@ -2121,7 +2189,10 @@ async function retryScheduler() {
                 /></span>
               </div>
               <div class="setting-right">
-                <AppToggle v-model="hideMainViewDuringScreenshot" />
+                <AppToggle
+                  v-model="hideMainViewDuringScreenshot"
+                  data-diagnostic-action="settings.hideMainViewDuringScreenshot"
+                />
               </div>
             </div>
           </section>
@@ -2159,7 +2230,7 @@ async function retryScheduler() {
                 </span>
               </div>
               <div class="setting-right">
-                <AppToggle v-model="autoStart" />
+                <AppToggle v-model="autoStart" data-diagnostic-action="settings.autoStart" />
               </div>
             </div>
 
@@ -2310,6 +2381,7 @@ async function retryScheduler() {
               <div class="setting-right">
                 <AppToggle
                   v-model="receiveRemoteNotices"
+                  data-diagnostic-action="settings.receiveRemoteNotices"
                   :disabled="remoteHealthStatus === 'retired'"
                 />
               </div>
@@ -2325,6 +2397,7 @@ async function retryScheduler() {
               <div class="setting-right">
                 <AppToggle
                   v-model="uploadDeviceInfo"
+                  data-diagnostic-action="settings.uploadDeviceInfo"
                   :disabled="remoteHealthStatus === 'retired'"
                 />
               </div>

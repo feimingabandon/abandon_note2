@@ -94,7 +94,7 @@ function onPointerDown(event) {
   if (doublePress) {
     suppressDoubleClickUntil = now + 500
     event.preventDefault()
-    void expandAfterDrag(press)
+    void expandAfterDrag()
     return
   }
 
@@ -154,16 +154,16 @@ function onLostPointerCapture(event) {
   })
 }
 
-function onDoubleClick(event) {
+function onDoubleClick() {
   if (Date.now() < suppressDoubleClickUntil) return
-  void expandAfterDrag({ x: event.screenX, y: event.screenY })
+  void expandAfterDrag()
 }
 
-async function expandAfterDrag(anchor) {
+async function expandAfterDrag() {
   if (expandPromise) return expandPromise
   expandPromise = (async () => {
     await finishActiveDrag()
-    await window.api.exitCompactPresentation(anchor)
+    await window.api.exitCompactPresentation()
   })()
   try {
     await expandPromise
@@ -175,14 +175,7 @@ async function expandAfterDrag(anchor) {
 }
 
 async function expandFromKeyboard() {
-  const bounds = await window.api.getWindowBounds().catch(() => null)
-  const anchor = bounds
-    ? {
-        x: Math.round(bounds.x + bounds.width / 2),
-        y: Math.round(bounds.y + bounds.height / 2)
-      }
-    : null
-  await expandAfterDrag(anchor)
+  await expandAfterDrag()
 }
 
 async function completeCurrentNote() {

@@ -141,6 +141,7 @@ onBeforeUnmount(() => {
       ref="triggerRef"
       type="button"
       class="titlebar-btn view-switcher__trigger"
+      data-diagnostic-action="view.menu"
       :class="{ 'is-open': menuOpen, 'is-switching': switching }"
       :data-active-view="activeView"
       :title="`当前视图：${activeOption.label}`"
@@ -175,6 +176,7 @@ onBeforeUnmount(() => {
             role="menuitemradio"
             :aria-checked="option.value === activeView"
             :data-view="option.value"
+            :data-diagnostic-action="`view.switch.${option.value}`"
             @click="switchView(option.value)"
           >
             <span class="view-switcher__option-check" aria-hidden="true">✓</span>

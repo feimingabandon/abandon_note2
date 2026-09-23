@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
-import { app, BrowserWindow, dialog, nativeImage } from 'electron'
+import { app, BrowserWindow, dialog } from 'electron'
 
 const root = mkdtempSync(join(tmpdir(), 'abandon-draft-conflict-ui-'))
 app.setPath('userData', root)
@@ -50,9 +50,7 @@ assert.ok(chunk)
 require(resolve('out/main/chunks', chunk))
 
 let response = 0
-let dialogs = 0
 dialog.showMessageBox = async () => {
-  dialogs++
   return { response }
 }
 const resultPath = resolve('tmp/maturity-regressions-results.json')
@@ -80,22 +78,6 @@ async function view(mode) {
       ),
     'ready ' + mode
   )
-}
-async function openEditor(id) {
-  await until(
-    () => js('Boolean(document.querySelector(\'.nl-card[data-note-id="' + id + '"]\'))'),
-    'card'
-  )
-  await js(
-    'document.querySelector(\'.nl-card[data-note-id="' +
-      id +
-      "\"]').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:120,clientY:180}))"
-  )
-  await until(() => js("Boolean(document.querySelector('.nl-context-menu'))"), 'menu')
-  await js(
-    "Array.from(document.querySelectorAll('.nl-context-menu button')).find(b=>b.textContent.trim()==='修改').click()"
-  )
-  await until(() => js("Boolean(document.querySelector('.app-editor textarea'))"), 'editor')
 }
 async function fill(selector, text) {
   await js(

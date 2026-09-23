@@ -1,6 +1,6 @@
 /** 循环模板 CRUD、标签快照配置与可恢复删除。 */
 import { getDb } from './db-connection.js'
-import { calculateNextRun, normalizeRecurrenceRule } from '../services/recurrence-rules.js'
+import { calculateNextRunInRange, normalizeRecurrenceRule } from '../services/recurrence-rules.js'
 import { requireSingleAssignedTagId } from '../../shared/tag-rules.js'
 
 const now = () => Date.now()
@@ -15,6 +15,26 @@ function normalizeContent(content) {
   const value = String(content ?? '')
   if (!value.trim()) throw new Error('模板内容不能为空')
   return value
+}
+
+function normalizeTemplateBoundary(value, fieldName, { nullable = false } = {}) {
+  if (nullable && (value === null || value === undefined || value === '')) return null
+  const timestamp = Number(value)
+  if (!Number.isFinite(timestamp) || timestamp <= 0) throw new Error(`${fieldName}无效`)
+  return Math.trunc(timestamp / 1000) * 1000
+}
+
+function normalizeTemplateTimeRange({ startAt, endAt }, fallbackStartAt) {
+  const normalizedStartAt = normalizeTemplateBoundary(startAt ?? fallbackStartAt, '模板开始时间')
+  const normalizedEndAt = normalizeTemplateBoundary(endAt, '模板结束时间', { nullable: true })
+  if (normalizedEndAt !== null && normalizedEndAt <= normalizedStartAt) {
+    throw new Error('模板结束时间必须晚于开始时间')
+  }
+  return { startAt: normalizedStartAt, endAt: normalizedEndAt }
+}
+
+function calculateTemplateNextRun(rule, afterTimestamp, scheduleAnchorAt, startAt, endAt) {
+  return calculateNextRunInRange(rule, afterTimestamp, scheduleAnchorAt, { startAt, endAt })
 }
 
 function normalizeTagIds(tagIds = []) {
@@ -76,14 +96,31 @@ function attachTagsToTemplates(db, templates) {
 }
 
 export function createTemplate(
-  { recurrenceRule, content = '', notifyEnabled = true, isPinned = false, tagIds = [] } = {},
+  {
+    recurrenceRule,
+    content = '',
+    notifyEnabled = true,
+    isPinned = false,
+    tagIds = [],
+    startAt = null,
+    endAt = null
+  } = {},
   timestamp = now()
 ) {
   const db = getDb()
   const normalizedContent = normalizeContent(content)
   const normalizedRule = normalizeRecurrenceRule(recurrenceRule)
   const normalizedTags = normalizeTagIds(tagIds)
-  const nextRunAt = calculateNextRun(normalizedRule, timestamp, timestamp)
+  const range = normalizeTemplateTimeRange({ startAt, endAt }, timestamp)
+  const scheduleAnchorAt = range.startAt
+  const nextRunAt = calculateTemplateNextRun(
+    normalizedRule,
+    timestamp,
+    scheduleAnchorAt,
+    range.startAt,
+    range.endAt
+  )
+  if (nextRunAt === null) throw new Error('所选开始与结束时间之间没有可生成节点')
 
   return db.transaction(() => {
     ensureTagsExist(db, normalizedTags)
@@ -91,17 +128,19 @@ export function createTemplate(
       .prepare(
         `INSERT INTO note_templates (
          content, recurrence_rule, is_pinned, notify_enabled, is_paused, is_deleted,
-           deleted_at, schedule_anchor_at, next_run_at, last_generated_at,
+           deleted_at, schedule_anchor_at, start_at, end_at, next_run_at, last_generated_at,
            last_generated_note_id, consecutive_failures, last_error, last_failed_at,
            pause_reason, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, 0, 0, NULL, ?, ?, NULL, NULL, 0, NULL, NULL, NULL, ?, ?)`
+         ) VALUES (?, ?, ?, ?, 0, 0, NULL, ?, ?, ?, ?, NULL, NULL, 0, NULL, NULL, NULL, ?, ?)`
       )
       .run(
         normalizedContent,
         JSON.stringify(normalizedRule),
         isPinned ? 1 : 0,
         notifyEnabled ? 1 : 0,
-        timestamp,
+        scheduleAnchorAt,
+        range.startAt,
+        range.endAt,
         nextRunAt,
         timestamp,
         timestamp
@@ -129,20 +168,42 @@ export function updateTemplate(id, fields = {}, timestamp = now()) {
     }
     const rule =
       fields.recurrenceRule === undefined ? oldRule : normalizeRecurrenceRule(fields.recurrenceRule)
+    const hasStartAt = fields.startAt !== undefined || fields.start_at !== undefined
+    const hasEndAt = fields.endAt !== undefined || fields.end_at !== undefined
+    const submittedStartAt = fields.startAt !== undefined ? fields.startAt : fields.start_at
+    const submittedEndAt = fields.endAt !== undefined ? fields.endAt : fields.end_at
+    const range = normalizeTemplateTimeRange(
+      {
+        startAt: hasStartAt ? submittedStartAt : old.start_at,
+        endAt: hasEndAt ? submittedEndAt : old.end_at
+      },
+      hasStartAt ? timestamp : (old.start_at ?? old.schedule_anchor_at)
+    )
     const scheduleChanged =
-      fields.recurrenceRule !== undefined &&
-      (!oldRule || JSON.stringify(rule) !== JSON.stringify(oldRule))
-    const scheduleAnchorAt = scheduleChanged ? timestamp : old.schedule_anchor_at
-    const nextRunAt = old.is_paused
-      ? null
-      : scheduleChanged
-        ? calculateNextRun(rule, timestamp, timestamp)
-        : old.next_run_at
+      (fields.recurrenceRule !== undefined &&
+        (!oldRule || JSON.stringify(rule) !== JSON.stringify(oldRule))) ||
+      (hasStartAt && Number(range.startAt) !== Number(old.start_at ?? old.schedule_anchor_at)) ||
+      (hasEndAt && range.endAt !== (old.end_at ?? null))
+    const scheduleAnchorAt = scheduleChanged ? range.startAt : old.schedule_anchor_at
+    const candidateNextRunAt = scheduleChanged
+      ? calculateTemplateNextRun(rule, timestamp, scheduleAnchorAt, range.startAt, range.endAt)
+      : old.next_run_at
+    if (scheduleChanged && candidateNextRunAt === null) {
+      throw new Error('所选开始与结束时间之间没有可生成节点')
+    }
+    const automaticallyEnded =
+      Number(old.is_paused) === 1 &&
+      old.pause_reason === null &&
+      old.end_at !== null &&
+      old.next_run_at === null
+    const resumesEndedTemplate = automaticallyEnded && scheduleChanged
+    const isPaused = old.is_paused && !resumesEndedTemplate ? 1 : 0
+    const nextRunAt = isPaused ? null : candidateNextRunAt
 
     db.prepare(
       `UPDATE note_templates SET
          content = ?, recurrence_rule = ?, is_pinned = ?, notify_enabled = ?,
-         schedule_anchor_at = ?, next_run_at = ?,
+         schedule_anchor_at = ?, start_at = ?, end_at = ?, next_run_at = ?, is_paused = ?,
          updated_at = ?
        WHERE id = ? AND is_deleted = 0`
     ).run(
@@ -151,7 +212,10 @@ export function updateTemplate(id, fields = {}, timestamp = now()) {
       fields.isPinned === undefined ? old.is_pinned : fields.isPinned ? 1 : 0,
       fields.notifyEnabled === undefined ? old.notify_enabled : fields.notifyEnabled ? 1 : 0,
       scheduleAnchorAt,
+      range.startAt,
+      range.endAt,
       nextRunAt,
+      isPaused,
       timestamp,
       templateId
     )
@@ -182,14 +246,21 @@ export function restoreTemplate(id, timestamp = now()) {
     const old = getTemplateRow(db, templateId)
     if (!old || !old.is_deleted) throw new Error('模板不存在或未删除')
     const rule = normalizeRecurrenceRule(old.recurrence_rule)
-    const nextRunAt = calculateNextRun(rule, timestamp, old.schedule_anchor_at)
+    const nextRunAt = calculateTemplateNextRun(
+      rule,
+      timestamp,
+      old.schedule_anchor_at,
+      old.start_at ?? old.schedule_anchor_at,
+      old.end_at
+    )
+    const isPaused = nextRunAt === null ? 1 : 0
     db.prepare(
       `UPDATE note_templates
-       SET is_deleted = 0, is_paused = 0, deleted_at = NULL,
+       SET is_deleted = 0, is_paused = ?, deleted_at = NULL,
            next_run_at = ?, consecutive_failures = 0, last_error = NULL,
            last_failed_at = NULL, pause_reason = NULL, updated_at = ?
        WHERE id = ? AND is_deleted = 1`
-    ).run(nextRunAt, timestamp, templateId)
+    ).run(isPaused, nextRunAt, timestamp, templateId)
     return attachTags(db, getTemplateRow(db, templateId))
   })()
 }
@@ -222,7 +293,14 @@ export function resumeTemplate(id, timestamp = now()) {
     const old = getTemplateRow(db, templateId)
     if (!old || old.is_deleted || !old.is_paused) throw new Error('模板不存在、已删除或未暂停')
     const rule = normalizeRecurrenceRule(old.recurrence_rule)
-    const nextRunAt = calculateNextRun(rule, timestamp, old.schedule_anchor_at)
+    const nextRunAt = calculateTemplateNextRun(
+      rule,
+      timestamp,
+      old.schedule_anchor_at,
+      old.start_at ?? old.schedule_anchor_at,
+      old.end_at
+    )
+    if (nextRunAt === null) throw new Error('模板结束时间已到，请先修改结束时间')
     db.prepare(
       `UPDATE note_templates
        SET is_paused = 0, next_run_at = ?, consecutive_failures = 0,

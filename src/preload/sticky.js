@@ -1,4 +1,7 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer as electronIpcRenderer } from 'electron'
+import { createStickyDiagnosticIpcRenderer } from './sticky-diagnostic-ipc.js'
+
+const ipcRenderer = createStickyDiagnosticIpcRenderer(electronIpcRenderer)
 
 contextBridge.exposeInMainWorld('stickyAPI', {
   reportLog: (payload) => ipcRenderer.send('logs:write', payload),

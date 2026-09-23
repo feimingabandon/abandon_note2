@@ -122,7 +122,9 @@ async function run() {
     const selected = await window.webContents.executeJavaScript(`(() => {
       const root = document.querySelector('.month-event-tooltip__content')
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-      const node = walker.nextNode()
+      let node
+      while ((node = walker.nextNode()) && !node.data.includes('日历详情选色测试')) {}
+      if (!node) throw new Error('详情浮窗没有找到待选取的便签正文')
       const range = document.createRange()
       range.setStart(node, 2)
       range.setEnd(node, 4)

@@ -54,8 +54,7 @@ function seedListView(userDataPath) {
 
 function getListWindow() {
   return BrowserWindow.getAllWindows().find(
-    (window) =>
-      !window.isDestroyed() && /\/index\.html(?:$|[?#])/.test(window.webContents.getURL())
+    (window) => !window.isDestroyed() && /\/index\.html(?:$|[?#])/.test(window.webContents.getURL())
   )
 }
 
@@ -64,11 +63,7 @@ let exitCode = 0
 
 async function runWindowBorderTest() {
   try {
-    const listWindow = await waitUntil(
-      () => getListWindow(),
-      '列表主窗口没有按隔离设置启动',
-      10000
-    )
+    const listWindow = await waitUntil(() => getListWindow(), '列表主窗口没有按隔离设置启动', 10000)
     await waitUntil(() => listWindow.isVisible(), '列表主窗口渲染就绪后没有显示')
     await waitUntil(
       () =>

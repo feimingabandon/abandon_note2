@@ -38,7 +38,7 @@ const query = ref('')
 const filtersOpen = ref(false)
 const filterContentRef = ref(null)
 const filterContentHeight = ref(0)
-const state = ref('running')
+const selectedStates = ref([])
 const frequency = ref('all')
 const selectedTags = ref([])
 const pinnedOnly = ref(false)
@@ -75,6 +75,10 @@ const stateOptions = [
   { value: 'paused', label: '已暂停' },
   { value: 'deleted', label: '已删除' }
 ]
+const allStatesSelected = computed(() => selectedStates.value.length === 0)
+const onlyDeletedSelected = computed(
+  () => selectedStates.value.length === 1 && selectedStates.value[0] === 'deleted'
+)
 const frequencyOptions = [
   { value: 'all', label: '全部频率' },
   { value: 'daily', label: '每天' },
@@ -101,6 +105,7 @@ const refreshSummary = computed(() =>
 )
 const filteredTemplates = computed(() =>
   filterAndSortTemplates(templates.value, {
+    states: selectedStates.value,
     text: query.value,
     frequency: frequency.value,
     tags: selectedTags.value,
@@ -111,7 +116,7 @@ const filteredTemplates = computed(() =>
 )
 const hasAdvancedFilters = computed(
   () =>
-    state.value !== 'running' ||
+    !allStatesSelected.value ||
     frequency.value !== 'all' ||
     selectedTags.value.length > 0 ||
     pinnedOnly.value ||
@@ -192,20 +197,19 @@ function finishRefreshSpin() {
 
 async function loadTemplateData() {
   const requestSeq = ++loadSeq
-  const requestedState = state.value
   loading.value = true
   try {
     const [rows, allTags] = await Promise.all([
-      window.api.listTemplates({ state: requestedState }),
+      window.api.listTemplates({ state: 'all' }),
       window.api.listTags()
     ])
-    if (requestSeq !== loadSeq || requestedState !== state.value) return false
+    if (requestSeq !== loadSeq) return false
     templates.value = rows || []
     tags.value = allTags || []
     lastRefreshedAt.value = new Date()
     return true
   } catch (error) {
-    console.error(`[TemplatePage] 加载 ${requestedState} 模板失败:`, error)
+    console.error('[TemplatePage] 加载模板失败:', error)
     if (requestSeq === loadSeq) showMessage('error', error.message || '加载模板失败')
     return false
   } finally {
@@ -302,8 +306,7 @@ async function createTemplate(payload) {
     await window.api.createTemplate(payload)
     createPanelRef.value?.reset()
     showMessage('success', '循环模板已创建')
-    if (state.value !== 'running') state.value = 'running'
-    else await refreshInBackground({ before })
+    await refreshInBackground({ before })
   } catch (error) {
     console.error('[TemplatePage] 创建模板失败:', error)
     showMessage('error', error.message || '创建失败')
@@ -364,8 +367,7 @@ async function performAction(name, template) {
         purge: '模板已彻底删除'
       }[name]
     )
-    if (name === 'restore' && state.value !== 'running') state.value = 'running'
-    else await refreshInBackground({ before })
+    await refreshInBackground({ before })
   } catch (error) {
     console.error(`[TemplatePage] 执行模板操作 ${name} 失败 (templateId=${template.id}):`, error)
     showMessage('error', error.message || '操作失败')
@@ -385,7 +387,7 @@ function toggleFilters() {
   filtersOpen.value = !filtersOpen.value
 }
 function resetFilters() {
-  state.value = 'running'
+  selectedStates.value = []
   frequency.value = 'all'
   selectedTags.value = []
   pinnedOnly.value = false
@@ -429,13 +431,19 @@ function toggleFilterTag(id) {
   next.has(id) ? next.delete(id) : next.add(id)
   selectedTags.value = [...next]
 }
+function toggleFilterState(value) {
+  if (value === 'all') {
+    selectedStates.value = []
+    return
+  }
+  const next = new Set(selectedStates.value)
+  next.has(value) ? next.delete(value) : next.add(value)
+  selectedStates.value = next.size === stateOptions.length ? [] : [...next]
+}
 
 watch(
-  [state, frequency, selectedTags, pinnedOnly, notifyOnly, sort, query],
-  (nextValues, previousValues) => {
-    const stateChanged = nextValues[0] !== previousValues[0]
-    void replayListRefresh({ fetch: stateChanged })
-  },
+  [selectedStates, frequency, selectedTags, pinnedOnly, notifyOnly, sort, query],
+  () => void replayListRefresh(),
   { deep: true }
 )
 
@@ -528,12 +536,22 @@ onBeforeUnmount(() => {
             </header>
             <div class="tp-filter-row">
               <span>状态</span>
-              <div class="tp-filter-chips">
+              <div class="tp-filter-chips" role="group" aria-label="模板状态筛选">
+                <button
+                  type="button"
+                  :class="{ active: allStatesSelected }"
+                  :aria-pressed="allStatesSelected"
+                  @click="toggleFilterState('all')"
+                >
+                  全部
+                </button>
                 <button
                   v-for="item in stateOptions"
                   :key="item.value"
-                  :class="{ active: state === item.value }"
-                  @click="state = item.value"
+                  type="button"
+                  :class="{ active: selectedStates.includes(item.value) }"
+                  :aria-pressed="selectedStates.includes(item.value)"
+                  @click="toggleFilterState(item.value)"
                 >
                   {{ item.label }}
                 </button>
@@ -600,11 +618,13 @@ onBeforeUnmount(() => {
         />
         <div v-if="!loading && !displayedTemplates.length" class="tp-empty">
           <svg viewBox="0 0 32 32"><path d="M8 5h13l4 4v18H8zM21 5v5h5M12 15h9M12 20h7" /></svg>
-          <strong>{{ state === 'deleted' ? '没有已删除模板' : '还没有符合条件的模板' }}</strong>
+          <strong>{{ onlyDeletedSelected ? '没有已删除模板' : '还没有符合条件的模板' }}</strong>
           <span>{{
-            state === 'deleted'
+            onlyDeletedSelected
               ? '删除的模板会暂时保留在这里'
-              : '展开上方的新建框，创建第一个循环模板'
+              : templates.length
+                ? '试试调整筛选条件'
+                : '展开上方的新建框，创建第一个循环模板'
           }}</span>
         </div>
         <div v-else-if="hasMoreTemplates" class="tp-more-state">继续向下滚动加载更多</div>
@@ -649,7 +669,7 @@ onBeforeUnmount(() => {
   <ConfirmDialog
     v-model:visible="editDiscardConfirmVisible"
     title="放弃未保存的修改？"
-    message="正文、生成规则、通知、置顶和标签都将恢复为打开编辑器时的内容。"
+    message="正文、生成规则、有效期、通知、置顶和标签都将恢复为打开编辑器时的内容。"
     confirm-text="放弃修改"
     cancel-text="继续编辑"
     variant="danger"

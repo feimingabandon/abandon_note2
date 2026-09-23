@@ -201,12 +201,7 @@ async function assertCalendarToolbarAppearance(window) {
   )
   assert.equal(initial.todayText, '', '定位到今天入口不应继续显示文字')
   assert.equal(initial.todayLabel, '定位到今天')
-  assert.deepEqual(initial.iconNames, [
-    'locate-current',
-    'taiji',
-    'recurrence',
-    'date-panel'
-  ])
+  assert.deepEqual(initial.iconNames, ['locate-current', 'taiji', 'recurrence', 'date-panel'])
   assert.equal(initial.pairedAssets, true, '日历工具栏操作图标必须同时提供黑白资源')
   assert.ok(
     initial.iconWidths.every((width) => Math.abs(width - 17 * initial.rootFontSize) < 0.1),
@@ -421,15 +416,20 @@ async function runMainViewEnhancementsTest() {
     await waitForView('list')
 
     const db = new Database(join(testUserData, 'app.db'), { readonly: true })
-    const activeView = db
-      .prepare(
-        `SELECT value FROM app_settings
+    try {
+      const readActiveView = db
+        .prepare(
+          `SELECT value FROM app_settings
          WHERE window_name = 'application' AND type = 'application' AND key = 'active_view'`
-      )
-      .pluck()
-      .get()
-    db.close()
-    assert.equal(activeView, 'list', '标题栏切换后的当前视图没有持久化')
+        )
+        .pluck()
+      // DOM readiness precedes the main-process presentation acknowledgement.
+      // Wait for the actual SQLite write, not a fixed delay or a renderer snapshot.
+      await waitUntil(() => readActiveView.get() === 'list', '标题栏切换后的当前视图没有持久化')
+      assert.equal(readActiveView.get(), 'list')
+    } finally {
+      db.close()
+    }
 
     report('note weather and list/month/week titlebar switching passed')
     app.exit(0)

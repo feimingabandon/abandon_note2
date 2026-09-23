@@ -9,8 +9,11 @@
  * 仅暴露 window.api；渲染层不获得通用 Electron API。
  */
 
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer as electronIpcRenderer } from 'electron'
 import { getSystemNotificationCapability } from '../shared/notification-policy.js'
+import { createDiagnosticIpcRenderer } from './diagnostic-ipc.js'
+
+const ipcRenderer = createDiagnosticIpcRenderer(electronIpcRenderer)
 
 const editingDraftSessionId =
   process.argv
@@ -41,8 +44,8 @@ const api = {
   queryLogs: (query) => ipcRenderer.invoke('logs:query', query),
   /** 使用系统文件管理器打开日志目录。 */
   openLogsFolder: () => ipcRenderer.invoke('logs:open-folder'),
-  /** 导出完整诊断日志。 */
-  exportLogs: () => ipcRenderer.invoke('logs:export'),
+  /** 按 all / last-hour 导出全部保留日志或近一小时日志。 */
+  exportLogs: (options = {}) => ipcRenderer.invoke('logs:export', options),
 
   // ---- 窗口控制（单向通信，无需返回值） ----
   /** 关闭当前窗口 */
@@ -69,8 +72,7 @@ const api = {
   getPresentationModeState: () => ipcRenderer.invoke('presentation-mode:get-state'),
   enterCompactPresentation: (anchor) =>
     ipcRenderer.invoke('presentation-mode:enter-compact', { anchor }),
-  exitCompactPresentation: (anchor) =>
-    ipcRenderer.invoke('presentation-mode:exit-compact', { anchor }),
+  exitCompactPresentation: () => ipcRenderer.invoke('presentation-mode:exit-compact'),
   beginCompactWindowDrag: (point) => ipcRenderer.invoke('presentation-mode:begin-drag', point),
   updateCompactWindowDrag: (point) => ipcRenderer.send('presentation-mode:update-drag', point),
   endCompactWindowDrag: () => ipcRenderer.invoke('presentation-mode:end-drag'),
@@ -88,9 +90,11 @@ const api = {
     return () => ipcRenderer.removeListener('presentation-mode:force-expanded', handler)
   },
 
-  beginTitlebarWindowDrag: (point) => ipcRenderer.invoke('titlebar-window:begin-drag', point),
+  beginTitlebarWindowDrag: (point, diagnostics) =>
+    ipcRenderer.invoke('titlebar-window:begin-drag', { point, diagnostics }),
   updateTitlebarWindowDrag: (point) => ipcRenderer.send('titlebar-window:update-drag', point),
-  endTitlebarWindowDrag: () => ipcRenderer.invoke('titlebar-window:end-drag'),
+  endTitlebarWindowDrag: (diagnostics) =>
+    ipcRenderer.invoke('titlebar-window:end-drag', diagnostics),
   // ---- 设置桥接（双向通信，均返回 Promise） ----
   /** 按共享 schema ID 写入设置；数据库键名和校验不暴露给 renderer */
   setSettingValue: (id, value) => ipcRenderer.invoke('set-setting-value', id, value),

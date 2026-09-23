@@ -31,7 +31,7 @@ import MockTemplateCard from './MockTemplateCard.vue'
           />
         </svg>
       </span>
-      <span class="mtp-create-hint">展开以新建循环模板…</span>
+      <span class="mtp-create-hint">请新建循环模板内容…</span>
     </div>
 
     <!-- 工具栏 -->

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { EventEmitter } from 'node:events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const electronMocks = vi.hoisted(() => ({
@@ -124,5 +125,69 @@ describe('ScreenshotService dock suspension', () => {
     expect(source).toContain('resolvedSettings.interaction.hideMainViewDuringScreenshot')
     expect(source).toContain('hideMainWindowForViewNavigation(mainWindow)')
     expect(source).toContain("reassertBottomWindowZOrder('screenshot-finished')")
+  })
+})
+
+describe('ScreenshotService overlay recovery', () => {
+  it('settles once on renderer crash, ignores late load, and allows another capture', async () => {
+    let finishLoad
+    const overlays = []
+    electronMocks.screen.getCursorScreenPoint.mockReturnValue({ x: 0, y: 0 })
+    electronMocks.screen.getDisplayNearestPoint.mockReturnValue({
+      id: 1,
+      scaleFactor: 1,
+      size: { width: 800, height: 600 },
+      bounds: { x: 0, y: 0, width: 800, height: 600 }
+    })
+    electronMocks.BrowserWindow.mockImplementation(function () {
+      const overlay = new EventEmitter()
+      overlay.webContents = new EventEmitter()
+      let destroyed = false
+      overlay.isDestroyed = () => destroyed
+      overlay.destroy = vi.fn(() => {
+        destroyed = true
+        overlay.emit('closed')
+      })
+      overlay.show = vi.fn()
+      overlay.focus = vi.fn()
+      overlay.loadURL = () =>
+        new Promise((resolve) => {
+          finishLoad = resolve
+        })
+      overlays.push(overlay)
+      return overlay
+    })
+    const ipcMain = new EventEmitter()
+    let handler
+    ipcMain.handle = (_channel, callback) => {
+      handler = callback
+    }
+    ipcMain.removeHandler = vi.fn()
+    const sender = { isDestroyed: () => false, send: vi.fn() }
+    const onCaptureEnd = vi.fn()
+    const service = new ScreenshotService({
+      ipcMain,
+      getMainWindow: () => ({ webContents: sender }),
+      onCaptureEnd
+    })
+    service.initialize()
+    const pending = handler({ sender })
+    const first = overlays[0]
+    first.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 })
+    await expect(pending).resolves.toBeNull()
+    finishLoad()
+    await Promise.resolve()
+    expect(first.isDestroyed()).toBe(true)
+    expect(first.show).not.toHaveBeenCalled()
+    expect(sender.send).not.toHaveBeenCalled()
+    expect(onCaptureEnd).toHaveBeenCalledTimes(1)
+    expect(ipcMain.listenerCount('screenshot:confirm')).toBe(0)
+    expect(ipcMain.listenerCount('screenshot:cancel')).toBe(0)
+    const next = handler({ sender })
+    ipcMain.emit('screenshot:cancel', { sender: overlays[1].webContents })
+    await expect(next).resolves.toBeNull()
+    expect(onCaptureEnd).toHaveBeenCalledTimes(2)
+    expect(service.window).toBeNull()
+    service.dispose()
   })
 })

@@ -1,5 +1,5 @@
 /** 数据库结构版本。公开版本只能通过显式迁移递增。 */
-export const DATABASE_SCHEMA_VERSION = 14
+export const DATABASE_SCHEMA_VERSION = 15
 
 function hasTable(db, tableName) {
   return Boolean(
@@ -255,6 +255,21 @@ function migrateToVersion14(db) {
   }
 }
 
+/** V15 为循环模板增加可选结束时间，并持久化明确的开始时间。 */
+function migrateToVersion15(db) {
+  if (!hasColumn(db, 'note_templates', 'start_at')) {
+    db.exec('ALTER TABLE note_templates ADD COLUMN start_at INTEGER;')
+  }
+  if (!hasColumn(db, 'note_templates', 'end_at')) {
+    db.exec('ALTER TABLE note_templates ADD COLUMN end_at INTEGER;')
+  }
+  db.exec(`
+    UPDATE note_templates
+    SET start_at = CAST(schedule_anchor_at / 1000 AS INTEGER) * 1000
+    WHERE start_at IS NULL;
+  `)
+}
+
 function ensureTagRelationIndexes(db) {
   if (hasColumn(db, 'note_tags', 'tag_id')) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id ON note_tags(tag_id);')
@@ -286,6 +301,8 @@ function migrateDatabaseSchema(db, existingVersion) {
   const missingNoteRemark = !hasColumn(db, 'notes', 'remark')
   const missingDurationKind = !hasColumn(db, 'notes', 'duration_kind')
   const missingContentColorRanges = !hasColumn(db, 'notes', 'content_color_ranges')
+  const missingTemplateTimeRange =
+    !hasColumn(db, 'note_templates', 'start_at') || !hasColumn(db, 'note_templates', 'end_at')
   const hasObsoleteTagPinning =
     hasColumn(db, 'tags', 'is_pinned') || hasColumn(db, 'tags', 'pinned_at')
   const hasObsoleteSnoozeColumn = hasColumn(db, 'notes', 'remind_again_at')
@@ -319,6 +336,7 @@ function migrateDatabaseSchema(db, existingVersion) {
     !missingNoteRemark &&
     !missingDurationKind &&
     !missingContentColorRanges &&
+    !missingTemplateTimeRange &&
     !hasRemovedWindowModeSettings &&
     !hasRemovedHistoricalMoveSettings
   )
@@ -343,6 +361,7 @@ function migrateDatabaseSchema(db, existingVersion) {
       migrateToVersion13(db)
     }
     if (existingVersion < 14 || missingContentColorRanges) migrateToVersion14(db)
+    if (existingVersion < 15 || missingTemplateTimeRange) migrateToVersion15(db)
     if (existingVersion < DATABASE_SCHEMA_VERSION) {
       db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
     }
@@ -478,6 +497,8 @@ export function createNotesSchema(db) {
       is_deleted              INTEGER NOT NULL DEFAULT 0 CHECK(is_deleted IN (0, 1)),
       deleted_at              INTEGER,
       schedule_anchor_at      INTEGER NOT NULL,
+      start_at                INTEGER,
+      end_at                  INTEGER,
       next_run_at             INTEGER,
       last_generated_at       INTEGER,
       last_generated_note_id  INTEGER REFERENCES notes(id) ON DELETE SET NULL,

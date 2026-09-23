@@ -355,6 +355,24 @@ async function run() {
           'hidden'
         )
       }
+      const quickLinkTitles = await evaluate(
+        window,
+        `[...document.querySelectorAll('.help-quick-links button')].map(button => button.textContent.replace('↗', '').trim())`
+      )
+      assert.equal(quickLinkTitles.length, 4, `${mode}: 帮助首页快捷入口缺失`)
+      assert.ok(quickLinkTitles.includes('便签持续方式'), `${mode}: 持续方式快捷入口缺失`)
+      await evaluate(
+        window,
+        `[...document.querySelectorAll('.help-quick-links button')].find(button => button.textContent.includes('便签持续方式')).click()`
+      )
+      await until(
+        () =>
+          evaluate(
+            window,
+            `document.activeElement === document.querySelector('[data-anchor-id="note-duration"] h2')`
+          ),
+        `${mode}: 持续方式快捷入口没有定位到对应文章`
+      )
       await search(window, '持续到完成')
       writeFileSync(join(qaDir, `${mode}-search.png`), (await window.capturePage()).toPNG())
       await closeHelp(window)

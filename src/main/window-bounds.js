@@ -41,38 +41,6 @@ export function constrainMainWindowBounds(
 }
 
 /**
- * 以屏幕坐标中的一个点作为主视图导航栏中心来放置窗口。
- * 空间足够时保持精确对齐；靠近屏幕边缘时由工作区约束整体平移回可视范围。
- */
-export function mainWindowBoundsFromTitlebarAnchor(
-  bounds,
-  anchor,
-  titlebarCenterOffsetY,
-  workArea,
-  options
-) {
-  const width = Math.round(finiteNumber(bounds?.width, 0))
-  const height = Math.round(finiteNumber(bounds?.height, 0))
-  const centerX = finiteNumber(anchor?.x, finiteNumber(bounds?.x, 0) + width / 2)
-  const centerY = finiteNumber(
-    anchor?.y,
-    finiteNumber(bounds?.y, 0) + finiteNumber(titlebarCenterOffsetY, 0)
-  )
-  const titlebarOffset = clamp(finiteNumber(titlebarCenterOffsetY, 0), 0, Math.max(0, height))
-
-  return constrainMainWindowBounds(
-    {
-      x: Math.round(centerX - width / 2),
-      y: Math.round(centerY - titlebarOffset),
-      width,
-      height
-    },
-    workArea,
-    options
-  )
-}
-
-/**
  * 比较当前边界与约束后的目标边界，避免显示器指标事件无条件重提交窗口尺寸。
  * 只有工作区确实容不下当前窗口时，才允许调用 setBounds 改变宽高。
  */

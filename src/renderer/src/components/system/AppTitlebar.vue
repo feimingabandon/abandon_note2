@@ -78,6 +78,8 @@ let titlebarDragStartPromise = null
 let titlebarDragging = false
 let titlebarDragGeneration = 0
 let titlebarDragCaptureTarget = null
+let titlebarDragDiagnostic = null
+let titlebarDragSequence = 0
 let lastTitlebarPress = null
 let suppressTitlebarDomDoubleClickUntil = 0
 const TITLEBAR_DOUBLE_CLICK_MS = 420
@@ -213,13 +215,9 @@ function requestTitlebarDragUpdate() {
 }
 
 function compactAnchor(event) {
-  const titlebarRect = event.currentTarget?.getBoundingClientRect?.()
   return {
     x: Math.round(event.screenX),
-    y: Math.round(event.screenY),
-    titlebarCenterOffsetY: titlebarRect
-      ? Math.round(titlebarRect.top + titlebarRect.height / 2)
-      : null
+    y: Math.round(event.screenY)
   }
 }
 
@@ -244,6 +242,60 @@ function releaseTitlebarPointerCapture(target, pointerId) {
   } catch {
     // lostpointercapture 与 pointerup 可能竞争，释放操作保持幂等。
   }
+}
+
+function hasTitlebarPointerCapture(target, pointerId) {
+  try {
+    return Boolean(target?.hasPointerCapture?.(pointerId))
+  } catch {
+    return false
+  }
+}
+
+function titlebarPointerSnapshot(event = null, extra = {}) {
+  const diagnostic = titlebarDragDiagnostic
+  const pointerId = event?.pointerId ?? titlebarDragPointerId
+  return {
+    eventType: event?.type || null,
+    dragId: diagnostic?.dragId || null,
+    pointerId,
+    pointerType: event?.pointerType || diagnostic?.pointerType || null,
+    isPrimary: event?.isPrimary ?? diagnostic?.isPrimary ?? null,
+    button: event?.button ?? null,
+    buttons: event?.buttons ?? null,
+    screenPoint:
+      Number.isFinite(event?.screenX) && Number.isFinite(event?.screenY)
+        ? { x: Math.round(event.screenX), y: Math.round(event.screenY) }
+        : titlebarDragLatestPoint
+          ? {
+              x: Math.round(titlebarDragLatestPoint.x),
+              y: Math.round(titlebarDragLatestPoint.y)
+            }
+          : null,
+    hasPointerCapture:
+      pointerId === null ? false : hasTitlebarPointerCapture(titlebarDragCaptureTarget, pointerId),
+    dragging: titlebarDragging,
+    moved: titlebarPointerMoved,
+    moveCount: diagnostic?.moveCount || 0,
+    elapsedMs: diagnostic ? Math.max(0, Math.round(performance.now() - diagnostic.startedAt)) : 0,
+    locked: props.locked,
+    zOrderMode: props.zOrderMode,
+    documentHasFocus: document.hasFocus(),
+    visibilityState: document.visibilityState,
+    ...extra
+  }
+}
+
+function reportTitlebarDrag(level, message, event = null, extra = {}) {
+  window.api.reportLog?.({
+    level,
+    scope: 'titlebar.drag.renderer',
+    message,
+    metadata: titlebarPointerSnapshot(event, extra),
+    dedupeKey: titlebarDragDiagnostic?.dragId
+      ? `${titlebarDragDiagnostic.dragId}:${event?.type || message}`
+      : undefined
+  })
 }
 
 function addTitlebarPointerListeners() {
@@ -281,7 +333,7 @@ function onTitlebarPointerDown(event) {
     titlebarDragGeneration += 1
     titlebarDragging = false
     void window.api
-      .endTitlebarWindowDrag()
+      .endTitlebarWindowDrag({ reason: 'titlebar-double-click' })
       .catch(() => false)
       .finally(() => emit('request:compact', anchor))
     return
@@ -292,18 +344,36 @@ function onTitlebarPointerDown(event) {
   titlebarDragLatestPoint = { x: event.screenX, y: event.screenY }
   titlebarPointerMoved = false
   titlebarDragCaptureTarget = event.currentTarget
+  titlebarDragDiagnostic = {
+    dragId: `titlebar-${Date.now().toString(36)}-${++titlebarDragSequence}`,
+    startedAt: performance.now(),
+    pointerType: event.pointerType,
+    isPrimary: event.isPrimary,
+    moveCount: 0
+  }
   setTitlebarPointerCapture(titlebarDragCaptureTarget, event.pointerId)
   addTitlebarPointerListeners()
-  const task = window.api.beginTitlebarWindowDrag(titlebarDragLatestPoint).catch(() => false)
+  reportTitlebarDrag('info', '标题栏拖动指针已按下', event)
+  const task = window.api
+    .beginTitlebarWindowDrag(titlebarDragLatestPoint, {
+      dragId: titlebarDragDiagnostic.dragId
+    })
+    .catch(() => false)
   titlebarDragStartPromise = task
   void task.then(async (started) => {
     if (titlebarDragStartPromise === task) titlebarDragStartPromise = null
+    reportTitlebarDrag('info', '标题栏拖动主进程响应', null, { started: Boolean(started) })
     if (generation !== titlebarDragGeneration || titlebarDragPointerId === null) {
       if (started) {
         if (titlebarPointerMoved && titlebarDragLatestPoint) {
           window.api.updateTitlebarWindowDrag(titlebarDragLatestPoint)
         }
-        await window.api.endTitlebarWindowDrag().catch(() => false)
+        await window.api
+          .endTitlebarWindowDrag({
+            dragId: titlebarDragDiagnostic?.dragId || null,
+            reason: 'renderer-finished-before-main-begin'
+          })
+          .catch(() => false)
       }
       return
     }
@@ -316,6 +386,7 @@ function onTitlebarPointerMove(event) {
   if (titlebarDragPointerId === null || titlebarDragPointerId !== event.pointerId) return
   titlebarDragLatestPoint = { x: event.screenX, y: event.screenY }
   titlebarPointerMoved = true
+  if (titlebarDragDiagnostic) titlebarDragDiagnostic.moveCount += 1
   if (titlebarDragging) requestTitlebarDragUpdate()
 }
 
@@ -324,37 +395,31 @@ function onTitlebarLostPointerCapture(event) {
   // Windows 置底层级和毛玻璃 Overlay 可能在移动 HWND 时短暂重排 Z 序。
   // Chromium 偶发因此释放 DOM pointer capture；实际左键尚未松开时必须继续
   // 使用 window 级监听，否则一次长拖只会留下捕获丢失前的很短位移。
-  console.warn('[AppTitlebar] 标题栏拖动期间指针捕获丢失，继续使用窗口级监听', {
-    pointerId: event.pointerId,
-    buttons: event.buttons,
-    dragging: titlebarDragging,
-    moved: titlebarPointerMoved
-  })
+  reportTitlebarDrag('warn', '标题栏拖动期间指针捕获丢失，继续使用窗口级监听', event)
 }
 
 function onTitlebarPointerUp(event) {
-  void finishTitlebarPointer(event)
+  reportTitlebarDrag('info', '标题栏拖动收到 pointerup', event)
+  void finishTitlebarPointer(event, 'pointerup')
 }
 
 function onTitlebarPointerCancel(event) {
   if (titlebarDragPointerId === null || titlebarDragPointerId !== event.pointerId) return
-  console.warn('[AppTitlebar] 标题栏拖动收到 pointercancel，正在安全结束事务', {
-    pointerId: event.pointerId,
-    buttons: event.buttons,
-    dragging: titlebarDragging,
-    moved: titlebarPointerMoved
-  })
-  void finishTitlebarPointer(event)
+  reportTitlebarDrag('warn', '标题栏拖动收到 pointercancel，正在安全结束事务', event)
+  void finishTitlebarPointer(event, 'pointercancel')
 }
 
 function onTitlebarWindowBlur() {
-  void finishTitlebarPointer()
+  reportTitlebarDrag('warn', '标题栏拖动期间窗口失焦，正在安全结束事务')
+  void finishTitlebarPointer(null, 'window-blur')
 }
 
-async function finishTitlebarPointer(event = null) {
+async function finishTitlebarPointer(event = null, reason = 'unknown') {
   const pointerId = titlebarDragPointerId
   if (pointerId === null) return
   if (event?.pointerId !== undefined && event.pointerId !== pointerId) return
+  const diagnostic = titlebarDragDiagnostic
+  const rendererSummary = titlebarPointerSnapshot(event, { reason })
   titlebarDragPointerId = null
   titlebarDragGeneration += 1
   removeTitlebarPointerListeners()
@@ -370,10 +435,17 @@ async function finishTitlebarPointer(event = null) {
       window.api.updateTitlebarWindowDrag(titlebarDragLatestPoint)
     }
     titlebarDragging = false
-    await window.api.endTitlebarWindowDrag().catch(() => false)
+    await window.api
+      .endTitlebarWindowDrag({
+        dragId: diagnostic?.dragId || null,
+        reason,
+        renderer: rendererSummary
+      })
+      .catch(() => false)
   }
   titlebarDragLatestPoint = null
   titlebarPointerMoved = false
+  if (titlebarDragDiagnostic === diagnostic) titlebarDragDiagnostic = null
 }
 
 watch(
@@ -391,7 +463,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
   window.removeEventListener('resize', updateZOrderMenuPosition)
-  if (titlebarDragPointerId !== null) void finishTitlebarPointer()
+  if (titlebarDragPointerId !== null) void finishTitlebarPointer(null, 'component-unmount')
   else removeTitlebarPointerListeners()
   if (zOrderGuardTimer) clearTimeout(zOrderGuardTimer)
   if (lockGuardTimer) clearTimeout(lockGuardTimer)
@@ -411,7 +483,12 @@ onBeforeUnmount(() => {
     <!-- 红绿灯按钮组：设置 no-drag 使按钮可点击 -->
     <div class="traffic-lights">
       <!-- 关闭按钮(红色) -->
-      <button class="light light-close" title="关闭" @click="close">
+      <button
+        class="light light-close"
+        data-diagnostic-action="window.close"
+        title="关闭"
+        @click="close"
+      >
         <AppIcon class="light-icon" name="close" alt="关闭" />
       </button>
       <!-- 全视图共享的三态窗口层级入口 -->
@@ -428,6 +505,7 @@ onBeforeUnmount(() => {
         aria-haspopup="menu"
         :aria-expanded="zOrderMenuOpen"
         :aria-disabled="zOrderChanging"
+        data-diagnostic-action="window.z-order.menu"
         @click="toggleZOrderMenu"
       >
         <AppIcon
@@ -442,6 +520,7 @@ onBeforeUnmount(() => {
         :class="{ locked: locked, 'is-changing': lockChanging }"
         :title="lockChanging ? '正在切换锁定状态' : locked ? '解锁主窗口' : '锁定主窗口'"
         :disabled="lockChanging"
+        data-diagnostic-action="window.lock.toggle"
         @click="toggleLock"
       >
         <AppIcon class="light-icon" name="lock" alt="锁定" />

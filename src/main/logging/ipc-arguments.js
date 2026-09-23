@@ -4,6 +4,8 @@ const MAX_ARRAY_ITEMS = 24
 const MAX_OBJECT_KEYS = 48
 const MAX_DEPTH = 6
 const BINARY_FIELD_PATTERN = /(?:base64|data[-_]?url|binary|byte(?:s|array)?|buffer)/i
+const PRIVATE_FIELD_PATTERN =
+  /(?:password|passwd|secret|token|cookie|authorization|credential|content|remark|body|text|html|markdown)/i
 
 function summarizeBinary(value, type) {
   return {
@@ -26,6 +28,13 @@ function consumeString(value, state) {
 }
 
 function compactArgument(value, state, depth, key = '') {
+  if (PRIVATE_FIELD_PATTERN.test(key)) {
+    return {
+      omitted: true,
+      reason: 'private-field',
+      length: typeof value === 'string' ? value.length : undefined
+    }
+  }
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value
   if (typeof value === 'bigint') return `${value}n`
   if (typeof value === 'string') {

@@ -1,3 +1,4 @@
+import { ref } from 'vue'
 import { describe, expect, it } from 'vitest'
 import {
   applyNoteTextColorRange,
@@ -7,6 +8,20 @@ import {
 } from '../src/shared/note-text-color-rules.js'
 
 describe('note text color ranges', () => {
+  it('converts Vue reactive arrays into structured-cloneable IPC values', () => {
+    const content = '颜色正文'
+    const emptyRanges = ref([])
+    const coloredRanges = ref([{ start: 0, end: 2, text: '颜色', color: '#AF52DE' }])
+
+    expect(() => structuredClone(emptyRanges.value)).toThrow()
+    expect(() => structuredClone(coloredRanges.value)).toThrow()
+
+    expect(structuredClone(normalizeNoteTextColorRanges(emptyRanges.value, content))).toEqual([])
+    expect(structuredClone(normalizeNoteTextColorRanges(coloredRanges.value, content))).toEqual([
+      { start: 0, end: 2, text: '颜色', color: '#af52de' }
+    ])
+  })
+
   it('supports multiple ranges and lets a new color split an existing range', () => {
     const content = '今天完成报告'
     const red = applyNoteTextColorRange([], { content, start: 0, end: 6, color: '#FF3B30' })

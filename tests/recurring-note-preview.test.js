@@ -73,6 +73,30 @@ describe('future recurring note previews', () => {
     ])
   })
 
+  it('does not preview occurrences after the template end time', () => {
+    const source = template(
+      12,
+      { frequency: 'daily', interval: 1, time_of_day: '09:00' },
+      localTs(2026, 9, 15),
+      {
+        start_at: localTs(2026, 9, 15, 8),
+        end_at: localTs(2026, 9, 16)
+      }
+    )
+
+    const result = buildRecurringNotePreviews({
+      rangeStart: '2026-09-14',
+      rangeEnd: '2026-09-18',
+      now: localTs(2026, 9, 14, 10),
+      templates: [source]
+    })
+
+    expect(result.items.map((item) => item.effective_at)).toEqual([
+      localTs(2026, 9, 15),
+      localTs(2026, 9, 16)
+    ])
+  })
+
   it('skips paused and malformed templates without failing the complete calendar preview', () => {
     const valid = template(
       9,

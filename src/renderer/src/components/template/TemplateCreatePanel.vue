@@ -217,13 +217,17 @@ onBeforeUnmount(() => {
   top: 0;
   left: 36rem;
   right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
   height: 36rem;
   padding: 0 12rem;
   border: 0;
   background: transparent;
-  color: var(--text-color-secondary);
+  color: color-mix(in srgb, var(--text-color) 68%, transparent);
   font: inherit;
   font-size: var(--fs-secondary);
+  text-align: left;
   white-space: nowrap;
   overflow: hidden;
   cursor: pointer;
@@ -233,7 +237,7 @@ onBeforeUnmount(() => {
     opacity 180ms ease,
     transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-.is-expanded .tcp-hint {
+.tcp-root.is-expanded .tcp-hint {
   opacity: 0;
   transform: translateY(-9rem);
   pointer-events: none;

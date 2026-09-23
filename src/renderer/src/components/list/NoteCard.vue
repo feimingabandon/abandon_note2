@@ -609,6 +609,7 @@ async function toggleTags() {
     </span>
 
     <StatusRing
+      data-diagnostic-action="note.status.change"
       :status="note.status"
       :transition-state="statusTransition"
       @activate="handleStatusAction"
@@ -858,7 +859,13 @@ async function toggleTags() {
             <button role="menuitem" :disabled="togglingPinned" @click="onContextMenuAction('pin')">
               {{ note.is_pinned ? '取消置顶' : '置顶' }}
             </button>
-            <button role="menuitem" @click="onContextMenuAction('edit')">修改</button>
+            <button
+              role="menuitem"
+              data-diagnostic-action="note.edit.open"
+              @click="onContextMenuAction('edit')"
+            >
+              修改
+            </button>
             <button
               role="menuitem"
               :disabled="creatingSticky"
@@ -877,6 +884,7 @@ async function toggleTags() {
               class="nl-context-menu__delete"
               role="menuitem"
               :disabled="deleting"
+              data-diagnostic-action="note.delete"
               @click="onContextMenuAction('delete')"
             >
               删除

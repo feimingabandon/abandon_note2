@@ -6,14 +6,17 @@ import TagSelector from '../ui/TagSelector.vue'
 import AppToggle from '../ui/AppToggle.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import TimePicker from '../ui/TimePicker.vue'
+import DateTimePicker from '../ui/DateTimePicker.vue'
 import TemplateFrequencySelector from './TemplateFrequencySelector.vue'
 import {
   createTemplateFormSnapshot,
   createTemplateRuleSnapshot,
+  formatTemplateDateTime,
   formatTemplateTime,
   MAX_DAILY_INTERVAL,
   normalizeYearDates,
   parseTemplateRule,
+  parseTemplateDateTime,
   resolveStoredTemplatePreviewAt
 } from '../../utils/templateRules.js'
 import { useMessage } from '../../composables/useMessage.js'
@@ -50,6 +53,8 @@ const quarterMonth = ref(3)
 const quarterDays = ref([31])
 const yearDates = ref([{ month: 1, day: 1 }])
 const timeOfDay = ref(currentTimeOfDay())
+const startAt = ref('')
+const endAt = ref('')
 const notifyEnabled = ref(systemNotificationsSupported)
 const isPinned = ref(false)
 const tagIds = ref([])
@@ -152,6 +157,10 @@ function loadInitial(template) {
   const normalizedYearDates = normalizeYearDates(rule?.dates_of_year)
   yearDates.value = normalizedYearDates.length ? normalizedYearDates : [{ month: 1, day: 1 }]
   timeOfDay.value = rule?.time_of_day || currentTimeOfDay()
+  startAt.value = template
+    ? formatTemplateDateTime(template.start_at ?? template.schedule_anchor_at)
+    : ''
+  endAt.value = template ? formatTemplateDateTime(template.end_at) : ''
   notifyEnabled.value =
     systemNotificationsSupported && (template ? Number(template.notify_enabled) === 1 : true)
   isPinned.value = template ? Number(template.is_pinned) === 1 : false
@@ -175,18 +184,40 @@ const recurrenceRule = computed(() => ({
   dates_of_year: frequency.value === 'yearly' ? normalizeYearDates(yearDates.value) : [],
   time_of_day: timeOfDay.value
 }))
+const parsedStartAt = computed(() => parseTemplateDateTime(startAt.value))
+const parsedEndAt = computed(() => parseTemplateDateTime(endAt.value))
+const timeRangeError = computed(() => {
+  if (startAt.value && !Number.isFinite(parsedStartAt.value)) return '开始时间无效'
+  if (endAt.value && !Number.isFinite(parsedEndAt.value)) return '结束时间无效'
+  const effectiveStartAt = Number.isFinite(parsedStartAt.value) ? parsedStartAt.value : Date.now()
+  if (Number.isFinite(parsedEndAt.value) && parsedEndAt.value <= effectiveStartAt) {
+    return '结束时间必须晚于开始时间'
+  }
+  return ''
+})
 const currentSnapshot = computed(() =>
   createTemplateFormSnapshot({
     content: content.value,
     recurrenceRule: recurrenceRule.value,
+    startAt: parsedStartAt.value,
+    endAt: parsedEndAt.value,
     notifyEnabled: systemNotificationsSupported && notifyEnabled.value,
     isPinned: isPinned.value,
     tagIds: tagIds.value
   })
 )
-const currentRuleSnapshot = computed(() => createTemplateRuleSnapshot(recurrenceRule.value))
+const currentRuleSnapshot = computed(() =>
+  createTemplateRuleSnapshot({
+    recurrenceRule: recurrenceRule.value,
+    startAt: parsedStartAt.value,
+    endAt: parsedEndAt.value
+  })
+)
 const hasChanges = computed(
   () => initialSnapshot.value !== '' && currentSnapshot.value !== initialSnapshot.value
+)
+const requiresSchedulePreview = computed(
+  () => !props.initial || initialRuleSnapshot.value !== currentRuleSnapshot.value
 )
 
 watch(
@@ -221,6 +252,8 @@ const canSubmit = computed(
   () =>
     !!content.value.trim() &&
     ruleComplete.value &&
+    !timeRangeError.value &&
+    (!requiresSchedulePreview.value || (!!previewAt.value && !previewError.value)) &&
     !props.submitting &&
     (!props.editorMode || hasChanges.value)
 )
@@ -231,6 +264,8 @@ const previewText = computed(
 watch(
   [
     recurrenceRule,
+    startAt,
+    endAt,
     () => props.initial?.id,
     () => props.initial?.next_run_at,
     () => props.initial?.nextRunAt,
@@ -240,8 +275,9 @@ watch(
     const sequence = ++previewSequence
     clearTimeout(previewTimer)
     previewError.value = ''
-    if (!ruleComplete.value) {
+    if (!ruleComplete.value || timeRangeError.value) {
       previewAt.value = null
+      previewError.value = timeRangeError.value
       return
     }
     const storedPreviewAt = resolveStoredTemplatePreviewAt({
@@ -253,10 +289,23 @@ watch(
       previewAt.value = storedPreviewAt
       return
     }
+    previewAt.value = null
     previewTimer = setTimeout(async () => {
       try {
-        const nextRunAt = await window.api.previewTemplateNextRun(recurrenceRule.value, Date.now())
+        const now = Date.now()
+        const previewAfter = Number.isFinite(parsedStartAt.value)
+          ? Math.max(now, parsedStartAt.value - 1)
+          : now
+        const nextRunAt = await window.api.previewTemplateNextRun(
+          recurrenceRule.value,
+          previewAfter
+        )
         if (sequence !== previewSequence) return
+        if (Number.isFinite(parsedEndAt.value) && nextRunAt > parsedEndAt.value) {
+          previewAt.value = null
+          previewError.value = '有效期内没有生成节点'
+          return
+        }
         previewAt.value = nextRunAt
       } catch (error) {
         if (sequence !== previewSequence) return
@@ -277,6 +326,8 @@ function submit() {
   emit('submit', {
     content: content.value,
     recurrenceRule: recurrenceRule.value,
+    startAt: Number.isFinite(parsedStartAt.value) ? parsedStartAt.value : null,
+    endAt: Number.isFinite(parsedEndAt.value) ? parsedEndAt.value : null,
     notifyEnabled: systemNotificationsSupported && notifyEnabled.value,
     isPinned: isPinned.value,
     tagIds: [...tagIds.value]
@@ -312,6 +363,8 @@ const protectedDraft = useDraftProtection({
     quarterDays,
     yearDates,
     timeOfDay,
+    startAt,
+    endAt,
     notifyEnabled,
     isPinned,
     tagIds
@@ -352,6 +405,33 @@ const protectedDraft = useDraftProtection({
 
       <div class="tf-row">
         <label>生成时间</label><TimePicker v-model="timeOfDay" aria-label="选择模板生成时间" />
+      </div>
+      <div class="tf-time-range">
+        <div class="tf-row">
+          <label
+            >开始时间<HelpButton text="未设置时从保存模板的时间开始；设置后不会提前生成。"
+          /></label>
+          <DateTimePicker
+            v-model="startAt"
+            class="tf-date-picker"
+            placeholder="保存后开始"
+            :default-time="`${timeOfDay}:00`"
+            aria-label="选择模板开始时间"
+          />
+        </div>
+        <div class="tf-row">
+          <label
+            >结束时间<HelpButton text="可留空，表示模板持续循环；到达结束时间后不再生成。"
+          /></label>
+          <DateTimePicker
+            v-model="endAt"
+            class="tf-date-picker"
+            placeholder="永不结束"
+            :default-time="`${timeOfDay}:00`"
+            aria-label="选择模板结束时间"
+          />
+        </div>
+        <p v-if="timeRangeError" class="tf-range-error">{{ timeRangeError }}</p>
       </div>
       <div class="tf-preview">
         <span>下一次生成</span>
@@ -478,6 +558,26 @@ label,
   display: flex;
   flex-direction: column;
   gap: 5rem;
+}
+.tf-time-range {
+  display: flex;
+  flex-direction: column;
+  gap: 9rem;
+}
+.tf-time-range .tf-row {
+  display: grid;
+  grid-template-columns: max-content minmax(220rem, 320rem);
+  gap: 5rem;
+}
+.tf-date-picker {
+  width: 100%;
+  min-width: 0;
+}
+.tf-range-error {
+  margin: 0;
+  color: var(--ui-danger);
+  font-size: var(--fs-secondary);
+  text-align: right;
 }
 .tf-platform-note {
   margin: 0;

@@ -21,6 +21,7 @@ import ColoredTextEditor from '../note/ColoredTextEditor.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 import { NOTE_DURATION_KINDS } from '../../../../shared/calendar/calendar-date-rules.js'
+import { normalizeNoteTextColorRanges } from '../../../../shared/note-text-color-rules.js'
 import {
   assertCreatableNoteEffectiveTime,
   canScheduleNoteNotification,
@@ -266,7 +267,7 @@ async function handleCreate() {
   try {
     const options = {
       content: text,
-      contentColorRanges: contentColorRanges.value,
+      contentColorRanges: normalizeNoteTextColorRanges(contentColorRanges.value, text),
       durationKind: durationKind.value,
       durationDays: durationDays.value,
       notifyEnabled: canEnableNotify.value && notifyEnabled.value ? 1 : 0,
@@ -429,6 +430,7 @@ const protectedDraft = useDraftProtection({
         'is-success': submitState === 'success'
       }"
       :disabled="submitState !== 'idle' || !canCreate"
+      data-diagnostic-action="note.create"
       @click="handleCreate"
     >
       <Transition name="nnp-submit-label">

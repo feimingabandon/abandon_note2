@@ -163,6 +163,9 @@ onBeforeUnmount(() => {
         <span v-else-if="state.key === 'deleted'"
           >删除于 {{ formatTemplateTime(template.deleted_at) }}</span
         >
+        <span v-else-if="state.key === 'ended'"
+          >结束于 {{ formatTemplateTime(template.end_at) }}</span
+        >
         <span v-else>已暂停</span>
       </div>
       <div
@@ -242,7 +245,10 @@ onBeforeUnmount(() => {
       <div v-if="menuOpen" class="tc-menu" :style="menuStyle" @pointerdown.stop>
         <template v-if="state.key !== 'deleted'">
           <button @click="action('edit')">修改</button>
-          <button @click="action(state.key === 'running' ? 'pause' : 'resume')">
+          <button
+            v-if="state.key !== 'ended'"
+            @click="action(state.key === 'running' ? 'pause' : 'resume')"
+          >
             {{ state.key === 'running' ? '暂停' : '恢复' }}
           </button>
           <hr />
@@ -300,6 +306,9 @@ onBeforeUnmount(() => {
 }
 .is-paused .tc-state i {
   background: #ff9f0a;
+}
+.is-ended .tc-state i {
+  background: var(--text-color-secondary);
 }
 .is-error .tc-state i {
   background: #ff453a;

@@ -226,9 +226,7 @@ async function runQuickNoteEditTest() {
     )
     await waitUntil(
       () =>
-        listWindow.webContents.executeJavaScript(
-          `!document.querySelector('.quick-note-editor')`
-        ),
+        listWindow.webContents.executeJavaScript(`!document.querySelector('.quick-note-editor')`),
       '空正文校验后无法使用 Escape 取消编辑'
     )
 
@@ -264,7 +262,7 @@ async function runQuickNoteEditTest() {
       () =>
         monthWindow.webContents.executeJavaScript(
           `Boolean(document.querySelector(${JSON.stringify(eventSelector)}))`
-      ),
+        ),
       '便签没有出现在月视图'
     )
     await monthWindow.webContents.executeJavaScript(`(() => {

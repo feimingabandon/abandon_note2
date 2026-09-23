@@ -39,6 +39,7 @@ import {
   reSyncZOrder as blurReSyncZOrder,
   getRuntimeHealth as getBlurRuntimeHealth,
   getNativeRuntimeCompatibility,
+  getWindowZOrderStatus,
   reassertWindowZOrder,
   setWindowAlwaysOnBottom
 } from './bridge/blur_bridge.js'
@@ -111,10 +112,11 @@ import { buildStickyTrayTemplate } from './sticky/StickyTrayMenu.js'
 import {
   constrainMainWindowBounds,
   getPersistableWindowBounds,
-  getWindowBoundsUpdate,
-  mainWindowBoundsFromTitlebarAnchor
+  getWindowBoundsUpdate
 } from './window-bounds.js'
 import { ipcMain } from './logging/ipc-main.js'
+import { checkpoint, diagnosticBroadcast } from './logging/operation-context.js'
+import { readSettingEvidence, reportSettingEvidence } from './logging/persistence-evidence.js'
 import {
   exportLogs,
   flushLogs,
@@ -129,6 +131,7 @@ import {
   attachWindowLogging,
   getWindowDiagnosticContext,
   getWindowLogContext,
+  noteStructuredRendererConsole,
   setWindowLogContext
 } from './logging/window-capture.js'
 import { getRecentCrashDumps } from './logging/process-capture.js'
@@ -461,7 +464,6 @@ const MAIN_WINDOW_MIN_SIZE = 240
 const MAIN_VIEW_RENDERER_READY_TIMEOUT_MS = 15000
 const PRESENTATION_RENDERER_READY_TIMEOUT_MS = 3000
 let compactExpandedBounds = null
-let compactExpandedTitlebarCenterOffsetY = null
 let stableCompactBounds = null
 let compactDragSession = null
 let compactDockSuspended = false
@@ -555,14 +557,46 @@ function resolvedDragPoint(point) {
     : screen.getCursorScreenPoint()
 }
 
-function beginTitlebarWindowDrag(pointerOrigin) {
-  if (
-    isLocked ||
-    isCompactPresentationActive() ||
-    !mainWindow ||
-    mainWindow.isDestroyed() ||
-    titlebarDragSession
-  ) {
+function captureTitlebarZOrderStatus() {
+  if (!mainWindow || mainWindow.isDestroyed()) return null
+  try {
+    return getWindowZOrderStatus(mainWindow)
+  } catch (error) {
+    return { error: error?.message || String(error) }
+  }
+}
+
+function normalizeTitlebarDragDiagnostics(diagnostics) {
+  if (!diagnostics || typeof diagnostics !== 'object') return {}
+  return {
+    dragId:
+      typeof diagnostics.dragId === 'string' ? diagnostics.dragId.slice(0, 128) || null : null,
+    reason: typeof diagnostics.reason === 'string' ? diagnostics.reason.slice(0, 128) : null,
+    renderer:
+      diagnostics.renderer && typeof diagnostics.renderer === 'object' ? diagnostics.renderer : null
+  }
+}
+
+function beginTitlebarWindowDrag(pointerOrigin, diagnostics = {}) {
+  const dragDiagnostics = normalizeTitlebarDragDiagnostics(diagnostics)
+  const rejectionReason = isLocked
+    ? 'locked'
+    : isCompactPresentationActive()
+      ? 'compact-presentation-active'
+      : !mainWindow || mainWindow.isDestroyed()
+        ? 'main-window-unavailable'
+        : titlebarDragSession
+          ? 'drag-session-already-active'
+          : null
+  if (rejectionReason) {
+    logger.info('titlebar.drag-lifecycle', '标题栏拖动开始请求被拒绝', {
+      dragId: dragDiagnostics.dragId,
+      rejectionReason,
+      isLocked,
+      zOrderMode,
+      presentationMode: presentationModeController.committedMode,
+      nativeZOrder: captureTitlebarZOrderStatus()
+    })
     return false
   }
   let motionBounds
@@ -570,8 +604,12 @@ function beginTitlebarWindowDrag(pointerOrigin) {
     motionBounds = windowMotionBackend?.capture()
   } catch (error) {
     logger.error('titlebar.drag-start', error, {
+      dragId: dragDiagnostics.dragId,
       pointerOrigin,
-      electronBounds: mainWindow.getBounds()
+      electronBounds: mainWindow.getBounds(),
+      isLocked,
+      zOrderMode,
+      nativeZOrder: captureTitlebarZOrderStatus()
     })
     return false
   }
@@ -581,6 +619,8 @@ function beginTitlebarWindowDrag(pointerOrigin) {
   beginDockInteractionSuspension('titlebar-drag')
   titlebarDockSuspended = true
   titlebarDragSession = {
+    dragId: dragDiagnostics.dragId,
+    startedAt: Date.now(),
     cursor: resolvedDragPoint(pointerOrigin),
     bounds: electronBounds,
     lastPosition: { x: electronBounds.x, y: electronBounds.y },
@@ -593,8 +633,18 @@ function beginTitlebarWindowDrag(pointerOrigin) {
       }
     },
     moved: false,
+    updateCount: 0,
     failureLogged: false
   }
+  logger.info('titlebar.drag-lifecycle', '标题栏拖动事务已开始', {
+    dragId: titlebarDragSession.dragId,
+    pointerOrigin: titlebarDragSession.cursor,
+    electronStartBounds: electronBounds,
+    motionStartBounds: motionBounds,
+    isLocked,
+    zOrderMode,
+    nativeZOrder: captureTitlebarZOrderStatus()
+  })
   return true
 }
 
@@ -618,6 +668,7 @@ function updateTitlebarWindowDrag(pointerPosition) {
     setDockPosition(motionPosition, session.motionPlan)
     session.lastPosition = position
     session.moved = true
+    session.updateCount += 1
     return true
   } catch (error) {
     if (!session.failureLogged) {
@@ -629,29 +680,56 @@ function updateTitlebarWindowDrag(pointerPosition) {
         // 原始移动错误优先，诊断快照读取失败不再制造第二条日志。
       }
       logger.error('titlebar.drag-move', error, {
+        dragId: session.dragId,
+        updateCount: session.updateCount,
         pointerOrigin: session.cursor,
         pointerPosition: cursor,
         electronStartBounds: session.bounds,
         electronTargetPosition: position,
         electronActualBounds: mainWindow.getBounds(),
         motionStartBounds: session.motionPlan.initial,
-        motionActualBounds: actualMotionBounds
+        motionActualBounds: actualMotionBounds,
+        isLocked,
+        zOrderMode,
+        nativeZOrder: captureTitlebarZOrderStatus()
       })
     }
     return false
   }
 }
 
-function endTitlebarWindowDrag() {
+function endTitlebarWindowDrag(diagnostics = {}) {
+  const dragDiagnostics = normalizeTitlebarDragDiagnostics(diagnostics)
   const session = titlebarDragSession
   if (!session && !titlebarDockSuspended) return false
+  const nativeZOrderBeforeReassert = captureTitlebarZOrderStatus()
+  const electronEndBounds = mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : null
   titlebarDragSession = null
   if (titlebarDockSuspended) {
     titlebarDockSuspended = false
     endDockInteractionSuspension('titlebar-drag')
   }
   if (session?.moved) debouncedSaveGeometry()
-  if (zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM) reassertBottomWindowZOrder('titlebar-drag-end')
+  const bottomReasserted =
+    zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM
+      ? reassertBottomWindowZOrder('titlebar-drag-end')
+      : null
+  logger.info('titlebar.drag-lifecycle', '标题栏拖动事务已结束', {
+    dragId: session?.dragId || dragDiagnostics.dragId,
+    rendererReason: dragDiagnostics.reason,
+    durationMs: session?.startedAt ? Date.now() - session.startedAt : null,
+    moved: Boolean(session?.moved),
+    updateCount: session?.updateCount || 0,
+    pointerOrigin: session?.cursor || null,
+    electronStartBounds: session?.bounds || null,
+    electronEndBounds,
+    isLocked,
+    zOrderMode,
+    bottomReasserted,
+    nativeZOrderBeforeReassert,
+    nativeZOrderAfterReassert: captureTitlebarZOrderStatus(),
+    renderer: dragDiagnostics.renderer
+  })
   return true
 }
 
@@ -963,13 +1041,26 @@ function initializeBlurRuntime() {
 }
 
 function broadcastSettingsChanged(snapshot = getResolvedSettingsSnapshot()) {
+  const payload = diagnosticBroadcast(snapshot)
   for (const window of getApplicationWindows()) {
     if (
       !window.webContents.isDestroyed() &&
       !window.webContents.isCrashed() &&
       !window.webContents.isLoadingMainFrame()
-    )
-      window.webContents.send('settings:changed', snapshot)
+    ) {
+      window.webContents.send('settings:changed', payload)
+      checkpoint('broadcast.sent', {
+        channel: 'settings:changed',
+        webContentsId: window.webContents.id,
+        revision: snapshot.revision
+      })
+    } else {
+      checkpoint(
+        'broadcast.skipped',
+        { channel: 'settings:changed', webContentsId: window.webContents.id },
+        { outcome: 'not-ready' }
+      )
+    }
   }
 }
 
@@ -1224,23 +1315,6 @@ function persistStableExpandedBounds(bounds) {
   geometryDirty = false
 }
 
-function persistAnchoredExpandedBounds(bounds, source) {
-  try {
-    persistStableExpandedBounds(bounds)
-  } catch (error) {
-    const normalized = Object.fromEntries(
-      Object.entries(bounds).map(([key, value]) => [key, Math.round(Number(value))])
-    )
-    compactExpandedBounds = normalized
-    lastVisibleMainWindowBounds = { ...normalized }
-    geometryDirty = true
-    logger.warn('presentation-mode.anchor-persist', '定位后的主视图边界暂未写入数据库', {
-      source,
-      error: error?.message
-    })
-  }
-}
-
 function hideWindowForPresentationCommit(window, source) {
   if (!window || window.isDestroyed()) return
   if (blurInitialized) {
@@ -1309,29 +1383,12 @@ function showCommittedPresentation(window, source, showWhenDone) {
   window.focus()
 }
 
-function normalizedScreenPoint(point) {
-  const x = Number(point?.x)
-  const y = Number(point?.y)
-  return Number.isFinite(x) && Number.isFinite(y) ? { x: Math.round(x), y: Math.round(y) } : null
-}
-
-function resolveExpandedBoundsForRecovery(anchor = null) {
+function resolveExpandedBoundsForRecovery() {
   const storedBounds =
     compactExpandedBounds ||
     (lastVisibleMainWindowBounds && !presentationModeController.isCompact()
       ? lastVisibleMainWindowBounds
       : resolveActiveViewWindowBounds().bounds)
-  const normalizedAnchor = normalizedScreenPoint(anchor)
-  if (normalizedAnchor) {
-    const display = screen.getDisplayNearestPoint(normalizedAnchor)
-    const fallbackTitlebarCenter = Math.min(24, Math.max(0, storedBounds.height / 2))
-    return mainWindowBoundsFromTitlebarAnchor(
-      storedBounds,
-      normalizedAnchor,
-      compactExpandedTitlebarCenterOffsetY ?? fallbackTitlebarCenter,
-      display.workArea
-    )
-  }
   const display = screen.getDisplayMatching(storedBounds)
   return constrainMainWindowBounds(storedBounds, display.workArea)
 }
@@ -1347,10 +1404,6 @@ async function performPresentationModeCommit({ window, operation }) {
     endTitlebarWindowDrag()
     const expandedBounds = mainWindow.getBounds()
     persistStableExpandedBounds(expandedBounds)
-    const titlebarCenterOffsetY = Number(operation.context?.titlebarCenterOffsetY)
-    compactExpandedTitlebarCenterOffsetY = Number.isFinite(titlebarCenterOffsetY)
-      ? Math.max(0, Math.round(titlebarCenterOffsetY))
-      : null
     if (!compactDockSuspended) {
       beginDockInteractionSuspension('presentation-compact')
       compactDockSuspended = true
@@ -1376,8 +1429,7 @@ async function performPresentationModeCommit({ window, operation }) {
     return { bounds: { ...stableCompactBounds } }
   }
 
-  const expandedAnchor = normalizedScreenPoint(operation.context?.anchor)
-  const expandedBounds = resolveExpandedBoundsForRecovery(expandedAnchor)
+  const expandedBounds = resolveExpandedBoundsForRecovery()
   presentationModeController.operation.targetBounds = { ...expandedBounds }
   broadcastPresentationModeState()
   hideWindowForPresentationCommit(window, 'expanded')
@@ -1385,9 +1437,7 @@ async function performPresentationModeCommit({ window, operation }) {
   window.setBounds(expandedBounds, false)
   window.setMinimumSize(MAIN_WINDOW_MIN_SIZE, MAIN_WINDOW_MIN_SIZE)
   lastVisibleMainWindowBounds = { ...window.getBounds() }
-  if (expandedAnchor) persistAnchoredExpandedBounds(lastVisibleMainWindowBounds, 'expanded')
   stableCompactBounds = null
-  compactExpandedTitlebarCenterOffsetY = null
   if (compactDockSuspended) {
     compactDockSuspended = false
     endDockInteractionSuspension('presentation-expanded')
@@ -1416,17 +1466,11 @@ async function recoverExpandedPresentation({ window, operation, error }) {
     })
   }
   hideWindowForPresentationCommit(window, 'recovery')
-  const expandedAnchor =
-    operation.to === PRESENTATION_MODES.EXPANDED
-      ? normalizedScreenPoint(operation.context?.anchor)
-      : null
-  const expandedBounds = resolveExpandedBoundsForRecovery(expandedAnchor)
+  const expandedBounds = resolveExpandedBoundsForRecovery()
   window.setBounds(expandedBounds, false)
   window.setMinimumSize(MAIN_WINDOW_MIN_SIZE, MAIN_WINDOW_MIN_SIZE)
   lastVisibleMainWindowBounds = { ...window.getBounds() }
-  if (expandedAnchor) persistAnchoredExpandedBounds(lastVisibleMainWindowBounds, 'recovery')
   stableCompactBounds = null
-  compactExpandedTitlebarCenterOffsetY = null
   if (compactDockSuspended) {
     compactDockSuspended = false
     endDockInteractionSuspension('presentation-recovery')
@@ -1451,27 +1495,18 @@ function enterCompactPresentation(anchor) {
   if (isLocked) {
     return Promise.reject(new Error('窗口已锁定：切换为灵动岛会改变窗口位置和尺寸，请先解锁'))
   }
-  const titlebarCenterOffsetY = Number(anchor?.titlebarCenterOffsetY)
   return requestPresentationMode(PRESENTATION_MODES.COMPACT, {
     source: 'titlebar-double-click',
     anchor: resolvedDragPoint(anchor),
-    titlebarCenterOffsetY: Number.isFinite(titlebarCenterOffsetY)
-      ? Math.max(0, Math.round(titlebarCenterOffsetY))
-      : null,
     showWhenDone: true
   })
 }
 
-function exitCompactPresentation({
-  source = 'compact-double-click',
-  showWhenDone = true,
-  anchor = null
-} = {}) {
+function exitCompactPresentation({ source = 'compact-double-click', showWhenDone = true } = {}) {
   if (compactDragSession) endCompactWindowDrag()
   return requestPresentationMode(PRESENTATION_MODES.EXPANDED, {
     source,
-    showWhenDone,
-    anchor: normalizedScreenPoint(anchor)
+    showWhenDone
   })
 }
 
@@ -1700,6 +1735,13 @@ function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
   const changesDockConfig = entries.some(({ id }) => id.startsWith('dock.'))
   const previousDockConfig = changesDockConfig ? getDockRuntimeConfig() : null
   const normalizedEntries = entries.map(({ id, value }) => ({ id, ...serializeSetting(id, value) }))
+  const evidenceScope = getActiveWindowName()
+  const beforeEvidence = readSettingEvidence(
+    normalizedEntries,
+    getAllSettings,
+    APPLICATION_SETTING_ID_SET,
+    evidenceScope
+  )
   const applicationEntries = normalizedEntries.filter(({ id }) =>
     APPLICATION_SETTING_ID_SET.has(id)
   )
@@ -1708,6 +1750,15 @@ function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
   if (applicationEntries.length) {
     writeApplicationSettings(applicationEntries.map(({ id, value }) => ({ id, value })))
   }
+  reportSettingEvidence(
+    beforeEvidence,
+    readSettingEvidence(
+      normalizedEntries,
+      getAllSettings,
+      APPLICATION_SETTING_ID_SET,
+      evidenceScope
+    )
+  )
   refreshResolvedSettings({ incrementRevision: true })
 
   if (normalizedEntries.some(({ id }) => id.startsWith('window.'))) {
@@ -4127,6 +4178,12 @@ if (process.env.ABANDON_INTEGRATION_TEST === '1') {
     enterCompactPresentation,
     exitCompactPresentation,
     getPresentationModeState: presentationModeSnapshot,
+    getDockRuntimeState: () => ({
+      ...getDockDiagnosticSnapshot(),
+      interactionSuspendCount: dockInteractionSuspendCount,
+      screenshotCaptureActive,
+      locked: isLocked
+    }),
     handleDisplayTopologyChange: handleDockDisplayTopologyChange,
     getBlurRuntimeHealth: () => (blurInitialized ? getBlurRuntimeHealth() : null),
     triggerViewVisibilityShortcut: () => viewVisibilityShortcutService?.handleTrigger()
@@ -4206,6 +4263,7 @@ const startupPromise = app.whenReady().then(async () => {
     const win = BrowserWindow.fromWebContents(event.sender)
     const normalized = normalizeRendererLog(payload)
     const windowContext = getWindowLogContext(win)
+    noteStructuredRendererConsole(win, normalized)
     writeLog({
       ...normalized,
       windowRole: windowContext.role,
@@ -4234,10 +4292,16 @@ const startupPromise = app.whenReady().then(async () => {
     return true
   })
 
-  mainWindowIpc.handle('logs:export', async () => {
+  mainWindowIpc.handle('logs:export', async (_event, options = {}) => {
+    const range = options?.range ?? 'all'
+    if (!['all', 'last-hour'].includes(range)) throw new Error('不支持的日志导出范围')
+    // 点击导出时固定时间范围，跨应用会话筛选，不受日志查看器筛选条件影响。
+    const requestedAt = Date.now()
+    const selection =
+      range === 'last-hour' ? { from: requestedAt - 3_600_000, to: requestedAt } : null
     const result = await dialog.showSaveDialog(mainWindow, {
       title: '导出诊断日志',
-      defaultPath: `abandon-note-diagnostics-${new Date().toISOString().slice(0, 10)}.jsonl`,
+      defaultPath: `abandon-note-diagnostics-${range}-${new Date(requestedAt).toISOString().slice(0, 10)}.jsonl`,
       filters: [{ name: 'JSON Lines', extensions: ['jsonl'] }]
     })
     if (result.canceled || !result.filePath) return { canceled: true }
@@ -4265,11 +4329,22 @@ const startupPromise = app.whenReady().then(async () => {
       {
         logDirectory: getLogDirectory(),
         crashDumpsPath: app.getPath('crashDumps'),
-        recentCrashDumps: getRecentCrashDumps()
+        recentCrashDumps: getRecentCrashDumps(),
+        exportScope: range === 'last-hour' ? 'last-hour' : 'all-retained-logs',
+        ...(selection
+          ? {
+              from: new Date(selection.from).toISOString(),
+              to: new Date(selection.to).toISOString()
+            }
+          : {})
       },
-      systemDiagnostics
+      systemDiagnostics,
+      selection
     )
-    logger.info('logs.export', '诊断日志已导出', { targetPath: result.filePath })
+    logger.info('logs.export', '诊断日志已导出', {
+      targetPath: result.filePath,
+      exportScope: range === 'last-hour' ? 'last-hour' : 'all-retained-logs'
+    })
     return { canceled: false, filePath: result.filePath }
   })
 
@@ -4382,13 +4457,34 @@ const startupPromise = app.whenReady().then(async () => {
   // 【窗口锁定 - 切换锁定状态】
   mainWindowIpc.handle('toggle-lock', () => {
     const now = Date.now()
+    const before = {
+      isLocked,
+      zOrderMode,
+      nativeZOrder: captureTitlebarZOrderStatus()
+    }
     if (lockToggleInFlight || now - lastLockToggleAt < WINDOW_CONTROL_GUARD_MS) {
+      logger.info('window.control-change', '窗口锁定切换请求被节流', {
+        control: 'lock',
+        before,
+        lockToggleInFlight,
+        elapsedSinceLastChangeMs: now - lastLockToggleAt
+      })
       return { value: isLocked, changed: false, throttled: true }
     }
     lockToggleInFlight = true
     try {
       const snapshot = persistSettingValue('window.lockState', !isLocked)
       const value = snapshot.values.window.lockState
+      logger.info('window.control-change', '窗口锁定状态已切换', {
+        control: 'lock',
+        before,
+        after: {
+          isLocked: value,
+          zOrderMode,
+          movable: mainWindow && !mainWindow.isDestroyed() ? mainWindow.isMovable() : null,
+          nativeZOrder: captureTitlebarZOrderStatus()
+        }
+      })
       sendAppMessage('success', value ? '主窗口已锁定' : '主窗口已解除锁定')
       return { value, changed: true, throttled: false }
     } catch (error) {
@@ -4406,12 +4502,37 @@ const startupPromise = app.whenReady().then(async () => {
     if (!requested) throw new Error('无效的窗口层级')
 
     const now = Date.now()
+    const before = {
+      isLocked,
+      zOrderMode,
+      alwaysOnTop: mainWindow && !mainWindow.isDestroyed() ? mainWindow.isAlwaysOnTop() : null,
+      nativeZOrder: captureTitlebarZOrderStatus()
+    }
     if (zOrderChangeInFlight || now - lastZOrderChangeAt < WINDOW_CONTROL_GUARD_MS) {
+      logger.info('window.control-change', '窗口层级切换请求被节流', {
+        control: 'z-order',
+        requested,
+        before,
+        zOrderChangeInFlight,
+        elapsedSinceLastChangeMs: now - lastZOrderChangeAt
+      })
       return { mode: zOrderMode, changed: false, throttled: true }
     }
     zOrderChangeInFlight = true
     try {
       const result = await persistWindowZOrderMode(requested)
+      logger.info('window.control-change', '窗口层级状态已核验', {
+        control: 'z-order',
+        requested,
+        result,
+        before,
+        after: {
+          isLocked,
+          zOrderMode,
+          alwaysOnTop: mainWindow && !mainWindow.isDestroyed() ? mainWindow.isAlwaysOnTop() : null,
+          nativeZOrder: captureTitlebarZOrderStatus()
+        }
+      })
       if (result.changed) {
         const message =
           result.mode === WINDOW_Z_ORDER_MODES.TOP
@@ -4442,8 +4563,8 @@ const startupPromise = app.whenReady().then(async () => {
   mainWindowIpc.handle('presentation-mode:enter-compact', (_event, { anchor } = {}) =>
     enterCompactPresentation(anchor)
   )
-  mainWindowIpc.handle('presentation-mode:exit-compact', (_event, { anchor } = {}) =>
-    exitCompactPresentation({ source: 'renderer', showWhenDone: true, anchor })
+  mainWindowIpc.handle('presentation-mode:exit-compact', () =>
+    exitCompactPresentation({ source: 'renderer', showWhenDone: true })
   )
   mainWindowIpc.handle('presentation-mode:begin-drag', (_event, point) =>
     beginCompactWindowDrag(point)
@@ -4477,14 +4598,16 @@ const startupPromise = app.whenReady().then(async () => {
     return true
   })
 
-  mainWindowIpc.handle('titlebar-window:begin-drag', (_event, point) =>
-    beginTitlebarWindowDrag(point)
+  mainWindowIpc.handle('titlebar-window:begin-drag', (_event, payload = {}) =>
+    beginTitlebarWindowDrag(payload.point, payload.diagnostics)
   )
   ipcMain.on('titlebar-window:update-drag', (event, point) => {
     if (event.sender !== mainWindow?.webContents) return
     updateTitlebarWindowDrag(point)
   })
-  mainWindowIpc.handle('titlebar-window:end-drag', () => endTitlebarWindowDrag())
+  mainWindowIpc.handle('titlebar-window:end-drag', (_event, diagnostics) =>
+    endTitlebarWindowDrag(diagnostics)
+  )
   mainWindowIpc.handle('window-resize:end', () => finishCompactWindowResize())
   // 【缩放手柄 - 设置边界】根据渲染进程传入的 bounds 调整窗口大小/位置
   ipcMain.on('window-set-bounds', (event, bounds) => {

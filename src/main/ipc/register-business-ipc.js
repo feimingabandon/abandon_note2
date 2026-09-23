@@ -81,13 +81,31 @@ import {
   reconcileNoteTextColorRanges
 } from '../../shared/note-text-color-rules.js'
 import { createMainWindowIpc } from './ipc-authorization.js'
+import { checkpoint, diagnosticBroadcast } from '../logging/operation-context.js'
+import { observeNoteMutation } from '../logging/persistence-evidence.js'
 
 function sendToWindows(getWindows, channel, payload) {
+  const diagnosticPayload = diagnosticBroadcast(payload)
   const resolved = getWindows()
   const windows = Array.isArray(resolved) ? resolved : [resolved]
   for (const window of new Set(windows.filter(Boolean))) {
-    if (window.isDestroyed() || window.webContents.isDestroyed()) continue
-    window.webContents.send(channel, payload)
+    try {
+      if (window.isDestroyed() || window.webContents.isDestroyed()) continue
+      window.webContents.send(channel, diagnosticPayload)
+    } catch (error) {
+      checkpoint(
+        'broadcast.failed',
+        { channel, id: payload?.id },
+        { level: 'error', outcome: 'failed', error }
+      )
+      continue
+    }
+    checkpoint('broadcast.sent', {
+      channel,
+      webContentsId: window.webContents.id,
+      id: payload?.id,
+      reason: payload?.reason
+    })
   }
 }
 
@@ -107,7 +125,46 @@ export function registerBusinessIpcHandlers({
   diagnosticLogger = null,
   onNotePurged = () => {}
 }) {
-  const ipcMain = createMainWindowIpc(rawIpcMain, getAuthorizedWindows, '便签业务数据')
+  const authorizedIpc = createMainWindowIpc(rawIpcMain, getAuthorizedWindows, '便签业务数据')
+  const observedNoteChannels = new Set([
+    'notes:create',
+    'notes:create-with-assets',
+    'notes:update',
+    'notes:save-draft',
+    'notes:set-text-color',
+    'notes:restore',
+    'notes:delete',
+    'notes:purge',
+    'notes:start-progress',
+    'notes:complete',
+    'notes:reopen'
+  ])
+  const readDiagnosticNote = (id) => {
+    const db = getDb()
+    const note = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
+    if (!note) return null
+    return {
+      ...note,
+      attachments: db
+        .prepare('SELECT id FROM note_attachments WHERE note_id = ? ORDER BY id')
+        .all(id),
+      tags: db
+        .prepare('SELECT tag_id AS id FROM note_tags WHERE note_id = ? ORDER BY tag_id')
+        .all(id)
+    }
+  }
+  const ipcMain = {
+    handle(channel, handler) {
+      authorizedIpc.handle(
+        channel,
+        observedNoteChannels.has(channel)
+          ? (event, ...args) =>
+              observeNoteMutation(handler, readDiagnosticNote, event, args, channel)
+          : handler
+      )
+      return this
+    }
+  }
   const enforceNotificationPolicy = (payload) => enforceSystemNotificationPolicy(payload, platform)
   const normalizeUserCreateOptions = (payload) => {
     const options = enforceNotificationPolicy(payload)
@@ -193,17 +250,18 @@ export function registerBusinessIpcHandlers({
       return getNoteById(note.id)
     })
 
+    let created
     try {
-      const created = transaction()
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      broadcastNoteChange('create', created)
-      return created
+      created = transaction()
     } catch (error) {
       await Promise.all(writtenFiles.map(deleteImageFile))
       await Promise.all(stagedImages.map(cleanupStagedImage))
       console.error('[notes:create-with-assets] 创建失败，已回滚并清理文件:', error)
       throw error
     }
+    // SQLite has committed: notification failures must never remove committed files.
+    await Promise.all(stagedImages.map(cleanupStagedImage))
+    return broadcastNoteChange('create', created)
   })
 
   ipcMain.handle('notes:restore', (_event, { id }) =>
@@ -366,20 +424,20 @@ export function registerBusinessIpcHandlers({
       return getNoteById(id)
     })
 
+    let updated
     try {
-      const updated = transaction()
-      await Promise.all([
-        ...stagedImages.map(cleanupStagedImage),
-        ...stagedDeletions.map(cleanupStagedImage)
-      ])
-      broadcastNoteChange('update', updated, { id })
-      return updated
+      updated = transaction()
     } catch (error) {
       await Promise.all(writtenFiles.map(deleteImageFile))
       await Promise.all(stagedImages.map(cleanupStagedImage))
       for (const staged of stagedDeletions.reverse()) restoreStagedImageDeletion(staged)
       throw error
     }
+    await Promise.all([
+      ...stagedImages.map(cleanupStagedImage),
+      ...stagedDeletions.map(cleanupStagedImage)
+    ])
+    return broadcastNoteChange('update', updated, { id })
   })
 
   ipcMain.handle('notes:delete', (_event, { id }) => {
@@ -538,16 +596,17 @@ export function registerBusinessIpcHandlers({
       return results
     })
 
+    let results
     try {
-      const results = transaction()
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      broadcastNoteChange('attachment', true, { id: noteId })
-      return results
+      results = transaction()
     } catch (error) {
       await Promise.all(writtenFiles.map(deleteImageFile))
       await Promise.all(stagedImages.map(cleanupStagedImage))
       throw error
     }
+    await Promise.all(stagedImages.map(cleanupStagedImage))
+    broadcastNoteChange('attachment', true, { id: noteId })
+    return results
   })
 
   ipcMain.handle('images:delete', async (_event, { id }) => {

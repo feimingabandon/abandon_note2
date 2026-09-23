@@ -11,7 +11,7 @@ const props = defineProps({
 const emit = defineEmits(['update:visible'])
 
 const loading = ref(false)
-const exporting = ref(false)
+const exporting = ref('')
 const errorMessage = ref('')
 const records = ref([])
 const nextCursor = ref(null)
@@ -87,26 +87,17 @@ function clearSearch() {
   applySearch()
 }
 
-async function openFolder() {
+async function exportLogs(range) {
+  if (exporting.value) return
+  exporting.value = range
   errorMessage.value = ''
   try {
-    await window.api.openLogsFolder()
-  } catch (error) {
-    console.error('[LogViewerDialog] 打开日志目录失败:', error)
-    errorMessage.value = error?.message || '无法打开日志目录'
-  }
-}
-
-async function exportLogs() {
-  exporting.value = true
-  errorMessage.value = ''
-  try {
-    await window.api.exportLogs()
+    await window.api.exportLogs({ range })
   } catch (error) {
     console.error('[LogViewerDialog] 导出日志失败:', error)
     errorMessage.value = error?.message || '导出日志失败'
   } finally {
-    exporting.value = false
+    exporting.value = ''
   }
 }
 
@@ -209,6 +200,7 @@ onBeforeUnmount(() => {
           />
           <button v-if="searchInput" title="清空搜索" @click="clearSearch">×</button>
         </div>
+        <BaseButton size="sm" :disabled="loading" @click="query()">刷新</BaseButton>
       </div>
 
       <div class="log-list" aria-live="polite">
@@ -246,17 +238,21 @@ onBeforeUnmount(() => {
       </div>
 
       <footer class="log-footer">
-        <div class="log-footer-left">
-          <BaseButton size="sm" :disabled="loading" @click="query()">刷新</BaseButton>
-          <BaseButton size="sm" @click="openFolder">打开文件夹</BaseButton>
-        </div>
         <BaseButton
           size="sm"
-          :disabled="exporting"
-          title="导出全部日志，并附上当前系统、显示器和显卡诊断信息"
-          @click="exportLogs"
+          :disabled="Boolean(exporting)"
+          title="导出最近一小时内所有级别和来源的日志，不受当前搜索条件影响"
+          @click="exportLogs('last-hour')"
         >
-          {{ exporting ? '正在导出…' : '导出完整日志' }}
+          {{ exporting === 'last-hour' ? '正在导出…' : '导出近一小时日志' }}
+        </BaseButton>
+        <BaseButton
+          size="sm"
+          :disabled="Boolean(exporting)"
+          title="导出本机当前保留的全部日志，不受当前搜索条件影响"
+          @click="exportLogs('all')"
+        >
+          {{ exporting === 'all' ? '正在导出…' : '导出全部日志' }}
         </BaseButton>
       </footer>
     </div>
@@ -495,13 +491,9 @@ onBeforeUnmount(() => {
 }
 
 .log-footer {
-  justify-content: space-between;
+  justify-content: flex-end;
   border-top: 1px solid var(--ui-border-divider);
-}
-
-.log-footer-left {
-  display: flex;
-  gap: 8rem;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 620px) {

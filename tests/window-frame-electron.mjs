@@ -8,9 +8,7 @@ const WS_THICKFRAME = 0x00040000
 
 function readNativeHandle(window) {
   const buffer = window.getNativeWindowHandle()
-  return process.arch === 'x64'
-    ? buffer.readBigUInt64LE(0)
-    : BigInt(buffer.readUInt32LE(0))
+  return process.arch === 'x64' ? buffer.readBigUInt64LE(0) : BigInt(buffer.readUInt32LE(0))
 }
 
 app.once('ready', async () => {
@@ -24,21 +22,18 @@ app.once('ready', async () => {
       process.env.ABANDON_NATIVE_DLL_PATH ||
         resolve('native_blur', 'build', 'bin', 'blur_engine.dll')
     )
-    const getMotionSnapshot = motionLibrary.func(
-      'WindowMotion_GetSnapshotJson',
-      'str',
-      ['intptr_t']
-    )
-    const moveWindowPhysical = motionLibrary.func(
-      'WindowMotion_MoveWindow',
+    const getMotionSnapshot = motionLibrary.func('WindowMotion_GetSnapshotJson', 'str', [
+      'intptr_t'
+    ])
+    const moveWindowPhysical = motionLibrary.func('WindowMotion_MoveWindow', 'int', [
+      'intptr_t',
       'int',
-      ['intptr_t', 'int', 'int']
-    )
-    const isEdgeExposed = motionLibrary.func(
-      'WindowMotion_IsEdgeExposed',
-      'int',
-      ['intptr_t', 'int']
-    )
+      'int'
+    ])
+    const isEdgeExposed = motionLibrary.func('WindowMotion_IsEdgeExposed', 'int', [
+      'intptr_t',
+      'int'
+    ])
 
     window = new BrowserWindow({
       show: true,

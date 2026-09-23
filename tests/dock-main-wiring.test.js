@@ -8,10 +8,13 @@ describe('dock main-process wiring', () => {
   it('exposes one authorized atomic dock IPC and no generic per-field write path', () => {
     const source = readFileSync(MAIN_PATH, 'utf8')
     const preload = readFileSync(PRELOAD_PATH, 'utf8')
-    const allowlist = source.slice(
-      source.indexOf('const RENDERER_WRITABLE_SETTING_IDS'),
-      source.indexOf('const APPLICATION_SETTING_IDS')
+    // The application IDs are now imported; using their old declaration as an
+    // end marker sliced the whole remainder of main and produced false failures.
+    const allowlistMatch = source.match(
+      /const RENDERER_WRITABLE_SETTING_IDS\s*=\s*new Set\(\[([\s\S]*?)\]\)/
     )
+    expect(allowlistMatch, 'renderer allowlist declaration must exist').not.toBeNull()
+    const allowlist = [...allowlistMatch[1].matchAll(/'([^']+)'/g)].map((match) => match[1])
     const handler = source.slice(
       source.indexOf("mainWindowIpc.handle('set-dock-config'"),
       source.indexOf("mainWindowIpc.handle('get-settings-snapshot'")

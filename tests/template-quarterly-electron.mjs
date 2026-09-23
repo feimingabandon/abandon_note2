@@ -118,6 +118,23 @@ async function runQuarterlyTemplateTest() {
       true,
       `整框点击坐标必须命中新建循环模板区域: ${JSON.stringify(createBoxTarget)}`
     )
+    const collapsedHint = await listWindow.webContents.executeJavaScript(`(() => {
+      const hint = document.querySelector('.app-template-panel .tcp-hint')
+      if (!hint) return null
+      const style = getComputedStyle(hint)
+      const rect = hint.getBoundingClientRect()
+      return {
+        text: hint.textContent.trim(),
+        opacity: Number(style.opacity),
+        visibility: style.visibility,
+        width: rect.width,
+        height: rect.height
+      }
+    })()`)
+    assert.equal(collapsedHint?.text, '请新建循环模板内容…')
+    assert.equal(collapsedHint?.visibility, 'visible')
+    assert.ok(collapsedHint?.opacity > 0.5, JSON.stringify(collapsedHint))
+    assert.ok(collapsedHint?.width > 0 && collapsedHint?.height > 0)
     listWindow.webContents.sendInputEvent({
       type: 'mouseDown',
       button: 'left',
@@ -137,6 +154,44 @@ async function runQuarterlyTemplateTest() {
         ),
       '循环模板新建表单没有展开'
     )
+    const lifecycleFields = await listWindow.webContents.executeJavaScript(`(() => ({
+      labels: Array.from(document.querySelectorAll('.app-template-panel .tf-time-range label'),
+        (node) => node.childNodes[0]?.textContent.trim()),
+      pickers: document.querySelectorAll('.app-template-panel .tf-time-range .dt-wrapper').length
+    }))()`)
+    assert.deepEqual(lifecycleFields.labels, ['开始时间', '结束时间'])
+    assert.equal(lifecycleFields.pickers, 2)
+    await listWindow.webContents.executeJavaScript(
+      `document.querySelector('.app-template-panel .tf-time-range .dt-trigger').click()`
+    )
+    const lifecyclePickerLayout = await waitUntil(
+      () =>
+        listWindow.webContents.executeJavaScript(`(() => {
+          const trigger = document.querySelector('.app-template-panel .tf-time-range .dt-wrapper')
+          const panel = document.querySelector('.dt-panel-wrap')
+          if (!trigger || !panel) return null
+          const triggerRect = trigger.getBoundingClientRect()
+          const panelRect = panel.getBoundingClientRect()
+          return {
+            trigger: { left: triggerRect.left, right: triggerRect.right, width: triggerRect.width },
+            panel: { left: panelRect.left, right: panelRect.right, width: panelRect.width },
+            viewportWidth: window.innerWidth
+          }
+        })()`),
+      '模板开始时间选择面板没有打开'
+    )
+    assert.ok(lifecyclePickerLayout.trigger.width >= 220, JSON.stringify(lifecyclePickerLayout))
+    assert.ok(
+      Math.abs(lifecyclePickerLayout.trigger.width - lifecyclePickerLayout.panel.width) <= 3,
+      JSON.stringify(lifecyclePickerLayout)
+    )
+    assert.ok(
+      Math.abs(lifecyclePickerLayout.trigger.left - lifecyclePickerLayout.panel.left) <= 3,
+      JSON.stringify(lifecyclePickerLayout)
+    )
+    assert.ok(lifecyclePickerLayout.panel.right <= lifecyclePickerLayout.viewportWidth)
+    listWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'ESC' })
+    listWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'ESC' })
 
     const frequencyCount = await listWindow.webContents.executeJavaScript(
       `document.querySelectorAll('.app-template-panel .tfs-segments button').length`
@@ -169,10 +224,9 @@ async function runQuarterlyTemplateTest() {
         .find((node) => node.textContent.trim() === '15')
       day15.click()
       const textarea = document.querySelector('.app-template-panel .tf-root textarea')
-      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
-      setValue.call(textarea, '自然季度集成测试')
-      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea.focus()
     })()`)
+    listWindow.webContents.insertText('自然季度集成测试')
     await waitUntil(
       () =>
         listWindow.webContents.executeJavaScript(
@@ -180,6 +234,25 @@ async function runQuarterlyTemplateTest() {
         ),
       '自然季度下一次生成时间没有通过 IPC 完成预览'
     )
+    await waitUntil(
+      () =>
+        listWindow.webContents.executeJavaScript(
+          `document.querySelector('.app-template-panel .tf-submit')?.disabled === false`
+        ),
+      '循环模板创建按钮没有在表单有效后启用'
+    )
+    const beforeSubmit = await listWindow.webContents.executeJavaScript(`(() => {
+      const submit = document.querySelector('.app-template-panel .tf-submit')
+      return {
+        disabled: submit?.disabled ?? null,
+        label: submit?.textContent.trim() || '',
+        preview:
+          document
+            .querySelector('.app-template-panel .tf-preview strong')
+            ?.textContent.trim() || ''
+      }
+    })()`)
+    assert.equal(beforeSubmit.disabled, false, JSON.stringify(beforeSubmit))
     await listWindow.webContents.executeJavaScript(
       `document.querySelector('.app-template-panel .tf-submit').click()`
     )
@@ -194,6 +267,8 @@ async function runQuarterlyTemplateTest() {
     assert.equal(rule.frequency, 'quarterly')
     assert.equal(rule.month_of_quarter, 2)
     assert.deepEqual(rule.days_of_month, [15, 31])
+    assert.ok(Number.isFinite(Number(saved.start_at)))
+    assert.equal(saved.end_at, null)
     await waitUntil(
       () =>
         listWindow.webContents.executeJavaScript(
@@ -201,6 +276,44 @@ async function runQuarterlyTemplateTest() {
         ),
       '模板卡片没有显示自然季度摘要'
     )
+
+    await listWindow.webContents.executeJavaScript(
+      `document.querySelector('.app-template-panel .tp-filter-button').click()`
+    )
+    const statusFilterState = () =>
+      listWindow.webContents.executeJavaScript(`(() => ({
+        selected: Array.from(document.querySelectorAll('.app-template-panel .tp-filter-chips button[aria-pressed="true"]'),
+          (button) => button.textContent.trim()),
+        cardVisible: Boolean(document.querySelector('.app-template-panel .tc-card[data-template-id="${Number(saved.id)}"]'))
+      }))()`)
+    assert.deepEqual((await statusFilterState()).selected, ['全部'])
+    await listWindow.webContents.executeJavaScript(`(() => {
+      const buttons = Array.from(document.querySelectorAll('.app-template-panel .tp-filter-chips button'))
+      buttons.find((button) => button.textContent.trim() === '运行中').click()
+      buttons.find((button) => button.textContent.trim() === '已暂停').click()
+    })()`)
+    await waitUntil(async () => {
+      const status = await statusFilterState()
+      return status.selected.join(',') === '运行中,已暂停' && status.cardVisible
+    }, '模板状态未支持同时选择运行中和已暂停')
+    await listWindow.webContents.executeJavaScript(`(() => {
+      const button = Array.from(document.querySelectorAll('.app-template-panel .tp-filter-chips button'))
+        .find((item) => item.textContent.trim() === '运行中')
+      button.click()
+    })()`)
+    await waitUntil(async () => {
+      const status = await statusFilterState()
+      return status.selected.join(',') === '已暂停' && !status.cardVisible
+    }, '取消运行中后，已暂停筛选仍显示运行中的模板')
+    await listWindow.webContents.executeJavaScript(`(() => {
+      const button = Array.from(document.querySelectorAll('.app-template-panel .tp-filter-chips button'))
+        .find((item) => item.textContent.trim() === '全部')
+      button.click()
+    })()`)
+    await waitUntil(async () => {
+      const status = await statusFilterState()
+      return status.selected.join(',') === '全部' && status.cardVisible
+    }, '选择全部后没有恢复模板列表')
 
     await listWindow.webContents.executeJavaScript(
       `document.querySelector('.tc-card[data-template-id="${Number(saved.id)}"] .tc-more').click()`
@@ -228,11 +341,15 @@ async function runQuarterlyTemplateTest() {
       frequency: document.querySelector('.tp-edit-dialog .tfs-segments button.active')?.textContent.trim(),
       quarterMonth: document.querySelector('.tp-edit-dialog .tfs-quarter-months button.active')?.textContent.trim(),
       days: Array.from(document.querySelectorAll('.tp-edit-dialog .tfs-panel .tfs-monthdays button.active'),
-        (node) => Number(node.textContent.trim()))
+        (node) => Number(node.textContent.trim())),
+      lifecycle: Array.from(document.querySelectorAll('.tp-edit-dialog .tf-time-range .dt-label'),
+        (node) => node.textContent.trim())
     }))()`)
     assert.equal(editValues.frequency, '季')
     assert.equal(editValues.quarterMonth, '第 2 月')
     assert.deepEqual(editValues.days, [15, 31])
+    assert.match(editValues.lifecycle[0], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+    assert.equal(editValues.lifecycle[1], '永不结束')
 
     process.stderr.write('quarterly template integration passed\n')
   } catch (error) {

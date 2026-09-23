@@ -25,7 +25,7 @@ describe('通知与更新共用 Markdown', () => {
   })
   it('原始 HTML 和事件属性不能执行，图片标题无法注入属性', () => {
     const html = renderNoticeMarkdown(
-      '<script>alert(1)</script>\n<img src=x onerror=alert(1)>\n\n![\" onerror=\"alert(1)](https://example.com/a.png)'
+      '<script>alert(1)</script>\n<img src=x onerror=alert(1)>\n\n![" onerror="alert(1)](https://example.com/a.png)'
     )
     expect(html).not.toContain('<script>')
     expect(html).not.toContain('<img src=x')

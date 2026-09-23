@@ -314,6 +314,10 @@ assert.deepEqual(tagIdMigrationDb.prepare('SELECT * FROM template_tags').all(), 
   { template_id: 61, tag_id: 41 }
 ])
 assert.deepEqual(
+  tagIdMigrationDb.prepare('SELECT start_at, end_at FROM note_templates WHERE id = 61').get(),
+  { start_at: 1000, end_at: null }
+)
+assert.deepEqual(
   JSON.parse(
     tagIdMigrationDb.prepare("SELECT value FROM app_settings WHERE key = 'list_filter'").get().value
   ),
@@ -434,6 +438,12 @@ try {
   assert.equal(noteColumns.includes('duration_days'), true)
   assert.equal(noteColumns.includes('duration_kind'), true)
   assert.equal(noteColumns.includes('remind_again_at'), false)
+  const templateColumns = db
+    .prepare("PRAGMA table_info('note_templates')")
+    .all()
+    .map((column) => column.name)
+  assert.equal(templateColumns.includes('start_at'), true)
+  assert.equal(templateColumns.includes('end_at'), true)
   assert.deepEqual(
     db
       .prepare("PRAGMA table_info('wallpaper_sources')")
@@ -679,6 +689,84 @@ try {
   deleteTemplate(quarterlyTemplate.id, localTs(2025, 3, 31, 10, 1))
   assert.equal(purgeTemplate(quarterlyTemplate.id), true)
   db.prepare('DELETE FROM notes WHERE id = ?').run(quarterlyNoteId)
+
+  const boundedStartAt = localTs(2025, 7, 22, 8)
+  const boundedEndAt = localTs(2025, 7, 22, 9)
+  const boundedTemplate = createTemplate(
+    {
+      content: '限定有效期模板',
+      recurrenceRule: { frequency: 'daily', interval: 1, time_of_day: '09:00' },
+      startAt: boundedStartAt,
+      endAt: boundedEndAt
+    },
+    localTs(2025, 7, 20, 8)
+  )
+  assert.equal(boundedTemplate.start_at, boundedStartAt)
+  assert.equal(boundedTemplate.end_at, boundedEndAt)
+  assert.equal(boundedTemplate.next_run_at, boundedEndAt)
+  assert.throws(
+    () =>
+      updateTemplate(
+        boundedTemplate.id,
+        { startAt: boundedStartAt, endAt: boundedStartAt },
+        localTs(2025, 7, 20, 8, 1)
+      ),
+    /结束时间必须晚于开始时间/
+  )
+  const boundedRun = runRecurringTemplates({
+    now: localTs(2025, 7, 22, 9, 0, 30),
+    reason: 'scheduled'
+  })
+  assert.equal(boundedRun.count, 1)
+  const endedTemplate = getTemplateById(boundedTemplate.id)
+  const boundedNoteId = endedTemplate.last_generated_note_id
+  assert.equal(endedTemplate.is_paused, 1)
+  assert.equal(endedTemplate.next_run_at, null)
+  const resumedBoundedTemplate = updateTemplate(
+    boundedTemplate.id,
+    { startAt: null, endAt: localTs(2025, 7, 23, 9) },
+    localTs(2025, 7, 22, 10)
+  )
+  assert.equal(resumedBoundedTemplate.start_at, localTs(2025, 7, 22, 10))
+  assert.equal(resumedBoundedTemplate.is_paused, 0)
+  assert.equal(resumedBoundedTemplate.next_run_at, localTs(2025, 7, 23, 9))
+  deleteTemplate(boundedTemplate.id, localTs(2025, 7, 22, 10, 1))
+  assert.equal(purgeTemplate(boundedTemplate.id), true)
+  db.prepare('DELETE FROM notes WHERE id = ?').run(boundedNoteId)
+
+  const expiredBacklog = createTemplate(
+    {
+      content: '过期积压模板',
+      recurrenceRule: { frequency: 'daily', interval: 1, time_of_day: '09:00' },
+      startAt: boundedStartAt,
+      endAt: boundedEndAt
+    },
+    localTs(2025, 7, 20, 8)
+  )
+  const expiredBacklogRun = runRecurringTemplates({
+    now: localTs(2025, 7, 23, 9, 0, 30),
+    reason: 'startup'
+  })
+  assert.equal(expiredBacklogRun.count, 0)
+  assert.equal(expiredBacklogRun.skipped, 1)
+  const expiredBacklogRow = getTemplateById(expiredBacklog.id)
+  assert.equal(expiredBacklogRow.is_paused, 1)
+  assert.equal(expiredBacklogRow.next_run_at, null)
+  assert.equal(expiredBacklogRow.last_generated_note_id, null)
+  deleteTemplate(expiredBacklog.id, localTs(2025, 7, 23, 10))
+  const restoredExpired = restoreTemplate(expiredBacklog.id, localTs(2025, 7, 24, 10))
+  assert.equal(restoredExpired.is_deleted, 0)
+  assert.equal(restoredExpired.is_paused, 1)
+  assert.equal(restoredExpired.next_run_at, null)
+  const extendedExpired = updateTemplate(
+    expiredBacklog.id,
+    { endAt: localTs(2025, 7, 25, 9) },
+    localTs(2025, 7, 24, 10, 1)
+  )
+  assert.equal(extendedExpired.is_paused, 0)
+  assert.equal(extendedExpired.next_run_at, localTs(2025, 7, 25, 9))
+  deleteTemplate(expiredBacklog.id, localTs(2025, 7, 24, 10, 2))
+  assert.equal(purgeTemplate(expiredBacklog.id), true)
 
   const resumedMissedTemplate = resumeTemplate(missedTemplate.id, localTs(2025, 7, 20, 10, 3))
   assert.equal(resumedMissedTemplate.next_run_at, localTs(2025, 7, 21, 9))

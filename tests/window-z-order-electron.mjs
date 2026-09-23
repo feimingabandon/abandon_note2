@@ -111,21 +111,33 @@ app.once('ready', async () => {
       true,
       'ordinary windows must remain above the bottom-anchored main window'
     )
-    assert.equal(getStatus().desktopWindowsAbove, 0, 'desktop hosts must stay below the main window')
+    assert.equal(
+      getStatus().desktopWindowsAbove,
+      0,
+      'desktop hosts must stay below the main window'
+    )
     assert.ok(getStatus().desktopWindowsBelow > 0, 'the test must observe a Windows desktop host')
+    assert.equal(typeof getStatus().lastSyncReason, 'string')
+    assert.equal(Number.isInteger(getStatus().syncRequestCount), true)
+    assert.equal(Number.isInteger(getStatus().syncPostCount), true)
+    assert.equal(Number.isInteger(getStatus().anchorCheckCount), true)
+    assert.equal(Number.isInteger(getStatus().anchorNoopCount), true)
+    assert.equal(Number.isInteger(getStatus().anchorApplyCount), true)
 
     // 模拟 Electron focus()/moveTop() 或快速双击触发的主动提层。Subclass 必须在
     // WINDOWPOSCHANGING 阶段阻止前移，而不是等 JS focus 事件后再补救。
-    assert.equal(
-      setWindowPos(mainHwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE),
-      1
-    )
+    assert.equal(setWindowPos(mainHwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE), 1)
     mainWindow.focus()
     assert.equal(
       await waitUntil(() => getStatus().anchored && isAbove(ordinaryHwnd, mainHwnd)),
       true,
       'focus and explicit HWND_TOP requests must not raise an always-bottom window'
     )
+    assert.ok(
+      getStatus().syncRequestCount > 0,
+      'bottom diagnostics must count z-order sync requests'
+    )
+    assert.ok(getStatus().anchorCheckCount > 0, 'bottom diagnostics must count anchor checks')
 
     assert.equal(blurInit(mainHwnd), 1)
     blurInitialized = true

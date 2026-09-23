@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   calculateNextRun,
+  calculateNextRunInRange,
   daysInMonth,
   isLeapYear,
   MAX_DAILY_INTERVAL,
@@ -112,6 +113,34 @@ describe('rule validation', () => {
 })
 
 describe('next run calculation', () => {
+  it('keeps the next run inside the configured template time range', () => {
+    const rule = { frequency: 'daily', interval: 1, time_of_day: '09:00' }
+    const startAt = localTs(2025, 7, 22, 8)
+    const endAt = localTs(2025, 7, 23, 9)
+
+    expect(
+      calculateNextRunInRange(rule, localTs(2025, 7, 20, 12), startAt, { startAt, endAt })
+    ).toBe(localTs(2025, 7, 22, 9))
+    expect(
+      calculateNextRunInRange(rule, localTs(2025, 7, 23, 9), startAt, { startAt, endAt })
+    ).toBeNull()
+  })
+
+  it('rejects malformed template time boundaries', () => {
+    const rule = { frequency: 'daily', interval: 1, time_of_day: '09:00' }
+    expect(() =>
+      calculateNextRunInRange(rule, localTs(2025, 7, 20, 12), localTs(2025, 7, 20, 8), {
+        endAt: 'invalid'
+      })
+    ).toThrow('模板结束时间无效')
+    expect(() =>
+      calculateNextRunInRange(rule, localTs(2025, 7, 20, 12), localTs(2025, 7, 20, 8), {
+        startAt: localTs(2025, 7, 22, 9),
+        endAt: localTs(2025, 7, 22, 8)
+      })
+    ).toThrow('模板结束时间必须晚于开始时间')
+  })
+
   it('uses today when a new daily template is created before its time', () => {
     const now = localTs(2025, 7, 20, 8, 0)
     const next = calculateNextRun(

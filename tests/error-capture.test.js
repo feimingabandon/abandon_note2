@@ -127,4 +127,31 @@ describe('renderer error capture', () => {
     report.restoreConsole()
     console.error = originalError
   })
+
+  it('captures warning messages even when they do not include an Error object', () => {
+    const listeners = new Map()
+    globalThis.window = {
+      addEventListener: vi.fn((name, listener) => listeners.set(name, listener))
+    }
+    const originalWarn = console.warn
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const reportLog = vi.fn()
+    const report = installBrowserErrorCapture(
+      { reportLog },
+      { scope: 'test-renderer', captureStructuredConsole: true }
+    )
+
+    console.warn('[editor] 已回退到安全状态', { noteId: 42 })
+
+    expect(reportLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: 'warn',
+        scope: 'test-renderer.console-warn',
+        message: '[editor] 已回退到安全状态 {"noteId":42}'
+      })
+    )
+    expect(consoleSpy).toHaveBeenCalled()
+    report.restoreConsole()
+    console.warn = originalWarn
+  })
 })

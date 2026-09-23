@@ -4,7 +4,10 @@ import { captureIpcArguments } from '../src/main/logging/ipc-arguments.js'
 describe('captureIpcArguments', () => {
   it('preserves useful ordinary IPC context', () => {
     expect(captureIpcArguments([{ id: 7, fields: { content: '正文', isPinned: true } }])).toEqual([
-      { id: 7, fields: { content: '正文', isPinned: true } }
+      {
+        id: 7,
+        fields: { content: { omitted: true, reason: 'private-field', length: 2 }, isPinned: true }
+      }
     ])
   })
 
@@ -27,12 +30,12 @@ describe('captureIpcArguments', () => {
     expect(JSON.stringify(captured).length).toBeLessThan(100_000)
   })
 
-  it('bounds large plain text while retaining an error-relevant preview', () => {
+  it('omits even large note text instead of retaining a private preview', () => {
     const captured = captureIpcArguments([{ content: '便'.repeat(200_000) }])
     expect(captured[0].content).toMatchObject({
-      truncated: true,
-      originalLength: 200_000
+      omitted: true,
+      length: 200_000
     })
-    expect(captured[0].content.preview.length).toBe(20_000)
+    expect(captured[0].content.preview).toBeUndefined()
   })
 })

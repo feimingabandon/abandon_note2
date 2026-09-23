@@ -16,6 +16,7 @@ import {
   NOTE_DURATION_KINDS
 } from '../../../../shared/calendar/calendar-date-rules.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
+import { normalizeNoteTextColorRanges } from '../../../../shared/note-text-color-rules.js'
 import {
   assertCreatableNoteEffectiveTime,
   canScheduleNoteNotification,
@@ -106,7 +107,7 @@ async function create() {
 
   const options = {
     content: content.value,
-    contentColorRanges: contentColorRanges.value,
+    contentColorRanges: normalizeNoteTextColorRanges(contentColorRanges.value, content.value),
     durationKind: durationKind.value,
     durationDays: durationDays.value,
     notifyEnabled: canNotify.value && notifyEnabled.value,
@@ -250,7 +251,13 @@ const protectedDraft = useDraftProtection({
     </div>
     <footer>
       <button type="button" :disabled="saving" @click="requestClose">取消</button>
-      <button type="button" class="is-primary" :disabled="saving || !canCreate" @click="create">
+      <button
+        type="button"
+        class="is-primary"
+        data-diagnostic-action="note.create"
+        :disabled="saving || !canCreate"
+        @click="create"
+      >
         {{ saving ? '创建中…' : '创建便签' }}
       </button>
     </footer>

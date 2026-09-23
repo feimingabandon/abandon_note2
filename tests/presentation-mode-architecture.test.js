@@ -109,7 +109,8 @@ describe('single-window presentation architecture', () => {
     expect(presentation).toContain(':ready="!operation"')
     expect(presentation).not.toContain('getComputedStyle(document.body).fontSize')
     expect(island).toContain('border-radius: var(--window-radius)')
-    expect(island).toContain('exitCompactPresentation(anchor)')
+    expect(island).toContain('exitCompactPresentation()')
+    expect(island).not.toContain('exitCompactPresentation(anchor)')
     expect(island).toContain('@dblclick="onDoubleClick"')
     expect(island).toContain('suppressDoubleClickUntil = now + 500')
     expect(island).toContain("'is-ready': ready")
@@ -120,8 +121,8 @@ describe('single-window presentation architecture', () => {
     expect(island).toContain('font-size: var(--compact-content-font-size)')
     expect(island).toContain('justify-content: flex-start')
     expect(island).not.toContain('prefers-reduced-motion')
-    expect(titlebar).toContain('titlebarCenterOffsetY: titlebarRect')
     expect(titlebar).toContain('const anchor = compactAnchor(event)')
+    expect(titlebar).not.toContain('titlebarCenterOffsetY')
     expect(titlebar).toContain(".finally(() => emit('request:compact', anchor))")
   })
 
@@ -146,6 +147,7 @@ describe('single-window presentation architecture', () => {
 
   it('keeps titlebar dragging alive when Windows z-order work releases DOM pointer capture', () => {
     const titlebar = readFileSync(TITLEBAR_PATH, 'utf8')
+    const main = readFileSync(MAIN_PROCESS_PATH, 'utf8')
 
     expect(titlebar).toContain(
       "window.addEventListener('pointermove', onTitlebarPointerMove, true)"
@@ -156,6 +158,12 @@ describe('single-window presentation architecture', () => {
     expect(titlebar).toContain("window.addEventListener('blur', onTitlebarWindowBlur)")
     expect(titlebar).not.toContain("window.addEventListener('blur', onTitlebarWindowBlur, true)")
     expect(titlebar).toContain('继续使用窗口级监听')
+    expect(titlebar).toContain("scope: 'titlebar.drag.renderer'")
+    expect(titlebar).toContain('hasPointerCapture')
+    expect(titlebar).toContain("finishTitlebarPointer(event, 'pointercancel')")
+    expect(main).toContain("logger.info('titlebar.drag-lifecycle'")
+    expect(main).toContain('nativeZOrderBeforeReassert')
+    expect(main).toContain('nativeZOrderAfterReassert')
   })
 
   it('keeps locked windows expanded and explains why compact mode is unavailable', () => {

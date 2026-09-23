@@ -6,7 +6,6 @@ import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow, screen } from 'electron'
 import koffi from 'koffi'
-import { mainWindowBoundsFromTitlebarAnchor } from '../src/main/window-bounds.js'
 import { compactBoundsFromAnchor } from '../src/shared/window-compact-geometry.js'
 
 const root = mkdtempSync(join(tmpdir(), 'abandon-presentation-mode-'))
@@ -304,12 +303,6 @@ async function run() {
         Math.min(80, Math.max(0, workArea.width - originalBounds.width)),
       y: workArea.y + titlebarCenterOffsetY
     }
-    const anchoredExpandedBounds = mainWindowBoundsFromTitlebarAnchor(
-      originalBounds,
-      expandAnchor,
-      titlebarCenterOffsetY,
-      screen.getDisplayNearestPoint(expandAnchor).workArea
-    )
     await js(`document.querySelector('.compact-island').dispatchEvent(
       new MouseEvent('dblclick', {
         bubbles: true,
@@ -324,9 +317,7 @@ async function run() {
       'compact island double-click did not restore expanded mode'
     )
     assert.equal(hooks.getPresentationModeState().mode, 'expanded')
-    assert.deepEqual(window.getBounds(), anchoredExpandedBounds)
-    assert.equal(window.getBounds().x + window.getBounds().width / 2, expandAnchor.x)
-    assert.equal(window.getBounds().y + titlebarCenterOffsetY, expandAnchor.y)
+    assert.deepEqual(window.getBounds(), originalBounds)
     assert.equal(window.getNativeWindowHandle().toString('hex'), originalHandle)
     assert.equal(await js("Boolean(document.querySelector('.app-titlebar'))"), true)
     assert.equal(syncBlurGeometry(1_000), 1, 'blur geometry did not match restored expanded bounds')
@@ -484,7 +475,7 @@ async function run() {
 
     await hooks.openMainWindowFromTray()
     assert.equal(hooks.getPresentationModeState().mode, 'expanded')
-    assert.deepEqual(window.getBounds(), anchoredExpandedBounds)
+    assert.deepEqual(window.getBounds(), originalBounds)
     assert.equal(window.getNativeWindowHandle().toString('hex'), originalHandle)
 
     await hooks.enterCompactPresentation(secondAnchor)

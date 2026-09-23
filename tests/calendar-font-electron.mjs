@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
-import { app, BrowserWindow, screen } from 'electron'
+import { app, BrowserWindow } from 'electron'
 
 const WAIT_STEP_MS = 25
 const require = createRequire(import.meta.url)
@@ -66,12 +66,6 @@ function getWeekWindow() {
   return BrowserWindow.getAllWindows().find(
     (window) => !window.isDestroyed() && /\/week\.html(?:$|[?#])/.test(window.webContents.getURL())
   )
-}
-
-function addDays(dateKey, amount) {
-  const [year, month, day] = dateKey.split('-').map(Number)
-  const date = new Date(Date.UTC(year, month - 1, day + amount))
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`
 }
 
 const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-week-e2e-'))

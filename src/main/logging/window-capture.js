@@ -3,6 +3,8 @@ import { getRecentCrashDumps } from './process-capture.js'
 
 const contexts = new WeakMap()
 const attached = new WeakSet()
+const structuredConsoleMessages = new WeakMap()
+const STRUCTURED_CONSOLE_DEDUPE_MS = 2_000
 
 function contextFor(win) {
   return contexts.get(win) || { role: 'unknown-window' }
@@ -66,6 +68,50 @@ function isExpectedViteDevelopmentMessage(context, details) {
   }
 }
 
+export function noteStructuredRendererConsole(win, payload = {}) {
+  if (!win || win.isDestroyed()) return
+  const level = payload.level === 'warn' ? 'warning' : payload.level
+  if (!['warning', 'error'].includes(level)) return
+  if (!String(payload.scope || '').includes(`console-${payload.level}`)) return
+  const now = Date.now()
+  const entries = structuredConsoleMessages.get(win) || []
+  entries.push({
+    level,
+    message: String(payload.message || ''),
+    errorMessage: String(payload.error?.message || ''),
+    recordedAt: now
+  })
+  structuredConsoleMessages.set(
+    win,
+    entries.filter((entry) => now - entry.recordedAt <= STRUCTURED_CONSOLE_DEDUPE_MS).slice(-20)
+  )
+}
+
+function isCapturedByStructuredRendererConsole(win, context, details) {
+  if (!['main', 'month', 'week'].includes(context.role)) return false
+  const level = String(details?.level || '')
+  const message = String(details?.message || '')
+  const now = Date.now()
+  const entries = (structuredConsoleMessages.get(win) || []).filter(
+    (entry) => now - entry.recordedAt <= STRUCTURED_CONSOLE_DEDUPE_MS
+  )
+  const matchIndex = entries.findIndex(
+    (entry) =>
+      entry.level === level &&
+      (message === entry.message ||
+        (entry.message &&
+          message.includes(entry.message) &&
+          (!entry.errorMessage || message.includes(entry.errorMessage))))
+  )
+  if (matchIndex < 0) {
+    structuredConsoleMessages.set(win, entries)
+    return false
+  }
+  entries.splice(matchIndex, 1)
+  structuredConsoleMessages.set(win, entries)
+  return true
+}
+
 function recordWindowEvent(win, payload) {
   const context = contextFor(win)
   const diagnostic = getWindowDiagnosticContext(win)
@@ -99,6 +145,7 @@ export function attachWindowLogging(win) {
   webContents.on('console-message', (details) => {
     const context = contextFor(win)
     if (isExpectedViteDevelopmentMessage(context, details)) return
+    if (isCapturedByStructuredRendererConsole(win, context, details)) return
     const levelMap = {
       verbose: 'debug',
       info: 'info',

@@ -10,7 +10,7 @@ describe('便签正文局部文字颜色', () => {
     const ipc = read('../src/main/ipc/register-business-ipc.js')
     const preload = read('../src/preload/index.js')
 
-    expect(schema).toContain('export const DATABASE_SCHEMA_VERSION = 14')
+    expect(schema).toContain('export const DATABASE_SCHEMA_VERSION = 15')
     expect(schema).toContain("content_color_ranges TEXT  NOT NULL DEFAULT '[]'")
     expect(notes).toContain('reconcileNoteTextColorRanges(')
     expect(notes).toContain('export function updateNoteTextColor(')
@@ -45,7 +45,6 @@ describe('便签正文局部文字颜色', () => {
     for (const source of [noteEditor, listCreator, monthCreator]) {
       expect(source).toContain('<ColoredTextEditor')
       expect(source).toContain('v-model:color-ranges="contentColorRanges"')
-      expect(source).toContain('contentColorRanges')
     }
   })
 

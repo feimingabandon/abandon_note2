@@ -19,6 +19,28 @@ import { useMessage } from '../../composables/useMessage.js'
 import { weatherLocationKey } from '../../../../shared/weather-rules.js'
 import { buildDisplayableWeatherByDate, getWeatherForNote } from '../../utils/noteWeather.js'
 import { recentLocalDayRange } from '../../../../shared/calendar/calendar-date-rules.js'
+import {
+  createRefreshCauses,
+  traceViewRefresh,
+  summarizeViewNotes
+} from '../../utils/diagnosticEvidence.js'
+
+const refreshCauses = createRefreshCauses('list')
+function traceListLoad(mode, options, work, notes) {
+  const expectedSequence = loadSeq + 1
+  return traceViewRefresh(
+    'list',
+    {
+      mode,
+      statuses: [...statusFilter.value],
+      tagIds: [...tagFilterIds.value],
+      ...options?.diagnosticCauses
+    },
+    work,
+    () => summarizeViewNotes(notes()),
+    () => loadSeq === expectedSequence
+  )
+}
 
 const emit = defineEmits(['edit'])
 const { showMessage } = useMessage()
@@ -286,7 +308,15 @@ async function restoreScrollAnchor(anchor) {
   container.scrollTop += card.getBoundingClientRect().top - containerTop - anchor.offset
 }
 
-async function loadAll({ showLoading = true, preserveAnchor = false } = {}) {
+function loadAll(options = {}) {
+  return traceListLoad(
+    'timeline',
+    options,
+    () => loadAllData(options),
+    () => noteList.value
+  )
+}
+async function loadAllData({ showLoading = true, preserveAnchor = false } = {}) {
   const seq = ++loadSeq
   tagGroupGeneration++
   loadError.value = null
@@ -435,7 +465,15 @@ const customNormalLimit = ref(10) // 首 10，滚动后 20
 const customNormalLoading = ref(false)
 
 /** 自定义模式：并行加载置顶 + 日常首 10 条 */
-async function loadCustom({ showLoading = true, preserveAnchor = false } = {}) {
+function loadCustom(options = {}) {
+  return traceListLoad(
+    'custom',
+    options,
+    () => loadCustomData(options),
+    () => customList.value
+  )
+}
+async function loadCustomData({ showLoading = true, preserveAnchor = false } = {}) {
   const seq = ++loadSeq
   tagGroupGeneration++
   loadError.value = null
@@ -590,7 +628,15 @@ async function loadTagGroupPage(group, { reset = false, limit = null } = {}) {
   }
 }
 
-async function loadTagGroups({ showLoading = true, preserveAnchor = false } = {}) {
+function loadTagGroups(options = {}) {
+  return traceListLoad(
+    'tag-group',
+    options,
+    () => loadTagGroupsData(options),
+    () => tagGroups.value.flatMap((group) => group.notes || [])
+  )
+}
+async function loadTagGroupsData({ showLoading = true, preserveAnchor = false } = {}) {
   const seq = ++loadSeq
   const generation = ++tagGroupGeneration
   loadError.value = null
@@ -1229,10 +1275,10 @@ async function replayListRefresh() {
   }
 }
 
-async function refreshInBackground({ reenterIds = [] } = {}) {
+async function refreshInBackground({ reenterIds = [], diagnosticCauses } = {}) {
   const motionSeq = ++presenceMotionSeq
   const before = captureVisibleCardLayout()
-  const options = { showLoading: false, preserveAnchor: true }
+  const options = { showLoading: false, preserveAnchor: true, diagnosticCauses }
   let result
   if (sortMode.value === 'timeline') {
     result = await loadAll(options)
@@ -1342,12 +1388,14 @@ onMounted(async () => {
 let notesChangedTimer = null
 function refreshNotesWhenStatusIdle() {
   if (statusTransitions.size > 0) {
+    refreshCauses.defer('status-transition')
     notesChangedTimer = setTimeout(refreshNotesWhenStatusIdle, 100)
     return
   }
-  refreshInBackground()
+  refreshInBackground({ diagnosticCauses: refreshCauses.take() })
 }
-const stopNotesChanged = window.api.onNotesChanged?.(() => {
+const stopNotesChanged = window.api.onNotesChanged?.((payload) => {
+  refreshCauses.add(payload)
   clearTimeout(notesChangedTimer)
   notesChangedTimer = setTimeout(refreshNotesWhenStatusIdle, 80)
 })

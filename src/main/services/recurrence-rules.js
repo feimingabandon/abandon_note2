@@ -239,3 +239,35 @@ export function calculateNextRun(ruleInput, afterTimestamp, anchorTimestamp = af
   if (rule.frequency === 'quarterly') return quarterlyNext(rule, after, hour, minute)
   return yearlyNext(rule, after, hour, minute)
 }
+
+/**
+ * 在模板有效期内计算下一次规则节点。startAt 为包含边界，endAt 为包含边界；
+ * 返回 null 表示有效期内已经没有可生成节点。
+ */
+export function calculateNextRunInRange(
+  ruleInput,
+  afterTimestamp,
+  anchorTimestamp = afterTimestamp,
+  { startAt = null, endAt = null } = {}
+) {
+  const after = Number(afterTimestamp)
+  const anchor = Number(anchorTimestamp)
+  if (!Number.isFinite(after) || !Number.isFinite(anchor)) throw new Error('时间锚点无效')
+
+  const normalizedStart = Number(startAt)
+  const normalizedEnd = Number(endAt)
+  const hasStart = startAt !== null && startAt !== undefined && startAt !== ''
+  const hasEnd = endAt !== null && endAt !== undefined && endAt !== ''
+  if (hasStart && (!Number.isFinite(normalizedStart) || normalizedStart <= 0)) {
+    throw new Error('模板开始时间无效')
+  }
+  if (hasEnd && (!Number.isFinite(normalizedEnd) || normalizedEnd <= 0)) {
+    throw new Error('模板结束时间无效')
+  }
+  if (hasStart && hasEnd && normalizedEnd <= normalizedStart) {
+    throw new Error('模板结束时间必须晚于开始时间')
+  }
+  const boundedAfter = hasStart ? Math.max(after, normalizedStart - 1) : after
+  const next = calculateNextRun(ruleInput, boundedAfter, anchor)
+  return hasEnd && next > normalizedEnd ? null : next
+}

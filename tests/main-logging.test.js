@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -147,6 +147,56 @@ describe('main-process logging', () => {
     expect(records.at(-1)).toEqual({ type: 'diagnostic-system', schemaVersion: 1, snapshot })
   })
 
+  it('persists action correlation fields and can export only one run session', async () => {
+    const marker = `action-export-${Date.now()}`
+    logging.writeLog({
+      scope: 'action.note.save',
+      message: marker,
+      eventName: 'note.save',
+      phase: 'failure',
+      actionId: 'action-test-42',
+      outcome: 'failure',
+      durationMs: 17,
+      errorCode: 'SAVE_FAILED',
+      stage: 'ipc-handler'
+    })
+    logging.flushLogs()
+    const source = logging.getLogFiles()[0]
+    writeFileSync(
+      source.path,
+      `${JSON.stringify({
+        time: new Date().toISOString(),
+        sessionId: 'foreign-session',
+        message: `${marker}-foreign`
+      })}\n`,
+      { flag: 'a' }
+    )
+
+    const target = join(testUserData, 'diagnostics-session-export.jsonl')
+    await logging.exportLogs(
+      target,
+      { fixture: true },
+      { capturedAt: new Date().toISOString() },
+      { sessionId: logging.getCurrentSessionId() }
+    )
+    const records = readFileSync(target, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        schemaVersion: 2,
+        message: marker,
+        eventName: 'note.save',
+        phase: 'failure',
+        actionId: 'action-test-42',
+        errorCode: 'SAVE_FAILED',
+        stage: 'ipc-handler'
+      })
+    )
+    expect(records.some((record) => record.sessionId === 'foreign-session')).toBe(false)
+  })
+
   it('captures the Electron 43 console-message event details object', async () => {
     const marker = `console-event-${Date.now()}`
     const webContents = new EventEmitter()
@@ -194,6 +244,43 @@ describe('main-process logging', () => {
           minimized: false
         }
       }
+    })
+  })
+
+  it('deduplicates structured renderer console messages without dropping unmatched browser errors', async () => {
+    const marker = `structured-console-${Date.now()}`
+    const unmatchedMarker = `${marker}-browser-only`
+    const webContents = new EventEmitter()
+    webContents.id = 75
+    const win = new EventEmitter()
+    win.webContents = webContents
+    win.isDestroyed = () => false
+
+    windowCapture.setWindowLogContext(win, { role: 'main' })
+    windowCapture.attachWindowLogging(win)
+    windowCapture.noteStructuredRendererConsole(win, {
+      level: 'error',
+      scope: 'main-renderer.console-error',
+      message: marker
+    })
+    webContents.emit('console-message', {
+      level: 'error',
+      message: marker,
+      lineNumber: 5,
+      sourceId: 'NoteEditor.vue'
+    })
+    webContents.emit('console-message', {
+      level: 'error',
+      message: unmatchedMarker,
+      lineNumber: 6,
+      sourceId: 'chromium'
+    })
+
+    const result = await logging.queryLogs({ search: marker, limit: 10 })
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0]).toMatchObject({
+      scope: 'renderer.console',
+      message: unmatchedMarker
     })
   })
 
@@ -289,6 +376,28 @@ describe('main-process logging', () => {
     }).not.toThrow()
     expect(logging.loggingInternals.isConsoleStreamAvailable(stream)).toBe(false)
     expect(logging.loggingInternals.installConsoleStreamGuard(stream)).toBe(false)
+  })
+
+  it('keeps callers running when log storage is unavailable and writes again after recovery', async () => {
+    logging.flushLogs()
+    const directory = logging.getLogDirectory()
+    const backup = join(testUserData, 'logs-storage-failure-backup')
+    renameSync(directory, backup)
+    writeFileSync(directory, 'test-owned file blocks the log directory')
+    try {
+      expect(() => {
+        logging.logger.error('storage-failure-fixture', new Error('expected storage failure'))
+        logging.flushLogs()
+      }).not.toThrow()
+    } finally {
+      rmSync(directory)
+      renameSync(backup, directory)
+    }
+    const marker = 'logging-storage-recovered'
+    logging.logger.info('storage-recovery-fixture', marker)
+    logging.flushLogs()
+    const records = await logging.queryLogs({ search: marker, limit: 10 })
+    expect(records.items.some((record) => record.message === marker)).toBe(true)
   })
 
   it('does not install an unhandledRejection listener that changes Node fatal behavior', async () => {

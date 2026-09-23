@@ -28,6 +28,12 @@ import {
 import { createDefaultSettings, VIEW_MODES } from '../../../../shared/settings-schema.js'
 import { notesCoveringDate } from '../../../../shared/calendar/calendar-event-layout.js'
 import { isDisplayableWeatherDay } from '../../../../shared/weather-rules.js'
+import {
+  createRefreshCauses,
+  traceViewRefresh,
+  summarizeViewNotes,
+  reportEvidence
+} from '../../utils/diagnosticEvidence.js'
 
 const { showMessage } = useMessage()
 const props = defineProps({
@@ -50,6 +56,33 @@ const lastWeekDateKey = buildWeekGrid(MAX_CALENDAR_DATE).weekEnd
 const todayKey = useTodayKey()
 const defaultDayPanelSize = createDefaultSettings(props.viewMode).ui.dayPanelSize
 const calendarData = ref({ days: [], notes: [], recurringPreviews: [] })
+const refreshCauses = createRefreshCauses(props.viewMode)
+function traceCalendarLoad(metadata, work) {
+  const expectedSequence = loadSequence + 1
+  return traceViewRefresh(
+    props.viewMode,
+    metadata,
+    work,
+    () => ({
+      year: viewYear.value,
+      month: viewMonth.value,
+      weekStart: calendarData.value.weekStart,
+      ...summarizeViewNotes(calendarData.value.notes)
+    }),
+    () => loadSequence === expectedSequence
+  )
+}
+watch(
+  calendarData,
+  (data) =>
+    reportEvidence('view.data-committed', {
+      view: props.viewMode,
+      year: viewYear.value,
+      month: viewMonth.value,
+      ...summarizeViewNotes(data.notes)
+    }),
+  { flush: 'post' }
+)
 const recurringPreviewEnabled = ref(false)
 const recurringPreviewSaving = ref(false)
 const weatherEnabled = ref(false)
@@ -290,37 +323,47 @@ async function replaceCalendarData(data, { direction, nextSelection = '' } = {})
 }
 
 async function loadMonth(year = viewYear.value, month = viewMonth.value) {
+  return traceCalendarLoad({ reason: 'load-month', year, month }, () => loadMonthData(year, month))
+}
+async function loadMonthData(year, month) {
   const sequence = ++loadSequence
   loading.value = true
   loadError.value = ''
   try {
     const data = await window.api.getMonthCalendarData(year, month, calendarRequestOptions())
-    if (sequence !== loadSequence) return
+    if (sequence !== loadSequence) return { status: 'cancelled' }
     calendarData.value = data
     syncCalendarPeriod(data)
+    return { status: 'success' }
   } catch (error) {
-    if (sequence !== loadSequence) return
+    if (sequence !== loadSequence) return { status: 'cancelled' }
     console.error('[MonthWorkspace] 加载月历失败:', error)
     loadError.value = error.message || '月历加载失败'
+    return { status: 'error' }
   } finally {
     if (sequence === loadSequence) loading.value = false
   }
 }
 
 async function loadWeek(anchorDate = weekAnchorKey.value) {
+  return traceCalendarLoad({ reason: 'load-week', anchorDate }, () => loadWeekData(anchorDate))
+}
+async function loadWeekData(anchorDate) {
   const sequence = ++loadSequence
   loading.value = true
   loadError.value = ''
   try {
     const data = await window.api.getWeekCalendarData(anchorDate, calendarRequestOptions())
-    if (sequence !== loadSequence) return
+    if (sequence !== loadSequence) return { status: 'cancelled' }
     calendarData.value = data
     syncCalendarPeriod(data)
     if (!selectedKey.value) selectedKey.value = anchorDate
+    return { status: 'success' }
   } catch (error) {
-    if (sequence !== loadSequence) return
+    if (sequence !== loadSequence) return { status: 'cancelled' }
     console.error('[MonthWorkspace] 加载周历失败:', error)
     loadError.value = error.message || '周历加载失败'
+    return { status: 'error' }
   } finally {
     if (sequence === loadSequence) loading.value = false
   }
@@ -463,7 +506,12 @@ function jumpToDate(dateKey) {
   void navigateWeek(dateKey, { selectionKey: dateKey, focusIfCurrent: true })
 }
 
-async function refreshCalendarContent({ manual = false } = {}) {
+async function refreshCalendarContent({ manual = false, diagnosticCauses } = {}) {
+  return traceCalendarLoad({ reason: manual ? 'manual' : 'refresh', ...diagnosticCauses }, () =>
+    refreshCalendarData({ manual })
+  )
+}
+async function refreshCalendarData({ manual = false } = {}) {
   if (refreshing.value || transitioning.value) return
   if (manual) refreshing.value = true
   transitioning.value = true
@@ -477,7 +525,7 @@ async function refreshCalendarContent({ manual = false } = {}) {
           viewMonth.value,
           calendarRequestOptions()
         )
-    if (sequence !== loadSequence) return
+    if (sequence !== loadSequence) return { status: 'cancelled' }
     const outgoing = manual ? startRefreshContentAnimation('out') : []
     if (manual) await waitForAnimations(outgoing)
     calendarData.value = data
@@ -488,10 +536,12 @@ async function refreshCalendarContent({ manual = false } = {}) {
       await waitForAnimations(incoming)
       incoming.forEach((animation) => animation.cancel())
     }
+    return { status: 'success' }
   } catch (error) {
-    if (sequence !== loadSequence) return
+    if (sequence !== loadSequence) return { status: 'cancelled' }
     console.error('[MonthWorkspace] 同步日历失败:', error)
     loadError.value = error.message || `${calendarViewLabel.value}同步失败`
+    return { status: 'error' }
   } finally {
     if (manual) refreshing.value = false
     transitioning.value = false
@@ -806,15 +856,17 @@ function onBusinessModalKeydown(event, type) {
   trapModalTab(event, event.currentTarget)
 }
 
-function queueNotesRefresh() {
+function queueNotesRefresh(payload) {
+  if (payload) refreshCauses.add(payload)
   clearTimeout(notesChangedTimer)
   notesChangedTimer = setTimeout(() => {
     notesChangedTimer = null
     if (transitioning.value || statusTransitions.size > 0) {
+      refreshCauses.defer(transitioning.value ? 'calendar-transition' : 'status-transition')
       queueNotesRefresh()
       return
     }
-    void refreshCalendarContent()
+    void refreshCalendarContent({ diagnosticCauses: refreshCauses.take() })
   }, 40)
 }
 

@@ -1,3 +1,5 @@
+import { installInteractionEvidence } from './diagnosticEvidence.js'
+
 function serializeError(error, seen = new WeakSet()) {
   if (typeof error === 'bigint') return String(error)
   if (!error || typeof error !== 'object') return error
@@ -58,21 +60,25 @@ function installStructuredConsoleCapture(report, scope) {
               typeof value.message === 'string' &&
               ('stack' in value || 'code' in value || 'cause' in value))
         )
-        if (error) {
-          const message = args
-            .filter((value) => value !== error)
-            .map((value) =>
-              typeof value === 'string' ? value : JSON.stringify(serializeError(value))
-            )
-            .join(' ')
-          report({
-            level,
-            scope: `${scope}.console-${level}`,
-            message: message || error.message,
-            error,
-            metadata: { argumentCount: args.length }
+        const message = args
+          .filter((value) => value !== error)
+          .map((value) => {
+            if (typeof value === 'string') return value
+            try {
+              return JSON.stringify(serializeError(value))
+            } catch {
+              return String(value)
+            }
           })
-        }
+          .join(' ')
+        report({
+          level,
+          scope: `${scope}.console-${level}`,
+          message: message || error?.message || `${level} console message`,
+          error,
+          metadata: { argumentCount: args.length },
+          dedupeKey: error?.stack || `${level}|${message}`
+        })
       } catch {
         // 控制台增强失败时仍必须执行原始 console，不能反过来干扰业务错误处理。
       }
@@ -90,6 +96,7 @@ export function installBrowserErrorCapture(
   api,
   { scope = 'renderer', captureStructuredConsole = false } = {}
 ) {
+  installInteractionEvidence(api)
   const report = createReporter(api, scope)
   const restoreConsole = captureStructuredConsole
     ? installStructuredConsoleCapture(report, scope)

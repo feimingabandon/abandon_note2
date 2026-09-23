@@ -8,7 +8,7 @@ describe('便签备注', () => {
     const schema = read('../src/main/db/db-schema.js')
     const notes = read('../src/main/db/db-notes.js')
 
-    expect(schema).toContain('export const DATABASE_SCHEMA_VERSION = 14')
+    expect(schema).toContain('export const DATABASE_SCHEMA_VERSION = 15')
     expect(schema).toContain("ALTER TABLE notes ADD COLUMN remark TEXT NOT NULL DEFAULT ''")
     expect(schema).toContain("remark              TEXT    NOT NULL DEFAULT ''")
     expect(notes).toContain(

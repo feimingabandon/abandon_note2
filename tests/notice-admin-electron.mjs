@@ -5,6 +5,9 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
 import { app, BrowserWindow, net, nativeImage } from 'electron'
 
+// Keep Electron alive until asynchronous backend cleanup and explicit exit finish.
+app.on('window-all-closed', () => {})
+
 async function run() {
   const serverRoot = resolve(process.argv[2] || '../abandon_note_server_light')
   const qa = resolve('tmp/notice-markdown-qa')

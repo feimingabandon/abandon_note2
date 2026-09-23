@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { helpArticles, helpGroups } from './help-content.js'
+import { resolveHelpQuickLinks } from './help-quick-links.js'
 import { highlightHelp, searchHelp } from './help-search.js'
 import { createHelpScrollMotion } from './help-scroll-motion.js'
 import { stopScrollInertia } from '../../utils/smoothScroll.js'
@@ -32,9 +33,7 @@ const sections = helpGroups.map((group) => ({
     (article) => article.group === group.id && article.id !== 'safety-support'
   )
 }))
-const quickLinks = ['notes-create', 'notes-move', 'window-dock', 'safety-troubleshoot'].map((id) =>
-  helpArticles.find((article) => article.id === id)
-)
+const quickLinks = resolveHelpQuickLinks()
 const query = ref('')
 const hasQuery = computed(() => Boolean(query.value.trim()))
 const results = computed(() => searchHelp(helpArticles, query.value))

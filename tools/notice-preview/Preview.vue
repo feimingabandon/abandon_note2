@@ -31,6 +31,14 @@ const update = computed(() => ({
 function returnToEditor() {
   window.parent.postMessage({ type: 'abandon-notice-preview-exit' }, window.location.origin)
 }
+function onPreviewKeydown(event) {
+  // The desktop notice deliberately traps Escape; only the admin preview exits.
+  // Let the image viewer consume the first Escape before returning to the editor.
+  if (event.key !== 'Escape' || document.querySelector('.markdown-enlarged, .ipv-overlay')) return
+  event.preventDefault()
+  event.stopPropagation()
+  returnToEditor()
+}
 function receive(event) {
   if (
     event.source !== window.parent ||
@@ -57,9 +65,13 @@ watchEffect(() => {
 })
 onMounted(() => {
   window.addEventListener('message', receive)
+  window.addEventListener('keydown', onPreviewKeydown, true)
   window.parent.postMessage({ type: 'abandon-notice-preview-ready' }, window.location.origin)
 })
-onBeforeUnmount(() => window.removeEventListener('message', receive))
+onBeforeUnmount(() => {
+  window.removeEventListener('message', receive)
+  window.removeEventListener('keydown', onPreviewKeydown, true)
+})
 </script>
 
 <template>

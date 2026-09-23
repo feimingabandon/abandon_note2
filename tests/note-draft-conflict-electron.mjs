@@ -3,7 +3,13 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { app } from 'electron'
-import { initDatabase, closeDatabase, getDb } from '../src/main/db/db.js'
+import {
+  initDatabase,
+  closeDatabase,
+  getDb,
+  cleanupPendingAttachmentDirs
+} from '../src/main/db/db.js'
+import { flushLogs } from '../src/main/logging/logger.js'
 import {
   completeNote,
   createNote,
@@ -30,13 +36,26 @@ app.whenReady().then(async () => {
     initDatabase()
     const handlers = new Map()
     const broadcasts = []
+    let failBroadcast = false
     const window = {
       isDestroyed: () => false,
-      webContents: { isDestroyed: () => false, send: (...args) => broadcasts.push(args) }
+      webContents: {
+        isDestroyed: () => false,
+        send: (...args) => {
+          if (failBroadcast) throw new Error('injected post-commit broadcast failure')
+          broadcasts.push(args)
+        }
+      }
+    }
+    const healthyBroadcasts = []
+    const healthyWindow = {
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send: (...args) => healthyBroadcasts.push(args) }
     }
     registerBusinessIpcHandlers({
       ipcMain: { handle: (name, callback) => handlers.set(name, callback) },
-      getMainWindow: () => window
+      getMainWindow: () => window,
+      getBroadcastWindows: () => [window, healthyWindow]
     })
     const save = (note, patch = {}) =>
       handlers.get('notes:save-draft')(
@@ -212,6 +231,40 @@ app.whenReady().then(async () => {
     assert.equal(retried.attachments.length, 1)
     assert.notEqual(retried.attachments[0].id, attachment.id)
     assert.equal(existsSync(resolveImagePath(committed.relativePath)), false)
+    failBroadcast = true
+    const broadcastCount = healthyBroadcasts.length
+    const createdWithFailure = await handlers.get('notes:create-with-assets')(
+      { sender: window.webContents },
+      { options: { content: 'committed despite broadcast failure' }, images: [image], tagIds: [] }
+    )
+    const oldPath = createdWithFailure.attachments[0].file_path
+    assert.equal(readFileSync(resolveImagePath(oldPath), 'utf8'), 'isolated attachment bytes')
+    const savedWithFailure = await save(createdWithFailure, {
+      addedImages: [image],
+      deletedImageIds: [createdWithFailure.attachments[0].id]
+    })
+    assert.equal(existsSync(resolveImagePath(oldPath)), false)
+    const batchNote = createNote({ content: 'batch broadcast failure' })
+    const batchResult = await handlers.get('images:save-batch')(
+      { sender: window.webContents },
+      { noteId: batchNote.id, images: [image] }
+    )
+    assert.equal(batchResult.length, 1)
+    assert.equal(healthyBroadcasts.length, broadcastCount + 3)
+    // Recovery must retain the committed records and their exact file contents.
+    await cleanupPendingAttachmentDirs()
+    for (const noteId of [savedWithFailure.id, batchNote.id]) {
+      const persisted = getNoteById(noteId)
+      assert.equal(persisted.attachments.length, 1)
+      assert.equal(
+        readFileSync(resolveImagePath(persisted.attachments[0].file_path), 'utf8'),
+        'isolated attachment bytes'
+      )
+    }
+    assert.deepEqual(existsSync(stagingRoot) ? readdirSync(stagingRoot) : [], [])
+    console.log(
+      'post-commit broadcast failure: create, draft replacement, batch and recovery passed'
+    )
     console.log(
       'note draft conflicts: fresh save, missing version, same-ms content, concurrent status change, tags, attachments, staging race and retry passed'
     )
@@ -220,6 +273,7 @@ app.whenReady().then(async () => {
     exitCode = 1
   } finally {
     closeDatabase()
+    await flushLogs()
     rmSync(testRoot, { recursive: true, force: true })
     app.exit(exitCode)
   }

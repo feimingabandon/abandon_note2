@@ -4,14 +4,14 @@ import { resolve } from 'node:path'
 import koffi from 'koffi'
 
 const HANDLE = koffi.pointer('HANDLE', koffi.opaque())
-const HWND = koffi.alias('HWND', HANDLE)
+koffi.alias('HWND', HANDLE)
 const GW_HWNDFIRST = 0
 const GW_HWNDNEXT = 2
 const SWP_NOSIZE = 0x0001
 const SWP_NOMOVE = 0x0002
 const SWP_NOACTIVATE = 0x0010
 const OVERLAY_CLASS_NAME = 'BlurOverlayWindow'
-const RECT = koffi.struct('RECT', {
+koffi.struct('RECT', {
   left: 'int32_t',
   top: 'int32_t',
   right: 'int32_t',
@@ -56,7 +56,8 @@ app.once('ready', async () => {
     )
     const isWindowVisible = user32.func('int IsWindowVisible(HWND hWnd)')
     const getWindowRect = user32.func('int GetWindowRect(HWND hWnd, _Out_ RECT *bounds)')
-    const blurDllPath = process.env.ABANDON_INTEGRATION_NATIVE_DLL ||
+    const blurDllPath =
+      process.env.ABANDON_INTEGRATION_NATIVE_DLL ||
       resolve('native_blur', 'build', 'bin', 'blur_engine.dll')
     const blurLibrary = koffi.load(blurDllPath)
     const blurInit = blurLibrary.func('Blur_Init', 'int', ['intptr_t'])
@@ -101,7 +102,9 @@ app.once('ready', async () => {
     })
     windows.push(mainWindow, interloperWindow)
     await Promise.all([
-      mainWindow.loadURL('data:text/html,<body style="margin:0;background:rgba(255,255,255,.2)"></body>'),
+      mainWindow.loadURL(
+        'data:text/html,<body style="margin:0;background:rgba(255,255,255,.2)"></body>'
+      ),
       interloperWindow.loadURL('data:text/html,<body>interloper</body>')
     ])
 
@@ -114,9 +117,8 @@ app.once('ready', async () => {
     while (candidate) {
       const classNameBuffer = Buffer.allocUnsafe(256)
       const classNameLength = getClassName(candidate, classNameBuffer, classNameBuffer.length)
-      const className = classNameLength > 0
-        ? classNameBuffer.toString('ascii', 0, classNameLength)
-        : ''
+      const className =
+        classNameLength > 0 ? classNameBuffer.toString('ascii', 0, classNameLength) : ''
 
       const ownerProcessId = [null]
       getWindowThreadProcessId(candidate, ownerProcessId)

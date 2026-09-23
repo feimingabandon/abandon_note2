@@ -9,6 +9,36 @@ export const MAX_DAILY_INTERVAL = 3650
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
 
+function padDateTimePart(value) {
+  return String(value).padStart(2, '0')
+}
+
+export function formatTemplateDateTime(timestamp) {
+  if (timestamp === null || timestamp === undefined || timestamp === '') return ''
+  const date = new Date(Number(timestamp))
+  if (Number.isNaN(date.getTime())) return ''
+  return `${date.getFullYear()}-${padDateTimePart(date.getMonth() + 1)}-${padDateTimePart(date.getDate())} ${padDateTimePart(date.getHours())}:${padDateTimePart(date.getMinutes())}:${padDateTimePart(date.getSeconds())}`
+}
+
+export function parseTemplateDateTime(value) {
+  if (!value) return null
+  const match = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})$/.exec(String(value))
+  if (!match) return Number.NaN
+  const [year, month, day, hour, minute, second] = match.slice(1).map(Number)
+  const date = new Date(year, month - 1, day, hour, minute, second, 0)
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day ||
+    date.getHours() !== hour ||
+    date.getMinutes() !== minute ||
+    date.getSeconds() !== second
+  ) {
+    return Number.NaN
+  }
+  return date.getTime()
+}
+
 export function normalizeYearDates(values) {
   const unique = new Map()
   for (const value of values || []) {
@@ -59,6 +89,16 @@ export function templateState(template) {
   if (Number(template?.is_deleted) === 1) return { key: 'deleted', label: '已删除' }
   if (Number(template?.is_paused) === 1 && template?.pause_reason === 'error')
     return { key: 'error', label: '错误暂停' }
+  if (
+    Number(template?.is_paused) === 1 &&
+    (template?.pause_reason === null || template?.pause_reason === undefined) &&
+    template?.end_at !== null &&
+    template?.end_at !== undefined &&
+    template?.end_at !== '' &&
+    Number.isFinite(Number(template?.end_at)) &&
+    (template?.next_run_at === null || template?.next_run_at === undefined)
+  )
+    return { key: 'ended', label: '已结束' }
   if (Number(template?.is_paused) === 1) return { key: 'paused', label: '已暂停' }
   return { key: 'running', label: '运行中' }
 }
@@ -66,7 +106,15 @@ export function templateState(template) {
 export function filterAndSortTemplates(templates, filters) {
   const text = String(filters.text || '').toLocaleLowerCase()
   const selectedTags = filters.tags || []
+  const selectedStates = filters.states || []
   const rows = (templates || []).filter((template) => {
+    const state =
+      Number(template.is_deleted) === 1
+        ? 'deleted'
+        : Number(template.is_paused) === 1
+          ? 'paused'
+          : 'running'
+    if (selectedStates.length && !selectedStates.includes(state)) return false
     const rule = parseTemplateRule(template.recurrence_rule)
     if (
       text &&
@@ -136,6 +184,8 @@ export function createTemplateFormSnapshot(payload = {}) {
   return JSON.stringify({
     content: String(payload.content ?? ''),
     recurrenceRule: payload.recurrenceRule || null,
+    startAt: payload.startAt ?? null,
+    endAt: payload.endAt ?? null,
     notifyEnabled: Boolean(payload.notifyEnabled),
     isPinned: Boolean(payload.isPinned),
     tagIds: [...(payload.tagIds || [])].map(Number).sort((a, b) => a - b)

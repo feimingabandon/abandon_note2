@@ -215,6 +215,7 @@ export class ScreenshotService {
       })
       setWindowLogContext(window, { role: 'screenshot', displayId: String(targetDisplay.id) })
       this.window = window
+      const webContents = window.webContents
 
       let settled = false
       let confirming = false
@@ -223,16 +224,18 @@ export class ScreenshotService {
         settled = true
         this.ipcMain.removeListener('screenshot:confirm', onConfirm)
         this.ipcMain.removeListener('screenshot:cancel', onCancel)
-        if (!window.isDestroyed()) window.close()
+        webContents.removeListener('render-process-gone', onRendererGone)
+        if (!window.isDestroyed()) window.destroy()
         if (this.window === window) this.window = null
         resolve(result)
       }
       const onConfirm = async (event, selection) => {
-        if (event.sender !== window.webContents || confirming || settled) return
+        if (event.sender !== webContents || confirming || settled) return
         confirming = true
         window.hide()
         try {
           await new Promise((resolveDelay) => setTimeout(resolveDelay, 60))
+          if (settled) return
           done(cropScreenshot(selection, await captureTargetDisplay()))
         } catch (error) {
           console.error('[screenshot] 保存截图失败:', error)
@@ -240,11 +243,20 @@ export class ScreenshotService {
         }
       }
       const onCancel = (event) => {
-        if (event.sender === window.webContents) done(null)
+        if (event.sender === webContents) done(null)
+      }
+      const onRendererGone = (_event, details) => {
+        logger.error('screenshot.renderer-gone', new Error('截图渲染进程已退出'), {
+          displayId: targetDisplay.id,
+          reason: details.reason,
+          exitCode: details.exitCode
+        })
+        done(null)
       }
 
       this.ipcMain.on('screenshot:confirm', onConfirm)
       this.ipcMain.on('screenshot:cancel', onCancel)
+      webContents.on('render-process-gone', onRendererGone)
       window.on('closed', () => done(null))
       window
         .loadURL(
@@ -256,6 +268,7 @@ export class ScreenshotService {
           )}`
         )
         .then(() => {
+          if (settled || window.isDestroyed()) return
           window.show()
           window.focus()
           if (!requestEvent.sender.isDestroyed()) requestEvent.sender.send('screenshot:ready')

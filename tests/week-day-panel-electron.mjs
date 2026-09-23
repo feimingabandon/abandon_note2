@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
 import { verifyCalendarCountPreview } from './calendar-count-preview-helper.mjs'
+import { traceRendererExpressions } from './helpers/renderer-evidence.mjs'
 
 const WAIT_STEP_MS = 25
 const require = createRequire(import.meta.url)
@@ -90,6 +91,8 @@ try {
 async function runWeekDayPanelTests() {
   try {
     const weekWindow = await waitUntil(() => getWeekWindow(), '周视图未按 active_view 启动')
+    traceRendererExpressions(weekWindow, 'week-day-panel')
+    await waitUntil(() => weekWindow.isVisible(), '周视图尚未完成首次展示')
     await waitUntil(
       () =>
         weekWindow.webContents.executeJavaScript(
@@ -184,6 +187,27 @@ async function runWeekDayPanelTests() {
       false,
       '周视图当日预览不应自动展开日期列表'
     )
+    assert.equal(
+      await weekWindow.webContents.executeJavaScript(
+        `document.querySelector('.month-day-preview [aria-label="当天没有可操作的真实便签"]')?.disabled`
+      ),
+      true,
+      '空日期预览应禁用展开操作列表'
+    )
+    await weekWindow.webContents.executeJavaScript(`(async () => {
+      await window.api.createNote({
+        content: '周视图日期列表专项便签',
+        effectiveAt: new Date('${targetKey}T00:01:00').getTime(),
+        durationDays: 1
+      })
+    })()`)
+    await waitUntil(
+      () =>
+        weekWindow.webContents.executeJavaScript(
+          `document.querySelector('.month-day-preview [aria-label="展开左侧操作列表"]')?.disabled === false`
+        ),
+      '创建真实便签后预览没有启用展开操作列表'
+    )
     await weekWindow.webContents.executeJavaScript(
       `document.querySelector('.month-day-preview [aria-label="展开左侧操作列表"]').click()`
     )
@@ -211,12 +235,12 @@ async function runWeekDayPanelTests() {
       '周视图工具栏没有收起预览打开的日期列表'
     )
     await weekWindow.webContents.executeJavaScript(
-      `document.querySelector('.month-day-cell[data-date="${initial.selectedKey}"] .month-day-cell__quick-activate').click()`
+      `document.querySelector('.month-day-cell[data-date="${targetKey}"] .month-day-cell__quick-activate').click()`
     )
     await waitUntil(
       () =>
         weekWindow.webContents.executeJavaScript(
-          `document.activeElement?.matches('.month-day-cell[data-date="${initial.selectedKey}"] .month-day-cell__quick-create input')`
+          `document.activeElement?.matches('.month-day-cell[data-date="${targetKey}"] .month-day-cell__quick-create input')`
         ),
       '周视图日期格没有打开快速新建输入框'
     )

@@ -265,7 +265,7 @@ async function handleSave() {
       expectedVersion: initialVersion.value,
       fields: {
         content: text,
-        contentColorRanges: contentColorRanges.value,
+        contentColorRanges: normalizeNoteTextColorRanges(contentColorRanges.value, text),
         status: status.value,
         effectiveAt: requestedEffectiveAt,
         durationKind: durationKind.value,
@@ -393,7 +393,12 @@ const protectedDraft = useDraftProtection({
       <button class="ne-dismiss" :disabled="saving" @click="requestClose">
         {{ hasChanges ? '放弃修改' : '关闭' }}
       </button>
-      <button class="ne-submit" :disabled="!canSave || !hasChanges || saving" @click="handleSave">
+      <button
+        class="ne-submit"
+        data-diagnostic-action="note.save"
+        :disabled="!canSave || !hasChanges || saving"
+        @click="handleSave"
+      >
         {{ saving ? '保存中…' : '保存修改' }}
       </button>
     </div>

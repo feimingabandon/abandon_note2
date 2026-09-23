@@ -1,15 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
-import {
-  assertMainWindowSender,
-  createMainWindowIpc
-} from '../src/main/ipc/ipc-authorization.js'
+import { assertMainWindowSender, createMainWindowIpc } from '../src/main/ipc/ipc-authorization.js'
 
 describe('主窗口 IPC 授权', () => {
   it('只允许当前主窗口的 webContents', () => {
     const webContents = {}
     const getMainWindow = () => ({ isDestroyed: () => false, webContents })
 
-    expect(() => assertMainWindowSender({ sender: webContents }, getMainWindow, '测试功能')).not.toThrow()
+    expect(() =>
+      assertMainWindowSender({ sender: webContents }, getMainWindow, '测试功能')
+    ).not.toThrow()
     expect(() => assertMainWindowSender({ sender: {} }, getMainWindow, '测试功能')).toThrow(
       '无权访问测试功能'
     )

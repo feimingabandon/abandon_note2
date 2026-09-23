@@ -20,6 +20,38 @@ bool g_enabled = false;
 bool g_applying = false;
 bool g_lastApplySucceeded = false;
 std::atomic_bool g_syncPending{false};
+std::atomic<unsigned long long> g_syncRequestCount{0};
+std::atomic<unsigned long long> g_syncPostCount{0};
+std::atomic<unsigned long long> g_anchorCheckCount{0};
+std::atomic<unsigned long long> g_anchorNoopCount{0};
+std::atomic<unsigned long long> g_anchorApplyCount{0};
+std::atomic<unsigned long long> g_lastAnchorApplyTickMs{0};
+
+enum class SyncReason : unsigned int {
+    Unknown = 0,
+    ForegroundEvent = 1,
+    ReorderEvent = 2,
+    TaskbarCreated = 3,
+    WindowPosChanged = 4,
+    SetFocus = 5,
+    Activate = 6,
+    ShowWindow = 7,
+};
+
+std::atomic<unsigned int> g_lastSyncReason{static_cast<unsigned int>(SyncReason::Unknown)};
+
+const char* SyncReasonName(unsigned int reason) {
+    switch (static_cast<SyncReason>(reason)) {
+    case SyncReason::ForegroundEvent: return "foreground-event";
+    case SyncReason::ReorderEvent: return "reorder-event";
+    case SyncReason::TaskbarCreated: return "taskbar-created";
+    case SyncReason::WindowPosChanged: return "window-pos-changed";
+    case SyncReason::SetFocus: return "set-focus";
+    case SyncReason::Activate: return "activate";
+    case SyncReason::ShowWindow: return "show-window";
+    default: return "unknown";
+    }
+}
 
 UINT SyncMessage() {
     static const UINT message = RegisterWindowMessageW(L"AbandonNote.WindowZOrder.Sync.v1");
@@ -129,6 +161,7 @@ bool IsAbove(HWND upper, HWND lower) {
 
 bool AnchorWindowAndOverlay() {
     if (!g_enabled || !g_target || !IsWindow(g_target)) return false;
+    g_anchorCheckCount.fetch_add(1);
 
     const HWND overlay = GetOverlayWindow();
     const DesktopRelation desktopRelation = GetDesktopRelation(g_target);
@@ -137,10 +170,13 @@ bool AnchorWindowAndOverlay() {
         CountOrdinaryVisibleWindowsBelow(g_target) == 0;
     const bool overlayAlreadyAdjacent = !overlay || GetWindow(g_target, GW_HWNDNEXT) == overlay;
     if (mainAlreadyAnchored && overlayAlreadyAdjacent) {
+        g_anchorNoopCount.fetch_add(1);
         g_lastApplySucceeded = true;
         return true;
     }
 
+    g_anchorApplyCount.fetch_add(1);
+    g_lastAnchorApplyTickMs.store(GetTickCount64());
     g_applying = true;
     const UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
     HWND insertionAfter = nullptr;
@@ -160,11 +196,17 @@ bool AnchorWindowAndOverlay() {
     return g_lastApplySucceeded;
 }
 
-void QueueSync() {
+void QueueSync(SyncReason reason) {
     if (!g_enabled || !g_target || !IsWindow(g_target)) return;
+    g_syncRequestCount.fetch_add(1);
+    g_lastSyncReason.store(static_cast<unsigned int>(reason));
     bool expected = false;
     if (!g_syncPending.compare_exchange_strong(expected, true)) return;
-    if (!PostMessageW(g_target, SyncMessage(), 0, 0)) g_syncPending.store(false);
+    if (PostMessageW(g_target, SyncMessage(), 0, 0)) {
+        g_syncPostCount.fetch_add(1);
+    } else {
+        g_syncPending.store(false);
+    }
 }
 
 void UnhookEvents() {
@@ -202,13 +244,18 @@ void ResetState(bool removeSubclass) {
 
 void CALLBACK WinEventProc(
     HWINEVENTHOOK,
-    DWORD,
+    DWORD event,
     HWND,
     LONG,
     LONG,
     DWORD,
     DWORD) {
-    QueueSync();
+    QueueSync(
+        event == EVENT_SYSTEM_FOREGROUND
+            ? SyncReason::ForegroundEvent
+            : event == EVENT_OBJECT_REORDER
+                ? SyncReason::ReorderEvent
+                : SyncReason::Unknown);
 }
 
 LRESULT CALLBACK BottomSubclassProc(
@@ -224,7 +271,7 @@ LRESULT CALLBACK BottomSubclassProc(
         return 0;
     }
 
-    if (message == TaskbarCreatedMessage()) QueueSync();
+    if (message == TaskbarCreatedMessage()) QueueSync(SyncReason::TaskbarCreated);
 
     switch (message) {
     case WM_WINDOWPOSCHANGING:
@@ -243,12 +290,16 @@ LRESULT CALLBACK BottomSubclassProc(
         }
         break;
     case WM_WINDOWPOSCHANGED:
+        if (!g_applying) QueueSync(SyncReason::WindowPosChanged);
+        break;
     case WM_SETFOCUS:
+        if (!g_applying) QueueSync(SyncReason::SetFocus);
+        break;
     case WM_ACTIVATE:
-        if (!g_applying) QueueSync();
+        if (!g_applying) QueueSync(SyncReason::Activate);
         break;
     case WM_SHOWWINDOW:
-        if (wParam != FALSE) QueueSync();
+        if (wParam != FALSE) QueueSync(SyncReason::ShowWindow);
         break;
     case WM_NCDESTROY: {
         const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
@@ -344,7 +395,7 @@ int Reassert(HWND hwnd) {
 }
 
 const char* GetStatusJson(HWND hwnd) {
-    thread_local char json[768]{};
+    thread_local char json[1024]{};
     const bool targetValid = g_target && IsWindow(g_target);
     const bool requestedMatches = hwnd && targetValid && hwnd == g_target;
     const HWND overlay = GetOverlayWindow();
@@ -356,12 +407,16 @@ const char* GetStatusJson(HWND hwnd) {
     const bool desktopBehind = requestedMatches && desktopRelation.targetFound &&
         desktopRelation.above == 0 && desktopRelation.below > 0;
     const bool anchored = g_enabled && requestedMatches && ordinaryBelow == 0 && desktopBehind;
+    const unsigned int lastSyncReason = g_lastSyncReason.load();
     sprintf_s(
         json,
         "{\"enabled\":%s,\"targetValid\":%s,\"requestedMatches\":%s,"
         "\"anchored\":%s,\"ordinaryWindowsBelow\":%d,\"desktopBehind\":%s,"
         "\"desktopWindowsAbove\":%d,\"desktopWindowsBelow\":%d,\"overlayValid\":%s,"
-        "\"overlayBehind\":%s,\"lastApplySucceeded\":%s,\"ownerThreadId\":%lu}",
+        "\"overlayBehind\":%s,\"lastApplySucceeded\":%s,\"ownerThreadId\":%lu,"
+        "\"syncPending\":%s,\"syncRequestCount\":%llu,\"syncPostCount\":%llu,"
+        "\"anchorCheckCount\":%llu,\"anchorNoopCount\":%llu,\"anchorApplyCount\":%llu,"
+        "\"lastSyncReason\":\"%s\",\"lastAnchorApplyTickMs\":%llu}",
         g_enabled ? "true" : "false",
         targetValid ? "true" : "false",
         requestedMatches ? "true" : "false",
@@ -373,7 +428,15 @@ const char* GetStatusJson(HWND hwnd) {
         overlay ? "true" : "false",
         overlayBehind ? "true" : "false",
         g_lastApplySucceeded ? "true" : "false",
-        static_cast<unsigned long>(g_ownerThreadId));
+        static_cast<unsigned long>(g_ownerThreadId),
+        g_syncPending.load() ? "true" : "false",
+        g_syncRequestCount.load(),
+        g_syncPostCount.load(),
+        g_anchorCheckCount.load(),
+        g_anchorNoopCount.load(),
+        g_anchorApplyCount.load(),
+        SyncReasonName(lastSyncReason),
+        g_lastAnchorApplyTickMs.load());
     return json;
 }
 

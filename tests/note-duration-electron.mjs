@@ -332,7 +332,7 @@ async function runTests() {
     })()`)
     assert.equal(
       await window.webContents.executeJavaScript(
-        `document.querySelector('.note-duration-field .sel-trigger').textContent.trim()`
+        `document.querySelector('.nnp-body .note-duration-field .sel-trigger').textContent.trim()`
       ),
       '仅当天',
       '持续方式默认值必须为仅当天'
@@ -343,7 +343,7 @@ async function runTests() {
     )
     assert.equal(
       await window.webContents.executeJavaScript(
-        `Boolean(document.querySelector('.note-duration-field'))`
+        `Boolean(document.querySelector('.nnp-body .note-duration-field'))`
       ),
       true,
       '立即生效便签也必须可以选择持续方式'
@@ -362,24 +362,31 @@ async function runTests() {
       shortcut.click()
       document.querySelector('.dt-btn--confirm').click()
     })()`)
+    await waitUntil(
+      () => window.webContents.executeJavaScript(`!document.querySelector('.dt-panel-wrap')`),
+      '生效时间选择器未关闭'
+    )
     await window.webContents.executeJavaScript(
-      `document.querySelector('.note-duration-field .sel-trigger').click()`
+      `document.querySelector('.nnp-body .note-duration-field .sel-trigger').click()`
     )
     await waitUntil(
       () =>
         window.webContents.executeJavaScript(
-          `Boolean(Array.from(document.querySelectorAll('.sel-panel button')).find((node) => node.textContent.trim() === '指定天数'))`
+          `Boolean(document.querySelector('.sel-panel button[data-value="fixed_days"]'))`
         ),
       '持续方式下拉框未打开'
     )
-    await window.webContents.executeJavaScript(`(() => {
-      const option = Array.from(document.querySelectorAll('.sel-panel button')).find((node) => node.textContent.trim() === '指定天数')
-      option.click()
-    })()`)
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.sel-panel button[data-value="fixed_days"]').click()`
+    )
+    await waitUntil(
+      () => window.webContents.executeJavaScript(`!document.querySelector('.sel-panel-wrap')`),
+      '持续方式下拉框未关闭'
+    )
     await waitUntil(
       () =>
         window.webContents.executeJavaScript(
-          `Boolean(document.querySelector('.note-duration-field input'))`
+          `Boolean(document.querySelector('.nnp-body .note-duration-field input'))`
         ),
       '选择指定天数后未显示数字控件'
     )
@@ -388,7 +395,7 @@ async function runTests() {
       const textarea = document.querySelector('.nnp-body .rt-textarea')
       textarea.value = '月视图跨日便签'
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
-      const duration = document.querySelector('.note-duration-field input')
+      const duration = document.querySelector('.nnp-body .note-duration-field input')
       duration.value = '3'
       duration.dispatchEvent(new Event('input', { bubbles: true }))
     })()`)
@@ -450,14 +457,24 @@ async function runTests() {
     await waitUntil(
       () =>
         window.webContents.executeJavaScript(
-          `Boolean(Array.from(document.querySelectorAll('.sel-panel button')).find((node) => node.textContent.trim() === '持续到完成'))`
+          `Boolean(document.querySelector('.sel-panel button[data-value="until_completed"]'))`
         ),
       '修改器持续方式下拉框未打开'
     )
-    await window.webContents.executeJavaScript(`(() => {
-      const option = Array.from(document.querySelectorAll('.sel-panel button')).find((node) => node.textContent.trim() === '持续到完成')
-      option.click()
-    })()`)
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.sel-panel button[data-value="until_completed"]').click()`
+    )
+    await waitUntil(
+      () =>
+        window.webContents.executeJavaScript(
+          `document.querySelector('.ne-root .note-duration-field .sel-trigger').textContent.trim() === '持续到完成'`
+        ),
+      '修改器未切换到持续到完成模式'
+    )
+    await waitUntil(
+      () => window.webContents.executeJavaScript(`!document.querySelector('.sel-panel-wrap')`),
+      '修改器持续方式下拉框未关闭'
+    )
     await waitUntil(
       () => window.webContents.executeJavaScript(`!document.querySelector('.ne-submit').disabled`),
       '修改便签保存按钮未启用'
@@ -489,8 +506,9 @@ async function runTests() {
     const confirmText = await window.webContents.executeJavaScript(
       `document.querySelector('.confirm-message').textContent`
     )
-    assert.match(confirmText, /持续 5 天/)
-    assert.match(confirmText, /日历视图/)
+    assert.match(confirmText, /持续到完成/)
+    assert.match(confirmText, /直到标记完成/)
+    assert.doesNotMatch(confirmText, /持续 \d+ 天/)
 
     report(
       'legacy migration, animated duration field, create, edit and early-start confirmation passed'

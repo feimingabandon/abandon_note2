@@ -310,11 +310,18 @@ async function run() {
       'template lazy load'
     )
     await js("document.querySelector('.tp-filter-button').click()")
-    await until(() => js("Boolean(document.querySelector('.sel-trigger'))"), 'select trigger')
+    await until(
+      () => js("Boolean(document.querySelector('.tp-filter-shell .sel-trigger'))"),
+      'select trigger'
+    )
     current.setBounds({ width: 240, height: 460 })
     await new Promise((resolve) => setTimeout(resolve, 350))
-    await js("document.querySelector('.sel-trigger').click()")
+    await js("document.querySelector('.tp-filter-shell .sel-trigger').click()")
     await until(() => js("Boolean(document.querySelector('.sel-panel-wrap'))"), 'select panel')
+    await until(
+      () => js("Boolean(document.activeElement.closest('.sel-panel-wrap'))"),
+      'select opening transfers keyboard focus into the panel'
+    )
     const selectBounds = await js(
       "(()=>{const r=document.querySelector('.sel-panel-wrap').getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,bottom:r.bottom,w:innerWidth,h:innerHeight}})()"
     )
@@ -328,7 +335,13 @@ async function run() {
     await js(
       "document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true}));document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))"
     )
-    assert.equal(await js("document.activeElement.matches('.sel-trigger')"), true)
+    await until(
+      () =>
+        js(
+          "document.activeElement.matches('.tp-filter-shell .sel-trigger') && !document.querySelector('.sel-panel-wrap')"
+        ),
+      'Escape closes the select and restores trigger focus'
+    )
     results.push('select keyboard focus and narrow-window bounds')
     await js("document.querySelector('.titlebar-btn-template').click()")
     await until(() => js("!document.querySelector('.tp-filter-button')"), 'template closed')

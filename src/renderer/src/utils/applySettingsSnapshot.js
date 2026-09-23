@@ -4,6 +4,8 @@
  * 默认值、数据库回退和数值校验均由共享 schema / 主进程负责；这里仅负责把
  * 已解析的值映射为 CSS 自定义属性，避免 App 与 SettingsPanel 各维护一套映射。
  */
+import { reportEvidence } from './diagnosticEvidence.js'
+
 const GLASS_PRESETS = Object.freeze({
   select: { blurRatio: 1.2, blurMax: 16, opacityRatio: 1.6, opacityMax: 0.72 },
   complex: { blurRatio: 2, blurMax: 24, opacityRatio: 1.35, opacityMax: 0.65 },
@@ -74,4 +76,16 @@ export function applySettingsSnapshot(snapshot, root = document.documentElement)
   if (cornerRadius !== undefined) {
     root.style.setProperty('--window-radius', `${cornerRadius}px`)
   }
+  // CSS 提交证据，不声称整页所有控件和原生窗口均已正确绘制。
+  if (snapshot.revision !== undefined)
+    reportEvidence(
+      'settings.css-applied',
+      {
+        revision: snapshot.revision,
+        fontSize: root.style.getPropertyValue?.('--font-size-base'),
+        textColor: root.style.getPropertyValue?.('--text-color'),
+        tagColorEnabled: snapshot.values?.notes?.tagColorEnabled
+      },
+      { actionId: snapshot.diagnostic?.actionId, outcome: 'css-applied' }
+    )
 }

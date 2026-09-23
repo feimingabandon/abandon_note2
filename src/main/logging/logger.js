@@ -244,6 +244,7 @@ function createBoundedLine(record) {
   if (Buffer.byteLength(compactedLine) <= MAX_RECORD_BYTES) return compactedLine
 
   const fallback = {
+    schemaVersion: record.schemaVersion,
     id: record.id,
     time: record.time,
     level: record.level,
@@ -262,6 +263,15 @@ function createBoundedLine(record) {
     },
     windowRole: truncateUtf8(record.windowRole, 4 * 1024),
     webContentsId: Number.isSafeInteger(record.webContentsId) ? record.webContentsId : undefined,
+    eventName: truncateUtf8(record.eventName, 16 * 1024),
+    phase: truncateUtf8(record.phase, 1024),
+    actionId: truncateUtf8(record.actionId, 4 * 1024),
+    parentActionId: truncateUtf8(record.parentActionId, 4 * 1024),
+    outcome: truncateUtf8(record.outcome, 1024),
+    durationMs: Number.isFinite(record.durationMs) ? record.durationMs : undefined,
+    errorCode: truncateUtf8(record.errorCode, 4 * 1024),
+    markerId: truncateUtf8(record.markerId, 4 * 1024),
+    stage: truncateUtf8(record.stage, 4 * 1024),
     truncation: {
       originalBytes,
       payloadPreview: '',
@@ -352,6 +362,10 @@ export function getLogDirectory() {
   return logDirectory
 }
 
+export function getCurrentSessionId() {
+  return sessionId
+}
+
 export function writeLog({
   level = 'info',
   process: processType = 'main',
@@ -361,13 +375,23 @@ export function writeLog({
   metadata,
   windowRole,
   webContentsId,
-  dedupeKey
+  dedupeKey,
+  eventName,
+  phase,
+  actionId,
+  parentActionId,
+  outcome,
+  durationMs,
+  errorCode,
+  markerId,
+  stage
 }) {
   try {
     initializeLogger()
     const normalizedLevel = LEVELS.has(level) ? level : 'info'
     const normalizedError = error === undefined ? undefined : serializeUnknown(error)
     const record = {
+      schemaVersion: 2,
       id: `${sessionId}-${++sequence}`,
       time: new Date().toISOString(),
       level: normalizedLevel,
@@ -387,6 +411,15 @@ export function writeLog({
     }
     if (windowRole) record.windowRole = windowRole
     if (webContentsId !== undefined) record.webContentsId = webContentsId
+    if (eventName) record.eventName = truncateUtf8(eventName, 16 * 1024)
+    if (phase) record.phase = truncateUtf8(phase, 1024)
+    if (actionId) record.actionId = truncateUtf8(actionId, 4 * 1024)
+    if (parentActionId) record.parentActionId = truncateUtf8(parentActionId, 4 * 1024)
+    if (outcome) record.outcome = truncateUtf8(outcome, 1024)
+    if (Number.isFinite(Number(durationMs))) record.durationMs = Number(durationMs)
+    if (errorCode) record.errorCode = truncateUtf8(errorCode, 4 * 1024)
+    if (markerId) record.markerId = truncateUtf8(markerId, 4 * 1024)
+    if (stage) record.stage = truncateUtf8(stage, 4 * 1024)
     if (normalizedError !== undefined) record.error = normalizedError
     if (metadata !== undefined) record.metadata = serializeUnknown(metadata)
     if (shouldSkipDuplicate(record, dedupeKey)) return null
@@ -569,7 +602,23 @@ export function getLogFiles() {
   })
 }
 
-export async function exportLogs(targetPath, metadata = {}, systemDiagnostics = null) {
+function exportSelectionMatches(record, selection) {
+  if (!selection || typeof selection !== 'object') return true
+  if (selection.sessionId && record.sessionId !== selection.sessionId) return false
+  const timestamp = Date.parse(record.time)
+  if (selection.from && (!Number.isFinite(timestamp) || timestamp < Number(selection.from)))
+    return false
+  if (selection.to && (!Number.isFinite(timestamp) || timestamp > Number(selection.to)))
+    return false
+  return true
+}
+
+export async function exportLogs(
+  targetPath,
+  metadata = {},
+  systemDiagnostics = null,
+  selection = null
+) {
   flushLogs()
   const files = listLogFilesNewestFirst().reverse()
   const resolvedTarget = resolve(targetPath)
@@ -591,8 +640,25 @@ export async function exportLogs(targetPath, metadata = {}, systemDiagnostics = 
   }
   await writeFileAsync(resolvedTarget, `${JSON.stringify(header)}\n`, 'utf8')
   for (const file of files) {
-    await appendFileAsync(resolvedTarget, await readFileAsync(file.path))
-    await appendFileAsync(resolvedTarget, '\n')
+    const contents = await readFileAsync(file.path, 'utf8')
+    if (!selection) {
+      await appendFileAsync(resolvedTarget, contents)
+      await appendFileAsync(resolvedTarget, '\n')
+      continue
+    }
+    const selectedLines = contents
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .filter((line) => {
+        try {
+          return exportSelectionMatches(JSON.parse(line), selection)
+        } catch {
+          return false
+        }
+      })
+    if (selectedLines.length) {
+      await appendFileAsync(resolvedTarget, `${selectedLines.join('\n')}\n`, 'utf8')
+    }
   }
   await appendFileAsync(
     resolvedTarget,
@@ -623,7 +689,18 @@ export function normalizeRendererLog(payload = {}) {
     message: truncate(payload.message || ''),
     error: payload.error ? serializeUnknown(payload.error) : undefined,
     metadata: payload.metadata ? serializeUnknown(payload.metadata) : undefined,
-    dedupeKey: truncate(payload.dedupeKey || '')
+    dedupeKey: truncate(payload.dedupeKey || ''),
+    eventName: truncate(payload.eventName || ''),
+    phase: truncate(payload.phase || ''),
+    actionId: truncate(payload.actionId || ''),
+    parentActionId: truncate(payload.parentActionId || ''),
+    outcome: truncate(payload.outcome || ''),
+    durationMs: Number.isFinite(Number(payload.durationMs))
+      ? Number(payload.durationMs)
+      : undefined,
+    errorCode: truncate(payload.errorCode || ''),
+    markerId: truncate(payload.markerId || ''),
+    stage: truncate(payload.stage || '')
   }
 }
 
@@ -634,6 +711,7 @@ export const loggingInternals = {
   createBoundedLine,
   encodeCursor,
   decodeCursor,
+  exportSelectionMatches,
   installConsoleStreamGuard,
   isConsoleStreamAvailable
 }
