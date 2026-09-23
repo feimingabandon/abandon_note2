@@ -5,6 +5,7 @@ const {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   statSync,
@@ -149,6 +150,17 @@ async function runJobs(jobs, { directory = createRunDirectory(), ...options } = 
     results.push(result)
     writeFileSync(join(directory, 'summary.json'), JSON.stringify(results, null, 2) + '\n')
     process.stdout.write(`[${result.status}] ${job.id} (${result.durationMs || 0} ms)\n`)
+    if (result.status !== 'passed' && result.directory) {
+      for (const stream of ['stderr', 'stdout']) {
+        const logPath = join(result.directory, `${stream}.log`)
+        if (!existsSync(logPath)) continue
+        const output = readFileSync(logPath, 'utf8')
+        if (!output) continue
+        const maxCharacters = 16_000
+        const tail = output.slice(-maxCharacters)
+        process.stdout.write(`[${job.id} ${stream} tail]\n${tail}\n`)
+      }
+    }
   }
   return results
 }
