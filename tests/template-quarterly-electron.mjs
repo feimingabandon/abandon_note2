@@ -175,16 +175,29 @@ async function runQuarterlyTemplateTest() {
           return {
             trigger: { left: triggerRect.left, right: triggerRect.right, width: triggerRect.width },
             panel: { left: panelRect.left, right: panelRect.right, width: panelRect.width },
-            viewportWidth: window.innerWidth
+            viewportWidth: window.innerWidth,
+            remSize: Number.parseFloat(getComputedStyle(document.documentElement).fontSize)
           }
         })()`),
       '模板开始时间选择面板没有打开'
     )
-    assert.ok(lifecyclePickerLayout.trigger.width >= 220, JSON.stringify(lifecyclePickerLayout))
     assert.ok(
-      Math.abs(lifecyclePickerLayout.trigger.width - lifecyclePickerLayout.panel.width) <= 3,
+      lifecyclePickerLayout.trigger.width >= 220 * lifecyclePickerLayout.remSize - 3,
       JSON.stringify(lifecyclePickerLayout)
     )
+    if (lifecyclePickerLayout.viewportWidth >= 480) {
+      assert.ok(
+        Math.abs(lifecyclePickerLayout.trigger.width - lifecyclePickerLayout.panel.width) <= 3,
+        JSON.stringify(lifecyclePickerLayout)
+      )
+    } else {
+      // The 240px minimum window can shrink the trigger below the panel's 320rem content width.
+      assert.ok(
+        lifecyclePickerLayout.panel.width >= lifecyclePickerLayout.trigger.width - 3 &&
+          lifecyclePickerLayout.panel.width <= 320 * lifecyclePickerLayout.remSize + 3,
+        JSON.stringify(lifecyclePickerLayout)
+      )
+    }
     assert.ok(
       Math.abs(lifecyclePickerLayout.trigger.left - lifecyclePickerLayout.panel.left) <= 3,
       JSON.stringify(lifecyclePickerLayout)
