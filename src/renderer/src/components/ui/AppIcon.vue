@@ -1,4 +1,6 @@
 <script setup>
+import almanacBlack from '@/resources/icons/almanac.svg'
+import almanacWhite from '@/resources/icons/almanac-white.svg'
 import dailyReportBlack from '@/resources/icons/daily-report.svg'
 import dailyReportWhite from '@/resources/icons/daily-report-white.svg'
 import recurrenceBlack from '@/resources/icons/recurrence.svg'
@@ -27,6 +29,7 @@ import datePanelBlack from '@/resources/icons/date-panel.svg'
 import datePanelWhite from '@/resources/icons/date-panel-white.svg'
 
 const ICON_SOURCES = Object.freeze({
+  almanac: { black: almanacBlack, white: almanacWhite },
   'daily-report': { black: dailyReportBlack, white: dailyReportWhite },
   recurrence: { black: recurrenceBlack, white: recurrenceWhite },
   settings: { black: settingsBlack, white: settingsWhite },
@@ -48,6 +51,7 @@ defineProps({
     required: true,
     validator: (value) =>
       [
+        'almanac',
         'daily-report',
         'recurrence',
         'settings',

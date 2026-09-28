@@ -3,6 +3,7 @@ import EditingDraftDialog from './components/system/EditingDraftDialog.vue'
 import { editingDataGeneration } from './composables/useDraftProtection.js'
 import { defineAsyncComponent } from 'vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import AlmanacLauncher from './components/almanac/AlmanacLauncher.vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
 import ViewSwitcher from './components/system/ViewSwitcher.vue'
@@ -57,6 +58,7 @@ const showRemoteNoticeDialog = ref(false)
 const showFirstUseNotice = ref(false)
 const showHolidayDataNoticeDialog = ref(false)
 const showDailyReportDialog = ref(false)
+const showAlmanac = ref(false)
 const templatePanelRef = ref(null)
 const helpPanelRef = ref(null)
 const templateWorkspace = useSlidingWorkspace({ getElement: () => templatePanelRef.value })
@@ -108,6 +110,7 @@ const compactBlocked = computed(
     showRemoteNoticeDialog.value ||
     showHolidayDataNoticeDialog.value ||
     showDailyReportDialog.value ||
+    showAlmanac.value ||
     templateInteractive.value ||
     helpInteractive.value
 )
@@ -229,6 +232,7 @@ function revealFirstUseNoticeFromSnapshot(snapshot) {
   showRemoteNoticeDialog.value = false
   showHolidayDataNoticeDialog.value = false
   showDailyReportDialog.value = false
+  showAlmanac.value = false
   showFirstUseNotice.value = true
 }
 
@@ -409,7 +413,8 @@ onUnmounted(() => {
           showUpdateDialog ||
           showRemoteNoticeDialog ||
           showHolidayDataNoticeDialog ||
-          showDailyReportDialog
+          showDailyReportDialog ||
+          showAlmanac
         "
       >
         <AppTitlebar
@@ -420,6 +425,7 @@ onUnmounted(() => {
         >
           <TitlebarActions :style-variant="titlebarStyle">
             <ViewSwitcher :active-view="viewMode" :style-variant="titlebarStyle" />
+            <AlmanacLauncher v-model:visible="showAlmanac" />
             <DailyReportButton month-view @open="openDailyReport" />
             <button
               class="titlebar-btn titlebar-btn-template month-titlebar-btn"

@@ -94,19 +94,71 @@ async function chooseView(window, mode) {
 }
 
 async function dispatchDoubleClick(window, selector) {
-  return window.webContents.executeJavaScript(`(() => {
+  await window.webContents.executeJavaScript(
+    `document.querySelector(${JSON.stringify(selector)})?.scrollIntoView({block: 'center'})`
+  )
+  await wait(250)
+  const point = await window.webContents.executeJavaScript(`(() => {
     const target = document.querySelector(${JSON.stringify(selector)})
-    if (!target) return false
-    const rect = target.getBoundingClientRect()
-    target.dispatchEvent(new MouseEvent('dblclick', {
-      bubbles: true,
-      cancelable: true,
-      detail: 2,
-      clientX: rect.left + rect.width / 2,
-      clientY: rect.top + rect.height / 2
-    }))
-    return true
+    if (!target) return null
+    const text = target.querySelector('.nl-card-text, .month-event-bar__text') || target
+    const walker = document.createTreeWalker(text, NodeFilter.SHOW_TEXT)
+    let node
+    while ((node = walker.nextNode()) && !node.data.trim()) {}
+    const range = document.createRange()
+    if (node?.length) { const start = Array.from(node.data).findIndex(c => c.trim()); range.setStart(node, start); range.setEnd(node, start + 1) }
+    const rect = node?.length ? range.getBoundingClientRect() : target.getBoundingClientRect()
+    return {x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2)}
   })()`)
+  if (!point) return false
+  window.focus()
+  window.webContents.focus()
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...point })
+  for (const clickCount of [1, 2]) {
+    window.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount, ...point })
+    window.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount, ...point })
+    await wait(50)
+  }
+  return true
+}
+
+async function verifySidebarDoubleClick(window, selector) {
+  await window.webContents.executeJavaScript(`(() => {
+    const toggle = document.querySelector('.month-toolbar__day-panel-toggle')
+    if (toggle.getAttribute('aria-expanded') !== 'true') toggle.click()
+  })()`)
+  await waitUntil(
+    () =>
+      window.webContents.executeJavaScript(
+        `Boolean(document.querySelector(${JSON.stringify(selector)}))`
+      ),
+    '日期侧栏便签未显示'
+  )
+  assert.equal(await dispatchDoubleClick(window, selector), true)
+  await waitUntil(
+    () =>
+      window.webContents.executeJavaScript(
+        `document.activeElement?.matches('.quick-note-editor textarea') === true`
+      ),
+    '日期侧栏正文双击未进入编辑'
+  )
+  assert.equal(
+    await window.webContents.executeJavaScript(
+      `Boolean(document.querySelector('[data-note-text-color-popover]'))`
+    ),
+    false
+  )
+  await window.webContents.executeJavaScript(
+    `document.querySelector('.quick-note-editor').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`
+  )
+  await waitUntil(
+    () => window.webContents.executeJavaScript(`!document.querySelector('.quick-note-editor')`),
+    '侧栏编辑器未关闭'
+  )
+  await window.webContents.executeJavaScript(
+    `document.querySelector('.month-toolbar__day-panel-toggle').click()`
+  )
+  await wait(350)
 }
 
 async function quickEdit(window, { selector, content, renderedContent }) {
@@ -122,7 +174,7 @@ async function quickEdit(window, { selector, content, renderedContent }) {
     const textarea = document.querySelector('.quick-note-editor textarea')
     textarea.value = ${JSON.stringify(content)}
     textarea.dispatchEvent(new Event('input', { bubbles: true }))
-    document.querySelector('.app-titlebar, .month-toolbar, body').dispatchEvent(
+    document.body.dispatchEvent(
       new PointerEvent('pointerdown', { bubbles: true, cancelable: true })
     )
   })()`)
@@ -182,6 +234,14 @@ async function runQuickNoteEditTest() {
       '新建便签没有出现在列表'
     )
 
+    await listWindow.webContents.executeJavaScript(`(() => {
+      window.__unexpectedColorPopovers = 0
+      new MutationObserver(records => {
+        for (const record of records) for (const node of record.addedNodes) {
+          if (node.nodeType === 1 && (node.matches('[data-note-text-color-popover]') || node.querySelector('[data-note-text-color-popover]'))) window.__unexpectedColorPopovers++
+        }
+      }).observe(document.body, { childList: true, subtree: true })
+    })()`)
     await quickEdit(listWindow, {
       selector: cardSelector,
       content: '列表失焦保存正文',
@@ -189,6 +249,27 @@ async function runQuickNoteEditTest() {
         `${cardSelector} .nl-card-text`
       )})?.textContent.trim() === '列表失焦保存正文'`
     })
+
+    for (const minimal of [true, false]) {
+      await listWindow.webContents.executeJavaScript(
+        `window.api.setSettingValue('listAppearance.minimalMode', ${minimal})`
+      )
+      await wait(150)
+      await listWindow.webContents.executeJavaScript(
+        `(async () => { const note = await window.api.getNote(${noteId}); return window.api.setNoteTextColor({ id: ${noteId}, start: 0, end: 2, color: '#ff3b30', expectedContent: note.content, expectedColorRanges: note.content_color_ranges }) })()`
+      )
+      await wait(200)
+      await quickEdit(listWindow, {
+        selector: cardSelector,
+        content: minimal ? '极简双击编辑正文' : '列表双击编辑正文',
+        renderedContent: `document.querySelector(${JSON.stringify(cardSelector + ' .nl-card-text')})?.textContent.trim() === '${minimal ? '极简双击编辑正文' : '列表双击编辑正文'}'`
+      })
+    }
+    assert.equal(
+      await listWindow.webContents.executeJavaScript('window.__unexpectedColorPopovers'),
+      0,
+      '双击期间不应闪出颜色面板'
+    )
 
     assert.equal(await dispatchDoubleClick(listWindow, cardSelector), true)
     await waitUntil(
@@ -202,7 +283,7 @@ async function runQuickNoteEditTest() {
       const textarea = document.querySelector('.quick-note-editor textarea')
       textarea.value = ''
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
-      document.querySelector('.app-titlebar').dispatchEvent(
+      document.body.dispatchEvent(
         new PointerEvent('pointerdown', { bubbles: true, cancelable: true })
       )
       textarea.dispatchEvent(new FocusEvent('focusout', {
@@ -250,6 +331,10 @@ async function runQuickNoteEditTest() {
       false,
       '关闭设置后列表仍打开快速编辑器'
     )
+    assert.ok(
+      await listWindow.webContents.executeJavaScript('window.getSelection().toString().trim()'),
+      '关闭双击编辑后应保留原生选词'
+    )
     await listWindow.webContents.executeJavaScript(
       `window.api.setSettingValue('interaction.doubleClickQuickEdit', true)`
     )
@@ -288,6 +373,8 @@ async function runQuickNoteEditTest() {
       )})?.textContent.trim() === '月视图失焦保存正文'`
     })
 
+    await verifySidebarDoubleClick(monthWindow, cardSelector)
+
     await chooseView(monthWindow, 'week')
     const weekWindow = await waitForView('week')
     await waitUntil(
@@ -305,6 +392,8 @@ async function runQuickNoteEditTest() {
       )})?.textContent.trim() === '周视图失焦保存正文'`
     })
 
+    await verifySidebarDoubleClick(weekWindow, cardSelector)
+
     assert.equal(
       await weekWindow.webContents.executeJavaScript(
         `window.api.getNote(${Number(noteId)}).then((note) => note.content)`
@@ -313,7 +402,7 @@ async function runQuickNoteEditTest() {
       '最终正文没有写入数据库'
     )
     report(
-      'list/month/week double-click edit, blur-save, validation guard, tooltip cancellation, toast and shared setting passed'
+      'native double-click: list/minimal/colored text/month/week/sidebar, no color popup flash, disabled native selection, blur-save and validation passed'
     )
     app.exit(0)
   } catch (error) {

@@ -39,7 +39,7 @@ const props = defineProps({
   refreshKey: { type: [String, Number], default: '' }
 })
 
-const emit = defineEmits(['count-change', 'draft-change', 'overflow-change'])
+const emit = defineEmits(['count-change', 'draft-change', 'overflow-change', 'busy-change'])
 
 /** 图片列表（统一数据格式） */
 const images = ref([])
@@ -49,12 +49,18 @@ const deletedImageIds = ref([])
 const dragover = ref(false)
 /** 文件选择器 */
 const fileInput = ref(null)
+const loadingImages = ref(false)
+const busy = computed(() => loadingImages.value || images.value.some((image) => image._loading))
+// 同步通知父表单，不能等下一次渲染才阻止保存或切换视图。
+watch(busy, (value) => emit('busy-change', value), { immediate: true, flush: 'sync' })
 
 let imageLoadSeq = 0
 
 /** 支持的图片扩展名 */
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']
-const canAdd = computed(() => !props.readonly && images.value.length < MAX_ATTACHMENTS_PER_NOTE)
+const canAdd = computed(
+  () => !props.readonly && !loadingImages.value && images.value.length < MAX_ATTACHMENTS_PER_NOTE
+)
 const pendingAddedBytes = computed(() =>
   images.value
     .filter((image) => !image.saved)
@@ -100,7 +106,11 @@ const carouselViewportStyle = computed(() => {
 // ============================================================
 async function loadImages() {
   const seq = ++imageLoadSeq
-  if (!props.noteId || !['persist', 'draft'].includes(props.mode)) return
+  if (!props.noteId || !['persist', 'draft'].includes(props.mode)) {
+    loadingImages.value = false
+    return
+  }
+  loadingImages.value = true
   try {
     const records = await window.api.listImages(props.noteId)
 
@@ -136,6 +146,8 @@ async function loadImages() {
     observeCarouselSize()
   } catch (e) {
     console.error('[ImagePicker] 加载图片失败:', e)
+  } finally {
+    if (seq === imageLoadSeq) loadingImages.value = false
   }
   if (seq !== imageLoadSeq) return
   emitCount()
@@ -177,6 +189,7 @@ function observeCarouselSize() {
 // 文件处理（拖拽 / 选择共用）
 // ============================================================
 async function processFiles(files) {
+  if (!canAdd.value) return
   const available = MAX_ATTACHMENTS_PER_NOTE - images.value.length
   if (available <= 0) return
 
@@ -562,7 +575,9 @@ function formatSize(bytes) {
 
     <!-- 已满时不可添加的占位 -->
     <div v-else-if="!readonly" class="ip-dropzone ip-dropzone--disabled">
-      <span class="ip-dropzone__text ip-dropzone__text--full">已满</span>
+      <span class="ip-dropzone__text ip-dropzone__text--full">{{
+        loadingImages ? '加载中…' : '已满'
+      }}</span>
     </div>
 
     <div

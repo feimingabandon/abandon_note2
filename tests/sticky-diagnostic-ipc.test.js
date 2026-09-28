@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createStickyDiagnosticIpcRenderer } from '../src/preload/sticky-diagnostic-ipc.js'
+import { createStickyDiagnosticIpcRenderer as createIpc } from '../src/preload/sticky-diagnostic-ipc.js'
+import { diagnosticTransportFixture } from './helpers/diagnostic-mode-fixture.js'
+const createStickyDiagnosticIpcRenderer = (raw) =>
+  createIpc(raw, { transport: diagnosticTransportFixture(raw) })
 
 describe('sticky preload diagnostic IPC wrapper', () => {
   it('correlates sticky writes without logging their content', async () => {

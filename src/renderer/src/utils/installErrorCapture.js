@@ -1,28 +1,8 @@
 import { installInteractionEvidence } from './diagnosticEvidence.js'
+import { installRendererPerformanceDiagnostics } from './performanceDiagnostics.js'
+import { diagnosticText, sanitizeDiagnosticValue } from '../../../shared/diagnostic-sanitize.js'
 
-function serializeError(error, seen = new WeakSet()) {
-  if (typeof error === 'bigint') return String(error)
-  if (!error || typeof error !== 'object') return error
-  if (seen.has(error)) return '[Circular]'
-  seen.add(error)
-  if (error instanceof Error) {
-    const result = {
-      name: error.name,
-      message: error.message,
-      stack: error.stack
-    }
-    if (error.code !== undefined) result.code = error.code
-    if (error.cause !== undefined) result.cause = serializeError(error.cause, seen)
-    for (const key of Object.keys(error)) {
-      if (!(key in result)) result[key] = serializeError(error[key], seen)
-    }
-    return result
-  }
-  if (Array.isArray(error)) return error.map((item) => serializeError(item, seen))
-  return Object.fromEntries(
-    Object.entries(error).map(([key, value]) => [key, serializeError(value, seen)])
-  )
-}
+const serializeError = (error) => sanitizeDiagnosticValue(error, { maxBytes: 24576 })
 
 function createReporter(api, defaultScope) {
   return ({ level = 'error', scope = defaultScope, message, error, metadata, dedupeKey }) => {
@@ -30,12 +10,14 @@ function createReporter(api, defaultScope) {
       api?.reportLog?.({
         level,
         scope,
-        message: String(message || error?.message || ''),
+        message: diagnosticText(message || error?.message || ''),
         error: error === undefined ? undefined : serializeError(error),
         metadata: metadata === undefined ? undefined : serializeError(metadata),
         dedupeKey:
           dedupeKey ||
-          (error instanceof Error ? error.stack || error.message : String(message || ''))
+          diagnosticText(
+            error instanceof Error ? error.stack || error.message : String(message || '')
+          )
       })
     } catch {
       // Logging must never replace or hide the original application failure.
@@ -52,7 +34,8 @@ function installStructuredConsoleCapture(report, scope) {
   for (const level of ['warn', 'error']) {
     console[level] = (...args) => {
       try {
-        const error = args.find(
+        const boundedArgs = args.slice(0, 16)
+        const error = boundedArgs.find(
           (value) =>
             value instanceof Error ||
             (value &&
@@ -60,10 +43,10 @@ function installStructuredConsoleCapture(report, scope) {
               typeof value.message === 'string' &&
               ('stack' in value || 'code' in value || 'cause' in value))
         )
-        const message = args
+        const message = boundedArgs
           .filter((value) => value !== error)
           .map((value) => {
-            if (typeof value === 'string') return value
+            if (typeof value === 'string') return diagnosticText(value)
             try {
               return JSON.stringify(serializeError(value))
             } catch {
@@ -96,7 +79,8 @@ export function installBrowserErrorCapture(
   api,
   { scope = 'renderer', captureStructuredConsole = false } = {}
 ) {
-  installInteractionEvidence(api)
+  const removeInteraction = installInteractionEvidence(api)
+  const performanceMonitor = installRendererPerformanceDiagnostics(api)
   const report = createReporter(api, scope)
   const restoreConsole = captureStructuredConsole
     ? installStructuredConsoleCapture(report, scope)
@@ -139,6 +123,15 @@ export function installBrowserErrorCapture(
     })
   })
   report.restoreConsole = restoreConsole
+  window.addEventListener(
+    'pagehide',
+    () => {
+      removeInteraction()
+      performanceMonitor.dispose()
+      restoreConsole()
+    },
+    { once: true }
+  )
   return report
 }
 

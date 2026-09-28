@@ -613,3 +613,14 @@ describe('calendar font settings', () => {
     })
   })
 })
+
+describe('list minimal card setting', () => {
+  it('defaults off and round trips enabled and disabled values', () => {
+    expect(DEFAULT_SETTINGS.listAppearance.minimalMode).toBe(false)
+    for (const enabled of [true, false]) {
+      const row = serializeSetting('listAppearance.minimalMode', enabled)
+      expect(row).toMatchObject({ type: 'notes', key: 'minimal_mode', value: enabled ? '1' : '0' })
+      expect(resolveSettingsRows([row]).listAppearance.minimalMode).toBe(enabled)
+    }
+  })
+})

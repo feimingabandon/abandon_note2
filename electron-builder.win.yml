@@ -7,11 +7,14 @@ win:
       arch:
         - x64
   extraResources:
+    - from: build/windows/sandbox-permissions.ps1
+      to: diagnostics/sandbox-permissions.ps1
     - from: native_blur/build/bin/
       to: native_blur/
       filter:
         - '*.dll'
 nsis:
+  include: build/windows/installer.nsh
   # 沿用 0.9.x 安装器身份；appId 规范化后仍可覆盖升级并保持单一卸载项。
   guid: 41249b74-bbe0-5d8d-8a9d-7f1bd6f04a19
   artifactName: Abandon-Note-${version}-windows-${arch}-setup.${ext}

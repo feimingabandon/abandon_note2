@@ -58,7 +58,11 @@ function listWindow() {
 }
 
 async function selectText(window, cardSelector, start, end) {
-  return window.webContents.executeJavaScript(`(() => {
+  await window.webContents.executeJavaScript(
+    `document.querySelector(${JSON.stringify(`${cardSelector} .nl-card-text`)})?.scrollIntoView({block: 'center'})`
+  )
+  await wait(250)
+  const points = await window.webContents.executeJavaScript(`(() => {
     const root = document.querySelector(${JSON.stringify(`${cardSelector} .nl-card-text`)})
     if (!root) return false
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
@@ -84,12 +88,38 @@ async function selectText(window, cardSelector, start, end) {
     const range = document.createRange()
     range.setStart(startNode, startOffset)
     range.setEnd(endNode, endOffset)
-    const selection = window.getSelection()
-    selection.removeAllRanges()
-    selection.addRange(range)
-    root.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0 }))
-    return selection.toString()
+    const rects = Array.from(range.getClientRects())
+    const first = rects[0], last = rects.at(-1)
+    return { start: { x: Math.round(first.left), y: Math.round(first.top + first.height / 2) },
+      end: { x: Math.round(last.right), y: Math.round(last.top + last.height / 2) } }
   })()`)
+  assert.ok(points, '未找到正文拖选位置')
+  window.focus()
+  window.webContents.focus()
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...points.start })
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...points.start
+  })
+  for (let i = 1; i <= 8; i++) {
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      modifiers: ['leftButtonDown'],
+      x: Math.round(points.start.x + ((points.end.x - points.start.x) * i) / 8),
+      y: Math.round(points.start.y + ((points.end.y - points.start.y) * i) / 8)
+    })
+    await wait(16)
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    clickCount: 1,
+    ...points.end
+  })
+  await wait(50)
+  return window.webContents.executeJavaScript('window.getSelection().toString()')
 }
 
 async function selectTextareaText(window, selector, start, end) {
@@ -177,6 +207,16 @@ async function run() {
       '第一段颜色没有持久化'
     )
 
+    await window.webContents.executeJavaScript(
+      `window.api.setSettingValue('listAppearance.minimalMode', true)`
+    )
+    await waitUntil(
+      () =>
+        window.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.nl-card--minimal'))`
+        ),
+      '极简模式未生效'
+    )
     assert.equal(await selectText(window, cardSelector, 4, 6), '报告')
     await window.webContents.executeJavaScript(
       `document.querySelector('button[aria-label="设置文字颜色 #007aff"]').click()`
@@ -189,6 +229,9 @@ async function run() {
       '同一便签没有保存多段颜色'
     )
 
+    await window.webContents.executeJavaScript(
+      `window.api.setSettingValue('listAppearance.minimalMode', false)`
+    )
     const shifted = await window.webContents.executeJavaScript(
       `window.api.updateNote(${noteId}, { content: '请在今天完成报告' })`
     )

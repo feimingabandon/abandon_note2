@@ -16,7 +16,73 @@ vi.mock('../src/main/logging/window-capture.js', () => ({
   setWindowLogContext: vi.fn()
 }))
 
-import { ScreenshotService } from '../src/main/services/ScreenshotService.js'
+import { cropScreenshot, ScreenshotService } from '../src/main/services/ScreenshotService.js'
+
+describe('screenshot selection intersection', () => {
+  function image(width = 800, height = 600) {
+    return {
+      getSize: () => ({ width, height }),
+      crop: vi.fn(() => ({ toDataURL: () => 'cropped image' }))
+    }
+  }
+
+  it.each([
+    [
+      { x: 40, y: 20, w: 100, h: 100 },
+      { x: 40, y: 20, width: 100, height: 100 }
+    ],
+    [
+      { x: -40, y: -20, w: 100, h: 100 },
+      { x: 0, y: 0, width: 60, height: 80 }
+    ],
+    [
+      { x: 760, y: 580, w: 100, h: 100 },
+      { x: 760, y: 580, width: 40, height: 20 }
+    ],
+    [
+      { x: -40, y: -20, w: 1000, h: 1000 },
+      { x: 0, y: 0, width: 800, height: 600 }
+    ]
+  ])('crops only the intersection for %j', (selection, expected) => {
+    const source = image()
+    expect(cropScreenshot({ viewportWidth: 800, viewportHeight: 600, ...selection }, source)).toBe(
+      'cropped image'
+    )
+    expect(source.crop).toHaveBeenCalledExactlyOnceWith(expected)
+  })
+
+  it('converts fractional viewport endpoints to pixels before clipping at high DPI', () => {
+    const source = image(1200, 900)
+    cropScreenshot(
+      { viewportWidth: 800, viewportHeight: 600, x: -10.5, y: 20.5, w: 50, h: 40 },
+      source
+    )
+    expect(source.crop).toHaveBeenCalledExactlyOnceWith({ x: 0, y: 31, width: 59, height: 60 })
+  })
+
+  it.each([
+    { x: -100, w: 100 },
+    { y: -100, h: 100 },
+    { x: 800 },
+    { y: 600 },
+    { w: 0 },
+    { h: -1 },
+    { x: NaN },
+    { y: Infinity },
+    { viewportWidth: 0 },
+    { viewportHeight: -600 },
+    { viewportWidth: Infinity }
+  ])('rejects empty intersections and invalid geometry %j', (overrides) => {
+    const source = image()
+    expect(
+      cropScreenshot(
+        { viewportWidth: 800, viewportHeight: 600, x: 0, y: 0, w: 100, h: 100, ...overrides },
+        source
+      )
+    ).toBeNull()
+    expect(source.crop).not.toHaveBeenCalled()
+  })
+})
 
 describe('ScreenshotService dock suspension', () => {
   let handler

@@ -3,8 +3,8 @@ import { EventEmitter } from 'node:events'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
-import { app } from 'electron'
-import { ScreenshotService } from '../src/main/services/ScreenshotService.js'
+import { app, nativeImage } from 'electron'
+import { cropScreenshot, ScreenshotService } from '../src/main/services/ScreenshotService.js'
 import { flushLogs } from '../src/main/logging/logger.js'
 
 app.setPath(
@@ -33,6 +33,16 @@ const timeout = setTimeout(() => {
 app.whenReady().then(async () => {
   let exitCode = 0
   try {
+    const source = nativeImage.createFromBitmap(Buffer.alloc(200 * 160 * 4, 255), {
+      width: 200,
+      height: 160
+    })
+    const cropped = cropScreenshot(
+      { viewportWidth: 100, viewportHeight: 80, x: -10, y: -5, w: 30, h: 20 },
+      source
+    )
+    assert.deepEqual(nativeImage.createFromDataURL(cropped).getSize(), { width: 40, height: 30 })
+    console.log('nativeImage crop intersection at 2x DPI passed')
     service.initialize()
     for (const action of ['crash', 'cancel', 'dispose']) {
       const pending = handlers.get('screenshot:capture')({ sender })

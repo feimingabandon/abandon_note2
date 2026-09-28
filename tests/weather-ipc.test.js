@@ -77,7 +77,9 @@ describe('天气 IPC 请求协调', () => {
       forecast
     )
     expect(weatherService.getForecast).toHaveBeenNthCalledWith(1, beijing, { cacheOnly: true })
-    expect(weatherService.getForecast.mock.calls[1][1]).toMatchObject({ refresh: true })
+    expect(
+      weatherService.getForecast.mock.calls.filter(([, options]) => options.refresh)
+    ).toHaveLength(1)
     expect(harness.webContents.send).toHaveBeenCalledWith('weather:forecast-updated', forecast)
   })
 
@@ -101,6 +103,7 @@ describe('天气 IPC 请求协调', () => {
     const harness = createHarness(weatherService, { enabled: true, location: beijing })
 
     const oldRequest = harness.lifecycle.refreshAtStartup()
+    await Promise.resolve() // Allow the old network request to start before switching.
     harness.setSettings({ enabled: true, location: shanghai })
     const currentRequest = harness.handlers.get('weather:get-forecast')(harness.event)
 

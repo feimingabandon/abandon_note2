@@ -13,12 +13,30 @@ vi.mock('electron', () => ({
 }))
 
 let buildCalendarDayMetadata
+let getAlmanacDay
 
 beforeAll(async () => {
   ;({ buildCalendarDayMetadata } = await import('../src/main/calendar/calendar-metadata.js'))
+  ;({ getAlmanacDay } = await import('../src/main/calendar/almanac-service.js'))
 })
 
 describe('calendar metadata', () => {
+  it('单日详情、截止寒食的范围与整月返回相同的寒食信息，且不增加输出日期', () => {
+    for (const year of [2024, 2025, 2026, 2027]) {
+      const month = buildCalendarDayMetadata(`${year}-04-01`, `${year}-04-30`)
+      const entry = [...month].find(([, data]) => data.festivals.some((f) => f.name === '寒食节'))
+      expect(entry, `${year} 年应有寒食节`).toBeDefined()
+      const [dateKey, expected] = entry
+      const single = buildCalendarDayMetadata(dateKey, dateKey)
+      expect([...single.keys()]).toEqual([dateKey])
+      expect(single.get(dateKey)).toEqual(expected)
+      const endingAtColdFood = buildCalendarDayMetadata(`${year}-04-01`, dateKey)
+      expect([...endingAtColdFood.keys()].at(-1)).toBe(dateKey)
+      expect(endingAtColdFood.get(dateKey)).toEqual(expected)
+      expect(getAlmanacDay(dateKey).metadata).toEqual(expected)
+    }
+  })
+
   it('组合农历、传统节日和内置法定节假日', () => {
     const metadata = buildCalendarDayMetadata('2026-02-01', '2026-02-28')
 

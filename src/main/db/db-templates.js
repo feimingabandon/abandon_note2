@@ -1,5 +1,6 @@
 /** 循环模板 CRUD、标签快照配置与可恢复删除。 */
 import { getDb } from './db-connection.js'
+import { measureSyncPerformance } from '../logging/operation-performance.js'
 import { calculateNextRunInRange, normalizeRecurrenceRule } from '../services/recurrence-rules.js'
 import { requireSingleAssignedTagId } from '../../shared/tag-rules.js'
 
@@ -340,14 +341,16 @@ export function listTemplates({ state = 'active' } = {}) {
 export function getDueTemplates(timestamp) {
   const dueAt = Number(timestamp)
   if (!Number.isFinite(dueAt)) throw new Error('调度时间无效')
-  return getDb()
-    .prepare(
-      `SELECT * FROM note_templates
+  return measureSyncPerformance('database', 'templates.due', () =>
+    getDb()
+      .prepare(
+        `SELECT * FROM note_templates
        WHERE is_deleted = 0 AND is_paused = 0
          AND next_run_at IS NOT NULL AND next_run_at <= ?
        ORDER BY next_run_at ASC, id ASC`
-    )
-    .all(dueAt)
+      )
+      .all(dueAt)
+  )
 }
 
 /** 记录单模板连续失败；第三次失败时原子切换为错误暂停。 */

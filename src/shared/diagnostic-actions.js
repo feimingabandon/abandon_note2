@@ -90,9 +90,14 @@ function summarizeString(value, key) {
     : { truncated: true, length: value.length, preview: value.slice(0, MAX_STRING_PREVIEW) }
 }
 
-function summarizeValue(value, key, depth, seen) {
+function summarizeValue(value, key, depth, seen, budget = { nodes: 0, remaining: 8192 }) {
+  if (++budget.nodes > 256 || budget.remaining < 32) return { omitted: true, reason: 'budget' }
+  budget.remaining -= 32
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value
-  if (typeof value === 'string') return summarizeString(value, key)
+  if (typeof value === 'string') {
+    budget.remaining -= Math.min(value.length, MAX_STRING_PREVIEW) * 3
+    return summarizeString(value, key)
+  }
   if (typeof value === 'bigint') return String(value)
   if (typeof value === 'function' || typeof value === 'symbol') return String(value)
   if (depth >= MAX_DEPTH) return { truncated: true, reason: 'max-depth' }
@@ -100,9 +105,19 @@ function summarizeValue(value, key, depth, seen) {
   seen.add(value)
 
   if (Array.isArray(value)) {
-    const items = value
-      .slice(0, MAX_ARRAY_ITEMS)
-      .map((item, index) => summarizeValue(item, String(index), depth + 1, seen))
+    const items = []
+    for (
+      let index = 0;
+      index < Math.min(value.length, MAX_ARRAY_ITEMS) && budget.remaining > 32;
+      index++
+    ) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+      items.push(
+        descriptor && 'value' in descriptor
+          ? summarizeValue(descriptor.value, String(index), depth + 1, seen, budget)
+          : '[accessor omitted]'
+      )
+    }
     return value.length > items.length
       ? { count: value.length, items, omittedItems: value.length - items.length }
       : items
@@ -117,11 +132,20 @@ function summarizeValue(value, key, depth, seen) {
   }
 
   const result = {}
-  const entries = Object.entries(value)
-  for (const [entryKey, entryValue] of entries.slice(0, MAX_OBJECT_KEYS)) {
-    result[entryKey] = summarizeValue(entryValue, entryKey, depth + 1, seen)
+  let keys = 0
+  for (const entryKey in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, entryKey)) continue
+    if (++keys > MAX_OBJECT_KEYS || budget.remaining < 32) {
+      result.__omittedKeys = true
+      break
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, entryKey)
+    if (['__proto__', 'constructor', 'prototype'].includes(entryKey)) continue
+    result[entryKey.slice(0, 96)] =
+      descriptor && 'value' in descriptor
+        ? summarizeValue(descriptor.value, entryKey, depth + 1, seen, budget)
+        : '[accessor omitted]'
   }
-  if (entries.length > MAX_OBJECT_KEYS) result.__omittedKeys = entries.length - MAX_OBJECT_KEYS
   return result
 }
 

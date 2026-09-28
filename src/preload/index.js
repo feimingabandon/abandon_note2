@@ -40,6 +40,14 @@ const api = {
   // ---- 本地日志与诊断 ----
   /** 上报 renderer 结构化日志；主进程负责落盘。 */
   reportLog: (payload) => ipcRenderer.send('logs:write', payload),
+  getDiagnosticPolicy: () => ipcRenderer.diagnostics.getPolicy(),
+  onDiagnosticPolicy: (callback) => ipcRenderer.diagnostics.subscribe(callback),
+  onDiagnosticFlush: (callback) => ipcRenderer.diagnostics.onFlush(callback),
+  registerDiagnosticCapability: (name) => ipcRenderer.diagnostics.capability(name),
+  getDiagnosticState: () => ipcRenderer.invoke('logs:state'),
+  startDeepDiagnostics: () => ipcRenderer.invoke('logs:mode-start'),
+  extendDeepDiagnostics: () => ipcRenderer.invoke('logs:mode-extend'),
+  stopDeepDiagnostics: () => ipcRenderer.invoke('logs:mode-stop'),
   /** 分页读取本机日志，只供设置页诊断查看器使用。 */
   queryLogs: (query) => ipcRenderer.invoke('logs:query', query),
   /** 使用系统文件管理器打开日志目录。 */
@@ -254,6 +262,7 @@ const api = {
     return () => ipcRenderer.removeListener('notes:changed', handler)
   },
   /** 获取固定 7×6 的月历日期与当前可见范围内的真实便签。 */
+  getAlmanacDay: (dateKey) => ipcRenderer.invoke('calendar:get-almanac', { dateKey }),
   getMonthCalendarData: (year, month, options = {}) =>
     ipcRenderer.invoke('calendar:get-month', { year, month, ...options }),
   /** 获取锚点日期所在周（周一至周日）的日期、元数据与真实便签。 */

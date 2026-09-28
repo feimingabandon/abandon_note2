@@ -137,7 +137,7 @@ async function assertTodayWeatherSummary(window) {
   const meta = await waitUntil(
     () =>
       window.webContents.executeJavaScript(`(() => {
-    const element = document.querySelector('.month-toolbar__weather-meta')
+    const element = document.querySelector('.weather-brief__button')
     return element?.textContent.includes('☀️ 晴 18°～27°') ? {
       text: element.textContent.trim(),
       title: element.title,
@@ -152,8 +152,8 @@ async function assertTodayWeatherSummary(window) {
   })()`),
     '当天天气概览没有显示'
   )
-  assert.equal(meta.title, meta.text)
-  assert.equal(meta.isButton, false)
+  assert.match(meta.title, /点击查看天气与宜忌详情/)
+  assert.equal(meta.isButton, true)
   assert.equal(meta.sourceCount, 0)
   assert.ok(
     Math.abs(meta.weatherCenter - meta.todayCenter) < 0.25,
@@ -174,6 +174,7 @@ async function calendarToolbarAppearance(window) {
     const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize)
     return {
       toolbarHeight: toolbar?.getBoundingClientRect().height ?? 0,
+      summaryHeight: document.querySelector('.date-context-summary')?.getBoundingClientRect().height ?? 0,
       rootFontSize,
       todayText: today?.textContent.trim() ?? '',
       todayLabel: today?.getAttribute('aria-label') ?? '',
@@ -196,8 +197,9 @@ async function calendarToolbarAppearance(window) {
 async function assertCalendarToolbarAppearance(window) {
   const initial = await calendarToolbarAppearance(window)
   assert.ok(
-    initial.toolbarHeight <= 36 * initial.rootFontSize + 0.1,
-    `日历工具栏高度没有收紧到 36rem：${JSON.stringify(initial)}`
+    Math.abs(initial.toolbarHeight - Math.max(36 * initial.rootFontSize, initial.summaryHeight)) <
+      1,
+    `日历工具栏应在 36rem 基础上适配双行摘要，不能裁切文字或额外撑高：${JSON.stringify(initial)}`
   )
   assert.equal(initial.todayText, '', '定位到今天入口不应继续显示文字')
   assert.equal(initial.todayLabel, '定位到今天')

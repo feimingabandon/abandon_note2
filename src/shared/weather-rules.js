@@ -32,29 +32,40 @@ const WEATHER_BY_CODE = new Map(
   )
 )
 
-export function describeWeatherCode(value) {
-  return WEATHER_BY_CODE.get(Number(value)) || { label: '未知天气', icon: '•' }
+export function isKnownWeatherCode(value) {
+  return isFiniteWeatherNumber(value) && WEATHER_BY_CODE.has(Number(value))
+}
+
+export function describeWeatherCode(value, isDay = null) {
+  const description = isKnownWeatherCode(value) ? WEATHER_BY_CODE.get(Number(value)) : null
+  if (!description) return { label: '未知天气', icon: '•' }
+  if (isDay === false) {
+    if (Number(value) === 0) return { ...description, icon: '🌙' }
+    if ([1, 2].includes(Number(value))) return { ...description, icon: '☁️' }
+    if (description.icon === '🌦️') return { ...description, icon: '🌧️' }
+  }
+  return description
 }
 
 function isFiniteWeatherNumber(value) {
-  if (value === null || value === undefined || value === '') return false
+  if (typeof value !== 'number' && typeof value !== 'string') return false
+  if (typeof value === 'string' && !value.trim()) return false
   return Number.isFinite(Number(value))
 }
 
 /**
  * 日历中只展示具备天气码和高低温的完整日预报。
- * Open-Meteo 模型超出可用预报范围时会返回 null，旧版曾将它们误转为 0。
- * 同时屏蔽这类历史占位数据，但保留 0°～5° 等真实低温预报。
+ * 真实低温预报四舍五入后可以是 0°～0°；历史占位数据仅在旧缓存迁移时清理。
  */
 export function isDisplayableWeatherDay(day) {
   if (
-    !isFiniteWeatherNumber(day?.weatherCode) ||
+    !isKnownWeatherCode(day?.weatherCode) ||
     !isFiniteWeatherNumber(day?.temperatureMin) ||
     !isFiniteWeatherNumber(day?.temperatureMax)
   ) {
     return false
   }
-  return !(Number(day.temperatureMin) === 0 && Number(day.temperatureMax) === 0)
+  return Number(day.temperatureMin) <= Number(day.temperatureMax)
 }
 
 export function weatherDailyRefreshKey(timestamp = Date.now(), refreshHour = 9) {

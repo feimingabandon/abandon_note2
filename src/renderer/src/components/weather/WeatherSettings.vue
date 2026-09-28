@@ -326,7 +326,9 @@ onMounted(() =>
     <div class="setting-item">
       <div class="setting-left">
         <span class="setting-label">显示天气</span>
-        <span class="setting-hint-caption">启动时、每天 09:00 或手动更新</span>
+        <span class="setting-hint-caption"
+          >窗口显示时每 30 分钟更新，恢复窗口后检查时效，也可手动更新</span
+        >
       </div>
       <div class="setting-right">
         <AppToggle

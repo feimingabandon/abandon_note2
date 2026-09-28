@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { encodeLogRecord } from '../src/main/logging/log-store.mjs'
+import { drainOperationPerformance } from '../src/main/logging/operation-performance.js'
 
 const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-logging-'))
 process.env.ABANDON_NOTE_LOG_TEST_USER_DATA = testUserData
@@ -29,16 +31,33 @@ beforeAll(async () => {
   processCapture = await import('../src/main/logging/process-capture.js')
 })
 
-afterAll(() => {
+afterAll(async () => {
   if (logging) {
-    logging.flushLogs()
-    process.removeListener('exit', logging.flushLogs)
+    await logging.closeLogs()
   }
   rmSync(testUserData, { recursive: true, force: true })
   delete process.env.ABANDON_NOTE_LOG_TEST_USER_DATA
 })
 
 describe('main-process logging', () => {
+  it('measures batches and queue size in memory without recursively writing performance records', async () => {
+    await logging.flushLogs()
+    drainOperationPerformance()
+    for (let i = 0; i < 25; i++)
+      logging.writeLog({ scope: 'test.batch', message: 'private-batch-text' })
+    await logging.flushLogs()
+    const batch = drainOperationPerformance()
+    const flush = batch.entries.find((entry) => entry.operation === 'flush')
+    const enqueue = batch.entries.find((entry) => entry.operation === 'enqueue')
+    expect(flush).toMatchObject({
+      metrics: { records: { total: 25 }, errors: { total: 0 } }
+    })
+    expect(enqueue.count).toBe(25)
+    expect(enqueue.metrics.queuedBytes.max).toBeGreaterThan(0)
+    expect(JSON.stringify(batch)).not.toContain('private-batch-text')
+    await logging.flushLogs()
+    expect(drainOperationPerformance().entries).toEqual([])
+  })
   it('keeps serializing Electron-like objects when an enumerable getter throws', () => {
     const destroyedWindow = { id: 17 }
     Object.defineProperty(destroyedWindow, 'devToolsWebContents', {
@@ -51,13 +70,13 @@ describe('main-process logging', () => {
     expect(logging.loggingInternals.serializeUnknown({ window: destroyedWindow })).toEqual({
       window: {
         id: 17,
-        devToolsWebContents: '[Unreadable property: Object has been destroyed]'
+        devToolsWebContents: '[accessor omitted]'
       }
     })
   })
 
   it('keeps the complete encoded JSONL record within the hard byte limit', () => {
-    const line = logging.loggingInternals.createBoundedLine({
+    const line = encodeLogRecord({
       id: 'oversized-record',
       time: new Date().toISOString(),
       level: 'error',
@@ -74,7 +93,7 @@ describe('main-process logging', () => {
       metadata: { payload: 'y'.repeat(700_000) }
     })
 
-    expect(Buffer.byteLength(line)).toBeLessThanOrEqual(512 * 1024)
+    expect(Buffer.byteLength(line)).toBeLessThanOrEqual(32 * 1024)
     expect(JSON.parse(line)).toMatchObject({
       id: 'oversized-record',
       truncation: {
@@ -105,7 +124,7 @@ describe('main-process logging', () => {
       scope: 'test.snapshot',
       message: `${marker}-arrived-after-snapshot`
     })
-    logging.flushLogs()
+    await logging.flushLogs()
 
     const secondPage = await logging.queryLogs({
       search: marker,
@@ -122,8 +141,8 @@ describe('main-process logging', () => {
       scope: 'test.export',
       message: 'source-path-protection'
     })
-    logging.flushLogs()
-    const [source] = logging.getLogFiles()
+    await logging.flushLogs()
+    const [source] = await logging.getLogFiles()
 
     await expect(logging.exportLogs(source.path)).rejects.toThrow('导出目标不能覆盖现有日志文件')
   })
@@ -160,8 +179,8 @@ describe('main-process logging', () => {
       errorCode: 'SAVE_FAILED',
       stage: 'ipc-handler'
     })
-    logging.flushLogs()
-    const source = logging.getLogFiles()[0]
+    await logging.flushLogs()
+    const source = (await logging.getLogFiles())[0]
     writeFileSync(
       source.path,
       `${JSON.stringify({
@@ -185,7 +204,7 @@ describe('main-process logging', () => {
       .map((line) => JSON.parse(line))
     expect(records).toContainEqual(
       expect.objectContaining({
-        schemaVersion: 2,
+        schemaVersion: 3,
         message: marker,
         eventName: 'note.save',
         phase: 'failure',
@@ -221,6 +240,7 @@ describe('main-process logging', () => {
       sourceId: 'SettingsPanel.vue'
     })
 
+    await new Promise((resolve) => setTimeout(resolve, 1300))
     const result = await logging.queryLogs({ search: marker, limit: 10 })
     expect(result.items).toHaveLength(1)
     expect(result.items[0]).toMatchObject({
@@ -276,6 +296,7 @@ describe('main-process logging', () => {
       sourceId: 'chromium'
     })
 
+    await new Promise((resolve) => setTimeout(resolve, 1300))
     const result = await logging.queryLogs({ search: marker, limit: 10 })
     expect(result.items).toHaveLength(1)
     expect(result.items[0]).toMatchObject({
@@ -284,17 +305,18 @@ describe('main-process logging', () => {
     })
   })
 
-  it('lists recent Crashpad dumps without reading their contents', () => {
+  it('lists recent Crashpad dumps without reading their contents', async () => {
     const reports = join(testUserData, 'reports')
     mkdirSync(reports, { recursive: true })
-    writeFileSync(join(reports, 'older.dmp'), Buffer.alloc(3))
-    writeFileSync(join(reports, 'newer.dmp'), Buffer.alloc(7))
+    writeFileSync(join(reports, 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.dmp'), Buffer.alloc(3))
+    writeFileSync(join(reports, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.dmp'), Buffer.alloc(7))
     writeFileSync(join(reports, 'ignored.txt'), 'not a dump')
 
+    await processCapture.refreshCrashDumpIndex()
     expect(processCapture.getRecentCrashDumps()).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: 'older.dmp', size: 3 }),
-        expect.objectContaining({ name: 'newer.dmp', size: 7 })
+        expect.objectContaining({ name: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.dmp', size: 3 }),
+        expect.objectContaining({ name: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.dmp', size: 7 })
       ])
     )
     expect(processCapture.getRecentCrashDumps().some((item) => item.name === 'ignored.txt')).toBe(
@@ -340,6 +362,7 @@ describe('main-process logging', () => {
         sourceId: 'http://localhost:5173/@vite/client'
       })
 
+      await new Promise((resolve) => setTimeout(resolve, 1300))
       const result = await logging.queryLogs({ search: marker, limit: 10 })
       const messages = result.items.map((item) => item.message)
       expect(messages).toHaveLength(2)
@@ -379,7 +402,8 @@ describe('main-process logging', () => {
   })
 
   it('keeps callers running when log storage is unavailable and writes again after recovery', async () => {
-    logging.flushLogs()
+    await logging.flushLogs()
+    drainOperationPerformance()
     const directory = logging.getLogDirectory()
     const backup = join(testUserData, 'logs-storage-failure-backup')
     renameSync(directory, backup)
@@ -387,15 +411,18 @@ describe('main-process logging', () => {
     try {
       expect(() => {
         logging.logger.error('storage-failure-fixture', new Error('expected storage failure'))
-        logging.flushLogs()
       }).not.toThrow()
+      await logging.flushLogs()
+      const flush = drainOperationPerformance().entries.find((entry) => entry.operation === 'flush')
+      expect(flush.metrics.errors.total).toBeGreaterThan(0)
+      expect(flush.metrics.droppedRecords.total).toBeGreaterThan(0)
     } finally {
       rmSync(directory)
       renameSync(backup, directory)
     }
     const marker = 'logging-storage-recovered'
     logging.logger.info('storage-recovery-fixture', marker)
-    logging.flushLogs()
+    await logging.flushLogs()
     const records = await logging.queryLogs({ search: marker, limit: 10 })
     expect(records.items.some((record) => record.message === marker)).toBe(true)
   })

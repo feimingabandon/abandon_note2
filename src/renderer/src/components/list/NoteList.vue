@@ -6,6 +6,9 @@
  * - 三状态：initialized / in_progress / completed
  */
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { useSharedMinuteClock } from '../../composables/useSharedMinuteClock.js'
+import { useWeatherRecovery } from '../../composables/useWeatherRecovery.js'
+import DateContextSummary from '../almanac/DateContextSummary.vue'
 import draggable from 'vuedraggable'
 import TagSelector from '../ui/TagSelector.vue'
 import FilterTabs from '../ui/FilterTabs.vue'
@@ -44,9 +47,11 @@ function traceListLoad(mode, options, work, notes) {
 
 const emit = defineEmits(['edit'])
 const { showMessage } = useMessage()
+useWeatherRecovery()
 
 /** 排序模式：timeline | custom | tag-group */
 const sortMode = ref(DEFAULT_SETTINGS.listFilter.listMode)
+const minimalMode = ref(DEFAULT_SETTINGS.listAppearance.minimalMode)
 
 /** 排序模式显示文本 */
 const modeOptions = [
@@ -152,9 +157,12 @@ const loading = ref(false)
 const loadError = ref(null)
 const weatherEnabled = ref(false)
 const weatherForecast = ref(null)
+const weatherNow = useSharedMinuteClock()
 const weatherSettingsKey = ref('')
 let weatherLoadSequence = 0
-const weatherByDate = computed(() => buildDisplayableWeatherByDate(weatherForecast.value))
+const weatherByDate = computed(() =>
+  buildDisplayableWeatherByDate(weatherForecast.value, Math.max(weatherNow.value, Date.now()))
+)
 /** 全部未删除便签总数，不受当前标签/状态筛选影响。 */
 const allNoteTotal = ref(0)
 const lastRefreshedAt = ref(null)
@@ -1358,6 +1366,8 @@ async function loadFilterState() {
   restoring = true
   try {
     const snapshot = await window.api.getSettingsSnapshot()
+    minimalMode.value =
+      snapshot.values.listAppearance?.minimalMode ?? DEFAULT_SETTINGS.listAppearance.minimalMode
     const state = snapshot.values.listFilter
     sortMode.value = state.listMode
     tagFilterIds.value = [...state.tagIds]
@@ -1401,6 +1411,8 @@ const stopNotesChanged = window.api.onNotesChanged?.((payload) => {
 })
 
 const stopSettingsChanged = window.api.onSettingsChanged?.(async (snapshot) => {
+  minimalMode.value =
+    snapshot?.values?.listAppearance?.minimalMode ?? DEFAULT_SETTINGS.listAppearance.minimalMode
   applyWeatherSettings(snapshot)
   const changed = await applyFilterState(snapshot?.values?.listFilter)
   if (changed) await switchMode(sortMode.value)
@@ -1412,6 +1424,7 @@ const stopWeatherForecastUpdated = window.api.onWeatherForecastUpdated?.((foreca
   ) {
     return
   }
+  weatherLoadSequence += 1
   weatherForecast.value = forecast
 })
 
@@ -1517,9 +1530,21 @@ defineExpose({
   <div class="note-list">
     <!-- 工具栏 -->
     <div class="nl-toolbar">
-      <!-- 左：标题板块 -->
+      <!-- 两侧摘要共享可用宽度，排列操作单独占位。 -->
       <div class="nl-toolbar-left">
-        <span class="nl-title">便签</span>
+        <DateContextSummary kind="weather" :forecast="weatherForecast" />
+      </div>
+      <div class="nl-toolbar-center">
+        <FilterTabs
+          :model-value="panelState"
+          :options="panelOptions"
+          @update:model-value="onPanelClick"
+        />
+      </div>
+      <div class="nl-toolbar-right">
+        <DateContextSummary kind="almanac" :forecast="weatherForecast" />
+      </div>
+      <div class="nl-toolbar-options">
         <button
           v-if="sortMode === 'tag-group'"
           type="button"
@@ -1560,19 +1585,6 @@ defineExpose({
             <circle cx="11" cy="12.75" r="1.2" />
           </svg>
         </button>
-      </div>
-
-      <!-- 中：功能板块（单选切换） -->
-      <div class="nl-toolbar-center">
-        <FilterTabs
-          :model-value="panelState"
-          :options="panelOptions"
-          @update:model-value="onPanelClick"
-        />
-      </div>
-
-      <!-- 右：展示模式选择 -->
-      <div class="nl-toolbar-right">
         <div ref="modeMenuRootRef" class="nl-mode-menu-root">
           <button
             ref="modeToggleRef"
@@ -1724,8 +1736,10 @@ defineExpose({
               <NoteCard
                 v-for="note in g.items"
                 :key="note.id"
+                :minimal="minimalMode"
                 :note="note"
                 :weather="weatherForNote(note)"
+                show-date-context
                 :status-transition="statusTransitionFor(note.id)"
                 @edit="emit('edit', $event)"
                 @status-action="onCardStatusAction"
@@ -1861,8 +1875,10 @@ defineExpose({
                       <NoteCard
                         v-for="note in group.notes"
                         :key="note.id"
+                        :minimal="minimalMode"
                         :note="note"
                         :weather="weatherForNote(note)"
+                        show-date-context
                         allow-create-tag
                         :status-transition="statusTransitionFor(note.id)"
                         @edit="emit('edit', $event)"
@@ -1946,8 +1962,10 @@ defineExpose({
             >
               <template #item="{ element: note }">
                 <NoteCard
+                  :minimal="minimalMode"
                   :note="note"
                   :weather="weatherForNote(note)"
+                  show-date-context
                   draggable
                   :status-transition="statusTransitionFor(note.id)"
                   @edit="emit('edit', $event)"
@@ -1978,8 +1996,10 @@ defineExpose({
             >
               <template #item="{ element: note }">
                 <NoteCard
+                  :minimal="minimalMode"
                   :note="note"
                   :weather="weatherForNote(note)"
+                  show-date-context
                   draggable
                   :status-transition="statusTransitionFor(note.id)"
                   @edit="emit('edit', $event)"
@@ -2026,15 +2046,17 @@ defineExpose({
 
 /* ===== 工具栏 ===== */
 .nl-toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0;
+  gap: 12rem;
   padding: 8rem 0;
   flex-shrink: 0;
 }
 
 .nl-toolbar-left {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 10rem;
@@ -2049,15 +2071,23 @@ defineExpose({
 
 .nl-toolbar-right {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 10rem;
 }
 
-.nl-title {
-  font-size: var(--fs-title);
-  font-weight: 700;
+.nl-toolbar .date-context-summary {
+  flex: 1;
+}
+.nl-toolbar-options {
+  display: flex;
+  align-items: center;
+  gap: 6rem;
+}
+.nl-toolbar-options .nl-tag-group-sort-toggle {
+  flex-shrink: 0;
 }
 .nl-tag-group-sort-toggle {
   width: 26rem;

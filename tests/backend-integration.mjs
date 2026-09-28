@@ -80,6 +80,74 @@ assert.equal(
 )
 futureDb.close()
 
+// A removed feature must not make databases already written by that feature unreadable.
+const compatibilityRoot = mkdtempSync(join(tmpdir(), 'abandon-v16-compatibility-'))
+const compatibilityPath = join(compatibilityRoot, 'app.db')
+let compatibilityDb
+try {
+  compatibilityDb = new Database(compatibilityPath)
+  createDatabaseSchema(compatibilityDb)
+  assert.equal(
+    compatibilityDb
+      .prepare("SELECT name FROM sqlite_master WHERE name = 'minimal_note_layout'")
+      .get(),
+    undefined,
+    'new databases must not recreate the removed feature'
+  )
+  setDb(compatibilityDb)
+  const note = createNote({ content: 'preserve existing note', durationDays: 2 })
+  clearDb()
+  compatibilityDb
+    .prepare('UPDATE notes SET remark = ? WHERE id = ?')
+    .run('preserve remark', note.id)
+  compatibilityDb.exec(`
+    INSERT INTO app_settings (window_name, type, key, value)
+    VALUES ('main', 'notes', 'minimal_mode', '1');
+    PRAGMA user_version = 15;
+  `)
+  const savedNote = compatibilityDb.prepare('SELECT * FROM notes WHERE id = ?').get(note.id)
+  createDatabaseSchema(compatibilityDb)
+  assert.equal(compatibilityDb.pragma('user_version', { simple: true }), 16)
+  assert.deepEqual(
+    compatibilityDb.prepare('SELECT * FROM notes WHERE id = ?').get(note.id),
+    savedNote
+  )
+  // Exact additive table from the withdrawn V16 implementation, including saved layout values.
+  compatibilityDb.exec(`
+    CREATE TABLE minimal_note_layout (
+      note_id INTEGER PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      height INTEGER CHECK(height IS NULL OR height BETWEEN 1 AND 4000),
+      width INTEGER CHECK(width IS NULL OR width > 0)
+    );
+    CREATE INDEX idx_minimal_layout_position ON minimal_note_layout(position);
+  `)
+  compatibilityDb.prepare('INSERT INTO minimal_note_layout VALUES (?, 0, 120, NULL)').run(note.id)
+  compatibilityDb.close()
+  compatibilityDb = new Database(compatibilityPath)
+  createDatabaseSchema(compatibilityDb)
+  createDatabaseSchema(compatibilityDb)
+  assert.equal(compatibilityDb.pragma('user_version', { simple: true }), 16)
+  assert.deepEqual(
+    compatibilityDb.prepare('SELECT * FROM notes WHERE id = ?').get(note.id),
+    savedNote
+  )
+  assert.equal(compatibilityDb.prepare('SELECT height FROM minimal_note_layout').get().height, 120)
+  assert.equal(
+    compatibilityDb.prepare("SELECT value FROM app_settings WHERE key = 'minimal_mode'").get()
+      .value,
+    '1'
+  )
+  assert.equal(compatibilityDb.pragma('integrity_check', { simple: true }), 'ok')
+  console.log(
+    'PASS V15 upgrade and withdrawn V16 reopen preserve note, remark, settings and layout'
+  )
+} finally {
+  clearDb()
+  compatibilityDb?.close()
+  rmSync(compatibilityRoot, { recursive: true, force: true })
+}
+
 const removedFeatureMigrationDb = new Database(':memory:')
 createDatabaseSchema(removedFeatureMigrationDb)
 removedFeatureMigrationDb.exec(`

@@ -7,6 +7,7 @@ import { WeatherService } from '../src/main/services/weather-service.js'
 const temporaryDirectories = []
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   await Promise.all(
     temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true }))
   )
@@ -48,13 +49,164 @@ const tokyo = {
   timezone: 'Asia/Tokyo'
 }
 
+function validForecast() {
+  return {
+    timezone: 'Asia/Shanghai',
+    utc_offset_seconds: 28800,
+    current: {
+      time: '2026-09-28T21:00',
+      temperature_2m: 27,
+      apparent_temperature: 32,
+      weather_code: 0,
+      is_day: 0
+    },
+    daily: {
+      time: ['2026-09-28'],
+      weather_code: [51],
+      temperature_2m_min: [26],
+      temperature_2m_max: [35],
+      precipitation_sum: [1.7]
+    }
+  }
+}
+
 describe('WeatherService', () => {
+  it.each([
+    {},
+    null,
+    { daily: {} },
+    { current: validForecast().current },
+    {
+      daily: {
+        time: ['2026-09-28'],
+        weather_code: [0],
+        temperature_2m_min: [null],
+        temperature_2m_max: [null]
+      }
+    }
+  ])('preserves useful cache after an unusable HTTP 200 response: %j', async (invalid) => {
+    let body = validForecast()
+    const { service, cachePath } = await createService(async () => jsonResponse(body))
+    const first = await service.getForecast(beijing)
+    const saved = await readFile(cachePath, 'utf8')
+    body = invalid
+    const result = await service.getForecast(beijing, { refresh: true })
+    expect(result.days).toEqual(first.days)
+    expect(result.fetchedAt).toBe(first.fetchedAt)
+    expect(result.cache).toMatchObject({ hit: true, stale: true })
+    expect(result.warning).toContain('未返回有效日预报')
+    expect(await readFile(cachePath, 'utf8')).toBe(saved)
+  })
+
+  it('uses valid automatic data when the primary model returns an empty success', async () => {
+    const { service } = await createService(async (url) =>
+      jsonResponse(new URL(url).searchParams.has('models') ? {} : validForecast())
+    )
+    const result = await service.getForecast(beijing)
+    expect(result.days).toHaveLength(1)
+    expect(result.source.model.id).toBe('auto')
+    expect(result.cache.stale).toBe(false)
+  })
+
+  it('rejects empty or malformed data without a cache, and does not coerce invalid numbers', async () => {
+    const body = validForecast()
+    body.daily = {
+      time: ['2026-02-30', '2026-09-28', '2026-09-29', '2026-09-30'],
+      weather_code: [0, 0, 0.1, 0],
+      temperature_2m_min: [20, false, 20, 20.4],
+      temperature_2m_max: [30, 30, 30, 20.3]
+    }
+    const { service } = await createService(async () => jsonResponse(body))
+    await expect(service.getForecast(beijing)).rejects.toThrow('未返回有效日预报')
+    expect(await service.getForecast(beijing, { cacheOnly: true })).toBeNull()
+  })
+
+  it('retains real sub-zero rounded ranges through a v4 cache reload', async () => {
+    const body = validForecast()
+    body.daily.temperature_2m_min = [-0.4]
+    body.daily.temperature_2m_max = [0.4]
+    const { service, cachePath } = await createService(async () => jsonResponse(body))
+    const result = await service.getForecast(beijing)
+    expect(result.days).toHaveLength(1)
+    expect(Math.abs(result.days[0].temperatureMin)).toBe(0)
+    expect(result.days[0].temperatureMax).toBe(0)
+    const fetchImpl = vi.fn()
+    const reloaded = new WeatherService({ cachePath, fetchImpl })
+    expect((await reloaded.getForecast(beijing, { cacheOnly: true })).days).toHaveLength(1)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it.each(['2026-09-28T14:00', '2026-09-28T18:30', '2026-09-28T20:45'])(
+    'prefers fresh current data over an older primary reading at %s',
+    async (primaryTime) => {
+      vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-28T13:05:00Z'))
+      const { service } = await createService(async (url) => {
+        const body = validForecast()
+        if (new URL(url).searchParams.has('models')) {
+          body.current.time = primaryTime
+          body.current.weather_code = 51
+        }
+        return jsonResponse(body)
+      })
+      const result = await service.getForecast(beijing)
+      expect(result.current).toMatchObject({
+        time: '2026-09-28T21:00',
+        label: '晴',
+        icon: '🌙',
+        isDay: false,
+        dataAt: Date.parse('2026-09-28T13:00:00Z'),
+        source: { model: { id: 'auto' } }
+      })
+      expect(result.days[0].source.model.id).toBe('cma_grapes_global')
+      expect(result.source.model.id).toBe('cma_grapes_global+auto')
+    }
+  )
+
+  it('keeps coherent primary daily conditions while filling missing optional fields with provenance', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-28T13:05:00Z'))
+    const fetchImpl = vi.fn(async (url) => {
+      const body = validForecast()
+      const primary = new URL(url).searchParams.has('models')
+      body.daily.precipitation_probability_max = [primary ? null : 80]
+      body.daily.precipitation_sum = [primary ? 0 : 4]
+      body.daily.wind_speed_10m_max = [primary ? null : 18]
+      if (!primary) {
+        body.daily.weather_code = [95]
+        body.daily.temperature_2m_max = [30]
+      }
+      return jsonResponse(body)
+    })
+    const { service } = await createService(fetchImpl)
+    const result = await service.getForecast(beijing)
+    expect(result.days[0]).toMatchObject({
+      label: '毛毛雨',
+      temperatureMax: 35,
+      precipitation: 0,
+      precipitationProbability: 80,
+      windSpeedMax: 18,
+      source: { model: { id: 'cma_grapes_global' } },
+      fieldSources: {
+        precipitationProbability: { model: { id: 'auto' } },
+        windSpeedMax: { model: { id: 'auto' } }
+      }
+    })
+    expect(result.days[0].fieldSources).not.toHaveProperty('precipitation')
+    expect(result.current.source.model.id).toBe('cma_grapes_global')
+    expect(result.source.model.id).toBe('cma_grapes_global+auto')
+    for (const [url] of fetchImpl.mock.calls)
+      expect(new URL(url).searchParams.get('current').split(',')).toContain('is_day')
+  })
   it('uses the injected application version in request headers', async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({
         timezone: 'Asia/Tokyo',
         current: null,
-        daily: { time: ['2026-08-12'], weather_code: [0] }
+        daily: {
+          time: ['2026-08-12'],
+          weather_code: [0],
+          temperature_2m_min: [20],
+          temperature_2m_max: [30]
+        }
       })
     )
     const directory = await mkdtemp(join(tmpdir(), 'abandon-weather-agent-test-'))
@@ -124,7 +276,7 @@ describe('WeatherService', () => {
     expect(JSON.parse(await readFile(cachePath, 'utf8')).forecasts).toBeTruthy()
   })
 
-  it('uses current conditions for today instead of the daily most-severe code', async () => {
+  it('keeps current conditions separate from the daily most-severe code', async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({
         timezone: 'Asia/Shanghai',
@@ -147,11 +299,12 @@ describe('WeatherService', () => {
     const forecast = await service.getForecast(beijing)
 
     expect(forecast.days[0]).toMatchObject({
-      weatherCode: 0,
+      weatherCode: 95,
       dailyWeatherCode: 95,
-      label: '晴',
-      icon: '☀️'
+      label: '雷阵雨',
+      icon: '⛈️'
     })
+    expect(forecast.current).toMatchObject({ weatherCode: 0, label: '晴', temperature: 38 })
     expect(forecast.days[1]).toMatchObject({
       weatherCode: 80,
       dailyWeatherCode: 80,
@@ -164,7 +317,12 @@ describe('WeatherService', () => {
       jsonResponse({
         timezone: 'Asia/Tokyo',
         current: null,
-        daily: { time: ['2026-08-12'], weather_code: [0] }
+        daily: {
+          time: ['2026-08-12'],
+          weather_code: [0],
+          temperature_2m_min: [20],
+          temperature_2m_max: [30]
+        }
       })
     )
     const { service } = await createService(fetchImpl)
@@ -299,7 +457,12 @@ describe('WeatherService', () => {
       jsonResponse({
         timezone: 'Asia/Shanghai',
         current: null,
-        daily: { time: ['2026-08-12'], weather_code: [0] }
+        daily: {
+          time: ['2026-08-12'],
+          weather_code: [0],
+          temperature_2m_min: [20],
+          temperature_2m_max: [30]
+        }
       })
     )
     const { service } = await createService(fetchImpl)
@@ -316,7 +479,12 @@ describe('WeatherService', () => {
       jsonResponse({
         timezone: 'Asia/Shanghai',
         current: null,
-        daily: { time: ['2026-08-12'], weather_code: [0] }
+        daily: {
+          time: ['2026-08-12'],
+          weather_code: [0],
+          temperature_2m_min: [20],
+          temperature_2m_max: [30]
+        }
       })
     )
     const { service } = await createService(fetchImpl)
@@ -328,12 +496,44 @@ describe('WeatherService', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
+  it('keeps successful network data when cache persistence fails without making another request', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        timezone: 'Asia/Shanghai',
+        daily: {
+          time: ['2026-09-28'],
+          weather_code: [95],
+          temperature_2m_min: [18],
+          temperature_2m_max: [30]
+        }
+      })
+    )
+    const { service } = await createService(fetchImpl)
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(service, 'saveCache').mockRejectedValue(new Error('disk full'))
+    try {
+      const result = await service.getForecast(beijing, { refresh: true })
+      expect(result.cache.stale).toBe(false)
+      expect(result.days[0].weatherCode).toBe(95)
+      expect((await service.getForecast(beijing, { cacheOnly: true })).days).toEqual(result.days)
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
+      expect(log).toHaveBeenCalled()
+    } finally {
+      log.mockRestore()
+    }
+  })
+
   it('does not reuse a forecast for a different district sharing the same coordinates', async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({
         timezone: 'Asia/Shanghai',
         current: null,
-        daily: { time: ['2026-08-12'], weather_code: [0] }
+        daily: {
+          time: ['2026-08-12'],
+          weather_code: [0],
+          temperature_2m_min: [20],
+          temperature_2m_max: [30]
+        }
       })
     )
     const { service } = await createService(fetchImpl)
@@ -350,7 +550,12 @@ describe('WeatherService', () => {
       jsonResponse({
         timezone: 'Asia/Shanghai',
         current: null,
-        daily: { time: ['2026-08-12'], weather_code: [0] }
+        daily: {
+          time: ['2026-08-12'],
+          weather_code: [0],
+          temperature_2m_min: [20],
+          temperature_2m_max: [30]
+        }
       })
     )
     const { service } = await createService(fetchImpl)
@@ -362,7 +567,7 @@ describe('WeatherService', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
-  it('uses CMA first, fills missing Chinese dates with Best Match, and hides zero placeholders', async () => {
+  it('uses CMA first, fills missing Chinese dates with Best Match, and ignores null placeholders', async () => {
     const fetchImpl = vi.fn(async (requestUrl) => {
       const isCma = new URL(requestUrl).searchParams.get('models') === 'cma_grapes_global'
       return jsonResponse({
@@ -370,9 +575,9 @@ describe('WeatherService', () => {
         current: null,
         daily: {
           time: ['2026-08-12', '2026-08-13', '2026-08-14'],
-          weather_code: isCma ? [80, null, null] : [1, 61, 0],
-          temperature_2m_max: isCma ? [35, null, null] : [33, 32, 0],
-          temperature_2m_min: isCma ? [27, null, null] : [26, 25, 0]
+          weather_code: isCma ? [80, null, null] : [1, 61, null],
+          temperature_2m_max: isCma ? [35, null, null] : [33, 32, null],
+          temperature_2m_min: isCma ? [27, null, null] : [26, 25, null]
         }
       })
     })
@@ -421,6 +626,7 @@ describe('WeatherService', () => {
     const oldCache = JSON.parse(await readFile(cachePath, 'utf8'))
     oldCache.version = 1
     const [forecast] = Object.values(oldCache.forecasts)
+    forecast.days[0].dailyWeatherCode = 95
     forecast.days.push({
       date: '2026-08-20',
       weatherCode: 0,
@@ -437,7 +643,8 @@ describe('WeatherService', () => {
     const migrated = JSON.parse(await readFile(cachePath, 'utf8'))
 
     expect(cached.days.map((day) => day.date)).toEqual(['2026-08-12'])
-    expect(migrated.version).toBe(2)
+    expect(cached.days[0]).toMatchObject({ weatherCode: 95, label: '雷阵雨' })
+    expect(migrated.version).toBe(4)
     expect(Object.values(migrated.forecasts)[0].days.map((day) => day.date)).toEqual(['2026-08-12'])
   })
 })

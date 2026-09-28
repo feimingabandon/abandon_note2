@@ -6,6 +6,7 @@ const groups = Object.freeze({
   all: [...windowFrameTests, ...electronFeatureTests],
   features: electronFeatureTests,
   'logging-actions': ['tests/logging-actions-electron.mjs'],
+  'titlebar-native-drag': ['tests/titlebar-native-drag-electron.mjs'],
   'window-frame': windowFrameTests,
   'window-control-drag': ['tests/window-control-drag-electron.mjs']
 })

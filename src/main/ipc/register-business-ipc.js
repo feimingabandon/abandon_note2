@@ -139,10 +139,11 @@ export function registerBusinessIpcHandlers({
     'notes:complete',
     'notes:reopen'
   ])
-  const readDiagnosticNote = (id) => {
+  const readDiagnosticNote = (id, { relations = false } = {}) => {
     const db = getDb()
     const note = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
     if (!note) return null
+    if (!relations) return note
     return {
       ...note,
       attachments: db

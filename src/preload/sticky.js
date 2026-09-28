@@ -5,6 +5,10 @@ const ipcRenderer = createStickyDiagnosticIpcRenderer(electronIpcRenderer)
 
 contextBridge.exposeInMainWorld('stickyAPI', {
   reportLog: (payload) => ipcRenderer.send('logs:write', payload),
+  getDiagnosticPolicy: () => ipcRenderer.diagnostics.getPolicy(),
+  onDiagnosticPolicy: (callback) => ipcRenderer.diagnostics.subscribe(callback),
+  onDiagnosticFlush: (callback) => ipcRenderer.diagnostics.onFlush(callback),
+  registerDiagnosticCapability: (name) => ipcRenderer.diagnostics.capability(name),
   getState: () => ipcRenderer.invoke('sticky:get-state'),
   ready: () => ipcRenderer.invoke('sticky:ready'),
   close: () => ipcRenderer.invoke('sticky:close'),

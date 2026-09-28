@@ -3,8 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   getMonthCalendarData: vi.fn(),
   getWeekCalendarData: vi.fn(),
+  getAlmanacDay: vi.fn(),
   getMissingHolidayDataNotice: vi.fn()
 }))
+
+vi.mock('../src/main/calendar/almanac-service.js', () => ({ getAlmanacDay: mocks.getAlmanacDay }))
 
 vi.mock('../src/main/calendar/calendar-service.js', () => ({
   getMonthCalendarData: mocks.getMonthCalendarData,
@@ -41,9 +44,18 @@ beforeEach(() => {
   mocks.getMonthCalendarData.mockReset()
   mocks.getWeekCalendarData.mockReset()
   mocks.getMissingHolidayDataNotice.mockReset()
+  mocks.getAlmanacDay.mockReset()
 })
 
 describe('calendar IPC', () => {
+  it('always requests almanac data and rejects other renderers before calculation', () => {
+    const h = createHarness()
+    const get = h.handlers.get('calendar:get-almanac')
+    get(h.event, { dateKey: '2026-09-28' })
+    expect(mocks.getAlmanacDay).toHaveBeenLastCalledWith('2026-09-28')
+    expect(() => get({ sender: {} }, { dateKey: '2026-09-28' })).toThrow(/无权访问/)
+    expect(mocks.getAlmanacDay).toHaveBeenCalledTimes(1)
+  })
   it('routes an authorized week request using its anchor date', () => {
     const harness = createHarness()
     const expected = { weekStart: '2026-08-10', weekEnd: '2026-08-16' }

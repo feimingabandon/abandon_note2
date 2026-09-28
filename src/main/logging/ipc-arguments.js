@@ -1,5 +1,5 @@
-const MAX_ARGUMENT_TEXT = 100_000
-const MAX_CAPTURED_STRING = 20_000
+const MAX_ARGUMENT_TEXT = 16_384
+const MAX_CAPTURED_STRING = 2_048
 const MAX_ARRAY_ITEMS = 24
 const MAX_OBJECT_KEYS = 48
 const MAX_DEPTH = 6
@@ -28,6 +28,8 @@ function consumeString(value, state) {
 }
 
 function compactArgument(value, state, depth, key = '') {
+  if (++state.nodes > 256 || state.remaining < 32) return { omitted: true, reason: 'budget' }
+  state.remaining -= 32
   if (PRIVATE_FIELD_PATTERN.test(key)) {
     return {
       omitted: true,
@@ -55,9 +57,19 @@ function compactArgument(value, state, depth, key = '') {
   state.seen.add(value)
 
   if (Array.isArray(value)) {
-    const items = value
-      .slice(0, MAX_ARRAY_ITEMS)
-      .map((item, index) => compactArgument(item, state, depth + 1, String(index)))
+    const items = []
+    for (
+      let index = 0;
+      index < Math.min(value.length, MAX_ARRAY_ITEMS) && state.remaining > 32;
+      index++
+    ) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+      items.push(
+        descriptor && 'value' in descriptor
+          ? compactArgument(descriptor.value, state, depth + 1, String(index))
+          : '[accessor omitted]'
+      )
+    }
     if (value.length > items.length) {
       items.push({ truncated: true, omittedItems: value.length - items.length })
     }
@@ -65,12 +77,19 @@ function compactArgument(value, state, depth, key = '') {
   }
 
   const result = {}
-  const entries = Object.entries(value)
-  for (const [entryKey, entryValue] of entries.slice(0, MAX_OBJECT_KEYS)) {
-    result[entryKey] = compactArgument(entryValue, state, depth + 1, entryKey)
-  }
-  if (entries.length > MAX_OBJECT_KEYS) {
-    result.__truncatedKeys = entries.length - MAX_OBJECT_KEYS
+  let keys = 0
+  for (const entryKey in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, entryKey)) continue
+    if (++keys > MAX_OBJECT_KEYS || state.remaining < 32) {
+      result.__truncatedKeys = true
+      break
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, entryKey)
+    if (['__proto__', 'constructor', 'prototype'].includes(entryKey)) continue
+    result[entryKey.slice(0, 96)] =
+      descriptor && 'value' in descriptor
+        ? compactArgument(descriptor.value, state, depth + 1, entryKey)
+        : '[accessor omitted]'
   }
   return result
 }
@@ -80,7 +99,8 @@ export function captureIpcArguments(args) {
     const compacted = compactArgument(
       args,
       {
-        remaining: MAX_ARGUMENT_TEXT - 10_000,
+        nodes: 0,
+        remaining: MAX_ARGUMENT_TEXT - 2048,
         seen: new WeakSet()
       },
       0

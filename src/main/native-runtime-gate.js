@@ -47,8 +47,24 @@ export function enforceNativeRuntimeCompatibility({
     logger.error('startup.native-runtime-dialog', dialogError)
   } finally {
     try {
-      flushLogs()
-    } finally {
+      const pending = flushLogs(1000)
+      if (pending?.then) {
+        let exited = false
+        const finish = () => {
+          if (!exited) {
+            exited = true
+            exit(1)
+          }
+        }
+        const deadline = setTimeout(finish, 1000)
+        Promise.resolve(pending)
+          .catch(() => {})
+          .finally(() => {
+            clearTimeout(deadline)
+            finish()
+          })
+      } else exit(1)
+    } catch {
       exit(1)
     }
   }

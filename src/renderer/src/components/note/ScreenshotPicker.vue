@@ -5,10 +5,10 @@
  * 包裹 ImagePicker，在其首位添加截图按钮。
  * 点击截图 → 主进程打开独立全屏窗口 → 用户选区 → 裁切 → 添加到 ImagePicker。
  */
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import ImagePicker from './ImagePicker.vue'
 
-const emit = defineEmits(['count-change', 'draft-change'])
+const emit = defineEmits(['count-change', 'draft-change', 'busy-change'])
 
 defineProps({
   noteId: { type: Number, default: null },
@@ -18,9 +18,12 @@ defineProps({
 const imagePickerRef = ref(null)
 const capturing = ref(false)
 const launching = ref(false)
+const pickerBusy = ref(false)
+const busy = computed(() => capturing.value || pickerBusy.value)
+watch(busy, (value) => emit('busy-change', value), { immediate: true, flush: 'sync' })
 
 async function onScreenshot() {
-  if (capturing.value) return
+  if (busy.value) return
   capturing.value = true
   launching.value = true
   const stopListening = window.api.onScreenshotReady(() => {
@@ -63,15 +66,16 @@ defineExpose({ restoreDraft, getImages, getDraftChanges, clearImages })
     :mode="mode"
     @count-change="(n) => emit('count-change', n)"
     @draft-change="(changes) => emit('draft-change', changes)"
+    @busy-change="pickerBusy = $event"
   >
     <template #leading>
       <!-- 与添加入口、缩略图共用同一个流式布局 -->
       <div
         class="sp-btn"
-        :class="{ 'sp-btn--busy': capturing }"
+        :class="{ 'sp-btn--busy': busy }"
         title="截图"
         role="button"
-        :aria-disabled="capturing"
+        :aria-disabled="busy"
         @click="onScreenshot"
       >
         <Transition name="sp-content" mode="out-in">

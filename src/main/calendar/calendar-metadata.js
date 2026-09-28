@@ -26,7 +26,10 @@ export function buildCalendarDayMetadata(monthStart, monthEnd) {
     chineseDays.getLunarDatesInRange(monthStart, monthEnd).map((item) => [item.date, item])
   )
   const solarTermByDate = new Map(
-    chineseDays.getSolarTerms(monthStart, monthEnd).map((item) => [item.date, item.name])
+    // 寒食按清明前一天推算；即使查询在寒食当天结束，也要看到次日节气。
+    chineseDays
+      .getSolarTerms(monthStart, addCalendarDays(monthEnd, 1))
+      .map((item) => [item.date, item.name])
   )
   const coldFoodDates = new Set(
     [...solarTermByDate].flatMap(([dateKey, name]) =>

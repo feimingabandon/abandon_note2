@@ -5,6 +5,29 @@ import { enforceNativeRuntimeCompatibility } from '../src/main/native-runtime-ga
 import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
 
 describe('Windows native runtime startup gate', () => {
+  it('bounds asynchronous flush on startup failure and exits only once', async () => {
+    vi.useFakeTimers()
+    let resolveFlush
+    const exit = vi.fn()
+    const result = enforceNativeRuntimeCompatibility({
+      getCompatibility: () => ({ success: false }),
+      logger: { fatal: vi.fn(), error: vi.fn() },
+      dialog: { showErrorBox: vi.fn() },
+      flushLogs: () =>
+        new Promise((resolve) => {
+          resolveFlush = resolve
+        }),
+      exit
+    })
+    expect(result).toBe(false)
+    expect(exit).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(exit).toHaveBeenCalledOnce()
+    resolveFlush()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(exit).toHaveBeenCalledOnce()
+    vi.useRealTimers()
+  })
   it('allows startup when the native runtime is compatible', () => {
     const logger = { fatal: vi.fn(), error: vi.fn() }
     const dialog = { showErrorBox: vi.fn() }

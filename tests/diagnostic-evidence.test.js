@@ -14,6 +14,8 @@ vi.mock('electron', () => ({
 }))
 import { ipcMain } from '../src/main/logging/ipc-main.js'
 import { createDiagnosticIpcRenderer } from '../src/preload/diagnostic-ipc.js'
+import { diagnosticState } from '../src/main/logging/diagnostic-state.js'
+import { diagnosticTransportFixture, deepPolicy } from './helpers/diagnostic-mode-fixture.js'
 import { currentOperation, withOperation } from '../src/main/logging/operation-context.js'
 import {
   observeNoteMutation,
@@ -39,6 +41,7 @@ beforeEach(() => {
   writeLog.mockClear()
 })
 afterEach(() => {
+  diagnosticState.stop()
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
@@ -73,7 +76,7 @@ describe('operation evidence, not inferred success', () => {
         return handlers.get(channel)(event, ...args)
       })
     }
-    const api = createDiagnosticIpcRenderer(raw)
+    const api = createDiagnosticIpcRenderer(raw, { transport: diagnosticTransportFixture(raw) })
     await expect(api.invoke('notes:update', { id: 0, invalid: () => {} })).rejects.toThrow()
     const a = api.invoke('notes:update', { id: 1 })
     const b = api.invoke('notes:update', { id: 2 })
@@ -123,6 +126,49 @@ describe('operation evidence, not inferred success', () => {
 })
 
 describe('database evidence', () => {
+  beforeEach(() => diagnosticState.start())
+  it('does no diagnostic readback or hashing when a daily action is not sampled', () => {
+    diagnosticState.stop()
+    const read = vi.fn(() => {
+      throw new Error('must not query')
+    })
+    const result = { id: 1 }
+    const operation = { actionId: 'not-selected' }
+    expect(
+      withOperation(operation, () => observeNoteMutation(() => result, read, event, [{ id: 1 }]))
+    ).toBe(result)
+    expect(read).not.toHaveBeenCalled()
+    expect(operation.verification).toBe('skipped-policy')
+    expect(records).toHaveLength(0)
+  })
+  it('labels overlapping writes inconclusive without changing their results', async () => {
+    let complete
+    let row = { id: 1, content: 'first' }
+    const first = observeNoteMutation(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve
+        }),
+      () => row,
+      event,
+      [{ id: 1, content: 'first' }]
+    )
+    observeNoteMutation(
+      () => {
+        row = { id: 1, content: 'second' }
+        return row
+      },
+      () => row,
+      event,
+      [{ id: 1, content: 'second' }]
+    )
+    complete({ id: 1 })
+    expect(await first).toEqual({ id: 1 })
+    expect(records.at(-1)).toMatchObject({
+      outcome: 'inconclusive',
+      metadata: { overlapping: true, mismatchedFields: [] }
+    })
+  })
   it('distinguishes SQL NULL from a missing row and does not report a missing row as verified', () => {
     const entries = [{ id: 'nullable', type: 'test', key: 'nullable', value: null }]
     const read = () => [{ type: 'test', key: 'nullable', value: null }]
@@ -217,6 +263,15 @@ describe('database evidence', () => {
 })
 
 describe('renderer evidence', () => {
+  it('skips extra applied-data observation in daily mode', async () => {
+    vi.stubGlobal('window', {
+      api: { reportLog: vi.fn(), getDiagnosticPolicy: () => ({ mode: 'daily' }) }
+    })
+    const read = vi.fn()
+    const result = { status: 'success' }
+    expect(await traceViewRefresh('month', {}, async () => result, read)).toBe(result)
+    expect(read).not.toHaveBeenCalled()
+  })
   it('does not acknowledge another refresh as this request after it is superseded', async () => {
     const logs = []
     vi.stubGlobal('window', { api: { reportLog: (entry) => logs.push(entry) } })
@@ -255,7 +310,9 @@ describe('renderer evidence', () => {
 
   it('retains merged causes and never reports stale/failed refreshes as applied', async () => {
     const logs = []
-    vi.stubGlobal('window', { api: { reportLog: (entry) => logs.push(entry) } })
+    vi.stubGlobal('window', {
+      api: { reportLog: (entry) => logs.push(entry), getDiagnosticPolicy: deepPolicy }
+    })
     const causes = createRefreshCauses('month')
     causes.add({ diagnostic: { actionId: 'one' } })
     causes.add({ diagnostic: { actionId: 'two' } })

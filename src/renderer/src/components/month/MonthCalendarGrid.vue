@@ -1,8 +1,10 @@
 <script setup>
+import { measureRendererLayout } from '../../utils/performanceDiagnostics.js'
 import { isComposingInput } from '../../utils/inputComposition.js'
 import { useDraftProtection } from '../../composables/useDraftProtection.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import MonthEventBar from './MonthEventBar.vue'
+import DateContextBadge from '../almanac/DateContextBadge.vue'
 import NoteImagePreview from '../note/NoteImagePreview.vue'
 import { animateCalendarPreview, calendarPreviewPosition } from './calendar-day-preview.js'
 import {
@@ -47,6 +49,7 @@ const { enabled: tagColorEnabled } = useTagColorSetting()
 const gridRef = ref(null)
 const weekRefs = ref([])
 const dayCellRefs = new Map()
+const hoveredEventDayKey = ref('')
 const quickCreatorRefs = new Map()
 const quickInputRefs = new Map()
 const contextMenuRef = ref(null)
@@ -134,6 +137,22 @@ function setDayCellRef(element, key) {
   else dayCellRefs.delete(key)
 }
 
+function updateEventHover(event, weekIndex) {
+  // 便签横条跨日期绘制在格子上方的独立层，需按指针位置找到实际日期。
+  if (!event.target.closest?.('.month-week__events')) {
+    hoveredEventDayKey.value = ''
+    return
+  }
+  for (const day of props.days.slice(weekIndex * 7, weekIndex * 7 + 7)) {
+    const rect = dayCellRefs.get(day.key)?.getBoundingClientRect()
+    if (isActiveDay(day) && rect && event.clientX >= rect.left && event.clientX < rect.right) {
+      hoveredEventDayKey.value = day.key
+      return
+    }
+  }
+  hoveredEventDayKey.value = ''
+}
+
 function setQuickCreatorRef(element, key) {
   if (element) quickCreatorRefs.set(key, element)
   else quickCreatorRefs.delete(key)
@@ -191,19 +210,21 @@ function toggleCountPreview(day, event) {
 }
 
 function calculateCapacity() {
-  const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
-  const headerHeight = 35 * rem
-  const footerHeight = 18 * rem
-  const base =
-    Number.parseFloat(
-      getComputedStyle(document.documentElement).getPropertyValue('--font-size-base')
-    ) || 20
-  const pitch = Math.max(22, base * 0.72 + 9) * rem
-  const next = weekRefs.value.map((element) => {
-    const height = element?.getBoundingClientRect().height || 0
-    return Math.max(0, Math.floor((height - headerHeight - footerHeight) / pitch))
+  return measureRendererLayout('layout.calendar-capacity', () => {
+    const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
+    const headerHeight = 35 * rem
+    const footerHeight = 18 * rem
+    const base =
+      Number.parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--font-size-base')
+      ) || 20
+    const pitch = Math.max(22, base * 0.72 + 9) * rem
+    const next = weekRefs.value.map((element) => {
+      const height = element?.getBoundingClientRect().height || 0
+      return Math.max(0, Math.floor((height - headerHeight - footerHeight) / pitch))
+    })
+    capacityByWeek.value = Array.from({ length: rowCount.value }, (_, index) => next[index] || 0)
   })
-  capacityByWeek.value = Array.from({ length: rowCount.value }, (_, index) => next[index] || 0)
 }
 
 function queueCapacityCalculation() {
@@ -676,18 +697,6 @@ function cancelEventBarMotion() {
   detachedEventBars.clear()
 }
 
-function weatherPrecipitationLabel(weather) {
-  if (
-    weather?.precipitationProbability !== null &&
-    weather?.precipitationProbability !== undefined
-  ) {
-    return `降水概率 ${weather.precipitationProbability}%`
-  }
-  return weather?.precipitation !== null && weather?.precipitation !== undefined
-    ? `预计降水 ${weather.precipitation} mm`
-    : '暂无降水数据'
-}
-
 watch([segments, () => props.days], async () => {
   await nextTick()
   weekRefs.value.length = rowCount.value
@@ -798,6 +807,9 @@ useDraftProtection({
         :ref="(element) => setWeekRef(element, weekIndex - 1)"
         class="month-week"
         role="row"
+        @pointermove.capture="updateEventHover($event, weekIndex - 1)"
+        @pointerleave="hoveredEventDayKey = ''"
+        @pointercancel="hoveredEventDayKey = ''"
       >
         <div class="month-week__cells">
           <div
@@ -809,7 +821,8 @@ useDraftProtection({
               'is-outside': !day.inCurrentMonth,
               'is-unavailable': !isActiveDay(day),
               'is-selected': isActiveDay(day) && day.key === selectedKey,
-              'is-today': isActiveDay(day) && day.key === todayKey
+              'is-today': isActiveDay(day) && day.key === todayKey,
+              'is-context-hovered': day.key === hoveredEventDayKey
             }"
             :data-date="day.key"
             role="gridcell"
@@ -839,18 +852,14 @@ useDraftProtection({
               >
                 {{ day.metadata.displayLabel }}
               </span>
-              <span
-                v-if="isActiveDay(day) && weatherByDate.get(day.key)"
-                class="month-day-cell__weather"
-                :title="`${weatherByDate.get(day.key).label}，${weatherByDate.get(day.key).temperatureMin}°～${weatherByDate.get(day.key).temperatureMax}°，${weatherPrecipitationLabel(weatherByDate.get(day.key))}`"
-              >
-                <span aria-hidden="true">{{ weatherByDate.get(day.key).icon }}</span>
-                <span class="month-day-cell__weather-temperature">
-                  {{ weatherByDate.get(day.key).temperatureMin }}°·{{
-                    weatherByDate.get(day.key).temperatureMax
-                  }}°
-                </span>
-              </span>
+              <DateContextBadge
+                v-if="isActiveDay(day)"
+                class="month-day-cell__context"
+                weather-class="month-day-cell__weather"
+                :date-key="day.key"
+                :weather="weatherByDate.get(day.key)"
+                compact
+              />
               <span class="month-day-cell__badges">
                 <span
                   v-if="isActiveDay(day) && day.metadata?.holiday"
@@ -1187,11 +1196,29 @@ useDraftProtection({
   cursor: default;
 }
 .month-day-cell__header {
+  --day-number: max(23rem, calc(var(--fs-secondary) * 1.35));
+  --day-header-gap: 3rem;
+  --day-context: minmax(0, 1fr);
   display: grid;
   min-width: 0;
-  grid-template-columns: max(23rem, calc(var(--fs-secondary) * 1.35)) minmax(0, 1fr) auto auto;
+  grid-template-columns: var(--day-number) minmax(0, 1fr) var(--day-context) auto;
   align-items: center;
-  column-gap: 3rem;
+  column-gap: var(--day-header-gap);
+}
+.month-day-cell__header:has(.is-almanac) {
+  /* 收起时连同摘要间距一起释放；相同类型的轨道保证展开、收回均可平滑插值。 */
+  grid-template-columns: var(--day-number) minmax(0, 1fr) minmax(0, 0fr) auto;
+  column-gap: 0;
+  transition: grid-template-columns var(--motion-control) var(--ease-standard);
+}
+.month-day-cell:is(:hover, .is-context-hovered, :focus-within)
+  .month-day-cell__header:has(.is-almanac),
+.month-day-cell__header:has(.is-almanac[aria-expanded='true']) {
+  grid-template-columns: var(--day-number) minmax(0, 0.65fr) minmax(0, 1fr) auto;
+}
+.month-day-cell__header:has(.is-almanac) .month-day-cell__lunar,
+.month-day-cell__header:has(.is-almanac) .month-day-cell__badges:not(:empty) {
+  margin-left: var(--day-header-gap);
 }
 .month-day-cell__badges {
   display: inline-flex;
@@ -1289,7 +1316,6 @@ useDraftProtection({
 }
 .month-day-cell__holiday {
   display: inline-grid;
-  width: 18rem;
   height: 18rem;
   flex-shrink: 0;
   place-items: center;
@@ -1297,7 +1323,33 @@ useDraftProtection({
   font-size: calc(var(--fs-secondary) * 0.68);
   font-weight: 650;
   line-height: 1;
+}
+.month-day-cell__holiday {
+  width: 18rem;
   pointer-events: none;
+}
+.month-day-cell__context.is-almanac {
+  opacity: 0;
+  pointer-events: none;
+  text-align: right;
+  transition:
+    opacity var(--motion-control) var(--ease-standard),
+    padding-left var(--motion-control) var(--ease-standard);
+}
+.month-day-cell__context.is-almanac :deep(.date-context-badge__almanac) {
+  width: fit-content;
+  max-width: 100%;
+  margin-left: auto;
+  /* 短摘要靠右，溢出时仍从“宜”开始，不能右对齐到整段文本的尾部。 */
+  text-align: left;
+}
+.month-day-cell:hover .month-day-cell__context.is-almanac,
+.month-day-cell.is-context-hovered .month-day-cell__context.is-almanac,
+.month-day-cell:focus-within .month-day-cell__context.is-almanac,
+.month-day-cell__context.is-almanac[aria-expanded='true'] {
+  opacity: 1;
+  pointer-events: auto;
+  padding-left: var(--day-header-gap);
 }
 .month-day-cell__holiday.is-off {
   background: color-mix(in srgb, #34c759 14%, transparent);
@@ -1321,19 +1373,12 @@ useDraftProtection({
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.month-day-cell__weather {
-  display: inline-flex;
+.month-day-cell__context {
   min-width: 0;
   grid-column: 3;
-  align-items: center;
-  gap: 2rem;
   color: var(--text-color-secondary);
   font-size: calc(var(--fs-secondary) * 0.75);
-  line-height: 1;
-  pointer-events: none;
-  white-space: nowrap;
-}
-.month-day-cell__weather-temperature {
+  line-height: 1.3;
   font-variant-numeric: tabular-nums;
 }
 .month-day-cell__lunar.is-festival,
@@ -1503,8 +1548,8 @@ useDraftProtection({
 
 @container (max-width: 90rem) {
   .month-day-cell__header {
-    grid-template-columns: max(20rem, calc(var(--fs-secondary) * 1.35)) minmax(0, 1fr) auto;
-    column-gap: 2rem;
+    --day-number: max(20rem, calc(var(--fs-secondary) * 1.35));
+    --day-header-gap: 2rem;
   }
 
   .month-day-cell__number {
@@ -1525,24 +1570,6 @@ useDraftProtection({
   .month-day-cell__holiday {
     width: 16rem;
     height: 16rem;
-  }
-}
-
-@container (max-width: 150rem) {
-  .month-day-cell__weather-temperature {
-    display: none;
-  }
-}
-
-@container (max-width: 112rem) {
-  .month-day-cell__weather {
-    display: none;
-  }
-  .month-day-cell__header {
-    grid-template-columns: max(20rem, calc(var(--fs-secondary) * 1.35)) minmax(0, 1fr) auto;
-  }
-  .month-day-cell__badges {
-    grid-column: 3;
   }
 }
 </style>

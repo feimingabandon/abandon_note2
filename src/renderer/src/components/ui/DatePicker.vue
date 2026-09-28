@@ -1,6 +1,8 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
+import { ownPopover, releasePopover } from '../../utils/anchoredPopover.js'
+import { focusModal, trapModalTab } from '../../utils/modalFocus.js'
 import {
   MAX_CALENDAR_YEAR,
   MIN_CALENDAR_YEAR,
@@ -23,6 +25,7 @@ const viewYear = ref(new Date().getFullYear())
 const viewMonth = ref(new Date().getMonth() + 1)
 const monthDirection = ref('next')
 let panelResizeObserver = null
+let focusFrame = null
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
 
 const selectedParts = computed(() => {
@@ -73,18 +76,27 @@ async function openPanel() {
   panelResizeObserver = new ResizeObserver(updatePosition)
   panelResizeObserver.observe(panelRef.value)
   updatePosition()
+  ownPopover(panelRef.value, triggerRef.value)
+  focusFrame = requestAnimationFrame(() => {
+    focusFrame = null
+    if (open.value) focusModal(panelRef.value, '.date-picker-panel__day.is-selected:not(:disabled)')
+  })
   window.addEventListener('resize', updatePosition)
 }
 
-function closePanel() {
+function closePanel({ restoreFocus = false } = {}) {
+  releasePopover(panelRef.value)
+  if (focusFrame !== null) cancelAnimationFrame(focusFrame)
+  focusFrame = null
   open.value = false
   panelResizeObserver?.disconnect()
   panelResizeObserver = null
   window.removeEventListener('resize', updatePosition)
+  if (restoreFocus) triggerRef.value?.querySelector('button')?.focus({ preventScroll: true })
 }
 
 function togglePanel() {
-  if (open.value) closePanel()
+  if (open.value) closePanel({ restoreFocus: true })
   else void openPanel()
 }
 
@@ -101,7 +113,7 @@ function selectDate(dateKey) {
   if (year < MIN_CALENDAR_YEAR || year > MAX_CALENDAR_YEAR) return
   emit('update:modelValue', dateKey)
   emit('change', dateKey)
-  closePanel()
+  closePanel({ restoreFocus: true })
 }
 
 function selectToday() {
@@ -115,7 +127,11 @@ function onDocumentPointerDown(event) {
 }
 
 function onDocumentKeydown(event) {
-  if (event.key === 'Escape' && open.value) closePanel()
+  if (event.key !== 'Escape' || !open.value || event.isComposing) return
+  // 捕获阶段先关闭日期浮层，避免触发器上的 Escape 被外层模态抢先处理。
+  event.preventDefault()
+  event.stopPropagation()
+  closePanel({ restoreFocus: true })
 }
 
 watch(
@@ -126,12 +142,14 @@ watch(
 )
 
 document.addEventListener('pointerdown', onDocumentPointerDown)
-document.addEventListener('keydown', onDocumentKeydown)
+document.addEventListener('keydown', onDocumentKeydown, true)
 
 onBeforeUnmount(() => {
+  releasePopover(panelRef.value)
+  if (focusFrame !== null) cancelAnimationFrame(focusFrame)
   panelResizeObserver?.disconnect()
   document.removeEventListener('pointerdown', onDocumentPointerDown)
-  document.removeEventListener('keydown', onDocumentKeydown)
+  document.removeEventListener('keydown', onDocumentKeydown, true)
   window.removeEventListener('resize', updatePosition)
 })
 </script>
@@ -174,6 +192,7 @@ onBeforeUnmount(() => {
           :style="panelStyle"
           role="dialog"
           :aria-label="ariaLabel"
+          @keydown="trapModalTab($event, panelRef)"
         >
           <header class="date-picker-panel__header">
             <button

@@ -1,5 +1,10 @@
-/** 数据库结构版本。公开版本只能通过显式迁移递增。 */
-export const DATABASE_SCHEMA_VERSION = 15
+/**
+ * 数据库结构版本只能递增，删除功能也不能回退已写入数据库的版本号。
+ * V16 曾为已撤销的独立极简视图增加布局表，便签结构仍兼容 V15。
+ * 保留 V16 兼容号；新库不创建废弃表，已有库保留该表及数据但不再使用。
+ * V15 → V16 仅由迁移事务提交版本号，后续结构变更必须从 V17 开始。
+ */
+export const DATABASE_SCHEMA_VERSION = 16
 
 function hasTable(db, tableName) {
   return Boolean(

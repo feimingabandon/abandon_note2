@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import AlmanacSummary from '../almanac/AlmanacSummary.vue'
 import NoteCard from '../list/NoteCard.vue'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
 import { dateOrdinal } from '../../../../shared/calendar/calendar-date-rules.js'
@@ -9,6 +10,7 @@ const props = defineProps({
   dateKey: { type: String, required: true },
   notes: { type: Array, default: () => [] },
   weather: { type: Object, default: null },
+  weatherCurrent: { type: Object, default: null },
   weatherLocation: { type: Object, default: null },
   weatherFetchedAt: { type: Number, default: null },
   weatherStale: { type: Boolean, default: false },
@@ -189,7 +191,7 @@ onBeforeUnmount(() => {
               displayedWeather.icon
             }}</span>
             <div class="month-day-panel__weather-main">
-              <strong>{{ displayedWeather.label }}</strong>
+              <strong>全天 {{ displayedWeather.label }}</strong>
               <span>
                 {{ weatherPlace }}·{{ displayedWeather.temperatureMin }}°～{{
                   displayedWeather.temperatureMax
@@ -197,16 +199,33 @@ onBeforeUnmount(() => {
               </span>
             </div>
             <div class="month-day-panel__weather-details">
+              <template v-if="weatherCurrent">
+                <span
+                  >当前 {{ weatherCurrent.icon }} {{ weatherCurrent.label }}
+                  {{ weatherCurrent.temperature }}°</span
+                >
+                <span :title="weatherCurrent.validTimeLabel">{{
+                  weatherCurrent.validTimeLabel
+                }}</span>
+                <span>{{ weatherCurrent.updateLabel }}</span>
+              </template>
               <span>{{ weatherPrecipitationLabel }}</span>
               <span>最大风速 {{ displayedWeather.windSpeedMax ?? '—' }} km/h</span>
               <span :title="weatherError">
-                {{ weatherStale ? '离线缓存' : `更新 ${weatherUpdatedLabel}` }}
+                {{
+                  weatherError
+                    ? `更新失败 · 获取于 ${weatherUpdatedLabel}`
+                    : weatherStale
+                      ? `数据较旧 · 获取于 ${weatherUpdatedLabel}`
+                      : `获取于 ${weatherUpdatedLabel}`
+                }}
               </span>
             </div>
           </section>
         </Transition>
       </div>
     </div>
+    <AlmanacSummary :date-key="dateKey" />
     <div ref="listRef" class="month-day-panel__list scroll-y">
       <NoteCard
         v-for="note in notes"

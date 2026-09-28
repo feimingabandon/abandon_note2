@@ -44,6 +44,7 @@ const isPinned = ref(false)
 const tagIds = ref([])
 const imagePickerRef = ref(null)
 const draftImageCount = ref(0)
+const attachmentsBusy = ref(false)
 const saving = ref(false)
 const discardVisible = ref(false)
 const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
@@ -84,7 +85,7 @@ function onTimeChange() {
 }
 
 function requestClose() {
-  if (saving.value) return
+  if (saving.value || attachmentsBusy.value) return
   if (dirty.value) discardVisible.value = true
   else emit('close')
 }
@@ -95,7 +96,7 @@ function discardDraft() {
 }
 
 async function create() {
-  if (saving.value) return
+  if (saving.value || attachmentsBusy.value) return
   if (!canCreate.value) {
     showMessage('warning', '请输入便签内容或添加图片')
     return
@@ -161,7 +162,7 @@ const protectedDraft = useDraftProtection({
     tagIds
   },
   dirty: () => dirty.value,
-  busy: () => saving.value,
+  busy: () => saving.value || attachmentsBusy.value,
   extra: () => ({ attachments: imagePickerRef.value?.getDraftChanges() }),
   restoreExtra: (data) => imagePickerRef.value?.restoreDraft(data.attachments)
 })
@@ -178,9 +179,17 @@ const protectedDraft = useDraftProtection({
       <div>
         <strong>新建便签</strong><span>{{ dateLabel }}</span>
       </div>
-      <button type="button" aria-label="关闭新建便签" title="关闭" @click="requestClose">×</button>
+      <button
+        type="button"
+        aria-label="关闭新建便签"
+        title="关闭"
+        :disabled="saving || attachmentsBusy"
+        @click="requestClose"
+      >
+        ×
+      </button>
     </header>
-    <div class="month-creator__body scroll-y">
+    <div class="month-creator__body scroll-y" :inert="saving">
       <ColoredTextEditor
         v-model="content"
         v-model:color-ranges="contentColorRanges"
@@ -246,19 +255,22 @@ const protectedDraft = useDraftProtection({
           ref="imagePickerRef"
           mode="memory"
           @count-change="draftImageCount = $event"
+          @busy-change="attachmentsBusy = $event"
         />
       </div>
     </div>
     <footer>
-      <button type="button" :disabled="saving" @click="requestClose">取消</button>
+      <button type="button" :disabled="saving || attachmentsBusy" @click="requestClose">
+        取消
+      </button>
       <button
         type="button"
         class="is-primary"
         data-diagnostic-action="note.create"
-        :disabled="saving || !canCreate"
+        :disabled="saving || attachmentsBusy || !canCreate"
         @click="create"
       >
-        {{ saving ? '创建中…' : '创建便签' }}
+        {{ saving ? '创建中…' : attachmentsBusy ? '图片处理中…' : '创建便签' }}
       </button>
     </footer>
 

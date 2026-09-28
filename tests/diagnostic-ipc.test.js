@@ -1,7 +1,34 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createDiagnosticIpcRenderer } from '../src/preload/diagnostic-ipc.js'
+import { createDiagnosticIpcRenderer as createIpc } from '../src/preload/diagnostic-ipc.js'
+import { diagnosticTransportFixture } from './helpers/diagnostic-mode-fixture.js'
+const createDiagnosticIpcRenderer = (raw) =>
+  createIpc(raw, { transport: diagnosticTransportFixture(raw) })
 
 describe('preload diagnostic IPC wrapper', () => {
+  it('waits for a bounded diagnostic drain before destructive IPC without replacing business results', async () => {
+    let finishDrain
+    const raw = { send: vi.fn(), invoke: vi.fn(async () => true) }
+    const transport = {
+      ...diagnosticTransportFixture(raw),
+      prepareForUnload: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            finishDrain = resolve
+          })
+      )
+    }
+    const ipc = createIpc(raw, { transport })
+    const closing = ipc.invoke('sticky:close')
+    expect(raw.invoke).not.toHaveBeenCalled()
+    finishDrain({ incomplete: false })
+    await expect(closing).resolves.toBe(true)
+    expect(raw.invoke).toHaveBeenCalledWith(
+      'sticky:close',
+      expect.objectContaining({ __abandonDiagnostic: 1 })
+    )
+    transport.prepareForUnload.mockRejectedValueOnce(new Error('diagnostic unavailable'))
+    await expect(ipc.invoke('view:switch', 'month')).resolves.toBe(true)
+  })
   it('reports broadcast receipt without changing callback arguments or listener removal', () => {
     const raw = { send: vi.fn(), on: vi.fn(), removeListener: vi.fn() }
     const ipc = createDiagnosticIpcRenderer(raw)

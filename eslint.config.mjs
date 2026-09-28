@@ -4,7 +4,17 @@ import eslintPluginVue from 'eslint-plugin-vue'
 import vueParser from 'vue-eslint-parser'
 
 export default [
-  { ignores: ['**/node_modules', '**/dist', '**/out'] },
+  {
+    ignores: [
+      '**/node_modules',
+      '**/dist',
+      '**/out',
+      // Preserve the pinned third-party source; the local civil-date adapter is linted.
+      'src/main/calendar/vendor/cnlunar/lunar.js',
+      'src/main/calendar/vendor/cnlunar/data/**',
+      'src/main/calendar/vendor/cnlunar/utils/**'
+    ]
+  },
   eslintConfig,
   ...eslintPluginVue.configs['flat/recommended'],
   {

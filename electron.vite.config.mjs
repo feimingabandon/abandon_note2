@@ -1,4 +1,5 @@
-import { resolve } from 'path'
+import { resolve, dirname } from 'path'
+import { readFileSync } from 'node:fs'
 import { defineConfig } from 'electron-vite'
 import vue from '@vitejs/plugin-vue'
 
@@ -16,18 +17,41 @@ function enforceSandboxPreloadSingleFile() {
   }
 }
 
+// 同一份策略/运输源码可供多个 preload 使用，但 sandbox 运行时仍各自内联。
+function isolateSandboxPreloadModules() {
+  const entries = new Set(['index', 'screenshot', 'sticky'])
+  const suffix = '?sandbox-entry='
+  return {
+    name: 'isolate-sandbox-preload-modules',
+    enforce: 'pre',
+    resolveId(source, importer) {
+      if (!importer || !source.startsWith('.')) return null
+      const normalized = importer.replaceAll('\\', '/')
+      const entry = normalized.includes(suffix)
+        ? normalized.split(suffix)[1]
+        : /^.*\/src\/preload\/(index|screenshot|sticky)\.js$/.exec(normalized)?.[1]
+      if (!entries.has(entry)) return null
+      return `${resolve(dirname(importer.split(suffix)[0]), source)}${suffix}${entry}`
+    },
+    load(id) {
+      if (id.includes(suffix)) return readFileSync(id.split(suffix)[0], 'utf8')
+    }
+  }
+}
+
 export default defineConfig({
   main: {
     build: {
       rollupOptions: {
         input: {
-          index: resolve('src/main/bootstrap.js')
+          index: resolve('src/main/bootstrap.js'),
+          'log-writer': resolve('src/main/logging/log-writer.mjs')
         }
       }
     }
   },
   preload: {
-    plugins: [enforceSandboxPreloadSingleFile()],
+    plugins: [isolateSandboxPreloadModules(), enforceSandboxPreloadSingleFile()],
     build: {
       rollupOptions: {
         input: {

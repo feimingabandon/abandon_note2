@@ -11,10 +11,13 @@ import {
   cleanupPendingWallpaperFiles,
   deleteWallpaperVersion,
   listWallpaperRecords,
+  getWallpaperDataUrl,
+  getWallpaperThumbnail,
   resolveWallpaperPath,
   saveWallpaperVersion,
   setWallpaperStorageFaultInjectorForTests
 } from '../src/main/db/db-wallpapers.js'
+import { drainOperationPerformance } from '../src/main/logging/operation-performance.js'
 
 async function expectStorageFault(point, operation) {
   setWallpaperStorageFaultInjectorForTests((currentPoint) => {
@@ -68,6 +71,27 @@ app.once('ready', async () => {
     assert.equal(first.original_path, second.original_path)
     assert.equal(existsSync(resolveWallpaperPath(first.original_path)), true)
     assert.equal(existsSync(resolveWallpaperPath(first.cropped_path)), true)
+
+    drainOperationPerformance()
+    assert.equal(await getWallpaperDataUrl(first.id), `data:image/png;base64,${png}`)
+    assert.equal(
+      await getWallpaperDataUrl(first.id, { original: true }),
+      `data:image/png;base64,${png}`
+    )
+    assert.ok(getWallpaperThumbnail(first.id).startsWith('data:image/png;base64,'))
+    const performanceBatch = drainOperationPerformance()
+    for (const operation of ['wallpaper.cropped', 'wallpaper.original', 'wallpaper.thumbnail']) {
+      const entry = performanceBatch.entries.find((value) => value.operation === operation)
+      assert.equal(entry.count, 1)
+      assert.equal(entry.metrics.pixels.max, 4)
+      assert.equal(entry.metrics.width.max, 2)
+      assert.equal(entry.metrics.height.max, 2)
+    }
+    assert.ok(!JSON.stringify(performanceBatch).includes(png), '壁纸诊断泄漏图片数据')
+    assert.ok(
+      !JSON.stringify(performanceBatch).includes(first.cropped_path),
+      '壁纸诊断泄漏文件路径'
+    )
 
     const alternateBitmap = Buffer.from([
       30, 40, 50, 255, 70, 80, 90, 255, 110, 120, 130, 255, 150, 160, 170, 255

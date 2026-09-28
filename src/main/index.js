@@ -1,4 +1,5 @@
 import { installRendererRecovery } from './windows/renderer-recovery.js'
+import { beginPerformanceOperation } from './logging/operation-performance.js'
 import { createEditingDraftGuard } from './windows/editing-draft-guard.js'
 /**
  * index.js — Electron 主进程入口文件
@@ -115,27 +116,24 @@ import {
   getWindowBoundsUpdate
 } from './window-bounds.js'
 import { ipcMain } from './logging/ipc-main.js'
-import { checkpoint, diagnosticBroadcast } from './logging/operation-context.js'
+import { checkpoint, currentOperation, diagnosticBroadcast } from './logging/operation-context.js'
 import { readSettingEvidence, reportSettingEvidence } from './logging/persistence-evidence.js'
 import {
   exportLogs,
   flushLogs,
+  freezeLogSnapshot,
+  releaseLogSnapshot,
   getLogDirectory,
-  getLogFiles,
   logger,
-  normalizeRendererLog,
   queryLogs,
   writeLog
 } from './logging/logger.js'
-import {
-  attachWindowLogging,
-  getWindowDiagnosticContext,
-  getWindowLogContext,
-  noteStructuredRendererConsole,
-  setWindowLogContext
-} from './logging/window-capture.js'
-import { getRecentCrashDumps } from './logging/process-capture.js'
+import { attachWindowLogging, setWindowLogContext } from './logging/window-capture.js'
+import { refreshCrashDumpIndex } from './logging/process-capture.js'
 import { collectSystemDiagnostics } from './logging/system-diagnostics.js'
+import { startPerformanceDiagnostics } from './logging/performance-diagnostics.js'
+import { registerDiagnosticController } from './logging/diagnostic-controller.js'
+import { diagnosticState } from './logging/diagnostic-state.js'
 import { DockNativeStatusObserver } from './logging/dock-native-status-observer.js'
 import { enforceNativeRuntimeCompatibility } from './native-runtime-gate.js'
 import {
@@ -150,7 +148,6 @@ import {
   WINDOW_Z_ORDER_MODES
 } from '../shared/settings-schema.js'
 import { getSystemNotificationCapability } from '../shared/notification-policy.js'
-import { weatherDailyRefreshKey } from '../shared/weather-rules.js'
 import { registerBusinessIpcHandlers } from './ipc/register-business-ipc.js'
 import { registerCalendarIpcHandlers } from './ipc/register-calendar-ipc.js'
 import { registerDailyReportIpcHandlers } from './ipc/register-daily-report-ipc.js'
@@ -215,6 +212,7 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'ui.dayPanelSize',
   'calendar.recurringPreviewEnabled',
   'notes.tagColorEnabled',
+  'listAppearance.minimalMode',
   'interaction.doubleClickQuickEdit',
   'interaction.hideMainViewDuringScreenshot',
   'weather.enabled',
@@ -345,6 +343,9 @@ let pendingNotificationRevealContext = null
 let shutdownStartedAt = null
 let shutdownTrigger = null
 let shutdownCompletedLogged = false
+let diagnosticController = null
+let diagnosticShutdownStarted = false
+let diagnosticShutdownFinished = false
 
 function notificationWindowSnapshot() {
   return {
@@ -1041,6 +1042,7 @@ function initializeBlurRuntime() {
 }
 
 function broadcastSettingsChanged(snapshot = getResolvedSettingsSnapshot()) {
+  weatherRuntime?.settingsChanged()
   const payload = diagnosticBroadcast(snapshot)
   for (const window of getApplicationWindows()) {
     if (
@@ -1736,11 +1738,14 @@ function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
   const previousDockConfig = changesDockConfig ? getDockRuntimeConfig() : null
   const normalizedEntries = entries.map(({ id, value }) => ({ id, ...serializeSetting(id, value) }))
   const evidenceScope = getActiveWindowName()
+  const evidenceTicket = diagnosticState.observation(currentOperation()?.actionId)
+  if (currentOperation()) currentOperation().verification = evidenceTicket.reason
   const beforeEvidence = readSettingEvidence(
     normalizedEntries,
     getAllSettings,
     APPLICATION_SETTING_ID_SET,
-    evidenceScope
+    evidenceScope,
+    evidenceTicket
   )
   const applicationEntries = normalizedEntries.filter(({ id }) =>
     APPLICATION_SETTING_ID_SET.has(id)
@@ -1756,7 +1761,8 @@ function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
       normalizedEntries,
       getAllSettings,
       APPLICATION_SETTING_ID_SET,
-      evidenceScope
+      evidenceScope,
+      evidenceTicket
     )
   )
   refreshResolvedSettings({ incrementRevision: true })
@@ -1845,7 +1851,12 @@ const dockNativeStatusObserver = new DockNativeStatusObserver({
   getStatus: () => windowMotionBackend?.getEdgeMonitorStatus() || {},
   getContext: getDockNativeObserverContext,
   logger,
-  intervalMs: DOCK_NATIVE_STATUS_OBSERVER_INTERVAL_MS
+  intervalMs: 2000
+})
+diagnosticState.subscribe((policy) => {
+  dockNativeStatusObserver.setInterval(
+    policy.mode === 'deep' ? DOCK_NATIVE_STATUS_OBSERVER_INTERVAL_MS : 2000
+  )
 })
 
 function scheduleNativeEdgeCleanup() {
@@ -4259,93 +4270,127 @@ const startupPromise = app.whenReady().then(async () => {
   // ---- IPC 通道注册 ----
   const mainWindowIpc = createMainWindowIpc(ipcMain, () => mainWindow)
 
-  ipcMain.on('logs:write', (event, payload) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    const normalized = normalizeRendererLog(payload)
-    const windowContext = getWindowLogContext(win)
-    noteStructuredRendererConsole(win, normalized)
-    writeLog({
-      ...normalized,
-      windowRole: windowContext.role,
-      webContentsId: event.sender.id,
-      metadata: {
-        ...(normalized.metadata || {}),
-        ...getWindowDiagnosticContext(win, event.sender)
+  const performanceDiagnostics = startPerformanceDiagnostics({
+    app,
+    powerMonitor,
+    writeLog,
+    readNativeState: captureTitlebarZOrderStatus,
+    readWindowState: () => {
+      const window = getActiveVisualWindow()
+      if (!window || window.isDestroyed()) return null
+      const display = screen.getDisplayMatching(window.getBounds())
+      return {
+        id: window.id,
+        webContentsId: window.webContents.id,
+        rendererPid: window.webContents.getOSProcessId(),
+        viewMode: activeViewMode,
+        visible: window.isVisible(),
+        minimized: window.isMinimized(),
+        focused: window.isFocused(),
+        zOrderMode,
+        blurEnabled: blurConfig.enabled,
+        wallpaperEnabled: Boolean(
+          resolvedSettings.wallpaper.enabled &&
+          resolvedSettings.wallpaper.activeId &&
+          !blurConfig.enabled
+        ),
+        wallpaperBlurRadius: resolvedSettings.wallpaper.blurRadius,
+        displayId: display.id,
+        displayFrequency: display.displayFrequency,
+        scaleFactor: display.scaleFactor
       }
-    })
-  })
-
-  mainWindowIpc.handle('logs:query', async (_event, query) => {
-    return {
-      ...(await queryLogs(query)),
-      files: getLogFiles().map((file) => ({
-        name: file.name,
-        size: file.size,
-        modifiedAt: file.modifiedAt
-      }))
     }
   })
 
+  diagnosticController = registerDiagnosticController({
+    ipcMain,
+    controls: mainWindowIpc,
+    BrowserWindow,
+    observeRenderer: performanceDiagnostics.observeRenderer,
+    flushPerformance: (requestId) => performanceDiagnostics.flush(requestId)
+  })
+
+  mainWindowIpc.handle('logs:query', async (_event, query) => {
+    return queryLogs(query)
+  })
+
   mainWindowIpc.handle('logs:open-folder', async () => {
+    await flushLogs()
     const errorMessage = await shell.openPath(getLogDirectory())
     if (errorMessage) throw new Error(errorMessage)
     return true
   })
 
+  let diagnosticExporting = false
   mainWindowIpc.handle('logs:export', async (_event, options = {}) => {
-    const range = options?.range ?? 'all'
-    if (!['all', 'last-hour'].includes(range)) throw new Error('不支持的日志导出范围')
-    // 点击导出时固定时间范围，跨应用会话筛选，不受日志查看器筛选条件影响。
-    const requestedAt = Date.now()
-    const selection =
-      range === 'last-hour' ? { from: requestedAt - 3_600_000, to: requestedAt } : null
-    const result = await dialog.showSaveDialog(mainWindow, {
-      title: '导出诊断日志',
-      defaultPath: `abandon-note-diagnostics-${range}-${new Date(requestedAt).toISOString().slice(0, 10)}.jsonl`,
-      filters: [{ name: 'JSON Lines', extensions: ['jsonl'] }]
-    })
-    if (result.canceled || !result.filePath) return { canceled: true }
-    let systemDiagnostics
+    if (diagnosticExporting) throw new Error('已有诊断日志正在导出')
+    diagnosticExporting = true
+    let fileSnapshot
     try {
-      systemDiagnostics = await collectSystemDiagnostics({
-        app,
-        screen,
-        windows: getApplicationWindows(),
-        runtime: {
-          activeViewMode,
-          blur: { ...blurConfig, initialized: blurInitialized },
-          native: getNativeRuntimeCompatibility(),
-          dock: getDockDiagnosticSnapshot()
-        }
+      const range = options?.range ?? 'all'
+      if (!['all', 'last-hour'].includes(range)) throw new Error('不支持的日志导出范围')
+      // 点击导出时固定时间范围，跨应用会话筛选，不受日志查看器筛选条件影响。
+      const requestedAt = Date.now()
+      const frozen = await diagnosticController.freeze('export', requestedAt)
+      fileSnapshot = await freezeLogSnapshot()
+      const selection =
+        range === 'last-hour'
+          ? { from: requestedAt - 3_600_000, to: requestedAt, requestId: frozen.requestId }
+          : { requestId: frozen.requestId, to: requestedAt }
+      selection.snapshotId = fileSnapshot.id
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: '导出诊断日志',
+        defaultPath: `abandon-note-diagnostics-${range}-${new Date(requestedAt).toISOString().slice(0, 10)}.jsonl`,
+        filters: [{ name: 'JSON Lines', extensions: ['jsonl'] }]
       })
-    } catch (error) {
-      systemDiagnostics = {
-        capturedAt: new Date().toISOString(),
-        collectionErrors: [{ field: 'system', message: error?.message || String(error) }]
+      if (result.canceled || !result.filePath) return { canceled: true }
+      let systemDiagnostics
+      try {
+        systemDiagnostics = await collectSystemDiagnostics({
+          app,
+          screen,
+          windows: getApplicationWindows(),
+          runtime: {
+            activeViewMode,
+            blur: { ...blurConfig, initialized: blurInitialized },
+            native: getNativeRuntimeCompatibility(),
+            dock: getDockDiagnosticSnapshot(),
+            performance: performanceDiagnostics.snapshot()
+          }
+        })
+      } catch (error) {
+        systemDiagnostics = {
+          capturedAt: new Date().toISOString(),
+          collectionErrors: [{ field: 'system', message: error?.message || String(error) }]
+        }
       }
+      await exportLogs(
+        result.filePath,
+        {
+          logDirectory: getLogDirectory(),
+          crashDumpsPath: app.getPath('crashDumps'),
+          recentCrashDumps: await refreshCrashDumpIndex(),
+          exportScope: range === 'last-hour' ? 'last-hour' : 'all-retained-logs',
+          ...(Number.isFinite(selection.from)
+            ? {
+                from: new Date(selection.from).toISOString(),
+                to: new Date(selection.to).toISOString()
+              }
+            : {})
+        },
+        systemDiagnostics,
+        selection,
+        { capture: frozen, controller: diagnosticController.state() }
+      )
+      logger.info('logs.export', '诊断日志已导出', {
+        targetPath: result.filePath,
+        exportScope: range === 'last-hour' ? 'last-hour' : 'all-retained-logs'
+      })
+      return { canceled: false, filePath: result.filePath }
+    } finally {
+      await releaseLogSnapshot(fileSnapshot?.id)
+      diagnosticExporting = false
     }
-    await exportLogs(
-      result.filePath,
-      {
-        logDirectory: getLogDirectory(),
-        crashDumpsPath: app.getPath('crashDumps'),
-        recentCrashDumps: getRecentCrashDumps(),
-        exportScope: range === 'last-hour' ? 'last-hour' : 'all-retained-logs',
-        ...(selection
-          ? {
-              from: new Date(selection.from).toISOString(),
-              to: new Date(selection.to).toISOString()
-            }
-          : {})
-      },
-      systemDiagnostics,
-      selection
-    )
-    logger.info('logs.export', '诊断日志已导出', {
-      targetPath: result.filePath,
-      exportScope: range === 'last-hour' ? 'last-hour' : 'all-retained-logs'
-    })
-    return { canceled: false, filePath: result.filePath }
   })
 
   // ---- 应用更新（检查版本后，通过浏览器直链或对应标签页下载） ----
@@ -5153,6 +5198,7 @@ const startupPromise = app.whenReady().then(async () => {
       if (result.count > 0 && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('notes:changed', { reason: 'activation' })
       }
+      return { performanceCounts: { activated: result.count, notifications: notifiedCount } }
     }
   })
 
@@ -5215,6 +5261,15 @@ const startupPromise = app.whenReady().then(async () => {
       }
       if (result.count > 0 && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('notes:changed', { reason: 'recurrence' })
+      }
+      return {
+        performanceCounts: {
+          generated: result.count,
+          skipped: result.skipped,
+          errors: result.errors.length,
+          autoPaused: result.autoPaused.length,
+          notifications: notifiedCount
+        }
       }
     }
   })
@@ -5338,6 +5393,7 @@ const startupPromise = app.whenReady().then(async () => {
     shell,
     getMainWindow: () => mainWindow
   })
+  const weatherPowerPauses = new Set()
   weatherRuntime = registerWeatherIpcHandlers({
     ipcMain,
     shell,
@@ -5345,31 +5401,52 @@ const startupPromise = app.whenReady().then(async () => {
     appVersion: app.getVersion(),
     getMainWindow: () => mainWindow,
     getWeatherSettings: () => structuredClone(resolvedSettings.weather),
+    canAutoRefresh: () =>
+      process.env.ABANDON_INTEGRATION_TEST !== '1' &&
+      weatherPowerPauses.size === 0 &&
+      Boolean(
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        mainWindow.isVisible() &&
+        !mainWindow.isMinimized() &&
+        !isCompactPresentationActive()
+      ),
     logger
   })
-  // 完整 Electron 集成测试使用固定天气缓存断言界面，不能让真实网络结果异步覆盖夹具。
-  // 天气服务与刷新协调由独立单元测试覆盖；普通运行仍保持启动刷新和每日刷新。
-  if (process.env.ABANDON_INTEGRATION_TEST !== '1') {
-    void weatherRuntime.refreshAtStartup().catch((error) => {
-      logger.warn('weather.startup-refresh', error?.message || '启动时天气更新失败')
-    })
-    // 3.8 每天 09:00 后最多更新一次。若 09:00 时系统休眠，恢复后的首次 tick 补执行；
-    // 若应用在 09:00 后启动，启动更新已经覆盖当天，不再额外请求。
-    let lastWeatherDailyRefreshKey = weatherDailyRefreshKey(Date.now())
-    scheduler.register({
-      name: 'weatherDailyRefreshTask',
-      maxFailures: Infinity,
-      shouldRun: (context) => {
-        const dateKey = weatherDailyRefreshKey(context.now)
-        return Boolean(dateKey && dateKey !== lastWeatherDailyRefreshKey)
-      },
-      execute: (context) => {
-        lastWeatherDailyRefreshKey = weatherDailyRefreshKey(context.now)
-        void weatherRuntime.refreshDaily().catch((error) => {
-          logger.warn('weather.daily-refresh', error?.message || '每日天气更新失败')
-        })
+  // A single due check covers startup, visible operation and recovery. Tests use fixed caches.
+  const refreshWeatherIfDue = () => {
+    const finish = beginPerformanceOperation('background', 'weather.refreshIfDue')
+    // 此统计包含异步完成；scheduler 的同步分发耗时不代表网络等待时间。
+    void weatherRuntime.refreshIfDue().then(
+      () => finish(),
+      (error) => {
+        finish({ errors: 1 })
+        logger.warn('weather.auto-refresh', error?.message || '天气更新失败')
       }
+    )
+  }
+  if (process.env.ABANDON_INTEGRATION_TEST !== '1') {
+    scheduler.register({
+      name: 'weatherRefreshTask',
+      maxFailures: Infinity,
+      shouldRun: () => true,
+      execute: refreshWeatherIfDue
     })
+    mainWindow.on('show', refreshWeatherIfDue)
+    mainWindow.on('restore', refreshWeatherIfDue)
+    for (const event of ['suspend', 'lock-screen'])
+      powerMonitor.on(event, () => {
+        weatherPowerPauses.add(event)
+      })
+    for (const [event, pause] of [
+      ['resume', 'suspend'],
+      ['unlock-screen', 'lock-screen']
+    ])
+      powerMonitor.on(event, () => {
+        weatherPowerPauses.delete(pause)
+        refreshWeatherIfDue()
+      })
+    refreshWeatherIfDue()
   }
 
   screenshotService = new ScreenshotService({
@@ -5493,6 +5570,27 @@ app.on('before-quit', (event) => {
         })
         .finally(() => {
           remoteShutdownFinished = true
+          app.quit()
+        })
+    }
+    return
+  }
+  if (diagnosticController && !diagnosticShutdownFinished) {
+    event.preventDefault()
+    if (!diagnosticShutdownStarted) {
+      diagnosticShutdownStarted = true
+      void diagnosticController
+        .freeze('shutdown')
+        .then((capture) =>
+          logger.info('logging.shutdown-capture', '退出前提交页面诊断', {
+            complete: capture.complete,
+            windows: capture.windows,
+            retiredIncompleteOmitted: capture.retiredIncompleteOmitted
+          })
+        )
+        .catch((error) => logger.error('logging.shutdown-capture', error))
+        .finally(() => {
+          diagnosticShutdownFinished = true
           app.quit()
         })
     }

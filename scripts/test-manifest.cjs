@@ -33,19 +33,25 @@ const windowFrameTests = Object.freeze([
 ])
 
 const electronFeatureTests = Object.freeze([
+  'tests/almanac-weather-electron.mjs',
+  'tests/attachment-loading-electron.mjs',
+  'tests/list-minimal-mode-electron.mjs',
   'tests/calendar-font-electron.mjs',
   'tests/draft-dialog-ui-electron.mjs',
   'tests/first-use-notice-electron.mjs',
   'tests/help-center-electron.mjs',
   'tests/logging-actions-electron.mjs',
+  'tests/logging-worker-asar-electron.mjs',
   'tests/month-context-menu-electron.mjs',
   'tests/month-day-preview-status-electron.mjs',
   'tests/month-event-text-color-electron.mjs',
   'tests/note-text-color-electron.mjs',
   'tests/notice-markdown-electron.mjs',
   'tests/presentation-mode-electron.mjs',
+  'tests/titlebar-native-drag-electron.mjs',
   'tests/recurring-preview-electron.mjs',
   'tests/screenshot-recovery-electron.mjs',
+  'tests/settings-scroll-memory-electron.mjs',
   'tests/window-state-matrix-electron.mjs',
   'tests/week-day-panel-electron.mjs',
   'tests/window-control-drag-electron.mjs',
@@ -61,10 +67,14 @@ const acceptanceTests = Object.freeze([
   'tests/notice-admin-electron.mjs'
 ])
 
-const benchmarkTests = Object.freeze(['tests/thumbnail-benchmark-electron.mjs'])
+const benchmarkTests = Object.freeze([
+  'tests/thumbnail-benchmark-electron.mjs',
+  'tests/logging-overhead-electron.mjs'
+])
 
 const helperFiles = Object.freeze([
   'tests/calendar-count-preview-helper.mjs',
+  'tests/helpers/date-picker-keyboard.mjs',
   'tests/helpers/renderer-evidence.mjs',
   'tests/fullscreen-foreground-electron.mjs'
 ])

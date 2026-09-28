@@ -1,3 +1,4 @@
+import { getAlmanacDay } from '../calendar/almanac-service.js'
 import { getMonthCalendarData, getWeekCalendarData } from '../calendar/calendar-service.js'
 import {
   dismissMissingHolidayDataNotice,
@@ -17,6 +18,11 @@ export function registerCalendarIpcHandlers({ ipcMain, dialog, shell, getMainWin
     if (window && !window.isDestroyed())
       window.webContents.send('calendar:holiday-data-changed', payload)
   }
+
+  ipcMain.handle('calendar:get-almanac', (event, { dateKey } = {}) => {
+    assertAuthorized(event)
+    return getAlmanacDay(dateKey)
+  })
 
   ipcMain.handle(
     'calendar:get-month',

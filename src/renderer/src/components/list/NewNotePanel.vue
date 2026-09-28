@@ -157,6 +157,7 @@ const submitState = ref('idle') // idle | creating | success
 /** ScreenshotPicker 组件引用 */
 const imagePickerRef = ref(null)
 const draftImageCount = ref(0)
+const attachmentsBusy = ref(false)
 let successTimer = null
 let successHoldResolve = null
 
@@ -177,6 +178,7 @@ const canCreate = computed(() => Boolean(content.value.trim()) || draftImageCoun
 const submitLabel = computed(() => {
   if (submitState.value === 'creating') return '创建中…'
   if (submitState.value === 'success') return '✓ 已创建'
+  if (attachmentsBusy.value) return '图片处理中…'
   return '创建便签'
 })
 const submitEmpty = computed(() => submitState.value === 'idle' && !canCreate.value)
@@ -237,6 +239,7 @@ function finishSuccessHold() {
 }
 
 async function handleCreate() {
+  if (attachmentsBusy.value) return
   const text = content.value
 
   if (!canCreate.value) {
@@ -331,7 +334,7 @@ const protectedDraft = useDraftProtection({
     isPinned.value ||
     tagIds.value.length > 0 ||
     (imagePickerRef.value?.getImages().length || 0) > 0,
-  busy: () => submitState.value === 'creating',
+  busy: () => submitState.value === 'creating' || attachmentsBusy.value,
   extra: () => ({ attachments: imagePickerRef.value?.getDraftChanges() }),
   restoreExtra: (data) => imagePickerRef.value?.restoreDraft(data.attachments)
 })
@@ -416,6 +419,7 @@ const protectedDraft = useDraftProtection({
           ref="imagePickerRef"
           mode="memory"
           @count-change="draftImageCount = $event"
+          @busy-change="attachmentsBusy = $event"
         />
       </div>
     </div>
@@ -429,7 +433,7 @@ const protectedDraft = useDraftProtection({
         'is-creating': submitState === 'creating',
         'is-success': submitState === 'success'
       }"
-      :disabled="submitState !== 'idle' || !canCreate"
+      :disabled="submitState !== 'idle' || attachmentsBusy || !canCreate"
       data-diagnostic-action="note.create"
       @click="handleCreate"
     >

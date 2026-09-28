@@ -18,6 +18,7 @@ import { defineAsyncComponent } from 'vue'
  */
 
 import { computed, nextTick, ref, onMounted, onUnmounted, watch } from 'vue'
+import AlmanacLauncher from './components/almanac/AlmanacLauncher.vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
 import ViewSwitcher from './components/system/ViewSwitcher.vue'
@@ -70,6 +71,7 @@ const showRemoteNoticeDialog = ref(false)
 const showFirstUseNotice = ref(false)
 const showHolidayDataNoticeDialog = ref(false)
 const showDailyReportDialog = ref(false)
+const showAlmanac = ref(false)
 const pendingHolidayDataNotice = ref(null)
 const holidayNoticeTodayKey = useTodayKey()
 const pendingRemoteNotices = ref([])
@@ -310,6 +312,7 @@ const compactBlocked = computed(
     showRemoteNoticeDialog.value ||
     showHolidayDataNoticeDialog.value ||
     showDailyReportDialog.value ||
+    showAlmanac.value ||
     templateInteractive.value ||
     helpInteractive.value
 )
@@ -371,6 +374,7 @@ function revealFirstUseNoticeFromSnapshot(snapshot) {
   showRemoteNoticeDialog.value = false
   showHolidayDataNoticeDialog.value = false
   showDailyReportDialog.value = false
+  showAlmanac.value = false
   showFirstUseNotice.value = true
 }
 
@@ -595,7 +599,8 @@ onUnmounted(() => {
           showUpdateDialog ||
           showRemoteNoticeDialog ||
           showHolidayDataNoticeDialog ||
-          showDailyReportDialog
+          showDailyReportDialog ||
+          showAlmanac
         "
       >
         <!-- 同一套窗口功能通过 style 属性切换 Apple / Microsoft 视觉。 -->
@@ -608,6 +613,7 @@ onUnmounted(() => {
           <!-- 设置和帮助按钮组 -->
           <TitlebarActions :style-variant="titlebarStyle">
             <ViewSwitcher :active-view="VIEW_MODES.LIST" :style-variant="titlebarStyle" />
+            <AlmanacLauncher v-model:visible="showAlmanac" />
             <DailyReportButton @open="openDailyReport" />
             <button
               class="titlebar-btn titlebar-btn-template"

@@ -1,456 +1,425 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs'
-import {
-  appendFile as appendFileAsync,
-  readFile as readFileAsync,
-  writeFile as writeFileAsync
-} from 'fs/promises'
-import { randomUUID } from 'crypto'
-import { basename, join, resolve } from 'path'
+import { existsSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { app } from 'electron'
+import { createLogWriterClient } from './log-writer-client.js'
+import { diagnosticState, getDiagnosticPolicy } from './diagnostic-state.js'
+import { beginPerformanceOperation, recordPerformanceOperation } from './operation-performance.js'
+import {
+  DIAGNOSTIC_LIMITS,
+  diagnosticDestination,
+  diagnosticRecordKind,
+  diagnosticRecordLimit,
+  diagnosticHash
+} from '../../shared/diagnostic-policy.js'
+import {
+  diagnosticText,
+  sanitizeDiagnosticValue,
+  estimateDiagnosticBytes
+} from '../../shared/diagnostic-sanitize.js'
 
-const MAX_FILE_BYTES = 5 * 1024 * 1024
-const MAX_TOTAL_BYTES = 50 * 1024 * 1024
-const MAX_RECORD_BYTES = 512 * 1024
-const MAX_VALUE_PREVIEW_BYTES = 160 * 1024
-const MAX_PENDING_BYTES = 2 * 1024 * 1024
-const RETENTION_MS = 14 * 24 * 60 * 60 * 1000
-const MAX_RENDERER_FIELD_LENGTH = 200_000
 const LEVELS = new Set(['debug', 'info', 'warn', 'error', 'fatal'])
-const LOG_FILE_PATTERN = /^app-\d{4}-\d{2}-\d{2}(?:-\d+)?\.jsonl$/
-
-const originalConsole = {
-  debug: console.debug.bind(console),
-  info: console.info.bind(console),
-  log: console.log.bind(console),
-  warn: console.warn.bind(console),
-  error: console.error.bind(console)
+const originals = Object.fromEntries(
+  ['debug', 'info', 'log', 'warn', 'error'].map((key) => [key, console[key].bind(console)])
+)
+const guardedStreams = new WeakSet()
+const unavailableStreams = new WeakSet()
+let initialized = false
+let consoleInstalled = false
+let writer = null
+let sequence = 0
+const sessionId = randomUUID()
+let logDirectory = ''
+let applicationContext = {}
+let unsubscribePolicy = null
+let incident = null
+let incidentTimer = null
+let ringBytes = 0
+const ring = []
+const duplicates = new Map()
+const recentIncidents = []
+const healthListeners = new Set()
+const health = {
+  suppressedRecords: 0,
+  ringOverwritten: 0,
+  ringExpired: 0,
+  rejectedRecords: 0,
+  captureBytes: 0
 }
 
-const guardedConsoleStreams = new WeakSet()
-const unavailableConsoleStreams = new WeakSet()
-let consoleStreamGuardsInstalled = false
-
-function isConsoleStreamAvailable(stream) {
+export function isConsoleStreamAvailable(stream) {
   return Boolean(
     stream &&
-    !unavailableConsoleStreams.has(stream) &&
+    !unavailableStreams.has(stream) &&
     !stream.destroyed &&
     !stream.writableEnded &&
     stream.writable !== false
   )
 }
-
-function markConsoleStreamUnavailable(stream) {
-  if (stream && (typeof stream === 'object' || typeof stream === 'function')) {
-    unavailableConsoleStreams.add(stream)
-  }
-}
-
-function installConsoleStreamGuard(stream) {
-  if (!stream || typeof stream.on !== 'function' || guardedConsoleStreams.has(stream)) return false
-  guardedConsoleStreams.add(stream)
-  stream.on('error', () => {
-    // Electron 由终端、测试宿主或更新器以 pipe 方式启动时，父进程可能先关闭
-    // stdout/stderr。控制台只是日志副本，管道断开不能升级成主进程未捕获异常；
-    // JSONL 文件日志仍照常保留。
-    markConsoleStreamUnavailable(stream)
-  })
+export function installConsoleStreamGuard(stream) {
+  if (!stream?.on || guardedStreams.has(stream)) return false
+  guardedStreams.add(stream)
+  stream.on('error', () => unavailableStreams.add(stream))
   return true
 }
-
 export function installConsoleStreamGuards() {
-  if (consoleStreamGuardsInstalled) return
-  consoleStreamGuardsInstalled = true
   installConsoleStreamGuard(process.stdout)
   installConsoleStreamGuard(process.stderr)
 }
-
-function safeForwardOriginalConsole(method, ...args) {
-  const stream = method === 'warn' || method === 'error' ? process.stderr : process.stdout
-  if (!isConsoleStreamAvailable(stream)) return false
+function forwardConsole(method, ...args) {
+  const stream = ['warn', 'error'].includes(method) ? process.stderr : process.stdout
+  if (!isConsoleStreamAvailable(stream)) return
   try {
-    originalConsole[method](...args)
-    return true
+    originals[method](...args)
   } catch {
-    // 少数 Writable 实现会同步抛出 EPIPE；与异步 error 事件采用相同降级。
-    markConsoleStreamUnavailable(stream)
-    return false
+    unavailableStreams.add(stream)
   }
 }
-
-let initialized = false
-let consoleInstalled = false
-let logDirectory = ''
-let activeDate = ''
-let activeFile = ''
-let activePart = 0
-let activeBytes = 0
-let sequence = 0
-let sessionId = randomUUID()
-let flushHandle = null
-let exitHookInstalled = false
-let pendingWrites = []
-let pendingBytes = 0
-const recentFingerprints = new Map()
-
-function localDateKey(date = new Date()) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+function resolveWriterFile() {
+  // 只在启动解析构建产物时检查文件，常规日志路径没有同步文件操作。
+  const directory =
+    typeof __dirname === 'string' ? __dirname : dirname(fileURLToPath(import.meta.url))
+  const root = process.env.ABANDON_INTEGRATION_APP_ROOT || app.getAppPath?.()
+  const candidates = [
+    join(directory, 'log-writer.mjs'),
+    join(directory, 'log-writer.js'),
+    join(directory, '..', 'log-writer.js'),
+    ...(root ? [join(root, 'out', 'main', 'log-writer.js')] : [])
+  ]
+  const path = candidates.find((candidate) => existsSync(candidate))
+  if (!path) throw new Error('日志后台模块不存在')
+  return path
 }
-
-function serializeUnknown(value, seen = new WeakSet()) {
-  if (typeof value === 'bigint') return String(value)
-  if (typeof value === 'function') return `[Function ${value.name || 'anonymous'}]`
-  if (typeof value === 'symbol') return String(value)
-  if (!value || typeof value !== 'object') return value
-  if (seen.has(value)) return '[Circular]'
-  seen.add(value)
-  if (value instanceof Error) {
-    const result = {
-      name: value.name,
-      message: value.message,
-      stack: value.stack
-    }
-    if (value.code !== undefined) result.code = value.code
-    if (value.cause !== undefined) result.cause = serializeUnknown(value.cause, seen)
-    let keys = []
-    try {
-      keys = Object.keys(value)
-    } catch (keyError) {
-      result.serializationError = keyError?.message || String(keyError)
-    }
-    for (const key of keys) {
-      if (key in result) continue
-      try {
-        result[key] = serializeUnknown(value[key], seen)
-      } catch (propertyError) {
-        result[key] = `[Unreadable property: ${propertyError?.message || String(propertyError)}]`
-      }
-    }
-    return result
-  }
-  if (Array.isArray(value)) return value.map((item) => serializeUnknown(item, seen))
-  const result = {}
-  let keys
-  try {
-    keys = Object.keys(value)
-  } catch (keyError) {
-    return { serializationError: keyError?.message || String(keyError) }
-  }
-  for (const key of keys) {
-    try {
-      result[key] = serializeUnknown(value[key], seen)
-    } catch (propertyError) {
-      result[key] = `[Unreadable property: ${propertyError?.message || String(propertyError)}]`
-    }
-  }
-  return result
-}
-
-function displayValue(value) {
-  if (typeof value === 'string') return value
-  if (value instanceof Error) return value.stack || `${value.name}: ${value.message}`
-  try {
-    return JSON.stringify(serializeUnknown(value))
-  } catch {
-    return String(value)
-  }
-}
-
-function normalizeMessage(message, args) {
-  return [message, ...args].map(displayValue).join(' ')
-}
-
-function cleanupLogs() {
-  if (!logDirectory || !existsSync(logDirectory)) return
-  const now = Date.now()
-  const files = readdirSync(logDirectory)
-    .filter((name) => LOG_FILE_PATTERN.test(name))
-    .map((name) => {
-      const path = join(logDirectory, name)
-      const stat = statSync(path)
-      return { name, path, size: stat.size, mtimeMs: stat.mtimeMs }
-    })
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
-
-  let total = 0
-  for (const file of files) {
-    total += file.size
-    if (now - file.mtimeMs > RETENTION_MS || total > MAX_TOTAL_BYTES) {
-      try {
-        unlinkSync(file.path)
-      } catch (error) {
-        safeForwardOriginalConsole('warn', '[logging] 无法清理旧日志:', file.path, error)
-      }
-    }
-  }
-}
-
-function fileSize(path) {
-  return existsSync(path) ? statSync(path).size : 0
-}
-
-function selectActiveFile(nextBytes) {
-  const dateKey = localDateKey()
-  if (dateKey !== activeDate) {
-    activeDate = dateKey
-    activePart = 0
-    activeFile = join(logDirectory, `app-${dateKey}.jsonl`)
-    activeBytes = fileSize(activeFile)
-  }
-  while (activeBytes > 0 && activeBytes + nextBytes > MAX_FILE_BYTES) {
-    activePart += 1
-    activeFile = join(logDirectory, `app-${dateKey}-${activePart}.jsonl`)
-    activeBytes = fileSize(activeFile)
-  }
-  activeBytes += nextBytes
-  return activeFile
-}
-
-function truncateUtf8(value, maxBytes) {
-  const text = String(value ?? '')
-  const buffer = Buffer.from(text, 'utf8')
-  if (buffer.length <= maxBytes) return text
-  return `${buffer.subarray(0, maxBytes).toString('utf8')}…`
-}
-
-function compactValue(value, maxBytes = MAX_VALUE_PREVIEW_BYTES) {
-  if (value === undefined) return undefined
-  const serialized = JSON.stringify(value)
-  const bytes = Buffer.byteLength(serialized)
-  if (bytes <= maxBytes) return value
-  return {
-    truncated: true,
-    originalBytes: bytes,
-    preview: truncateUtf8(serialized, maxBytes)
-  }
-}
-
-function createBoundedLine(record) {
-  const originalLine = `${JSON.stringify(record)}\n`
-  const originalBytes = Buffer.byteLength(originalLine)
-  if (originalBytes <= MAX_RECORD_BYTES) return originalLine
-
-  const compacted = {
-    ...record,
-    message: truncateUtf8(record.message, 64 * 1024),
-    error: compactValue(record.error),
-    metadata: compactValue(record.metadata),
-    truncation: { originalBytes }
-  }
-  const compactedLine = `${JSON.stringify(compacted)}\n`
-  if (Buffer.byteLength(compactedLine) <= MAX_RECORD_BYTES) return compactedLine
-
-  const fallback = {
-    schemaVersion: record.schemaVersion,
-    id: record.id,
-    time: record.time,
-    level: record.level,
-    process: record.process,
-    scope: truncateUtf8(record.scope, 16 * 1024),
-    message: truncateUtf8(record.message, 64 * 1024),
-    sessionId: truncateUtf8(record.sessionId, 4 * 1024),
-    pid: Number.isSafeInteger(record.pid) ? record.pid : undefined,
-    appVersion: truncateUtf8(record.appVersion, 1024),
-    platform: truncateUtf8(record.platform, 128),
-    arch: truncateUtf8(record.arch, 128),
-    versions: {
-      electron: truncateUtf8(record.versions?.electron, 1024),
-      chrome: truncateUtf8(record.versions?.chrome, 1024),
-      node: truncateUtf8(record.versions?.node, 1024)
-    },
-    windowRole: truncateUtf8(record.windowRole, 4 * 1024),
-    webContentsId: Number.isSafeInteger(record.webContentsId) ? record.webContentsId : undefined,
-    eventName: truncateUtf8(record.eventName, 16 * 1024),
-    phase: truncateUtf8(record.phase, 1024),
-    actionId: truncateUtf8(record.actionId, 4 * 1024),
-    parentActionId: truncateUtf8(record.parentActionId, 4 * 1024),
-    outcome: truncateUtf8(record.outcome, 1024),
-    durationMs: Number.isFinite(record.durationMs) ? record.durationMs : undefined,
-    errorCode: truncateUtf8(record.errorCode, 4 * 1024),
-    markerId: truncateUtf8(record.markerId, 4 * 1024),
-    stage: truncateUtf8(record.stage, 4 * 1024),
-    truncation: {
-      originalBytes,
-      payloadPreview: '',
-      previewTruncated: true
-    }
-  }
-
-  // JSON escaping can expand a string by several times, so a character or UTF-8
-  // slice alone cannot guarantee the final JSONL record size. Find the largest
-  // preview that keeps the complete encoded line inside the hard limit.
-  let low = 0
-  let high = originalLine.length
-  let bestLine = `${JSON.stringify(fallback)}\n`
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2)
-    fallback.truncation.payloadPreview = originalLine.slice(0, middle)
-    const candidate = `${JSON.stringify(fallback)}\n`
-    if (Buffer.byteLength(candidate) <= MAX_RECORD_BYTES) {
-      bestLine = candidate
-      low = middle + 1
-    } else {
-      high = middle - 1
-    }
-  }
-  return bestLine
-}
-
-function scheduleFlush() {
-  if (flushHandle) return
-  flushHandle = setImmediate(() => {
-    flushHandle = null
-    flushLogs()
-  })
-}
-
-export function flushLogs() {
-  if (flushHandle) {
-    clearImmediate(flushHandle)
-    flushHandle = null
-  }
-  if (!pendingWrites.length) return
-  const batch = pendingWrites
-  pendingWrites = []
-  pendingBytes = 0
-  const writeBatches = []
-  for (const item of batch) {
-    const current = writeBatches.at(-1)
-    if (current?.path === item.path) current.lines.push(item.line)
-    else writeBatches.push({ path: item.path, lines: [item.line] })
-  }
-  for (const { path, lines } of writeBatches) {
-    try {
-      appendFileSync(path, lines.join(''), 'utf8')
-    } catch (error) {
-      safeForwardOriginalConsole('error', '[logging] 批量写入日志失败:', path, error)
-    }
-  }
-}
-
-function shouldSkipDuplicate(record, dedupeKey) {
-  if (!dedupeKey) return false
-  const now = Date.now()
-  const fingerprint = `${record.level}|${record.process}|${record.scope}|${dedupeKey}`
-  const previous = recentFingerprints.get(fingerprint)
-  recentFingerprints.set(fingerprint, now)
-  if (recentFingerprints.size > 500) {
-    for (const [key, time] of recentFingerprints) {
-      if (now - time > 10_000) recentFingerprints.delete(key)
-    }
-  }
-  return previous !== undefined && now - previous < 300
-}
-
 export function initializeLogger() {
   if (initialized) return
-  logDirectory = join(app.getPath('userData'), 'logs')
-  mkdirSync(logDirectory, { recursive: true })
-  cleanupLogs()
   initialized = true
-  if (!exitHookInstalled) {
-    exitHookInstalled = true
-    process.once('exit', flushLogs)
+  logDirectory = join(app.getPath('userData'), 'logs')
+  applicationContext = {
+    appVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    versions: {
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      node: process.versions.node
+    }
   }
+  try {
+    writer = createLogWriterClient({
+      directory: logDirectory,
+      workerFile: resolveWriterFile(),
+      workerOptions: { crashDirectory: app.getPath('crashDumps') },
+      onHealth(state) {
+        if (['degraded', 'unavailable'].includes(state.status))
+          diagnosticState.stop('writer-unavailable')
+        for (const callback of healthListeners) {
+          try {
+            callback(state)
+          } catch {
+            /* 旁路。 */
+          }
+        }
+      },
+      onBatch(result) {
+        recordPerformanceOperation('logging', 'flush', result.durationMs, {
+          bytes: result.bytes,
+          records: result.records,
+          errors: result.errors,
+          droppedRecords: result.droppedRecords
+        })
+      }
+    })
+  } catch (error) {
+    forwardConsole('error', '[logging] 后台日志不可用', diagnosticText(error.message))
+  }
+  unsubscribePolicy = diagnosticState.subscribe((policy, reason) => {
+    if (reason === 'started') {
+      health.captureBytes = 0
+      saveRecentDiagnostics('deep-start', policy.captureId)
+    }
+    writeLog({
+      kind: 'event',
+      scope: 'logging.mode',
+      eventName: 'diagnostics.mode.changed',
+      message: '诊断采集模式变化',
+      metadata: { ...policy, reason }
+    })
+  })
+  let closing = false
+  app.on?.('will-quit', (event) => {
+    if (closing) return
+    closing = true
+    event.preventDefault?.()
+    // 等其它 will-quit 清理结束，收进最后的 shutdown-complete 再发写入屏障。
+    setImmediate(async () => {
+      await closeLogs(1000)
+      app.exit?.(Number(process.exitCode) || 0)
+    })
+  })
 }
-
-export function getLogDirectory() {
+export const getLogDirectory = () => {
   initializeLogger()
   return logDirectory
 }
-
-export function getCurrentSessionId() {
-  return sessionId
+export const getCurrentSessionId = () => sessionId
+export const subscribeLogHealth = (callback) => {
+  healthListeners.add(callback)
+  return () => healthListeners.delete(callback)
 }
 
-export function writeLog({
-  level = 'info',
-  process: processType = 'main',
-  scope = 'application',
-  message = '',
-  error,
-  metadata,
-  windowRole,
-  webContentsId,
-  dedupeKey,
-  eventName,
-  phase,
-  actionId,
-  parentActionId,
-  outcome,
-  durationMs,
-  errorCode,
-  markerId,
-  stage
-}) {
-  try {
-    initializeLogger()
-    const normalizedLevel = LEVELS.has(level) ? level : 'info'
-    const normalizedError = error === undefined ? undefined : serializeUnknown(error)
-    const record = {
-      schemaVersion: 2,
-      id: `${sessionId}-${++sequence}`,
-      time: new Date().toISOString(),
-      level: normalizedLevel,
-      process: processType,
-      scope,
-      message: String(message || normalizedError?.message || ''),
-      sessionId,
-      pid: process.pid,
-      appVersion: app.getVersion(),
-      platform: process.platform,
-      arch: process.arch,
-      versions: {
-        electron: process.versions.electron,
-        chrome: process.versions.chrome,
-        node: process.versions.node
-      }
-    }
-    if (windowRole) record.windowRole = windowRole
-    if (webContentsId !== undefined) record.webContentsId = webContentsId
-    if (eventName) record.eventName = truncateUtf8(eventName, 16 * 1024)
-    if (phase) record.phase = truncateUtf8(phase, 1024)
-    if (actionId) record.actionId = truncateUtf8(actionId, 4 * 1024)
-    if (parentActionId) record.parentActionId = truncateUtf8(parentActionId, 4 * 1024)
-    if (outcome) record.outcome = truncateUtf8(outcome, 1024)
-    if (Number.isFinite(Number(durationMs))) record.durationMs = Number(durationMs)
-    if (errorCode) record.errorCode = truncateUtf8(errorCode, 4 * 1024)
-    if (markerId) record.markerId = truncateUtf8(markerId, 4 * 1024)
-    if (stage) record.stage = truncateUtf8(stage, 4 * 1024)
-    if (normalizedError !== undefined) record.error = normalizedError
-    if (metadata !== undefined) record.metadata = serializeUnknown(metadata)
-    if (shouldSkipDuplicate(record, dedupeKey)) return null
-
-    const line = createBoundedLine(record)
-    const lineBytes = Buffer.byteLength(line)
-    const path = selectActiveFile(lineBytes)
-    pendingWrites.push({ path, line })
-    pendingBytes += lineBytes
-    if (normalizedLevel === 'fatal' || pendingBytes >= MAX_PENDING_BYTES) flushLogs()
-    else scheduleFlush()
-    return record.id
-  } catch (writeError) {
-    safeForwardOriginalConsole('error', '[logging] 写入日志失败:', writeError)
-    return null
+function trimRing(now = Date.now()) {
+  while (
+    ring.length &&
+    (ringBytes > DIAGNOSTIC_LIMITS.ringBytes || now - ring[0].at > DIAGNOSTIC_LIMITS.ringAgeMs)
+  ) {
+    const entry = ring.shift()
+    ringBytes -= entry.bytes
+    if (now - entry.at > DIAGNOSTIC_LIMITS.ringAgeMs) health.ringExpired++
+    else health.ringOverwritten++
   }
 }
-
-function logAt(level, scope, message, metadata) {
-  return writeLog({ level, scope, message, metadata })
+function retain(record) {
+  const bytes = estimateDiagnosticBytes(record)
+  ring.push({ record, bytes, at: Date.now() })
+  ringBytes += bytes
+  trimRing()
 }
-
+function enqueue(record) {
+  if (!writer) {
+    health.rejectedRecords++
+    return false
+  }
+  const priority = ['error', 'fatal'].includes(record.level)
+    ? 3
+    : record.level === 'warn' || record.kind === 'event'
+      ? 2
+      : record.kind === 'metric'
+        ? 1
+        : 0
+  const accepted = writer.enqueue(record, priority)
+  if (!accepted) {
+    health.rejectedRecords++
+    diagnosticState.stop('queue-budget')
+  }
+  return accepted
+}
+export function saveRecentDiagnostics(reason = 'export', captureId = null, exportRequestId = null) {
+  initializeLogger()
+  trimRing()
+  const records = ring.splice(0)
+  ringBytes = 0
+  let saved = 0
+  for (const entry of records)
+    if (
+      enqueue({
+        ...entry.record,
+        storage: 'detail',
+        captureId: captureId || entry.record.captureId,
+        ...(exportRequestId ? { exportRequestId } : {}),
+        replayReason: reason
+      })
+    )
+      saved++
+  return {
+    requested: records.length,
+    saved,
+    retainedFrom: records[0]?.record.time || null,
+    retainedTo: records.at(-1)?.record.time || null,
+    incomplete: saved !== records.length
+  }
+}
+export function captureDiagnosticIncident(reason, actionId) {
+  const now = Date.now()
+  if (incident && now < incident.until) return incident.id
+  while (recentIncidents.length && now - recentIncidents[0].at > 600000) recentIncidents.shift()
+  if (
+    recentIncidents.length >= 3 ||
+    recentIncidents.some((item) => item.reason === reason && now - item.at < 60000)
+  )
+    return null
+  const id = randomUUID()
+  incident = { id, reason, actionId, until: now + 30000, bytes: 0 }
+  recentIncidents.push({ id, reason, at: now })
+  saveRecentDiagnostics('incident', id)
+  writeLog({
+    kind: 'event',
+    scope: 'logging.incident',
+    message: '保存近期诊断现场',
+    metadata: { id, reason, actionId, until: incident.until }
+  })
+  clearTimeout(incidentTimer)
+  incidentTimer = setTimeout(() => {
+    const completed = incident
+    incident = null
+    writeLog({
+      kind: 'event',
+      scope: 'logging.incident',
+      message: '诊断现场采集结束',
+      metadata: completed
+    })
+  }, 30000)
+  incidentTimer.unref?.()
+  return id
+}
+function emitDuplicate(entry) {
+  enqueue({
+    ...entry.record,
+    id: `${sessionId}-${++sequence}`,
+    time: new Date().toISOString(),
+    kind: 'event',
+    scope: 'logging.repeated',
+    message: '重复日志汇总',
+    metadata: {
+      originalId: entry.record.id,
+      originalScope: entry.record.scope,
+      count: entry.count - 1,
+      firstAt: entry.firstAt,
+      lastAt: entry.lastAt
+    }
+  })
+  entry.count = 1
+}
+function collectDuplicate(record, key) {
+  if (!key) return false
+  const now = Date.now()
+  const previous = duplicates.get(key)
+  if (previous && now - previous.firstAt < 30000) {
+    previous.count++
+    previous.lastAt = now
+    health.suppressedRecords++
+    return true
+  }
+  if (previous?.count > 1) emitDuplicate(previous)
+  if (duplicates.size >= 512) {
+    const oldest = duplicates.keys().next().value
+    const entry = duplicates.get(oldest)
+    if (entry.count > 1) emitDuplicate(entry)
+    duplicates.delete(oldest)
+  }
+  duplicates.set(key, { record, count: 1, firstAt: now, lastAt: now })
+  return false
+}
+export function writeLog(payload = {}) {
+  let finish = () => {}
+  try {
+    const receiptPolicy = getDiagnosticPolicy()
+    const policy = payload.collectionPolicy || receiptPolicy
+    const destination = diagnosticDestination(
+      payload,
+      policy,
+      payload.collectionPolicy ? Date.parse(payload.time) : Date.now()
+    )
+    if (destination === 'drop') return null
+    initializeLogger()
+    if (!String(payload.scope || '').startsWith('performance.'))
+      finish = beginPerformanceOperation('logging', 'enqueue')
+    const kind = diagnosticRecordKind(payload)
+    const limit = diagnosticRecordLimit(payload)
+    const metadata = typeof payload.metadata === 'function' ? payload.metadata() : payload.metadata
+    const record = {
+      schemaVersion: 3,
+      id: `${sessionId}-${++sequence}`,
+      time: payload.time || new Date().toISOString(),
+      receivedAt: new Date().toISOString(),
+      monotonicMs: performance.now(),
+      level: LEVELS.has(payload.level) ? payload.level : 'info',
+      process: payload.process || 'main',
+      scope: diagnosticText(payload.scope || 'application', 128),
+      message: diagnosticText(payload.message || '', 2048),
+      kind,
+      sessionId,
+      pid: process.pid,
+      ...applicationContext,
+      mode: policy.mode,
+      policyEpoch: policy.policyEpoch,
+      receiptPolicyEpoch: receiptPolicy.policyEpoch,
+      captureId: policy.captureId,
+      storage: kind === 'trace' || (kind === 'metric' && policy.mode === 'deep') ? 'detail' : 'app'
+    }
+    for (const field of [
+      'windowRole',
+      'eventName',
+      'phase',
+      'actionId',
+      'parentActionId',
+      'outcome',
+      'errorCode',
+      'markerId',
+      'stage',
+      'producerId',
+      'exportRequestId'
+    ])
+      if (payload[field] !== undefined) record[field] = diagnosticText(payload[field], 160)
+    for (const field of ['webContentsId', 'durationMs', 'producerSeq', 'producerMonotonicMs'])
+      if (Number.isFinite(payload[field])) record[field] = payload[field]
+    if (payload.error !== undefined)
+      record.error = sanitizeDiagnosticValue(payload.error, { maxBytes: Math.floor(limit / 2) })
+    if (metadata !== undefined)
+      record.metadata = sanitizeDiagnosticValue(metadata, {
+        maxBytes: limit,
+        maxDepth: kind === 'metric' ? 9 : 6,
+        maxArray: kind === 'metric' ? 128 : 32,
+        maxNodes: kind === 'metric' ? 4096 : 256
+      })
+    const duplicateKey = payload.dedupeKey
+      ? `${record.scope}:${diagnosticHash(payload.dedupeKey)}`
+      : ['error', 'fatal'].includes(record.level)
+        ? `${record.scope}:${diagnosticHash(record.error?.stack || record.message)}`
+        : null
+    if (collectDuplicate(record, duplicateKey)) return null
+    if (destination === 'ring' && !incident) retain(record)
+    else {
+      if (destination === 'ring' && incident) {
+        record.captureId = incident.id
+        record.storage = 'detail'
+        incident.bytes += estimateDiagnosticBytes(record)
+        if (incident.bytes > DIAGNOSTIC_LIMITS.captureBytes) {
+          incident = null
+          retain(record)
+          return record.id
+        }
+      }
+      if (policy.mode === 'deep' && record.storage === 'detail') {
+        health.captureBytes += estimateDiagnosticBytes(record)
+        if (health.captureBytes > DIAGNOSTIC_LIMITS.captureBytes) {
+          diagnosticState.stop('capture-budget')
+          retain(record)
+          return record.id
+        }
+      }
+      enqueue(record)
+    }
+    if (
+      !record.scope.startsWith('logging.') &&
+      (['error', 'fatal'].includes(record.level) ||
+        record.outcome === 'mismatch' ||
+        (record.level === 'warn' &&
+          ['performance.main-stall', 'performance.renderer'].includes(record.scope)))
+    )
+      captureDiagnosticIncident(record.scope, record.actionId)
+    finish({
+      bytes: estimateDiagnosticBytes(record),
+      queuedBytes: writer?.snapshot().queuedBytes || 0
+    })
+    return record.id
+  } catch {
+    health.rejectedRecords++
+    return null
+  } finally {
+    finish()
+  }
+}
 export const logger = {
-  debug: (scope, message, metadata) => logAt('debug', scope, message, metadata),
-  info: (scope, message, metadata) => logAt('info', scope, message, metadata),
-  warn: (scope, message, metadata) => logAt('warn', scope, message, metadata),
+  debug: (scope, message, metadata) => writeLog({ level: 'debug', scope, message, metadata }),
+  info: (scope, message, metadata) => writeLog({ level: 'info', scope, message, metadata }),
+  warn: (scope, message, metadata) => writeLog({ level: 'warn', scope, message, metadata }),
   error: (scope, error, metadata) =>
     writeLog({
       level: 'error',
       scope,
-      message: error instanceof Error ? error.message : String(error),
+      message:
+        error instanceof Error ? error.message : typeof error === 'string' ? error : '操作异常',
       error,
       metadata
     }),
@@ -458,260 +427,156 @@ export const logger = {
     writeLog({
       level: 'fatal',
       scope,
-      message: error instanceof Error ? error.message : String(error),
+      message:
+        error instanceof Error ? error.message : typeof error === 'string' ? error : '严重异常',
       error,
       metadata
     })
 }
-
 export function installConsoleCapture() {
   if (consoleInstalled) return
-  installConsoleStreamGuards()
   consoleInstalled = true
-  for (const [method, level] of [
-    ['debug', 'debug'],
-    ['info', 'info'],
-    ['log', 'info'],
-    ['warn', 'warn'],
-    ['error', 'error']
-  ]) {
+  installConsoleStreamGuards()
+  for (const method of ['debug', 'info', 'log', 'warn', 'error']) {
     console[method] = (message, ...args) => {
-      safeForwardOriginalConsole(method, message, ...args)
-      writeLog({
-        level,
-        scope: 'console',
-        message: normalizeMessage(message, args),
-        error: [message, ...args].find((item) => item instanceof Error)
-      })
+      const level = method === 'log' ? 'info' : method
+      const record = { level, scope: 'console' }
+      if (diagnosticDestination(record, getDiagnosticPolicy()) !== 'drop')
+        writeLog({
+          ...record,
+          message: typeof message === 'string' ? message : 'Console event',
+          error: [message, ...args].find((item) => item instanceof Error),
+          metadata: () => ({ arguments: sanitizeDiagnosticValue(args) })
+        })
+      if (!app.isPackaged) forwardConsole(method, message, ...args)
     }
   }
 }
-
-function listLogFilesNewestFirst() {
-  initializeLogger()
-  return readdirSync(logDirectory)
-    .filter((name) => LOG_FILE_PATTERN.test(name))
-    .map((name) => {
-      const path = join(logDirectory, name)
-      const stat = statSync(path)
-      return { name, path, size: stat.size, mtimeMs: stat.mtimeMs }
-    })
-    .sort((a, b) => b.mtimeMs - a.mtimeMs || b.name.localeCompare(a.name))
-}
-
-function recordMatches(record, query) {
-  const levels = Array.isArray(query.levels) ? new Set(query.levels) : null
-  const processes = Array.isArray(query.processes) ? new Set(query.processes) : null
-  if (levels?.size && !levels.has(record.level)) return false
-  if (processes?.size && !processes.has(record.process)) return false
-  const search = String(query.search || '')
-    .trim()
-    .toLocaleLowerCase()
-  if (!search) return true
-  return JSON.stringify(record).toLocaleLowerCase().includes(search)
-}
-
-function encodeCursor(snapshot, offset) {
-  return Buffer.from(JSON.stringify({ version: 1, snapshot, offset }), 'utf8').toString('base64url')
-}
-
-function decodeCursor(cursor) {
-  if (!cursor || typeof cursor !== 'string') return null
-  try {
-    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
-    if (decoded?.version !== 1 || !Array.isArray(decoded.snapshot)) return null
-    if (decoded.snapshot.length > 100) return null
-    let totalSize = 0
-    const snapshot = decoded.snapshot.map((file) => {
-      if (!LOG_FILE_PATTERN.test(file?.name)) throw new Error('非法日志文件名')
-      const size = Number(file.size)
-      if (!Number.isSafeInteger(size) || size < 0 || size > MAX_TOTAL_BYTES) {
-        throw new Error('非法日志快照大小')
-      }
-      totalSize += size
-      if (totalSize > MAX_TOTAL_BYTES) throw new Error('日志快照总量过大')
-      return { name: file.name, size }
-    })
-    const offset = Number(decoded.offset)
-    if (!Number.isSafeInteger(offset) || offset < 0) return null
-    return { snapshot, offset }
-  } catch {
-    return null
-  }
-}
-
-function createSnapshot() {
-  flushLogs()
-  cleanupLogs()
-  return listLogFilesNewestFirst().map((file) => ({ name: file.name, size: file.size }))
-}
-
-export async function queryLogs(query = {}) {
-  const limit = Math.min(500, Math.max(1, Number(query.limit) || 200))
-  const decodedCursor = decodeCursor(query.cursor)
-  const snapshot = decodedCursor?.snapshot || createSnapshot()
-  const offset = decodedCursor?.offset || 0
-  const results = []
-  let matched = 0
-  let hasMore = false
-
-  outer: for (const file of snapshot) {
-    const path = join(logDirectory, file.name)
-    let contents
-    try {
-      const buffer = await readFileAsync(path)
-      contents = buffer.subarray(0, Math.min(file.size, buffer.length)).toString('utf8')
-    } catch (error) {
-      if (error?.code === 'ENOENT') continue
-      throw error
-    }
-    const lines = contents.split(/\r?\n/)
-    for (let index = lines.length - 1; index >= 0; index -= 1) {
-      if (!lines[index]) continue
-      try {
-        const record = JSON.parse(lines[index])
-        if (!recordMatches(record, query)) continue
-        if (matched++ < offset) continue
-        if (results.length >= limit) {
-          hasMore = true
-          break outer
-        }
-        results.push(record)
-      } catch {
-        // A process may have terminated mid-write. Keep the remaining valid lines readable.
-      }
-    }
-  }
+export function getLoggingHealth() {
+  trimRing()
   return {
-    items: results,
-    nextCursor: hasMore ? encodeCursor(snapshot, offset + results.length) : null,
-    hasMore
+    ...health,
+    ringBytes,
+    ringRecords: ring.length,
+    retainedFrom: ring[0]?.record.time || null,
+    writer: writer?.snapshot() || { status: 'unavailable' },
+    incidents: recentIncidents.slice(),
+    ...diagnosticState.snapshot()
   }
 }
-
-export function getLogFiles() {
-  flushLogs()
-  return listLogFilesNewestFirst().map((file) => {
-    const stat = statSync(file.path)
-    return {
-      name: basename(file.name),
-      path: file.path,
-      size: stat.size,
-      modifiedAt: stat.mtime.toISOString()
-    }
-  })
+export async function flushLogs(timeoutMs = 5000) {
+  initializeLogger()
+  for (const entry of duplicates.values()) if (entry.count > 1) emitDuplicate(entry)
+  if (!writer) return { incomplete: true, reason: 'writer-unavailable' }
+  const result = await writer.flush(timeoutMs)
+  return {
+    ...result,
+    incomplete: Boolean(
+      result.incomplete ||
+      result.droppedRecords ||
+      result.writeErrors ||
+      health.rejectedRecords ||
+      result.status !== 'ready'
+    )
+  }
 }
-
-function exportSelectionMatches(record, selection) {
-  if (!selection || typeof selection !== 'object') return true
-  if (selection.sessionId && record.sessionId !== selection.sessionId) return false
-  const timestamp = Date.parse(record.time)
-  if (selection.from && (!Number.isFinite(timestamp) || timestamp < Number(selection.from)))
-    return false
-  if (selection.to && (!Number.isFinite(timestamp) || timestamp > Number(selection.to)))
-    return false
-  return true
+export async function closeLogs(timeoutMs = 1000) {
+  clearTimeout(incidentTimer)
+  unsubscribePolicy?.()
+  await flushLogs(timeoutMs)
+  await writer?.close(0)
 }
-
+export async function queryLogs(query = {}) {
+  initializeLogger()
+  await flushLogs()
+  if (!writer) throw new Error('日志后台不可用')
+  return writer.request('query', query)
+}
+export async function getLogFiles() {
+  initializeLogger()
+  return writer ? writer.request('files') : []
+}
+export async function getCrashDumpIndex() {
+  initializeLogger()
+  return writer ? writer.request('crash-index') : { files: [], unavailable: true }
+}
+export async function freezeLogSnapshot() {
+  initializeLogger()
+  if (!writer) throw new Error('日志后台不可用')
+  return writer.request('freeze-export')
+}
+export async function releaseLogSnapshot(id) {
+  if (writer && id) await writer.request('release-snapshot', id).catch(() => {})
+}
 export async function exportLogs(
   targetPath,
   metadata = {},
   systemDiagnostics = null,
-  selection = null
+  selection = null,
+  manifest = {}
 ) {
-  flushLogs()
-  const files = listLogFilesNewestFirst().reverse()
-  const resolvedTarget = resolve(targetPath)
-  const normalizedTarget =
-    process.platform === 'win32' ? resolvedTarget.toLocaleLowerCase() : resolvedTarget
-  const overwritesSource = files.some((file) => {
-    const source = resolve(file.path)
-    return (process.platform === 'win32' ? source.toLocaleLowerCase() : source) === normalizedTarget
-  })
-  if (overwritesSource) throw new Error('导出目标不能覆盖现有日志文件')
+  initializeLogger()
+  if (!selection?.snapshotId) saveRecentDiagnostics('export', null, selection?.requestId)
+  await flushLogs()
+  if (!writer) throw new Error('日志后台不可用')
   const header = {
     type: 'diagnostic-export',
+    schemaVersion: 3,
     exportedAt: new Date().toISOString(),
-    appVersion: app.getVersion(),
-    platform: process.platform,
-    arch: process.arch,
-    versions: process.versions,
-    metadata
+    ...applicationContext,
+    metadata: sanitizeDiagnosticValue(metadata, { maxBytes: 16384 })
   }
-  await writeFileAsync(resolvedTarget, `${JSON.stringify(header)}\n`, 'utf8')
-  for (const file of files) {
-    const contents = await readFileAsync(file.path, 'utf8')
-    if (!selection) {
-      await appendFileAsync(resolvedTarget, contents)
-      await appendFileAsync(resolvedTarget, '\n')
-      continue
-    }
-    const selectedLines = contents
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .filter((line) => {
-        try {
-          return exportSelectionMatches(JSON.parse(line), selection)
-        } catch {
-          return false
-        }
-      })
-    if (selectedLines.length) {
-      await appendFileAsync(resolvedTarget, `${selectedLines.join('\n')}\n`, 'utf8')
-    }
-  }
-  await appendFileAsync(
-    resolvedTarget,
-    `${JSON.stringify({
-      type: 'diagnostic-system',
-      schemaVersion: 1,
-      snapshot: systemDiagnostics || {
-        collectionErrors: [{ field: 'system', message: 'System snapshot was not collected' }]
-      }
-    })}\n`,
-    'utf8'
+  const snapshot =
+    systemDiagnostics == null
+      ? null
+      : sanitizeDiagnosticValue(systemDiagnostics, {
+          maxBytes: 128 * 1024,
+          maxDepth: 10,
+          maxArray: 128,
+          maxNodes: 8192
+        })
+  await writer.request(
+    'export',
+    [targetPath, header, snapshot, selection, { ...manifest, diagnostics: getLoggingHealth() }],
+    60000
   )
-  return resolvedTarget
+  return targetPath
 }
-
 export function normalizeRendererLog(payload = {}) {
-  const level = LEVELS.has(payload.level) ? payload.level : 'error'
-  const truncate = (value) => {
-    const text = String(value ?? '')
-    return text.length > MAX_RENDERER_FIELD_LENGTH
-      ? `${text.slice(0, MAX_RENDERER_FIELD_LENGTH)}…`
-      : text
-  }
-  return {
-    level,
-    process: 'renderer',
-    scope: truncate(payload.scope || 'renderer'),
-    message: truncate(payload.message || ''),
-    error: payload.error ? serializeUnknown(payload.error) : undefined,
-    metadata: payload.metadata ? serializeUnknown(payload.metadata) : undefined,
-    dedupeKey: truncate(payload.dedupeKey || ''),
-    eventName: truncate(payload.eventName || ''),
-    phase: truncate(payload.phase || ''),
-    actionId: truncate(payload.actionId || ''),
-    parentActionId: truncate(payload.parentActionId || ''),
-    outcome: truncate(payload.outcome || ''),
-    durationMs: Number.isFinite(Number(payload.durationMs))
-      ? Number(payload.durationMs)
-      : undefined,
-    errorCode: truncate(payload.errorCode || ''),
-    markerId: truncate(payload.markerId || ''),
-    stage: truncate(payload.stage || '')
-  }
+  if (!payload || typeof payload !== 'object')
+    return { level: 'warn', scope: 'renderer.invalid', message: '无效诊断记录' }
+  const result = {}
+  for (const key of [
+    'level',
+    'scope',
+    'message',
+    'kind',
+    'eventName',
+    'phase',
+    'actionId',
+    'parentActionId',
+    'outcome',
+    'errorCode',
+    'dedupeKey',
+    'stage',
+    'producerId',
+    'producerMode',
+    'producerCaptureId',
+    'exportRequestId',
+    'time'
+  ])
+    if (typeof payload[key] === 'string')
+      result[key] = diagnosticText(payload[key], key === 'message' ? 2048 : 160)
+  for (const key of ['producerSeq', 'producerPolicyEpoch', 'producerMonotonicMs', 'durationMs'])
+    if (Number.isFinite(payload[key])) result[key] = payload[key]
+  result.level = LEVELS.has(result.level) ? result.level : 'error'
+  result.process = 'renderer'
+  if (payload.error !== undefined) result.error = payload.error
+  if (payload.metadata !== undefined) result.metadata = payload.metadata
+  return result
 }
-
 export const loggingInternals = {
-  serializeUnknown,
-  localDateKey,
-  recordMatches,
-  createBoundedLine,
-  encodeCursor,
-  decodeCursor,
-  exportSelectionMatches,
+  serializeUnknown: sanitizeDiagnosticValue,
   installConsoleStreamGuard,
   isConsoleStreamAvailable
 }

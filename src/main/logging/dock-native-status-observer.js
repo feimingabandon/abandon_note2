@@ -89,6 +89,14 @@ export class DockNativeStatusObserver {
     return Boolean(this.timer)
   }
 
+  setInterval(intervalMs) {
+    this.intervalMs = Math.max(250, Number(intervalMs) || 2000)
+    if (!this.timer) return
+    this.clearIntervalFn(this.timer)
+    this.timer = this.setIntervalFn(() => this.capture('poll'), this.intervalMs)
+    this.timer?.unref?.()
+  }
+
   start(generation, source = 'arm-succeeded') {
     this.stop('observer-replaced', { capture: false })
     this.generation = Number(generation) || 0

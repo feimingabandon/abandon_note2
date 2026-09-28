@@ -5,6 +5,7 @@ import {
   summarizeDiagnosticResult,
   diagnosticOutcome
 } from '../shared/diagnostic-actions.js'
+import { createDiagnosticTransport } from './diagnostic-transport.js'
 
 function createDiagnosticActionId() {
   try {
@@ -23,11 +24,11 @@ function serializeDiagnosticError(error) {
   }
 }
 
-export function createDiagnosticIpcRenderer(rawIpcRenderer) {
+export function createDiagnosticIpcRenderer(rawIpcRenderer, { transport } = {}) {
+  const diagnostics = transport || createDiagnosticTransport(rawIpcRenderer)
   const sendDiagnostic = (channel, payload) => {
     try {
-      rawIpcRenderer.send(channel, payload)
-      return true
+      return diagnostics.report(payload)
     } catch {
       // 诊断链路只能旁路观察，不能因窗口销毁或日志 IPC 异常改变业务调用结果。
       return false
@@ -50,6 +51,7 @@ export function createDiagnosticIpcRenderer(rawIpcRenderer) {
   }
 
   const invoke = async (channel, ...args) => {
+    if (['logs:query', 'logs:export'].includes(channel)) await diagnostics.flush(800)
     const eventName = diagnosticEventForChannel(channel)
     if (!eventName) return rawIpcRenderer.invoke(channel, ...args)
 
@@ -60,14 +62,27 @@ export function createDiagnosticIpcRenderer(rawIpcRenderer) {
       phase: 'start',
       actionId,
       outcome: 'pending',
-      metadata: { channel, arguments: summarizeDiagnosticArguments(args) }
+      metadata: {
+        channel,
+        ...(diagnostics.getPolicy().mode === 'deep'
+          ? { arguments: summarizeDiagnosticArguments(args) }
+          : {})
+      }
     })
     try {
+      if (['sticky:close', 'view:switch'].includes(channel)) {
+        try {
+          await diagnostics.prepareForUnload?.(channel)
+        } catch {
+          // 限时提交失败仍继续用户的关闭/导航操作；主进程保留缺失状态。
+        }
+      }
       // 与业务参数一起克隆和传输，失败的调用不会给后一个调用留下 FIFO 上下文。
       const result = await rawIpcRenderer.invoke(channel, ...args, {
         __abandonDiagnostic: 1,
         channel,
-        actionId
+        actionId,
+        policyEpoch: diagnostics.getPolicy().policyEpoch
       })
       reportAction({
         eventName,
@@ -96,8 +111,12 @@ export function createDiagnosticIpcRenderer(rawIpcRenderer) {
   const listenerWrappers = new Map()
   let listenerSequence = 0
   return {
+    diagnostics,
     invoke,
-    send: (...args) => rawIpcRenderer.send(...args),
+    send: (channel, ...args) =>
+      channel === 'logs:write'
+        ? diagnostics.report(args[0])
+        : rawIpcRenderer.send(channel, ...args),
     on: (channel, listener) => {
       if (!['settings:changed', 'notes:changed'].includes(channel)) {
         return rawIpcRenderer.on(channel, listener)

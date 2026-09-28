@@ -466,6 +466,15 @@ const definitions = [
     remark: '月视图和周视图共享的未来循环便签只读预览开关'
   },
   {
+    id: 'listAppearance.minimalMode',
+    path: ['listAppearance', 'minimalMode'],
+    db: { type: 'notes', key: 'minimal_mode' },
+    defaultValue: false,
+    parse: parseBoolean,
+    serialize: (value) => (value ? '1' : '0'),
+    remark: '便签列表隐藏卡片辅助信息与操作组件'
+  },
+  {
     id: 'notes.tagColorEnabled',
     path: ['notes', 'tagColorEnabled'],
     db: { type: 'notes', key: 'tag_color_enabled' },

@@ -9,16 +9,24 @@ import {
 } from '../src/shared/weather-rules.js'
 
 describe('weather rules', () => {
-  it('only displays complete daily weather and rejects legacy zero placeholders', () => {
+  it('only displays complete daily weather, including genuine zero-degree ranges', () => {
     expect(isDisplayableWeatherDay({ weatherCode: 0, temperatureMin: 0, temperatureMax: 5 })).toBe(
       true
     )
     expect(isDisplayableWeatherDay({ weatherCode: 0, temperatureMin: 0, temperatureMax: 0 })).toBe(
-      false
+      true
     )
     expect(
       isDisplayableWeatherDay({ weatherCode: null, temperatureMin: null, temperatureMax: null })
     ).toBe(false)
+    for (const day of [
+      { weatherCode: 999, temperatureMin: 0, temperatureMax: 5 },
+      { weatherCode: 0, temperatureMin: 5, temperatureMax: 0 },
+      { weatherCode: false, temperatureMin: 0, temperatureMax: 5 },
+      { weatherCode: 0, temperatureMin: ' ', temperatureMax: 5 },
+      { weatherCode: 0, temperatureMin: [], temperatureMax: 5 }
+    ])
+      expect(isDisplayableWeatherDay(day)).toBe(false)
   })
 
   it('maps WMO weather codes to local Chinese labels', () => {
@@ -26,6 +34,17 @@ describe('weather rules', () => {
     expect(describeWeatherCode(63).label).toBe('中雨')
     expect(describeWeatherCode(95).label).toBe('雷阵雨')
     expect(describeWeatherCode(999).label).toBe('未知天气')
+    expect(describeWeatherCode(null).label).toBe('未知天气')
+  })
+
+  it('uses night icons only for current readings with known night context', () => {
+    expect(describeWeatherCode(0, false)).toEqual({ label: '晴', icon: '🌙' })
+    expect(describeWeatherCode(1, false).icon).toBe('☁️')
+    expect(describeWeatherCode(2, false).icon).toBe('☁️')
+    expect(describeWeatherCode(51, false)).toEqual({ label: '毛毛雨', icon: '🌧️' })
+    expect(describeWeatherCode(95, false)).toEqual(describeWeatherCode(95))
+    expect(describeWeatherCode(0, true).icon).toBe('☀️')
+    expect(describeWeatherCode(0).icon).toBe('☀️')
   })
 
   it('creates one local-date refresh key only after 09:00', () => {

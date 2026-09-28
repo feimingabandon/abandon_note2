@@ -22,6 +22,8 @@
  * @property {number} [maxFailures=10] - 自动禁用阈值；Infinity 表示永不自动禁用
  */
 
+import { measureSyncPerformance } from '../logging/operation-performance.js'
+
 export class Scheduler {
   /** @type {SchedulerTask[]} */
   tasks = []
@@ -202,8 +204,23 @@ export class Scheduler {
         stats.total++
 
         try {
-          if (task.shouldRun(context)) {
-            task.execute(context)
+          const source = ['startup', 'scheduled', 'recovery', 'resume', 'manual-retry'].includes(
+            effectiveReason
+          )
+            ? effectiveReason
+            : 'other'
+          if (
+            measureSyncPerformance('scheduler-check', `${task.name}.${source}`, () =>
+              task.shouldRun(context)
+            )
+          ) {
+            // 调度器仍是同步分发；异步任务的完成时间由任务自身记录，不能以此冒充。
+            measureSyncPerformance(
+              'scheduler',
+              `${task.name}.${source}`,
+              () => task.execute(context),
+              (result) => result?.performanceCounts || {}
+            )
             task.nextRetryAt = null
             task.lastError = null
             task.failures = 0 // 执行成功，重置失败计数

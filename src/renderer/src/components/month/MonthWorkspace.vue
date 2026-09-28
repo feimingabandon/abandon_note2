@@ -1,5 +1,9 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useSharedMinuteClock } from '../../composables/useSharedMinuteClock.js'
+import { useWeatherRecovery } from '../../composables/useWeatherRecovery.js'
+import { buildDisplayableWeatherByDate } from '../../utils/noteWeather.js'
+import { weatherFreshness } from '../../../../shared/weather-freshness.js'
 import MonthCalendarToolbar from './MonthCalendarToolbar.vue'
 import MonthCalendarGrid from './MonthCalendarGrid.vue'
 import MonthDayPanel from './MonthDayPanel.vue'
@@ -27,7 +31,6 @@ import {
 } from '../../../../shared/calendar/calendar-date-rules.js'
 import { createDefaultSettings, VIEW_MODES } from '../../../../shared/settings-schema.js'
 import { notesCoveringDate } from '../../../../shared/calendar/calendar-event-layout.js'
-import { isDisplayableWeatherDay } from '../../../../shared/weather-rules.js'
 import {
   createRefreshCauses,
   traceViewRefresh,
@@ -36,6 +39,7 @@ import {
 } from '../../utils/diagnosticEvidence.js'
 
 const { showMessage } = useMessage()
+useWeatherRecovery()
 const props = defineProps({
   viewMode: {
     type: String,
@@ -87,6 +91,12 @@ const recurringPreviewEnabled = ref(false)
 const recurringPreviewSaving = ref(false)
 const weatherEnabled = ref(false)
 const weatherForecast = ref(null)
+const weatherNow = useSharedMinuteClock()
+// The minute clock schedules ageing; a just-received response can be newer than
+// its last tick and must be evaluated against the actual receipt time immediately.
+const weatherState = computed(() =>
+  weatherFreshness(weatherForecast.value, Math.max(weatherNow.value, Date.now()))
+)
 const weatherLoading = ref(false)
 const weatherError = ref('')
 const loading = ref(true)
@@ -131,21 +141,10 @@ const selectedNotes = computed(() =>
     : []
 )
 const modalOpen = computed(() => Boolean(creatorDate.value || editingNote.value))
-const weatherByDate = computed(
-  () =>
-    new Map(
-      (weatherForecast.value?.days || [])
-        .filter((day) => isDisplayableWeatherDay(day))
-        .map((day) => [day.date, day])
-    )
+const weatherByDate = computed(() =>
+  buildDisplayableWeatherByDate(weatherForecast.value, Math.max(weatherNow.value, Date.now()))
 )
 const selectedWeather = computed(() => weatherByDate.value.get(selectedKey.value) || null)
-const toolbarTodayWeather = computed(() => {
-  if (!weatherEnabled.value) return ''
-  const weather = weatherByDate.value.get(todayKey.value)
-  if (!weather) return ''
-  return `${weather.icon} ${weather.label} ${weather.temperatureMin}°～${weather.temperatureMax}°`
-})
 const earlyStartMessage = computed(() => {
   if (earlyStartNote.value?.duration_kind === 'until_completed') {
     return '该便签设置为持续到完成。提前执行后，生效时间将改为当前时间，并从今天开始连续显示，直到标记完成。是否确认提前执行？'
@@ -935,12 +934,15 @@ onMounted(async () => {
     if (weatherEnabled.value && snapshot?.values?.weather?.location) {
       void loadWeather({ quiet: true })
     } else {
+      weatherLoadSequence += 1
       weatherForecast.value = null
       weatherError.value = ''
     }
   })
   stopWeatherForecastListener = window.api.onWeatherForecastUpdated?.((forecast) => {
     if (!weatherEnabled.value) return
+    weatherLoadSequence += 1
+    weatherLoading.value = false
     weatherForecast.value = forecast
     weatherError.value = forecast?.warning || ''
   })
@@ -997,9 +999,10 @@ onBeforeUnmount(() => {
           :date-key="selectedKey"
           :notes="selectedNotes"
           :weather="selectedWeather"
+          :weather-current="selectedWeather?.currentWeather || null"
           :weather-location="weatherForecast?.location || null"
           :weather-fetched-at="weatherForecast?.fetchedAt || null"
-          :weather-stale="Boolean(weatherForecast?.cache?.stale)"
+          :weather-stale="weatherState.stale || Boolean(weatherError)"
           :weather-error="weatherError"
           :status-transitions="statusTransitions"
           @close="panelOpen = false"
@@ -1021,7 +1024,7 @@ onBeforeUnmount(() => {
           :day-panel-open="panelOpen"
           :refreshing="refreshing"
           :busy="transitioning"
-          :today-weather-label="toolbarTodayWeather"
+          :forecast="weatherEnabled ? weatherForecast : null"
           :recurring-preview-enabled="recurringPreviewEnabled"
           :recurring-preview-saving="recurringPreviewSaving"
           @previous="goPrevious"
@@ -1155,6 +1158,7 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 .month-workspace__calendar {
+  container: calendar-pane / inline-size;
   position: relative;
   display: flex;
   min-width: 0;

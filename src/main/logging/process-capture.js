@@ -1,35 +1,17 @@
 import { app, crashReporter } from 'electron'
-import { existsSync, readdirSync, statSync } from 'fs'
-import { join } from 'path'
-import { logger, writeLog } from './logger.js'
+import { logger, writeLog, getCrashDumpIndex } from './logger.js'
 
 let installed = false
+let recentDumps = []
 
-export function getRecentCrashDumps(limit = 5) {
+export const getRecentCrashDumps = (limit = 5) => recentDumps.slice(0, limit)
+export async function refreshCrashDumpIndex() {
   try {
-    const crashDumpsPath = app.getPath('crashDumps')
-    const directories = [crashDumpsPath, join(crashDumpsPath, 'reports')]
-    const dumps = []
-    for (const directory of directories) {
-      if (!existsSync(directory)) continue
-      for (const name of readdirSync(directory)) {
-        if (!name.toLocaleLowerCase().endsWith('.dmp')) continue
-        const path = join(directory, name)
-        const stat = statSync(path)
-        if (!stat.isFile()) continue
-        dumps.push({
-          name,
-          relativePath: directory === crashDumpsPath ? name : join('reports', name),
-          size: stat.size,
-          modifiedAt: stat.mtime.toISOString()
-        })
-      }
-    }
-    return dumps
-      .sort((left, right) => right.modifiedAt.localeCompare(left.modifiedAt))
-      .slice(0, Math.max(0, Number(limit) || 0))
-  } catch (error) {
-    return [{ unavailable: true, reason: error?.message || String(error) }]
+    const result = await getCrashDumpIndex()
+    recentDumps = result.unavailable ? [{ unavailable: true }] : result.files
+    return result
+  } catch {
+    return { unavailable: true, files: recentDumps }
   }
 }
 
@@ -74,6 +56,7 @@ export function startLocalCrashReporter() {
       ignoreSystemCrashHandler: false,
       rateLimit: false
     })
+    void refreshCrashDumpIndex()
     logger.info('crash-reporter', '本地崩溃转储已启用', {
       crashDumpsPath: app.getPath('crashDumps'),
       recentCrashDumps: getRecentCrashDumps()

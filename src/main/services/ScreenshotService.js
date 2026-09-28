@@ -123,22 +123,35 @@ document.addEventListener('mouseup',(ev)=>{
 setTimeout(()=>{resize()},0)
 </script></body></html>`
 
-function cropScreenshot(selection, sourceImage) {
+export function cropScreenshot(selection, sourceImage) {
   if (!sourceImage) return null
   const viewportWidth = Number(selection?.viewportWidth)
   const viewportHeight = Number(selection?.viewportHeight)
-  if (!viewportWidth || !viewportHeight) return null
+  const selectionX = Number(selection?.x)
+  const selectionY = Number(selection?.y)
+  const selectionWidth = Number(selection?.w)
+  const selectionHeight = Number(selection?.h)
+  if (
+    ![viewportWidth, viewportHeight, selectionX, selectionY, selectionWidth, selectionHeight].every(
+      Number.isFinite
+    ) ||
+    viewportWidth <= 0 ||
+    viewportHeight <= 0 ||
+    selectionWidth <= 0 ||
+    selectionHeight <= 0
+  )
+    return null
 
   const imageSize = sourceImage.getSize()
   const scaleX = imageSize.width / viewportWidth
   const scaleY = imageSize.height / viewportHeight
-  const x = Math.max(0, Math.round(Number(selection.x) * scaleX))
-  const y = Math.max(0, Math.round(Number(selection.y) * scaleY))
-  const width = Math.min(imageSize.width - x, Math.max(1, Math.round(Number(selection.w) * scaleX)))
-  const height = Math.min(
-    imageSize.height - y,
-    Math.max(1, Math.round(Number(selection.h) * scaleY))
-  )
+  // 两个端点分别裁到屏幕边界，左/上越界不能保留原来的宽高。
+  const x = Math.max(0, Math.round(selectionX * scaleX))
+  const y = Math.max(0, Math.round(selectionY * scaleY))
+  const right = Math.min(imageSize.width, Math.round((selectionX + selectionWidth) * scaleX))
+  const bottom = Math.min(imageSize.height, Math.round((selectionY + selectionHeight) * scaleY))
+  const width = right - x
+  const height = bottom - y
   if (!Number.isFinite(x + y + width + height) || width <= 0 || height <= 0) return null
   return sourceImage.crop({ x, y, width, height }).toDataURL()
 }

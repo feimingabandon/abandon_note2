@@ -4,3 +4,6 @@ pnpm-lock.yaml
 LICENSE.md
 tsconfig.json
 tsconfig.*.json
+src/main/calendar/vendor/cnlunar/lunar.js
+src/main/calendar/vendor/cnlunar/data
+src/main/calendar/vendor/cnlunar/utils

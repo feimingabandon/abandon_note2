@@ -7,6 +7,8 @@ import {
 import { takeInvocationContext, withOperation, observeDiagnostic } from './operation-context.js'
 import { logger, writeLog } from './logger.js'
 import { captureIpcArguments } from './ipc-arguments.js'
+import { beginPerformanceOperation, performanceResultCounts } from './operation-performance.js'
+import { getDiagnosticPolicy } from './diagnostic-state.js'
 
 const listenerWrappers = new Map()
 const SLOW_IPC_MS = 2000
@@ -55,6 +57,8 @@ function reportActionOutcome(
       metadata: {
         ...senderMetadata(event, channel, startedAt, actionContext),
         ...summarizeDiagnosticResult(result),
+        verification: actionContext.verification || 'not-requested',
+        operationPolicyEpoch: actionContext.policyEpoch,
         windowState,
         ...(error ? { arguments: captureIpcArguments(args) } : {})
       }
@@ -82,6 +86,7 @@ function wrapHandle(channel, handler) {
   return function loggedIpcHandle(event, ...args) {
     const startedAt = Date.now()
     const actionContext = takeInvocationContext(channel, args)
+    if (actionContext) actionContext.policyEpoch = getDiagnosticPolicy().policyEpoch
     return withOperation(actionContext, () => {
       const beforeWindow = readWindowState(event, channel)
       if (actionContext)
@@ -126,8 +131,33 @@ function wrapHandle(channel, handler) {
           })
         )
       }
+      // 日志读取/导出走独立链路，不把诊断请求反过来作为业务热点。
+      const finishPerformance = channel.startsWith('logs:')
+        ? () => {}
+        : beginPerformanceOperation('ipc', channel)
+      const handlerStarted = performance.now()
+      let handlerSyncMs = null
+      const finishInvocation = (value, failed = false) => {
+        let counts = {}
+        try {
+          counts = performanceResultCounts(value)
+        } catch {
+          /* 诊断旁路。 */
+        }
+        finishPerformance({
+          ...counts,
+          errors: failed ? 1 : 0,
+          handlerSyncMs: handlerSyncMs ?? performance.now() - handlerStarted,
+          // await 之后的经过时间可能包含异步回调执行，并不等于纯 I/O 等待。
+          asyncRemainderMs:
+            handlerSyncMs === null
+              ? 0
+              : Math.max(0, performance.now() - handlerStarted - handlerSyncMs)
+        })
+      }
       try {
         const result = handler(event, ...args)
+        handlerSyncMs = performance.now() - handlerStarted
         if (result && typeof result.then === 'function') {
           if (actionContext) {
             pendingTimer = setTimeout(
@@ -152,6 +182,7 @@ function wrapHandle(channel, handler) {
           }
           return result.then(
             (value) => {
+              finishInvocation(value)
               clearPending()
               reportSlow()
               reportActionOutcome(
@@ -168,12 +199,14 @@ function wrapHandle(channel, handler) {
               return value
             },
             (error) => {
+              finishInvocation(undefined, true)
               clearPending()
               reportError(error)
               throw error
             }
           )
         }
+        finishInvocation(result)
         reportSlow()
         reportActionOutcome(
           event,
@@ -188,6 +221,7 @@ function wrapHandle(channel, handler) {
         )
         return result
       } catch (error) {
+        finishInvocation(undefined, true)
         clearPending()
         reportError(error)
         throw error

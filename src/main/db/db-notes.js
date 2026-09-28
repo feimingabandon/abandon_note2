@@ -1,3 +1,4 @@
+import { measureSyncPerformance } from '../logging/operation-performance.js'
 /**
  * db-notes.js — 便签实例、三状态流转与列表摘要查询
  *
@@ -245,50 +246,60 @@ export function updateNote(id, fields = {}) {
 }
 
 export function getNoteById(id) {
-  const note = getDb().prepare('SELECT * FROM notes WHERE id = ? AND is_deleted = 0').get(id)
-  if (!note) return null
+  return measureSyncPerformance('database', 'getNoteById', () => {
+    const note = getDb().prepare('SELECT * FROM notes WHERE id = ? AND is_deleted = 0').get(id)
+    if (!note) return null
 
-  note.content_color_ranges = normalizeNoteTextColorRanges(note.content_color_ranges, note.content)
-
-  note.attachments = getDb()
-    .prepare('SELECT * FROM note_attachments WHERE note_id = ? ORDER BY sort_order')
-    .all(id)
-  note.tags = getDb()
-    .prepare(
-      `SELECT t.* FROM tags t
-       INNER JOIN note_tags nt ON nt.tag_id = t.id
-       WHERE nt.note_id = ?
-       ORDER BY nt.rowid ASC`
+    note.content_color_ranges = normalizeNoteTextColorRanges(
+      note.content_color_ranges,
+      note.content
     )
-    .all(id)
-  note.attachment_count = note.attachments.length
-  note.has_text = Boolean(note.content?.trim())
-  note.has_image = note.attachment_count > 0
 
-  // 时间戳可能落在同一毫秒；版本同时覆盖实际字段和关系，供编辑草稿比较。
-  note.editVersion = createHash('sha256')
-    .update(
-      JSON.stringify({
-        content: note.content,
-        contentColorRanges: note.content_color_ranges,
-        remark: note.remark,
-        status: note.status,
-        effectiveAt: note.effective_at,
-        durationDays: note.duration_days,
-        durationKind: note.duration_kind,
-        notifyEnabled: note.notify_enabled,
-        isPinned: note.is_pinned,
-        finishedAt: note.finished_at,
-        updatedAt: note.updated_at,
-        tagIds: note.tags.map((tag) => tag.id).sort((a, b) => a - b),
-        attachments: note.attachments
-          .map(({ id, file_path, file_size, sort_order }) => [id, file_path, file_size, sort_order])
-          .sort((a, b) => a[0] - b[0])
-      })
-    )
-    .digest('hex')
+    note.attachments = getDb()
+      .prepare('SELECT * FROM note_attachments WHERE note_id = ? ORDER BY sort_order')
+      .all(id)
+    note.tags = getDb()
+      .prepare(
+        `SELECT t.* FROM tags t
+         INNER JOIN note_tags nt ON nt.tag_id = t.id
+         WHERE nt.note_id = ?
+         ORDER BY nt.rowid ASC`
+      )
+      .all(id)
+    note.attachment_count = note.attachments.length
+    note.has_text = Boolean(note.content?.trim())
+    note.has_image = note.attachment_count > 0
 
-  return note
+    // 时间戳可能落在同一毫秒；版本同时覆盖实际字段和关系，供编辑草稿比较。
+    note.editVersion = createHash('sha256')
+      .update(
+        JSON.stringify({
+          content: note.content,
+          contentColorRanges: note.content_color_ranges,
+          remark: note.remark,
+          status: note.status,
+          effectiveAt: note.effective_at,
+          durationDays: note.duration_days,
+          durationKind: note.duration_kind,
+          notifyEnabled: note.notify_enabled,
+          isPinned: note.is_pinned,
+          finishedAt: note.finished_at,
+          updatedAt: note.updated_at,
+          tagIds: note.tags.map((tag) => tag.id).sort((a, b) => a - b),
+          attachments: note.attachments
+            .map(({ id, file_path, file_size, sort_order }) => [
+              id,
+              file_path,
+              file_size,
+              sort_order
+            ])
+            .sort((a, b) => a[0] - b[0])
+        })
+      )
+      .digest('hex')
+
+    return note
+  })
 }
 
 /**
@@ -416,13 +427,15 @@ export function activateNotes() {
   const ts = now()
 
   return db.transaction(() => {
-    const due = db
-      .prepare(
-        `SELECT id, content, notify_enabled
+    const due = measureSyncPerformance('database', 'activation.candidates', () =>
+      db
+        .prepare(
+          `SELECT id, content, notify_enabled
          FROM notes
          WHERE status = 'initialized' AND is_deleted = 0 AND effective_at <= ?`
-      )
-      .all(ts)
+        )
+        .all(ts)
+    )
 
     if (due.length === 0) return { count: 0, notified: [] }
 
@@ -507,57 +520,59 @@ function buildWhereClause({
 
 /** @returns {NoteListItem[]} */
 export function toNoteListItems(notes) {
-  if (!notes?.length) return []
+  return measureSyncPerformance('database', 'toNoteListItems', () => {
+    if (!notes?.length) return []
 
-  const db = getDb()
-  const tagsByNote = new Map()
-  const attachmentCounts = new Map()
-  const ids = [...new Set(notes.map((note) => note.id))]
-  for (let offset = 0; offset < ids.length; offset += 500) {
-    const batch = ids.slice(offset, offset + 500)
-    const placeholders = batch.map(() => '?').join(',')
-    const tags = db
-      .prepare(
-        `SELECT nt.note_id, t.id, t.name, t.color FROM note_tags nt
-      INNER JOIN tags t ON t.id = nt.tag_id WHERE nt.note_id IN (${placeholders}) ORDER BY nt.rowid ASC`
-      )
-      .all(...batch)
-    for (const tag of tags) {
-      if (!tagsByNote.has(tag.note_id)) tagsByNote.set(tag.note_id, [])
-      tagsByNote.get(tag.note_id).push({ id: tag.id, name: tag.name, color: tag.color })
+    const db = getDb()
+    const tagsByNote = new Map()
+    const attachmentCounts = new Map()
+    const ids = [...new Set(notes.map((note) => note.id))]
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const batch = ids.slice(offset, offset + 500)
+      const placeholders = batch.map(() => '?').join(',')
+      const tags = db
+        .prepare(
+          `SELECT nt.note_id, t.id, t.name, t.color FROM note_tags nt
+        INNER JOIN tags t ON t.id = nt.tag_id WHERE nt.note_id IN (${placeholders}) ORDER BY nt.rowid ASC`
+        )
+        .all(...batch)
+      for (const tag of tags) {
+        if (!tagsByNote.has(tag.note_id)) tagsByNote.set(tag.note_id, [])
+        tagsByNote.get(tag.note_id).push({ id: tag.id, name: tag.name, color: tag.color })
+      }
+      const counts = db
+        .prepare(
+          `SELECT note_id, COUNT(*) AS count FROM note_attachments
+        WHERE note_id IN (${placeholders}) GROUP BY note_id`
+        )
+        .all(...batch)
+      for (const row of counts) attachmentCounts.set(row.note_id, row.count)
     }
-    const counts = db
-      .prepare(
-        `SELECT note_id, COUNT(*) AS count FROM note_attachments
-      WHERE note_id IN (${placeholders}) GROUP BY note_id`
-      )
-      .all(...batch)
-    for (const row of counts) attachmentCounts.set(row.note_id, row.count)
-  }
 
-  return notes.map((note) => {
-    const attachmentCount = attachmentCounts.get(note.id) || 0
-    return {
-      id: note.id,
-      content: note.content,
-      content_color_ranges: normalizeNoteTextColorRanges(note.content_color_ranges, note.content),
-      remark: note.remark,
-      status: note.status,
-      is_pinned: note.is_pinned,
-      is_deleted: note.is_deleted,
-      notify_enabled: note.notify_enabled,
-      effective_at: note.effective_at,
-      duration_days: note.duration_days,
-      duration_kind: note.duration_kind,
-      finished_at: note.finished_at,
-      sort_order: note.sort_order,
-      created_at: note.created_at,
-      updated_at: note.updated_at,
-      tags: tagsByNote.get(note.id) || [],
-      attachment_count: attachmentCount,
-      has_text: Boolean(note.content?.trim()),
-      has_image: attachmentCount > 0
-    }
+    return notes.map((note) => {
+      const attachmentCount = attachmentCounts.get(note.id) || 0
+      return {
+        id: note.id,
+        content: note.content,
+        content_color_ranges: normalizeNoteTextColorRanges(note.content_color_ranges, note.content),
+        remark: note.remark,
+        status: note.status,
+        is_pinned: note.is_pinned,
+        is_deleted: note.is_deleted,
+        notify_enabled: note.notify_enabled,
+        effective_at: note.effective_at,
+        duration_days: note.duration_days,
+        duration_kind: note.duration_kind,
+        finished_at: note.finished_at,
+        sort_order: note.sort_order,
+        created_at: note.created_at,
+        updated_at: note.updated_at,
+        tags: tagsByNote.get(note.id) || [],
+        attachment_count: attachmentCount,
+        has_text: Boolean(note.content?.trim()),
+        has_image: attachmentCount > 0
+      }
+    })
   })
 }
 
@@ -572,36 +587,38 @@ export function queryCalendarNotes({
   filter = () => true,
   hydrate = true
 } = {}) {
-  const from = Number(candidateFrom)
-  const start = Number(visibleStart)
-  const end = Number(visibleEndExclusive)
-  if (
-    !Number.isFinite(from) ||
-    !Number.isFinite(start) ||
-    !Number.isFinite(end) ||
-    from > start ||
-    start >= end
-  ) {
-    throw new Error('无效的月历查询范围')
-  }
-  const notes = getDb()
-    .prepare(
-      `SELECT n.* FROM notes n
-       WHERE n.is_deleted = 0 AND n.effective_at < ?
-         AND (
-           n.effective_at >= ?
-           OR (n.duration_kind = 'until_completed' AND n.status = 'in_progress')
-           OR (
-             n.duration_kind = 'until_completed'
-             AND n.status = 'completed'
-             AND n.finished_at >= ?
+  return measureSyncPerformance('database', 'queryCalendarNotes', () => {
+    const from = Number(candidateFrom)
+    const start = Number(visibleStart)
+    const end = Number(visibleEndExclusive)
+    if (
+      !Number.isFinite(from) ||
+      !Number.isFinite(start) ||
+      !Number.isFinite(end) ||
+      from > start ||
+      start >= end
+    ) {
+      throw new Error('无效的月历查询范围')
+    }
+    const notes = getDb()
+      .prepare(
+        `SELECT n.* FROM notes n
+         WHERE n.is_deleted = 0 AND n.effective_at < ?
+           AND (
+             n.effective_at >= ?
+             OR (n.duration_kind = 'until_completed' AND n.status = 'in_progress')
+             OR (
+               n.duration_kind = 'until_completed'
+               AND n.status = 'completed'
+               AND n.finished_at >= ?
+             )
            )
-         )
-       ORDER BY n.is_pinned DESC, n.effective_at ASC, n.duration_days DESC, n.id ASC`
-    )
-    .all(end, from, start)
-  const matching = notes.filter(filter)
-  return hydrate ? toNoteListItems(matching) : matching
+         ORDER BY n.is_pinned DESC, n.effective_at ASC, n.duration_days DESC, n.id ASC`
+      )
+      .all(end, from, start)
+    const matching = notes.filter(filter)
+    return hydrate ? toNoteListItems(matching) : matching
+  })
 }
 
 // ============================================================
@@ -609,49 +626,55 @@ export function queryCalendarNotes({
 // ============================================================
 
 export function queryPinnedNotes({ statuses, tagIds, search } = {}) {
-  const db = getDb()
-  const { whereClause, params } = buildWhereClause({
-    statuses,
-    tagIds,
-    search,
-    extraWhere: ['n.is_pinned = 1']
+  return measureSyncPerformance('database', 'queryPinnedNotes', () => {
+    const db = getDb()
+    const { whereClause, params } = buildWhereClause({
+      statuses,
+      tagIds,
+      search,
+      extraWhere: ['n.is_pinned = 1']
+    })
+    const notes = db
+      .prepare(
+        `SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`
+      )
+      .all(...params)
+    return toNoteListItems(notes)
   })
-  const notes = db
-    .prepare(
-      `SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`
-    )
-    .all(...params)
-  return toNoteListItems(notes)
 }
 
 export function queryRecentNotes({ statuses, tagIds, search, cutoffTime } = {}) {
-  const db = getDb()
-  const { whereClause, params } = buildWhereClause({
-    statuses,
-    tagIds,
-    search,
-    extraWhere: ['n.is_pinned = 0', 'n.effective_at > ?'],
-    extraParams: [cutoffTime]
+  return measureSyncPerformance('database', 'queryRecentNotes', () => {
+    const db = getDb()
+    const { whereClause, params } = buildWhereClause({
+      statuses,
+      tagIds,
+      search,
+      extraWhere: ['n.is_pinned = 0', 'n.effective_at > ?'],
+      extraParams: [cutoffTime]
+    })
+    const notes = db
+      .prepare(
+        `SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`
+      )
+      .all(...params)
+    return toNoteListItems(notes)
   })
-  const notes = db
-    .prepare(
-      `SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`
-    )
-    .all(...params)
-  return toNoteListItems(notes)
 }
 
 /** 灵动岛只展示最近进入进行中的一条真实便签。 */
 export function queryCompactNote() {
-  const note = getDb()
-    .prepare(
-      `SELECT n.* FROM notes n
-       WHERE n.is_deleted = 0 AND n.status = 'in_progress'
-       ORDER BY n.effective_at DESC, n.id DESC
-       LIMIT 1`
-    )
-    .get()
-  return note ? toNoteListItems([note])[0] : null
+  return measureSyncPerformance('database', 'queryCompactNote', () => {
+    const note = getDb()
+      .prepare(
+        `SELECT n.* FROM notes n
+         WHERE n.is_deleted = 0 AND n.status = 'in_progress'
+         ORDER BY n.effective_at DESC, n.id DESC
+         LIMIT 1`
+      )
+      .get()
+    return note ? toNoteListItems([note])[0] : null
+  })
 }
 
 export function queryEarlierNotes({
@@ -662,26 +685,28 @@ export function queryEarlierNotes({
   limit = 10,
   offset = 0
 } = {}) {
-  const db = getDb()
-  const safeLimit = normalizeQueryLimit(limit, 10)
-  const safeOffset = normalizeQueryOffset(offset)
-  const { whereClause, params } = buildWhereClause({
-    statuses,
-    tagIds,
-    search,
-    extraWhere: ['n.is_pinned = 0', 'n.effective_at <= ?'],
-    extraParams: [cutoffTime]
+  return measureSyncPerformance('database', 'queryEarlierNotes', () => {
+    const db = getDb()
+    const safeLimit = normalizeQueryLimit(limit, 10)
+    const safeOffset = normalizeQueryOffset(offset)
+    const { whereClause, params } = buildWhereClause({
+      statuses,
+      tagIds,
+      search,
+      extraWhere: ['n.is_pinned = 0', 'n.effective_at <= ?'],
+      extraParams: [cutoffTime]
+    })
+    const { total } = db
+      .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
+      .get(...params)
+    const notes = db
+      .prepare(
+        `SELECT n.* FROM notes n ${whereClause}
+         ORDER BY n.effective_at DESC, n.created_at DESC LIMIT ? OFFSET ?`
+      )
+      .all(...params, safeLimit, safeOffset)
+    return { notes: toNoteListItems(notes), total }
   })
-  const { total } = db
-    .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
-    .get(...params)
-  const notes = db
-    .prepare(
-      `SELECT n.* FROM notes n ${whereClause}
-       ORDER BY n.effective_at DESC, n.created_at DESC LIMIT ? OFFSET ?`
-    )
-    .all(...params, safeLimit, safeOffset)
-  return { notes: toNoteListItems(notes), total }
 }
 
 // ============================================================
@@ -689,39 +714,45 @@ export function queryEarlierNotes({
 // ============================================================
 
 export function queryCustomPinned({ statuses, tagIds, search } = {}) {
-  const db = getDb()
-  const { whereClause, params } = buildWhereClause({
-    statuses,
-    tagIds,
-    search,
-    extraWhere: ['n.is_pinned = 1']
+  return measureSyncPerformance('database', 'queryCustomPinned', () => {
+    const db = getDb()
+    const { whereClause, params } = buildWhereClause({
+      statuses,
+      tagIds,
+      search,
+      extraWhere: ['n.is_pinned = 1']
+    })
+    const notes = db
+      .prepare(
+        `SELECT n.* FROM notes n ${whereClause} ORDER BY n.sort_order ASC, n.created_at DESC`
+      )
+      .all(...params)
+    return toNoteListItems(notes)
   })
-  const notes = db
-    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY n.sort_order ASC, n.created_at DESC`)
-    .all(...params)
-  return toNoteListItems(notes)
 }
 
 export function queryCustomNormal({ statuses, tagIds, search, limit = 10, offset = 0 } = {}) {
-  const db = getDb()
-  const safeLimit = normalizeQueryLimit(limit, 10)
-  const safeOffset = normalizeQueryOffset(offset)
-  const { whereClause, params } = buildWhereClause({
-    statuses,
-    tagIds,
-    search,
-    extraWhere: ['n.is_pinned = 0']
+  return measureSyncPerformance('database', 'queryCustomNormal', () => {
+    const db = getDb()
+    const safeLimit = normalizeQueryLimit(limit, 10)
+    const safeOffset = normalizeQueryOffset(offset)
+    const { whereClause, params } = buildWhereClause({
+      statuses,
+      tagIds,
+      search,
+      extraWhere: ['n.is_pinned = 0']
+    })
+    const { total } = db
+      .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
+      .get(...params)
+    const notes = db
+      .prepare(
+        `SELECT n.* FROM notes n ${whereClause}
+         ORDER BY n.sort_order ASC, n.created_at DESC LIMIT ? OFFSET ?`
+      )
+      .all(...params, safeLimit, safeOffset)
+    return { notes: toNoteListItems(notes), total }
   })
-  const { total } = db
-    .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
-    .get(...params)
-  const notes = db
-    .prepare(
-      `SELECT n.* FROM notes n ${whereClause}
-       ORDER BY n.sort_order ASC, n.created_at DESC LIMIT ? OFFSET ?`
-    )
-    .all(...params, safeLimit, safeOffset)
-  return { notes: toNoteListItems(notes), total }
 }
 
 // ============================================================
@@ -733,57 +764,59 @@ export function queryCustomNormal({ statuses, tagIds, search, limit = 10, offset
  * 额外返回一个“未分类”合成组。total 始终受状态条件约束。
  */
 export function queryTagGroups({ statuses, tagIds } = {}) {
-  const db = getDb()
-  const selectedTagIds = Array.isArray(tagIds)
-    ? [...new Set(tagIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))]
-    : []
-  const statusList = Array.isArray(statuses) ? statuses : []
-  const statusJoin = statusList.length
-    ? `AND n.status IN (${statusList.map(() => '?').join(',')})`
-    : ''
-  const tagWhere = selectedTagIds.length
-    ? `WHERE t.id IN (${selectedTagIds.map(() => '?').join(',')})`
-    : ''
+  return measureSyncPerformance('database', 'queryTagGroups', () => {
+    const db = getDb()
+    const selectedTagIds = Array.isArray(tagIds)
+      ? [...new Set(tagIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))]
+      : []
+    const statusList = Array.isArray(statuses) ? statuses : []
+    const statusJoin = statusList.length
+      ? `AND n.status IN (${statusList.map(() => '?').join(',')})`
+      : ''
+    const tagWhere = selectedTagIds.length
+      ? `WHERE t.id IN (${selectedTagIds.map(() => '?').join(',')})`
+      : ''
 
-  const groups = db
-    .prepare(
-      `SELECT t.id, t.name, t.color, t.created_at, t.sort_order, COUNT(n.id) AS total
-       FROM tags t
-       LEFT JOIN note_tags nt ON nt.tag_id = t.id
-       LEFT JOIN notes n ON n.id = nt.note_id AND n.is_deleted = 0 ${statusJoin}
-       ${tagWhere}
-       GROUP BY t.id, t.name, t.color, t.created_at, t.sort_order
-       ORDER BY t.sort_order ASC, t.id ASC`
-    )
-    .all(...statusList, ...selectedTagIds)
-    .map((group) => ({
-      key: `tag:${group.id}`,
-      id: group.id,
-      name: group.name,
-      color: group.color,
-      sort_order: group.sort_order,
-      total: Number(group.total) || 0,
-      untagged: false
-    }))
+    const groups = db
+      .prepare(
+        `SELECT t.id, t.name, t.color, t.created_at, t.sort_order, COUNT(n.id) AS total
+         FROM tags t
+         LEFT JOIN note_tags nt ON nt.tag_id = t.id
+         LEFT JOIN notes n ON n.id = nt.note_id AND n.is_deleted = 0 ${statusJoin}
+         ${tagWhere}
+         GROUP BY t.id, t.name, t.color, t.created_at, t.sort_order
+         ORDER BY t.sort_order ASC, t.id ASC`
+      )
+      .all(...statusList, ...selectedTagIds)
+      .map((group) => ({
+        key: `tag:${group.id}`,
+        id: group.id,
+        name: group.name,
+        color: group.color,
+        sort_order: group.sort_order,
+        total: Number(group.total) || 0,
+        untagged: false
+      }))
 
-  if (selectedTagIds.length > 0) return groups
+    if (selectedTagIds.length > 0) return groups
 
-  const { whereClause, params } = buildWhereClause({
-    statuses: statusList,
-    extraWhere: ['NOT EXISTS (SELECT 1 FROM note_tags nt WHERE nt.note_id = n.id)']
+    const { whereClause, params } = buildWhereClause({
+      statuses: statusList,
+      extraWhere: ['NOT EXISTS (SELECT 1 FROM note_tags nt WHERE nt.note_id = n.id)']
+    })
+    const untaggedTotal = db
+      .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
+      .get(...params).total
+    groups.push({
+      key: 'untagged',
+      id: null,
+      name: '未分类',
+      color: null,
+      total: Number(untaggedTotal) || 0,
+      untagged: true
+    })
+    return groups
   })
-  const untaggedTotal = db
-    .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
-    .get(...params).total
-  groups.push({
-    key: 'untagged',
-    id: null,
-    name: '未分类',
-    color: null,
-    total: Number(untaggedTotal) || 0,
-    untagged: true
-  })
-  return groups
 }
 
 /**
@@ -791,34 +824,36 @@ export function queryTagGroups({ statuses, tagIds } = {}) {
  * 从未来到过去排列，id 仅用于相同时间下提供稳定顺序。
  */
 export function queryTagGroupNotes({ tagId = null, statuses, limit = 10, offset = 0 } = {}) {
-  const db = getDb()
-  const untagged = tagId === null
-  const normalizedTagId = untagged ? null : Number(tagId)
-  if (!untagged && (!Number.isInteger(normalizedTagId) || normalizedTagId <= 0)) {
-    throw new Error('无效的标签 ID')
-  }
+  return measureSyncPerformance('database', 'queryTagGroupNotes', () => {
+    const db = getDb()
+    const untagged = tagId === null
+    const normalizedTagId = untagged ? null : Number(tagId)
+    if (!untagged && (!Number.isInteger(normalizedTagId) || normalizedTagId <= 0)) {
+      throw new Error('无效的标签 ID')
+    }
 
-  const extraWhere = untagged
-    ? ['NOT EXISTS (SELECT 1 FROM note_tags nt WHERE nt.note_id = n.id)']
-    : ['EXISTS (SELECT 1 FROM note_tags nt WHERE nt.note_id = n.id AND nt.tag_id = ?)']
-  const { whereClause, params } = buildWhereClause({
-    statuses,
-    extraWhere,
-    extraParams: untagged ? [] : [normalizedTagId]
+    const extraWhere = untagged
+      ? ['NOT EXISTS (SELECT 1 FROM note_tags nt WHERE nt.note_id = n.id)']
+      : ['EXISTS (SELECT 1 FROM note_tags nt WHERE nt.note_id = n.id AND nt.tag_id = ?)']
+    const { whereClause, params } = buildWhereClause({
+      statuses,
+      extraWhere,
+      extraParams: untagged ? [] : [normalizedTagId]
+    })
+    const safeLimit = Math.min(100, Math.max(1, Math.trunc(Number(limit)) || 10))
+    const safeOffset = Math.max(0, Math.trunc(Number(offset)) || 0)
+    const { total } = db
+      .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
+      .get(...params)
+    const notes = db
+      .prepare(
+        `SELECT n.* FROM notes n ${whereClause}
+         ORDER BY n.effective_at DESC, n.id DESC LIMIT ? OFFSET ?`
+      )
+      .all(...params, safeLimit, safeOffset)
+
+    return { notes: toNoteListItems(notes), total: Number(total) || 0 }
   })
-  const safeLimit = Math.min(100, Math.max(1, Math.trunc(Number(limit)) || 10))
-  const safeOffset = Math.max(0, Math.trunc(Number(offset)) || 0)
-  const { total } = db
-    .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
-    .get(...params)
-  const notes = db
-    .prepare(
-      `SELECT n.* FROM notes n ${whereClause}
-       ORDER BY n.effective_at DESC, n.id DESC LIMIT ? OFFSET ?`
-    )
-    .all(...params, safeLimit, safeOffset)
-
-  return { notes: toNoteListItems(notes), total: Number(total) || 0 }
 }
 
 // ============================================================
@@ -842,45 +877,47 @@ export function searchNotes({
   limit = 15,
   offset = 0
 } = {}) {
-  const db = getDb()
-  const extraWhere = []
-  const extraParams = []
-  const parsedFrom = Number(timeFrom)
-  const parsedTo = Number(timeTo)
+  return measureSyncPerformance('database', 'searchNotes', () => {
+    const db = getDb()
+    const extraWhere = []
+    const extraParams = []
+    const parsedFrom = Number(timeFrom)
+    const parsedTo = Number(timeTo)
 
-  if (Number.isFinite(parsedFrom) && parsedFrom > 0) {
-    extraWhere.push('n.effective_at >= ?')
-    extraParams.push(parsedFrom)
-  }
-  if (Number.isFinite(parsedTo) && parsedTo > 0) {
-    extraWhere.push('n.effective_at <= ?')
-    extraParams.push(parsedTo)
-  }
-  if (onlyPinned) extraWhere.push('n.is_pinned = 1')
-  if (hasAttachments) {
-    extraWhere.push('EXISTS (SELECT 1 FROM note_attachments a WHERE a.note_id = n.id)')
-  }
+    if (Number.isFinite(parsedFrom) && parsedFrom > 0) {
+      extraWhere.push('n.effective_at >= ?')
+      extraParams.push(parsedFrom)
+    }
+    if (Number.isFinite(parsedTo) && parsedTo > 0) {
+      extraWhere.push('n.effective_at <= ?')
+      extraParams.push(parsedTo)
+    }
+    if (onlyPinned) extraWhere.push('n.is_pinned = 1')
+    if (hasAttachments) {
+      extraWhere.push('EXISTS (SELECT 1 FROM note_attachments a WHERE a.note_id = n.id)')
+    }
 
-  const { whereClause, params } = buildWhereClause({
-    search,
-    statuses,
-    tagIds,
-    includeDeleted,
-    extraWhere,
-    extraParams
+    const { whereClause, params } = buildWhereClause({
+      search,
+      statuses,
+      tagIds,
+      includeDeleted,
+      extraWhere,
+      extraParams
+    })
+    const safeLimit = Math.min(100, Math.max(1, Math.trunc(Number(limit)) || 15))
+    const safeOffset = Math.max(0, Math.trunc(Number(offset)) || 0)
+    const orderBy =
+      sort === 'updated' ? 'n.updated_at DESC, n.id DESC' : 'n.effective_at DESC, n.created_at DESC'
+    const { total } = db
+      .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
+      .get(...params)
+    const notes = db
+      .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
+      .all(...params, safeLimit, safeOffset)
+
+    return { notes: toNoteListItems(notes), total }
   })
-  const safeLimit = Math.min(100, Math.max(1, Math.trunc(Number(limit)) || 15))
-  const safeOffset = Math.max(0, Math.trunc(Number(offset)) || 0)
-  const orderBy =
-    sort === 'updated' ? 'n.updated_at DESC, n.id DESC' : 'n.effective_at DESC, n.created_at DESC'
-  const { total } = db
-    .prepare(`SELECT COUNT(*) AS total FROM notes n ${whereClause}`)
-    .get(...params)
-  const notes = db
-    .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
-    .all(...params, safeLimit, safeOffset)
-
-  return { notes: toNoteListItems(notes), total }
 }
 
 export function reorderCustomSortOrder() {

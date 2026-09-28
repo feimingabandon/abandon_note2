@@ -1,4 +1,5 @@
 <script setup>
+import { measureRendererLayout } from '../../utils/performanceDiagnostics.js'
 /**
  * NoteCard.vue — 便签列表项
  *
@@ -11,6 +12,8 @@ import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import StatusRing from './StatusRing.vue'
 import QuickNoteContentEditor from '../note/QuickNoteContentEditor.vue'
 import NoteTextColorPopover from '../note/NoteTextColorPopover.vue'
+import DateContextBadge from '../almanac/DateContextBadge.vue'
+import { getNoteEffectiveDateKey } from '../../utils/noteWeather.js'
 import { useMessage } from '../../composables/useMessage.js'
 import { useQuickNoteEditSetting } from '../../composables/useQuickNoteEditSetting.js'
 import { useSharedMinuteClock } from '../../composables/useSharedMinuteClock.js'
@@ -25,7 +28,9 @@ import {
 const props = defineProps({
   note: { type: Object, required: true },
   weather: { type: Object, default: null },
+  showDateContext: { type: Boolean, default: false },
   draggable: { type: Boolean, default: false },
+  minimal: { type: Boolean, default: false },
   muted: { type: Boolean, default: false },
   allowCreateTag: { type: Boolean, default: false },
   statusTransition: { type: Object, default: null }
@@ -99,6 +104,35 @@ const textColorPopoverVisible = ref(false)
 const textColorPopoverAnchor = ref(null)
 const selectedTextRange = ref(null)
 const savingTextColor = ref(false)
+let contentPointer = null
+let contentWasDragged = false
+
+function cancelContentPointer() {
+  contentPointer = null
+  window.removeEventListener('pointermove', onContentPointerMove)
+  window.removeEventListener('pointerup', onContentPointerUp)
+  window.removeEventListener('pointercancel', cancelContentPointer)
+  window.removeEventListener('blur', cancelContentPointer)
+}
+
+function onContentPointerDown(event) {
+  cancelContentPointer()
+  closeTextColorPopover()
+  if (event.button !== 0 || event.isPrimary === false) return
+  contentPointer = { id: event.pointerId, x: event.clientX, y: event.clientY, dragged: false }
+  // 不捕获指针或 preventDefault，保留 Chromium 原生选字；窗口监听负责正文外松手。
+  window.addEventListener('pointermove', onContentPointerMove)
+  window.addEventListener('pointerup', onContentPointerUp)
+  window.addEventListener('pointercancel', cancelContentPointer)
+  window.addEventListener('blur', cancelContentPointer)
+}
+
+function onContentPointerMove(event) {
+  if (!contentPointer || event.pointerId !== contentPointer.id) return
+  if (Math.hypot(event.clientX - contentPointer.x, event.clientY - contentPointer.y) >= 4) {
+    contentPointer.dragged = true
+  }
+}
 
 function readSelectedTextRange() {
   return readTextSelection(contentTextRef.value, String(props.note.content || ''))
@@ -124,8 +158,14 @@ async function showTextColorPopover() {
 }
 
 function onContentPointerUp(event) {
-  if (event.button !== 0) return
-  void showTextColorPopover()
+  if (event.button !== 0 || !contentPointer || event.pointerId !== contentPointer.id) return
+  onContentPointerMove(event)
+  contentWasDragged = contentPointer.dragged
+  cancelContentPointer()
+  // 双击的原生选词不是拖动选字，不应在 dblclick 到来前闪出颜色面板。
+  if (!quickEditorVisible.value && (contentWasDragged || !doubleClickQuickEditEnabled.value)) {
+    void showTextColorPopover()
+  }
 }
 
 async function saveTextColor(start, end, color, successMessage = '') {
@@ -167,10 +207,7 @@ function clearAllTextColors() {
 
 function openQuickEditor(event, force = false) {
   if ((!force && !doubleClickQuickEditEnabled.value) || quickEditorVisible.value) return
-  if (!force && readSelectedTextRange()) {
-    void showTextColorPopover()
-    return
-  }
+  if (!force && contentWasDragged) return
   if (
     !force &&
     event.target.closest?.(
@@ -192,6 +229,9 @@ function openQuickEditor(event, force = false) {
   }
   closeTags()
   closeContextMenu()
+  cancelContentPointer()
+  closeTextColorPopover()
+  if (readSelectedTextRange()) window.getSelection()?.removeAllRanges()
   quickEditorVisible.value = true
 }
 
@@ -209,6 +249,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  cancelContentPointer()
   contentResizeObserver?.disconnect()
   contentAnimation?.cancel()
   document.removeEventListener('pointerdown', onTagPopoverOutside)
@@ -252,15 +293,17 @@ watch(
 )
 
 function measureContentOverflow() {
-  const element = contentTextRef.value
-  if (!element) return
-  const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight)
-  if (!Number.isFinite(lineHeight)) return
-  const fullHeight = element.scrollHeight
-  const collapsedHeight = Math.min(fullHeight, lineHeight * CONTENT_PREVIEW_LINES)
-  contentOverflows.value = fullHeight > collapsedHeight + 1
-  if (contentAnimating.value) return
-  contentShellHeight.value = contentExpanded.value ? 'auto' : `${collapsedHeight}px`
+  return measureRendererLayout('layout.note-card-overflow', () => {
+    const element = contentTextRef.value
+    if (!element) return
+    const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight)
+    if (!Number.isFinite(lineHeight)) return
+    const fullHeight = element.scrollHeight
+    const collapsedHeight = Math.min(fullHeight, lineHeight * CONTENT_PREVIEW_LINES)
+    contentOverflows.value = fullHeight > collapsedHeight + 1
+    if (contentAnimating.value) return
+    contentShellHeight.value = contentExpanded.value ? 'auto' : `${collapsedHeight}px`
+  })
 }
 
 function finishContentAnimation(animation) {
@@ -301,6 +344,11 @@ async function toggleContent() {
   contentAnimation = animation
   animation.onfinish = () => finishContentAnimation(animation)
 }
+
+watch(
+  () => props.minimal,
+  () => closeTags()
+)
 
 function togglePrimaryContent() {
   if (isImageOnly.value) {
@@ -394,14 +442,7 @@ const timingTitle = computed(() => {
   }
   return parts.join(' · ')
 })
-const weatherSummary = computed(() => {
-  const weather = props.weather
-  if (!weather) return ''
-  return `${weather.label} ${weather.temperatureMin}°～${weather.temperatureMax}°`
-})
-const weatherTitle = computed(() =>
-  weatherSummary.value ? `${weatherSummary.value} · 便签生效日天气` : ''
-)
+const effectiveDateKey = computed(() => getNoteEffectiveDateKey(props.note))
 
 function handleStatusAction() {
   if (canChangeStatus.value) emit('status-action', props.note)
@@ -479,6 +520,10 @@ async function openContextMenu(event) {
 /** 修改打开现有编辑器；桌面展示和删除均通过受限主进程能力完成。 */
 async function onContextMenuAction(action) {
   closeContextMenu()
+  if (action === 'toggle-content') {
+    togglePrimaryContent()
+    return
+  }
   if (action === 'edit') {
     emit('edit', props.note)
     return
@@ -585,6 +630,7 @@ async function toggleTags() {
       `nl-card--${note.status}`,
       {
         'nl-card--draggable': draggable,
+        'nl-card--minimal': minimal,
         'nl-card--muted': muted,
         'nl-card--empty': !String(note.content || '').trim(),
         'nl-card--status-playing': statusTransition?.phase === 'playing'
@@ -595,6 +641,7 @@ async function toggleTags() {
     :data-note-id="note.id"
     :aria-label="`${status.label}：${displayContent}`"
     @contextmenu="openContextMenu"
+    @pointerdown="contentWasDragged = false"
     @dblclick="openQuickEditor"
   >
     <span v-if="draggable" class="nl-drag-handle" title="拖动排序" aria-hidden="true" @click.stop>
@@ -627,7 +674,12 @@ async function toggleTags() {
         }"
         :style="{ height: contentShellHeight }"
       >
-        <p ref="contentTextRef" class="nl-card-text" @pointerup="onContentPointerUp">
+        <p
+          ref="contentTextRef"
+          class="nl-card-text"
+          @pointerdown="onContentPointerDown"
+          @pointerup="onContentPointerUp"
+        >
           <span
             v-for="segment in contentSegments"
             :key="`${segment.start}:${segment.end}:${segment.color || 'default'}`"
@@ -650,10 +702,10 @@ async function toggleTags() {
         :readonly-max-size="260"
         @overflow-change="imageOverflows = $event"
       />
-      <p v-if="String(note.remark || '').trim()" class="nl-card-remark-text">
+      <p v-if="!minimal && String(note.remark || '').trim()" class="nl-card-remark-text">
         {{ note.remark }}
       </p>
-      <div class="nl-card-meta">
+      <div v-if="!minimal" class="nl-card-meta">
         <div class="nl-card-context">
           <span class="nl-card-status">{{ status.label }}</span>
           <span class="nl-card-separator" aria-hidden="true">·</span>
@@ -666,12 +718,14 @@ async function toggleTags() {
               >
             </template>
           </span>
-          <template v-if="weatherSummary">
+          <template v-if="showDateContext && effectiveDateKey">
             <span class="nl-card-separator" aria-hidden="true">·</span>
-            <span class="nl-card-weather" :title="weatherTitle" :aria-label="weatherTitle">
-              <span class="nl-card-weather-icon" aria-hidden="true">{{ weather.icon }}</span>
-              <span class="nl-card-weather-text">{{ weatherSummary }}</span>
-            </span>
+            <DateContextBadge
+              class="nl-card-date-context"
+              weather-class="nl-card-weather"
+              :date-key="effectiveDateKey"
+              :weather="weather"
+            />
           </template>
         </div>
 
@@ -856,6 +910,13 @@ async function toggleTags() {
           @contextmenu.prevent
         >
           <div class="nl-context-menu">
+            <button
+              v-if="minimal && primaryContentOverflows"
+              role="menuitem"
+              @click="onContextMenuAction('toggle-content')"
+            >
+              {{ primaryContentExpanded ? '收起内容' : '展开内容' }}
+            </button>
             <button role="menuitem" :disabled="togglingPinned" @click="onContextMenuAction('pin')">
               {{ note.is_pinned ? '取消置顶' : '置顶' }}
             </button>
@@ -907,13 +968,13 @@ async function toggleTags() {
     <div
       v-if="attachmentCount && !isImageOnly"
       class="nl-image-panel-shell"
-      :class="{ 'nl-image-panel-shell--expanded': imagesExpanded }"
+      :class="{ 'nl-image-panel-shell--expanded': minimal || imagesExpanded }"
       @click.stop
     >
       <div class="nl-image-panel-clip">
         <div class="nl-image-panel-content">
           <ImagePicker
-            v-if="imagesMounted"
+            v-if="minimal || imagesMounted"
             :note-id="note.id"
             :refresh-key="note.updated_at"
             mode="persist"
@@ -1269,26 +1330,19 @@ async function toggleTags() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.nl-card-weather {
-  display: inline-flex;
+.nl-card-date-context {
   min-width: 0;
-  max-width: 128rem;
-  flex: 0 1 auto;
-  align-items: center;
-  gap: 3rem;
-  overflow: hidden;
+  max-width: 45%;
+  flex: 0 1 128rem;
   color: color-mix(in srgb, var(--text-color) 68%, transparent);
-  white-space: nowrap;
 }
-.nl-card-weather-icon {
-  flex: 0 0 auto;
-  font-size: 1.08em;
-  line-height: 1;
+.nl-card-date-context.is-almanac {
+  flex: 1 1 0;
+  min-width: 1em;
+  max-width: none;
 }
-.nl-card-weather-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.nl-card-context:has(.is-almanac) .nl-card-timing {
+  flex: 0 1 auto;
 }
 .nl-card-time {
   white-space: nowrap;
@@ -1316,13 +1370,16 @@ async function toggleTags() {
 .nl-card-more-tags {
   min-width: 0;
   max-width: min(140rem, 42vw);
-  padding: 2rem 6rem;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nl-card-tag,
+.nl-card-more-tags {
+  padding: 2rem 6rem;
   border-radius: 5rem;
   background: color-mix(in srgb, var(--tag-color, var(--text-color)) 9%, transparent);
   color: color-mix(in srgb, var(--tag-color, var(--text-color)) 68%, var(--text-color-secondary));
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .nl-card-more-tags {
   flex-shrink: 0;

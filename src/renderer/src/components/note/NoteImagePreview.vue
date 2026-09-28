@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import ImagePreview from './ImagePreview.vue'
 import { useMessage } from '../../composables/useMessage.js'
 
@@ -37,10 +37,11 @@ async function openNoteImages() {
       return
     }
     records.value = nextRecords
-    sources.value = await Promise.all(
+    const thumbnails = await Promise.all(
       nextRecords.map((record) => window.api.getImageThumbnail(record.file_path, 512))
     )
     if (sequence !== loadSequence) return
+    sources.value = thumbnails
     await loadSource(0, sequence)
   } catch (error) {
     console.error('[NoteImagePreview] 加载图片失败:', error)
@@ -63,6 +64,8 @@ watch(
   },
   { immediate: true }
 )
+
+onBeforeUnmount(() => loadSequence++)
 </script>
 
 <template>

@@ -1,4 +1,5 @@
 <script setup>
+import { flushRendererPerformanceDiagnostics } from '../../utils/performanceDiagnostics.js'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import AppModalShell from '../ui/AppModalShell.vue'
 import BaseButton from '../ui/BaseButton.vue'
@@ -22,6 +23,38 @@ const processType = ref('all')
 const searchInput = ref('')
 const appliedSearch = ref('')
 const searchRef = ref(null)
+const diagnosticState = ref({ mode: 'daily' })
+const changingMode = ref(false)
+const clockNow = ref(Date.now())
+let modeTimer = null
+let unsubscribePolicy = null
+const deepMode = computed(
+  () => diagnosticState.value.mode === 'deep' && diagnosticState.value.expiresAt > clockNow.value
+)
+const remaining = computed(() => {
+  const seconds = Math.max(0, Math.ceil((diagnosticState.value.expiresAt - clockNow.value) / 1000))
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+})
+const incomplete = computed(() => {
+  const health = diagnosticState.value.diagnostics
+  return (
+    health &&
+    (health.writer?.status !== 'ready' ||
+      health.rejectedRecords ||
+      health.writer?.droppedRecords ||
+      health.writer?.writeErrors ||
+      diagnosticState.value.lastFreeze?.complete === false)
+  )
+})
+const earlyStopMessage = computed(
+  () =>
+    ({
+      'capture-budget': '本次采集已达到容量上限，已恢复日常记录。',
+      'queue-budget': '记录生成过快，已停止详细采集以保持应用响应。',
+      'writer-unavailable': '日志暂时无法保存，已恢复日常记录。',
+      'collector-cost': '详细采集开销偏高，已自动恢复日常记录。'
+    })[diagnosticState.value.reason] || ''
+)
 let requestSequence = 0
 let searchTimer = null
 
@@ -67,12 +100,40 @@ async function query({ append = false } = {}) {
     nextCursor.value = result.nextCursor
     hasMore.value = result.hasMore
     files.value = result.files || []
+    await refreshDiagnosticState()
   } catch (error) {
     console.error('[LogViewerDialog] 查询日志失败:', error)
     if (sequence !== requestSequence) return
     errorMessage.value = error?.message || '读取日志失败'
   } finally {
     if (sequence === requestSequence) loading.value = false
+  }
+}
+
+async function refreshDiagnosticState() {
+  try {
+    diagnosticState.value = await window.api.getDiagnosticState()
+  } catch {
+    /* 查询错误由主要操作显示。 */
+  }
+}
+
+async function changeMode(action) {
+  if (changingMode.value) return
+  changingMode.value = true
+  errorMessage.value = ''
+  try {
+    const method = {
+      start: 'startDeepDiagnostics',
+      extend: 'extendDeepDiagnostics',
+      stop: 'stopDeepDiagnostics'
+    }[action]
+    diagnosticState.value = await window.api[method]()
+    clockNow.value = Date.now()
+  } catch (error) {
+    errorMessage.value = error?.message || '切换采集模式失败'
+  } finally {
+    changingMode.value = false
   }
 }
 
@@ -92,7 +153,9 @@ async function exportLogs(range) {
   exporting.value = range
   errorMessage.value = ''
   try {
+    flushRendererPerformanceDiagnostics('export')
     await window.api.exportLogs({ range })
+    await refreshDiagnosticState()
   } catch (error) {
     console.error('[LogViewerDialog] 导出日志失败:', error)
     errorMessage.value = error?.message || '导出日志失败'
@@ -144,11 +207,23 @@ function levelLabel(value) {
 watch(
   () => props.visible,
   (visible) => {
+    clearInterval(modeTimer)
+    unsubscribePolicy?.()
+    unsubscribePolicy = null
     if (visible) {
+      clockNow.value = Date.now()
+      modeTimer = setInterval(() => {
+        clockNow.value = Date.now()
+      }, 1000)
+      unsubscribePolicy = window.api.onDiagnosticPolicy?.((policy) => {
+        diagnosticState.value = { ...diagnosticState.value, ...policy }
+        void refreshDiagnosticState()
+      })
       requestAnimationFrame(() => searchRef.value?.focus())
       void query()
     }
-  }
+  },
+  { immediate: true }
 )
 
 watch([level, processType], () => {
@@ -169,6 +244,9 @@ watch(searchInput, () => {
 
 onBeforeUnmount(() => {
   clearTimeout(searchTimer)
+  clearInterval(modeTimer)
+  unsubscribePolicy?.()
+  requestSequence++
 })
 </script>
 
@@ -183,6 +261,49 @@ onBeforeUnmount(() => {
     @update:visible="close"
   >
     <div class="log-content">
+      <div class="log-mode">
+        <div class="log-mode-description">
+          <strong>{{ deepMode ? `深度排查 · 剩余 ${remaining}` : '日常记录' }}</strong>
+          <p>
+            {{
+              deepMode
+                ? '请复现问题，完成后停止并导出日志。到时会自动恢复日常记录。'
+                : '低开销保留异常与运行摘要。需要复现问题时，可临时开启详细采集。'
+            }}
+          </p>
+          <p v-if="incomplete" class="log-capture-warning" role="status">
+            部分诊断记录未能保留，导出文件会注明缺失情况。
+          </p>
+          <p v-if="earlyStopMessage" class="log-capture-warning" role="status">
+            {{ earlyStopMessage }}
+          </p>
+        </div>
+        <BaseButton
+          v-if="!deepMode"
+          size="sm"
+          :disabled="changingMode || Boolean(exporting)"
+          @click="changeMode('start')"
+          >开启深度排查（10 分钟）</BaseButton
+        >
+        <template v-else>
+          <BaseButton
+            size="sm"
+            :disabled="
+              changingMode ||
+              Boolean(exporting) ||
+              diagnosticState.expiresAt >= diagnosticState.startedAt + 1800000
+            "
+            @click="changeMode('extend')"
+            >延长 10 分钟</BaseButton
+          >
+          <BaseButton
+            size="sm"
+            :disabled="changingMode || Boolean(exporting)"
+            @click="changeMode('stop')"
+            >停止采集</BaseButton
+          >
+        </template>
+      </div>
       <div class="log-toolbar">
         <StyledSelect v-model="level" :options="levelOptions" size="sm" width="108rem" />
         <StyledSelect v-model="processType" :options="processOptions" size="sm" width="108rem" />
@@ -262,8 +383,31 @@ onBeforeUnmount(() => {
 <style scoped>
 .log-content {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   height: 100%;
+}
+
+.log-mode {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10rem;
+  padding: 14rem 16rem;
+  border-bottom: 1px solid var(--ui-border-divider);
+  color: var(--text-color);
+  background: var(--ui-surface-control);
+  font-size: var(--fs-secondary);
+}
+.log-mode-description {
+  flex: 1 1 240rem;
+}
+.log-mode p {
+  margin: 4rem 0 0;
+  color: var(--text-color-secondary);
+  line-height: 1.5;
+}
+.log-mode .log-capture-warning {
+  font-weight: 600;
 }
 
 .log-footer,

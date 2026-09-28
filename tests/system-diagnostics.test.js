@@ -29,6 +29,35 @@ const fixture = () => ({
 })
 afterEach(() => vi.useRealTimers())
 describe('export system diagnostics', () => {
+  it('includes read-only ACL findings without turning a missing grant into a startup verdict', async () => {
+    const permissions = {
+      status: 'inspected',
+      verification: 'required-allow-and-known-deny-rules',
+      checkedFiles: [{ path: 'icudtl.dat', hasRequiredAllow: false, error: null }]
+    }
+    const snapshot = await collectSystemDiagnostics(fixture(), {
+      readWindowsVersion: async () => null,
+      readSandboxPermissions: async () => permissions
+    })
+    expect(snapshot.sandboxPermissions).toEqual(permissions)
+    expect(snapshot.collectionErrors).toEqual([])
+  })
+
+  it('keeps exporting when installation ACL inspection fails', async () => {
+    const snapshot = await collectSystemDiagnostics(fixture(), {
+      readWindowsVersion: async () => null,
+      readSandboxPermissions: async () => {
+        throw new Error('ACL access denied')
+      }
+    })
+    expect(snapshot.sandboxPermissions).toBeNull()
+    expect(snapshot.graphics.featureStatus.gpu_compositing).toBe('enabled')
+    expect(snapshot.collectionErrors).toContainEqual({
+      field: 'sandboxPermissions',
+      message: 'ACL access denied'
+    })
+  })
+
   it('captures fresh display/GPU details and omits hardware identifiers', async () => {
     const providers = fixture()
     const first = await collectSystemDiagnostics(providers, {

@@ -318,6 +318,8 @@ function onTitlebarPointerDown(event) {
   if (event.button !== 0 || titlebarDragPointerId !== null) return
   const target = event.target
   if (!(target instanceof Element) || target.closest(TITLEBAR_INTERACTIVE_SELECTOR)) return
+  // 导航栏由窗口拖动接管；禁止已有文字选区触发 Chromium 原生拖拽并取消指针事务。
+  event.preventDefault()
   const now = Date.now()
   const press = { at: now, x: event.screenX, y: event.screenY }
   const isDoublePress =
@@ -478,6 +480,7 @@ onBeforeUnmount(() => {
     :data-style="styleVariant"
     @dblclick="onTitlebarDoubleClick"
     @pointerdown="onTitlebarPointerDown"
+    @dragstart.capture.prevent
     @lostpointercapture="onTitlebarLostPointerCapture"
   >
     <!-- 红绿灯按钮组：设置 no-drag 使按钮可点击 -->
@@ -578,6 +581,7 @@ onBeforeUnmount(() => {
   align-items: center; /* 垂直居中对齐 */
   padding: 14px 16px; /* 内边距，总高 14+18+14+1(border)=47rem ≈ 48px Apple 导航标准 */
   -webkit-app-region: no-drag; /* 保留完整 DOM 指针事件，拖动由主进程事务完成 */
+  user-select: none; /* 导航栏不参与正文全选；原生拖拽另由 dragstart 拦截兜底。 */
   flex-shrink: 0; /* 禁止在 flex 布局中被压缩 */
   gap: 8px; /* 子元素间距 */
   border-bottom: 1px solid var(--ui-border-divider); /* 标题栏底部分割线 */

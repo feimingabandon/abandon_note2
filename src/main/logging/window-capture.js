@@ -1,10 +1,13 @@
 import { writeLog } from './logger.js'
 import { getRecentCrashDumps } from './process-capture.js'
+import { isDeepDiagnosticMode } from './diagnostic-state.js'
+import { diagnosticText } from '../../shared/diagnostic-sanitize.js'
 
 const contexts = new WeakMap()
 const attached = new WeakSet()
 const structuredConsoleMessages = new WeakMap()
 const STRUCTURED_CONSOLE_DEDUPE_MS = 2_000
+const pendingConsole = new WeakMap()
 
 function contextFor(win) {
   return contexts.get(win) || { role: 'unknown-window' }
@@ -77,8 +80,8 @@ export function noteStructuredRendererConsole(win, payload = {}) {
   const entries = structuredConsoleMessages.get(win) || []
   entries.push({
     level,
-    message: String(payload.message || ''),
-    errorMessage: String(payload.error?.message || ''),
+    message: diagnosticText(payload.message || ''),
+    errorMessage: diagnosticText(payload.error?.message || ''),
     recordedAt: now
   })
   structuredConsoleMessages.set(
@@ -90,7 +93,7 @@ export function noteStructuredRendererConsole(win, payload = {}) {
 function isCapturedByStructuredRendererConsole(win, context, details) {
   if (!['main', 'month', 'week'].includes(context.role)) return false
   const level = String(details?.level || '')
-  const message = String(details?.message || '')
+  const message = diagnosticText(details?.message || '')
   const now = Date.now()
   const entries = (structuredConsoleMessages.get(win) || []).filter(
     (entry) => now - entry.recordedAt <= STRUCTURED_CONSOLE_DEDUPE_MS
@@ -143,6 +146,7 @@ export function attachWindowLogging(win) {
   const webContents = win.webContents
 
   webContents.on('console-message', (details) => {
+    if (!['warning', 'error'].includes(details.level) && !isDeepDiagnosticMode()) return
     const context = contextFor(win)
     if (isExpectedViteDevelopmentMessage(context, details)) return
     if (isCapturedByStructuredRendererConsole(win, context, details)) return
@@ -153,15 +157,34 @@ export function attachWindowLogging(win) {
       error: 'error',
       debug: 'debug'
     }
-    recordWindowEvent(win, {
+    const payload = {
       level: levelMap[details.level] || 'info',
       scope: 'renderer.console',
-      message: details.message || '',
+      message: diagnosticText(details.message || ''),
       metadata: {
         lineNumber: details.lineNumber,
-        sourceId: details.sourceId
+        sourceId: diagnosticText(details.sourceId)
       }
-    })
+    }
+    if (!['warning', 'error'].includes(details.level)) {
+      recordWindowEvent(win, payload)
+      return
+    }
+    // preload 批次可能晚于 Chromium console 回调；短暂有界等待结构化主记录。
+    const pending = pendingConsole.get(win) || []
+    const item = { payload, details: { level: details.level, message: payload.message } }
+    item.emit = () => {
+      clearTimeout(item.timer)
+      const index = pending.indexOf(item)
+      if (index >= 0) pending.splice(index, 1)
+      if (!isCapturedByStructuredRendererConsole(win, context, item.details))
+        recordWindowEvent(win, payload)
+    }
+    if (pending.length >= 20) pending[0].emit()
+    pending.push(item)
+    pendingConsole.set(win, pending)
+    item.timer = setTimeout(item.emit, 1250)
+    item.timer.unref?.()
   })
   webContents.on('preload-error', (_event, preloadPath, error) => {
     recordWindowEvent(win, {
@@ -186,6 +209,7 @@ export function attachWindowLogging(win) {
     }
   )
   webContents.on('render-process-gone', (_event, details) => {
+    for (const item of [...(pendingConsole.get(win) || [])]) item.emit()
     const recentCrashDumps = details.reason === 'clean-exit' ? undefined : getRecentCrashDumps()
     recordWindowEvent(win, {
       level: details.reason === 'clean-exit' ? 'info' : 'fatal',

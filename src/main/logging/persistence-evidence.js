@@ -1,9 +1,24 @@
 import { createHash } from 'node:crypto'
-import { checkpoint, observeDiagnostic } from './operation-context.js'
+import { checkpoint, currentOperation, observeDiagnostic } from './operation-context.js'
+import { diagnosticState } from './diagnostic-state.js'
+
+const mutationVersions = new Map()
+let mutationSequence = 0
 
 function textShape(value) {
   const text = String(value ?? '')
+  if (text.length > 65536) return { length: text.length, unavailable: 'skipped-size' }
   return { length: text.length, sha256: createHash('sha256').update(text).digest('hex') }
+}
+
+function publicEvidence(value) {
+  if (!value) return value
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      item && typeof item === 'object' && 'sha256' in item ? { length: item.length } : item
+    ])
+  )
 }
 
 export function noteEvidence(note) {
@@ -28,12 +43,10 @@ export function noteEvidence(note) {
   result.remark = textShape(note.remark)
   // 选区颜色结构内含 text 字段，不能把它当作纯样式原样写入日志。
   result.contentColorRanges = textShape(
-    typeof note.content_color_ranges === 'string'
-      ? note.content_color_ranges
-      : JSON.stringify(note.content_color_ranges || [])
+    typeof note.content_color_ranges === 'string' ? note.content_color_ranges : '[non-text-style]'
   )
-  result.attachments = (note.attachments || []).map((item) => item.id).slice(0, 100)
-  result.tags = (note.tags || []).map((item) => item.id).slice(0, 100)
+  if (note.attachments) result.attachments = note.attachments.slice(0, 32).map((item) => item.id)
+  if (note.tags) result.tags = note.tags.slice(0, 32).map((item) => item.id)
   return result
 }
 
@@ -46,51 +59,79 @@ export function changedFields(before, after) {
 // 调用方必须先完成 sender 授权。读回只是证据，不修改业务返回、异常或事务。
 export function observeNoteMutation(handler, readNote, event, args, channel = '') {
   const requestedId = Number(args[0]?.id)
+  const version = ++mutationSequence
+  if (requestedId > 0) mutationVersions.set(requestedId, version)
+  if (mutationVersions.size > 1024) mutationVersions.delete(mutationVersions.keys().next().value)
+  const context = currentOperation()
+  const ticket = diagnosticState.observation(context?.actionId)
+  if (context) context.verification = ticket.reason
+  if (!ticket.enabled) return handler(event, ...args)
+  const read = (id) =>
+    noteEvidence(
+      readNote(id, {
+        relations: /create-with-assets|save-draft|purge/.test(channel)
+      })
+    )
   const before =
     Number.isInteger(requestedId) && requestedId > 0
-      ? observeDiagnostic(() => noteEvidence(readNote(requestedId)))
+      ? observeDiagnostic(() => read(requestedId))
       : null
   const finish = (result, failure = false) => {
-    const id = Number(result?.id ?? requestedId)
-    if (!Number.isInteger(id) || id <= 0) return result
-    const after = observeDiagnostic(() => noteEvidence(readNote(id)))
-    const available = before !== undefined && after !== undefined
-    const fields = available ? changedFields(before, after) : []
-    const requested = {}
-    const requestedFields = args[0]?.fields || args[0]?.options || args[0] || {}
-    for (const key of channel === 'notes:save-draft' ? ['content'] : ['content', 'remark']) {
-      if (requestedFields[key] !== undefined) requested[key] = textShape(requestedFields[key])
-    }
-    const mismatchedFields =
-      available && !failure
-        ? Object.keys(requested).filter(
-            (key) => JSON.stringify(requested[key]) !== JSON.stringify(after?.[key])
-          )
-        : []
-    const dataChanged = fields.some((key) => key !== 'updated_at')
-    checkpoint(
-      'note.persisted',
-      {
-        id,
-        before,
-        after,
-        requested,
-        changedFields: fields,
-        dataChanged,
-        mismatchedFields,
-        handlerFailed: failure
-      },
-      {
-        level: mismatchedFields.length ? 'warn' : 'info',
-        outcome: !available
-          ? 'unavailable'
-          : mismatchedFields.length
-            ? 'mismatch'
-            : dataChanged
-              ? 'changed'
-              : 'no-change'
+    observeDiagnostic(() => {
+      const id = Number(result?.id ?? requestedId)
+      if (!Number.isInteger(id) || id <= 0) return
+      const overlapping = requestedId > 0 && mutationVersions.get(requestedId) !== version
+      const after = observeDiagnostic(() => read(id))
+      const available = before !== undefined && after !== undefined
+      const fields = available ? changedFields(before, after) : []
+      const requested = {}
+      const requestedFields = args[0]?.fields || args[0]?.options || args[0] || {}
+      for (const key of channel === 'notes:save-draft' ? ['content'] : ['content', 'remark']) {
+        if (requestedFields[key] !== undefined) requested[key] = textShape(requestedFields[key])
       }
-    )
+      const mismatchedFields =
+        available && !failure && !overlapping
+          ? Object.keys(requested).filter(
+              (key) =>
+                !requested[key].unavailable &&
+                !after?.[key]?.unavailable &&
+                JSON.stringify(requested[key]) !== JSON.stringify(after?.[key])
+            )
+          : []
+      const inconclusive =
+        overlapping ||
+        Object.keys(requested).some(
+          (key) => requested[key].unavailable || after?.[key]?.unavailable
+        )
+      const dataChanged = fields.some((key) => key !== 'updated_at')
+      checkpoint(
+        'note.persisted',
+        {
+          id,
+          before: publicEvidence(before),
+          after: publicEvidence(after),
+          requested: publicEvidence(requested),
+          verificationPolicyEpoch: ticket.policyEpoch,
+          overlapping,
+          changedFields: fields,
+          dataChanged,
+          mismatchedFields,
+          handlerFailed: failure
+        },
+        {
+          level: mismatchedFields.length ? 'warn' : 'info',
+          outcome: !available
+            ? 'unavailable'
+            : inconclusive
+              ? 'inconclusive'
+              : mismatchedFields.length
+                ? 'mismatch'
+                : dataChanged
+                  ? 'changed'
+                  : 'no-change'
+        }
+      )
+    })
     return result
   }
   try {
@@ -110,7 +151,14 @@ export function observeNoteMutation(handler, readNote, event, args, channel = ''
   }
 }
 
-export function readSettingEvidence(entries, readRows, applicationIds, viewScope) {
+export function readSettingEvidence(
+  entries,
+  readRows,
+  applicationIds,
+  viewScope,
+  ticket = diagnosticState.observation(currentOperation()?.actionId)
+) {
+  if (!ticket.enabled) return undefined
   return observeDiagnostic(() => {
     const scopes = new Map()
     return entries.map(({ id, type, key, value }) => {
@@ -135,7 +183,7 @@ function settingValue(value) {
     /^(true|false|-?\d+(\.\d+)?|top|bottom|normal|black|white|list|month|week)$/.test(value)
   )
     return value
-  return textShape(value)
+  return { length: String(value ?? '').length, omitted: true }
 }
 
 export function reportSettingEvidence(before, after) {

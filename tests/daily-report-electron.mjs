@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
+import { verifyDatePickerKeyboard } from './helpers/date-picker-keyboard.mjs'
 
 const require = createRequire(import.meta.url)
 const WAIT_STEP_MS = 25
@@ -249,6 +250,13 @@ async function runDailyReportTest() {
       ['TXT', 'Excel']
     )
     assert.equal(initial.formats[0].checked, 'true', 'TXT 没有保持为默认导出格式')
+    for (const label of ['选择报表开始日期', '选择报表结束日期']) {
+      await verifyDatePickerKeyboard(
+        listWindow,
+        `.date-picker__trigger[aria-label="${label}"]`,
+        '.daily-report'
+      )
+    }
 
     await listWindow.webContents.executeJavaScript(`(() => {
       document.querySelector('[aria-label="选择报表开始日期"]').click()

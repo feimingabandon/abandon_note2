@@ -9,17 +9,19 @@ import chinaAdminCenters from '../data/china-weather-admin-centers.js'
 import {
   WEATHER_SOURCE,
   describeWeatherCode,
+  isKnownWeatherCode,
   isDisplayableWeatherDay,
   normalizeWeatherLocation,
   weatherLocationKey
 } from '../../shared/weather-rules.js'
+import { weatherFreshness } from '../../shared/weather-freshness.js'
 
 const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast'
 const GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1/search'
 const REQUEST_TIMEOUT_MS = 12_000
 const SEARCH_RESULT_LIMIT = 8
 const MANUAL_REFRESH_MIN_INTERVAL_MS = 5 * 60 * 1000
-const CACHE_VERSION = 2
+const CACHE_VERSION = 4
 const CHINA_WEATHER_MODEL = Object.freeze({
   id: 'cma_grapes_global',
   name: 'CMA GRAPES',
@@ -141,7 +143,8 @@ function weatherModelForLocation(location) {
 }
 
 function numberOrNull(value) {
-  if (value === null || value === undefined || value === '') return null
+  if (typeof value !== 'number' && typeof value !== 'string') return null
+  if (typeof value === 'string' && !value.trim()) return null
   const number = Number(value)
   return Number.isFinite(number) ? number : null
 }
@@ -151,12 +154,22 @@ function roundOrNull(value) {
   return number === null ? null : Math.round(number)
 }
 
-function sanitizeForecast(forecast) {
+function sanitizeForecast(forecast, legacy = false) {
   if (!forecast || typeof forecast !== 'object') return forecast
   return {
     ...forecast,
     days: Array.isArray(forecast.days)
-      ? forecast.days.filter((day) => isDisplayableWeatherDay(day))
+      ? forecast.days
+          .map((day) => {
+            if (day?.dailyWeatherCode == null) return day
+            const description = describeWeatherCode(day.dailyWeatherCode)
+            return { ...day, weatherCode: day.dailyWeatherCode, ...description }
+          })
+          .filter(
+            (day) =>
+              isDisplayableWeatherDay(day) &&
+              !(legacy && Number(day.temperatureMin) === 0 && Number(day.temperatureMax) === 0)
+          )
       : []
   }
 }
@@ -167,23 +180,51 @@ function mergeForecasts(primary, fallback) {
 
   const primaryDays = Array.isArray(primary.days) ? primary.days : []
   const fallbackDays = Array.isArray(fallback.days) ? fallback.days : []
-  const primaryDates = new Set(primaryDays.map((day) => day.date))
   const daysByDate = new Map(fallbackDays.map((day) => [day.date, day]))
-  for (const day of primaryDays) daysByDate.set(day.date, day)
-
-  const fallbackSupplemented = fallbackDays.some((day) => !primaryDates.has(day.date))
-  const usesPrimary = primaryDays.length > 0
-  const base = usesPrimary ? primary : fallback
+  for (const day of primaryDays) {
+    const other = daysByDate.get(day.date)
+    const merged = { ...day, fieldSources: {} }
+    // 天气码和温度范围保持同一模型，只补齐主模型缺失的可选字段。
+    for (const field of ['precipitationProbability', 'precipitation', 'windSpeedMax']) {
+      if (day[field] == null && other?.[field] != null) {
+        merged[field] = other[field]
+        merged.fieldSources[field] = other.source
+      }
+    }
+    daysByDate.set(day.date, merged)
+  }
+  // 新近获取不代表模型时刻新近。先选仍可显示的当前天气，再比较有效时刻。
+  const now = Date.now()
+  const candidates = [primary, fallback].filter((forecast) => forecast.current)
+  candidates.sort(
+    (left, right) =>
+      Number(weatherFreshness(right, now).currentVisible) -
+        Number(weatherFreshness(left, now).currentVisible) ||
+      right.current.dataAt - left.current.dataAt
+  )
+  const current = candidates[0]?.current || null
+  const days = [...daysByDate.values()].sort((left, right) => left.date.localeCompare(right.date))
+  const models = new Set(
+    [
+      current?.source,
+      ...days.flatMap((day) => [day.source, ...Object.values(day.fieldSources || {})])
+    ]
+      .map((source) => source?.model?.id)
+      .filter(Boolean)
+  )
   const source =
-    usesPrimary && fallbackSupplemented
+    models.size > 1
       ? { ...WEATHER_SOURCE, model: CHINA_HYBRID_WEATHER_MODEL }
-      : base.source
+      : models.has(CHINA_WEATHER_MODEL.id)
+        ? primary.source
+        : fallback.source
 
   return {
-    ...base,
+    ...primary,
+    fetchedAt: Math.max(primary.fetchedAt, fallback.fetchedAt),
     timezone: primary.timezone || fallback.timezone,
-    current: primary.current || fallback.current,
-    days: [...daysByDate.values()].sort((left, right) => left.date.localeCompare(right.date)),
+    current,
+    days,
     source
   }
 }
@@ -191,7 +232,15 @@ function mergeForecasts(primary, fallback) {
 async function responseJson(response) {
   const body = await response.json().catch(() => null)
   if (!response.ok || body?.error) {
-    throw new Error(body?.reason || `天气服务返回 ${response.status}`)
+    const error = new Error(body?.reason || `天气服务返回 ${response.status}`)
+    error.status = response.status
+    const retry = response.headers?.get?.('retry-after')
+    error.retryAt = retry
+      ? Number.isFinite(Number(retry))
+        ? Date.now() + Number(retry) * 1000
+        : Date.parse(retry)
+      : 0
+    throw error
   }
   return body
 }
@@ -213,6 +262,8 @@ export class WeatherService {
     this.userAgent = String(userAgent).trim()
     this.diagnosticLog = typeof diagnosticLog === 'function' ? diagnosticLog : null
     this.cacheLoaded = false
+    this.cacheLoadPromise = null
+    this.cacheWriteQueue = Promise.resolve()
     this.cache = { version: CACHE_VERSION, forecasts: {} }
   }
 
@@ -220,20 +271,25 @@ export class WeatherService {
     this.diagnosticLog?.(level, scope, message, metadata)
   }
 
-  async loadCache() {
+  loadCache() {
+    if (!this.cacheLoadPromise) this.cacheLoadPromise = this.readCache()
+    return this.cacheLoadPromise
+  }
+
+  async readCache() {
     if (this.cacheLoaded) return
     this.cacheLoaded = true
     try {
       const parsed = JSON.parse(await readFile(this.cachePath, 'utf8'))
       if (
-        (parsed?.version === 1 || parsed?.version === CACHE_VERSION) &&
+        [1, 2, 3, CACHE_VERSION].includes(parsed?.version) &&
         parsed.forecasts &&
         typeof parsed.forecasts === 'object'
       ) {
         let changed = parsed.version !== CACHE_VERSION
         const forecasts = Object.fromEntries(
           Object.entries(parsed.forecasts).map(([key, forecast]) => {
-            const sanitized = sanitizeForecast(forecast)
+            const sanitized = sanitizeForecast(forecast, parsed.version < CACHE_VERSION)
             if ((forecast?.days?.length || 0) !== (sanitized?.days?.length || 0)) changed = true
             return [key, sanitized]
           })
@@ -248,11 +304,16 @@ export class WeatherService {
     }
   }
 
-  async saveCache() {
-    await mkdir(dirname(this.cachePath), { recursive: true })
-    const temporaryPath = `${this.cachePath}.tmp`
-    await writeFile(temporaryPath, JSON.stringify(this.cache), 'utf8')
-    await rename(temporaryPath, this.cachePath)
+  saveCache() {
+    const content = JSON.stringify(this.cache)
+    const write = this.cacheWriteQueue.then(async () => {
+      await mkdir(dirname(this.cachePath), { recursive: true })
+      const temporaryPath = `${this.cachePath}.tmp`
+      await writeFile(temporaryPath, content, 'utf8')
+      await rename(temporaryPath, this.cachePath)
+    })
+    this.cacheWriteQueue = write.catch(() => {})
+    return write
   }
 
   async request(url) {
@@ -414,7 +475,7 @@ export class WeatherService {
     url.searchParams.set('longitude', String(location.longitude))
     url.searchParams.set(
       'current',
-      'temperature_2m,apparent_temperature,weather_code,wind_speed_10m'
+      'temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day'
     )
     url.searchParams.set(
       'daily',
@@ -428,15 +489,27 @@ export class WeatherService {
 
   normalizeForecast(data, location, fetchedAt, model = weatherModelForLocation(location)) {
     const daily = data?.daily || {}
-    const times = Array.isArray(daily.time) ? daily.time : []
-    const currentCode = roundOrNull(data?.current?.weather_code)
-    const currentDate = String(data?.current?.time || '').slice(0, 10)
+    const times = ['time', 'weather_code', 'temperature_2m_min', 'temperature_2m_max'].every(
+      (field) => Array.isArray(daily[field])
+    )
+      ? daily.time
+      : []
+    const source = { ...WEATHER_SOURCE, model }
+    const currentCode = numberOrNull(data?.current?.weather_code)
     const days = times
       .map((date, index) => {
-        const dailyCode = roundOrNull(daily.weather_code?.[index])
-        // 日 weather_code 是当天最严重天气；今天优先展示当前实况，避免一次短时阵雨
-        // 把整天误导性地概括为雷阵雨。未来日期仍保留日预报码。
-        const code = String(date) === currentDate && currentCode !== null ? currentCode : dailyCode
+        const dailyCode = numberOrNull(daily.weather_code?.[index])
+        const temperatureMin = numberOrNull(daily.temperature_2m_min?.[index])
+        const temperatureMax = numberOrNull(daily.temperature_2m_max?.[index])
+        if (
+          !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+          !Number.isFinite(Date.parse(date)) ||
+          new Date(date).toISOString().slice(0, 10) !== date ||
+          !isDisplayableWeatherDay({ weatherCode: dailyCode, temperatureMin, temperatureMax })
+        )
+          return null
+        // 全天概括和当前天气分别保留，不能用此刻晴天覆盖当天降雨预报。
+        const code = dailyCode
         const description =
           code === null ? { label: '未知天气', icon: '•' } : describeWeatherCode(code)
         return {
@@ -445,24 +518,36 @@ export class WeatherService {
           dailyWeatherCode: dailyCode,
           label: description.label,
           icon: description.icon,
-          temperatureMax: roundOrNull(daily.temperature_2m_max?.[index]),
-          temperatureMin: roundOrNull(daily.temperature_2m_min?.[index]),
+          temperatureMax: Math.round(temperatureMax),
+          temperatureMin: Math.round(temperatureMin),
           precipitationProbability: roundOrNull(daily.precipitation_probability_max?.[index]),
           precipitation: numberOrNull(daily.precipitation_sum?.[index]),
-          windSpeedMax: roundOrNull(daily.wind_speed_10m_max?.[index])
+          windSpeedMax: roundOrNull(daily.wind_speed_10m_max?.[index]),
+          source,
+          fetchedAt
         }
       })
       .filter((day) => isDisplayableWeatherDay(day))
     const currentTemperature = roundOrNull(data?.current?.temperature_2m)
-    const currentDescription = currentCode === null ? null : describeWeatherCode(currentCode)
+    const isDay = data?.current?.is_day === 1 ? true : data?.current?.is_day === 0 ? false : null
+    const currentDescription = describeWeatherCode(currentCode, isDay)
+    const dataAt =
+      Date.parse(`${data?.current?.time}Z`) - Number(data?.utc_offset_seconds || 0) * 1000
     return {
       location,
       fetchedAt,
       timezone: data?.timezone || location.timezone || 'auto',
       current:
-        data?.current && currentCode !== null && currentTemperature !== null
+        data?.current &&
+        isKnownWeatherCode(currentCode) &&
+        currentTemperature !== null &&
+        Number.isFinite(dataAt)
           ? {
               time: data.current.time,
+              dataAt,
+              isDay,
+              source,
+              fetchedAt,
               weatherCode: currentCode,
               label: currentDescription.label,
               icon: currentDescription.icon,
@@ -472,13 +557,16 @@ export class WeatherService {
             }
           : null,
       days,
-      source: { ...WEATHER_SOURCE, model }
+      source
     }
   }
 
-  async requestForecast(location, fetchedAt, model) {
+  async requestForecast(location, model) {
     const data = await this.request(this.createForecastUrl(location, model))
-    return this.normalizeForecast(data, location, fetchedAt, model)
+    const forecast = this.normalizeForecast(data, location, Date.now(), model)
+    // 该请求必需返回日预报；HTTP 200 的空体、损坏数组不能覆盖已有缓存。
+    if (!forecast.days.length) throw new Error('天气服务未返回有效日预报')
+    return forecast
   }
 
   async getForecast(
@@ -490,9 +578,15 @@ export class WeatherService {
     await this.loadCache()
     const key = cacheKey(location)
     const cached = this.cache.forecasts[key]
-    const now = Date.now()
     if (!refresh && cached) {
-      return { ...cached, cache: { hit: true, stale: false, policy: 'startup-and-daily-09:00' } }
+      return {
+        ...cached,
+        cache: {
+          hit: true,
+          stale: false,
+          policy: 'visible-30-minutes'
+        }
+      }
     }
     if (cacheOnly) return null
 
@@ -502,8 +596,8 @@ export class WeatherService {
       let forecast
       if (model.id === CHINA_WEATHER_MODEL.id) {
         const [primaryResult, fallbackResult] = await Promise.allSettled([
-          this.requestForecast(location, now, CHINA_WEATHER_MODEL),
-          this.requestForecast(location, now, AUTO_WEATHER_MODEL)
+          this.requestForecast(location, CHINA_WEATHER_MODEL),
+          this.requestForecast(location, AUTO_WEATHER_MODEL)
         ])
         const primary = primaryResult.status === 'fulfilled' ? primaryResult.value : null
         const fallback = fallbackResult.status === 'fulfilled' ? fallbackResult.value : null
@@ -522,9 +616,22 @@ export class WeatherService {
             }
           )
         }
+        if (primary && !fallback) {
+          this.report(
+            'warn',
+            'weather.provider-partial',
+            '自动补齐模型失败，保留中国气象局有效预报',
+            {
+              trigger,
+              locationKey: weatherLocationKey(location),
+              failedModel: AUTO_WEATHER_MODEL.id,
+              reason: fallbackResult.reason?.message || String(fallbackResult.reason || '')
+            }
+          )
+        }
         forecast = mergeForecasts(primary, fallback)
       } else {
-        forecast = await this.requestForecast(location, now, model)
+        forecast = await this.requestForecast(location, model)
       }
       // 地区可能在请求期间被修改。由调用方确认结果仍属于当前设置，避免旧请求
       // 后完成时覆盖新地区缓存；服务独立使用时保持原有写入行为。
@@ -550,7 +657,7 @@ export class WeatherService {
       })
       return {
         ...forecast,
-        cache: { hit: false, stale: false, policy: 'startup-and-daily-09:00' }
+        cache: { hit: false, stale: false, policy: 'visible-30-minutes' }
       }
     } catch (error) {
       if (cached) {
@@ -562,8 +669,9 @@ export class WeatherService {
         })
         return {
           ...cached,
-          cache: { hit: true, stale: true, policy: 'startup-and-daily-09:00' },
-          warning: error?.message || '无法更新天气'
+          cache: { hit: true, stale: true, policy: 'visible-30-minutes' },
+          warning: error?.message || '无法更新天气',
+          failure: { status: error?.status || null, retryAt: error?.retryAt || 0 }
         }
       }
       throw error
@@ -585,7 +693,7 @@ export class WeatherService {
     ) {
       return {
         ...cached,
-        cache: { hit: true, stale: false, policy: 'startup-and-daily-09:00' },
+        cache: { hit: true, stale: false, policy: 'visible-30-minutes' },
         manualRefresh: { status: 'current', checkedAt }
       }
     }

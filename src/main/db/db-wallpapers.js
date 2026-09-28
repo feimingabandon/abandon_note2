@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, renameSync, rmSync } from 'fs'
 import { readFile, readdir, rm, writeFile } from 'fs/promises'
 import { basename, dirname, extname, join, resolve, sep } from 'path'
 import { getDb } from './db-connection.js'
+import { beginPerformanceOperation } from '../logging/operation-performance.js'
 
 const WALLPAPER_ROOT = 'wallpapers'
 const MAX_IMAGE_SIZE = 50 * 1024 * 1024
@@ -443,21 +444,35 @@ export async function getWallpaperDataUrl(id, { original = false } = {}) {
   const record = getWallpaperRecord(id)
   if (!record) return null
   const relativePath = original ? record.original_path : record.cropped_path
+  const finish = beginPerformanceOperation(
+    'image',
+    original ? 'wallpaper.original' : 'wallpaper.cropped'
+  )
+  const width = original ? record.original_width : record.target_width
+  const height = original ? record.original_height : record.target_height
+  const metrics = { width, height, pixels: width * height }
   try {
     const buffer = await readFile(resolveWallpaperPath(relativePath))
+    metrics.bytes = buffer.length
     return `data:${mimeForPath(relativePath)};base64,${buffer.toString('base64')}`
   } catch (error) {
+    metrics.errors = 1
     console.warn('[wallpaper] 读取壁纸文件失败:', error, { id: record.id, relativePath, original })
     return null
+  } finally {
+    finish(metrics)
   }
 }
 
 export function getWallpaperThumbnail(id, maxSize = 240) {
   const record = getWallpaperRecord(id)
   if (!record) return null
+  const finish = beginPerformanceOperation('image', 'wallpaper.thumbnail')
+  const metrics = {}
   try {
     const image = nativeImage.createFromPath(resolveWallpaperPath(record.cropped_path))
     if (image.isEmpty()) {
+      metrics.errors = 1
       console.warn('[wallpaper] 无法解析壁纸缩略图:', {
         id: record.id,
         relativePath: record.cropped_path
@@ -465,6 +480,7 @@ export function getWallpaperThumbnail(id, maxSize = 240) {
       return null
     }
     const { width, height } = image.getSize()
+    Object.assign(metrics, { width, height, pixels: width * height })
     const limit = Math.max(80, Math.min(480, Number(maxSize) || 240))
     const resized =
       width >= height
@@ -472,12 +488,15 @@ export function getWallpaperThumbnail(id, maxSize = 240) {
         : image.resize({ height: Math.min(height, limit), quality: 'good' })
     return resized.toDataURL()
   } catch (error) {
+    metrics.errors = 1
     console.warn('[wallpaper] 生成壁纸缩略图失败:', error, {
       id: record.id,
       relativePath: record.cropped_path,
       maxSize
     })
     return null
+  } finally {
+    finish(metrics)
   }
 }
 

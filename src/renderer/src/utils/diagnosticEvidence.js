@@ -1,4 +1,12 @@
 import { nextTick } from 'vue'
+import { rendererDeepDiagnostics } from './diagnosticPolicy.js'
+import {
+  beginRendererWork,
+  recordRendererWork,
+  recordRefreshDataApplied
+} from './performanceDiagnostics.js'
+
+const performanceView = (view) => (['list', 'month', 'week'].includes(view) ? view : 'other')
 
 export function reportEvidence(
   eventName,
@@ -7,13 +15,14 @@ export function reportEvidence(
   api = globalThis.window?.api
 ) {
   try {
+    if (typeof metadata === 'function' && !rendererDeepDiagnostics(api)) return
     const result = api?.reportLog?.({
       level: 'info',
       scope: 'diagnostic.renderer',
       eventName,
       phase: 'checkpoint',
       message: eventName,
-      metadata,
+      metadata: typeof metadata === 'function' ? metadata() : metadata,
       ...options
     })
     result?.catch?.(() => {})
@@ -33,8 +42,8 @@ export function newDiagnosticId() {
 export function summarizeViewNotes(notes = []) {
   return {
     count: notes.length,
-    truncated: notes.length > 100,
-    notes: notes.slice(0, 100).map((note) => ({
+    truncated: notes.length > 32,
+    notes: notes.slice(0, 32).map((note) => ({
       id: note.id,
       status: note.status,
       version: note.editVersion,
@@ -48,8 +57,13 @@ export function createRefreshCauses(view) {
   const ids = new Set()
   let omitted = 0
   let deferredReason = null
+  let queued = 0
   return {
     add(payload) {
+      recordRendererWork(`refresh.queued.${performanceView(view)}`, {
+        coalesced: queued > 0 ? 1 : 0
+      })
+      queued++
       const id = payload?.diagnostic?.actionId
       if (id && !ids.has(id)) {
         if (ids.size < 32) ids.add(id)
@@ -62,6 +76,7 @@ export function createRefreshCauses(view) {
       )
     },
     defer(reason) {
+      recordRendererWork(`refresh.deferred.${performanceView(view)}`)
       if (reason === deferredReason) return
       deferredReason = reason
       reportEvidence(
@@ -75,6 +90,7 @@ export function createRefreshCauses(view) {
       ids.clear()
       omitted = 0
       deferredReason = null
+      queued = 0
       return result
     }
   }
@@ -84,6 +100,8 @@ export function createRefreshCauses(view) {
 export async function traceViewRefresh(view, metadata, work, readApplied, isCurrent = () => true) {
   const actionId = newDiagnosticId()
   const started = Date.now()
+  const viewName = performanceView(view)
+  const finishWork = beginRendererWork(`refresh.work.${viewName}`)
   reportEvidence(
     'view.refresh',
     { view, ...metadata },
@@ -116,6 +134,7 @@ export async function traceViewRefresh(view, metadata, work, readApplied, isCurr
           : result?.status === 'error'
             ? 'failure'
             : 'skipped'
+    finishWork({ [outcome]: 1 })
     reportEvidence(
       'view.refresh',
       { view, ...metadata },
@@ -127,9 +146,15 @@ export async function traceViewRefresh(view, metadata, work, readApplied, isCurr
         level: outcome === 'failure' ? 'warn' : 'info'
       }
     )
-    if (outcome === 'applied') {
-      await nextTick()
+    if (outcome === 'applied' && rendererDeepDiagnostics()) {
+      const finishUpdate = beginRendererWork(`refresh.vue-update.${viewName}`)
+      try {
+        await nextTick()
+      } finally {
+        finishUpdate()
+      }
       if (!isCurrent()) {
+        recordRendererWork(`refresh.superseded.${viewName}`)
         reportEvidence(
           'view.apply-superseded',
           { view, ...metadata },
@@ -138,9 +163,12 @@ export async function traceViewRefresh(view, metadata, work, readApplied, isCurr
         return result
       }
       try {
+        const applied = readApplied()
+        recordRendererWork(`refresh.applied.${viewName}`, { resultRows: applied?.count })
+        recordRefreshDataApplied(viewName)
         reportEvidence(
           'view.data-applied',
-          { view, ...metadata, ...readApplied() },
+          { view, ...metadata, ...applied },
           { actionId, outcome: 'data-applied' }
         )
       } catch {
@@ -149,6 +177,7 @@ export async function traceViewRefresh(view, metadata, work, readApplied, isCurr
     }
     return result
   } catch (error) {
+    finishWork({ errors: 1 })
     reportEvidence(
       'view.refresh',
       { view, ...metadata },
@@ -165,7 +194,9 @@ export function installInteractionEvidence(api, target = globalThis.document) {
   const capture = (event) => {
     try {
       const control = event.target?.closest?.(
-        '[data-diagnostic-action],button,input,select,[role="button"],[role="switch"]'
+        rendererDeepDiagnostics(api)
+          ? '[data-diagnostic-action],button,input,select,[role="button"],[role="switch"]'
+          : '[data-diagnostic-action]'
       )
       if (!control) return
       // 不读取 textContent、value、placeholder、title 或键盘字符。

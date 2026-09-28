@@ -50,6 +50,7 @@ const saving = ref(false)
 const mounted = ref(false)
 const imagePickerRef = ref(null)
 const draftImageCount = ref(0)
+const attachmentsBusy = ref(false)
 const attachmentDirty = ref(false)
 const initialSnapshot = ref(null)
 const initialVersion = ref(null)
@@ -207,7 +208,7 @@ function onAttachmentDraftChange(changes) {
 }
 
 function requestClose() {
-  if (saving.value) return
+  if (saving.value || attachmentsBusy.value) return
   if (!hasChanges.value) {
     emit('cancel')
     return
@@ -221,7 +222,7 @@ function handleConfirm() {
 }
 
 async function handleSave() {
-  if (saving.value || !hasChanges.value) return
+  if (saving.value || attachmentsBusy.value || !hasChanges.value) return
   const text = content.value
   if (!canSave.value) {
     showMessage('warning', '请输入便签内容或保留至少一张图片')
@@ -303,7 +304,7 @@ const protectedDraft = useDraftProtection({
     initialVersion
   },
   dirty: () => hasChanges.value,
-  busy: () => saving.value,
+  busy: () => saving.value || attachmentsBusy.value,
   extra: () => ({ attachments: imagePickerRef.value?.getDraftChanges() }),
   restoreExtra: (data) => imagePickerRef.value?.restoreDraft(data.attachments)
 })
@@ -311,7 +312,7 @@ const protectedDraft = useDraftProtection({
 
 <template>
   <div class="ne-root" :class="{ 'ne-enter': mounted }">
-    <div class="ne-body scroll-y">
+    <div class="ne-body scroll-y" :inert="saving">
       <ColoredTextEditor
         v-model="content"
         v-model:color-ranges="contentColorRanges"
@@ -384,22 +385,23 @@ const protectedDraft = useDraftProtection({
           :note-id="note.id"
           mode="draft"
           @count-change="draftImageCount = $event"
+          @busy-change="attachmentsBusy = $event"
           @draft-change="onAttachmentDraftChange"
         />
       </div>
     </div>
 
     <div class="ne-footer ne-stagger" style="animation-delay: 230ms">
-      <button class="ne-dismiss" :disabled="saving" @click="requestClose">
+      <button class="ne-dismiss" :disabled="saving || attachmentsBusy" @click="requestClose">
         {{ hasChanges ? '放弃修改' : '关闭' }}
       </button>
       <button
         class="ne-submit"
         data-diagnostic-action="note.save"
-        :disabled="!canSave || !hasChanges || saving"
+        :disabled="!canSave || !hasChanges || saving || attachmentsBusy"
         @click="handleSave"
       >
-        {{ saving ? '保存中…' : '保存修改' }}
+        {{ saving ? '保存中…' : attachmentsBusy ? '图片处理中…' : '保存修改' }}
       </button>
     </div>
 

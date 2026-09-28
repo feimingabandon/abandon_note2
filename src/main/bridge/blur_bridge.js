@@ -1,3 +1,4 @@
+import { measureSyncPerformance } from '../logging/operation-performance.js'
 /**
  * blur_bridge.js — Node.js 到 C++ DLL 的 koffi FFI 桥接层
  */
@@ -12,6 +13,20 @@ let initialized = false
 let nativeDllPath = null
 let nativeAbiVersion = null
 let nativeLoadError = null
+
+function measureNativeOperation(operation, work) {
+  return measureSyncPerformance(
+    'native',
+    operation,
+    work,
+    (result) => ({ rejected: result === false || result?.success === false ? 1 : 0 }),
+    (error) => ({
+      // ERROR_TIMEOUT 是明确超时；send-timeout-or-failure 阶段本身不能证明超时。
+      timeouts:
+        error?.nativeError?.code === 8 || error?.nativeError?.details?.nativeCode === 1460 ? 1 : 0
+    })
+  )
+}
 
 function getWindowHandleValue(window) {
   const hwndBuffer = window.getNativeWindowHandle()
@@ -310,54 +325,62 @@ export function initialize(mainWindow) {
 }
 
 export function setConfig(config) {
-  if (!initialized) return false
-  const tint = String(config.tint || '255 255 255')
-    .trim()
-    .split(/\s+/)
-    .map((value) => Math.max(0, Math.min(255, Math.round(Number(value) || 0))))
-  const applied = lib.Blur_ApplyConfig(
-    config.enabled ? 1 : 0,
-    config.radius,
-    config.saturation,
-    config.cornerRadius,
-    tint[0] ?? 255,
-    tint[1] ?? 255,
-    tint[2] ?? 255,
-    Math.max(0, Math.min(1, Number(config.tintOpacity) || 0))
-  )
-  if (applied !== 1) {
-    const nativeError = getNativeError('原生毛玻璃材质切换未完成')
-    const error = new Error(nativeError.message)
-    error.code = 'NATIVE_BLUR_CONFIG_APPLY_FAILED'
-    error.nativeError = nativeError
-    throw error
-  }
-  return true
+  return measureNativeOperation('setConfig', () => {
+    if (!initialized) return false
+    const tint = String(config.tint || '255 255 255')
+      .trim()
+      .split(/\s+/)
+      .map((value) => Math.max(0, Math.min(255, Math.round(Number(value) || 0))))
+    const applied = lib.Blur_ApplyConfig(
+      config.enabled ? 1 : 0,
+      config.radius,
+      config.saturation,
+      config.cornerRadius,
+      tint[0] ?? 255,
+      tint[1] ?? 255,
+      tint[2] ?? 255,
+      Math.max(0, Math.min(1, Number(config.tintOpacity) || 0))
+    )
+    if (applied !== 1) {
+      const nativeError = getNativeError('原生毛玻璃材质切换未完成')
+      const error = new Error(nativeError.message)
+      error.code = 'NATIVE_BLUR_CONFIG_APPLY_FAILED'
+      error.nativeError = nativeError
+      throw error
+    }
+    return true
+  })
 }
 
 export function updateGeometry() {
-  if (!initialized) return
-  lib.Blur_UpdateGeometry()
+  return measureNativeOperation('updateGeometry', () => {
+    if (!initialized) return
+    lib.Blur_UpdateGeometry()
+  })
 }
 
 export function syncGeometryAndWait(timeoutMs = 500) {
-  if (!initialized || process.platform !== 'win32') return true
-  const synchronized = lib.Blur_SyncGeometryAndWait(
-    Math.max(1, Math.min(5_000, Math.round(Number(timeoutMs) || 500)))
-  )
-  if (synchronized !== 1) {
-    const nativeError = getNativeError('原生毛玻璃几何同步未完成')
-    const error = new Error(nativeError.message)
-    error.code = 'NATIVE_BLUR_GEOMETRY_SYNC_FAILED'
-    error.nativeError = nativeError
-    throw error
-  }
-  return true
+  return measureNativeOperation('syncGeometryAndWait', () => {
+    if (!initialized || process.platform !== 'win32') return true
+    const synchronized = lib.Blur_SyncGeometryAndWait(
+      Math.max(1, Math.min(5_000, Math.round(Number(timeoutMs) || 500)))
+    )
+    if (synchronized !== 1) {
+      const nativeError = getNativeError('原生毛玻璃几何同步未完成')
+      const error = new Error(nativeError.message)
+      error.code = 'NATIVE_BLUR_GEOMETRY_SYNC_FAILED'
+      error.nativeError = nativeError
+      throw error
+    }
+    return true
+  })
 }
 
 export function reSyncZOrder() {
-  if (!initialized || process.platform !== 'win32') return
-  lib.Blur_ReSyncOrder()
+  return measureNativeOperation('reSyncZOrder', () => {
+    if (!initialized || process.platform !== 'win32') return
+    lib.Blur_ReSyncOrder()
+  })
 }
 
 /**
@@ -408,38 +431,42 @@ export function moveWindowPhysical(window, physicalX, physicalY) {
 }
 
 export function setWindowAlwaysOnBottom(window, enabled) {
-  if (process.platform !== 'win32') {
-    return enabled
-      ? { success: false, code: null, error: '始终置底目前仅支持 Windows 10/11' }
-      : { success: true, code: 1, error: null }
-  }
-  if (!window || window.isDestroyed() || !initNative()) {
-    return { success: false, code: null, error: 'Windows 原生窗口层级组件不可用' }
-  }
-  const code = lib.WindowZOrder_SetBottom(getWindowHandleValue(window), enabled ? 1 : 0)
-  return {
-    success: code === 1,
-    code,
-    error:
-      code === 1
-        ? null
-        : WINDOW_Z_ORDER_RESULT_MESSAGES[code] || `Windows 窗口层级更新失败 (${code})`
-  }
+  return measureNativeOperation('setWindowAlwaysOnBottom', () => {
+    if (process.platform !== 'win32') {
+      return enabled
+        ? { success: false, code: null, error: '始终置底目前仅支持 Windows 10/11' }
+        : { success: true, code: 1, error: null }
+    }
+    if (!window || window.isDestroyed() || !initNative()) {
+      return { success: false, code: null, error: 'Windows 原生窗口层级组件不可用' }
+    }
+    const code = lib.WindowZOrder_SetBottom(getWindowHandleValue(window), enabled ? 1 : 0)
+    return {
+      success: code === 1,
+      code,
+      error:
+        code === 1
+          ? null
+          : WINDOW_Z_ORDER_RESULT_MESSAGES[code] || `Windows 窗口层级更新失败 (${code})`
+    }
+  })
 }
 
 export function reassertWindowZOrder(window) {
-  if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
-    return { success: false, code: null, error: 'Windows 原生窗口层级组件不可用' }
-  }
-  const code = lib.WindowZOrder_Reassert(getWindowHandleValue(window))
-  return {
-    success: code === 1,
-    code,
-    error:
-      code === 1
-        ? null
-        : WINDOW_Z_ORDER_RESULT_MESSAGES[code] || `Windows 置底层级重同步失败 (${code})`
-  }
+  return measureNativeOperation('reassertWindowZOrder', () => {
+    if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
+      return { success: false, code: null, error: 'Windows 原生窗口层级组件不可用' }
+    }
+    const code = lib.WindowZOrder_Reassert(getWindowHandleValue(window))
+    return {
+      success: code === 1,
+      code,
+      error:
+        code === 1
+          ? null
+          : WINDOW_Z_ORDER_RESULT_MESSAGES[code] || `Windows 置底层级重同步失败 (${code})`
+    }
+  })
 }
 
 export function getWindowZOrderStatus(window) {

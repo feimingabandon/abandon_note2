@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
+import { readSandboxPermissions } from './windows-sandbox-permissions.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -52,7 +53,7 @@ export async function collectSystemDiagnostics(
       clearTimeout(timer)
     }
   }
-  const [windowsVersion, gpu, bundleHash, nativeHash] = await Promise.all([
+  const [windowsVersion, gpu, bundleHash, nativeHash, sandboxPermissions] = await Promise.all([
     attempt('windowsVersion', overrides.readWindowsVersion || readWindowsVersion),
     attempt('gpu', () => app.getGPUInfo('complete')),
     attempt('mainBundleSha256', async () =>
@@ -66,6 +67,9 @@ export async function collectSystemDiagnostics(
             .update(await readFile(runtime.native.dllPath))
             .digest('hex')
         : null
+    ),
+    attempt('sandboxPermissions', () =>
+      (overrides.readSandboxPermissions || readSandboxPermissions)(app)
     )
   ])
   return {
@@ -78,6 +82,7 @@ export async function collectSystemDiagnostics(
       mainBundleSha256: bundleHash,
       nativeDllSha256: nativeHash
     },
+    sandboxPermissions,
     system: {
       platform: process.platform,
       release: os.release(),

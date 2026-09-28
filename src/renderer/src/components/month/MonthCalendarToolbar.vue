@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import AppIcon from '../ui/AppIcon.vue'
+import DateContextSummary from '../almanac/DateContextSummary.vue'
 import NumberStepper from '../ui/NumberStepper.vue'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 import {
@@ -25,7 +26,7 @@ const props = defineProps({
   busy: { type: Boolean, default: false },
   recurringPreviewEnabled: { type: Boolean, default: false },
   recurringPreviewSaving: { type: Boolean, default: false },
-  todayWeatherLabel: { type: String, default: '' }
+  forecast: { type: Object, default: null }
 })
 const emit = defineEmits([
   'previous',
@@ -295,9 +296,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
           @animationend="finishRefreshSpin"
         />
       </button>
-      <div v-if="todayWeatherLabel" class="month-toolbar__weather-meta" :title="todayWeatherLabel">
-        <span>{{ todayWeatherLabel }}</span>
-      </div>
+      <DateContextSummary kind="weather" :forecast="forecast" />
     </div>
 
     <div class="month-toolbar__navigation" :aria-label="isWeekView ? '周导航' : '月份导航'">
@@ -502,6 +501,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
     </div>
 
     <div class="month-toolbar__trailing">
+      <DateContextSummary kind="almanac" :forecast="forecast" />
       <button
         type="button"
         class="month-toolbar__recurring-preview month-toolbar__recurring-preview-toggle"
@@ -537,7 +537,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   display: grid;
   min-height: 36rem;
   align-items: center;
-  grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(max-content, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   gap: 12rem;
   padding: 0 4rem;
 }
@@ -553,7 +553,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   min-width: 0;
   align-items: center;
   gap: 5rem;
-  justify-self: start;
+  justify-self: stretch;
+  max-width: 100%;
+}
+.month-toolbar__leading .date-context-summary {
+  flex: 1 1 0;
+  margin-inline-end: 20rem;
+}
+.month-toolbar__leading > button {
+  flex-shrink: 0;
 }
 .month-toolbar__navigation {
   position: relative;
@@ -564,7 +572,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   gap: 9rem;
 }
 .month-toolbar__trailing {
-  justify-self: end;
+  min-width: 0;
+  justify-self: stretch;
+}
+.month-toolbar__trailing .date-context-summary {
+  flex: 1 1 0;
+  margin-inline-start: 20rem;
 }
 .month-toolbar__recurring-preview {
   display: grid !important;
@@ -589,31 +602,6 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 .month-toolbar__day-panel-toggle.is-open {
   background: var(--ui-fill-pressed);
   color: var(--ui-accent) !important;
-}
-.month-toolbar__weather-meta {
-  display: flex;
-  min-width: 0;
-  max-width: 100%;
-  height: 30rem;
-  align-items: center;
-  justify-self: start;
-  flex-direction: row;
-  padding: 0 7rem;
-  color: var(--text-color-secondary);
-  line-height: 1.15;
-  text-align: left;
-}
-.month-toolbar__weather-meta span {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.month-toolbar__weather-meta span {
-  min-width: 0;
-  font-size: var(--fs-secondary);
-  font-weight: 500;
 }
 .month-toolbar button {
   display: grid;
@@ -997,19 +985,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
     min-width: 0 !important;
   }
 }
-@media (max-width: 520px) {
-  .month-toolbar__weather-meta {
-    display: none !important;
-  }
-}
-@media (max-width: 420px) {
+@container calendar-pane (max-width: 760px) {
   .month-toolbar {
     min-height: 76rem;
     grid-template-areas:
       'leading trailing'
       'navigation navigation';
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: 30rem 36rem;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(30rem, auto) minmax(36rem, auto);
     row-gap: 4rem;
   }
   .month-toolbar__leading {

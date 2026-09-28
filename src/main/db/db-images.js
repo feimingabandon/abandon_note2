@@ -12,6 +12,11 @@ import { dirname, join, resolve, sep } from 'path'
 import { randomUUID } from 'crypto'
 import { app, nativeImage } from 'electron'
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync, statSync } from 'fs'
+import {
+  beginPerformanceOperation,
+  recordPerformanceOperation,
+  measureSyncPerformance
+} from '../logging/operation-performance.js'
 import { mkdir, writeFile, unlink, stat, readFile, rm } from 'fs/promises'
 import { getDb } from './db-connection.js'
 import {
@@ -206,28 +211,48 @@ export async function deleteImageFile(relativePath) {
  * @returns {string|null} 带 data:image/xxx;base64, 前缀的完整 data URL
  */
 export async function getImageBase64(relativePath) {
+  const finish = beginPerformanceOperation('image', 'original.read')
+  const metrics = {}
   try {
     const absPath = resolveImagePath(relativePath)
     const buffer = await readFile(absPath)
+    metrics.bytes = buffer.length
     const ext = relativePath.split('.').pop()?.toLowerCase() || 'png'
     const mime = ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext
-    return `data:image/${mime};base64,${buffer.toString('base64')}`
+    return measureSyncPerformance(
+      'image',
+      'original.encode',
+      () => `data:image/${mime};base64,${buffer.toString('base64')}`,
+      () => ({ bytes: buffer.length })
+    )
   } catch (error) {
+    metrics.errors = 1
     console.warn('[images] 读取附件原图失败:', error, { relativePath })
     return null
+  } finally {
+    finish(metrics)
   }
 }
 
 /** 读取原图像素尺寸，供卡片按正文可视宽度计算等比展示尺寸。 */
 export function getImageDimensions(relativePath) {
+  const finish = beginPerformanceOperation('image', 'dimensions')
+  const metrics = {}
   try {
     const image = nativeImage.createFromPath(resolveImagePath(relativePath))
-    if (image.isEmpty()) return null
+    if (image.isEmpty()) {
+      metrics.errors = 1
+      return null
+    }
     const { width, height } = image.getSize()
+    Object.assign(metrics, { width, height, pixels: width * height })
     return width > 0 && height > 0 ? { width, height } : null
   } catch (error) {
+    metrics.errors = 1
     console.warn('[images] 读取附件尺寸失败:', error, { relativePath })
     return null
+  } finally {
+    finish(metrics)
   }
 }
 
@@ -239,10 +264,18 @@ let thumbnailQueue = Promise.resolve()
 export function getImageThumbnail(relativePath, maxSize = 240) {
   const size = Math.max(32, Math.min(512, Number(maxSize) || 240))
   const key = relativePath + ':' + size
-  if (pendingThumbnails.has(key)) return pendingThumbnails.get(key)
+  if (pendingThumbnails.has(key)) {
+    recordPerformanceOperation('image', 'thumbnail.deduplicated')
+    return pendingThumbnails.get(key)
+  }
+  const finishWait = beginPerformanceOperation('image', 'thumbnail.queue')
+  const queueDepth = pendingThumbnails.size + 1
   const pending = thumbnailQueue
     .then(() => new Promise((resolve) => setImmediate(resolve)))
-    .then(() => decodeThumbnail(relativePath, size))
+    .then(() => {
+      finishWait({ queueDepth })
+      return decodeThumbnail(relativePath, size)
+    })
     .finally(() => pendingThumbnails.delete(key))
   thumbnailQueue = pending.catch(() => {})
   pendingThumbnails.set(key, pending)
@@ -250,19 +283,28 @@ export function getImageThumbnail(relativePath, maxSize = 240) {
 }
 
 function decodeThumbnail(relativePath, maxSize) {
+  const finish = beginPerformanceOperation('image', 'thumbnail.decode')
+  const metrics = {}
   try {
     const path = resolveImagePath(relativePath)
     const metadata = statSync(path)
+    metrics.bytes = metadata.size
     const cacheKey =
       path + ':' + metadata.mtimeMs + ':' + metadata.ctimeMs + ':' + metadata.size + ':' + maxSize
     const cached = thumbnailCache.get(cacheKey)
-    if (cached !== undefined) return cached
+    if (cached !== undefined) {
+      metrics.cacheHits = 1
+      return cached
+    }
+    metrics.cacheMisses = 1
     const image = nativeImage.createFromPath(path)
     if (image.isEmpty()) {
+      metrics.errors = 1
       console.warn('[images] 无法解析附件缩略图:', { relativePath })
       return null
     }
     const { width, height } = image.getSize()
+    Object.assign(metrics, { width, height, pixels: width * height })
     const limit = Math.max(32, Math.min(512, Number(maxSize) || 240))
     const resized =
       width >= height
@@ -272,8 +314,11 @@ function decodeThumbnail(relativePath, maxSize) {
     thumbnailCache.set(cacheKey, data)
     return data
   } catch (error) {
+    metrics.errors = 1
     console.warn('[images] 生成附件缩略图失败:', error, { relativePath, maxSize })
     return null
+  } finally {
+    finish(metrics)
   }
 }
 
