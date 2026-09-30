@@ -187,6 +187,7 @@ export function createTemplateFormSnapshot(payload = {}) {
     startAt: payload.startAt ?? null,
     endAt: payload.endAt ?? null,
     notifyEnabled: Boolean(payload.notifyEnabled),
+    reminderChannels: Number(payload.reminderChannels ?? (payload.notifyEnabled ? 1 : 0)),
     isPinned: Boolean(payload.isPinned),
     tagIds: [...(payload.tagIds || [])].map(Number).sort((a, b) => a - b)
   })

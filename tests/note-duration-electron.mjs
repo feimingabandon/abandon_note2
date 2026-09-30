@@ -222,6 +222,16 @@ async function runTests() {
     )
 
     await window.webContents.executeJavaScript(`window.api.createTag('空层级测试', '#ff9500')`)
+    const filterPoint = await window.webContents.executeJavaScript(`(() => {
+      const rect = document.querySelector('.sg-btn--taiji').getBoundingClientRect()
+      return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) }
+    })()`)
+    window.webContents.sendInputEvent({ type: 'mouseMove', ...filterPoint })
+    await waitUntil(
+      () =>
+        window.webContents.executeJavaScript(`!document.querySelector('.sg-btn--tags').disabled`),
+      '悬停太极后标签入口未展开'
+    )
     await window.webContents.executeJavaScript(`document.querySelector('.sg-btn--tags').click()`)
     await waitUntil(
       () =>

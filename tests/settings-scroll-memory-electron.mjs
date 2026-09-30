@@ -55,6 +55,11 @@ if (!phase) {
               'cross-view navigation',
               'renderer reload',
               'search motion cancelled on close',
+              'compact settings typography and five content groups',
+              'precise setting search and collapsed diagnostics',
+              'narrow panels, larger text, and three background surfaces',
+              'aligned compact controls, matching ordinary row heights, color and shortcut popovers',
+              'popover keyboard return, outside close, and recording cleanup',
               'new process with same profile starts at top'
             ]
           },
@@ -154,12 +159,300 @@ if (!phase) {
     )
     await until(() => js("!document.querySelector('.settings-panel')"), 'panel did not close')
   }
+  async function search(term) {
+    await js(`(() => {
+      const input = document.querySelector('.settings-search input');
+      input.value = ${JSON.stringify(term)};
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`)
+    await until(
+      () => js("Boolean(document.querySelector('.settings-search-results button'))"),
+      `search result missing: ${term}`
+    )
+  }
+  async function checkLayout(mode) {
+    const bounds = win.getBounds()
+    const settings = await js(
+      'window.api.getSettingsSnapshot().then(s => ({ font: s.values.css.fontSizeBase, size: s.values.ui.settingsPanelSize }))'
+    )
+    async function configure(font, size) {
+      await scroll(0)
+      await close()
+      await js(`(async () => {
+        await window.api.setSettingValue('css.fontSizeBase', ${font});
+        await window.api.setSettingValue('ui.settingsPanelSize', ${size});
+      })()`)
+      await open(0)
+    }
+    win.setSize(mode === 'list' ? 480 : 1200, 820)
+    await pause(160)
+    const initial = await js(`(() => {
+      const p = document.querySelector('.settings-panel');
+      const label = p.querySelector('.setting-label');
+      const root = document.documentElement;
+      return {
+        groups: [...p.querySelectorAll('.category-title')].map(n => n.textContent),
+        bodyFont: parseFloat(getComputedStyle(document.body).fontSize),
+        settingsFont: parseFloat(getComputedStyle(label).fontSize),
+        rootStyle: root.style.cssText,
+        bodyStyle: document.body.style.cssText,
+        expanded: p.querySelector('.diagnostics-toggle').getAttribute('aria-expanded')
+      };
+    })()`)
+    assert.deepEqual(initial.groups, [
+      '外观',
+      '窗口与操作',
+      '便签与截图',
+      '天气与日历',
+      '系统与数据'
+    ])
+    assert.ok(
+      initial.settingsFont < initial.bodyFont * 0.9,
+      'settings font was not reduced locally'
+    )
+    assert.ok(initial.settingsFont >= 12, 'settings text became too small')
+    assert.equal(initial.expanded, 'false', 'diagnostics should start collapsed')
+    await search('备注字号')
+    assert.equal(
+      await js("document.querySelector('.settings-search-results button').textContent.trim()"),
+      '备注字号'
+    )
+    await js("document.querySelector('.settings-search-results button').click()")
+    await until(
+      () => js("document.activeElement.closest('.setting-item')?.textContent.includes('备注字号')"),
+      'search did not focus the requested control'
+    )
+    await search('调度器诊断')
+    await js("document.querySelector('.settings-search-results button').click()")
+    await until(
+      () =>
+        js(
+          "document.querySelector('.diagnostics-toggle').getAttribute('aria-expanded') === 'true' && Boolean(document.activeElement.closest('.diagnostics-content'))"
+        ),
+      'search did not reveal and focus diagnostics'
+    )
+    const savedTop = await js(`${body}.scrollTop`)
+    await close()
+    await open(savedTop, true)
+    assert.equal(
+      await js("document.querySelector('.diagnostics-toggle').getAttribute('aria-expanded')"),
+      'true'
+    )
+    await js("document.querySelector('.diagnostics-toggle').click()")
+    await pause(350)
+    const captureDir = resolve('tmp/settings-layout')
+    mkdirSync(captureDir, { recursive: true })
+    const measurements = []
+    for (const narrow of [false, true]) {
+      win.setSize(mode === 'list' ? (narrow ? 360 : 480) : narrow ? 960 : 1200, 820)
+      await configure(
+        narrow ? (mode === 'list' ? 22 : 28) : mode === 'list' ? 17 : 20,
+        mode === 'list' ? 70 : narrow ? 25 : 40
+      )
+      await pause(160)
+      const dimensions = await js(`(() => {
+        const p = document.querySelector('.settings-panel');
+        const b = p.querySelector('.panel-body');
+        const rows = [...p.querySelectorAll('.setting-item')].filter(n => n.getClientRects().length);
+        return {
+          mode: ${JSON.stringify(mode)}, narrow: ${narrow},
+          width: p.getBoundingClientRect().width,
+          font: getComputedStyle(p.querySelector('.setting-label')).fontSize,
+          bodyOverflow: b.scrollWidth - b.clientWidth,
+          rowOverflow: rows.filter(n => n.scrollWidth > n.clientWidth + 2).map(n => n.textContent.trim().slice(0, 70)),
+          ordinaryRows: rows.filter(n => n.closest('[data-settings-category="appearance"]') && !n.querySelector('.wallpaper-settings, .setting-hint-caption, .setting-error')).map(n => {
+            const label = n.querySelector('.setting-label');
+            const control = n.querySelector('.setting-right, .titlebar-style-selector, .setting-slider-control');
+            const r = n.getBoundingClientRect();
+            return { label: label?.textContent.trim(), height: r.height, right: control?.getBoundingClientRect().right,
+              sameLine: !!control && control.getBoundingClientRect().left >= label.getBoundingClientRect().right - 1 };
+          }).filter(r => r.label),
+          gutterDelta: p.querySelector('.settings-search input').getBoundingClientRect().left - p.querySelector('.category-title').getBoundingClientRect().left
+        };
+      })()`)
+      measurements.push(dimensions)
+      assert.ok(dimensions.bodyOverflow <= 2, JSON.stringify(dimensions))
+      assert.deepEqual(dimensions.rowOverflow, [], JSON.stringify(dimensions))
+      assert.ok(Math.abs(dimensions.gutterDelta) <= 1, 'search and content gutters should align')
+      assert.ok(
+        dimensions.ordinaryRows.every((row) => row.sameLine),
+        JSON.stringify(dimensions)
+      )
+      const rightEdges = dimensions.ordinaryRows.map((row) => row.right)
+      assert.ok(
+        Math.max(...rightEdges) - Math.min(...rightEdges) < 2,
+        'control right edges diverged'
+      )
+      if (!narrow) {
+        const heights = dimensions.ordinaryRows.map((row) => row.height)
+        assert.ok(Math.max(...heights) - Math.min(...heights) < 2, JSON.stringify(dimensions))
+      }
+      for (const theme of narrow ? ['white'] : ['white', 'black', 'wallpaper']) {
+        await js(
+          `document.documentElement.style.setProperty('--bg-color', '${theme === 'black' ? '0 0 0' : '255 255 255'}'); document.documentElement.style.setProperty('--text-color', '${theme === 'black' ? '#fff' : '#182333'}'); document.body.style.background = ${JSON.stringify(theme === 'wallpaper' ? 'repeating-linear-gradient(35deg,#b85b72 0 70px,#3b769c 70px 140px,#bda775 140px 210px)' : theme)}`
+        )
+        await pause(100)
+        writeFileSync(
+          join(captureDir, `${mode}-${narrow ? 'narrow' : 'normal'}-${theme}.png`),
+          (await win.webContents.capturePage()).toPNG()
+        )
+        await js(`document.querySelector('.settings-color-control button').click()`)
+        await until(
+          () => js("Boolean(document.querySelector('.settings-control-panel'))"),
+          'color popup missing'
+        )
+        await pause(250)
+        const popup = await js(`(() => {
+          const p = document.querySelector('.settings-control-panel'); const r = p.getBoundingClientRect();
+          return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: innerWidth, height: innerHeight,
+            overflow: p.scrollWidth - p.clientWidth, font: parseFloat(getComputedStyle(p).fontSize) };
+        })()`)
+        assert.ok(
+          popup.left >= 0 &&
+            popup.right <= popup.width &&
+            popup.top >= 0 &&
+            popup.bottom <= popup.height,
+          JSON.stringify(popup)
+        )
+        assert.ok(
+          popup.overflow <= 2 && popup.font >= 12 && popup.font <= 16,
+          JSON.stringify(popup)
+        )
+        writeFileSync(
+          join(captureDir, `${mode}-${narrow ? 'narrow' : 'normal'}-color-${theme}.png`),
+          (await win.webContents.capturePage()).toPNG()
+        )
+        if (!narrow && theme === 'white') {
+          const originalColor = await js(
+            'window.api.getSettingsSnapshot().then(s => s.values.css.bgColor)'
+          )
+          await js(`(() => {
+            const input = document.querySelector('.settings-control-panel .color-hex-input');
+            input.focus(); input.value = '#123456';
+            input.dispatchEvent(new Event('input', {bubbles:true}));
+            input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true}));
+          })()`)
+          await until(
+            () =>
+              js("window.api.getSettingsSnapshot().then(s => s.values.css.bgColor === '18 52 86')"),
+            'color popup did not save typed value'
+          )
+          await js(`(() => {
+            const input = document.querySelector('.settings-control-panel .color-hex-input');
+            input.value = '#zzzzzz'; input.dispatchEvent(new Event('input', {bubbles:true}));
+            input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true}));
+          })()`)
+          assert.equal(
+            await js("document.querySelector('.color-hex-input').classList.contains('has-error')"),
+            true
+          )
+          assert.equal(
+            await js('window.api.getSettingsSnapshot().then(s => s.values.css.bgColor)'),
+            '18 52 86',
+            'invalid input changed saved color'
+          )
+          await js(`document.querySelector('.settings-control-panel .color-dot').click()`)
+          await until(
+            () =>
+              js("window.api.getSettingsSnapshot().then(s => s.values.css.bgColor === '0 0 0')"),
+            'color preset did not save'
+          )
+          await js(`window.api.setSettingValue('css.bgColor', ${JSON.stringify(originalColor)})`)
+        }
+        await js(
+          `document.querySelector('.settings-control-panel').dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true, cancelable:true}))`
+        )
+        await until(
+          () => js("!document.querySelector('.settings-control-panel')"),
+          'color popup did not close'
+        )
+        assert.equal(
+          await js("document.activeElement.matches('.settings-color-control button')"),
+          true,
+          'Escape did not return focus'
+        )
+      }
+      await js(`(() => {
+        const trigger = document.querySelector('[data-shortcut="viewVisibility"] button');
+        trigger.scrollIntoView({ block: 'center', behavior: 'instant' }); trigger.click();
+      })()`)
+      await until(
+        () => js("Boolean(document.querySelector('.shortcut-recorder-field'))"),
+        'shortcut popup missing'
+      )
+      await pause(250)
+      writeFileSync(
+        join(captureDir, `${mode}-${narrow ? 'narrow' : 'normal'}-shortcut.png`),
+        (await win.webContents.capturePage()).toPNG()
+      )
+      await js("document.querySelector('.shortcut-recorder-field').click()")
+      await until(
+        () =>
+          js(
+            'window.api.getSettingsSnapshot().then(s => s.runtime.shortcuts.viewVisibility.capturing)'
+          ),
+        'recording did not begin'
+      )
+      await js(
+        "document.querySelector('.panel-title').dispatchEvent(new PointerEvent('pointerdown', {bubbles:true}))"
+      )
+      await until(
+        () => js("!document.querySelector('.shortcut-recorder')"),
+        'outside click did not close recorder'
+      )
+      await until(
+        () =>
+          js(
+            'window.api.getSettingsSnapshot().then(s => !s.runtime.shortcuts.viewVisibility.capturing)'
+          ),
+        'closing popup leaked recording session'
+      )
+      await scroll(0)
+    }
+    for (const category of ['notes', 'weather', 'system']) {
+      await js(`(() => {
+        const p = document.querySelector('.settings-panel');
+        const b = p.querySelector('.panel-body');
+        const target = p.querySelector('[data-settings-category="${category}"]');
+        b.scrollTop += target.getBoundingClientRect().top - b.getBoundingClientRect().top;
+      })()`)
+      await pause(100)
+      const categoryLayout = await js(`(() => {
+        const p = document.querySelector('.settings-panel');
+        const target = p.querySelector('[data-settings-category="${category}"]');
+        return { width: p.getBoundingClientRect().width, font: parseFloat(getComputedStyle(p.querySelector('.setting-label')).fontSize), overflow: target.scrollWidth - target.clientWidth };
+      })()`)
+      assert.ok(categoryLayout.overflow <= 2, `${category}: ${JSON.stringify(categoryLayout)}`)
+      if (mode !== 'list') {
+        assert.equal(categoryLayout.width, 300, 'narrow category capture width changed')
+        assert.equal(categoryLayout.font, 16, 'large-text category capture font changed')
+      }
+      writeFileSync(
+        join(captureDir, `${mode}-narrow-${category}.png`),
+        (await win.webContents.capturePage()).toPNG()
+      )
+    }
+    writeFileSync(join(captureDir, `${mode}.json`), JSON.stringify(measurements, null, 2))
+    win.setBounds(bounds)
+    await configure(settings.font, settings.size)
+    await js(
+      `document.documentElement.style.cssText = ${JSON.stringify(initial.rootStyle)}; document.body.style.cssText = ${JSON.stringify(initial.bodyStyle)}; ${body}.scrollTop = 0;`
+    )
+    await pause(160)
+  }
   async function run() {
     const positions = new Map()
     for (const [index, mode] of ['list', 'month', 'week'].entries()) {
       await view(mode)
       await open(0)
+      if (phase === 'restart') {
+        assert.equal(
+          await js("document.querySelector('.diagnostics-toggle').getAttribute('aria-expanded')"),
+          'false'
+        )
+      }
       if (phase === 'remember') {
+        await checkLayout(mode)
         const top = await scroll(420 + index * 300)
         assert.ok(top > 300)
         positions.set(mode, top)
@@ -224,7 +517,7 @@ if (!phase) {
   setTimeout(() => {
     console.error('[settings-scroll] timed out')
     app.exit(1)
-  }, 60000)
+  }, 120000)
   app.once('ready', () => {
     void run().catch((error) => {
       console.error(error)

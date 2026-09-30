@@ -25,3 +25,5 @@ docs/发布构建与应用更新流程.md
 # Local QA snapshots and native transition build artifacts
 /tmp/
 /native_blur/build-transition/
+/native_capture/build/
+/native_capture/deploy/

@@ -3,6 +3,7 @@ import { useDraftProtection } from '../../composables/useDraftProtection.js'
 import { computed, onBeforeUnmount, ref } from 'vue'
 import ColoredTextEditor from '../note/ColoredTextEditor.vue'
 import TimePicker from '../ui/TimePicker.vue'
+import ReminderChannelPicker from '../note/ReminderChannelPicker.vue'
 import AppToggle from '../ui/AppToggle.vue'
 import TagSelector from '../ui/TagSelector.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
@@ -39,7 +40,7 @@ const time = ref(initialTime)
 const timeDirty = ref(false)
 const durationKind = ref(NOTE_DURATION_KINDS.SINGLE_DAY)
 const durationDays = ref(1)
-const notifyEnabled = ref(false)
+const reminderChannels = ref(0)
 const isPinned = ref(false)
 const tagIds = ref([])
 const imagePickerRef = ref(null)
@@ -47,11 +48,6 @@ const draftImageCount = ref(0)
 const attachmentsBusy = ref(false)
 const saving = ref(false)
 const discardVisible = ref(false)
-const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
-  supported: true,
-  reason: ''
-}
-
 const dateLabel = computed(() => {
   const [year, month, day] = props.dateKey.split('-').map(Number)
   return `${year}年${month}月${day}日`
@@ -63,16 +59,14 @@ const isHistoricalBackfill = computed(
 )
 const canNotify = computed(
   () =>
-    systemNotificationCapability.supported &&
-    !isImmediateDefault.value &&
-    canScheduleNoteNotification(selectedEffectiveAt.value, Date.now())
+    !isImmediateDefault.value && canScheduleNoteNotification(selectedEffectiveAt.value, Date.now())
 )
 const dirty = computed(
   () =>
     Boolean(content.value.trim()) ||
     timeDirty.value ||
     durationKind.value !== NOTE_DURATION_KINDS.SINGLE_DAY ||
-    notifyEnabled.value ||
+    reminderChannels.value ||
     isPinned.value ||
     tagIds.value.length > 0 ||
     (imagePickerRef.value?.getImages?.().length || 0) > 0
@@ -81,7 +75,7 @@ const canCreate = computed(() => Boolean(content.value.trim()) || draftImageCoun
 
 function onTimeChange() {
   timeDirty.value = true
-  if (!canNotify.value) notifyEnabled.value = false
+  if (!canNotify.value) reminderChannels.value = 0
 }
 
 function requestClose() {
@@ -111,7 +105,7 @@ async function create() {
     contentColorRanges: normalizeNoteTextColorRanges(contentColorRanges.value, content.value),
     durationKind: durationKind.value,
     durationDays: durationDays.value,
-    notifyEnabled: canNotify.value && notifyEnabled.value,
+    reminderChannels: canNotify.value ? reminderChannels.value : 0,
     isPinned: isPinned.value
   }
   if (!isImmediateDefault.value) {
@@ -157,7 +151,7 @@ const protectedDraft = useDraftProtection({
     timeDirty,
     durationKind,
     durationDays,
-    notifyEnabled,
+    reminderChannels,
     isPinned,
     tagIds
   },
@@ -216,21 +210,18 @@ const protectedDraft = useDraftProtection({
       </div>
       <p v-if="isImmediateDefault" class="month-creator__hint">保持默认时间：创建后立即生效</p>
       <p v-else-if="isHistoricalBackfill" class="month-creator__hint is-history">
-        历史补录将直接进入进行中，不发送系统提醒。
+        历史补录将直接进入进行中，不触发提醒。
       </p>
 
       <NoteDurationField v-model:kind="durationKind" v-model:days="durationDays" visible />
 
-      <div class="month-creator__row">
-        <label
-          >系统提醒<HelpButton
-            :text="
-              canNotify
-                ? '到达生效时间时发送系统提醒。'
-                : `仅未来至少 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟的预约可开启提醒。`
-            "
-        /></label>
-        <AppToggle v-model="notifyEnabled" :disabled="!canNotify" />
+      <div class="month-creator__field">
+        <ReminderChannelPicker
+          v-model="reminderChannels"
+          :disabled="!canNotify"
+          :help-text="`仅未来至少 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟的预约可开启提醒。`"
+          disabled-reason="设置未来生效时间后可选择提醒方式"
+        />
       </div>
       <div class="month-creator__row">
         <label>置顶<HelpButton text="与便签列表共用同一置顶状态。" /></label>

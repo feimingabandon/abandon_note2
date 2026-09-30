@@ -1,0 +1,25 @@
+********* Start testing of SelectionTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : SelectionTest::initTestCase()
+PASS   : SelectionTest::snappingVisibilityAndBounds()
+PASS   : SelectionTest::movementKeepsSizeAndExactAlignment()
+PASS   : SelectionTest::newSelectionBypassAndPrecision()
+PASS   : SelectionTest::resizeHandles(0)
+PASS   : SelectionTest::resizeHandles(1)
+PASS   : SelectionTest::resizeHandles(2)
+PASS   : SelectionTest::resizeHandles(3)
+PASS   : SelectionTest::resizeHandles(4)
+PASS   : SelectionTest::resizeHandles(5)
+PASS   : SelectionTest::resizeHandles(6)
+PASS   : SelectionTest::resizeHandles(7)
+PASS   : SelectionTest::clickSelectionMoveAndSpace()
+PASS   : SelectionTest::composition(left-negative-mixed)
+PASS   : SelectionTest::composition(above-negative-portrait)
+PASS   : SelectionTest::composition(vertical-offset)
+PASS   : SelectionTest::composition(physical-gap)
+PASS   : SelectionTest::composition(odd-fractional)
+PASS   : SelectionTest::compositionRejectsInvalidAndHugeLayouts()
+PASS   : SelectionTest::virtualScreensSelectionToolbarAndPin()
+PASS   : SelectionTest::cleanupTestCase()
+Totals: 21 passed, 0 failed, 0 skipped, 0 blacklisted, 193ms
+********* Finished testing of SelectionTest *********

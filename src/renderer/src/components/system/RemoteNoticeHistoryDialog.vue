@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import AppModalShell from '../ui/AppModalShell.vue'
 import RemoteNoticeDialog from './RemoteNoticeDialog.vue'
 
+defineProps({ queue: { type: Object, default: null } })
 const PAGE_SIZE = 20
 const visible = defineModel('visible', { type: Boolean, default: false })
 const loading = ref(false)
@@ -64,6 +65,7 @@ watch(visible, (value) => {
 
 <template>
   <AppModalShell
+    :queue="queue"
     :visible="visible"
     title="全部通知"
     :subtitle="subtitle"

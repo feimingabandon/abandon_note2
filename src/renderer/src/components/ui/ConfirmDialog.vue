@@ -8,6 +8,7 @@
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import BaseButton from './BaseButton.vue'
 import { retainModalBlur } from '../../utils/modalBlur.js'
+import { modalQueue } from '../../utils/modalQueue.js'
 import {
   captureFocusedElement,
   focusModal,
@@ -32,8 +33,10 @@ let animTimer = null
 let releaseBackgroundBlur = null
 let focusFrame = null
 let previouslyFocused = null
+let releaseQueueHold = null
 
 function acquireModalBlur() {
+  if (!releaseQueueHold) releaseQueueHold = modalQueue.hold()
   if (releaseBackgroundBlur) return
   releaseBackgroundBlur = retainModalBlur()
 }
@@ -41,6 +44,9 @@ function acquireModalBlur() {
 function freeModalBlur() {
   releaseBackgroundBlur?.()
   releaseBackgroundBlur = null
+  const done = releaseQueueHold
+  releaseQueueHold = null
+  if (done) void nextTick(done)
 }
 
 function close(type) {

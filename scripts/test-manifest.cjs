@@ -1,4 +1,6 @@
 const databaseTests = Object.freeze([
+  'tests/note-list-completion-db.mjs',
+  'tests/reminder-database-integration.mjs',
   'tests/backend-integration.mjs',
   'tests/note-duration-db.mjs',
   'tests/note-remark-db.mjs',
@@ -33,11 +35,17 @@ const windowFrameTests = Object.freeze([
 ])
 
 const electronFeatureTests = Object.freeze([
+  'tests/note-list-toolbar-electron.mjs',
+  'tests/note-list-tag-refresh-electron.mjs',
+  'tests/note-list-refresh-electron.mjs',
+  'tests/note-list-completion-electron.mjs',
+  'tests/reminders-electron.mjs',
   'tests/almanac-weather-electron.mjs',
   'tests/attachment-loading-electron.mjs',
   'tests/list-minimal-mode-electron.mjs',
   'tests/calendar-font-electron.mjs',
   'tests/draft-dialog-ui-electron.mjs',
+  'tests/modal-queue-electron.mjs',
   'tests/first-use-notice-electron.mjs',
   'tests/help-center-electron.mjs',
   'tests/logging-actions-electron.mjs',
@@ -50,7 +58,9 @@ const electronFeatureTests = Object.freeze([
   'tests/presentation-mode-electron.mjs',
   'tests/titlebar-native-drag-electron.mjs',
   'tests/recurring-preview-electron.mjs',
-  'tests/screenshot-recovery-electron.mjs',
+  'tests/capture-lifecycle-electron.mjs',
+  'tests/capture-host-electron.mjs',
+  'tests/capture-business-electron.mjs',
   'tests/settings-scroll-memory-electron.mjs',
   'tests/window-state-matrix-electron.mjs',
   'tests/week-day-panel-electron.mjs',
@@ -74,6 +84,7 @@ const benchmarkTests = Object.freeze([
 
 const helperFiles = Object.freeze([
   'tests/calendar-count-preview-helper.mjs',
+  'tests/helpers/capture-test-desktop.mjs',
   'tests/helpers/date-picker-keyboard.mjs',
   'tests/helpers/renderer-evidence.mjs',
   'tests/fullscreen-foreground-electron.mjs'

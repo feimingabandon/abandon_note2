@@ -1,0 +1,2 @@
+
+{"status":"passed","assertions":["prewarm single process","real desktop capture","cancel exactly once","crash recovery","IPC disconnect exit","atomic Job parent death","graceful shutdown"],"pid":42476}

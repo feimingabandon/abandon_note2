@@ -2157,8 +2157,8 @@ async function runMonthViewTests() {
     assert.equal(settingsUi.resizeCursor, 'ew-resize', '月视图设置面板左边缘必须支持横向调宽')
     for (const title of [
       '基础样式',
-      '窗口模糊玻璃与外观',
-      'CSS 玻璃全局基准',
+      '窗口背景与圆角',
+      '弹窗与浮层',
       '系统设置',
       '远程服务与隐私',
       '关于',

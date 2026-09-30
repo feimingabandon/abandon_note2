@@ -1,17 +1,27 @@
 <script setup>
 import { isComposingInput } from '../../utils/inputComposition.js'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   formatViewVisibilityShortcut,
   shortcutCaptureFromKeyboardEvent
 } from '../../../../shared/view-visibility-shortcut.js'
 import BaseButton from './BaseButton.vue'
+import {
+  acquireShortcutRecorder,
+  releaseShortcutRecorder
+} from '../../utils/shortcutRecordingOwner.js'
 
 const props = defineProps({
+  action: { type: String, default: 'viewVisibility' },
   modelValue: { type: String, default: '' },
   runtime: { type: Object, default: null },
   disabled: { type: Boolean, default: false }
 })
+
+const saveShortcut = (value) =>
+  props.action === 'viewVisibility'
+    ? window.api.setViewVisibilityShortcut(value)
+    : window.api.setCaptureShortcut(props.action, value)
 
 const emit = defineEmits(['update:modelValue', 'update:runtime', 'feedback'])
 
@@ -23,6 +33,7 @@ const capturePreview = ref('')
 const localStatus = ref(null)
 let captureRequested = false
 let componentUnmounted = false
+const recorderOwner = Symbol('shortcut-recorder')
 
 const formattedValue = computed(() => formatViewVisibilityShortcut(props.modelValue, platform))
 const fieldValue = computed(() => {
@@ -34,10 +45,13 @@ const actionLabel = computed(() => {
   return props.modelValue ? '重新录制' : '录制'
 })
 const persistentStatus = computed(() => {
+  if (props.runtime?.enabled === false) {
+    return { type: 'muted', text: '全局快捷键已禁用；可在托盘中开启，已保存的按键保持不变' }
+  }
   if (props.runtime?.error && props.modelValue && !props.runtime.registered) {
     return {
       type: 'error',
-      text: `启动时已保存但注册失败：${props.runtime.error.message || '快捷键被系统或其他应用占用'}`
+      text: `未能启用：${props.runtime.error.message || '快捷键被系统或其他应用占用'}；释放占用后点击“重试启用”，无需重启`
     }
   }
   if (props.modelValue && props.runtime?.registered !== false) {
@@ -46,6 +60,12 @@ const persistentStatus = computed(() => {
   return { type: 'muted', text: '未设置；点击“录制”，然后直接按下组合键' }
 })
 const visibleStatus = computed(() => localStatus.value || persistentStatus.value)
+watch(
+  () => [props.runtime?.enabled, props.runtime?.registered, props.runtime?.error?.message],
+  () => {
+    if (!isCapturing.value && !isBusy.value) localStatus.value = null
+  }
+)
 
 function setStatus(type, text) {
   localStatus.value = { type, text }
@@ -66,18 +86,30 @@ async function beginCapture() {
   localStatus.value = null
   capturePreview.value = ''
   try {
-    const runtime = await window.api.beginViewVisibilityShortcutCapture()
-    if (componentUnmounted) {
-      await window.api.endViewVisibilityShortcutCapture().catch(() => {})
-      return
-    }
-    applyRuntime(runtime)
-    isCapturing.value = true
-    setStatus('recording', '正在录制：请按下一个组合键，Esc 取消')
-    await nextTick()
-    fieldRef.value?.focus({ preventScroll: true })
+    await acquireShortcutRecorder(
+      recorderOwner,
+      () => cancelCapture({ announce: false }),
+      async () => {
+        if (componentUnmounted) {
+          releaseShortcutRecorder(recorderOwner)
+          return
+        }
+        const runtime = await window.api.beginViewVisibilityShortcutCapture(props.action)
+        if (componentUnmounted) {
+          releaseShortcutRecorder(recorderOwner)
+          await window.api.endViewVisibilityShortcutCapture(props.action).catch(() => {})
+          return
+        }
+        applyRuntime(runtime)
+        isCapturing.value = true
+        setStatus('recording', '正在录制：请按下一个组合键，Esc 取消')
+        await nextTick()
+        fieldRef.value?.focus({ preventScroll: true })
+      }
+    )
   } catch (error) {
     captureRequested = false
+    releaseShortcutRecorder(recorderOwner)
     setStatus('error', `无法进入录制：${error?.message || '主进程通信失败'}`)
   } finally {
     isBusy.value = false
@@ -88,11 +120,12 @@ async function cancelCapture({ announce = true } = {}) {
   if (!captureRequested && !isCapturing.value) return
   isBusy.value = true
   try {
-    applyRuntime(await window.api.endViewVisibilityShortcutCapture())
+    applyRuntime(await window.api.endViewVisibilityShortcutCapture(props.action))
   } catch (error) {
     console.warn('[ShortcutRecorder] 结束快捷键录制失败:', error)
   } finally {
     captureRequested = false
+    releaseShortcutRecorder(recorderOwner)
     isCapturing.value = false
     isBusy.value = false
     capturePreview.value = ''
@@ -113,7 +146,7 @@ async function recordCandidate(accelerator, display) {
   isBusy.value = true
   setStatus('recording', `正在校验：${display}`)
   try {
-    const result = await window.api.setViewVisibilityShortcut(accelerator)
+    const result = await saveShortcut(accelerator)
     applyRuntime(result?.runtime)
     if (result?.status === 'conflict') {
       setStatus('error', '冲突：该快捷键已被系统或其他应用占用，请换一个')
@@ -125,21 +158,29 @@ async function recordCandidate(accelerator, display) {
       return
     }
     if (result?.status === 'unchanged') {
+      releaseShortcutRecorder(recorderOwner)
       captureRequested = false
       emit('update:modelValue', result.accelerator || props.modelValue)
       isCapturing.value = false
       capturePreview.value = ''
-      setStatus('muted', `未变化：${formattedValue.value || display}`)
+      setStatus(
+        'muted',
+        `未变化：${formattedValue.value || display}${result.runtime?.enabled === false ? '；全局快捷键仍处于禁用状态' : ''}`
+      )
       return
     }
     if (result?.status === 'saved') {
+      releaseShortcutRecorder(recorderOwner)
       captureRequested = false
       emit('update:modelValue', result.accelerator)
       isCapturing.value = false
       capturePreview.value = ''
       const savedDisplay = formatViewVisibilityShortcut(result.accelerator, platform)
-      setStatus('success', `保存成功：${savedDisplay}`)
-      emitFeedback('success', `视图显示快捷键已保存：${savedDisplay}`)
+      setStatus(
+        'success',
+        `保存成功：${savedDisplay}${result.runtime?.enabled === false ? '；全局快捷键仍处于禁用状态' : ''}`
+      )
+      emitFeedback('success', `快捷键已保存：${savedDisplay}`)
       return
     }
 
@@ -186,17 +227,18 @@ async function clearShortcut() {
   if (props.disabled || isBusy.value || (!props.modelValue && !isCapturing.value)) return
   isBusy.value = true
   try {
-    const result = await window.api.setViewVisibilityShortcut('')
+    const result = await saveShortcut('')
     applyRuntime(result?.runtime)
     if (result?.status !== 'cleared' && result?.status !== 'unchanged') {
       throw new Error('主进程未清除快捷键')
     }
     emit('update:modelValue', '')
+    releaseShortcutRecorder(recorderOwner)
     captureRequested = false
     isCapturing.value = false
     capturePreview.value = ''
-    setStatus('success', '已清除：视图显示快捷键未设置')
-    emitFeedback('success', '视图显示快捷键已清除')
+    setStatus('success', '已清除：快捷键未设置')
+    emitFeedback('success', '快捷键已清除')
   } catch (error) {
     setStatus('error', `清除失败：${error?.message || '主进程通信失败'}`)
     emitFeedback('error', '快捷键清除失败，请重试', 4000)
@@ -205,13 +247,31 @@ async function clearShortcut() {
   }
 }
 
+async function retryShortcut() {
+  if (props.disabled || isBusy.value || isCapturing.value) return
+  isBusy.value = true
+  localStatus.value = null
+  try {
+    const snapshot = await window.api.retryShortcuts()
+    if (componentUnmounted) return
+    const runtime = snapshot.runtime.shortcuts[props.action]
+    applyRuntime(runtime)
+    if (runtime?.registered) emitFeedback('success', '快捷键已恢复，无需重启')
+  } catch {
+    setStatus('error', '重试失败，请稍后再试')
+  } finally {
+    isBusy.value = false
+  }
+}
+
 onMounted(() => window.addEventListener('keydown', onKeydown, true))
 
 onBeforeUnmount(() => {
+  releaseShortcutRecorder(recorderOwner)
   componentUnmounted = true
   window.removeEventListener('keydown', onKeydown, true)
   if (captureRequested || isCapturing.value) {
-    void window.api.endViewVisibilityShortcutCapture().catch(() => {})
+    void window.api.endViewVisibilityShortcutCapture(props.action).catch(() => {})
   }
 })
 </script>
@@ -226,8 +286,8 @@ onBeforeUnmount(() => {
         :value="fieldValue"
         readonly
         inputmode="none"
-        aria-label="视图显示快捷键录制框"
-        aria-describedby="view-visibility-shortcut-status"
+        :aria-label="`${action === 'viewVisibility' ? '视图显示' : '截图'}快捷键录制框`"
+        :aria-describedby="`shortcut-status-${action}`"
         :disabled="disabled"
         @click="beginCapture"
         @beforeinput.prevent
@@ -235,6 +295,20 @@ onBeforeUnmount(() => {
       />
       <BaseButton size="sm" :disabled="disabled || isBusy" @click="toggleCapture">
         {{ actionLabel }}
+      </BaseButton>
+      <BaseButton
+        v-if="
+          runtime?.enabled &&
+          runtime?.error &&
+          !runtime.registered &&
+          !runtime.capturing &&
+          !isCapturing
+        "
+        size="sm"
+        :disabled="disabled || isBusy"
+        @click="retryShortcut"
+      >
+        重试启用
       </BaseButton>
       <BaseButton
         size="sm"
@@ -245,7 +319,7 @@ onBeforeUnmount(() => {
       </BaseButton>
     </div>
     <p
-      id="view-visibility-shortcut-status"
+      :id="`shortcut-status-${action}`"
       class="shortcut-recorder-status"
       :class="`is-${visibleStatus.type}`"
       aria-live="polite"
@@ -263,6 +337,7 @@ onBeforeUnmount(() => {
 
 .shortcut-recorder-controls {
   display: flex;
+  flex-wrap: wrap;
   min-width: 0;
   align-items: center;
   gap: 6rem;

@@ -47,7 +47,10 @@
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build:unpack:win",
     "build:unpack:win": "npm run build:native:win && npm run build && electron-builder --config electron-builder.win.yml --win --x64 --dir",
-    "build:native:win": "powershell -NoProfile -ExecutionPolicy Bypass -File native_blur/build.ps1",
+    "build:native:win": "powershell -NoProfile -ExecutionPolicy Bypass -File native_blur/build.ps1 && npm run build:capture:win",
+    "build:capture:win": "powershell -NoProfile -ExecutionPolicy Bypass -File native_capture/build.ps1",
+    "test:capture:native": "powershell -NoProfile -ExecutionPolicy Bypass -File native_capture/build.ps1 -Test",
+    "test:capture:electron": "node scripts/run-electron-window-tests.cjs capture",
     "build:win": "npm run build:native:win && npm run build && electron-builder --config electron-builder.win.yml --win nsis --x64 --publish never",
     "build:mac:x64": "npm run build && electron-builder --config electron-builder.mac.yml --mac dmg --x64 --publish never",
     "build:mac:arm64": "npm run build && electron-builder --config electron-builder.mac.yml --mac dmg --arm64 --publish never"

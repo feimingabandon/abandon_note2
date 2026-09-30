@@ -1,4 +1,5 @@
 <script setup>
+import { useModalRequest } from '../../composables/useQueuedModal.js'
 import { reportEvidence } from '../../utils/diagnosticEvidence.js'
 import { useSettingsSearch } from '../../composables/useSettingsSearch.js'
 import { stopScrollInertia } from '../../utils/smoothScroll.js'
@@ -24,6 +25,9 @@ import BaseButton from '../ui/BaseButton.vue'
 import FontSizeInput from '../ui/FontSizeInput.vue'
 import AppSlider from '../ui/AppSlider.vue'
 import ShortcutRecorder from '../ui/ShortcutRecorder.vue'
+import SettingsControlPopover from './SettingsControlPopover.vue'
+import { formatViewVisibilityShortcut } from '../../../../shared/view-visibility-shortcut.js'
+import { CAPTURE_SHORTCUTS } from '../../../../shared/capture-shortcuts.js'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import WallpaperSettings from '../wallpaper/WallpaperSettings.vue'
@@ -57,7 +61,8 @@ const schedulerHealth = ref(null)
 let _schedulerTimer = null
 
 const SCHEDULER_TASK_LABELS = Object.freeze({
-  activationTask: '便签生效与提醒',
+  activationTask: '便签生效',
+  reminderTask: '便签提醒与稍后提醒',
   noteGenerationTask: '循环便签生成',
   blurRuntimeDiagnosticTask: '窗口模糊运行诊断',
   dockHealthTask: '贴边隐藏健康检查',
@@ -92,6 +97,15 @@ function tickTimeAgo(ts) {
   if (diff < 60000) return `${Math.floor(diff / 1000)} 秒前`
   if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`
   return `${Math.floor(diff / 3600000)} 小时前`
+}
+
+function shortcutSummary(value, runtime) {
+  const key =
+    formatViewVisibilityShortcut(value, window.api?.runtimeCapabilities?.platform || 'win32') ||
+    '未设置'
+  if (runtime?.enabled === false) return '已禁用 · ' + key
+  if (runtime?.error && !runtime.registered) return '未启用 · ' + key
+  return key
 }
 
 const props = defineProps({
@@ -144,6 +158,20 @@ const panelRef = ref(null)
 const panelBodyRef = ref(null)
 // sessionStorage 跨主视图导航保留，关闭本次软件窗口会话后清空，不写入用户设置。
 const scrollMemoryKey = `abandon-note:settings-scroll:${props.viewMode}`
+const diagnosticsMemoryKey = `${scrollMemoryKey}:diagnostics`
+const diagnosticsExpanded = ref(false)
+try {
+  diagnosticsExpanded.value = sessionStorage.getItem(diagnosticsMemoryKey) === 'true'
+} catch {
+  // 临时存储不可用时，诊断区默认收起。
+}
+watch(diagnosticsExpanded, (expanded) => {
+  try {
+    sessionStorage.setItem(diagnosticsMemoryKey, String(expanded))
+  } catch {
+    // 展开状态不写入持久设置，不影响诊断功能。
+  }
+})
 let scrollMemoryReady = false
 let scrollRestoreObserver = null
 
@@ -207,8 +235,10 @@ const panelStyle = computed(() =>
   isCalendarView.value ? { width: panelSize.value + '%' } : { height: panelSize.value + '%' }
 )
 const isResetting = ref(false)
-const showLogViewer = ref(false)
-const showNoticeHistory = ref(false)
+const logQueue = useModalRequest()
+const showLogViewer = logQueue.requested
+const historyQueue = useModalRequest()
+const showNoticeHistory = historyQueue.requested
 const appVersion = ref('未知')
 const currentHolidayYear = new Date().getFullYear()
 const holidayDataStatus = ref(null)
@@ -372,6 +402,8 @@ const titlebarStyle = ref(DEFAULT_SETTINGS.appearance.titlebarStyle)
 const titlebarIconScale = ref(DEFAULT_SETTINGS.appearance.titlebarIconScale)
 const iconColor = ref(DEFAULT_SETTINGS.appearance.iconColor)
 const viewVisibilityShortcut = ref(DEFAULT_SETTINGS.shortcuts.viewVisibility)
+const captureShortcuts = ref({ ...DEFAULT_SETTINGS.shortcuts })
+const captureShortcutRuntime = ref({})
 const viewVisibilityShortcutRuntime = ref({
   configured: DEFAULT_SETTINGS.shortcuts.viewVisibility,
   registered: false,
@@ -866,7 +898,7 @@ async function refreshWeatherManually() {
 }
 
 /**
- * 使用元素的真实高度驱动原生模糊参数区动画。
+ * 使用元素的真实高度驱动原生模糊参数和诊断详情的展开动画。
  * 相比 0fr/1fr CSS 插值，这在 Electron 当前布局中更稳定。
  */
 function animateNativeBlurOptions(el, opening, done) {
@@ -1243,6 +1275,8 @@ function assignSettingsSnapshot(snapshot) {
   titlebarIconScale.value = appearance.titlebarIconScale
   iconColor.value = appearance.iconColor
   viewVisibilityShortcut.value = shortcuts.viewVisibility
+  captureShortcuts.value = { ...shortcuts }
+  captureShortcutRuntime.value = { ...snapshot.runtime?.shortcuts }
   if (snapshot.runtime?.shortcuts?.viewVisibility) {
     viewVisibilityShortcutRuntime.value = snapshot.runtime.shortcuts.viewVisibility
   }
@@ -1364,7 +1398,11 @@ onMounted(async () => {
 
   stopBlurRuntimeListener = window.api.onSettingsChanged?.((snapshot) => {
     if (snapshot?.values?.shortcuts && !viewVisibilityShortcutRuntime.value.capturing) {
+      captureShortcuts.value = { ...snapshot.values.shortcuts }
       viewVisibilityShortcut.value = snapshot.values.shortcuts.viewVisibility
+    }
+    if (snapshot?.runtime?.shortcuts) {
+      captureShortcutRuntime.value = { ...snapshot.runtime.shortcuts }
     }
     if (snapshot?.runtime?.shortcuts?.viewVisibility) {
       viewVisibilityShortcutRuntime.value = snapshot.runtime.shortcuts.viewVisibility
@@ -1503,7 +1541,18 @@ const onConfirmResetSettings = async () => {
     isResetting.value = false
   }
 }
-const settingsSearch = useSettingsSearch(panelRef)
+const settingsSearch = useSettingsSearch(panelRef, {
+  beforeNavigate: async (target) => {
+    cancelScrollRestore()
+    if (!target.closest('.settings-diagnostics')) return
+    diagnosticsExpanded.value = true
+    await nextTick()
+    const content = panelRef.value?.querySelector('.diagnostics-content')
+    await Promise.allSettled(
+      (content?.getAnimations() || []).map((animation) => animation.finished)
+    )
+  }
+})
 watch(
   () => props.visible,
   (visible) => {
@@ -1599,7 +1648,7 @@ async function retryScheduler() {
           >
             <button
               v-for="result in settingsSearch.results.value"
-              :key="result.title"
+              :key="result.key"
               type="button"
               @click="settingsSearch.navigate(result)"
             >
@@ -1623,1079 +1672,1251 @@ async function retryScheduler() {
         >
           <fieldset class="settings-controls" :disabled="isResetting">
             <!-- ========== 基础样式 ========== -->
-            <section class="settings-section">
-              <h3 class="section-title">基础样式</h3>
+            <div
+              class="settings-category"
+              data-settings-category="appearance"
+              role="group"
+              aria-labelledby="settings-category-appearance"
+            >
+              <h3 id="settings-category-appearance" class="category-title">外观</h3>
+              <section class="settings-section">
+                <h4 class="section-title">基础样式</h4>
 
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >导航栏风格<HelpButton
-                      :text="
-                        isCalendarView
-                          ? `只切换${calendarViewLabel}导航栏的布局和按钮外观，不改变关闭、置顶、锁定、循环模板、设置和帮助按钮。`
-                          : '只切换列表导航栏的布局和按钮外观，不改变关闭、置顶、锁定、循环模板、设置和帮助功能。'
-                      "
-                  /></span>
-                </div>
-                <div class="titlebar-style-selector" role="radiogroup" aria-label="导航栏风格">
-                  <button
-                    type="button"
-                    role="radio"
-                    :aria-checked="titlebarStyle === 'apple'"
-                    :class="{ active: titlebarStyle === 'apple' }"
-                    @click="titlebarStyle = 'apple'"
-                  >
-                    Apple
-                  </button>
-                  <button
-                    type="button"
-                    role="radio"
-                    :aria-checked="titlebarStyle === 'microsoft'"
-                    :class="{ active: titlebarStyle === 'microsoft' }"
-                    @click="titlebarStyle = 'microsoft'"
-                  >
-                    Microsoft
-                  </button>
-                </div>
-              </div>
-
-              <div class="setting-item setting-item-slider">
-                <span class="setting-label"
-                  >导航图标大小<HelpButton
-                    text="此设置由列表、月视图和周视图共同使用。会同步调整窗口导航图标和日历工具栏操作图标；Apple 风格还会同步放大圆形按钮。"
-                /></span>
-                <span class="range-label-start" aria-hidden="true"></span>
-                <AppSlider
-                  v-model="titlebarIconScale"
-                  data-diagnostic-action="settings.titlebarIconScale"
-                  :min="TITLEBAR_ICON_SCALE_LIMITS.min"
-                  :max="TITLEBAR_ICON_SCALE_LIMITS.max"
-                  :step="TITLEBAR_ICON_SCALE_LIMITS.step"
-                  aria-label="导航图标大小"
-                />
-                <span class="range-label-end">放大</span>
-                <span class="setting-value">{{ titlebarIconScale }}%</span>
-                <small class="setting-scope-row">所有</small>
-              </div>
-
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >图标颜色 <small>所有</small
-                    ><HelpButton
-                      text="列表、月视图和周视图共同使用。控制窗口导航、日历工具栏操作，以及列表中的标签、太极刷新和三叶草筛选图标。"
-                  /></span>
-                </div>
-                <div class="titlebar-style-selector" role="radiogroup" aria-label="图标颜色">
-                  <button
-                    type="button"
-                    role="radio"
-                    :aria-checked="iconColor === ICON_COLORS.BLACK"
-                    :class="{ active: iconColor === ICON_COLORS.BLACK }"
-                    @click="iconColor = ICON_COLORS.BLACK"
-                  >
-                    黑色
-                  </button>
-                  <button
-                    type="button"
-                    role="radio"
-                    :aria-checked="iconColor === ICON_COLORS.WHITE"
-                    :class="{ active: iconColor === ICON_COLORS.WHITE }"
-                    @click="iconColor = ICON_COLORS.WHITE"
-                  >
-                    白色
-                  </button>
-                </div>
-              </div>
-
-              <!-- 背景颜色 -->
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >背景颜色<HelpButton
-                      text="设置应用的基础背景色。它会参与主窗口玻璃着色、设置面板和浮动组件的背景计算；可选择预设色或输入十六进制颜色。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <button
-                    v-for="c in hexPresets"
-                    :key="c.value"
-                    class="color-dot"
-                    :class="{ active: bgColorHex === c.value }"
-                    :style="{ backgroundColor: c.value }"
-                    :title="c.label"
-                    @click="setBgColorPreset(c.value)"
-                  />
-                  <input
-                    type="color"
-                    class="color-input"
-                    :value="bgColorHex"
-                    @input="
-                      (e) => {
-                        const h = e.target.value
-                        const r = parseInt(h.slice(1, 3), 16)
-                        const g = parseInt(h.slice(3, 5), 16)
-                        const b = parseInt(h.slice(5, 7), 16)
-                        bgColor = `${r} ${g} ${b}`
-                      }
-                    "
-                  />
-                  <div class="color-hex-input-wrap">
-                    <input
-                      type="text"
-                      class="color-hex-input"
-                      spellcheck="false"
-                      :class="{ 'has-error': bgColorInputError }"
-                      :value="bgColorInput"
-                      placeholder="#FFFFFF"
-                      maxlength="7"
-                      @input="onBgColorInput"
-                      @blur="commitBgColor"
-                      @keydown.enter="commitBgColor"
-                    />
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >导航栏风格<HelpButton
+                        :text="
+                          isCalendarView
+                            ? `只切换${calendarViewLabel}导航栏的布局和按钮外观，不改变关闭、置顶、锁定、循环模板、设置和帮助按钮。`
+                            : '只切换列表导航栏的布局和按钮外观，不改变关闭、置顶、锁定、循环模板、设置和帮助功能。'
+                        "
+                    /></span>
                   </div>
-                </div>
-              </div>
-
-              <!-- 主窗口内侧边框 -->
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >窗口边框<HelpButton
-                      text="在当前主视图窗口内侧显示 1px 边线。它不会启用 Windows 系统窗口框架，也不会影响圆角、自定义缩放、贴边隐藏或窗口层级。"
-                  /></span>
-                  <span class="setting-hint-caption">仅作用于当前{{ currentViewLabel }}</span>
-                </div>
-                <div class="setting-right">
-                  <AppToggle
-                    v-model="windowBorder"
-                    data-diagnostic-action="settings.windowBorder"
-                  />
-                </div>
-              </div>
-
-              <!-- 字体大小（输入 + 下拉预设） -->
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >字体大小<HelpButton
-                      text="调整应用的全局基础字号，列表、设置和编辑区域会按同一比例联动。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <FontSizeInput
-                    v-model="fontSizeBase"
-                    data-diagnostic-action="settings.fontSizeBase"
-                    :presets="fontSizePresets"
-                    :min="14"
-                    :max="fontSizeMax"
-                    width="90rem"
-                  />
-                </div>
-              </div>
-
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >备注字号<HelpButton
-                      text="单独调整便签卡片中备注文字的大小；备注颜色仍跟随辅助文字颜色。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <FontSizeInput
-                    v-model="noteRemarkFontSize"
-                    data-diagnostic-action="settings.noteRemarkFontSize"
-                    :presets="noteRemarkFontSizePresets"
-                    :min="12"
-                    :max="28"
-                    width="90rem"
-                  />
-                </div>
-              </div>
-
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >灵动岛字号 <small>所有</small
-                    ><HelpButton text="调整灵动岛中便签正文的字号，三个主视图共用。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <FontSizeInput
-                    v-model="compactFontSize"
-                    data-diagnostic-action="settings.compactFontSize"
-                    :presets="noteRemarkFontSizePresets"
-                    :min="12"
-                    :max="28"
-                    width="90rem"
-                  />
-                </div>
-              </div>
-
-              <!-- 文字颜色 -->
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >文字颜色<HelpButton
-                      text="设置应用的主要文字颜色，次要文字和边界颜色会基于它自动派生。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <button
-                    v-for="c in hexPresets"
-                    :key="c.value"
-                    class="color-dot"
-                    :class="{ active: textColor === c.value }"
-                    :style="{ backgroundColor: c.value }"
-                    :title="c.label"
-                    @click="textColor = c.value"
-                  />
-                  <input v-model="textColor" type="color" class="color-input" />
-                  <div class="color-hex-input-wrap">
-                    <input
-                      type="text"
-                      class="color-hex-input"
-                      spellcheck="false"
-                      :class="{ 'has-error': textColorInputError }"
-                      :value="textColorInput"
-                      placeholder="#000000"
-                      maxlength="7"
-                      @input="onTextColorInput"
-                      @blur="commitTextColor"
-                      @keydown.enter="commitTextColor"
-                    />
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <!-- ========== 贴边隐藏 ========== -->
-            <section class="settings-section">
-              <h3 class="section-title">贴边隐藏</h3>
-
-              <div class="setting-item dock-reveal-setting">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >隐藏后的唤出方式<HelpButton
-                      text="直接唤出会在鼠标触边后立即展开窗口；触边确认会先显示小黑条，鼠标离开后自动收回；常显确认会在窗口隐藏完成后自动显示小黑条并保持，点击后展开窗口，长按拖动可调整其沿屏幕边缘的位置。外部程序全屏时常显条会暂时收回，退出全屏后自动恢复。"
-                  /></span>
-                  <span class="setting-hint-caption">仅作用于当前{{ currentViewLabel }}</span>
-                  <span
-                    v-if="!dockRuntime.supported"
-                    class="setting-hint-caption dock-runtime-hint"
-                  >
-                    {{ dockRuntime.reason || '当前平台暂不支持贴边隐藏' }}
-                  </span>
-                </div>
-                <div class="setting-right">
-                  <div
-                    class="dock-reveal-mode-selector"
-                    role="radiogroup"
-                    aria-label="隐藏后的唤出方式"
-                  >
+                  <div class="titlebar-style-selector" role="radiogroup" aria-label="导航栏风格">
                     <button
-                      v-for="option in dockRevealModeOptions"
-                      :key="option.value"
                       type="button"
                       role="radio"
-                      :title="option.title"
-                      :aria-checked="dockRevealHandleMode === option.value"
-                      :disabled="isDockRevealModeDisabled(option.value)"
-                      :class="{ 'is-selected': dockRevealHandleMode === option.value }"
-                      @click="setDockRevealHandleMode(option.value)"
+                      :aria-checked="titlebarStyle === 'apple'"
+                      :class="{ active: titlebarStyle === 'apple' }"
+                      @click="titlebarStyle = 'apple'"
                     >
-                      {{ option.label }}
+                      Apple
+                    </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      :aria-checked="titlebarStyle === 'microsoft'"
+                      :class="{ active: titlebarStyle === 'microsoft' }"
+                      @click="titlebarStyle = 'microsoft'"
+                    >
+                      Microsoft
                     </button>
                   </div>
                 </div>
-              </div>
 
-              <div class="setting-item" :class="{ 'has-hint': dockEnabledEdges.length === 0 }">
-                <div class="setting-left">
+                <div class="setting-item setting-item-slider">
                   <span class="setting-label"
-                    >启用边缘<HelpButton
-                      text="可同时选择上、左、右边缘。把当前视图拖到已选择且真实可触达的屏幕外边缘后，鼠标离开窗口才会触发隐藏。"
+                    >导航图标大小 <small>所有</small
+                    ><HelpButton
+                      text="此设置由列表、月视图和周视图共同使用。会同步调整窗口导航图标和日历工具栏操作图标；Apple 风格还会同步放大圆形按钮。"
                   /></span>
-                  <span
-                    v-if="dockEnabledEdges.length === 0"
-                    class="setting-hint-caption dock-empty-hint"
-                  >
-                    未选择边缘时，当前{{ currentViewLabel }}不会贴边隐藏
-                  </span>
+                  <div class="setting-slider-control">
+                    <AppSlider
+                      v-model="titlebarIconScale"
+                      data-diagnostic-action="settings.titlebarIconScale"
+                      :min="TITLEBAR_ICON_SCALE_LIMITS.min"
+                      :max="TITLEBAR_ICON_SCALE_LIMITS.max"
+                      :step="TITLEBAR_ICON_SCALE_LIMITS.step"
+                      aria-label="导航图标大小"
+                    />
+                    <span class="setting-value">{{ titlebarIconScale }}%</span>
+                  </div>
                 </div>
-                <div class="dock-edge-selector" role="group" aria-label="贴边隐藏方向，可多选">
-                  <button
-                    v-for="edge in dockEdgeOptions"
-                    :key="edge.value"
-                    type="button"
-                    :disabled="!dockRuntime.supported"
-                    :aria-pressed="dockEnabledEdges.includes(edge.value)"
-                    :class="{ 'is-selected': dockEnabledEdges.includes(edge.value) }"
-                    @click="toggleDockEdge(edge.value)"
-                  >
-                    <span class="dock-edge-check" aria-hidden="true">
-                      <svg v-if="dockEnabledEdges.includes(edge.value)" viewBox="0 0 16 16">
-                        <path d="m3 8 3 3 7-7" />
-                      </svg>
-                    </span>
-                    {{ edge.label }}
-                  </button>
-                </div>
-              </div>
-            </section>
 
-            <!-- ========== 便利贴基础设置 ========== -->
-            <section v-if="!isCalendarView" class="settings-section">
-              <h3 class="section-title">便利贴</h3>
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >图标颜色 <small>所有</small
+                      ><HelpButton
+                        text="列表、月视图和周视图共同使用。控制窗口导航、日历工具栏操作，以及列表中的标签、太极刷新和三叶草筛选图标。"
+                    /></span>
+                  </div>
+                  <div class="titlebar-style-selector" role="radiogroup" aria-label="图标颜色">
+                    <button
+                      type="button"
+                      role="radio"
+                      :aria-checked="iconColor === ICON_COLORS.BLACK"
+                      :class="{ active: iconColor === ICON_COLORS.BLACK }"
+                      @click="iconColor = ICON_COLORS.BLACK"
+                    >
+                      黑色
+                    </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      :aria-checked="iconColor === ICON_COLORS.WHITE"
+                      :class="{ active: iconColor === ICON_COLORS.WHITE }"
+                      @click="iconColor = ICON_COLORS.WHITE"
+                    >
+                      白色
+                    </button>
+                  </div>
+                </div>
 
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >默认字体大小<HelpButton
-                      text="只决定之后新建便利贴的初始字号，不会修改当前已经展示的便利贴。"
-                  /></span>
+                <!-- 背景颜色 -->
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >背景颜色<HelpButton
+                        text="设置应用的基础背景色。它会参与主窗口玻璃着色、设置面板和浮动组件的背景计算；可选择预设色或输入十六进制颜色。"
+                    /></span>
+                  </div>
+                  <div class="setting-right settings-color-control">
+                    <SettingsControlPopover
+                      label="背景颜色"
+                      :summary="bgColorHex"
+                      :disabled="isResetting || !panelActive"
+                      :width="260"
+                    >
+                      <template #summary>
+                        <span
+                          class="settings-color-swatch"
+                          :style="{ backgroundColor: bgColorHex }"
+                        />
+                        <span class="settings-color-value">{{ bgColorHex.toUpperCase() }}</span>
+                      </template>
+                      <div class="settings-color-editor">
+                        <button
+                          v-for="c in hexPresets"
+                          :key="c.value"
+                          class="color-dot"
+                          :class="{ active: bgColorHex === c.value }"
+                          :style="{ backgroundColor: c.value }"
+                          :title="c.label"
+                          :aria-label="c.label"
+                          @click="setBgColorPreset(c.value)"
+                        />
+                        <input
+                          type="color"
+                          class="color-input"
+                          aria-label="自定义颜色"
+                          :value="bgColorHex"
+                          @input="
+                            (e) => {
+                              const h = e.target.value
+                              const r = parseInt(h.slice(1, 3), 16)
+                              const g = parseInt(h.slice(3, 5), 16)
+                              const b = parseInt(h.slice(5, 7), 16)
+                              bgColor = `${r} ${g} ${b}`
+                            }
+                          "
+                        />
+                        <div class="color-hex-input-wrap">
+                          <input
+                            type="text"
+                            class="color-hex-input"
+                            aria-label="十六进制颜色"
+                            spellcheck="false"
+                            :class="{ 'has-error': bgColorInputError }"
+                            :value="bgColorInput"
+                            placeholder="#FFFFFF"
+                            maxlength="7"
+                            @input="onBgColorInput"
+                            @blur="commitBgColor"
+                            @keydown.enter="commitBgColor"
+                          />
+                        </div>
+                      </div>
+                    </SettingsControlPopover>
+                  </div>
                 </div>
-                <div class="setting-right">
-                  <FontSizeInput
-                    v-model="stickyFontSize"
-                    data-diagnostic-action="settings.stickyFontSize"
-                    :presets="stickyFontSizePresets"
-                    :min="12"
-                    :max="32"
-                    width="90rem"
-                  />
-                </div>
-              </div>
 
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >默认背景颜色<HelpButton
-                      text="新建便利贴会使用该背景色，并自动选择具有足够对比度的文字颜色。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <button
-                    v-for="color in stickyColorPresets"
-                    :key="color.value"
-                    class="color-dot"
-                    :class="{ active: stickyBackgroundColor === color.value }"
-                    :style="{ backgroundColor: color.value }"
-                    :title="color.label"
-                    @click="stickyBackgroundColor = color.value"
-                  />
-                  <input v-model="stickyBackgroundColor" type="color" class="color-input" />
-                  <div class="color-hex-input-wrap">
-                    <input
-                      type="text"
-                      class="color-hex-input"
-                      spellcheck="false"
-                      :class="{ 'has-error': stickyColorInputError }"
-                      :value="stickyColorInput"
-                      placeholder="#FFF2A8"
-                      maxlength="7"
-                      @input="onStickyColorInput"
-                      @blur="commitStickyColor"
-                      @keydown.enter="commitStickyColor"
+                <!-- 主窗口内侧边框 -->
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >窗口边框<HelpButton
+                        text="在当前主视图窗口内侧显示 1px 边线。它不会启用 Windows 系统窗口框架，也不会影响圆角、自定义缩放、贴边隐藏或窗口层级。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <AppToggle
+                      v-model="windowBorder"
+                      data-diagnostic-action="settings.windowBorder"
                     />
                   </div>
                 </div>
-              </div>
 
-              <div class="setting-item setting-item-slider">
-                <span class="setting-label"
-                  >默认圆角<HelpButton
-                    text="设置新建便利贴的窗口圆角。0 为直角；圆角便利贴会使用透明窗口裁切。"
-                /></span>
-                <span class="range-label-start">直角</span>
-                <AppSlider
-                  v-model="stickyCornerRadius"
-                  data-diagnostic-action="settings.stickyCornerRadius"
-                  :min="0"
-                  :max="32"
-                  :step="1"
-                />
-                <span class="range-label-end">圆润</span>
-                <span class="setting-value">{{ stickyCornerRadius }}px</span>
-              </div>
-
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >默认置顶<HelpButton
-                      text="开启后，之后新建的便利贴默认保持在其他窗口上方；仍可在单张便利贴上临时取消。"
-                  /></span>
+                <!-- 字体大小（输入 + 下拉预设） -->
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >字体大小<HelpButton
+                        text="调整应用的全局基础字号，列表、设置和编辑区域会按同一比例联动。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <FontSizeInput
+                      v-model="fontSizeBase"
+                      data-diagnostic-action="settings.fontSizeBase"
+                      :presets="fontSizePresets"
+                      :min="14"
+                      :max="fontSizeMax"
+                      width="76px"
+                    />
+                  </div>
                 </div>
-                <div class="setting-right">
-                  <AppToggle
-                    v-model="stickyAlwaysOnTop"
-                    data-diagnostic-action="settings.stickyAlwaysOnTop"
-                  />
+
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >备注字号<HelpButton
+                        text="单独调整便签卡片中备注文字的大小；备注颜色仍跟随辅助文字颜色。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <FontSizeInput
+                      v-model="noteRemarkFontSize"
+                      data-diagnostic-action="settings.noteRemarkFontSize"
+                      :presets="noteRemarkFontSizePresets"
+                      :min="12"
+                      :max="28"
+                      width="76px"
+                    />
+                  </div>
                 </div>
-              </div>
-            </section>
 
-            <!-- ========== 系统窗口模糊玻璃效果 ========== -->
-            <section class="settings-section">
-              <h3 class="section-title">窗口模糊玻璃与外观</h3>
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >灵动岛字号 <small>所有</small
+                      ><HelpButton text="调整灵动岛中便签正文的字号，三个主视图共用。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <FontSizeInput
+                      v-model="compactFontSize"
+                      data-diagnostic-action="settings.compactFontSize"
+                      :presets="noteRemarkFontSizePresets"
+                      :min="12"
+                      :max="28"
+                      width="76px"
+                    />
+                  </div>
+                </div>
 
-              <!-- 启用开关（所有支持平台通用） -->
-              <div v-if="blurCaps.supported" class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >启用毛玻璃<HelpButton
-                      text="平台限制：Windows 需要 Windows 10 1903（Build 18362）或更高版本，支持调节模糊半径和饱和度；macOS 使用系统原生 Vibrancy，只支持开启或关闭，模糊半径和饱和度由系统决定，不能单独设置。玻璃浓度、背景颜色和窗口圆角在两个平台上都可以调节。关闭后不再渲染原生模糊层。"
-                  /></span>
-                  <span v-if="blurError" class="setting-error">
-                    <svg
-                      class="warn-icon"
-                      width="12"
-                      height="12"
-                      viewBox="0 0 12 12"
-                      fill="none"
-                      aria-hidden="true"
+                <!-- 文字颜色 -->
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >文字颜色<HelpButton
+                        text="设置应用的主要文字颜色，次要文字和边界颜色会基于它自动派生。"
+                    /></span>
+                  </div>
+                  <div class="setting-right settings-color-control">
+                    <SettingsControlPopover
+                      label="文字颜色"
+                      :summary="textColor"
+                      :disabled="isResetting || !panelActive"
+                      :width="260"
                     >
-                      <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" />
-                      <path
-                        d="M6 3.5v3"
-                        stroke="currentColor"
-                        stroke-width="1.2"
-                        stroke-linecap="round"
-                      />
-                      <circle cx="6" cy="9" r="0.7" fill="currentColor" />
-                    </svg>
-                    {{ blurError }}
-                  </span>
+                      <template #summary>
+                        <span
+                          class="settings-color-swatch"
+                          :style="{ backgroundColor: textColor }"
+                        />
+                        <span class="settings-color-value">{{ textColor.toUpperCase() }}</span>
+                      </template>
+                      <div class="settings-color-editor">
+                        <button
+                          v-for="c in hexPresets"
+                          :key="c.value"
+                          class="color-dot"
+                          :class="{ active: textColor === c.value }"
+                          :style="{ backgroundColor: c.value }"
+                          :title="c.label"
+                          :aria-label="c.label"
+                          @click="textColor = c.value"
+                        />
+                        <input
+                          v-model="textColor"
+                          type="color"
+                          class="color-input"
+                          aria-label="自定义颜色"
+                        />
+                        <div class="color-hex-input-wrap">
+                          <input
+                            type="text"
+                            class="color-hex-input"
+                            aria-label="十六进制颜色"
+                            spellcheck="false"
+                            :class="{ 'has-error': textColorInputError }"
+                            :value="textColorInput"
+                            placeholder="#000000"
+                            maxlength="7"
+                            @input="onTextColorInput"
+                            @blur="commitTextColor"
+                            @keydown.enter="commitTextColor"
+                          />
+                        </div>
+                      </div>
+                    </SettingsControlPopover>
+                  </div>
                 </div>
-                <div class="setting-right">
-                  <AppToggle v-model="blurEnabled" data-diagnostic-action="settings.blurEnabled" />
-                </div>
-              </div>
+              </section>
+              <section class="settings-section">
+                <h4 class="section-title">窗口背景与圆角</h4>
 
-              <div v-else class="setting-item">
-                <div class="setting-left">
+                <!-- 启用开关（所有支持平台通用） -->
+                <div v-if="blurCaps.supported" class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >启用毛玻璃<HelpButton
+                        text="平台限制：Windows 需要 Windows 10 1903（Build 18362）或更高版本，支持调节模糊半径和饱和度；macOS 使用系统原生 Vibrancy，只支持开启或关闭，模糊半径和饱和度由系统决定，不能单独设置。玻璃浓度、背景颜色和窗口圆角在两个平台上都可以调节。关闭后不再渲染原生模糊层。"
+                    /></span>
+                    <span v-if="blurError" class="setting-error">
+                      <svg
+                        class="warn-icon"
+                        width="12"
+                        height="12"
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        aria-hidden="true"
+                      >
+                        <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" />
+                        <path
+                          d="M6 3.5v3"
+                          stroke="currentColor"
+                          stroke-width="1.2"
+                          stroke-linecap="round"
+                        />
+                        <circle cx="6" cy="9" r="0.7" fill="currentColor" />
+                      </svg>
+                      {{ blurError }}
+                    </span>
+                  </div>
+                  <div class="setting-right">
+                    <AppToggle
+                      v-model="blurEnabled"
+                      data-diagnostic-action="settings.blurEnabled"
+                    />
+                  </div>
+                </div>
+
+                <div v-else class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >系统毛玻璃不可用<HelpButton
+                        text="当前系统版本或运行环境无法创建原生模糊层，应用会自动回退到背景颜色、玻璃浓度和圆角效果。"
+                    /></span>
+                    <span class="setting-error">当前系统将使用透明背景颜色和圆角回退</span>
+                  </div>
+                </div>
+
+                <!-- 玻璃浓度始终显示；原生模糊不可用时也是主要回退控制。 -->
+                <div class="setting-item setting-item-slider">
                   <span class="setting-label"
-                    >系统毛玻璃不可用<HelpButton
-                      text="当前系统版本或运行环境无法创建原生模糊层，应用会自动回退到背景颜色、玻璃浓度和圆角效果。"
+                    >玻璃浓度<HelpButton
+                      text="控制主窗口背景颜色的覆盖强度。0=完全通透，1=不透明纯色底；不改变原生模糊强度。默认30%"
                   /></span>
-                  <span class="setting-error">当前系统将使用透明背景颜色和圆角回退</span>
+                  <div class="setting-slider-control">
+                    <AppSlider
+                      v-model="windowOpacity"
+                      data-diagnostic-action="settings.windowOpacity"
+                      :min="0"
+                      :max="1"
+                      :step="0.01"
+                    />
+                    <span class="setting-value">{{ Math.round(windowOpacity * 100) }}%</span>
+                  </div>
                 </div>
-              </div>
 
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >运行诊断<HelpButton
-                      text="毛玻璃诊断已注册到应用统一调度器：启动时执行一次，之后每分钟检查原生效果链、Overlay 和窗口同步状态。"
-                  /></span>
-                  <span class="setting-hint-caption">
-                    {{ blurDiagnostic.message }}
-                    <template v-if="blurDiagnostic.lastCheckedAt">
-                      · {{ formatTickTime(blurDiagnostic.lastCheckedAt) }}
-                    </template>
-                  </span>
-                </div>
-                <div class="setting-right">
-                  <span class="sched-badge" :class="blurDiagnosticMeta.className">
-                    {{ blurDiagnosticMeta.label }}
-                  </span>
-                </div>
-              </div>
-
-              <!-- 玻璃浓度始终显示；原生模糊不可用时也是主要回退控制。 -->
-              <div class="setting-item setting-item-slider">
-                <span class="setting-label"
-                  >玻璃浓度<HelpButton
-                    text="控制主窗口背景颜色的覆盖强度。0=完全通透，1=不透明纯色底；不改变原生模糊强度。默认30%"
-                /></span>
-                <span class="range-label-start">通透</span>
-                <AppSlider
-                  v-model="windowOpacity"
-                  data-diagnostic-action="settings.windowOpacity"
-                  :min="0"
-                  :max="1"
-                  :step="0.01"
-                />
-                <span class="range-label-end">浓厚</span>
-                <span class="setting-value">{{ Math.round(windowOpacity * 100) }}%</span>
-              </div>
-
-              <!-- 开启时：显示系统模糊设置（仅 Windows） -->
-              <Transition
-                :css="false"
-                @enter="onNativeBlurOptionsEnter"
-                @leave="onNativeBlurOptionsLeave"
-              >
-                <div
-                  v-if="blurCaps.supported && blurEnabled && blurCaps.platform === 'Windows'"
-                  class="native-blur-options"
+                <!-- 开启时：显示系统模糊设置（仅 Windows） -->
+                <Transition
+                  :css="false"
+                  @enter="onNativeBlurOptionsEnter"
+                  @leave="onNativeBlurOptionsLeave"
                 >
-                  <div class="native-blur-options-inner">
-                    <!-- 模糊半径 -->
-                    <div class="setting-item setting-item-slider">
-                      <span class="setting-label"
-                        >模糊半径<HelpButton text="控制背景被打散的程度。推荐值10–20"
-                      /></span>
-                      <span class="range-label-start">清晰</span>
-                      <AppSlider
-                        v-model="blurRadius"
-                        data-diagnostic-action="settings.blurRadius"
-                        :min="0"
-                        :max="40"
-                        :step="1"
-                      />
-                      <span class="range-label-end">模糊</span>
-                      <span class="setting-value">{{ blurRadius }} DIP</span>
-                    </div>
+                  <div
+                    v-if="blurCaps.supported && blurEnabled && blurCaps.platform === 'Windows'"
+                    class="native-blur-options"
+                  >
+                    <div class="native-blur-options-inner">
+                      <!-- 模糊半径 -->
+                      <div class="setting-item setting-item-slider">
+                        <span class="setting-label"
+                          >模糊半径<HelpButton text="控制背景被打散的程度。推荐值10–20"
+                        /></span>
+                        <div class="setting-slider-control">
+                          <AppSlider
+                            v-model="blurRadius"
+                            data-diagnostic-action="settings.blurRadius"
+                            :min="0"
+                            :max="40"
+                            :step="1"
+                          />
+                          <span class="setting-value">{{ blurRadius }} DIP</span>
+                        </div>
+                      </div>
 
-                    <!-- 饱和度 -->
-                    <div class="setting-item setting-item-slider">
-                      <span class="setting-label"
-                        >饱和度<HelpButton
-                          text="模糊会让颜色变灰，提高饱和度能把鲜艳度补回来。推荐1.6–2.0（苹果用1.8）"
-                      /></span>
-                      <span class="range-label-start">黑白</span>
-                      <AppSlider
-                        v-model="blurSaturation"
-                        data-diagnostic-action="settings.blurSaturation"
-                        :min="0"
-                        :max="2"
-                        :step="0.1"
-                      />
-                      <span class="range-label-end">鲜艳</span>
-                      <span class="setting-value">{{ blurSaturation.toFixed(1) }}x</span>
+                      <!-- 饱和度 -->
+                      <div class="setting-item setting-item-slider">
+                        <span class="setting-label"
+                          >饱和度<HelpButton
+                            text="模糊会让颜色变灰，提高饱和度能把鲜艳度补回来。推荐1.6–2.0（苹果用1.8）"
+                        /></span>
+                        <div class="setting-slider-control">
+                          <AppSlider
+                            v-model="blurSaturation"
+                            data-diagnostic-action="settings.blurSaturation"
+                            :min="0"
+                            :max="2"
+                            :step="0.1"
+                          />
+                          <span class="setting-value">{{ blurSaturation.toFixed(1) }}x</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </Transition>
+
+                <!-- 窗口圆角（所有平台通用，纯 CSS 控制） -->
+                <div class="setting-item setting-item-slider">
+                  <span class="setting-label"
+                    >窗口圆角<HelpButton
+                      text="四个角的圆润程度。0=直角，数值越大越圆。推荐8–16（苹果原生风格）"
+                  /></span>
+                  <div class="setting-slider-control">
+                    <AppSlider
+                      v-model="blurCornerRadius"
+                      data-diagnostic-action="settings.blurCornerRadius"
+                      :min="0"
+                      :max="30"
+                      :step="1"
+                    />
+                    <span class="setting-value">{{ blurCornerRadius }}px</span>
+                  </div>
+                </div>
+
+                <Transition name="wallpaper-panel">
+                  <WallpaperSettings v-if="!blurEnabled" />
+                </Transition>
+              </section>
+              <section class="settings-section" data-search-text="CSS 玻璃全局基准">
+                <h4 class="section-title">弹窗与浮层</h4>
+
+                <!-- 模糊半径 -->
+                <div class="setting-item setting-item-slider">
+                  <span class="setting-label"
+                    >模糊基准<HelpButton
+                      text="所有界面内毛玻璃和弹窗背景按此值失焦，最低5px；C++原生窗口毛玻璃不受影响。推荐10px"
+                  /></span>
+                  <div class="setting-slider-control">
+                    <AppSlider
+                      v-model="cssBlur"
+                      data-diagnostic-action="settings.cssBlur"
+                      :min="5"
+                      :max="30"
+                      :step="1"
+                    />
+                    <span class="setting-value">{{ cssBlur }}px</span>
+                  </div>
+                </div>
+
+                <!-- 组件透明度 -->
+                <div class="setting-item setting-item-slider">
+                  <span class="setting-label"
+                    >霜层基准<HelpButton
+                      text="设置面板按此浓度显示；使用玻璃材质的浮层会按组件类型成比例调整并限制最大值。推荐20%"
+                  /></span>
+                  <div class="setting-slider-control">
+                    <AppSlider
+                      v-model="cssOpacity"
+                      data-diagnostic-action="settings.cssOpacity"
+                      :min="0"
+                      :max="1"
+                      :step="0.01"
+                    />
+                    <span class="setting-value">{{ Math.round(cssOpacity * 100) }}%</span>
+                  </div>
+                </div>
+              </section>
+            </div>
+            <div
+              class="settings-category"
+              data-settings-category="window"
+              role="group"
+              aria-labelledby="settings-category-window"
+            >
+              <h3 id="settings-category-window" class="category-title">窗口与操作</h3>
+              <section class="settings-section">
+                <h4 class="section-title">贴边隐藏</h4>
+
+                <div class="setting-item dock-reveal-setting">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >隐藏后的唤出方式<HelpButton
+                        text="直接唤出会在鼠标触边后立即展开窗口；触边确认会先显示小黑条，鼠标离开后自动收回；常显确认会在窗口隐藏完成后自动显示小黑条并保持，点击后展开窗口，长按拖动可调整其沿屏幕边缘的位置。外部程序全屏时常显条会暂时收回，退出全屏后自动恢复。"
+                    /></span>
+                    <span
+                      v-if="!dockRuntime.supported"
+                      class="setting-hint-caption dock-runtime-hint"
+                    >
+                      {{ dockRuntime.reason || '当前平台暂不支持贴边隐藏' }}
+                    </span>
+                  </div>
+                  <div class="setting-right">
+                    <div
+                      class="dock-reveal-mode-selector"
+                      role="radiogroup"
+                      aria-label="隐藏后的唤出方式"
+                    >
+                      <button
+                        v-for="option in dockRevealModeOptions"
+                        :key="option.value"
+                        type="button"
+                        role="radio"
+                        :title="option.title"
+                        :aria-checked="dockRevealHandleMode === option.value"
+                        :disabled="isDockRevealModeDisabled(option.value)"
+                        :class="{ 'is-selected': dockRevealHandleMode === option.value }"
+                        @click="setDockRevealHandleMode(option.value)"
+                      >
+                        {{ option.label }}
+                      </button>
                     </div>
                   </div>
                 </div>
-              </Transition>
 
-              <!-- 窗口圆角（所有平台通用，纯 CSS 控制） -->
-              <div class="setting-item setting-item-slider">
-                <span class="setting-label"
-                  >窗口圆角<HelpButton
-                    text="四个角的圆润程度。0=直角，数值越大越圆。推荐8–16（苹果原生风格）"
-                /></span>
-                <span class="range-label-start">直角</span>
-                <AppSlider
-                  v-model="blurCornerRadius"
-                  data-diagnostic-action="settings.blurCornerRadius"
-                  :min="0"
-                  :max="30"
-                  :step="1"
-                />
-                <span class="range-label-end">圆润</span>
-                <span class="setting-value">{{ blurCornerRadius }}px</span>
-              </div>
-
-              <Transition name="wallpaper-panel">
-                <WallpaperSettings v-if="!blurEnabled" />
-              </Transition>
-            </section>
-
-            <!-- ========== CSS 玻璃全局基准 ========== -->
-            <section class="settings-section">
-              <h3 class="section-title">CSS 玻璃全局基准</h3>
-
-              <!-- 模糊半径 -->
-              <div class="setting-item setting-item-slider">
-                <span class="setting-label"
-                  >模糊基准<HelpButton
-                    text="所有界面内毛玻璃和弹窗背景按此值失焦，最低5px；C++原生窗口毛玻璃不受影响。推荐10px"
-                /></span>
-                <span class="range-label-start">清晰</span>
-                <AppSlider
-                  v-model="cssBlur"
-                  data-diagnostic-action="settings.cssBlur"
-                  :min="5"
-                  :max="30"
-                  :step="1"
-                />
-                <span class="range-label-end">模糊</span>
-                <span class="setting-value">{{ cssBlur }}px</span>
-              </div>
-
-              <!-- 组件透明度 -->
-              <div class="setting-item setting-item-slider">
-                <span class="setting-label"
-                  >霜层基准<HelpButton
-                    text="设置面板按此浓度显示；使用玻璃材质的浮层会按组件类型成比例调整并限制最大值。推荐20%"
-                /></span>
-                <span class="range-label-start">通透</span>
-                <AppSlider
-                  v-model="cssOpacity"
-                  data-diagnostic-action="settings.cssOpacity"
-                  :min="0"
-                  :max="1"
-                  :step="0.01"
-                />
-                <span class="range-label-end">不透</span>
-                <span class="setting-value">{{ Math.round(cssOpacity * 100) }}%</span>
-              </div>
-            </section>
-
-            <section v-if="viewMode === VIEW_MODES.LIST" class="settings-section">
-              <h3 class="section-title">便签列表</h3>
-              <div class="setting-item has-hint">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >极简模式<HelpButton
-                      text="隐藏卡片的时间、标签、天气、备注和底部操作按钮，保留状态圆环、正文与图片。右键菜单仍可修改便签或展开内容。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <AppToggle
-                    v-model="minimalMode"
-                    data-diagnostic-action="settings.minimalMode"
-                    role="switch"
-                    :aria-checked="minimalMode"
-                    aria-label="极简模式"
-                  />
-                </div>
-              </div>
-            </section>
-
-            <!-- ========== 便签交互 ========== -->
-            <section class="settings-section">
-              <h3 class="section-title">便签交互 <small>所有</small></h3>
-
-              <div class="setting-item has-hint">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >标签颜色<HelpButton
-                      text="开启后，有标签的便签正文使用标签颜色，月视图和周视图横条也使用标签颜色；关闭后分别使用文字颜色和便签状态颜色。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <AppToggle
-                    v-model="tagColorEnabled"
-                    data-diagnostic-action="settings.tagColorEnabled"
-                  />
-                </div>
-              </div>
-
-              <div class="setting-item has-hint">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >双击快速编辑正文<HelpButton
-                      text="双击便签卡片或日历便签横条，只快速修改正文；失去焦点后自动保存。右键“修改”仍可打开完整编辑器。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <AppToggle
-                    v-model="doubleClickQuickEdit"
-                    data-diagnostic-action="settings.doubleClickQuickEdit"
-                  />
-                </div>
-              </div>
-
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >截图时隐藏主视图<HelpButton
-                      text="开启后，进入截图选区前会暂时隐藏当前主视图，截图完成或取消后自动恢复；关闭后可以把主视图一并截入图片。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <AppToggle
-                    v-model="hideMainViewDuringScreenshot"
-                    data-diagnostic-action="settings.hideMainViewDuringScreenshot"
-                  />
-                </div>
-              </div>
-            </section>
-
-            <!-- ========== 系统设置 ========== -->
-            <section class="settings-section">
-              <h3 class="section-title">系统设置</h3>
-
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >开机自启 <small>所有</small
-                    ><HelpButton
-                      text="控制应用是否随系统登录自动启动。此状态直接读取并写入操作系统，不保存在应用数据库中。"
-                  /></span>
-                  <span v-if="autoStartError" class="setting-error">
-                    <svg
-                      class="warn-icon"
-                      width="12"
-                      height="12"
-                      viewBox="0 0 12 12"
-                      fill="none"
-                      aria-hidden="true"
+                <div class="setting-item" :class="{ 'has-hint': dockEnabledEdges.length === 0 }">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >启用边缘<HelpButton
+                        text="可同时选择上、左、右边缘。把当前视图拖到已选择且真实可触达的屏幕外边缘后，鼠标离开窗口才会触发隐藏。"
+                    /></span>
+                    <span
+                      v-if="dockEnabledEdges.length === 0"
+                      class="setting-hint-caption dock-empty-hint"
                     >
-                      <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" />
-                      <path
-                        d="M6 3.5v3"
-                        stroke="currentColor"
-                        stroke-width="1.2"
-                        stroke-linecap="round"
+                      未选择边缘时，当前{{ currentViewLabel }}不会贴边隐藏
+                    </span>
+                  </div>
+                  <div class="dock-edge-selector" role="group" aria-label="贴边隐藏方向，可多选">
+                    <button
+                      v-for="edge in dockEdgeOptions"
+                      :key="edge.value"
+                      type="button"
+                      :disabled="!dockRuntime.supported"
+                      :aria-pressed="dockEnabledEdges.includes(edge.value)"
+                      :class="{ 'is-selected': dockEnabledEdges.includes(edge.value) }"
+                      @click="toggleDockEdge(edge.value)"
+                    >
+                      <span class="dock-edge-check" aria-hidden="true">
+                        <svg v-if="dockEnabledEdges.includes(edge.value)" viewBox="0 0 16 16">
+                          <path d="m3 8 3 3 7-7" />
+                        </svg>
+                      </span>
+                      {{ edge.label }}
+                    </button>
+                  </div>
+                </div>
+              </section>
+              <section class="settings-section">
+                <h4 class="section-title">显示与隐藏</h4>
+                <div class="setting-item shortcut-setting">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >视图显示快捷键 <small>所有</small
+                      ><HelpButton
+                        text="点击录制后直接按下组合键，无需输入或再次保存。用于显示或隐藏当前视图，窗口隐藏到托盘后仍可使用。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <SettingsControlPopover
+                      label="视图显示快捷键"
+                      :summary="
+                        shortcutSummary(viewVisibilityShortcut, viewVisibilityShortcutRuntime)
+                      "
+                      :disabled="isResetting || !panelActive"
+                      data-shortcut="viewVisibility"
+                    >
+                      <ShortcutRecorder
+                        v-model="viewVisibilityShortcut"
+                        :runtime="viewVisibilityShortcutRuntime"
+                        :disabled="isResetting"
+                        @update:runtime="viewVisibilityShortcutRuntime = $event"
+                        @feedback="showMessage($event.type, $event.message, $event.duration)"
                       />
-                      <circle cx="6" cy="9" r="0.7" fill="currentColor" />
-                    </svg>
-                    {{ autoStartError }}
-                  </span>
+                    </SettingsControlPopover>
+                  </div>
                 </div>
-                <div class="setting-right">
-                  <AppToggle v-model="autoStart" data-diagnostic-action="settings.autoStart" />
+              </section>
+            </div>
+            <div
+              class="settings-category"
+              data-settings-category="notes"
+              role="group"
+              aria-labelledby="settings-category-notes"
+            >
+              <h3 id="settings-category-notes" class="category-title">便签与截图</h3>
+              <section v-if="viewMode === VIEW_MODES.LIST" class="settings-section">
+                <h4 class="section-title">便签列表</h4>
+                <div class="setting-item has-hint">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >极简模式<HelpButton
+                        text="隐藏卡片的时间、标签、天气、备注和底部操作按钮，保留状态圆环、正文与图片。右键菜单仍可修改便签或展开内容。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <AppToggle
+                      v-model="minimalMode"
+                      data-diagnostic-action="settings.minimalMode"
+                      role="switch"
+                      :aria-checked="minimalMode"
+                      aria-label="极简模式"
+                    />
+                  </div>
                 </div>
-              </div>
+              </section>
+              <section class="settings-section">
+                <h4 class="section-title">便签交互 <small>所有</small></h4>
 
-              <div class="setting-item setting-item-full shortcut-setting">
-                <div class="setting-left">
+                <div class="setting-item has-hint">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >标签颜色<HelpButton
+                        text="开启后，有标签的便签正文使用标签颜色，月视图和周视图横条也使用标签颜色；关闭后分别使用文字颜色和便签状态颜色。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <AppToggle
+                      v-model="tagColorEnabled"
+                      data-diagnostic-action="settings.tagColorEnabled"
+                    />
+                  </div>
+                </div>
+
+                <div class="setting-item has-hint">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >双击快速编辑正文<HelpButton
+                        text="双击便签卡片或日历便签横条，只快速修改正文；失去焦点后自动保存。右键“修改”仍可打开完整编辑器。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <AppToggle
+                      v-model="doubleClickQuickEdit"
+                      data-diagnostic-action="settings.doubleClickQuickEdit"
+                    />
+                  </div>
+                </div>
+              </section>
+              <section v-if="!isCalendarView" class="settings-section">
+                <h4 class="section-title">便利贴</h4>
+
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >默认字体大小<HelpButton
+                        text="只决定之后新建便利贴的初始字号，不会修改当前已经展示的便利贴。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <FontSizeInput
+                      v-model="stickyFontSize"
+                      data-diagnostic-action="settings.stickyFontSize"
+                      :presets="stickyFontSizePresets"
+                      :min="12"
+                      :max="32"
+                      width="76px"
+                    />
+                  </div>
+                </div>
+
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >默认背景颜色<HelpButton
+                        text="新建便利贴会使用该背景色，并自动选择具有足够对比度的文字颜色。"
+                    /></span>
+                  </div>
+                  <div class="setting-right settings-color-control">
+                    <SettingsControlPopover
+                      label="默认背景颜色"
+                      :summary="stickyBackgroundColor"
+                      :disabled="isResetting || !panelActive"
+                      :width="260"
+                    >
+                      <template #summary>
+                        <span
+                          class="settings-color-swatch"
+                          :style="{ backgroundColor: stickyBackgroundColor }"
+                        />
+                        <span class="settings-color-value">{{
+                          stickyBackgroundColor.toUpperCase()
+                        }}</span>
+                      </template>
+                      <div class="settings-color-editor">
+                        <button
+                          v-for="color in stickyColorPresets"
+                          :key="color.value"
+                          class="color-dot"
+                          :class="{ active: stickyBackgroundColor === color.value }"
+                          :style="{ backgroundColor: color.value }"
+                          :title="color.label"
+                          :aria-label="color.label"
+                          @click="stickyBackgroundColor = color.value"
+                        />
+                        <input
+                          v-model="stickyBackgroundColor"
+                          type="color"
+                          class="color-input"
+                          aria-label="自定义颜色"
+                        />
+                        <div class="color-hex-input-wrap">
+                          <input
+                            type="text"
+                            class="color-hex-input"
+                            aria-label="十六进制颜色"
+                            spellcheck="false"
+                            :class="{ 'has-error': stickyColorInputError }"
+                            :value="stickyColorInput"
+                            placeholder="#FFF2A8"
+                            maxlength="7"
+                            @input="onStickyColorInput"
+                            @blur="commitStickyColor"
+                            @keydown.enter="commitStickyColor"
+                          />
+                        </div>
+                      </div>
+                    </SettingsControlPopover>
+                  </div>
+                </div>
+
+                <div class="setting-item setting-item-slider">
                   <span class="setting-label"
-                    >视图显示快捷键 <small>所有</small
-                    ><HelpButton
-                      text="点击录制后直接按下组合键，无需输入或再次保存。用于显示或隐藏当前视图，窗口隐藏到托盘后仍可使用。"
+                    >默认圆角<HelpButton
+                      text="设置新建便利贴的窗口圆角。0 为直角；圆角便利贴会使用透明窗口裁切。"
                   /></span>
+                  <div class="setting-slider-control">
+                    <AppSlider
+                      v-model="stickyCornerRadius"
+                      data-diagnostic-action="settings.stickyCornerRadius"
+                      :min="0"
+                      :max="32"
+                      :step="1"
+                    />
+                    <span class="setting-value">{{ stickyCornerRadius }}px</span>
+                  </div>
                 </div>
-                <div class="setting-right">
-                  <ShortcutRecorder
-                    v-model="viewVisibilityShortcut"
-                    :runtime="viewVisibilityShortcutRuntime"
-                    :disabled="isResetting"
-                    @update:runtime="viewVisibilityShortcutRuntime = $event"
-                    @feedback="showMessage($event.type, $event.message, $event.duration)"
-                  />
-                </div>
-              </div>
-            </section>
 
-            <!-- ========== 天气 ========== -->
-            <section class="settings-section">
-              <h3 class="section-title">
-                <span>天气 <small>所有</small></span>
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >默认置顶<HelpButton
+                        text="开启后，之后新建的便利贴默认保持在其他窗口上方；仍可在单张便利贴上临时取消。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <AppToggle
+                      v-model="stickyAlwaysOnTop"
+                      data-diagnostic-action="settings.stickyAlwaysOnTop"
+                    />
+                  </div>
+                </div>
+              </section>
+              <section class="settings-section">
+                <h4 class="section-title">截图与贴图 <small>所有</small></h4>
+                <div
+                  v-for="(definition, action) in CAPTURE_SHORTCUTS"
+                  :key="action"
+                  class="setting-item shortcut-setting"
+                >
+                  <div class="setting-left">
+                    <span class="setting-label">{{ definition.label }}</span>
+                  </div>
+                  <div class="setting-right">
+                    <SettingsControlPopover
+                      :label="definition.label"
+                      :summary="
+                        shortcutSummary(captureShortcuts[action], captureShortcutRuntime[action])
+                      "
+                      :disabled="isResetting || !panelActive"
+                      :data-shortcut="action"
+                    >
+                      <ShortcutRecorder
+                        v-model="captureShortcuts[action]"
+                        :action="action"
+                        :runtime="captureShortcutRuntime[action]"
+                        :disabled="isResetting"
+                        @update:runtime="captureShortcutRuntime[action] = $event"
+                        @feedback="showMessage($event.type, $event.message, $event.duration)"
+                      />
+                    </SettingsControlPopover>
+                  </div>
+                </div>
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >截图时隐藏主视图<HelpButton
+                        text="开启后，进入截图选区前会暂时隐藏当前主视图，截图完成或取消后自动恢复；关闭后可以把主视图一并截入图片。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <AppToggle
+                      v-model="hideMainViewDuringScreenshot"
+                      data-diagnostic-action="settings.hideMainViewDuringScreenshot"
+                    />
+                  </div>
+                </div>
+              </section>
+            </div>
+            <div
+              class="settings-category"
+              data-settings-category="weather"
+              role="group"
+              aria-labelledby="settings-category-weather"
+            >
+              <h3 id="settings-category-weather" class="category-title">天气与日历</h3>
+              <section class="settings-section">
+                <h4 class="section-title">
+                  <span>天气 <small>所有</small></span>
+                  <button
+                    type="button"
+                    class="weather-refresh-btn"
+                    :class="{ 'is-refreshing': weatherRefreshing }"
+                    :disabled="weatherRefreshing"
+                    title="手动更新天气"
+                    aria-label="手动更新天气"
+                    @click="refreshWeatherManually"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  </button>
+                </h4>
+                <WeatherSettings />
+              </section>
+              <section class="settings-section">
+                <h4 class="section-title">
+                  <span>日历与节假日数据</span>
+                  <span
+                    class="remote-health-badge sched-badge"
+                    :class="holidayDataStatus?.available ? 'sched-badge--ok' : 'sched-badge--warn'"
+                  >
+                    {{ holidayDataStatusLabel }}
+                  </span>
+                </h4>
+
+                <p
+                  v-if="holidayDataStatus && !holidayDataStatus.available"
+                  class="holiday-data-message"
+                >
+                  尚未安装 {{ currentHolidayYear }} 年节假日数据；日历视图将不显示“休 /
+                  班”标记，农历与节气不受影响。
+                </p>
+                <p v-if="holidayDataError" class="holiday-data-message is-error">
+                  {{ holidayDataError }}
+                </p>
+
+                <div class="setting-item holiday-summary-row">
+                  <div
+                    class="holiday-summary-item"
+                    :title="`可用年份 ${holidayCoveredYearsLabel}；农历与节气支持至 2100 年`"
+                  >
+                    <span class="setting-label"
+                      >当前年份<HelpButton
+                        text="程序检查当前年份最终生效的数据。用户导入或下载的数据优先，缺失时回退应用内置数据。"
+                    /></span>
+                    <span class="setting-value">{{ currentHolidayYear }}</span>
+                  </div>
+                  <div class="holiday-summary-item" :title="holidayDataSourceDetail">
+                    <span class="setting-label">当前数据源</span>
+                    <span class="setting-value">{{ holidayDataSourceLabel }}</span>
+                  </div>
+                </div>
+
+                <div class="setting-item setting-item-full setting-button-row holiday-action-row">
+                  <BaseButton
+                    variant="primary"
+                    :disabled="Boolean(holidayDataBusy)"
+                    @click="downloadCurrentHolidayData"
+                  >
+                    {{ holidayDataBusy === 'download' ? '正在下载…' : '下载并导入' }}
+                  </BaseButton>
+                  <BaseButton :disabled="Boolean(holidayDataBusy)" @click="importHolidayData">
+                    {{ holidayDataBusy === 'import' ? '正在导入…' : '导入 JSON' }}
+                  </BaseButton>
+                  <BaseButton
+                    variant="default"
+                    :disabled="Boolean(holidayDataBusy)"
+                    @click="openHolidayDataLink"
+                  >
+                    浏览器打开
+                  </BaseButton>
+                </div>
+              </section>
+            </div>
+            <div
+              class="settings-category"
+              data-settings-category="system"
+              role="group"
+              aria-labelledby="settings-category-system"
+            >
+              <h3 id="settings-category-system" class="category-title">系统与数据</h3>
+              <section class="settings-section">
+                <h4 class="section-title">系统设置</h4>
+
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >开机自启 <small>所有</small
+                      ><HelpButton
+                        text="控制应用是否随系统登录自动启动。此状态直接读取并写入操作系统，不保存在应用数据库中。"
+                    /></span>
+                    <span v-if="autoStartError" class="setting-error">
+                      <svg
+                        class="warn-icon"
+                        width="12"
+                        height="12"
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        aria-hidden="true"
+                      >
+                        <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" />
+                        <path
+                          d="M6 3.5v3"
+                          stroke="currentColor"
+                          stroke-width="1.2"
+                          stroke-linecap="round"
+                        />
+                        <circle cx="6" cy="9" r="0.7" fill="currentColor" />
+                      </svg>
+                      {{ autoStartError }}
+                    </span>
+                  </div>
+                  <div class="setting-right">
+                    <AppToggle v-model="autoStart" data-diagnostic-action="settings.autoStart" />
+                  </div>
+                </div>
+              </section>
+              <section class="settings-section">
+                <h4 class="section-title">
+                  <span>远程服务与隐私 <small>所有</small></span>
+                  <span
+                    class="remote-health-badge sched-badge"
+                    :class="
+                      remoteHealthStatus === 'available'
+                        ? 'sched-badge--ok'
+                        : remoteHealthStatus === 'checking'
+                          ? ''
+                          : 'sched-badge--warn'
+                    "
+                    :title="remoteHealthError || '本次启动时检测到远程服务正常'"
+                  >
+                    {{ remoteHealthLabel }}
+                  </span>
+                </h4>
+                <p v-if="remoteHealthStatus === 'skipped'" class="remote-health-message">
+                  本次启动未连接远程服务器；这里的修改将在下次启动时按新设置执行。
+                </p>
+                <p v-else-if="remoteHealthStatus === 'retired'" class="remote-health-message">
+                  {{ remoteHealthError }}
+                </p>
+                <p v-else-if="remoteHealthStatus === 'unavailable'" class="remote-health-message">
+                  本次启动连接远程服务器失败；这里的修改将在下次启动时按新设置执行。
+                </p>
+
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >接收软件通知<HelpButton
+                        text="启动时联系远程服务并获取适用于当前系统的软件通知。关闭后不会请求新通知，已经保存的历史通知仍可查看。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <AppToggle
+                      v-model="receiveRemoteNotices"
+                      data-diagnostic-action="settings.receiveRemoteNotices"
+                      :disabled="remoteHealthStatus === 'retired'"
+                    />
+                  </div>
+                </div>
+
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >后续设备统计<HelpButton
+                        text="首次启动已经发送一次匿名基础设备统计，用于估算实际启动的安装数量。关闭后，下次启动起停止后续启动/退出统计；不会上传便签正文、标签、模板、附件或壁纸。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <AppToggle
+                      v-model="uploadDeviceInfo"
+                      data-diagnostic-action="settings.uploadDeviceInfo"
+                      :disabled="remoteHealthStatus === 'retired'"
+                    />
+                  </div>
+                </div>
+
+                <div class="setting-item setting-item-full">
+                  <BaseButton
+                    variant="default"
+                    style="width: 100%"
+                    @click="showNoticeHistory = true"
+                  >
+                    查看全部通知
+                  </BaseButton>
+                </div>
+              </section>
+              <section class="settings-section">
+                <h4 class="section-title">关于</h4>
+
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >应用版本<HelpButton
+                        text="当前安装或运行的应用版本，用于确认功能版本和排查兼容性问题。"
+                    /></span>
+                  </div>
+                  <div class="setting-right">
+                    <span class="setting-value">v{{ appVersion }}</span>
+                  </div>
+                </div>
+
+                <div class="setting-item setting-item-full setting-button-row">
+                  <BaseButton variant="default" @click="emit('check-update')">检查更新</BaseButton>
+                  <BaseButton variant="default" @click="showLogViewer = true">查看日志</BaseButton>
+                </div>
+              </section>
+              <section class="settings-section settings-data">
+                <h4 class="section-title">数据管理</h4>
+                <div class="setting-item setting-item-full setting-button-row">
+                  <BaseButton variant="default" @click="showResetSettingsDialog = true">
+                    恢复默认设置
+                  </BaseButton>
+                  <BaseButton
+                    variant="default"
+                    class="clear-data-btn"
+                    @click="showClearNoteDataDialog = true"
+                  >
+                    清空便签数据
+                  </BaseButton>
+                </div>
+              </section>
+              <div class="settings-diagnostics">
                 <button
                   type="button"
-                  class="weather-refresh-btn"
-                  :class="{ 'is-refreshing': weatherRefreshing }"
-                  :disabled="weatherRefreshing"
-                  title="手动更新天气"
-                  aria-label="手动更新天气"
-                  @click="refreshWeatherManually"
+                  class="diagnostics-toggle"
+                  :aria-expanded="diagnosticsExpanded"
+                  aria-controls="settings-diagnostics-content"
+                  @click="diagnosticsExpanded = !diagnosticsExpanded"
                 >
-                  <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.8"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
+                  <span>高级与诊断</span
+                  ><span class="diagnostics-chevron" aria-hidden="true">⌄</span>
                 </button>
-              </h3>
-              <WeatherSettings />
-            </section>
-
-            <!-- ========== 日历与节假日数据 ========== -->
-            <section class="settings-section">
-              <h3 class="section-title">
-                <span>日历与节假日数据</span>
-                <span
-                  class="remote-health-badge sched-badge"
-                  :class="holidayDataStatus?.available ? 'sched-badge--ok' : 'sched-badge--warn'"
+                <Transition
+                  :css="false"
+                  @enter="onNativeBlurOptionsEnter"
+                  @leave="onNativeBlurOptionsLeave"
                 >
-                  {{ holidayDataStatusLabel }}
-                </span>
-              </h3>
-
-              <p
-                v-if="holidayDataStatus && !holidayDataStatus.available"
-                class="holiday-data-message"
-              >
-                尚未安装 {{ currentHolidayYear }} 年节假日数据；日历视图将不显示“休 /
-                班”标记，农历与节气不受影响。
-              </p>
-              <p v-if="holidayDataError" class="holiday-data-message is-error">
-                {{ holidayDataError }}
-              </p>
-
-              <div class="setting-item holiday-summary-row">
-                <div
-                  class="holiday-summary-item"
-                  :title="`可用年份 ${holidayCoveredYearsLabel}；农历与节气支持至 2100 年`"
-                >
-                  <span class="setting-label"
-                    >当前年份<HelpButton
-                      text="程序检查当前年份最终生效的数据。用户导入或下载的数据优先，缺失时回退应用内置数据。"
-                  /></span>
-                  <span class="setting-value">{{ currentHolidayYear }}</span>
-                </div>
-                <div class="holiday-summary-item" :title="holidayDataSourceDetail">
-                  <span class="setting-label">当前数据源</span>
-                  <span class="setting-value">{{ holidayDataSourceLabel }}</span>
-                </div>
-              </div>
-
-              <div class="setting-item setting-item-full setting-button-row holiday-action-row">
-                <BaseButton
-                  variant="primary"
-                  :disabled="Boolean(holidayDataBusy)"
-                  @click="downloadCurrentHolidayData"
-                >
-                  {{ holidayDataBusy === 'download' ? '正在下载…' : '下载并导入' }}
-                </BaseButton>
-                <BaseButton :disabled="Boolean(holidayDataBusy)" @click="importHolidayData">
-                  {{ holidayDataBusy === 'import' ? '正在导入…' : '导入 JSON' }}
-                </BaseButton>
-                <BaseButton
-                  variant="default"
-                  :disabled="Boolean(holidayDataBusy)"
-                  @click="openHolidayDataLink"
-                >
-                  浏览器打开
-                </BaseButton>
-              </div>
-            </section>
-
-            <!-- ========== 远程服务与隐私 ========== -->
-            <section class="settings-section">
-              <h3 class="section-title">
-                <span>远程服务与隐私 <small>所有</small></span>
-                <span
-                  class="remote-health-badge sched-badge"
-                  :class="
-                    remoteHealthStatus === 'available'
-                      ? 'sched-badge--ok'
-                      : remoteHealthStatus === 'checking'
-                        ? ''
-                        : 'sched-badge--warn'
-                  "
-                  :title="remoteHealthError || '本次启动时检测到远程服务正常'"
-                >
-                  {{ remoteHealthLabel }}
-                </span>
-              </h3>
-              <p v-if="remoteHealthStatus === 'skipped'" class="remote-health-message">
-                本次启动未连接远程服务器；这里的修改将在下次启动时按新设置执行。
-              </p>
-              <p v-else-if="remoteHealthStatus === 'retired'" class="remote-health-message">
-                {{ remoteHealthError }}
-              </p>
-              <p v-else-if="remoteHealthStatus === 'unavailable'" class="remote-health-message">
-                本次启动连接远程服务器失败；这里的修改将在下次启动时按新设置执行。
-              </p>
-
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >接收软件通知<HelpButton
-                      text="启动时联系远程服务并获取适用于当前系统的软件通知。关闭后不会请求新通知，已经保存的历史通知仍可查看。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <AppToggle
-                    v-model="receiveRemoteNotices"
-                    data-diagnostic-action="settings.receiveRemoteNotices"
-                    :disabled="remoteHealthStatus === 'retired'"
-                  />
-                </div>
-              </div>
-
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >后续设备统计<HelpButton
-                      text="首次启动已经发送一次匿名基础设备统计，用于估算实际启动的安装数量。关闭后，下次启动起停止后续启动/退出统计；不会上传便签正文、标签、模板、附件或壁纸。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <AppToggle
-                    v-model="uploadDeviceInfo"
-                    data-diagnostic-action="settings.uploadDeviceInfo"
-                    :disabled="remoteHealthStatus === 'retired'"
-                  />
-                </div>
-              </div>
-
-              <div class="setting-item setting-item-full">
-                <BaseButton variant="default" style="width: 100%" @click="showNoticeHistory = true">
-                  查看全部通知
-                </BaseButton>
-              </div>
-            </section>
-
-            <!-- ========== 关于 ========== -->
-            <section class="settings-section">
-              <h3 class="section-title">关于</h3>
-
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >应用版本<HelpButton
-                      text="当前安装或运行的应用版本，用于确认功能版本和排查兼容性问题。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <span class="setting-value">v{{ appVersion }}</span>
-                </div>
-              </div>
-
-              <div class="setting-item setting-item-full setting-button-row">
-                <BaseButton variant="default" @click="emit('check-update')">检查更新</BaseButton>
-                <BaseButton variant="default" @click="showLogViewer = true">查看日志</BaseButton>
-              </div>
-
-              <div class="setting-item setting-item-full setting-button-row">
-                <BaseButton variant="default" @click="showResetSettingsDialog = true">
-                  恢复默认设置
-                </BaseButton>
-                <BaseButton variant="default" @click="showClearNoteDataDialog = true">
-                  清空便签数据
-                </BaseButton>
-              </div>
-            </section>
-
-            <!-- ========== 调度器诊断 ========== -->
-            <section v-if="schedulerHealth" class="settings-section">
-              <h3 class="section-title">
-                调度器诊断 <small>所有</small>
-                <BaseButton size="sm" @click="retryScheduler">重试核心任务</BaseButton>
-                <button class="sched-refresh-btn" title="刷新" @click="loadSchedulerHealth">
-                  ↻
-                </button>
-              </h3>
-
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >调度器状态<HelpButton
-                      text="显示后台定时任务调度器是否正在运行。调度器负责便签生效、提醒和循环模板等定时工作。"
-                  /></span>
-                </div>
-                <div class="setting-right">
-                  <span
-                    class="sched-badge"
-                    :class="
-                      schedulerHealth.status === 'running' ? 'sched-badge--ok' : 'sched-badge--warn'
-                    "
+                  <div
+                    v-show="diagnosticsExpanded"
+                    id="settings-diagnostics-content"
+                    class="diagnostics-content"
                   >
-                    {{ schedulerHealth.status === 'running' ? '● 运行中' : '○ 已停止' }}
-                  </span>
-                </div>
-              </div>
+                    <section class="settings-section">
+                      <h4 class="section-title">窗口诊断</h4>
+                      <div class="setting-item">
+                        <div class="setting-left">
+                          <span class="setting-label"
+                            >运行诊断<HelpButton
+                              text="毛玻璃诊断已注册到应用统一调度器：启动时执行一次，之后每分钟检查原生效果链、Overlay 和窗口同步状态。"
+                          /></span>
+                          <span class="setting-hint-caption">
+                            {{ blurDiagnostic.message }}
+                            <template v-if="blurDiagnostic.lastCheckedAt">
+                              · {{ formatTickTime(blurDiagnostic.lastCheckedAt) }}
+                            </template>
+                          </span>
+                        </div>
+                        <div class="setting-right">
+                          <span class="sched-badge" :class="blurDiagnosticMeta.className">
+                            {{ blurDiagnosticMeta.label }}
+                          </span>
+                        </div>
+                      </div>
+                    </section>
+                    <section v-if="schedulerHealth" class="settings-section">
+                      <h4 class="section-title">
+                        调度器诊断 <small>所有</small>
+                        <BaseButton size="sm" @click="retryScheduler">重试核心任务</BaseButton>
+                        <button class="sched-refresh-btn" title="刷新" @click="loadSchedulerHealth">
+                          ↻
+                        </button>
+                      </h4>
 
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >最近执行<HelpButton
-                      text="后台调度器最近一次完成任务检查的时间；长时间不更新可能表示调度线程被阻塞。"
-                  /></span>
-                  <span class="setting-hint-caption">上次检查任务的时间</span>
-                </div>
-                <div class="setting-right">
-                  <span class="setting-value">
-                    {{ formatTickTime(schedulerHealth.lastTickAt) }}
-                    <span class="setting-hint-inline"
-                      >（{{ tickTimeAgo(schedulerHealth.lastTickAt) }}）</span
-                    >
-                  </span>
-                </div>
-              </div>
+                      <div class="setting-item">
+                        <div class="setting-left">
+                          <span class="setting-label"
+                            >调度器状态<HelpButton
+                              text="显示后台定时任务调度器是否正在运行。调度器负责便签生效、提醒和循环模板等定时工作。"
+                          /></span>
+                        </div>
+                        <div class="setting-right">
+                          <span
+                            class="sched-badge"
+                            :class="
+                              schedulerHealth.status === 'running'
+                                ? 'sched-badge--ok'
+                                : 'sched-badge--warn'
+                            "
+                          >
+                            {{ schedulerHealth.status === 'running' ? '● 运行中' : '○ 已停止' }}
+                          </span>
+                        </div>
+                      </div>
 
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >故障监控<HelpButton
-                      text="独立看门狗会定期检查主调度器是否正常推进，并在检测到停滞时尝试恢复。"
-                  /></span>
-                  <span class="setting-hint-caption">独立计时器，检测调度器是否卡死</span>
-                </div>
-                <div class="setting-right">
-                  <span
-                    class="sched-badge"
-                    :class="
-                      schedulerHealth.watchdogRunning ? 'sched-badge--ok' : 'sched-badge--warn'
-                    "
-                  >
-                    {{ schedulerHealth.watchdogRunning ? '● 活跃' : '○ 休眠' }}
-                  </span>
-                </div>
-              </div>
+                      <div class="setting-item">
+                        <div class="setting-left">
+                          <span class="setting-label"
+                            >最近执行<HelpButton
+                              text="后台调度器最近一次完成任务检查的时间；长时间不更新可能表示调度线程被阻塞。"
+                          /></span>
+                          <span class="setting-hint-caption">上次检查任务的时间</span>
+                        </div>
+                        <div class="setting-right">
+                          <span class="setting-value">
+                            {{ formatTickTime(schedulerHealth.lastTickAt) }}
+                            <span class="setting-hint-inline"
+                              >（{{ tickTimeAgo(schedulerHealth.lastTickAt) }}）</span
+                            >
+                          </span>
+                        </div>
+                      </div>
 
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >执行保护<HelpButton
-                      text="防止上一轮任务尚未结束时再次进入调度流程，避免同一便签被重复处理或重复提醒。"
-                  /></span>
-                  <span class="setting-hint-caption">防止同一时刻重复执行</span>
-                </div>
-                <div class="setting-right">
-                  <span
-                    class="sched-badge"
-                    :class="!schedulerHealth.tickStuck ? 'sched-badge--ok' : 'sched-badge--danger'"
-                  >
-                    {{ schedulerHealth.tickStuck ? '⚠ 阻塞中' : '● 空闲' }}
-                  </span>
-                </div>
-              </div>
+                      <div class="setting-item">
+                        <div class="setting-left">
+                          <span class="setting-label"
+                            >故障监控<HelpButton
+                              text="独立看门狗会定期检查主调度器是否正常推进，并在检测到停滞时尝试恢复。"
+                          /></span>
+                          <span class="setting-hint-caption">独立计时器，检测调度器是否卡死</span>
+                        </div>
+                        <div class="setting-right">
+                          <span
+                            class="sched-badge"
+                            :class="
+                              schedulerHealth.watchdogRunning
+                                ? 'sched-badge--ok'
+                                : 'sched-badge--warn'
+                            "
+                          >
+                            {{ schedulerHealth.watchdogRunning ? '● 活跃' : '○ 休眠' }}
+                          </span>
+                        </div>
+                      </div>
 
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >调度计数<HelpButton
-                      text="记录当前主调度器的运行代次；发生故障并重建调度循环后会进入下一轮。"
-                  /></span>
-                  <span class="setting-hint-caption">每发生一次故障恢复 +1</span>
-                </div>
-                <div class="setting-right">
-                  <span class="setting-value">第 {{ schedulerHealth.mainGeneration }} 轮</span>
-                </div>
-              </div>
+                      <div class="setting-item">
+                        <div class="setting-left">
+                          <span class="setting-label"
+                            >执行保护<HelpButton
+                              text="防止上一轮任务尚未结束时再次进入调度流程，避免同一便签被重复处理或重复提醒。"
+                          /></span>
+                          <span class="setting-hint-caption">防止同一时刻重复执行</span>
+                        </div>
+                        <div class="setting-right">
+                          <span
+                            class="sched-badge"
+                            :class="
+                              !schedulerHealth.tickStuck ? 'sched-badge--ok' : 'sched-badge--danger'
+                            "
+                          >
+                            {{ schedulerHealth.tickStuck ? '⚠ 阻塞中' : '● 空闲' }}
+                          </span>
+                        </div>
+                      </div>
 
-              <div class="setting-item">
-                <div class="setting-left">
-                  <span class="setting-label"
-                    >自动恢复<HelpButton
-                      text="显示看门狗连续恢复失败的次数。数值持续增加时通常需要重启应用并检查错误日志。"
-                  /></span>
-                  <span class="setting-hint-caption">故障监控触发的恢复次数</span>
-                </div>
-                <div class="setting-right">
-                  <span
-                    class="setting-value"
-                    :class="{ 'sched-warn': schedulerHealth.recoveryFailures > 0 }"
-                  >
-                    {{ schedulerHealth.recoveryFailures }} 次
-                  </span>
-                </div>
-              </div>
+                      <div class="setting-item">
+                        <div class="setting-left">
+                          <span class="setting-label"
+                            >调度计数<HelpButton
+                              text="记录当前主调度器的运行代次；发生故障并重建调度循环后会进入下一轮。"
+                          /></span>
+                          <span class="setting-hint-caption">每发生一次故障恢复 +1</span>
+                        </div>
+                        <div class="setting-right">
+                          <span class="setting-value"
+                            >第 {{ schedulerHealth.mainGeneration }} 轮</span
+                          >
+                        </div>
+                      </div>
 
-              <!-- 任务列表 -->
-              <div v-if="schedulerHealth.tasks?.length" class="sched-tasks">
-                <div class="sched-tasks-title">
-                  注册任务（{{ schedulerHealth.tasks.length }} 个）
-                </div>
-                <div
-                  v-for="task in schedulerHealth.tasks"
-                  :key="task.name"
-                  class="sched-task-card"
-                  :class="{ 'sched-task-card--disabled': task.disabled }"
-                >
-                  <div class="sched-task-header">
-                    <span class="sched-task-name" :title="task.name">
-                      {{ schedulerTaskLabel(task.name) }}
-                    </span>
-                    <span
-                      v-if="task.disabled"
-                      class="sched-badge sched-badge--danger"
-                      title="连续失败 10 次已自动禁用"
-                    >
-                      ⚠ 已熔断
-                    </span>
-                    <span v-else-if="task.nextRetryAt" class="sched-badge sched-badge--warn"
-                      >等待重试 {{ formatTickTime(task.nextRetryAt) }}</span
-                    >
-                    <span v-else class="sched-badge sched-badge--ok">正常</span>
+                      <div class="setting-item">
+                        <div class="setting-left">
+                          <span class="setting-label"
+                            >自动恢复<HelpButton
+                              text="显示看门狗连续恢复失败的次数。数值持续增加时通常需要重启应用并检查错误日志。"
+                          /></span>
+                          <span class="setting-hint-caption">故障监控触发的恢复次数</span>
+                        </div>
+                        <div class="setting-right">
+                          <span
+                            class="setting-value"
+                            :class="{ 'sched-warn': schedulerHealth.recoveryFailures > 0 }"
+                          >
+                            {{ schedulerHealth.recoveryFailures }} 次
+                          </span>
+                        </div>
+                      </div>
+
+                      <!-- 任务列表 -->
+                      <div v-if="schedulerHealth.tasks?.length" class="sched-tasks">
+                        <div class="sched-tasks-title">
+                          注册任务（{{ schedulerHealth.tasks.length }} 个）
+                        </div>
+                        <div
+                          v-for="task in schedulerHealth.tasks"
+                          :key="task.name"
+                          class="sched-task-card"
+                          :class="{ 'sched-task-card--disabled': task.disabled }"
+                        >
+                          <div class="sched-task-header">
+                            <span class="sched-task-name" :title="task.name">
+                              {{ schedulerTaskLabel(task.name) }}
+                            </span>
+                            <span
+                              v-if="task.disabled"
+                              class="sched-badge sched-badge--danger"
+                              title="连续失败 10 次已自动禁用"
+                            >
+                              ⚠ 已熔断
+                            </span>
+                            <span v-else-if="task.nextRetryAt" class="sched-badge sched-badge--warn"
+                              >等待重试 {{ formatTickTime(task.nextRetryAt) }}</span
+                            >
+                            <span v-else class="sched-badge sched-badge--ok">正常</span>
+                          </div>
+                          <div class="sched-task-meta">失败次数：{{ task.failures }}</div>
+                          <div v-if="task.lastError" class="sched-task-error">
+                            {{ task.lastError }}
+                          </div>
+                        </div>
+                      </div>
+                    </section>
                   </div>
-                  <div class="sched-task-meta">失败次数：{{ task.failures }}</div>
-                  <div v-if="task.lastError" class="sched-task-error">{{ task.lastError }}</div>
-                </div>
+                </Transition>
               </div>
-            </section>
+            </div>
           </fieldset>
         </div>
       </div>
@@ -2722,17 +2943,12 @@ async function retryScheduler() {
       variant="default"
       @confirm="onConfirmResetSettings"
     />
-    <LogViewerDialog v-model:visible="showLogViewer" />
-    <RemoteNoticeHistoryDialog v-model:visible="showNoticeHistory" />
+    <LogViewerDialog v-model:visible="showLogViewer" :queue="logQueue" />
+    <RemoteNoticeHistoryDialog v-model:visible="showNoticeHistory" :queue="historyQueue" />
   </Teleport>
 </template>
 
 <style scoped>
-.setting-scope-row {
-  flex-basis: 100%;
-  color: var(--text-color-secondary);
-  font-size: var(--fs-secondary);
-}
 .setting-label small,
 .section-title small {
   color: var(--text-color-secondary);
@@ -2740,11 +2956,12 @@ async function retryScheduler() {
   font-weight: 400;
 }
 .settings-search {
-  padding: 0 20rem 10rem;
+  padding: 0 var(--settings-gutter) 8rem var(--settings-gutter-start);
+  flex: 0 0 auto;
 }
 .settings-search input {
   width: 100%;
-  padding: 7rem 10rem;
+  padding: 6rem 9rem;
   border: 1px solid var(--ui-border-control);
   border-radius: 8rem;
   background: var(--ui-surface-control);
@@ -2752,7 +2969,7 @@ async function retryScheduler() {
   font: inherit;
 }
 .settings-search p {
-  margin-top: 6rem;
+  margin-top: 4rem;
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
 }
@@ -2760,8 +2977,8 @@ async function retryScheduler() {
   display: flex;
   flex-wrap: wrap;
   gap: 6rem;
-  max-height: 90px;
-  margin-top: 8rem;
+  max-height: 64px;
+  margin-top: 6rem;
 }
 .settings-search-results button {
   padding: 5rem 8rem;
@@ -2804,6 +3021,14 @@ async function retryScheduler() {
 
 /* ---- 面板主体：设置页使用 1× 全局霜层基准 ---- */
 .settings-panel {
+  /* 只缩小设置页及其内嵌控件，正文、便签和其他窗口仍使用用户的原字号。 */
+  --fs-body: clamp(12px, calc(var(--font-size-base) * 0.82), 16px);
+  --fs-secondary: max(11px, calc(var(--fs-body) * 0.86));
+  --fs-title: calc(var(--fs-body) * 1.2);
+  --settings-gutter: 16rem;
+  --settings-gutter-start: var(--settings-gutter);
+  font-size: var(--fs-body);
+  line-height: 1.45;
   position: absolute;
   container-type: inline-size;
   left: 0;
@@ -2830,11 +3055,13 @@ async function retryScheduler() {
 
 /* 月视图从右侧滑入；左边缘是贯穿整页的横向尺寸拖动区。 */
 .settings-panel--month {
+  --settings-gutter-start: 24rem;
   top: 0;
   right: 0;
   bottom: 0;
   left: auto;
   width: 40%;
+  min-width: min(300px, 100%);
   height: 100%;
   border-radius: 16rem 0 0 16rem;
   box-shadow: -8px 0 32px rgba(0, 0, 0, 0.3);
@@ -2849,7 +3076,7 @@ async function retryScheduler() {
 .drag-indicator {
   display: flex;
   justify-content: center;
-  padding: 10rem 0 4rem;
+  padding: 8rem 0 2rem;
   flex-shrink: 0;
   cursor: ns-resize;
   user-select: none;
@@ -2877,11 +3104,6 @@ async function retryScheduler() {
   transform: scaleY(1.18);
 }
 
-.settings-panel--month .panel-header,
-.settings-panel--month .panel-body {
-  padding-left: 28rem;
-}
-
 .drag-indicator.is-disabled {
   cursor: wait;
   opacity: 0.45;
@@ -2905,7 +3127,7 @@ async function retryScheduler() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4rem 20rem 14rem;
+  padding: 4rem var(--settings-gutter) 8rem var(--settings-gutter-start);
   flex-shrink: 0;
 }
 .panel-title {
@@ -2953,9 +3175,9 @@ async function retryScheduler() {
 /* ---- 面板内容区 ---- */
 .panel-body {
   flex: 1;
-  padding: 0 20rem 0;
-  padding-bottom: 20rem;
-  margin: 0 2px 32rem; /* 保留原 fieldset 外边距和底部安全区。 */
+  min-height: 0;
+  padding: 0 var(--settings-gutter) 24rem var(--settings-gutter-start);
+  margin: 0 0 10rem;
 
   /* 阻止滚动链接：子元素滚到头不会导致父级抖动 */
   overscroll-behavior: contain;
@@ -2966,10 +3188,10 @@ async function retryScheduler() {
   -webkit-mask-image: linear-gradient(
     to bottom,
     black 0%,
-    black calc(100% - 30rem),
+    black calc(100% - 14rem),
     transparent 100%
   );
-  mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 30rem), transparent 100%);
+  mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 14rem), transparent 100%);
 }
 .panel-body.is-resetting {
   cursor: wait;
@@ -2986,34 +3208,42 @@ async function retryScheduler() {
 }
 
 /* ---- 设置分区 ---- */
+.settings-category {
+  margin-bottom: 22rem;
+}
+.category-title {
+  margin-bottom: 10rem;
+  padding-bottom: 6rem;
+  border-bottom: 1px solid var(--ui-border-divider);
+  color: var(--text-color);
+  font-size: calc(var(--fs-body) * 1.1);
+  font-weight: 700;
+}
 .settings-section {
-  margin-bottom: 16rem;
+  margin-bottom: 12rem;
 }
 .settings-section:last-child {
   margin-bottom: 0;
 }
 .section-title {
-  font-size: var(--fs-body);
+  font-size: var(--fs-secondary);
   font-weight: 600;
-  color: var(--text-color);
-  text-transform: uppercase;
-  letter-spacing: 0.5rem;
-  margin-bottom: 8rem;
+  color: var(--text-color-secondary);
+  margin-bottom: 5rem;
   padding-left: 2rem;
 }
 
 /* ---- 单条设置项（Flex 两列：左标签 + 右控件，space-between 平分多余空间）---- */
 .setting-item {
   display: flex;
-  flex-wrap: wrap;
+  min-height: max(40px, 2.85em);
   align-items: center;
   justify-content: space-between;
-  row-gap: 8rem;
-  padding: 10rem 14rem;
-  border-radius: 10rem;
+  gap: 6px 10px;
+  padding: 6px 10px;
+  border-radius: 8rem;
   background-color: var(--ui-surface-subtle);
-  margin-bottom: 4rem;
-  transition: background-color 120ms ease;
+  margin-bottom: 2rem;
 }
 /* 原生模糊参数随启用状态平滑展开/收起；grid 可适应内容高度。 */
 .native-blur-options {
@@ -3045,9 +3275,10 @@ async function retryScheduler() {
   max-height: 1200rem;
 }
 
-/* 有辅助文字时，左列顶部对齐 */
-.setting-item.has-hint {
-  align-items: start;
+/* 必要的多行说明自然撑高，普通项保持相同的垂直基线。 */
+.setting-item:has(.setting-hint-caption),
+.setting-item:has(.setting-error) {
+  min-height: max(56px, 3.5em);
 }
 
 /* 按钮项占满宽度（单列） */
@@ -3070,33 +3301,86 @@ async function retryScheduler() {
   flex-direction: column;
   gap: 3rem;
   min-width: 0;
-  flex-shrink: 0;
+  flex: 1 1 auto;
 }
 
 /* ---- 右侧区域（控件容器）---- */
 .setting-right {
   display: flex;
   align-items: center;
-  gap: 10rem;
-  flex-shrink: 0;
+  gap: 6px;
+  min-width: 0;
+  max-width: 58%;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .shortcut-setting .setting-right {
-  min-width: 0;
-  flex: 1 0 100%;
-  justify-content: flex-start;
+  width: 156px;
+  max-width: 52%;
 }
-.shortcut-setting .setting-left {
-  flex: 1 0 100%;
+.shortcut-setting :deep(.settings-control-popover) {
+  width: 100%;
+}
+.settings-color-control {
+  width: 126px;
+}
+.settings-color-control :deep(.settings-control-popover) {
+  width: 100%;
+}
+.settings-color-swatch {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border-radius: 3px;
+  border: 1px solid var(--ui-border-control);
+}
+.settings-color-value {
+  font-family: var(--font-family-mono);
+  font-size: var(--fs-secondary);
+}
+.settings-color-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.settings-color-editor .color-hex-input-wrap {
+  flex: 1;
+}
+.settings-color-editor .color-hex-input {
+  width: 100%;
+  min-width: 90px;
+  border-color: var(--ui-border-control);
+  background: var(--ui-surface-control);
+}
+.settings-color-editor .color-hex-input:focus {
+  border-color: var(--ui-accent);
+}
+.settings-color-editor .color-hex-input.has-error {
+  border-color: var(--ui-danger);
+}
+.settings-color-editor .color-dot {
+  width: 24px;
+  height: 24px;
+}
+.settings-color-editor .color-dot.active {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}
+.settings-color-editor .color-dot:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
 }
 .holiday-summary-row {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 12rem;
 }
 .holiday-summary-item {
   display: flex;
   min-width: 0;
-  flex: 1 1 0;
+  flex: 1 1 140px;
   align-items: center;
   justify-content: space-between;
   gap: 8rem;
@@ -3105,11 +3389,16 @@ async function retryScheduler() {
   white-space: nowrap;
 }
 .holiday-action-row {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+}
+.holiday-action-row .base-btn {
+  flex: 1 1 100px;
 }
 .titlebar-style-selector {
   display: grid;
-  grid-template-columns: repeat(2, minmax(78rem, 1fr));
+  width: 136px;
+  flex-shrink: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 2rem;
   padding: 2rem;
   border: 0;
@@ -3117,8 +3406,8 @@ async function retryScheduler() {
   background-color: var(--ui-fill-passive);
 }
 .titlebar-style-selector button {
-  min-height: 28rem;
-  padding: 0 10rem;
+  min-height: 24px;
+  padding: 2px 4px;
   border: 0;
   border-radius: 6rem;
   color: var(--text-color-secondary);
@@ -3131,6 +3420,9 @@ async function retryScheduler() {
     background-color var(--motion-control) var(--ease-standard),
     box-shadow var(--motion-control) var(--ease-standard),
     transform var(--motion-fast) ease;
+}
+.titlebar-style-selector[aria-label='导航栏风格'] {
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
 }
 .titlebar-style-selector button:hover:not(.active) {
   color: var(--text-color);
@@ -3150,9 +3442,8 @@ async function retryScheduler() {
 }
 
 .dock-reveal-setting .setting-right {
-  width: 100%;
-  min-width: 0;
-  flex: 1 0 100%;
+  max-width: none;
+  width: max(174px, 12em);
 }
 .dock-reveal-mode-selector {
   display: grid;
@@ -3165,8 +3456,8 @@ async function retryScheduler() {
   background: var(--ui-surface-subtle);
 }
 .dock-reveal-mode-selector button {
-  min-height: 30rem;
-  padding: 0 8rem;
+  min-height: 26px;
+  padding: 2px 4px;
   border: 0;
   border-radius: 6rem;
   color: var(--text-color-secondary);
@@ -3200,9 +3491,15 @@ async function retryScheduler() {
   opacity: 0.35;
 }
 
-@container (max-width: 300px) {
-  .dock-reveal-mode-selector {
-    grid-template-columns: 1fr;
+@container (max-width: 340px) {
+  .dock-reveal-setting {
+    flex-wrap: wrap;
+  }
+  .dock-reveal-setting .setting-left {
+    flex-basis: 100%;
+  }
+  .dock-reveal-setting .setting-right {
+    width: 100%;
   }
 }
 
@@ -3214,10 +3511,10 @@ async function retryScheduler() {
 }
 .dock-edge-selector button {
   display: inline-flex;
-  min-height: 30rem;
+  min-height: 26px;
   align-items: center;
-  gap: 6rem;
-  padding: 0 10rem 0 7rem;
+  gap: 4px;
+  padding: 2px 7px;
   border: 0;
   border-radius: 15rem;
   background: var(--ui-fill-passive);
@@ -3277,37 +3574,47 @@ async function retryScheduler() {
   opacity: 1;
 }
 
-/* 滑块类设置项——单行水平布局：标签 ? 进度条 值 全在一行 */
-.setting-item.setting-item-slider {
-  display: flex;
-  flex-direction: row;
+/* 滑块右侧共用定宽数值槽；窄窗仍优先保持左右布局。 */
+.setting-slider-control {
+  display: grid;
+  width: clamp(116px, 45%, 180px);
+  flex: 0 0 auto;
+  grid-template-columns: minmax(40px, 1fr) 4em;
   align-items: center;
-  gap: 6rem;
+  gap: 8px;
+  font-size: var(--fs-secondary);
 }
-
-/* 进度条自适应撑满剩余空间 */
-.setting-item.setting-item-slider .slider-root {
+.setting-slider-control .slider-root {
+  min-width: 0;
+  width: 100%;
+}
+.setting-slider-control .setting-value {
+  min-width: 0;
+}
+.setting-item-slider > .setting-label {
   flex: 1;
-  min-width: 50rem;
+  min-width: 0;
 }
 
 /* ---- 文字样式 ---- */
 .setting-label {
   font-size: var(--fs-body);
   color: var(--text-color);
-  display: inline-flex;
-  align-items: center;
-  gap: 6rem;
+  display: block;
+  line-height: 1.45;
+}
+.setting-label small {
+  display: inline-block;
+  white-space: nowrap;
 }
 
 .setting-hint-caption {
   display: block;
   color: var(--text-color-secondary);
-  font-size: calc(var(--fs-secondary) * 0.75);
+  font-size: var(--fs-secondary);
   font-weight: 400;
   margin-top: 2rem;
   line-height: 1.3;
-  opacity: 0.7;
 }
 
 .setting-value {
@@ -3336,20 +3643,20 @@ async function retryScheduler() {
 
 .remote-health-badge.sched-badge {
   padding: 2rem 8rem;
-  font-size: calc(var(--fs-secondary) * 0.88);
+  font-size: var(--fs-secondary);
 }
 
 .remote-health-message {
   margin: -2rem 2rem 6rem;
   color: rgb(255, 149, 0);
-  font-size: calc(var(--fs-secondary) * 0.88);
+  font-size: var(--fs-secondary);
   line-height: 1.4;
 }
 
 .holiday-data-message {
   margin: -2rem 2rem 6rem;
   color: rgb(255, 149, 0);
-  font-size: calc(var(--fs-secondary) * 0.88);
+  font-size: var(--fs-secondary);
   line-height: 1.4;
 }
 .holiday-data-message.is-error {
@@ -3369,36 +3676,6 @@ async function retryScheduler() {
 /* 错误/警告图标（ⓘ 风格，复用于所有错误提示） */
 .warn-icon {
   flex-shrink: 0;
-}
-
-/* ---- 滑块行各列按百分比 flex-basis 统一，保证所有进度条对齐 ---- */
-/* 标题+问号：加宽并始终保留完整帮助按钮。 */
-.setting-item.setting-item-slider .setting-label {
-  flex: 0 0 27%;
-  min-width: 0;
-  overflow: visible;
-  white-space: nowrap;
-}
-.setting-item.setting-item-slider .setting-label :deep(.setting-help-btn) {
-  flex: 0 0 auto;
-}
-/* 左/右范围标签：各固定 6%，空 span 也占位 */
-.range-label-start,
-.range-label-end {
-  flex: 0 0 6%;
-  text-align: center;
-  font-size: calc(var(--fs-secondary) * 0.85);
-  color: var(--text-color-secondary);
-  opacity: 0.55;
-  user-select: none;
-  pointer-events: none;
-  white-space: nowrap;
-  overflow: hidden;
-}
-/* 数值列：固定 12% */
-.setting-item.setting-item-slider .setting-value {
-  flex: 0 0 12%;
-  min-width: 0;
 }
 
 /* ---- 预设色块 ---- */
@@ -3472,16 +3749,86 @@ async function retryScheduler() {
   border-radius: 5rem;
 }
 
-/* ---- 响应式：窗口很窄时堆叠为单列 ---- */
-@media (max-width: 380px) {
-  .setting-item {
-    gap: 8rem;
+@container (max-width: 380px) {
+  .holiday-summary-item {
+    flex-basis: 100%;
   }
-  .setting-item.has-hint {
-    align-items: stretch;
-  }
-  .setting-item.setting-item-slider {
-    gap: 8rem;
+}
+
+/* 仅设置页缩小控件，不改变编辑器与主页面的组件尺寸。 */
+.settings-panel :deep(.switch) {
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+}
+.settings-panel :deep(.switch)::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+.settings-panel :deep(.switch-thumb) {
+  left: 2px;
+  width: 16px;
+  height: 16px;
+}
+.settings-panel :deep(.switch.on .switch-thumb),
+.settings-panel :deep(.switch.on:active .switch-thumb) {
+  transform: translate(16px, -50%);
+}
+.settings-panel :deep(.switch:focus-visible) {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 3px;
+}
+.settings-panel :deep(.fsi-trigger) {
+  min-height: 26px;
+  padding: 3px 7px;
+}
+
+.settings-panel :deep(.base-btn) {
+  min-height: 26px;
+  padding: 4px 8px;
+  white-space: normal;
+}
+.settings-panel :deep(.setting-hint-caption),
+.settings-panel :deep(.shortcut-recorder-status) {
+  font-size: var(--fs-secondary);
+}
+.settings-panel :deep(.clear-data-btn) {
+  color: var(--ui-danger);
+}
+.diagnostics-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8rem 2rem;
+  border: 0;
+  background: transparent;
+  color: var(--text-color-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.diagnostics-toggle:hover {
+  color: var(--text-color);
+}
+.diagnostics-chevron {
+  transition: transform var(--motion-control) var(--ease-standard);
+}
+.diagnostics-toggle[aria-expanded='true'] .diagnostics-chevron {
+  transform: rotate(180deg);
+}
+.diagnostics-content {
+  overflow: hidden;
+}
+.settings-panel :deep(.settings-search-target) {
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  animation: settings-search-highlight 1600ms var(--ease-standard);
+}
+@keyframes settings-search-highlight {
+  20%,
+  70% {
+    outline-color: var(--ui-accent);
   }
 }
 
@@ -3490,6 +3837,7 @@ async function retryScheduler() {
 /* ---- 调度器诊断 ---- */
 .section-title {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8rem;
 }
@@ -3553,11 +3901,11 @@ async function retryScheduler() {
 .setting-hint-inline {
   color: var(--text-color-secondary);
   font-weight: 400;
-  font-size: calc(var(--fs-secondary) * 0.88);
+  font-size: var(--fs-secondary);
 }
 /* 苹果风格淡染胶囊：背景为语义色极淡染，文字同色系 */
 .sched-badge {
-  font-size: calc(var(--fs-secondary) * 0.88);
+  font-size: var(--fs-secondary);
   padding: 2rem 8rem;
   border-radius: 4rem;
   font-weight: 500;
@@ -3606,15 +3954,15 @@ async function retryScheduler() {
   margin-bottom: 4rem;
 }
 .sched-task-name {
-  font-size: calc(var(--fs-secondary) * 0.95);
+  font-size: var(--fs-secondary);
   font-weight: 600;
 }
 .sched-task-meta {
-  font-size: calc(var(--fs-secondary) * 0.8);
+  font-size: var(--fs-secondary);
   color: var(--text-color-secondary);
 }
 .sched-task-error {
-  font-size: calc(var(--fs-secondary) * 0.78);
+  font-size: var(--fs-secondary);
   color: rgb(255, 59, 48);
   margin-top: 4rem;
   padding: 4rem 6rem;

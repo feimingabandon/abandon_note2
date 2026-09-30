@@ -1,0 +1,17 @@
+********* Start testing of UiTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : UiTest::initTestCase()
+PASS   : UiTest::selectionAndExport()
+PASS   : UiTest::resizeHandles()
+PASS   : UiTest::pinLimitsAndOriginalPixels()
+PASS   : UiTest::saveDialogCancellation()
+PASS   : UiTest::annotationToolsAndChineseInput()
+QINFO  : UiTest::realDesktopSessionAndPins() {"type":"ready","version":1}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"afb83b41-d7dd-4ef7-bfbd-61fad64e210c","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"action":"source","deliveryId":"02a9e979-1cc9-4ab2-ad8a-8bc4477b48c8","height":30,"sessionId":"afb83b41-d7dd-4ef7-bfbd-61fad64e210c","type":"output","width":20}
+QINFO  : UiTest::realDesktopSessionAndPins() {"count":1,"type":"pins"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"afb83b41-d7dd-4ef7-bfbd-61fad64e210c","status":"pinned","type":"finished"}
+PASS   : UiTest::realDesktopSessionAndPins()
+PASS   : UiTest::cleanupTestCase()
+Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 766ms
+********* Finished testing of UiTest *********

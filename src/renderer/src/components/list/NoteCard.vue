@@ -1,5 +1,6 @@
 <script setup>
 import { measureRendererLayout } from '../../utils/performanceDiagnostics.js'
+import { reminderChannelLabels } from '../../../../shared/reminder-rules.js'
 /**
  * NoteCard.vue — 便签列表项
  *
@@ -41,8 +42,6 @@ const { showMessage } = useMessage()
 const { enabled: doubleClickQuickEditEnabled } = useQuickNoteEditSetting()
 const { enabled: tagColorEnabled } = useTagColorSetting()
 const sharedNow = useSharedMinuteClock()
-const systemNotificationsSupported =
-  window.api.runtimeCapabilities?.systemNotifications?.supported ?? true
 
 const STATUS_META = {
   initialized: { label: '待开始', color: 'var(--ui-status-pending)', action: '提前开始' },
@@ -57,10 +56,15 @@ const canChangeStatus = computed(() =>
 )
 const showReminder = computed(
   () =>
-    systemNotificationsSupported &&
-    props.note.status === 'initialized' &&
-    Number(props.note.notify_enabled) === 1
+    !!props.note.pending_reminder ||
+    (props.note.status === 'initialized' && Number(props.note.notify_enabled) === 1)
 )
+const reminderTitle = computed(() => {
+  const channels = reminderChannelLabels(props.note.reminder_channels ?? 1)
+  return props.note.pending_reminder
+    ? `${new Date(props.note.pending_reminder.due_at).toLocaleString('zh-CN')} 再次提醒 · ${channels}`
+    : `等待提醒 · ${channels}`
+})
 
 const tags = computed(() => (Array.isArray(props.note.tags) ? props.note.tags : []))
 const noteTextColor = computed(() =>
@@ -764,8 +768,8 @@ async function toggleTags() {
           <span
             v-if="showReminder"
             class="nl-card-icon"
-            title="等待系统提醒"
-            aria-label="等待系统提醒"
+            :title="reminderTitle"
+            :aria-label="reminderTitle"
           >
             <svg
               viewBox="0 0 20 20"

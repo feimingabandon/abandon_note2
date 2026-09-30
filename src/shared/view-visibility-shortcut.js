@@ -1,4 +1,4 @@
-export const VIEW_VISIBILITY_SHORTCUT_DEFAULT = ''
+export const VIEW_VISIBILITY_SHORTCUT_DEFAULT = 'F2'
 
 const MODIFIER_ORDER = Object.freeze(['Control', 'Command', 'Super', 'Alt', 'Shift'])
 const MODIFIER_ALIASES = new Map([
@@ -82,10 +82,8 @@ export function validateViewVisibilityShortcut(value) {
   return { valid: true, accelerator, code: 'valid' }
 }
 
-export function normalizeViewVisibilityShortcut(
-  value,
-  fallback = VIEW_VISIBILITY_SHORTCUT_DEFAULT
-) {
+// Shared by every action: invalid input must not inherit the view's F2 binding.
+export function normalizeViewVisibilityShortcut(value, fallback = '') {
   const result = validateViewVisibilityShortcut(value)
   return result.valid ? result.accelerator : fallback
 }

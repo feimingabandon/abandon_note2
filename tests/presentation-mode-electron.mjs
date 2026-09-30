@@ -7,6 +7,7 @@ import Database from 'better-sqlite3'
 import { app, BrowserWindow, screen } from 'electron'
 import koffi from 'koffi'
 import { compactBoundsFromAnchor } from '../src/shared/window-compact-geometry.js'
+import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
 
 const root = mkdtempSync(join(tmpdir(), 'abandon-presentation-mode-'))
 app.setPath('userData', root)
@@ -69,7 +70,7 @@ const timeout = setTimeout(() => {
 
 async function run() {
   try {
-    assert.equal(nativeAbi(), 17, 'native blur ABI was not rebuilt')
+    assert.equal(nativeAbi(), NATIVE_ABI_VERSION, 'native blur ABI was not rebuilt')
     const hooks = globalThis.__ABANDON_WINDOW_TEST_HOOKS__
     assert.ok(hooks, 'integration hooks missing')
 

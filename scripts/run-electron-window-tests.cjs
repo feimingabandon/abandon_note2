@@ -5,6 +5,15 @@ const { createRunDirectory, runJobs } = require('./test-runner.cjs')
 const groups = Object.freeze({
   all: [...windowFrameTests, ...electronFeatureTests],
   features: electronFeatureTests,
+  'modal-queue': [
+    'tests/modal-queue-electron.mjs',
+    'tests/first-use-notice-electron.mjs',
+    'tests/draft-dialog-ui-electron.mjs',
+    'tests/capture-business-electron.mjs'
+  ],
+  capture: ['tests/capture-lifecycle-electron.mjs', 'tests/capture-business-electron.mjs'],
+  'capture-host': ['tests/capture-host-electron.mjs'],
+  shortcuts: ['tests/view-visibility-shortcut-electron.mjs'],
   'logging-actions': ['tests/logging-actions-electron.mjs'],
   'titlebar-native-drag': ['tests/titlebar-native-drag-electron.mjs'],
   'window-frame': windowFrameTests,
@@ -25,7 +34,7 @@ runJobs(
     id: file,
     command: electronPath,
     args: [file],
-    gui: true,
+    gui: groupName !== 'capture-host',
     ...(file === 'tests/window-state-matrix-electron.mjs'
       ? { timeoutMs: 660_000, artifacts: ['tmp/window-state-matrix-results.json'] }
       : {})

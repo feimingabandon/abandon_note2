@@ -1,0 +1,5 @@
+Electron evidence: C:\addFile\idea\项目\abandon\abandon_note2\tmp\test-runs\2026-09-29T08-29-55-992Z-NnuSfr
+[test] tests/capture-lifecycle-electron.mjs
+[passed] tests/capture-lifecycle-electron.mjs (1672 ms)
+[test] tests/capture-business-electron.mjs
+[passed] tests/capture-business-electron.mjs (6119 ms)

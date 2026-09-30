@@ -5,6 +5,8 @@ import { measureSyncPerformance } from '../logging/operation-performance.js'
  * 状态模型：initialized → in_progress ⇄ completed
  */
 import { getDb } from './db-connection.js'
+import { enqueueReminder, getPendingReminder } from './db-reminders.js'
+import { normalizeReminderChannels } from '../../shared/reminder-rules.js'
 import { createHash } from 'node:crypto'
 import { NOTE_DURATION_KINDS } from '../../shared/calendar/calendar-date-rules.js'
 import { normalizeAssignedTagIds } from '../../shared/tag-rules.js'
@@ -127,6 +129,7 @@ export function createNote(
     durationKind,
     noteType = 'one_time',
     notifyEnabled = 0,
+    reminderChannels,
     isPinned = 0,
     sortOrder = 0
   } = {},
@@ -143,14 +146,16 @@ export function createNote(
   const effAt = hasExplicitTime ? parsedEffectiveAt : ts
   const hasFutureEffectiveTime = effAt > ts
   const status = hasFutureEffectiveTime ? 'initialized' : 'in_progress'
-  const pendingNotification = status === 'initialized' && notifyEnabled ? 1 : 0
+  const channels =
+    status === 'initialized' ? normalizeReminderChannels(reminderChannels, notifyEnabled) : 0
+  const pendingNotification = channels ? 1 : 0
 
   const result = getDb()
     .prepare(
       `INSERT INTO notes (
-         note_type, content, content_color_ranges, status, is_pinned, notify_enabled,
+         note_type, content, content_color_ranges, status, is_pinned, notify_enabled, reminder_channels,
          effective_at, duration_days, duration_kind, finished_at, sort_order, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       noteType,
@@ -159,6 +164,7 @@ export function createNote(
       status,
       isPinned ? 1 : 0,
       pendingNotification,
+      channels,
       effAt,
       normalizedDuration.durationDays,
       normalizedDuration.durationKind,
@@ -179,7 +185,8 @@ export function createRecurringNoteSnapshot({
   content = '',
   effectiveAt,
   isPinned = 0,
-  tagIds = []
+  tagIds = [],
+  reminderChannels = 0
 } = {}) {
   const db = getDb()
   // 循环任务可能读取到旧版本留下的多标签模板；生成新便签时稳定继承第一项。
@@ -193,11 +200,19 @@ export function createRecurringNoteSnapshot({
   const result = db
     .prepare(
       `INSERT INTO notes (
-         note_type, content, status, is_pinned, notify_enabled,
+         note_type, content, status, is_pinned, notify_enabled, reminder_channels,
          effective_at, finished_at, sort_order, created_at, updated_at, from_template
-       ) VALUES ('one_time', ?, 'in_progress', ?, 0, ?, ?, 0, ?, ?, 1)`
+       ) VALUES ('one_time', ?, 'in_progress', ?, 0, ?, ?, ?, 0, ?, ?, 1)`
     )
-    .run(content, isPinned ? 1 : 0, scheduledAt, ts, ts, ts)
+    .run(
+      content,
+      isPinned ? 1 : 0,
+      normalizeReminderChannels(reminderChannels),
+      scheduledAt,
+      ts,
+      ts,
+      ts
+    )
 
   const noteId = Number(result.lastInsertRowid)
   const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_id) VALUES (?, ?)')
@@ -249,6 +264,7 @@ export function getNoteById(id) {
   return measureSyncPerformance('database', 'getNoteById', () => {
     const note = getDb().prepare('SELECT * FROM notes WHERE id = ? AND is_deleted = 0').get(id)
     if (!note) return null
+    note.pending_reminder = getPendingReminder(note.id)
 
     note.content_color_ranges = normalizeNoteTextColorRanges(
       note.content_color_ranges,
@@ -282,6 +298,8 @@ export function getNoteById(id) {
           durationDays: note.duration_days,
           durationKind: note.duration_kind,
           notifyEnabled: note.notify_enabled,
+          reminderChannels: note.reminder_channels,
+          pendingReminder: note.pending_reminder,
           isPinned: note.is_pinned,
           finishedAt: note.finished_at,
           updatedAt: note.updated_at,
@@ -342,7 +360,7 @@ export function deleteNote(id) {
   const result = getDb()
     .prepare(
       `UPDATE notes
-       SET is_deleted = 1, notify_enabled = 0, updated_at = ?
+       SET is_deleted = 1, notify_enabled = 0, reminder_channels = 0, updated_at = ?
        WHERE id = ? AND is_deleted = 0`
     )
     .run(ts, id)
@@ -354,7 +372,7 @@ export function restoreNote(id) {
   const ts = now()
   const result = getDb()
     .prepare(
-      `UPDATE notes SET is_deleted = 0, notify_enabled = 0,
+      `UPDATE notes SET is_deleted = 0, notify_enabled = 0, reminder_channels = 0,
     status = CASE WHEN status = 'initialized' AND effective_at <= ? THEN 'in_progress' ELSE status END,
     updated_at = ? WHERE id = ? AND is_deleted = 1`
     )
@@ -386,7 +404,7 @@ function transitionNote(id, targetStatus, { setEffectiveAtToNow = false } = {}) 
     ? db
         .prepare(
           `UPDATE notes
-         SET status = ?, effective_at = ?, notify_enabled = 0,
+          SET status = ?, effective_at = ?, notify_enabled = 0, reminder_channels = 0,
              finished_at = ?, updated_at = ?
          WHERE id = ? AND status = ? AND is_deleted = 0`
         )
@@ -394,7 +412,7 @@ function transitionNote(id, targetStatus, { setEffectiveAtToNow = false } = {}) 
     : db
         .prepare(
           `UPDATE notes
-         SET status = ?, notify_enabled = 0,
+          SET status = ?, notify_enabled = 0, reminder_channels = 0,
              finished_at = ?, updated_at = ?
          WHERE id = ? AND status = ? AND is_deleted = 0`
         )
@@ -430,7 +448,7 @@ export function activateNotes() {
     const due = measureSyncPerformance('database', 'activation.candidates', () =>
       db
         .prepare(
-          `SELECT id, content, notify_enabled
+          `SELECT id, content, notify_enabled, reminder_channels, effective_at
          FROM notes
          WHERE status = 'initialized' AND is_deleted = 0 AND effective_at <= ?`
         )
@@ -438,6 +456,10 @@ export function activateNotes() {
     )
 
     if (due.length === 0) return { count: 0, notified: [] }
+
+    for (const note of due) {
+      if (note.reminder_channels) enqueueReminder(note.id, note.effective_at, ts)
+    }
 
     const result = db
       .prepare(
@@ -526,10 +548,19 @@ export function toNoteListItems(notes) {
     const db = getDb()
     const tagsByNote = new Map()
     const attachmentCounts = new Map()
+    const pendingReminders = new Map()
     const ids = [...new Set(notes.map((note) => note.id))]
     for (let offset = 0; offset < ids.length; offset += 500) {
       const batch = ids.slice(offset, offset + 500)
       const placeholders = batch.map(() => '?').join(',')
+      for (const reminder of db
+        .prepare(
+          `SELECT id, note_id, due_at FROM note_reminders
+        WHERE state = 'scheduled' AND note_id IN (${placeholders})`
+        )
+        .all(...batch)) {
+        pendingReminders.set(reminder.note_id, { id: reminder.id, due_at: reminder.due_at })
+      }
       const tags = db
         .prepare(
           `SELECT nt.note_id, t.id, t.name, t.color FROM note_tags nt
@@ -560,6 +591,8 @@ export function toNoteListItems(notes) {
         is_pinned: note.is_pinned,
         is_deleted: note.is_deleted,
         notify_enabled: note.notify_enabled,
+        reminder_channels: note.reminder_channels,
+        pending_reminder: pendingReminders.get(note.id) || null,
         effective_at: note.effective_at,
         duration_days: note.duration_days,
         duration_kind: note.duration_kind,
@@ -625,6 +658,15 @@ export function queryCalendarNotes({
 // 时间线查询
 // ============================================================
 
+// 必须在 LIMIT/OFFSET 前排序，保证完成便签落到整个日期或标签组末尾。
+// 已完成按完成时间升序排列，新完成的便签追加在已有完成项之后。
+const COMPLETED_LAST_ORDER = `
+  (n.status = 'completed') ASC,
+  CASE WHEN n.status = 'completed' THEN n.finished_at END ASC`
+const TIMELINE_NOTE_ORDER = `
+  date(n.effective_at / 1000.0, 'unixepoch', 'localtime') DESC,
+  ${COMPLETED_LAST_ORDER}, n.effective_at DESC, n.created_at DESC, n.id DESC`
+
 export function queryPinnedNotes({ statuses, tagIds, search } = {}) {
   return measureSyncPerformance('database', 'queryPinnedNotes', () => {
     const db = getDb()
@@ -632,7 +674,7 @@ export function queryPinnedNotes({ statuses, tagIds, search } = {}) {
       statuses,
       tagIds,
       search,
-      extraWhere: ['n.is_pinned = 1']
+      extraWhere: ['n.is_pinned = 1', "n.status != 'completed'"]
     })
     const notes = db
       .prepare(
@@ -650,13 +692,11 @@ export function queryRecentNotes({ statuses, tagIds, search, cutoffTime } = {}) 
       statuses,
       tagIds,
       search,
-      extraWhere: ['n.is_pinned = 0', 'n.effective_at > ?'],
+      extraWhere: ["(n.is_pinned = 0 OR n.status = 'completed')", 'n.effective_at > ?'],
       extraParams: [cutoffTime]
     })
     const notes = db
-      .prepare(
-        `SELECT n.* FROM notes n ${whereClause} ORDER BY n.effective_at DESC, n.created_at DESC`
-      )
+      .prepare(`SELECT n.* FROM notes n ${whereClause} ORDER BY ${TIMELINE_NOTE_ORDER}`)
       .all(...params)
     return toNoteListItems(notes)
   })
@@ -693,7 +733,7 @@ export function queryEarlierNotes({
       statuses,
       tagIds,
       search,
-      extraWhere: ['n.is_pinned = 0', 'n.effective_at <= ?'],
+      extraWhere: ["(n.is_pinned = 0 OR n.status = 'completed')", 'n.effective_at <= ?'],
       extraParams: [cutoffTime]
     })
     const { total } = db
@@ -702,7 +742,7 @@ export function queryEarlierNotes({
     const notes = db
       .prepare(
         `SELECT n.* FROM notes n ${whereClause}
-         ORDER BY n.effective_at DESC, n.created_at DESC LIMIT ? OFFSET ?`
+         ORDER BY ${TIMELINE_NOTE_ORDER} LIMIT ? OFFSET ?`
       )
       .all(...params, safeLimit, safeOffset)
     return { notes: toNoteListItems(notes), total }
@@ -820,8 +860,8 @@ export function queryTagGroups({ statuses, tagIds } = {}) {
 }
 
 /**
- * 分页查询单个标签组。tagId 为 null 时查询“未分类”；组内只按生效时间
- * 从未来到过去排列，id 仅用于相同时间下提供稳定顺序。
+ * 分页查询单个标签组。tagId 为 null 时查询“未分类”；未完成项按生效时间
+ * 从未来到过去排列，已完成项按完成时间排在组末尾，id 保证顺序稳定。
  */
 export function queryTagGroupNotes({ tagId = null, statuses, limit = 10, offset = 0 } = {}) {
   return measureSyncPerformance('database', 'queryTagGroupNotes', () => {
@@ -848,7 +888,7 @@ export function queryTagGroupNotes({ tagId = null, statuses, limit = 10, offset 
     const notes = db
       .prepare(
         `SELECT n.* FROM notes n ${whereClause}
-         ORDER BY n.effective_at DESC, n.id DESC LIMIT ? OFFSET ?`
+         ORDER BY ${COMPLETED_LAST_ORDER}, n.effective_at DESC, n.id DESC LIMIT ? OFFSET ?`
       )
       .all(...params, safeLimit, safeOffset)
 

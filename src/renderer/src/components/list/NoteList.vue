@@ -1,4 +1,5 @@
 <script setup>
+import { useModalRequest } from '../../composables/useQueuedModal.js'
 /**
  * NoteList.vue — 便签列表（时间线、自定义拖拽、标签分组三种模式）
  *
@@ -17,7 +18,6 @@ import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import TagManagerDialog from '../ui/TagManagerDialog.vue'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
-import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 import { useMessage } from '../../composables/useMessage.js'
 import { weatherLocationKey } from '../../../../shared/weather-rules.js'
 import { buildDisplayableWeatherByDate, getWeatherForNote } from '../../utils/noteWeather.js'
@@ -62,15 +62,10 @@ const modeOptions = [
 const sortModeLabel = computed(
   () => modeOptions.find((option) => option.value === sortMode.value)?.label || '时间线'
 )
-const modeMenuOpen = ref(false)
-const modeMenuRootRef = ref(null)
-const modeToggleRef = ref(null)
-
 /** 三种模式使用完整的依次离场、切换、依次进场。 */
 let modeSwitchRunning = false
 let modePresenceSwitching = false
 async function selectSortMode(nextMode) {
-  modeMenuOpen.value = false
   if (nextMode === sortMode.value || modeSwitchRunning || replayRefreshRunning) return
   if (nextMode !== 'tag-group') exitTagGroupSortMode()
   modeSwitchRunning = true
@@ -123,23 +118,6 @@ async function selectSortMode(nextMode) {
     modePresenceSwitching = false
     modeSwitchRunning = false
   }
-}
-
-function toggleModeMenu() {
-  if (modeSwitchRunning || replayRefreshRunning) return
-  modeMenuOpen.value = !modeMenuOpen.value
-}
-
-function onModeMenuOutside(event) {
-  if (modeMenuOpen.value && !modeMenuRootRef.value?.contains(event.target)) {
-    modeMenuOpen.value = false
-  }
-}
-
-function onModeMenuKeydown(event) {
-  if (event.key !== 'Escape' || !modeMenuOpen.value) return
-  modeMenuOpen.value = false
-  modeToggleRef.value?.focus()
 }
 
 // 筛选面板 chip 的轻量错峰；便签本身的进出场由列表 ID 差分协调器统一处理。
@@ -219,16 +197,18 @@ function applyWeatherSettings(snapshot, { load = true } = {}) {
 /** 标签筛选 ID 列表 */
 const tagFilterIds = ref([...DEFAULT_SETTINGS.listFilter.tagIds])
 
-/** 筛选面板状态：tags | taiji | status（taiji=太极图默认折叠态） */
+/** 工具栏面板：tags | status | mode；taiji 表示全部收起。 */
 const panelState = ref('taiji')
+// 退出动画结束前仍视为可见，避免按钮组抢先收回。
+const panelLeaving = ref(false)
 
 /** 状态筛选列表 */
 const statusFilter = ref([...DEFAULT_SETTINGS.listFilter.statusFilter])
 
 /** FilterTabs 选项 */
 const panelOptions = [
-  { value: 'tags', label: '按标签筛选' },
   { value: 'taiji', label: '刷新并收起筛选' },
+  { value: 'tags', label: '按标签筛选' },
   { value: 'status', label: '按状态筛选' }
 ]
 
@@ -279,6 +259,7 @@ function threeDayCutoff() {
 
 // ---- 时间线模式：单一统一列表 ----
 const noteList = ref([]) // 唯一列表（置顶 + 三天 + 更早已加载）
+const timelinePinnedIds = ref(new Set()) // 与列表快照一起提交，状态动画结束前不提前换组
 const earlierIds = ref(new Set()) // 方法三写入的便签 ID（折叠时用于定点清除）
 const earlierOffset = ref(0)
 const earlierHasMore = ref(false)
@@ -286,24 +267,43 @@ const earlierLoading = ref(false)
 const earlierHasData = ref(false) // 更早是否有数据（loadAll 时通过 count 查询获知）
 const earlierTotal = ref(0)
 const earlierLimit = ref(10) // 每次查询条数（首 10，滚动后 20）
+let timelineReloadSequence = null
 
 /** 时间线模式：并行加载置顶 + 三天 + 更早计数，合并到单一列表 */
-function captureScrollAnchor() {
+function captureScrollAnchor(nextNotes = null) {
   const container = currentScrollContainer()
   if (!container) return null
+  const context = { container, sequence: loadSeq, scrollTop: container.scrollTop }
   const containerTop = container.getBoundingClientRect().top
   const cards = [...container.querySelectorAll('[data-note-id]')]
+  if (nextNotes) {
+    const nextPositions = new Map(nextNotes.map((note, index) => [String(note.id), index]))
+    let previousPosition = -1
+    const reordered = cards.some((item) => {
+      const position = nextPositions.get(item.dataset.noteId)
+      if (position === undefined) return false
+      if (position < previousPosition) return true
+      previousPosition = position
+      return false
+    })
+    // 排序变化只移动卡片，不让视口追着完成项跳到组尾；增删仍保留阅读锚点。
+    if (reordered) return { ...context, id: null }
+  }
   const card = cards.find((item) => item.getBoundingClientRect().bottom > containerTop)
   return card
-    ? { id: card.dataset.noteId, offset: card.getBoundingClientRect().top - containerTop }
-    : { id: null, scrollTop: container.scrollTop }
+    ? {
+        ...context,
+        id: card.dataset.noteId,
+        offset: card.getBoundingClientRect().top - containerTop
+      }
+    : { ...context, id: null }
 }
 
 async function restoreScrollAnchor(anchor) {
   if (!anchor) return
   await nextTick()
   const container = currentScrollContainer()
-  if (!container) return
+  if (!container || container !== anchor.container || anchor.sequence !== loadSeq) return
   if (!anchor.id) {
     container.scrollTop = anchor.scrollTop || 0
     return
@@ -326,13 +326,13 @@ function loadAll(options = {}) {
 }
 async function loadAllData({ showLoading = true, preserveAnchor = false } = {}) {
   const seq = ++loadSeq
+  timelineReloadSequence = seq
   tagGroupGeneration++
   loadError.value = null
   earlierRequestSeq++
   customMoreRequestSeq++
   earlierLoading.value = false
   customNormalLoading.value = false
-  const anchor = preserveAnchor ? captureScrollAnchor() : null
   const loadedEarlierCount = earlierIds.value.size
   if (showLoading) loading.value = true
   try {
@@ -351,41 +351,70 @@ async function loadAllData({ showLoading = true, preserveAnchor = false } = {}) 
     ])
     if (seq !== loadSeq) return { status: 'cancelled' }
 
-    // 合并到单一列表：置顶在前，三天在后
-    noteList.value = [...(pinned || []), ...(recent || [])]
-    // 重置更早运行时状态（数据已清空，需按当前展开状态重新加载）
-    earlierIds.value = new Set()
-    earlierOffset.value = 0
-    earlierHasMore.value = false
-    earlierTotal.value = earlierCount.total || 0
-    earlierHasData.value = earlierTotal.value > 0
-    allNoteTotal.value = Number(activeTotal) || 0
-    // 如果更早之前是展开的，自动重新加载
-    if (!collapsedGroups.value['earlier'] && earlierHasData.value) {
-      earlierHasMore.value = true
-      if (preserveAnchor) {
-        earlierLimit.value = Math.max(10, loadedEarlierCount)
-        await loadEarlier()
-        earlierLimit.value = 20
-      } else {
-        loadEarlier() // 不 await，后台加载
+    // 刷新快照先在局部变量中收齐；等待 IPC 时保留所有旧卡片和列表高度。
+    // 每次数据库查询最多 100 条，已滚动加载的历史范围不能在刷新后被截断。
+    let earlierNotes = []
+    let totalEarlier = Number(earlierCount.total) || 0
+    let targetEarlierCount = preserveAnchor ? Math.max(10, loadedEarlierCount) : 10
+    while (
+      !collapsedGroups.value.earlier &&
+      earlierNotes.length < Math.min(targetEarlierCount, totalEarlier)
+    ) {
+      const expansionSeq = earlierRequestSeq
+      const result = await window.api.queryEarlierNotes({
+        statuses,
+        tagIds,
+        cutoffTime: cutoff,
+        limit: Math.min(100, targetEarlierCount - earlierNotes.length),
+        offset: earlierNotes.length
+      })
+      if (seq !== loadSeq) return { status: 'cancelled' }
+      // 查询期间主动收起/重开时，丢弃旧展开周期的结果，按首批重新加载。
+      if (expansionSeq !== earlierRequestSeq) {
+        earlierNotes = []
+        targetEarlierCount = 10
+        continue
       }
+      const page = result.notes || []
+      totalEarlier = Number(result.total) || 0
+      earlierNotes.push(...page)
+      if (page.length === 0) break
     }
+    if (collapsedGroups.value.earlier) earlierNotes = []
+    const nextNotes = [...(pinned || []), ...(recent || []), ...earlierNotes]
+    const anchor = preserveAnchor ? captureScrollAnchor(nextNotes) : null
+    const layoutBefore = preserveAnchor ? captureVisibleCardLayout() : null
+    noteList.value = nextNotes
+    timelinePinnedIds.value = new Set((pinned || []).map((note) => note.id))
+    earlierIds.value = new Set(earlierNotes.map((note) => note.id))
+    earlierOffset.value = earlierNotes.length
+    earlierTotal.value = totalEarlier
+    earlierHasData.value = totalEarlier > 0
+    earlierHasMore.value = !collapsedGroups.value.earlier && earlierNotes.length < totalEarlier
+    earlierLimit.value = earlierNotes.length > 0 ? 20 : 10
+    allNoteTotal.value = Number(activeTotal) || 0
     await restoreScrollAnchor(anchor)
     lastRefreshedAt.value = Date.now()
-    return { status: 'success' }
+    return { status: 'success', layoutBefore }
   } catch (e) {
     console.error('[NoteList] 加载列表失败:', e)
     if (seq === loadSeq && showLoading) loadError.value = '列表加载失败'
     return { status: 'error', error: e }
   } finally {
+    if (timelineReloadSequence === seq) timelineReloadSequence = null
     if (seq === loadSeq) loading.value = false
   }
 }
 
 /** 时间线模式：懒加载更早数据，追加到统一列表并记录 ID */
 async function loadEarlier() {
-  if (earlierLoading.value || !earlierHasMore.value) return
+  if (
+    timelineReloadSequence === loadSeq ||
+    collapsedGroups.value.earlier ||
+    earlierLoading.value ||
+    !earlierHasMore.value
+  )
+    return
   const requestSeq = ++earlierRequestSeq
   const parentLoadSeq = loadSeq
   earlierLoading.value = true
@@ -439,6 +468,9 @@ function onEarlierExpand() {
 
 /** 收起更早：从统一列表中移除方法三写入的便签 */
 function collapseEarlier() {
+  // 折叠时作废尚未返回的分页请求，避免响应把隐藏的日期组重新插回列表。
+  earlierRequestSeq++
+  earlierLoading.value = false
   noteList.value = noteList.value.filter((n) => !earlierIds.value.has(n.id))
   earlierIds.value = new Set()
   earlierOffset.value = 0
@@ -587,7 +619,8 @@ const tagGroupSortPreparing = ref(false)
 const tagGroupContextMenuVisible = ref(false)
 const tagGroupContextMenuRef = ref(null)
 const tagGroupContextMenuStyle = ref({})
-const tagManagerVisible = ref(false)
+const tagManagerQueue = useModalRequest()
+const tagManagerVisible = tagManagerQueue.requested
 let tagGroupGeneration = 0
 let tagGroupSortEntrySequence = 0
 let tagGroupSortEntryTimer = null
@@ -610,13 +643,15 @@ async function loadTagGroupPage(group, { reset = false, limit = null } = {}) {
   if (!group || group.loading) return { status: 'cancelled' }
   const generation = tagGroupGeneration
   const offset = reset ? 0 : group.notes.length
+  const pageLimit = limit || (reset ? TAG_GROUP_INITIAL_LIMIT : TAG_GROUP_MORE_LIMIT)
+  group.requestedCount = offset + pageLimit
   group.loading = true
   group.error = null
   try {
     const result = await window.api.queryTagGroupNotes({
       tagId: group.untagged ? null : group.id,
       statuses: activeStatuses(),
-      limit: limit || (reset ? TAG_GROUP_INITIAL_LIMIT : TAG_GROUP_MORE_LIMIT),
+      limit: pageLimit,
       offset
     })
     if (generation !== tagGroupGeneration || !tagGroups.value.includes(group)) {
@@ -626,13 +661,16 @@ async function loadTagGroupPage(group, { reset = false, limit = null } = {}) {
     group.notes = reset ? notes : [...group.notes, ...notes]
     group.total = Number(result.total) || 0
     group.hasMore = group.notes.length < group.total
+    delete group.requestedCount
     return { status: 'success' }
   } catch (error) {
+    delete group.requestedCount
     console.error('[NoteList] 加载标签组便签失败:', group.name, error)
     if (generation === tagGroupGeneration) group.error = '加载失败'
     return { status: 'error', error }
   } finally {
-    if (generation === tagGroupGeneration) group.loading = false
+    // 刷新期间仍保留旧分组，已取消的旧请求也必须释放它自己的加载状态。
+    group.loading = false
   }
 }
 
@@ -652,47 +690,70 @@ async function loadTagGroupsData({ showLoading = true, preserveAnchor = false } 
   customMoreRequestSeq++
   earlierLoading.value = false
   customNormalLoading.value = false
-  const anchor = preserveAnchor ? captureScrollAnchor() : null
-  const previousGroups = new Map(tagGroups.value.map((group) => [group.key, group]))
+  const isCurrent = () => seq === loadSeq && generation === tagGroupGeneration
   if (showLoading) loading.value = true
   try {
     const tagIds = tagFilterIds.value.length > 0 ? [...tagFilterIds.value] : null
+    const statuses = activeStatuses()
     const [groups, activeTotal] = await Promise.all([
-      window.api.queryTagGroups({ statuses: activeStatuses(), tagIds }),
+      window.api.queryTagGroups({ statuses, tagIds }),
       window.api.countActiveNotes()
     ])
-    if (seq !== loadSeq || generation !== tagGroupGeneration) return { status: 'cancelled' }
+    if (!isCurrent()) return { status: 'cancelled' }
 
-    tagGroups.value = (groups || []).map((group) => {
-      const previous = previousGroups.get(group.key)
-      return {
-        ...group,
-        expanded: Boolean(previous?.expanded || expandedTagGroupKeys.has(group.key)),
-        notes: [],
-        opening: false,
-        openingRequest: 0,
-        loading: false,
-        error: null,
-        hasMore: Number(group.total) > 0,
-        previousLoadedCount: previous?.notes?.length || 0
-      }
-    })
-    allNoteTotal.value = Number(activeTotal) || 0
-
-    await Promise.all(
-      tagGroups.value
-        .filter((group) => group.expanded)
-        .map((group) =>
-          loadTagGroupPage(group, {
-            reset: true,
-            limit: Math.max(TAG_GROUP_INITIAL_LIMIT, group.previousLoadedCount)
+    // 后台查询只构造局部快照，不清空已显示的卡片，也不提前改变列表高度。
+    const nextGroups = (groups || []).map((group) => ({
+      ...group,
+      notes: [],
+      opening: false,
+      openingRequest: 0,
+      loading: false,
+      error: null
+    }))
+    const exhausted = new Set()
+    const targetCount = (group) => {
+      if (!expandedTagGroupKeys.has(group.key) || exhausted.has(group.key)) return 0
+      const current = tagGroups.value.find((item) => item.key === group.key)
+      return Math.min(
+        Number(group.total) || 0,
+        Math.max(TAG_GROUP_INITIAL_LIMIT, current?.notes.length || 0, current?.requestedCount || 0)
+      )
+    }
+    while (true) {
+      const pendingGroups = nextGroups.filter((group) => group.notes.length < targetCount(group))
+      if (pendingGroups.length === 0) break
+      await Promise.all(
+        pendingGroups.map(async (group) => {
+          const result = await window.api.queryTagGroupNotes({
+            tagId: group.untagged ? null : group.id,
+            statuses,
+            limit: Math.min(100, targetCount(group) - group.notes.length),
+            offset: group.notes.length
           })
-        )
-    )
-    tagGroups.value.forEach((group) => delete group.previousLoadedCount)
+          if (!isCurrent()) return
+          const page = result.notes || []
+          group.notes.push(...page)
+          group.total = Number(result.total) || 0
+          if (page.length === 0) exhausted.add(group.key)
+        })
+      )
+      if (!isCurrent()) return { status: 'cancelled' }
+      // 等待期间用户可能展开/收起或加载更多，按最新意图补齐，不能覆盖用户操作。
+    }
+    if (!isCurrent()) return { status: 'cancelled' }
+    for (const group of nextGroups) {
+      group.expanded = expandedTagGroupKeys.has(group.key)
+      group.hasMore = group.notes.length < Number(group.total)
+    }
+    const nextNotes = nextGroups.filter((group) => group.expanded).flatMap((group) => group.notes)
+    const anchor = preserveAnchor ? captureScrollAnchor(nextNotes) : null
+    const layoutBefore = preserveAnchor ? captureVisibleCardLayout() : null
+    tagGroups.value = nextGroups
+    allNoteTotal.value = Number(activeTotal) || 0
     await restoreScrollAnchor(anchor)
+    if (!isCurrent()) return { status: 'cancelled' }
     lastRefreshedAt.value = Date.now()
-    return { status: 'success' }
+    return { status: 'success', layoutBefore }
   } catch (error) {
     console.error('[NoteList] 加载标签分组失败:', error)
     if (seq === loadSeq && showLoading) loadError.value = '标签分组加载失败'
@@ -718,6 +779,8 @@ async function toggleTagGroup(group) {
   }
 
   if (group.notes.length === 0 && group.total > 0) {
+    // 先记录展开意图，后台快照即使先返回也能接续这次展开。
+    expandedTagGroupKeys.add(group.key)
     const openingRequest = ++group.openingRequest
     group.opening = true
     try {
@@ -768,7 +831,6 @@ async function toggleTagGroupSortMode() {
   }
 
   closeTagGroupContextMenu()
-  modeMenuOpen.value = false
   tagGroupSortPreparing.value = true
   const shouldWaitForCollapse = tagGroups.value.some((group) => group.expanded || group.opening)
   collapseAllTagGroups()
@@ -909,7 +971,8 @@ const timelineGroups = computed(() => {
   const earlier = []
 
   for (const note of noteList.value) {
-    if (note.is_pinned) {
+    // 置顶归属随完整快照一起更新，避免先换组、数据返回后再移动一次。
+    if (timelinePinnedIds.value.has(note.id)) {
       pinned.push(note)
     } else {
       const g = timeGroup(note.effective_at)
@@ -965,7 +1028,7 @@ const timelineGroups = computed(() => {
 const timelineIsEmpty = computed(() => totalRendered.value === 0 && !earlierHasData.value)
 
 /** 更早折叠状态 */
-const collapsedGroups = ref({ earlier: true })
+const collapsedGroups = ref({ earlier: false })
 
 /** 更早展开/折叠 */
 function toggleGroupCollapse(groupKey) {
@@ -1161,8 +1224,10 @@ async function executeCardStatusAction(note) {
       const changedEffectiveTimeOrdering =
         resetsEffectiveTime &&
         ((sortMode.value === 'timeline' && !note.is_pinned) || sortMode.value === 'tag-group')
-      if (!remainsVisible || changedEffectiveTimeOrdering) {
-        await refreshInBackground({
+      const changedCompletionOrdering =
+        (from === 'completed' || to === 'completed') && sortMode.value !== 'custom'
+      if (!remainsVisible || changedEffectiveTimeOrdering || changedCompletionOrdering) {
+        scheduleNotesRefresh({
           reenterIds: changedEffectiveTimeOrdering && remainsVisible ? [note.id] : []
         })
       }
@@ -1197,9 +1262,10 @@ function patchVisibleNote(updated, force = false) {
   )
   const updatedGroupKey = updated.tags?.[0]?.id ? `tag:${updated.tags[0].id}` : 'untagged'
   if (!currentGroup || currentGroup.key !== updatedGroupKey) return false
-  currentGroup.notes = currentGroup.notes
-    .map((note) => (note.id === updated.id ? mergeListItem(note, updated) : note))
-    .sort((first, second) => second.effective_at - first.effective_at || second.id - first.id)
+  // 保留当前页位置直到状态动画完成，再由数据库重新查询完整分组顺序。
+  currentGroup.notes = currentGroup.notes.map((note) =>
+    note.id === updated.id ? mergeListItem(note, updated) : note
+  )
   return true
 }
 
@@ -1299,7 +1365,7 @@ async function refreshInBackground({ reenterIds = [], diagnosticCauses } = {}) {
   if (result?.status !== 'success' || motionSeq !== presenceMotionSeq) return result
   await nextTick()
   if (motionSeq !== presenceMotionSeq) return result
-  animateRetainedCards(before, { reenterIds })
+  animateRetainedCards(result.layoutBefore || before, { reenterIds })
   return result
 }
 
@@ -1387,8 +1453,6 @@ async function loadFilterState() {
 }
 
 onMounted(async () => {
-  document.addEventListener('pointerdown', onModeMenuOutside)
-  document.addEventListener('keydown', onModeMenuKeydown)
   await loadFilterState()
   if (weatherEnabled.value) void loadWeatherForecast()
   // 统一入口：根据当前模式加载（时间线 / 自定义 / 标签分组）
@@ -1396,18 +1460,28 @@ onMounted(async () => {
 })
 
 let notesChangedTimer = null
+const pendingRefreshReenterIds = new Set()
+function scheduleNotesRefresh({ reenterIds = [] } = {}) {
+  for (const id of reenterIds) pendingRefreshReenterIds.add(id)
+  clearTimeout(notesChangedTimer)
+  notesChangedTimer = setTimeout(refreshNotesWhenStatusIdle, 80)
+}
+
 function refreshNotesWhenStatusIdle() {
+  notesChangedTimer = null
   if (statusTransitions.size > 0) {
     refreshCauses.defer('status-transition')
     notesChangedTimer = setTimeout(refreshNotesWhenStatusIdle, 100)
     return
   }
-  refreshInBackground({ diagnosticCauses: refreshCauses.take() })
+  const reenterIds = [...pendingRefreshReenterIds]
+  pendingRefreshReenterIds.clear()
+  refreshInBackground({ reenterIds, diagnosticCauses: refreshCauses.take() })
 }
 const stopNotesChanged = window.api.onNotesChanged?.((payload) => {
   refreshCauses.add(payload)
-  clearTimeout(notesChangedTimer)
-  notesChangedTimer = setTimeout(refreshNotesWhenStatusIdle, 80)
+  // 本地状态回调和主进程广播共用队列，等待所有状态动画结束后只刷新一次。
+  scheduleNotesRefresh()
 })
 
 const stopSettingsChanged = window.api.onSettingsChanged?.(async (snapshot) => {
@@ -1448,8 +1522,6 @@ onUnmounted(() => {
   clearTimeout(_customSyncTimer)
   for (const timer of statusTransitionTimers.values()) clearTimeout(timer)
   statusTransitionTimers.clear()
-  document.removeEventListener('pointerdown', onModeMenuOutside)
-  document.removeEventListener('keydown', onModeMenuKeydown)
   stopNotesChanged?.()
   stopSettingsChanged?.()
   stopWeatherForecastUpdated?.()
@@ -1528,136 +1600,34 @@ defineExpose({
 
 <template>
   <div class="note-list">
-    <!-- 工具栏 -->
+    <!-- 操作组仅占当前可见宽度，其余空间由天气与宜忌平分。 -->
     <div class="nl-toolbar">
-      <!-- 两侧摘要共享可用宽度，排列操作单独占位。 -->
-      <div class="nl-toolbar-left">
-        <DateContextSummary kind="weather" :forecast="weatherForecast" />
-      </div>
-      <div class="nl-toolbar-center">
+      <div class="nl-toolbar-controls">
         <FilterTabs
           :model-value="panelState"
           :options="panelOptions"
+          :panel-open="panelState !== 'taiji' || panelLeaving"
+          :mode-label="sortModeLabel"
           @update:model-value="onPanelClick"
+          @close-panel="panelState = 'taiji'"
         />
+      </div>
+      <div class="nl-toolbar-left">
+        <DateContextSummary kind="weather" :forecast="weatherForecast" />
       </div>
       <div class="nl-toolbar-right">
         <DateContextSummary kind="almanac" :forecast="weatherForecast" />
       </div>
-      <div class="nl-toolbar-options">
-        <button
-          v-if="sortMode === 'tag-group'"
-          type="button"
-          class="nl-tag-group-sort-toggle"
-          :class="{
-            'nl-tag-group-sort-toggle--active': tagGroupSortMode || tagGroupSortPreparing
-          }"
-          :disabled="!tagGroupCanSort || tagGroupSortPreparing"
-          :aria-pressed="tagGroupSortMode"
-          :aria-busy="tagGroupSortPreparing || undefined"
-          :aria-label="tagGroupSortMode ? '完成标签排序' : '调整标签顺序'"
-          :title="tagGroupSortMode ? '完成排序' : '调整标签顺序'"
-          @click="toggleTagGroupSortMode"
-        >
-          <svg
-            v-if="tagGroupSortMode"
-            class="nl-tag-group-sort-check"
-            width="15"
-            height="15"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="m3.2 8.1 3 3 6.6-6.6"
-              stroke="currentColor"
-              stroke-width="1.6"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-          <svg v-else class="nl-tag-group-sort-grip" viewBox="0 0 16 16" aria-hidden="true">
-            <circle cx="5" cy="3.25" r="1.2" />
-            <circle cx="11" cy="3.25" r="1.2" />
-            <circle cx="5" cy="8" r="1.2" />
-            <circle cx="11" cy="8" r="1.2" />
-            <circle cx="5" cy="12.75" r="1.2" />
-            <circle cx="11" cy="12.75" r="1.2" />
-          </svg>
-        </button>
-        <div ref="modeMenuRootRef" class="nl-mode-menu-root">
-          <button
-            ref="modeToggleRef"
-            type="button"
-            class="nl-mode-toggle"
-            aria-haspopup="menu"
-            :aria-expanded="modeMenuOpen"
-            :aria-label="`当前是${sortModeLabel}，选择排列方式`"
-            @click="toggleModeMenu"
-          >
-            <Transition name="nl-mode-text" mode="out-in">
-              <span :key="sortMode" class="nl-mode-label">{{ sortModeLabel }}</span>
-            </Transition>
-            <svg
-              class="nl-mode-chevron"
-              :class="{ 'nl-mode-chevron--open': modeMenuOpen }"
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="m4 6 4 4 4-4"
-                stroke="currentColor"
-                stroke-width="1.4"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </button>
-          <Transition
-            :css="false"
-            @enter="(element, done) => enterPopover(element, done, 'dropdown')"
-            @leave="(element, done) => leavePopover(element, done, 'dropdown')"
-          >
-            <div v-if="modeMenuOpen" class="nl-mode-menu" role="menu">
-              <button
-                v-for="option in modeOptions"
-                :key="option.value"
-                type="button"
-                role="menuitemradio"
-                class="nl-mode-option"
-                :class="{ 'nl-mode-option--active': option.value === sortMode }"
-                :aria-checked="option.value === sortMode"
-                @click="selectSortMode(option.value)"
-              >
-                <span>{{ option.label }}</span>
-                <svg
-                  v-if="option.value === sortMode"
-                  width="13"
-                  height="13"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="m3.5 8 2.8 2.8 6.2-6.2"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
-              </button>
-            </div>
-          </Transition>
-        </div>
-      </div>
     </div>
-
-    <!-- 筛选面板（标签 / 状态；太极=折叠态）—— 单一 out-in 过渡，避免两面板同时伸缩 -->
-    <Transition :css="false" mode="out-in" @enter="onPanelEnter" @leave="onPanelLeave">
+    <!-- 工具栏面板（标签 / 状态 / 模式；太极=折叠态）—— 单一 out-in 过渡，避免两面板同时伸缩 -->
+    <Transition
+      :css="false"
+      mode="out-in"
+      @enter="onPanelEnter"
+      @before-leave="panelLeaving = true"
+      @leave="onPanelLeave"
+      @after-leave="panelLeaving = false"
+    >
       <div v-if="panelState !== 'taiji'" :key="panelState" class="nl-panel-wrap">
         <div class="nl-panel-inner">
           <TagSelector
@@ -1666,7 +1636,7 @@ defineExpose({
             class="nl-tags"
             @refresh="replayListRefresh"
           />
-          <div v-else class="nl-status-filter">
+          <div v-else-if="panelState === 'status'" class="nl-status-filter">
             <div class="nl-status-chips">
               <button
                 v-for="(s, i) in statusOptions"
@@ -1677,6 +1647,21 @@ defineExpose({
                 @click="toggleStatus(s.value)"
               >
                 {{ s.label }}
+              </button>
+            </div>
+          </div>
+          <div v-else class="nl-mode-panel nl-status-filter" role="group" aria-label="排列模式">
+            <div class="nl-status-chips">
+              <button
+                v-for="option in modeOptions"
+                :key="option.value"
+                type="button"
+                class="nl-status-chip nl-mode-option"
+                :class="{ 'nl-status-chip--active': option.value === sortMode }"
+                :aria-pressed="option.value === sortMode"
+                @click="selectSortMode(option.value)"
+              >
+                {{ option.label }}
               </button>
             </div>
           </div>
@@ -1774,6 +1759,21 @@ defineExpose({
         class="nl-tag-groups nl-list-scroll scroll-y"
         @contextmenu="openTagGroupContextMenu"
       >
+        <div class="nl-tag-group-tools">
+          <button
+            type="button"
+            class="nl-tag-group-sort-toggle"
+            :class="{
+              'nl-tag-group-sort-toggle--active': tagGroupSortMode || tagGroupSortPreparing
+            }"
+            :disabled="!tagGroupCanSort || tagGroupSortPreparing"
+            :aria-pressed="tagGroupSortMode"
+            :aria-busy="tagGroupSortPreparing || undefined"
+            @click="toggleTagGroupSortMode"
+          >
+            {{ tagGroupSortMode ? '完成标签排序' : '调整标签顺序' }}
+          </button>
+        </div>
         <div v-if="tagGroups.length === 0" class="nl-empty-state">暂无标签组</div>
         <draggable
           v-model="tagGroups"
@@ -1933,7 +1933,11 @@ defineExpose({
         </Transition>
       </Teleport>
 
-      <TagManagerDialog v-model:visible="tagManagerVisible" create-on-open />
+      <TagManagerDialog
+        v-model:visible="tagManagerVisible"
+        :queue="tagManagerQueue"
+        create-on-open
+      />
     </template>
 
     <!-- ======== 自定义模式 ======== -->
@@ -2047,58 +2051,42 @@ defineExpose({
 /* ===== 工具栏 ===== */
 .nl-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
   gap: 12rem;
   padding: 8rem 0;
   flex-shrink: 0;
 }
-
-.nl-toolbar-left {
-  flex: 1;
-  min-width: 0;
+.nl-toolbar-controls {
   display: flex;
-  align-items: center;
-  gap: 10rem;
-  justify-content: flex-start;
 }
-
-.nl-toolbar-center {
-  flex: 0 0 auto;
-  display: flex;
-  justify-content: center;
-}
-
+.nl-toolbar-left,
 .nl-toolbar-right {
-  flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 10rem;
 }
-
 .nl-toolbar .date-context-summary {
   flex: 1;
 }
-.nl-toolbar-options {
+.nl-tag-group-tools {
   display: flex;
-  align-items: center;
-  gap: 6rem;
-}
-.nl-toolbar-options .nl-tag-group-sort-toggle {
-  flex-shrink: 0;
+  justify-content: flex-end;
+  padding-bottom: 4rem;
 }
 .nl-tag-group-sort-toggle {
-  width: 26rem;
-  height: 26rem;
+  flex-shrink: 0;
+  width: auto;
+  min-height: 26rem;
   display: grid;
   place-items: center;
-  padding: 0;
+  padding: 3rem 6rem;
   border: 0;
   border-radius: 6rem;
   background: transparent;
   color: var(--text-color-secondary);
+  font: inherit;
+  font-size: var(--fs-secondary);
   cursor: pointer;
   transition:
     color var(--motion-fast) ease,
@@ -2119,111 +2107,6 @@ defineExpose({
   cursor: default;
   opacity: 0.42;
 }
-.nl-tag-group-sort-toggle svg {
-  width: 15rem;
-  height: 15rem;
-}
-.nl-tag-group-sort-grip {
-  fill: currentColor;
-}
-.nl-tag-group-sort-check {
-  fill: none;
-}
-
-/* 展示模式选择 */
-.nl-mode-menu-root {
-  position: relative;
-}
-.nl-mode-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4rem;
-  padding: 4rem 6rem;
-  border: none;
-  background: transparent;
-  color: var(--text-color-secondary);
-  font-size: var(--fs-secondary);
-  font-family: inherit;
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    color 150ms ease,
-    transform var(--motion-control) var(--ease-standard);
-}
-.nl-mode-toggle:hover {
-  color: var(--text-color);
-}
-.nl-mode-label {
-  display: inline-block;
-}
-.nl-mode-chevron {
-  display: block;
-  transition: transform var(--motion-control) var(--ease-standard);
-}
-.nl-mode-chevron--open {
-  transform: rotate(180deg);
-}
-.nl-mode-menu {
-  position: absolute;
-  z-index: var(--z-local-top);
-  top: calc(100% + 4rem);
-  right: 0;
-  min-width: 112rem;
-  padding: 4rem;
-  border: 1px solid var(--surface-float-border);
-  border-radius: 10rem;
-  background: var(--surface-float);
-  box-shadow: 0 8rem 24rem rgb(0 0 0 / 0.14);
-  transform-origin: top right;
-}
-.nl-mode-option {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12rem;
-  padding: 7rem 9rem;
-  border: 0;
-  border-radius: 7rem;
-  background: transparent;
-  color: var(--text-color-secondary);
-  font: inherit;
-  font-size: var(--fs-secondary);
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color var(--motion-control) ease,
-    color var(--motion-control) ease,
-    transform var(--motion-control) var(--ease-standard);
-}
-.nl-mode-option:hover {
-  background: var(--ui-fill-hover);
-  color: var(--text-color);
-}
-.nl-mode-option--active {
-  background: var(--ui-fill-pressed);
-  color: var(--text-color);
-}
-.nl-mode-option:active {
-  transform: scale(0.98);
-}
-
-/* 文字切换过渡：旧字往右滑出、新字从左滑入 */
-.nl-mode-text-enter-active,
-.nl-mode-text-leave-active {
-  transition:
-    opacity var(--motion-control) ease,
-    transform var(--motion-control) var(--ease-standard);
-}
-.nl-mode-text-enter-from {
-  opacity: 0;
-  transform: translateX(-5rem);
-}
-.nl-mode-text-leave-to {
-  opacity: 0;
-  transform: translateX(5rem);
-}
-
 /* ===== 加载状态 ===== */
 .nl-loading {
   display: flex;
@@ -2281,6 +2164,8 @@ defineExpose({
 
 .nl-timeline {
   flex: 1;
+  /* 滚动位置由列表快照恢复，避免浏览器先跟随移动的完成项调整一次。 */
+  overflow-anchor: none;
   -webkit-mask-image: linear-gradient(
     to bottom,
     black 0%,
@@ -2363,6 +2248,7 @@ defineExpose({
 /* ===== 标签分组模式 ===== */
 .nl-tag-groups {
   flex: 1;
+  overflow-anchor: none;
   -webkit-mask-image: linear-gradient(
     to bottom,
     black 0%,

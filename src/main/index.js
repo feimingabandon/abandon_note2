@@ -20,6 +20,7 @@ import { join, resolve } from 'path'
 import { randomUUID } from 'crypto'
 import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
 import icon from '../../resources/icon.png?asset' // 应用图标（Vite asset 导入）
+import { createShortcutTrayImages } from './tray/shortcut-status.js'
 import {
   initDatabase,
   closeDatabase,
@@ -106,8 +107,13 @@ import { TemplateSchedulerGuard } from './services/template-scheduler-guard.js'
 import { inspectDockHealth } from './window-motion/dock-health.js'
 import { AppUpdateService } from './services/app-update.js'
 import { NotificationService } from './services/NotificationService.js'
-import { ScreenshotService } from './services/ScreenshotService.js'
+import { ReminderService } from './services/ReminderService.js'
+import { ReminderWindow } from './services/ReminderWindow.js'
+import { TrayReminderController } from './services/TrayReminderController.js'
+import { CaptureCoordinator } from './capture/CaptureCoordinator.js'
+import { CaptureShortcutService } from './capture/CaptureShortcutService.js'
 import { ViewVisibilityShortcutService } from './services/view-visibility-shortcut.js'
+import { unavailableShortcuts } from '../shared/shortcut-status.js'
 import { ElectronStickyService } from './sticky/ElectronStickyService.js'
 import { buildStickyTrayTemplate } from './sticky/StickyTrayMenu.js'
 import {
@@ -148,6 +154,7 @@ import {
   WINDOW_Z_ORDER_MODES
 } from '../shared/settings-schema.js'
 import { getSystemNotificationCapability } from '../shared/notification-policy.js'
+import { parseReminderProtocol } from '../shared/reminder-protocol.js'
 import { registerBusinessIpcHandlers } from './ipc/register-business-ipc.js'
 import { registerCalendarIpcHandlers } from './ipc/register-calendar-ipc.js'
 import { registerDailyReportIpcHandlers } from './ipc/register-daily-report-ipc.js'
@@ -185,6 +192,11 @@ const APP_NAME = '便签'
 // 安装版由 NSIS 快捷方式把 APP_ID 映射为 productName；开发环境没有这层注册，
 // Windows 会直接展示原始 ID，因此开发时使用中文名称作为通知来源标识。
 const WINDOWS_APP_USER_MODEL_ID = app.isPackaged ? APP_ID : APP_NAME
+// Stable across releases: Windows uses this COM identity to activate old toasts.
+// Electron otherwise generates a different CLSID on every process start.
+const WINDOWS_TOAST_ACTIVATOR_CLSID = app.isPackaged
+  ? '{1CBE300C-E243-4C77-8BA9-1068B748F17E}'
+  : '{7A5326BE-B6B3-4F17-B4C3-C14FDFF451EA}'
 const APP_PROTOCOL = 'abandon-note'
 const SYSTEM_NOTIFICATION_CAPABILITY = getSystemNotificationCapability(process.platform)
 const integrationAppRoot =
@@ -235,6 +247,7 @@ app.setName(APP_NAME)
 app.setPath('userData', userDataPath)
 if (process.platform === 'win32') {
   app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID)
+  app.setToastActivatorCLSID(WINDOWS_TOAST_ACTIVATOR_CLSID)
   const protocolArgs = process.defaultApp && process.argv[1] ? [resolve(process.argv[1])] : []
   // 完整应用集成测试会启动真实主进程，但不应修改开发机的协议关联。
   if (process.env.ABANDON_INTEGRATION_TEST !== '1') {
@@ -251,6 +264,8 @@ if (!gotSingleInstanceLock) {
 let appUpdateService = null
 let remoteCoordinator = null
 let notificationService = null
+let reminderService = null
+let trayReminderController = null
 let screenshotService = null
 let weatherRuntime = null
 
@@ -328,17 +343,26 @@ function getApplicationWindows() {
 
 /** 系统托盘实例 */
 let tray = null
+let trayShortcutImages = null
 let stickyService = null
 let viewVisibilityShortcutService = null
+let captureShortcutService = null
+let startupShortcutFailures = []
+let startupShortcutNoticeDismissed = false
+let captureShutdownStarted = false
+let captureShutdownFinished = false
 const viewVisibilityShortcutCaptureSenders = new WeakSet()
 let screenshotCaptureActive = false
 let screenshotMainViewWasHidden = false
+let screenshotMainViewWasVisible = false
+let screenshotMainViewWasFocused = false
 
 /** 是否正在执行退出流程（托盘菜单「退出」触发） */
 let isQuitting = false
 let remoteShutdownStarted = false
 let remoteShutdownFinished = false
 let pendingNotificationReveal = false
+const pendingReminderActions = []
 let pendingNotificationRevealContext = null
 let shutdownStartedAt = null
 let shutdownTrigger = null
@@ -420,6 +444,12 @@ function handleNotificationProtocol(rawUrl, source = 'protocol') {
   try {
     const url = new URL(rawUrl)
     if (url.protocol !== `${APP_PROTOCOL}:` || url.hostname !== 'notification') return false
+    const reminderAction = parseReminderProtocol(rawUrl, APP_PROTOCOL)
+    if (reminderAction) {
+      if (reminderService) reminderService.nativeAction(reminderAction)
+      else if (pendingReminderActions.length < 32) pendingReminderActions.push(reminderAction)
+      return true
+    }
 
     if (url.pathname === '/open') {
       // 旧版本通知可能仍携带 id；这里只保留唤醒语义，不再定位或打开便签。
@@ -741,6 +771,7 @@ let lastLockToggleAt = 0
 let lockToggleInFlight = false
 let lastZOrderChangeAt = 0
 let zOrderChangeInFlight = false
+let pendingWindowZOrderMode = null
 let bottomZOrderRetryTimer = null
 let bottomZOrderRetryAttempt = 0
 let bottomZOrderRetryExhaustedNotified = false
@@ -774,6 +805,8 @@ const blurConfig = {
 
 /** DB 值覆盖共享默认值后的完整运行时设置快照。 */
 let resolvedSettings = createDefaultSettings(activeViewMode)
+// Temporary global pause belongs to the process, not a view or saved settings.
+let globalShortcutsEnabled = true
 let settingsRevision = 0
 
 /** 防抖定时器，用于延迟保存窗口位置/尺寸 */
@@ -864,7 +897,10 @@ function refreshResolvedSettings({ incrementRevision = false } = {}) {
   const nextSettings = resolveSettingsRows(getAllSettings(getActiveWindowName()), activeViewMode)
   nextSettings.appearance.titlebarIconScale = applicationSettings.appearance.titlebarIconScale
   nextSettings.appearance.iconColor = applicationSettings.appearance.iconColor
-  nextSettings.shortcuts = { ...applicationSettings.shortcuts }
+  nextSettings.shortcuts = {
+    ...applicationSettings.shortcuts,
+    enabled: globalShortcutsEnabled
+  }
   nextSettings.calendar = { ...applicationSettings.calendar }
   nextSettings.interaction = { ...applicationSettings.interaction }
   nextSettings.notes = { ...applicationSettings.notes }
@@ -875,6 +911,7 @@ function refreshResolvedSettings({ incrementRevision = false } = {}) {
   const changed = JSON.stringify(nextSettings) !== JSON.stringify(resolvedSettings)
   resolvedSettings = nextSettings
   syncBlurConfigFromResolved()
+  screenshotService?.syncTheme()
   const revisionChanged = incrementRevision || changed
   if (revisionChanged) settingsRevision += 1
   return revisionChanged
@@ -907,8 +944,10 @@ function getResolvedSettingsSnapshot() {
     runtime: {
       autoStart,
       shortcuts: {
+        ...captureShortcutService?.snapshot(),
         viewVisibility: viewVisibilityShortcutService?.snapshot() || {
           configured: resolvedSettings.shortcuts?.viewVisibility || '',
+          enabled: resolvedSettings.shortcuts?.enabled !== false,
           registered: false,
           capturing: false,
           error: null
@@ -1673,7 +1712,8 @@ const scheduleVisibleBlurRestore = createDeferredWindowRestore({
 
 function applyResolvedWindowRuntime() {
   isLocked = resolvedSettings.window.lockState
-  zOrderMode = resolvedSettings.window.zOrderMode
+  // 锁定或视图刷新可能在异步层级核验期间读取旧设置；保留正在提交的目标层级。
+  zOrderMode = pendingWindowZOrderMode ?? resolvedSettings.window.zOrderMode
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.setMovable(!isLocked)
   // Windows 使用 thickFrame:false + renderer 自定义缩放手柄。调用
@@ -3777,23 +3817,39 @@ function reassertBottomWindowZOrder(source) {
 async function confirmWindowZOrder(mode, window) {
   // 毛玻璃在独立 STA 线程处理排层消息。先等待实际 HWND 和 Overlay 一致，
   // 必要时受限地重发同步；队列接收成功不能代替可见层级已经生效。
+  let lastCheck = null
   for (const delay of [0, 40, 120, 240]) {
     if (delay) await new Promise((resolveWait) => setTimeout(resolveWait, delay))
     if (window.isDestroyed() || window !== getActiveVisualWindow()) {
       throw new Error('窗口已切换，请在当前窗口重新选择层级')
     }
     const topmostMatches = window.isAlwaysOnTop() === (mode === WINDOW_Z_ORDER_MODES.TOP)
+    const nativeZOrder = process.platform === 'win32' ? getWindowZOrderStatus(window) : null
+    const bottomMatches =
+      mode === WINDOW_Z_ORDER_MODES.BOTTOM
+        ? Boolean(nativeZOrder?.enabled && nativeZOrder.requestedMatches && nativeZOrder.anchored)
+        : !nativeZOrder?.enabled
     const blurHealth =
       process.platform === 'win32' && blurInitialized && blurConfig.enabled
         ? getBlurRuntimeHealth()
         : null
-    if (topmostMatches && (!blurHealth || (blurHealth.healthy && blurHealth.zOrderSynchronized))) {
+    lastCheck = { mode, topmostMatches, bottomMatches, nativeZOrder, blurHealth }
+    if (
+      topmostMatches &&
+      bottomMatches &&
+      (!blurHealth || (blurHealth.healthy && blurHealth.zOrderSynchronized))
+    ) {
       return
     }
     if (delay === 240) break
     const result = applyWindowZOrder(mode)
     if (!result.success) throw new Error(result.error)
   }
+  logger.warn('window.z-order-confirm', '窗口层级核验未收敛', {
+    ...lastCheck,
+    isSliding,
+    isDockHidden
+  })
   throw new Error('窗口层级未能同步，请重新选择后重试')
 }
 
@@ -3805,6 +3861,7 @@ async function persistWindowZOrderMode(mode) {
   try {
     // 原生排层期间可能同步触发 show 等回调；这些回调必须看到目标模式，
     // 不能在退出置底时重新装回旧的置底拦截器。失败时在下方恢复原模式。
+    pendingWindowZOrderMode = normalized
     zOrderMode = normalized
     const runtimeResult = applyWindowZOrder(normalized)
     if (!runtimeResult.success) {
@@ -3826,6 +3883,7 @@ async function persistWindowZOrderMode(mode) {
     broadcastSettingsChanged(snapshot)
     return { mode: zOrderMode, changed: true, throttled: false }
   } catch (error) {
+    pendingWindowZOrderMode = previousMode
     zOrderMode = previousMode
     const rollbackResult = applyWindowZOrder(previousMode)
     if (!rollbackResult.success) {
@@ -3849,6 +3907,8 @@ async function persistWindowZOrderMode(mode) {
       }
     }
     throw error
+  } finally {
+    pendingWindowZOrderMode = null
   }
 }
 
@@ -4154,31 +4214,89 @@ async function switchMainViewFromTray(targetMode) {
   return switchMainView(targetMode)
 }
 
+function toggleGlobalShortcuts() {
+  try {
+    const enabled = !globalShortcutsEnabled
+    globalShortcutsEnabled = enabled
+    resolvedSettings.shortcuts.enabled = enabled
+    settingsRevision += 1
+    if (captureShortcutService) captureShortcutService.setEnabled(enabled)
+    else viewVisibilityShortcutService?.setEnabled(enabled)
+    broadcastSettingsChanged(getResolvedSettingsSnapshot())
+    rebuildTrayMenu()
+  } catch (error) {
+    logger.error('shortcuts.toggle', error)
+    dialog.showErrorBox('无法修改快捷键开关', '快捷键状态切换失败，请重试。')
+  }
+}
+
+function buildTrayMenuTemplate() {
+  return [
+    { label: '查看便签提醒', click: () => reminderService?.showAll() },
+    {
+      id: 'toggle-global-shortcuts',
+      label: '禁用全部快捷键（本次运行）',
+      type: 'checkbox',
+      checked: !globalShortcutsEnabled,
+      click: toggleGlobalShortcuts
+    },
+    { type: 'separator' },
+    ...(screenshotService
+      ? [
+          {
+            label: '截图',
+            click: () =>
+              void screenshotService.capture().catch((error) => screenshotService?.report(error))
+          },
+          { label: '剪贴板贴图', click: () => void screenshotService.action('pinClipboard') },
+          {
+            label: '恢复最近关闭的贴图',
+            click: () => void screenshotService.action('restorePin')
+          },
+          {
+            label: '截图快速保存目录…',
+            click: () => void screenshotService.action('configureCaptureSave')
+          },
+          {
+            label: '显示/隐藏全部贴图',
+            click: () => void screenshotService.action('togglePins')
+          },
+          { type: 'separator' }
+        ]
+      : []),
+    ...buildStickyTrayTemplate({
+      stickyService,
+      openMainWindow: () => {
+        void openMainWindowFromTray().catch((error) =>
+          logger.error('presentation-mode.tray-open', error)
+        )
+      },
+      activeViewMode,
+      switchMainView: (targetMode) => {
+        void switchMainViewFromTray(targetMode).catch((error) =>
+          logger.error('view.switch-tray', error, { targetMode })
+        )
+      },
+      quitApplication: () => {
+        shutdownTrigger = 'tray-menu'
+        isQuitting = true
+        app.quit()
+      }
+    })
+  ]
+}
+
 function rebuildTrayMenu() {
   if (!tray || tray.isDestroyed() || !stickyService) return
-  tray.setContextMenu(
-    Menu.buildFromTemplate(
-      buildStickyTrayTemplate({
-        stickyService,
-        openMainWindow: () => {
-          void openMainWindowFromTray().catch((error) =>
-            logger.error('presentation-mode.tray-open', error)
-          )
-        },
-        activeViewMode,
-        switchMainView: (targetMode) => {
-          void switchMainViewFromTray(targetMode).catch((error) =>
-            logger.error('view.switch-tray', error, { targetMode })
-          )
-        },
-        quitApplication: () => {
-          shutdownTrigger = 'tray-menu'
-          isQuitting = true
-          app.quit()
-        }
-      })
-    )
-  )
+  if (trayShortcutImages) {
+    const baseIcon = globalShortcutsEnabled
+      ? trayShortcutImages.enabled
+      : trayShortcutImages.disabled
+    if (trayReminderController) trayReminderController.setBaseIcon(baseIcon)
+    else tray.setImage(baseIcon)
+    tray.setToolTip(globalShortcutsEnabled ? '便签' : '便签 · 快捷键已禁用（重启恢复）')
+  }
+  tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate()))
 }
 
 if (process.env.ABANDON_INTEGRATION_TEST === '1') {
@@ -4197,7 +4315,17 @@ if (process.env.ABANDON_INTEGRATION_TEST === '1') {
     }),
     handleDisplayTopologyChange: handleDockDisplayTopologyChange,
     getBlurRuntimeHealth: () => (blurInitialized ? getBlurRuntimeHealth() : null),
-    triggerViewVisibilityShortcut: () => viewVisibilityShortcutService?.handleTrigger()
+    triggerViewVisibilityShortcut: () => viewVisibilityShortcutService?.handleTrigger(),
+    getTrayMenuTemplate: buildTrayMenuTemplate,
+    getReminderService: () => reminderService,
+    triggerScreenshotShortcut: () => captureShortcutService?.services.screenshot.handleTrigger(),
+    startNativeCapture: () => screenshotService?.capture(),
+    captureCoordinator: () => screenshotService,
+    nativeCaptureState: () => ({
+      ready: screenshotService?.host?.ready,
+      pid: screenshotService?.host?.pid,
+      active: Boolean(screenshotService?.active)
+    })
   })
 }
 
@@ -4258,7 +4386,9 @@ const startupPromise = app.whenReady().then(async () => {
     onTrigger: handleViewVisibilityShortcut,
     logger
   })
-  viewVisibilityShortcutService.initialize(resolvedSettings.shortcuts.viewVisibility)
+  viewVisibilityShortcutService.initialize(resolvedSettings.shortcuts.viewVisibility, {
+    enabled: resolvedSettings.shortcuts.enabled
+  })
   handleProtocolArgs(process.argv)
 
   // 监听新窗口创建事件，自动注册快捷键优化器
@@ -4690,6 +4820,29 @@ const startupPromise = app.whenReady().then(async () => {
   })
 
   // ---- 设置 IPC ----
+  mainWindowIpc.handle('shortcuts:startup-notice', async () => {
+    // The renderer can mount before capture initialization has registered F1.
+    await startupPromise
+    if (startupShortcutNoticeDismissed) return []
+    return unavailableShortcuts(getResolvedSettingsSnapshot().runtime.shortcuts).filter((item) =>
+      startupShortcutFailures.includes(item.action)
+    )
+  })
+  mainWindowIpc.handle('shortcuts:dismiss-startup-notice', () => {
+    startupShortcutNoticeDismissed = true
+  })
+  mainWindowIpc.handle('shortcuts:retry', async () => {
+    await startupPromise
+    if (!isQuitting) {
+      viewVisibilityShortcutService?.retryRegistration()
+      for (const service of Object.values(captureShortcutService?.services || {}))
+        service.retryRegistration()
+      settingsRevision++
+    }
+    const snapshot = getResolvedSettingsSnapshot()
+    broadcastSettingsChanged(snapshot)
+    return snapshot
+  })
   // renderer 只提交 schema ID，数据库 type/key、校验、序列化均由共享 schema 决定。
   mainWindowIpc.handle('set-setting-value', async (_event, id, value) => {
     if (!RENDERER_WRITABLE_SETTING_IDS.has(id))
@@ -4698,30 +4851,56 @@ const startupPromise = app.whenReady().then(async () => {
     return true
   })
 
-  mainWindowIpc.handle('shortcut:view-visibility-capture-start', (event) => {
-    const ownerId = event.sender.id
-    if (!viewVisibilityShortcutCaptureSenders.has(event.sender)) {
-      viewVisibilityShortcutCaptureSenders.add(event.sender)
-      event.sender.once('destroyed', () => viewVisibilityShortcutService?.endCapture(ownerId))
+  mainWindowIpc.handle(
+    'shortcut:view-visibility-capture-start',
+    (event, key = 'viewVisibility') => {
+      const ownerId = event.sender.id
+      if (!viewVisibilityShortcutCaptureSenders.has(event.sender)) {
+        viewVisibilityShortcutCaptureSenders.add(event.sender)
+        event.sender.once('destroyed', () => {
+          captureShortcutService?.endCapture(ownerId)
+          viewVisibilityShortcutService?.endCapture(ownerId)
+        })
+      }
+      captureShortcutService?.beginCapture(ownerId)
+      const viewRuntime = viewVisibilityShortcutService.beginCapture(ownerId)
+      return key === 'viewVisibility' ? viewRuntime : captureShortcutService?.snapshot()[key]
     }
-    return viewVisibilityShortcutService.beginCapture(ownerId)
-  })
-
-  mainWindowIpc.handle('shortcut:view-visibility-capture-end', (event) =>
-    viewVisibilityShortcutService.endCapture(event.sender.id)
   )
 
+  mainWindowIpc.handle('shortcut:view-visibility-capture-end', (event, key = 'viewVisibility') => {
+    captureShortcutService?.endCapture(event.sender.id)
+    const viewRuntime = viewVisibilityShortcutService.endCapture(event.sender.id)
+    return key === 'viewVisibility' ? viewRuntime : captureShortcutService?.snapshot()[key]
+  })
+
   mainWindowIpc.handle('shortcut:view-visibility-set', (event, accelerator) => {
+    if (captureShortcutService?.conflicts('viewVisibility', accelerator))
+      return { status: 'conflict', runtime: viewVisibilityShortcutService.snapshot() }
     const result = viewVisibilityShortcutService.update(accelerator, {
       ownerId: event.sender.id,
       persist: (next) => writeApplicationSetting('shortcuts.viewVisibility', next)
     })
+    if (['saved', 'cleared', 'unchanged'].includes(result.status))
+      captureShortcutService?.endCapture(event.sender.id)
     if (!['saved', 'cleared'].includes(result.status)) return result
 
     refreshResolvedSettings({ incrementRevision: true })
     const snapshot = getResolvedSettingsSnapshot()
     broadcastSettingsChanged(snapshot)
     return { ...result, runtime: snapshot.runtime.shortcuts.viewVisibility }
+  })
+
+  mainWindowIpc.handle('shortcut:capture-set', (event, key, accelerator) => {
+    const result = captureShortcutService.update(key, accelerator, {
+      ownerId: event.sender.id,
+      persist: (next) => writeApplicationSetting(`shortcuts.${key}`, next)
+    })
+    if (['saved', 'cleared'].includes(result.status)) {
+      refreshResolvedSettings({ incrementRevision: true })
+      broadcastSettingsChanged(getResolvedSettingsSnapshot())
+    }
+    return result
   })
 
   /**
@@ -4807,7 +4986,11 @@ const startupPromise = app.whenReady().then(async () => {
     const resetApplicationSettingCount = resetApplicationSettingsToDefaults()
     const clearedViewSettingCount = clearSettings(resetViewScope)
     refreshResolvedSettings({ incrementRevision: true })
-    viewVisibilityShortcutService?.initialize(resolvedSettings.shortcuts.viewVisibility)
+    viewVisibilityShortcutService?.initialize(resolvedSettings.shortcuts.viewVisibility, {
+      enabled: resolvedSettings.shortcuts.enabled
+    })
+    captureShortcutService?.initialize(resolvedSettings.shortcuts)
+    rebuildTrayMenu()
     applyResolvedWindowRuntime()
     applyResolvedBlurRuntime()
     reconcileDockRuntimeConfig(previousDockConfig, 'reset-settings')
@@ -5172,6 +5355,39 @@ const startupPromise = app.whenReady().then(async () => {
     platform: process.platform,
     revealApplication: revealApplicationFromNotification
   })
+  const reminderIcon = Electron.nativeImage.createFromPath(icon).resize({ width: 16, height: 16 })
+  const reminderBitmap = reminderIcon.toBitmap()
+  // Amber is a semantic attention marker drawn over the application icon.
+  for (let y = 8; y < 16; y++)
+    for (let x = 8; x < 16; x++) {
+      if ((x - 11.5) ** 2 + (y - 11.5) ** 2 > 16) continue
+      reminderBitmap.set([10, 159, 255, 255], (y * 16 + x) * 4)
+    }
+  trayReminderController = new TrayReminderController({
+    normalIcon: icon,
+    alertIcon: Electron.nativeImage.createFromBitmap(reminderBitmap, { width: 16, height: 16 })
+  })
+  const reminderPopup = new ReminderWindow({
+    ipcMain,
+    preloadPath: join(PRELOAD_ROOT, 'reminder.js'),
+    rendererPath: RENDERER_ROOT,
+    rendererUrl: is.dev ? process.env.ELECTRON_RENDERER_URL : null,
+    getSettings: () => getResolvedSettingsSnapshot(),
+    onAction: (payload) => reminderService.action(payload),
+    reportError: (scene, error) => logger.error(scene, error)
+  })
+  reminderService = new ReminderService({
+    notifications: notificationService,
+    popup: reminderPopup,
+    tray: trayReminderController,
+    onChanged: (id) => {
+      for (const window of getApplicationWindows()) {
+        window.webContents.send('notes:changed', { reason: 'reminder', id })
+      }
+    },
+    reportError: (scene, error) => logger.error(scene, error)
+  })
+  for (const action of pendingReminderActions.splice(0)) reminderService.nativeAction(action)
 
   // 3.3 生效便签激活任务（含通知）
   scheduler.register({
@@ -5181,24 +5397,18 @@ const startupPromise = app.whenReady().then(async () => {
     shouldRun: () => true,
     execute: (context) => {
       const result = activateNotes()
-      let notifiedCount = 0
-      for (const note of result.notified) {
-        if (notificationService.trySend(note.content, { noteId: note.id })) {
-          notifiedCount += 1
-        }
-      }
+      const remindersQueued = result.notified.length
       if (result.count > 0) {
         logger.info('scheduler.activation', '到期便签激活完成', {
           reason: context.reason,
           activatedCount: result.count,
-          notificationRequestedCount: result.notified.length,
-          notifiedCount
+          remindersQueued
         })
       }
       if (result.count > 0 && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('notes:changed', { reason: 'activation' })
       }
-      return { performanceCounts: { activated: result.count, notifications: notifiedCount } }
+      return { performanceCounts: { activated: result.count, remindersQueued } }
     }
   })
 
@@ -5218,18 +5428,7 @@ const startupPromise = app.whenReady().then(async () => {
     shouldRun: (context) => templateSchedulerGuard.shouldRun(context.now),
     execute: (context) => {
       const result = templateSchedulerGuard.run(() => runRecurringTemplates(context), context.now)
-      let notifiedCount = 0
-      for (const note of result.generated) {
-        const preview = (note.content || '').trim().slice(0, 10) || '空内容'
-        if (
-          notificationService.trySend(note.content, {
-            title: `「${preview}」已通过模板生成新的便签`,
-            noteId: note.id
-          })
-        ) {
-          notifiedCount += 1
-        }
-      }
+      const remindersQueued = result.generated.length
       for (const template of result.autoPaused) {
         const preview = (template.content || '').trim().slice(0, 20) || '空内容模板'
         notificationService.trySend(`模板“${preview}”连续生成失败 3 次：${template.error}`, {
@@ -5245,8 +5444,7 @@ const startupPromise = app.whenReady().then(async () => {
         logger.info('scheduler.template-generation', '循环模板调度发生业务变化', {
           reason: context.reason,
           generatedCount: result.count,
-          notificationRequestedCount: result.generated.length,
-          notifiedCount,
+          remindersQueued,
           skippedCount: result.skipped,
           errorCount: result.errors.length,
           errorTemplateIds: result.errors.map((item) => item.templateId),
@@ -5268,10 +5466,18 @@ const startupPromise = app.whenReady().then(async () => {
           skipped: result.skipped,
           errors: result.errors.length,
           autoPaused: result.autoPaused.length,
-          notifications: notifiedCount
+          remindersQueued
         }
       }
     }
+  })
+
+  scheduler.register({
+    name: 'reminderTask',
+    maxFailures: Infinity,
+    retryBackoff: true,
+    shouldRun: () => true,
+    execute: (context) => reminderService.tick(context.now)
   })
 
   // 3.6 原生毛玻璃运行诊断：随统一调度器启动即检查，之后每分钟检查一次。
@@ -5326,6 +5532,7 @@ const startupPromise = app.whenReady().then(async () => {
       )
       .get()
     await clearNoteData()
+    reminderService?.refresh()
     stickyService?.discardAllRuntime()
     let draftClearError
     try {
@@ -5379,6 +5586,7 @@ const startupPromise = app.whenReady().then(async () => {
     getViewMode: () => activeViewMode,
     platform: process.platform,
     diagnosticLogger: logger,
+    onRemindersChanged: () => reminderService?.refresh(),
     onNotePurged: (noteId) => stickyService?.discardByNoteId(noteId)
   })
   registerCalendarIpcHandlers({
@@ -5449,11 +5657,22 @@ const startupPromise = app.whenReady().then(async () => {
     refreshWeatherIfDue()
   }
 
-  screenshotService = new ScreenshotService({
+  screenshotService = new CaptureCoordinator({
     ipcMain,
-    preloadPath: join(PRELOAD_ROOT, 'screenshot.js'),
+    logger,
+    getTheme: () => resolvedSettings.css,
+    onError: (message) => {
+      if (!isQuitting) void dialog.showMessageBox({ type: 'warning', title: '截图与贴图', message })
+    },
+    onBusinessOpen: () => openMainWindowFromTray(),
     getMainWindow: () => mainWindow,
     onCaptureStart: () => {
+      screenshotMainViewWasVisible = Boolean(
+        mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()
+      )
+      screenshotMainViewWasFocused = Boolean(
+        mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()
+      )
       screenshotCaptureActive = true
       beginDockInteractionSuspension('screenshot')
       screenshotMainViewWasHidden = Boolean(
@@ -5464,18 +5683,47 @@ const startupPromise = app.whenReady().then(async () => {
       )
       if (screenshotMainViewWasHidden) hideMainWindowForViewNavigation(mainWindow)
     },
-    onCaptureEnd: () => {
+    onCaptureEnd: (_origin, business = {}) => {
       screenshotCaptureActive = false
       endDockInteractionSuspension('screenshot')
       if (screenshotMainViewWasHidden && !isQuitting && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show()
-        mainWindow.focus()
+        mainWindow.showInactive()
+        if (screenshotMainViewWasFocused) mainWindow.focus()
         reassertBottomWindowZOrder('screenshot-finished')
       }
       screenshotMainViewWasHidden = false
+      if (
+        business.businessOpened &&
+        !business.businessAccepted &&
+        !screenshotMainViewWasVisible &&
+        !isQuitting &&
+        mainWindow &&
+        !mainWindow.isDestroyed()
+      )
+        hideMainWindowForViewNavigation(mainWindow)
     }
   })
-  screenshotService.initialize()
+  await screenshotService.initialize()
+  captureShortcutService = new CaptureShortcutService({
+    globalShortcut,
+    viewService: viewVisibilityShortcutService,
+    logger,
+    onTrigger: () => {
+      if (isQuitting) return
+      void screenshotService.capture().catch((error) => screenshotService?.report(error))
+    }
+  })
+  captureShortcutService.initialize(resolvedSettings.shortcuts)
+  startupShortcutFailures = unavailableShortcuts(
+    getResolvedSettingsSnapshot().runtime.shortcuts
+  ).map((item) => item.action)
+  const cancelNativeCapture = () => screenshotService?.cancel()
+  powerMonitor.on('lock-screen', cancelNativeCapture)
+  powerMonitor.on('suspend', cancelNativeCapture)
+  app.once('will-quit', () => {
+    powerMonitor.removeListener('lock-screen', cancelNativeCapture)
+    powerMonitor.removeListener('suspend', cancelNativeCapture)
+  })
 
   // ---- 调度器健康检查 IPC ----
 
@@ -5490,11 +5738,13 @@ const startupPromise = app.whenReady().then(async () => {
   })
 
   // ---- 系统托盘 ----
-  tray = new Tray(icon)
-  tray.setToolTip('便签')
+  trayShortcutImages = createShortcutTrayImages(icon)
+  tray = new Tray(trayShortcutImages.enabled)
+  trayReminderController.attach(tray)
 
   // 左键点击：切换（显示/隐藏 ↔ 滑出/滑入）
   tray.on('click', () => {
+    trayReminderController?.acknowledge()
     toggleWindow()
   })
 
@@ -5541,6 +5791,21 @@ app.on('before-quit', (event) => {
   }
   // 系统退出、Cmd+Q 与代码触发的 app.quit() 都必须绕过“关闭到托盘”。
   isQuitting = true
+  if (screenshotService && !captureShutdownFinished) {
+    event.preventDefault()
+    if (!captureShutdownStarted) {
+      captureShutdownStarted = true
+      captureShortcutService?.dispose()
+      void screenshotService
+        .dispose()
+        .catch((error) => logger.error('capture.shutdown', error))
+        .finally(() => {
+          captureShutdownFinished = true
+          app.quit()
+        })
+    }
+    return
+  }
   if (!remoteShutdownFinished && (remoteShutdownStarted || remoteCoordinator?.hasActiveSession())) {
     event.preventDefault()
     if (!remoteShutdownStarted) {
@@ -5638,10 +5903,14 @@ app.on('before-quit', (event) => {
     }
   }
   scheduler.stop()
+  reminderService?.dispose()
+  reminderService = null
+  trayReminderController = null
   viewVisibilityShortcutService?.dispose()
   viewVisibilityShortcutService = null
   notificationService = null
-  screenshotService?.dispose()
+  captureShortcutService?.dispose()
+  captureShortcutService = null
   screenshotService = null
   stickyService?.dispose()
   stickyService = null

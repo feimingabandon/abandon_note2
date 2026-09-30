@@ -1,0 +1,16 @@
+********* Start testing of PinHaloTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : PinHaloTest::initTestCase()
+QINFO  : PinHaloTest::contentGeometryAndExport() halo 0 request QRect(232,232 486x18) native QRect(232,232 486x18)
+QINFO  : PinHaloTest::contentGeometryAndExport() halo 1 request QRect(232,450 486x18) native QRect(232,450 486x18)
+QINFO  : PinHaloTest::contentGeometryAndExport() halo 2 request QRect(232,250 18x200) native QRect(232,250 18x200)
+QINFO  : PinHaloTest::contentGeometryAndExport() halo 3 request QRect(700,250 18x200) native QRect(700,250 18x200)
+QINFO  : PinHaloTest::contentGeometryAndExport() halo 0 request QRect(232,232 486x18) native QRect(232,232 486x18)
+QINFO  : PinHaloTest::contentGeometryAndExport() halo 1 request QRect(232,450 486x18) native QRect(232,450 486x18)
+QINFO  : PinHaloTest::contentGeometryAndExport() halo 2 request QRect(232,250 18x200) native QRect(232,250 18x200)
+QINFO  : PinHaloTest::contentGeometryAndExport() halo 3 request QRect(700,250 18x200) native QRect(700,250 18x200)
+FAIL!  : PinHaloTest::contentGeometryAndExport() '!nativeRect(*edge).intersects(nativeRect(pin))' returned FALSE. ()
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(59) : failure location
+PASS   : PinHaloTest::cleanupTestCase()
+Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 45ms
+********* Finished testing of PinHaloTest *********

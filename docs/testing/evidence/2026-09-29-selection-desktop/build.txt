@@ -1,0 +1,68 @@
+CMake is re-running because C:/addFile/idea/项目/abandon/abandon_note2/native_capture/build/CMakeFiles/generate.stamp is out-of-date.
+  the file 'C:/addFile/idea/项目/abandon/abandon_note2/native_capture/CMakeLists.txt'
+  is newer than 'C:/addFile/idea/项目/abandon/abandon_note2/native_capture/build/CMakeFiles/generate.stamp.depend'
+  result='-1'
+-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.
+-- Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR) 
+-- Configuring done (0.2s)
+-- Generating done (0.3s)
+-- Build files have been written to: C:/addFile/idea/项目/abandon/abandon_note2/native_capture/build
+适用于 .NET Framework MSBuild 版本 18.7.8+1ac568fee
+
+  Automatic MOC for target capture_core
+  DesktopLayout.cpp
+  SelectionSnap.cpp
+  DesktopTargets.cpp
+  正在生成代码...
+  capture_core.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_core.lib
+  Automatic MOC for target capture_ui
+  mocs_compilation_Release.cpp
+  AnnotationEditor.cpp
+  CaptureEngine.cpp
+  CaptureOverlay.cpp
+  PinHalo.cpp
+  PinWindow.cpp
+  正在生成代码...
+  capture_ui.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_ui.lib
+  Automatic MOC for target AbandonCapture
+  main.cpp
+  AbandonCapture.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\AbandonCapture.exe
+适用于 .NET Framework MSBuild 版本 18.7.8+1ac568fee
+
+  Automatic MOC for target capture_core
+  capture_core.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_core.lib
+  Automatic MOC for target capture_ui
+  capture_ui.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_ui.lib
+  Automatic MOC for target capture_selection_tests
+  Building Custom Rule C:/addFile/idea/项目/abandon/abandon_note2/native_capture/CMakeLists.txt
+  selection_test.cpp
+  mocs_compilation_Release.cpp
+  正在生成代码...
+  capture_selection_tests.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\capture_selection_tests.exe
+适用于 .NET Framework MSBuild 版本 18.7.8+1ac568fee
+
+  Automatic MOC for target capture_core
+  capture_core.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_core.lib
+  Automatic MOC for target capture_ui
+  capture_ui.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_ui.lib
+  Automatic MOC for target capture_ui_tests
+  ui_test.cpp
+  capture_ui_tests.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\capture_ui_tests.exe
+适用于 .NET Framework MSBuild 版本 18.7.8+1ac568fee
+
+  Automatic MOC for target capture_core
+  capture_core.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_core.lib
+  Automatic MOC for target capture_ui
+  capture_ui.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_ui.lib
+  Automatic MOC for target capture_ux_tests
+  ux_test.cpp
+  capture_ux_tests.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\capture_ux_tests.exe
+适用于 .NET Framework MSBuild 版本 18.7.8+1ac568fee
+
+  Automatic MOC for target capture_core
+  capture_core.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_core.lib
+  Automatic MOC for target capture_ui
+  capture_ui.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_ui.lib
+  Automatic MOC for target capture_pin_halo_tests
+  pin_halo_test.cpp
+  capture_pin_halo_tests.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\capture_pin_halo_tests.exe

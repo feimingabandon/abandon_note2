@@ -8,6 +8,7 @@ import { ref, watch, computed, onMounted, nextTick } from 'vue'
 import DateTimePicker from '../ui/DateTimePicker.vue'
 import TagSelector from '../ui/TagSelector.vue'
 import ScreenshotPicker from './ScreenshotPicker.vue'
+import ReminderChannelPicker from './ReminderChannelPicker.vue'
 import AppToggle from '../ui/AppToggle.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
@@ -30,20 +31,15 @@ const props = defineProps({
 
 const emit = defineEmits(['saved', 'cancel'])
 const { showMessage } = useMessage()
-const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
-  supported: true,
-  reason: ''
-}
-const systemNotificationsSupported = systemNotificationCapability.supported
-const systemNotificationUnavailableReason = systemNotificationCapability.reason
-
 const content = ref('')
 const contentColorRanges = ref([])
 const status = ref('initialized')
 const effectiveAt = ref('')
 const durationKind = ref(NOTE_DURATION_KINDS.SINGLE_DAY)
 const durationDays = ref(1)
-const notifyEnabled = ref(false)
+const reminderChannels = ref(0)
+const pendingReminderTime = ref('')
+const pendingReminderCancelled = ref(false)
 const isPinned = ref(false)
 const tagIds = ref([])
 const saving = ref(false)
@@ -82,7 +78,9 @@ function createSnapshot(note) {
         ? NOTE_DURATION_KINDS.FIXED_DAYS
         : NOTE_DURATION_KINDS.SINGLE_DAY),
     durationDays: Number(note.duration_days) || 1,
-    notifyEnabled: systemNotificationsSupported && !!note.notify_enabled,
+    reminderChannels: Number(note.reminder_channels ?? (note.notify_enabled ? 1 : 0)),
+    pendingReminderTime: note.pending_reminder ? formatDateTime(note.pending_reminder.due_at) : '',
+    pendingReminder: note.pending_reminder ? { ...note.pending_reminder } : null,
     isPinned: !!note.is_pinned,
     tagIds: normalizedTags(note.tags?.map((tag) => tag.id) || [])
   }
@@ -99,7 +97,9 @@ function resetFromNote(note) {
   effectiveAt.value = snapshot.effectiveAt
   durationKind.value = snapshot.durationKind
   durationDays.value = snapshot.durationDays
-  notifyEnabled.value = snapshot.notifyEnabled
+  reminderChannels.value = snapshot.reminderChannels
+  pendingReminderTime.value = snapshot.pendingReminderTime
+  pendingReminderCancelled.value = false
   isPinned.value = snapshot.isPinned
   tagIds.value = [...snapshot.tagIds]
   attachmentDirty.value = false
@@ -131,9 +131,9 @@ const isHistoricalSchedule = computed(
 )
 const canEditNotify = computed(
   () =>
-    status.value === 'initialized' &&
-    systemNotificationsSupported &&
-    canScheduleNoteNotification(effectiveTimestamp.value, Date.now())
+    status.value === 'in_progress' ||
+    (status.value === 'initialized' &&
+      canScheduleNoteNotification(effectiveTimestamp.value, Date.now()))
 )
 
 function dateAtDefaultScheduleTime(dayOffset) {
@@ -174,16 +174,11 @@ const scheduleHelp = computed(() => {
   return '已完成便签的生效时间不可修改。'
 })
 
-const notifyHelp = computed(() => {
-  if (!systemNotificationsSupported) return systemNotificationUnavailableReason
-  if (status.value === 'initialized')
-    return `仅未来至少 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟的预约可以修改系统提醒设置。`
-  return '进行中或已完成便签不发送待生效提醒。'
-})
-
-watch([effectiveAt, status], () => {
-  if (!canEditNotify.value && notifyEnabled.value) notifyEnabled.value = false
-})
+const notifyHelp = computed(() =>
+  status.value === 'initialized'
+    ? `仅未来至少 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟的预约可以修改提醒方式。`
+    : '进行中便签可修改后续提醒方式；关闭全部方式会取消待触发提醒。已结束的提醒不会重新触发。'
+)
 
 const hasChanges = computed(() => {
   const initial = initialSnapshot.value
@@ -196,7 +191,9 @@ const hasChanges = computed(() => {
     effectiveAt.value !== initial.effectiveAt ||
     durationKind.value !== initial.durationKind ||
     durationDays.value !== initial.durationDays ||
-    notifyEnabled.value !== initial.notifyEnabled ||
+    reminderChannels.value !== initial.reminderChannels ||
+    pendingReminderTime.value !== initial.pendingReminderTime ||
+    pendingReminderCancelled.value ||
     isPinned.value !== initial.isPinned ||
     JSON.stringify(normalizedTags(tagIds.value)) !== JSON.stringify(initial.tagIds)
   )
@@ -271,7 +268,20 @@ async function handleSave() {
         effectiveAt: requestedEffectiveAt,
         durationKind: durationKind.value,
         durationDays: durationDays.value,
-        notifyEnabled: canEditNotify.value && notifyEnabled.value,
+        reminderChannels: canEditNotify.value ? reminderChannels.value : 0,
+        ...(initialSnapshot.value.pendingReminder &&
+        (pendingReminderCancelled.value ||
+          pendingReminderTime.value !== initialSnapshot.value.pendingReminderTime)
+          ? {
+              pendingReminder: {
+                id: initialSnapshot.value.pendingReminder.id,
+                expectedDueAt: initialSnapshot.value.pendingReminder.due_at,
+                dueAt: pendingReminderCancelled.value
+                  ? null
+                  : new Date(pendingReminderTime.value).getTime()
+              }
+            }
+          : {}),
         isPinned: isPinned.value
       },
       tagIds: [...tagIds.value],
@@ -298,7 +308,9 @@ const protectedDraft = useDraftProtection({
     effectiveAt,
     durationKind,
     durationDays,
-    notifyEnabled,
+    reminderChannels,
+    pendingReminderTime,
+    pendingReminderCancelled,
     isPinned,
     tagIds,
     initialVersion
@@ -341,7 +353,7 @@ const protectedDraft = useDraftProtection({
         v-if="status === 'initialized' && isHistoricalSchedule"
         class="ne-platform-note ne-schedule-note"
       >
-        保存后将直接进入进行中，并关闭系统提醒。
+        保存后将直接进入进行中，并关闭提醒。
       </p>
 
       <NoteDurationField
@@ -351,13 +363,29 @@ const protectedDraft = useDraftProtection({
       />
 
       <div class="ne-notification-field ne-stagger" style="animation-delay: 100ms">
-        <div class="ne-field-row">
-          <label class="ne-field-label">系统提醒<HelpButton :text="notifyHelp" /></label>
-          <AppToggle v-model="notifyEnabled" :disabled="!canEditNotify" />
+        <ReminderChannelPicker
+          v-model="reminderChannels"
+          :disabled="!canEditNotify"
+          :help-text="notifyHelp"
+          :disabled-reason="
+            status === 'completed' ? '已完成便签不再提醒' : '设置未来生效时间后可选择提醒方式'
+          "
+        />
+        <div v-if="initialSnapshot?.pendingReminder" class="ne-pending-reminder">
+          <label class="ne-field-label">下次提醒时间</label>
+          <DateTimePicker
+            v-model="pendingReminderTime"
+            :shortcuts="[]"
+            :clearable="false"
+            :disabled="pendingReminderCancelled || !reminderChannels"
+          />
+          <label class="ne-reminder-cancel"
+            ><input
+              v-model="pendingReminderCancelled"
+              type="checkbox"
+            />取消这次稍后提醒（保存后生效）</label
+          >
         </div>
-        <p v-if="!systemNotificationsSupported" class="ne-platform-note">
-          {{ systemNotificationUnavailableReason }}
-        </p>
       </div>
 
       <div class="ne-field-row ne-stagger" style="animation-delay: 130ms">
@@ -563,5 +591,19 @@ const protectedDraft = useDraftProtection({
 .ne-submit:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+.ne-pending-reminder {
+  display: grid;
+  gap: 8rem;
+  margin-top: 12rem;
+}
+.ne-reminder-cancel {
+  display: flex;
+  gap: 6rem;
+  align-items: center;
+  font-size: var(--fs-secondary);
+}
+.ne-reminder-cancel input {
+  accent-color: var(--ui-accent);
 }
 </style>

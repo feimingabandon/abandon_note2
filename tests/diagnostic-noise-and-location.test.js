@@ -11,7 +11,7 @@ const MAIN_PATH = new URL('../src/main/index.js', import.meta.url)
 const BUSINESS_IPC_PATH = new URL('../src/main/ipc/register-business-ipc.js', import.meta.url)
 const WEATHER_SERVICE_PATH = new URL('../src/main/services/weather-service.js', import.meta.url)
 const SCREENSHOT_SERVICE_PATH = new URL(
-  '../src/main/services/ScreenshotService.js',
+  '../src/main/capture/CaptureCoordinator.js',
   import.meta.url
 )
 const ATTACHMENT_DB_PATH = new URL('../src/main/db/db.js', import.meta.url)
@@ -83,7 +83,7 @@ describe('high-value diagnostic coverage', () => {
     }
   })
 
-  it('records weather degradation, storage recovery and screenshot renderer errors', () => {
+  it('records weather degradation, storage recovery and native screenshot failures', () => {
     const weather = readFileSync(WEATHER_SERVICE_PATH, 'utf8')
     const screenshot = readFileSync(SCREENSHOT_SERVICE_PATH, 'utf8')
     const attachments = readFileSync(ATTACHMENT_DB_PATH, 'utf8')
@@ -92,8 +92,8 @@ describe('high-value diagnostic coverage', () => {
     expect(weather).toContain('weather.provider-fallback')
     expect(weather).toContain('weather.stale-cache')
     expect(weather).toContain('weather.network-refresh')
-    expect(screenshot).toContain("scope:'screenshot.renderer'")
-    expect(screenshot).toContain("window.addEventListener('unhandledrejection'")
+    expect(screenshot).toContain("'capture.failure'")
+    expect(screenshot).toContain("'capture.finished'")
     expect(attachments).toContain('onRecovery({')
     expect(wallpapers).toContain('onRecovery({')
   })

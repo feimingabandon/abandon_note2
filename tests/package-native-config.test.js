@@ -14,7 +14,10 @@ const {
   collectFilePatterns
 } = require('../scripts/configure-packaged-native.cjs')
 const { NATIVE_TARGETS, resolveNativeTarget } = require('../scripts/package-native-plan.cjs')
-const { default: validatePackagedApp } = require('../scripts/validate-packaged-app.cjs')
+const {
+  default: validatePackagedApp,
+  captureRuntimeFiles
+} = require('../scripts/validate-packaged-app.cjs')
 
 const temporaryRoots = []
 
@@ -43,6 +46,8 @@ async function createPackagedFixture(
   const target = resolveNativeTarget({ electronPlatformName: platform, arch: Arch[arch] })
 
   await writeFixture(appSource, 'package.json', '{"name":"package-fixture"}')
+  await writeFixture(appSource, 'out/preload/reminder.js')
+  await writeFixture(appSource, 'out/renderer/reminder.html')
   for (const relativePath of target.required) {
     await writeFixture(appSource, path.join('node_modules', relativePath))
   }
@@ -62,6 +67,8 @@ async function createPackagedFixture(
 
   if (target.requiresWindowsBlur) {
     await writeFixture(resourcesDir, path.join('native_blur', 'blur_engine.dll'))
+    for (const file of captureRuntimeFiles)
+      await writeFixture(resourcesDir, path.join('native_capture', file))
   }
   if (breakAsar) {
     await rm(path.join(resourcesDir, 'app.asar.unpacked', 'resources', 'icon.png'))
@@ -102,17 +109,32 @@ describe('platform native module configuration', () => {
       false
     )[0]
     const filter = matcher.createFilter()
-    for (const file of ['tmp/qa/image.png', 'tmp/server/.env', 'tools/deploy.py']) {
+    for (const file of [
+      'tmp/qa/image.png',
+      'tmp/server/.env',
+      'tools/deploy.py',
+      'native_capture/build/bin/capture_ui_tests.exe'
+    ]) {
       expect(filter(path.join(root, file), { isDirectory: () => false })).toBe(false)
     }
     expect(filter(path.join(root, 'out/main/index.js'), { isDirectory: () => false })).toBe(true)
   })
 
-  it.each(['tmp', 'tools'])('rejects %s files if they leak into ASAR', async (leakDirectory) => {
-    const context = await createPackagedFixture('win32', 'x64', { leakDirectory })
+  it.each(['tmp', 'tools', 'native_capture'])(
+    'rejects %s files if they leak into ASAR',
+    async (leakDirectory) => {
+      const context = await createPackagedFixture('win32', 'x64', { leakDirectory })
+      await expect(
+        validatePackagedApp(context, { validateWindowsNativeAbi: vi.fn() })
+      ).rejects.toThrow(`Development file leaked into app.asar: /${leakDirectory}`)
+    }
+  )
+  it('rejects a Windows package missing the native capture platform plugin', async () => {
+    const context = await createPackagedFixture('win32', 'x64')
+    await rm(path.join(context.packager.getResourcesDir(), 'native_capture/platforms/qwindows.dll'))
     await expect(
       validatePackagedApp(context, { validateWindowsNativeAbi: vi.fn() })
-    ).rejects.toThrow(`Development file leaked into app.asar: /${leakDirectory}`)
+    ).rejects.toThrow()
   })
   for (const [platform, platformPlans] of Object.entries(NATIVE_TARGETS)) {
     for (const [arch, plan] of Object.entries(platformPlans)) {

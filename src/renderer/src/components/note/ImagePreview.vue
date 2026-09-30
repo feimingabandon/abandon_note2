@@ -10,6 +10,7 @@
  */
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { retainModalBlur } from '../../utils/modalBlur.js'
+import { modalQueue } from '../../utils/modalQueue.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -39,6 +40,7 @@ const imageTransitionName = computed(() =>
   navigationDirection.value === 'previous' ? 'ipv-image-previous' : 'ipv-image-next'
 )
 let releaseBackgroundBlur = null
+let releaseQueueHold = null
 
 function resetTransform() {
   scale.value = 1
@@ -48,6 +50,7 @@ function resetTransform() {
 }
 
 function acquireModalBlur() {
+  if (!releaseQueueHold) releaseQueueHold = modalQueue.hold()
   if (releaseBackgroundBlur) return
   releaseBackgroundBlur = retainModalBlur()
 }
@@ -55,6 +58,9 @@ function acquireModalBlur() {
 function freeModalBlur() {
   releaseBackgroundBlur?.()
   releaseBackgroundBlur = null
+  const done = releaseQueueHold
+  releaseQueueHold = null
+  if (done) void nextTick(done)
 }
 
 /** 拖拽状态 */

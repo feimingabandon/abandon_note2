@@ -180,7 +180,7 @@ async function run() {
         '背景模糊未解除'
       )
       const toolbar = await js(
-        `(()=>{const left=document.querySelector('.nl-toolbar-left').getBoundingClientRect();const center=document.querySelector('.nl-toolbar-center').getBoundingClientRect();const brief=document.querySelector('.almanac-brief').getBoundingClientRect();return {fits:left.right<=center.left+1,inside:brief.left>=0&&brief.right<=innerWidth}})()`
+        `(()=>{const left=document.querySelector('.nl-toolbar-left').getBoundingClientRect();const center=document.querySelector('.nl-toolbar-controls').getBoundingClientRect();const brief=document.querySelector('.almanac-brief').getBoundingClientRect();return {fits:center.right<=left.left+1,inside:brief.left>=0&&brief.right<=innerWidth}})()`
       )
       assert.ok(toolbar.fits && toolbar.inside, JSON.stringify(toolbar))
       writeFileSync(
@@ -677,24 +677,58 @@ async function verifyListDateContext(win, js) {
     win.setSize(width, 760)
     await new Promise((resolve) => setTimeout(resolve, 250))
     const layout = await js(
-      `(()=>{const a=document.querySelector('.almanac-brief').getBoundingClientRect(),b=document.querySelector('.nl-toolbar-center').getBoundingClientRect();return {width:a.width,gap:(a.left-b.right)/parseFloat(getComputedStyle(document.documentElement).fontSize),hasDots:document.querySelector('.almanac-brief__rows').textContent.includes('…'),masked:!!document.querySelector('.almanac-brief .overflow-fade.is-overflowing'),mask:getComputedStyle(document.querySelector('.almanac-brief .overflow-fade')).maskImage}})()`
+      `(()=>{const a=document.querySelector('.almanac-brief').getBoundingClientRect(),b=document.querySelector('.nl-toolbar-left').getBoundingClientRect();return {width:a.width,gap:(a.left-b.right)/parseFloat(getComputedStyle(document.documentElement).fontSize),hasDots:document.querySelector('.almanac-brief__rows').textContent.includes('…'),rows:[...document.querySelectorAll('.almanac-brief .overflow-fade')].map(el=>({overflow:el.firstElementChild.scrollWidth>el.clientWidth+1,marked:el.classList.contains('is-overflowing'),mask:getComputedStyle(el).maskImage}))}})()`
     )
     assert.ok(
       layout.gap >= 10 &&
         layout.gap <= 14 &&
         !layout.hasDots &&
-        layout.masked &&
-        layout.mask.includes('linear-gradient'),
+        layout.rows.length === 2 &&
+        layout.rows.every(
+          (row) =>
+            row.overflow === row.marked &&
+            (row.overflow ? row.mask.includes('linear-gradient') : row.mask === 'none')
+        ),
       JSON.stringify(layout)
     )
     widths.push(layout.width)
     const summary = await js(`(()=>{
       const el=document.querySelector('.nl-card-date-context.is-almanac'),fade=el.querySelector('.overflow-fade'),s=getComputedStyle(el);
-      return {visible:s.opacity==='1',masked:getComputedStyle(fade).maskImage.includes('linear-gradient'),width:el.getBoundingClientRect().width};
+      return {visible:s.opacity==='1',overflow:fade.firstElementChild.scrollWidth>fade.clientWidth+1,masked:getComputedStyle(fade).maskImage.includes('linear-gradient'),width:el.getBoundingClientRect().width};
     })()`)
-    assert.ok(summary.visible && summary.masked && summary.width > 0, JSON.stringify(summary))
+    assert.ok(
+      summary.visible && summary.masked === summary.overflow && summary.width > 0,
+      JSON.stringify(summary)
+    )
   }
   assert.ok(widths[1] > widths[0] * 1.5, `列表摘要宽度应随可用空间增长: ${JSON.stringify(widths)}`)
+  // Today's 宜/忌 can be either short or long. Exercise both outcomes explicitly
+  // without assuming the first row is the overflowing row on every date.
+  const originalSummary = await js(`(() => {
+    const content=document.querySelector('.almanac-brief .overflow-fade__content');
+    const original=content.textContent;content.textContent='渐隐检查'.repeat(80);return original;
+  })()`)
+  try {
+    await until(
+      () =>
+        js(
+          `getComputedStyle(document.querySelector('.almanac-brief .overflow-fade')).maskImage.includes('linear-gradient')`
+        ),
+      '溢出长摘要应出现渐隐遮罩'
+    )
+    await js(`document.querySelector('.almanac-brief .overflow-fade__content').textContent='短'`)
+    await until(
+      () =>
+        js(
+          `getComputedStyle(document.querySelector('.almanac-brief .overflow-fade')).maskImage==='none'`
+        ),
+      '完整显示的短摘要不应被遮罩'
+    )
+  } finally {
+    await js(
+      `document.querySelector('.almanac-brief .overflow-fade__content').textContent=${JSON.stringify(originalSummary)}`
+    )
+  }
   win.setSize(445, 760)
   for (const [name, bg, fg] of [
     ['light', '255 255 255', '#111111'],

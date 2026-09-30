@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "packageDir": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\tmp\\capture-package-20260929\\win-unpacked",
+  "identity": {
+    "packaged": true,
+    "profile": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\tmp\\test-runs\\capture-package-FLydgS\\profile"
+  },
+  "assertions": [
+    "isolated packaged profile",
+    "app-local Qt without development PATH",
+    "real screenshot",
+    "ASAR image worker",
+    "renderer image draft",
+    "app/helper quit"
+  ]
+}

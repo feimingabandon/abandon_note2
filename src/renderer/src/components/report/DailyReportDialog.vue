@@ -8,6 +8,7 @@ import { useMessage } from '../../composables/useMessage.js'
 import { dateOrdinal, localDateKey } from '../../../../shared/calendar/calendar-date-rules.js'
 
 const props = defineProps({
+  queue: { type: Object, default: null },
   visible: { type: Boolean, default: false }
 })
 const emit = defineEmits(['update:visible'])
@@ -207,6 +208,7 @@ onBeforeUnmount(() => {
 
 <template>
   <AppModalShell
+    :queue="queue"
     :visible="visible"
     title="便签报表"
     subtitle="选择最长 366 天的日期范围、状态和导出格式"

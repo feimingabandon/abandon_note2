@@ -7,6 +7,10 @@ win:
       arch:
         - x64
   extraResources:
+    - from: native_capture/deploy/
+      to: native_capture/
+      filter:
+        - '**/*'
     - from: build/windows/sandbox-permissions.ps1
       to: diagnostics/sandbox-permissions.ps1
     - from: native_blur/build/bin/

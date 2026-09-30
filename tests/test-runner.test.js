@@ -95,6 +95,22 @@ describe('test execution evidence', () => {
     expect(() => fullRunner.selectJobs(jobs, ['misspelled-test'])).toThrow('Unknown test')
   })
 
+  it('builds and tests capture before GUI jobs and preserves native evidence', () => {
+    const jobs = fullRunner.createJobs()
+    const capture = jobs.find((entry) => entry.id === 'build-capture')
+    expect(capture.args).toContain('native_capture/build.ps1')
+    expect(capture.args).toContain('-Test')
+    expect(capture.artifacts).toContain('native_capture/build/capture-polish-results.txt')
+    for (const gui of jobs.filter((entry) => entry.gui)) {
+      expect(gui.requires).toContain('build-capture')
+      expect(jobs.indexOf(gui)).toBeGreaterThan(jobs.indexOf(capture))
+    }
+    const target = 'tests/capture-business-electron.mjs'
+    expect(fullRunner.selectJobs(jobs, ['build-capture', target]).at(-1).requires).toEqual([
+      'build-capture'
+    ])
+  })
+
   it('archives successful application diagnostics before removing temporary caches', async () => {
     const result = await runner.runJob(
       job(

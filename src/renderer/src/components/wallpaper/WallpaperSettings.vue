@@ -1,4 +1,6 @@
 <script setup>
+import { useScreenCapture } from '../../composables/useScreenCapture.js'
+const capture = useScreenCapture()
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import BaseButton from '../ui/BaseButton.vue'
 import AppSlider from '../ui/AppSlider.vue'
@@ -6,6 +8,7 @@ import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import ImagePreview from '../note/ImagePreview.vue'
 import WallpaperCropEditor from './WallpaperCropEditor.vue'
 import { useMessage } from '../../composables/useMessage.js'
+import { useQueuedModal } from '../../composables/useQueuedModal.js'
 
 const { showMessage } = useMessage()
 const fileInput = ref(null)
@@ -15,6 +18,11 @@ const activeId = ref(null)
 const enabled = ref(false)
 const blurRadius = ref(8)
 const sourceData = ref('')
+const { visible: cropDisplayed, finishLeave: finishCropLeave } = useQueuedModal(sourceData)
+// The crop editor's existing 190ms close animation finishes before sourceData clears.
+watch(sourceData, (value) => {
+  if (!value) finishCropLeave()
+})
 const sourceId = ref(null)
 const cropClosing = ref(false)
 const loading = ref(true)
@@ -182,8 +190,10 @@ async function captureScreen() {
   if (capturing.value) return
   capturing.value = true
   try {
-    const data = await window.api.captureScreen()
-    if (data) openCropEditor(data)
+    await capture('background', (asset) => {
+      openCropEditor(asset.dataUrl)
+      return true
+    })
   } catch (error) {
     console.error('[WallpaperSettings] 截图失败:', error)
     showMessage('error', `截图失败：${error?.message || '未知错误'}`)
@@ -350,7 +360,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="wp-settings">
+  <div class="wp-settings" data-settings-search-item>
     <div class="wp-heading">
       <div>
         <h4>设置主页面壁纸</h4>
@@ -482,7 +492,7 @@ onBeforeUnmount(() => {
     </Transition>
 
     <WallpaperCropEditor
-      v-if="sourceData"
+      v-if="cropDisplayed"
       :source-data="sourceData"
       :source-id="sourceId"
       :closing="cropClosing"
@@ -505,7 +515,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .wp-settings {
   margin-top: 6rem;
-  padding: 14rem;
+  padding: 10rem;
   border-radius: 12rem;
   background: var(--ui-surface-subtle);
 }

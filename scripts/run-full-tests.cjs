@@ -14,7 +14,7 @@ function createJobs() {
     command: electron,
     args: [file],
     gui: true,
-    requires: ['build-native', 'build-app']
+    requires: ['build-native', 'build-capture', 'build-app']
   })
   return [
     nodeJob('unit', ['node_modules/vitest/vitest.mjs', 'run']),
@@ -34,6 +34,18 @@ function createJobs() {
       command: 'powershell.exe',
       args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'native_blur/build.ps1']
     },
+    {
+      id: 'build-capture',
+      command: 'powershell.exe',
+      args: [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        'native_capture/build.ps1',
+        '-Test'
+      ]
+    },
     nodeJob('build-app', ['node_modules/electron-vite/bin/electron-vite.js', 'build']),
     nodeJob('build-notice-preview', ['scripts/build-notice-preview.mjs']),
     ...[...manifest.databaseTests, 'tests/maturity-db.mjs'].map((file) => ({
@@ -51,6 +63,16 @@ function createJobs() {
     ].map(guiJob)
   ].map((job) => {
     const artifacts = {
+      'build-capture': [
+        'native_capture/build/capture-polish-results.txt',
+        'native_capture/build/capture-selection-results.txt',
+        'native_capture/build/capture-pin-halo-results.txt',
+        'native_capture/build/capture-ux-results.txt',
+        'native_capture/build/capture-core-results.txt',
+        'native_capture/build/capture-ui-results.txt',
+        'native_capture/build/capture-clipboard-results.txt',
+        'native_capture/build/Testing/Temporary/LastTest.log'
+      ],
       'tests/draft-dialog-ui-electron.mjs': ['tmp/draft-dialog-ui-results.json'],
       'tests/help-center-electron.mjs': ['tmp/help-center-qa'],
       'tests/notice-admin-electron.mjs': ['tmp/notice-markdown-qa'],
@@ -91,7 +113,13 @@ function snapshot() {
     if (existsSync(file))
       hashes[file] = createHash('sha256').update(readFileSync(file)).digest('hex')
   }
-  for (const file of ['out/main/index.js', 'native_blur/build/bin/blur_engine.dll']) {
+  for (const file of [
+    'out/main/index.js',
+    'native_blur/build/bin/blur_engine.dll',
+    'native_capture/build/bin/AbandonCapture.exe',
+    'native_capture/deploy/AbandonCapture.exe',
+    'native_capture/deploy/capture_host.dll'
+  ]) {
     if (existsSync(file))
       hashes[file] = createHash('sha256').update(readFileSync(file)).digest('hex')
   }

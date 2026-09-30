@@ -1,0 +1,54 @@
+CMake is re-running because C:/addFile/idea/项目/abandon/abandon_note2/native_capture/build/CMakeFiles/generate.stamp is out-of-date.
+  the file 'C:/addFile/idea/项目/abandon/abandon_note2/native_capture/CMakeLists.txt'
+  is newer than 'C:/addFile/idea/项目/abandon/abandon_note2/native_capture/build/CMakeFiles/generate.stamp.depend'
+  result='-1'
+-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.
+-- Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR) 
+-- Configuring done (0.2s)
+-- Generating done (0.3s)
+-- Build files have been written to: C:/addFile/idea/项目/abandon/abandon_note2/native_capture/build
+适用于 .NET Framework MSBuild 版本 18.7.8+1ac568fee
+
+  Automatic MOC for target capture_core
+  DesktopTargets.cpp
+  capture_core.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_core.lib
+  Automatic MOC for target capture_ui
+  CaptureEngine.cpp
+  CaptureOverlay.cpp
+  PinWindow.cpp
+  PinHalo.cpp
+  mocs_compilation_Release.cpp
+  正在生成代码...
+  capture_ui.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_ui.lib
+  Automatic MOC for target AbandonCapture
+  main.cpp
+  AbandonCapture.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\AbandonCapture.exe
+适用于 .NET Framework MSBuild 版本 18.7.8+1ac568fee
+
+  Automatic MOC for target capture_core
+  capture_core.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_core.lib
+  Automatic MOC for target capture_ui
+  capture_ui.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_ui.lib
+  Automatic MOC for target capture_pin_halo_tests
+  Building Custom Rule C:/addFile/idea/项目/abandon/abandon_note2/native_capture/CMakeLists.txt
+  pin_halo_test.cpp
+  mocs_compilation_Release.cpp
+  正在生成代码...
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(162,21): error C2513: “const auto”: 在“=”前没有声明变量 [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(163,20): error C2513: “const auto”: 在“=”前没有声明变量 [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(164,5): error C2059: 语法错误:“.” [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(164,5): error C2143: 语法错误: 缺少“(”(在“.”的前面) [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(164,5): error C2143: 语法错误: 缺少“;”(在“{”的前面) [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(165,5): error C2059: 语法错误:“.” [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(165,5): error C2143: 语法错误: 缺少“(”(在“.”的前面) [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(165,5): error C2143: 语法错误: 缺少“;”(在“{”的前面) [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(166,5): error C2059: 语法错误:“.” [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(166,5): error C2143: 语法错误: 缺少“(”(在“.”的前面) [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(166,5): error C2660: “QTest::qVerify”: 函数不接受 1 个参数 [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]
+      C:\addFile\idea\项目\abandon\abandon_note2\tmp\toolchains\qt\6.8.3\msvc2022_64\include\QtTest\qtestcase.h(430,27):
+      参见“QTest::qVerify”的声明
+      C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(166,5):
+      尝试匹配参数列表“()”时
+  
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(166,5): error C2059: 语法错误:“)” [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(166,5): error C2143: 语法错误: 缺少“;”(在“{”的前面) [C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\capture_pin_halo_tests.vcxproj]

@@ -57,9 +57,9 @@ describe('titlebar icon scale UI wiring', () => {
     ]
 
     expect(appIcon).toContain("html[data-icon-color='white']")
-    expect(filterTabs).toContain("'tag'")
-    expect(filterTabs).toContain("'taiji'")
-    expect(filterTabs).toContain("'clover'")
+    expect(filterTabs).toContain("'标签'")
+    expect(filterTabs).toContain('name="taiji"')
+    expect(filterTabs).toContain("'状态'")
     expect(calendarToolbar).toContain("import AppIcon from '../ui/AppIcon.vue'")
     expect(calendarToolbar).toContain('name="taiji"')
     expect(calendarToolbar).toContain('name="locate-current"')

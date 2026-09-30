@@ -458,8 +458,8 @@ function clearImages() {
 }
 
 /** 程序化添加图片（供 ScreenshotPicker 等外部调用） */
-function addImage(dataUrl, ext, name, size) {
-  if (!canAdd.value) return
+async function addImage(dataUrl, ext, name, size) {
+  if (!canAdd.value) return false
   const base64 = dataUrl.split(',')[1]
   const resolvedSize = Number(size) > 0 ? Number(size) : getBase64DecodedSize(base64)
   if (resolvedSize > MAX_IMAGE_BYTES) {
@@ -472,7 +472,7 @@ function addImage(dataUrl, ext, name, size) {
     return
   }
   if (props.mode === 'persist' && props.noteId) {
-    window.api
+    return window.api
       .saveImages(props.noteId, [{ base64, ext }])
       .then((results) => {
         if (results && results.length > 0) {
@@ -487,9 +487,13 @@ function addImage(dataUrl, ext, name, size) {
             saved: true
           })
           emitCount()
+          return true
         }
       })
-      .catch((e) => console.error('[ImagePicker] 截图保存失败:', e))
+      .catch((e) => {
+        console.error('[ImagePicker] 截图保存失败:', e)
+        return false
+      })
   } else {
     images.value.push({
       id: null,
@@ -503,6 +507,7 @@ function addImage(dataUrl, ext, name, size) {
     })
     emitCount()
     emitDraftChange()
+    return true
   }
 }
 

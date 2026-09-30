@@ -78,8 +78,31 @@ describe('titlebar appearance setting', () => {
 })
 
 describe('global main-window controls', () => {
+  it('defaults capture to F1 and ignores the old persistent gate and retired bindings', () => {
+    expect(DEFAULT_SETTINGS.shortcuts).toEqual({
+      enabled: true,
+      viewVisibility: 'F2',
+      screenshot: 'F1'
+    })
+    expect(
+      resolveSettingsRows([
+        { type: 'shortcuts', key: 'enabled', value: '0' },
+        { type: 'shortcuts', key: 'screenshot', value: 'F2' },
+        { type: 'shortcuts', key: 'clipboard_pin', value: 'F3' },
+        { type: 'shortcuts', key: 'toggle_pins', value: 'F4' }
+      ]).shortcuts
+    ).toEqual({ enabled: true, viewVisibility: 'F2', screenshot: 'F2' })
+    expect(() => serializeSetting('shortcuts.enabled', false)).toThrow('不持久化')
+    expect(() => serializeSetting('shortcuts.clipboardPin', 'F3')).toThrow()
+    expect(() => serializeSetting('shortcuts.togglePins', 'F4')).toThrow()
+  })
+
   it('persists the shared view visibility shortcut in a dedicated application key', () => {
-    expect(DEFAULT_SETTINGS.shortcuts.viewVisibility).toBe('')
+    expect(DEFAULT_SETTINGS.shortcuts.viewVisibility).toBe('F2')
+    expect(
+      resolveSettingsRows([{ type: 'shortcuts', key: 'view_visibility', value: '' }]).shortcuts
+        .viewVisibility
+    ).toBe('')
     expect(serializeSetting('shortcuts.viewVisibility', 'alt+control+n')).toMatchObject({
       type: 'shortcuts',
       key: 'view_visibility',

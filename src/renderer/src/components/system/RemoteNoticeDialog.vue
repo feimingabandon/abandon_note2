@@ -5,6 +5,7 @@ import BaseButton from '../ui/BaseButton.vue'
 import MarkdownContent from '../markdown/MarkdownContent.vue'
 
 const props = defineProps({
+  queue: { type: Object, default: null },
   notices: {
     type: Array,
     default: () => []
@@ -52,6 +53,8 @@ async function acknowledge() {
 
 <template>
   <AppModalShell
+    :queue="queue"
+    :child-modal="historyMode"
     :visible="Boolean(current)"
     :title="current?.title || '软件通知'"
     :subtitle="

@@ -1,0 +1,7 @@
+
+[db-schema] 数据库结构版本 0 → 16（全新创建）
+[dock] 窗口移动后端: Windows 原生物理坐标
+[blur] 系统模糊已初始化, 策略: dcomp
+[sticky] 恢复便利贴完成 (source=startup, restored=0)
+[scheduler] 调度器已启动
+capture business integration passed (synthetic image transport): shortcut conflict/recording, global image draft, source draft attachment, draft guard, background crop cancellation

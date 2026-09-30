@@ -1,0 +1,28 @@
+********* Start testing of UiTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : UiTest::initTestCase()
+PASS   : UiTest::selectionPrecisionAndSpace()
+PASS   : UiTest::selectionAndExport()
+PASS   : UiTest::resizeHandles()
+PASS   : UiTest::completionGestures(enter)
+PASS   : UiTest::completionGestures(double)
+PASS   : UiTest::completionGestures(middle)
+PASS   : UiTest::completionGestures(source)
+PASS   : UiTest::pinTransformsEditingAndDisplay()
+PASS   : UiTest::pinDocumentHandoffAndRecovery()
+PASS   : UiTest::systemCloseCleansUpAllOverlays()
+PASS   : UiTest::annotationToolsAndChineseInput()
+PASS   : UiTest::displayChangeCancelsSessionAndRecoversPin()
+QINFO  : UiTest::realDesktopSessionAndPins() {"type":"ready","version":1}
+QINFO  : UiTest::realDesktopSessionAndPins() {"displays":[{"logical":[0,0,1920,1080],"physical":[0,0,1920,1080]}],"sessionId":"232ef89e-e05d-4ea9-ab22-75d794035ed8","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"action":"source","deliveryId":"a28b202a-2bfb-442d-83f2-106ef6a010db","height":30,"sessionId":"232ef89e-e05d-4ea9-ab22-75d794035ed8","type":"output","width":20}
+QINFO  : UiTest::realDesktopSessionAndPins() {"count":1,"type":"pins"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"232ef89e-e05d-4ea9-ab22-75d794035ed8","status":"pinned","type":"finished"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"displays":[{"logical":[0,0,1920,1080],"physical":[0,0,1920,1080]}],"sessionId":"6f4f905d-31a5-4bc2-8bf5-cc57489c7254","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"6f4f905d-31a5-4bc2-8bf5-cc57489c7254","status":"cancelled","type":"finished"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"displays":[{"logical":[0,0,1920,1080],"physical":[0,0,1920,1080]}],"sessionId":"bca501db-3b37-4317-a109-4cbf5372f989","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"bca501db-3b37-4317-a109-4cbf5372f989","status":"cancelled","type":"finished"}
+PASS   : UiTest::realDesktopSessionAndPins()
+PASS   : UiTest::cleanupTestCase()
+Totals: 15 passed, 0 failed, 0 skipped, 0 blacklisted, 1642ms
+********* Finished testing of UiTest *********

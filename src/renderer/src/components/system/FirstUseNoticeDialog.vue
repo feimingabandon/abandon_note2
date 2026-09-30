@@ -8,6 +8,7 @@ import AppModalShell from '../ui/AppModalShell.vue'
 import BaseButton from '../ui/BaseButton.vue'
 
 const props = defineProps({
+  queue: { type: Object, default: null },
   visible: { type: Boolean, default: false }
 })
 
@@ -113,6 +114,7 @@ onBeforeUnmount(disconnectRevealObserver)
 
 <template>
   <AppModalShell
+    :queue="queue"
     :visible="visible"
     :title="modalTitle"
     :subtitle="modalSubtitle"
@@ -125,6 +127,7 @@ onBeforeUnmount(disconnectRevealObserver)
     close-disabled
     :close-on-backdrop="false"
     flush
+    @opened="step === 'story' && prepareStoryMotion()"
   >
     <div ref="stageRef" class="first-use-stage">
       <div

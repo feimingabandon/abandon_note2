@@ -328,7 +328,7 @@ onBeforeUnmount(() => {
       </Transition>
     </Teleport>
 
-    <TagManagerDialog v-model:visible="managerVisible" />
+    <TagManagerDialog v-model:visible="managerVisible" child-modal />
   </div>
 </template>
 

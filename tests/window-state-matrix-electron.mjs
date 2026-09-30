@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
@@ -156,22 +157,51 @@ async function show() {
   await restored()
 }
 async function screenshotCrash(cancel = false) {
-  await js(
-    `window.__matrixCapture='pending';void window.api.captureScreen().then(r=>{window.__matrixCapture=r})`
-  )
-  let overlay
-  await until(() => {
-    overlay = BrowserWindow.getAllWindows().find(
-      (w) => w !== win && !w.isDestroyed() && w.webContents.getURL().startsWith('data:text/html')
+  const coordinator = hooks.captureCoordinator()
+  const token = randomUUID()
+  const errors = []
+  const originalError = coordinator.onError
+  let ready = false
+  const observe = (message) => {
+    if (message.type === 'captureReady' && message.sessionId === coordinator.active?.id)
+      ready = true
+  }
+  coordinator.host.on('message', observe)
+  // A deliberate helper crash must be observed without leaving a modal warning
+  // over the following window scenarios. Production error handling stays intact.
+  coordinator.onError = (message) => errors.push(message)
+  try {
+    const started = await js(`(() => {
+      window.__matrixCaptureFinished = null
+      window.__matrixCaptureStop = window.api.onScreenshotFinished(result => {
+        if (result.token === ${JSON.stringify(token)}) window.__matrixCaptureFinished = result
+      })
+      return window.api.captureScreen({ token: ${JSON.stringify(token)}, origin: 'note' })
+    })()`)
+    assert.equal(started.status, 'started')
+    await until(() => ready, 'Qt screenshot desktop never became ready')
+    const pid = coordinator.host.pid
+    assert.ok(pid > 0)
+    assert.equal(state().screenshotCaptureActive, true)
+    if (cancel) await js(`window.api.cancelScreenshot(${JSON.stringify(token)})`)
+    else process.kill(pid) // Only the helper owned by this isolated test profile.
+    await until(
+      () => js(`window.__matrixCaptureFinished?.status === '${cancel ? 'cancelled' : 'failed'}'`),
+      'Qt screenshot completion was not delivered to the source'
     )
-    return overlay?.isVisible()
-  }, 'screenshot overlay missing')
-  if (cancel) {
-    overlay.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
-    overlay.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
-  } else overlay.webContents.forcefullyCrashRenderer()
-  await until(() => js('window.__matrixCapture===null'), 'screenshot crash remained pending')
-  await restored()
+    assert.equal(coordinator.active, null)
+    await restored()
+    if (!cancel) {
+      await until(() => errors.length > 0, 'Qt crash was not reported')
+      await coordinator.host.start()
+      assert.notEqual(coordinator.host.pid, pid, 'Qt helper was not restarted')
+    }
+  } finally {
+    coordinator.cancel()
+    coordinator.host.removeListener('message', observe)
+    coordinator.onError = originalError
+    await js('window.__matrixCaptureStop?.(); delete window.__matrixCaptureStop')
+  }
 }
 async function run() {
   let exitCode = 0
@@ -272,6 +302,12 @@ async function run() {
           await scenario(`M3/${view}/${phase}/${action}`, async () => {
             await reset()
             if (state().viewMode !== view) await hooks.switchMainView(view)
+            // The preceding layer case switches to top; every interaction must
+            // independently establish bottom instead of inheriting that mode.
+            await wait(600)
+            const layer = await js("window.api.setWindowZOrderMode('bottom')")
+            assert.equal(layer.mode, 'bottom')
+            assert.equal(layer.throttled, false)
             await config(['left'], 'persistent')
             await place('left')
             await wait(600)

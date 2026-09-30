@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { app, BrowserWindow } from 'electron'
 import { resolve } from 'node:path'
 import koffi from 'koffi'
+import { spawn } from 'node:child_process'
 
 const GW_HWNDNEXT = 2
 const SWP_NOSIZE = 0x0001
@@ -15,6 +16,28 @@ function nativeHandle(window) {
 
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
+}
+
+function emitterMessage(child, key) {
+  return new Promise((done, reject) => {
+    const finish = (error, value) => {
+      clearTimeout(timer)
+      child.off('message', onMessage)
+      child.off('error', onError)
+      child.off('exit', onExit)
+      if (error) reject(error)
+      else done(value)
+    }
+    const onMessage = (value) => {
+      if (value[key]) finish(null, value)
+    }
+    const onError = (error) => finish(error)
+    const onExit = (code) => finish(new Error(`Event emitter exited early: ${code}`))
+    const timer = setTimeout(() => finish(new Error(`Event emitter timed out: ${key}`)), 5000)
+    child.on('message', onMessage)
+    child.once('error', onError)
+    child.once('exit', onExit)
+  })
 }
 
 async function waitUntil(predicate, timeoutMs = 2500) {
@@ -31,6 +54,7 @@ app.once('ready', async () => {
   let blurInitialized = false
   let destroyBlur = null
   let exitCode = 0
+  let emitter = null
 
   try {
     const user32 = koffi.load('user32.dll')
@@ -152,6 +176,38 @@ app.once('ready', async () => {
       'BlurOverlay must stay behind the bottom-anchored Electron window'
     )
 
+    emitter = spawn(
+      process.env.ABANDON_TEST_NODE || process.execPath,
+      [resolve('tests/helpers/z-order-event-emitter.cjs')],
+      {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        windowsHide: true,
+        stdio: ['ignore', 'ignore', 'pipe', 'ipc']
+      }
+    )
+    emitter.stderr.on('data', (data) => process.stderr.write(data))
+    await emitterMessage(emitter, 'ready')
+    await wait(200)
+    const emitEvents = async (objectId, childId) => {
+      const before = getStatus().anchorCheckCount
+      const done = emitterMessage(emitter, 'done')
+      emitter.send({ objectId, childId, count: 60 })
+      await done
+      await wait(100)
+      return getStatus().anchorCheckCount - before
+    }
+    const irrelevantChecks = await emitEvents(-4, 42) // OBJID_CLIENT / child control
+    assert.ok(irrelevantChecks < 15, `unrelated controls triggered ${irrelevantChecks} checks`)
+    const relevantChecks = await emitEvents(0, 0) // OBJID_WINDOW / CHILDID_SELF
+    assert.ok(relevantChecks >= 45, `real window events were lost: ${relevantChecks}`)
+    mainWindow.hide()
+    await wait(200)
+    const hiddenChecks = await emitEvents(0, 0)
+    assert.ok(hiddenChecks < 15, `hidden window still processed ${hiddenChecks} checks`)
+    mainWindow.showInactive()
+    assert.equal(await waitUntil(() => getStatus().anchored), true)
+    console.log('event filtering checks', { irrelevantChecks, relevantChecks, hiddenChecks })
+
     assert.equal(setBottom(mainHwnd, 0), 1)
     assert.equal(
       await waitUntil(() => isAbove(mainHwnd, ordinaryHwnd)),
@@ -165,6 +221,10 @@ app.once('ready', async () => {
     console.error(error)
     exitCode = 1
   } finally {
+    if (emitter) {
+      if (emitter.connected) emitter.disconnect()
+      emitter.kill()
+    }
     if (blurInitialized) {
       try {
         destroyBlur?.()

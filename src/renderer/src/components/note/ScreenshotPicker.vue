@@ -7,13 +7,21 @@
  */
 import { computed, ref, watch } from 'vue'
 import ImagePicker from './ImagePicker.vue'
+import { useScreenCapture } from '../../composables/useScreenCapture.js'
+import { useMessage } from '../../composables/useMessage.js'
+const capture = useScreenCapture()
+const { showMessage } = useMessage()
 
 const emit = defineEmits(['count-change', 'draft-change', 'busy-change'])
 
-defineProps({
+const props = defineProps({
   noteId: { type: Number, default: null },
   mode: { type: String, default: 'persist' }
 })
+watch(
+  () => props.noteId,
+  () => capture.invalidate()
+)
 
 const imagePickerRef = ref(null)
 const capturing = ref(false)
@@ -30,12 +38,12 @@ async function onScreenshot() {
     launching.value = false
   })
   try {
-    const cropped = await window.api.captureScreen()
-    if (!cropped) return
-    const ts = Date.now()
-    imagePickerRef.value?.addImage(cropped, 'png', `截图_${ts}.png`, 0)
+    await capture('note', (asset) =>
+      imagePickerRef.value?.addImage(asset.dataUrl, 'png', `截图_${Date.now()}.png`, asset.size)
+    )
   } catch (e) {
     console.error('[ScreenshotPicker] 截图失败:', e)
+    showMessage('error', e.message || '截图失败')
   } finally {
     stopListening()
     launching.value = false
@@ -56,7 +64,9 @@ function getDraftChanges() {
 }
 
 const restoreDraft = (draft) => imagePickerRef.value?.restoreDraft(draft)
-defineExpose({ restoreDraft, getImages, getDraftChanges, clearImages })
+const addCapture = (asset) =>
+  imagePickerRef.value?.addImage(asset.dataUrl, 'png', `截图_${Date.now()}.png`, asset.size)
+defineExpose({ restoreDraft, getImages, getDraftChanges, clearImages, addCapture })
 </script>
 
 <template>

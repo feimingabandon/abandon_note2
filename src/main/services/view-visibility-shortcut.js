@@ -4,19 +4,21 @@ import {
 } from '../../shared/view-visibility-shortcut.js'
 
 export class ViewVisibilityShortcutService {
-  constructor({ globalShortcut, onTrigger, logger = null }) {
+  constructor({ globalShortcut, onTrigger, logger = null, canRegister = () => true }) {
     this.globalShortcut = globalShortcut
     this.onTrigger = onTrigger
     this.logger = logger
+    this.canRegister = canRegister
     this.configuredAccelerator = ''
     this.registeredAccelerator = ''
     this.runtimeError = null
+    this.enabled = true
     this.captureOwners = new Set()
     this.handleTrigger = () => {
-      if (this.captureOwners.size > 0) {
+      if (!this.enabled || this.captureOwners.size > 0) {
         this.logger?.info?.('shortcut.view-visibility-trigger', '显示/隐藏快捷键触发被忽略', {
           action: 'ignored',
-          reason: 'capture'
+          reason: this.enabled ? 'capture' : 'disabled'
         })
         return
       }
@@ -24,12 +26,24 @@ export class ViewVisibilityShortcutService {
     }
   }
 
-  initialize(value) {
+  initialize(value, { enabled = this.enabled } = {}) {
     this.disposeRegistration()
+    this.enabled = enabled
     this.captureOwners.clear()
     this.configuredAccelerator = normalizeViewVisibilityShortcut(value)
     this.runtimeError = null
     if (this.configuredAccelerator) this.restoreConfiguredRegistration('startup')
+    return this.snapshot()
+  }
+
+  setEnabled(enabled) {
+    this.enabled = Boolean(enabled)
+    if (!this.enabled) {
+      this.disposeRegistration()
+      this.runtimeError = null
+    } else if (!this.registeredAccelerator) {
+      this.restoreConfiguredRegistration('enabled')
+    }
     return this.snapshot()
   }
 
@@ -41,6 +55,12 @@ export class ViewVisibilityShortcutService {
       this.globalShortcut.unregister(this.registeredAccelerator)
       this.registeredAccelerator = ''
     }
+    return this.snapshot()
+  }
+
+  retryRegistration() {
+    // Keep working bindings and recording/disabled states intact.
+    if (!this.registeredAccelerator) this.restoreConfiguredRegistration('retry')
     return this.snapshot()
   }
 
@@ -61,22 +81,33 @@ export class ViewVisibilityShortcutService {
     const next = validation.accelerator
     const previous = this.configuredAccelerator
     if (next === previous) {
-      if (next && !this.registeredAccelerator && !this.tryRegister(next, 'update-unchanged')) {
+      if (
+        this.enabled &&
+        next &&
+        !this.registeredAccelerator &&
+        !this.tryRegister(next, 'update-unchanged')
+      ) {
         return { status: 'conflict', accelerator: next, runtime: this.snapshot() }
       }
       this.captureOwners.delete(String(ownerId))
+      if (this.captureOwners.size > 0) this.disposeRegistration()
       return { status: 'unchanged', accelerator: previous, runtime: this.snapshot() }
     }
 
     const previouslyRegistered = this.registeredAccelerator
-    if (next && next !== previouslyRegistered && !this.tryRegister(next, 'update')) {
+    if (
+      this.enabled &&
+      next &&
+      next !== previouslyRegistered &&
+      !this.tryRegister(next, 'update')
+    ) {
       return { status: 'conflict', accelerator: next, runtime: this.snapshot() }
     }
 
     try {
       persist(next)
     } catch (error) {
-      if (next && next !== previouslyRegistered) {
+      if (this.enabled && next && next !== previouslyRegistered) {
         this.globalShortcut.unregister(next)
         if (this.registeredAccelerator === next) {
           this.registeredAccelerator = previouslyRegistered
@@ -90,9 +121,10 @@ export class ViewVisibilityShortcutService {
       this.globalShortcut.unregister(previouslyRegistered)
     }
     this.configuredAccelerator = next
-    this.registeredAccelerator = next
+    this.registeredAccelerator = this.enabled ? next : ''
     this.runtimeError = null
     this.captureOwners.delete(String(ownerId))
+    if (this.captureOwners.size > 0) this.disposeRegistration()
     if (
       this.captureOwners.size === 0 &&
       this.configuredAccelerator &&
@@ -110,6 +142,7 @@ export class ViewVisibilityShortcutService {
   snapshot() {
     return {
       configured: this.configuredAccelerator,
+      enabled: this.enabled,
       registered: Boolean(
         this.configuredAccelerator && this.registeredAccelerator === this.configuredAccelerator
       ),
@@ -131,11 +164,16 @@ export class ViewVisibilityShortcutService {
   }
 
   restoreConfiguredRegistration(source) {
-    if (!this.configuredAccelerator || this.captureOwners.size > 0) return false
+    if (!this.enabled || !this.configuredAccelerator || this.captureOwners.size > 0) return false
     return this.tryRegister(this.configuredAccelerator, source)
   }
 
   tryRegister(accelerator, source) {
+    if (!this.enabled) return false
+    if (!this.canRegister(accelerator)) {
+      this.runtimeError = { code: 'conflict', message: '与应用内另一项快捷键重复' }
+      return false
+    }
     try {
       const registered = this.globalShortcut.register(accelerator, this.handleTrigger)
       if (!registered) {

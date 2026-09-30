@@ -19,7 +19,7 @@ function enforceSandboxPreloadSingleFile() {
 
 // 同一份策略/运输源码可供多个 preload 使用，但 sandbox 运行时仍各自内联。
 function isolateSandboxPreloadModules() {
-  const entries = new Set(['index', 'screenshot', 'sticky'])
+  const entries = new Set(['index', 'sticky'])
   const suffix = '?sandbox-entry='
   return {
     name: 'isolate-sandbox-preload-modules',
@@ -29,7 +29,7 @@ function isolateSandboxPreloadModules() {
       const normalized = importer.replaceAll('\\', '/')
       const entry = normalized.includes(suffix)
         ? normalized.split(suffix)[1]
-        : /^.*\/src\/preload\/(index|screenshot|sticky)\.js$/.exec(normalized)?.[1]
+        : /^.*\/src\/preload\/(index|sticky)\.js$/.exec(normalized)?.[1]
       if (!entries.has(entry)) return null
       return `${resolve(dirname(importer.split(suffix)[0]), source)}${suffix}${entry}`
     },
@@ -45,6 +45,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/main/bootstrap.js'),
+          'capture-image': resolve('src/main/capture/capture-image-worker.mjs'),
           'log-writer': resolve('src/main/logging/log-writer.mjs')
         }
       }
@@ -56,7 +57,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/preload/index.js'),
-          screenshot: resolve('src/preload/screenshot.js'),
+          reminder: resolve('src/preload/reminder.js'),
           sticky: resolve('src/preload/sticky.js')
         }
       }
@@ -81,7 +82,8 @@ export default defineConfig({
           index: resolve('src/renderer/index.html'),
           month: resolve('src/renderer/month.html'),
           week: resolve('src/renderer/week.html'),
-          sticky: resolve('src/renderer/sticky.html')
+          sticky: resolve('src/renderer/sticky.html'),
+          reminder: resolve('src/renderer/reminder.html')
         }
       }
     }

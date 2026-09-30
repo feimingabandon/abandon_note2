@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useQueuedModal } from '../../composables/useQueuedModal.js'
 import TemplateForm from './TemplateForm.vue'
 import TemplateCard from './TemplateCard.vue'
 import TemplateCreatePanel from './TemplateCreatePanel.vue'
@@ -18,12 +19,6 @@ import {
 } from '../../utils/modalFocus.js'
 
 const { showMessage } = useMessage()
-const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
-  supported: true,
-  reason: ''
-}
-const systemNotificationsSupported = systemNotificationCapability.supported
-const systemNotificationUnavailableReason = systemNotificationCapability.reason
 const templates = ref([])
 const displayedTemplates = ref([])
 const tags = ref([])
@@ -45,6 +40,7 @@ const pinnedOnly = ref(false)
 const notifyOnly = ref(false)
 const sort = ref('next')
 const editing = ref(null)
+const { visible: editDisplayed, finishLeave: finishEditQueue } = useQueuedModal(editing)
 const editFormRef = ref(null)
 const editOverlayRef = ref(null)
 const savingEdit = ref(false)
@@ -146,7 +142,7 @@ watch(queryInput, (value) => {
     query.value = value
   }, 120)
 })
-watch(editing, async (value) => {
+watch(editDisplayed, async (value) => {
   if (!value) return
   if (!releaseEditBackgroundBlur) releaseEditBackgroundBlur = retainModalBlur()
   await nextTick()
@@ -162,6 +158,7 @@ function finishEditClose() {
   releaseEditBlur()
   restoreFocusedElement(editPreviousFocus)
   editPreviousFocus = null
+  finishEditQueue()
 }
 
 function onEditModalKeydown(event) {
@@ -583,14 +580,8 @@ onBeforeUnmount(() => {
               <span>选项</span>
               <div class="tp-filter-options">
                 <label>生成的便签是否置顶 <AppToggle v-model="pinnedOnly" /></label>
-                <label
-                  >模板通知
-                  <AppToggle v-model="notifyOnly" :disabled="!systemNotificationsSupported"
-                /></label>
+                <label>模板通知 <AppToggle v-model="notifyOnly" /></label>
               </div>
-              <p v-if="!systemNotificationsSupported" class="tp-notification-policy-note">
-                {{ systemNotificationUnavailableReason }}
-              </p>
             </div>
             <div class="tp-filter-row">
               <span>排序</span
@@ -636,7 +627,7 @@ onBeforeUnmount(() => {
   <Teleport to="body">
     <Transition name="tp-modal" @after-leave="finishEditClose">
       <div
-        v-if="editing"
+        v-if="editDisplayed"
         ref="editOverlayRef"
         class="tp-edit-overlay"
         data-modal-layer="template-editor"

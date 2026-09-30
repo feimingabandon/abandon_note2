@@ -7,6 +7,7 @@ import StyledSelect from '../ui/StyledSelect.vue'
 import { formatLogRecordText } from '../../utils/logRecordText.js'
 
 const props = defineProps({
+  queue: { type: Object, default: null },
   visible: { type: Boolean, default: false }
 })
 const emit = defineEmits(['update:visible'])
@@ -252,6 +253,7 @@ onBeforeUnmount(() => {
 
 <template>
   <AppModalShell
+    :queue="queue"
     :visible="visible"
     title="应用日志"
     :subtitle="fileSummary"

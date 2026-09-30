@@ -15,6 +15,7 @@ import DateTimePicker from '../ui/DateTimePicker.vue'
 import TagSelector from '../ui/TagSelector.vue'
 import ScreenshotPicker from '../note/ScreenshotPicker.vue'
 import NoteDurationField from '../note/NoteDurationField.vue'
+import ReminderChannelPicker from '../note/ReminderChannelPicker.vue'
 import AppToggle from '../ui/AppToggle.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import ColoredTextEditor from '../note/ColoredTextEditor.vue'
@@ -31,17 +32,11 @@ import {
 
 const emit = defineEmits(['create'])
 const props = defineProps({
+  draftKey: { type: String, default: 'new:list' },
   active: { type: Boolean, default: false }
 })
 
 const { showMessage } = useMessage()
-const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
-  supported: true,
-  reason: ''
-}
-const systemNotificationsSupported = systemNotificationCapability.supported
-const systemNotificationUnavailableReason = systemNotificationCapability.reason
-
 // ============================================================
 // 入场动效：按一级 DOM 顺序自动编排，组件常驻以保留草稿。
 // ============================================================
@@ -151,7 +146,7 @@ const effectiveAt = ref('') // "YYYY-MM-DD HH:mm:ss" 或空（空 = 立即生效
 const durationKind = ref(NOTE_DURATION_KINDS.SINGLE_DAY)
 const durationDays = ref(1)
 const tagIds = ref([]) // 仅保存用户自定义标签 ID；内容类型由正文和附件推导
-const notifyEnabled = ref(false) // 启用系统提醒开关
+const reminderChannels = ref(0) // 提醒方式多选
 const isPinned = ref(false) // 置顶开关
 const submitState = ref('idle') // idle | creating | success
 /** ScreenshotPicker 组件引用 */
@@ -168,11 +163,9 @@ const effectiveTimestamp = computed(() =>
 const isHistoricalBackfill = computed(
   () => Number.isFinite(effectiveTimestamp.value) && effectiveTimestamp.value <= Date.now()
 )
-/** 只有满足最小提前量的未来预约才能开启系统提醒。 */
-const canEnableNotify = computed(
-  () =>
-    systemNotificationsSupported &&
-    canScheduleNoteNotification(effectiveTimestamp.value, Date.now())
+/** 只有满足最小提前量的未来预约才能开启提醒。 */
+const canEnableNotify = computed(() =>
+  canScheduleNoteNotification(effectiveTimestamp.value, Date.now())
 )
 const canCreate = computed(() => Boolean(content.value.trim()) || draftImageCount.value > 0)
 const submitLabel = computed(() => {
@@ -197,9 +190,9 @@ const dateShortcuts = [
   { label: '明天', getValue: () => dateAtDefaultScheduleTime(1) }
 ]
 
-// 立即生效、历史补录或提前量不足时，强制关闭系统提醒。
+// 立即生效、历史补录或提前量不足时，强制关闭提醒。
 watch(effectiveAt, () => {
-  if (!canEnableNotify.value && notifyEnabled.value) notifyEnabled.value = false
+  if (!canEnableNotify.value && reminderChannels.value) reminderChannels.value = 0
 })
 
 // ============================================================
@@ -214,7 +207,7 @@ function resetForm() {
   durationKind.value = NOTE_DURATION_KINDS.SINGLE_DAY
   durationDays.value = 1
   tagIds.value = []
-  notifyEnabled.value = false
+  reminderChannels.value = 0
   isPinned.value = false
   imagePickerRef.value?.clearImages()
 }
@@ -273,7 +266,7 @@ async function handleCreate() {
       contentColorRanges: normalizeNoteTextColorRanges(contentColorRanges.value, text),
       durationKind: durationKind.value,
       durationDays: durationDays.value,
-      notifyEnabled: canEnableNotify.value && notifyEnabled.value ? 1 : 0,
+      reminderChannels: canEnableNotify.value ? reminderChannels.value : 0,
       isPinned: isPinned.value ? 1 : 0
     }
     if (effectiveAt.value) {
@@ -315,14 +308,14 @@ async function handleCreate() {
   }
 }
 const protectedDraft = useDraftProtection({
-  key: 'new:list',
+  key: props.draftKey,
   fields: {
     content,
     contentColorRanges,
     effectiveAt,
     durationKind,
     durationDays,
-    notifyEnabled,
+    reminderChannels,
     isPinned,
     tagIds
   },
@@ -330,13 +323,18 @@ const protectedDraft = useDraftProtection({
     !!content.value ||
     !!effectiveAt.value ||
     durationKind.value !== NOTE_DURATION_KINDS.SINGLE_DAY ||
-    notifyEnabled.value ||
+    reminderChannels.value ||
     isPinned.value ||
     tagIds.value.length > 0 ||
     (imagePickerRef.value?.getImages().length || 0) > 0,
   busy: () => submitState.value === 'creating' || attachmentsBusy.value,
   extra: () => ({ attachments: imagePickerRef.value?.getDraftChanges() }),
   restoreExtra: (data) => imagePickerRef.value?.restoreDraft(data.attachments)
+})
+defineExpose({
+  addCapture: (asset) => imagePickerRef.value?.addCapture(asset),
+  draftState: () => protectedDraft.flush(),
+  discard: () => protectedDraft.clear()
 })
 </script>
 
@@ -366,27 +364,18 @@ const protectedDraft = useDraftProtection({
         />
       </div>
       <p v-if="isHistoricalBackfill" class="nnp-platform-note">
-        历史补录将直接进入进行中，不发送系统提醒。
+        历史补录将直接进入进行中，不触发提醒。
       </p>
 
       <NoteDurationField v-model:kind="durationKind" v-model:days="durationDays" visible />
 
-      <!-- 启用系统提醒 -->
       <div class="nnp-notification-field">
-        <div class="nnp-field-row">
-          <label class="nnp-field-label"
-            >启用系统提醒<HelpButton
-              :text="
-                systemNotificationsSupported
-                  ? `仅未来至少 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟的预约可开启；历史补录不发送系统提醒。`
-                  : systemNotificationUnavailableReason
-              "
-          /></label>
-          <AppToggle v-model="notifyEnabled" :disabled="!canEnableNotify" />
-        </div>
-        <p v-if="!systemNotificationsSupported" class="nnp-platform-note">
-          {{ systemNotificationUnavailableReason }}
-        </p>
+        <ReminderChannelPicker
+          v-model="reminderChannels"
+          :disabled="!canEnableNotify"
+          :help-text="`仅未来至少 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟的预约可开启；稍后提醒不会改变生效时间。`"
+          disabled-reason="设置未来生效时间后可选择提醒方式"
+        />
       </div>
 
       <!-- 置顶 -->
@@ -497,9 +486,7 @@ const protectedDraft = useDraftProtection({
   flex-shrink: 0;
 }
 .nnp-notification-field {
-  display: flex;
-  flex-direction: column;
-  gap: 5rem;
+  margin-top: 12rem;
 }
 .nnp-platform-note {
   margin: 0;

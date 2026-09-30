@@ -1,0 +1,6 @@
+{
+  "source": "native_capture/build/bin/AbandonCapture.exe",
+  "sha256": "310F26894EA168C39709E75FB946E3C2B5D90468643C714DC5FA153BB0B08A85",
+  "verified": true,
+  "deployed": "native_capture/deploy/AbandonCapture.exe"
+}

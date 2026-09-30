@@ -14,7 +14,7 @@ describe('dock settings UI', () => {
   it('offers all three reveal modes and all three edges in the shared settings panel', () => {
     const source = readFileSync(SETTINGS_PANEL_PATH, 'utf8')
 
-    expect(source).toContain('<h3 class="section-title">贴边隐藏</h3>')
+    expect(source).toContain('<h4 class="section-title">贴边隐藏</h4>')
     expect(source).toContain('>隐藏后的唤出方式<HelpButton')
     expect(source).toContain('aria-label="隐藏后的唤出方式"')
     expect(source).toContain("label: '直接唤出'")
@@ -42,16 +42,16 @@ describe('dock settings UI', () => {
 
   it('reflows the three-mode selector against the settings panel width', () => {
     const source = readFileSync(SETTINGS_PANEL_PATH, 'utf8')
-    const dockSection = source.slice(source.indexOf('<h3 class="section-title">贴边隐藏</h3>'))
+    const dockSection = source.slice(source.indexOf('<h4 class="section-title">贴边隐藏</h4>'))
 
     expect(dockSection).toMatch(
       /<div class="setting-item dock-reveal-setting">[\s\S]*?>隐藏后的唤出方式<HelpButton/
     )
     expect(source).toContain('container-type: inline-size')
     expect(source).toContain('grid-template-columns: repeat(3, minmax(0, 1fr))')
-    expect(source).toContain('@container (max-width: 300px)')
+    expect(source).toContain('@container (max-width: 340px)')
     expect(source).toMatch(
-      /@container \(max-width: 300px\)[\s\S]*?\.dock-reveal-mode-selector\s*{[\s\S]*?grid-template-columns:\s*1fr/
+      /@container \(max-width: 340px\)[\s\S]*?\.dock-reveal-setting \.setting-right\s*{[\s\S]*?width:\s*100%/
     )
   })
 

@@ -1,0 +1,2 @@
+
+{"status":"passed","assertions":["single prewarmed helper","theme command survives","IPC loss exit","restart","explicit shutdown","atomic Job owner death"]}

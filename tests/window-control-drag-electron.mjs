@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
@@ -174,31 +175,49 @@ async function run() {
           await js(
             `window.api.setSettingValue('interaction.hideMainViewDuringScreenshot', ${hideMain})`
           )
-          await js(`window.__captureResult = 'pending';
-            void window.api.captureScreen().then(result => { window.__captureResult = result })`)
-          const overlay = await until(
-            () =>
-              BrowserWindow.getAllWindows().find(
-                (candidate) =>
-                  candidate !== window &&
-                  !candidate.isDestroyed() &&
-                  candidate.webContents.getURL().startsWith('data:text/html')
-              ),
-            `${label}: screenshot overlay missing`
-          )
-          await until(() => overlay.isVisible(), `${label}: screenshot overlay not ready`)
-          assert.equal(window.isVisible(), !hideMain, label)
-          assert.equal(hooks.getDockRuntimeState().screenshotCaptureActive, true, label)
-          assert.equal(hooks.getDockRuntimeState().interactionSuspendCount, 1, label)
-          hooks.triggerViewVisibilityShortcut()
-          assert.equal(window.isVisible(), !hideMain, `${label}: shortcut interrupted screenshot`)
-          overlay.webContents.forcefullyCrashRenderer()
-          await until(
-            () => js('window.__captureResult === null'),
-            `${label}: screenshot remained pending`
-          )
+          const coordinator = hooks.captureCoordinator()
+          const token = randomUUID()
+          let ready = false
+          const errors = []
+          const originalError = coordinator.onError
+          const observe = (message) => {
+            if (message.type === 'captureReady' && message.sessionId === coordinator.active?.id)
+              ready = true
+          }
+          coordinator.host.on('message', observe)
+          coordinator.onError = (message) => errors.push(message)
+          try {
+            const started = await js(`(() => {
+              window.__captureResult = null
+              window.__captureStop = window.api.onScreenshotFinished(result => {
+                if (result.token === ${JSON.stringify(token)}) window.__captureResult = result
+              })
+              return window.api.captureScreen({ token: ${JSON.stringify(token)}, origin: 'note' })
+            })()`)
+            assert.equal(started.status, 'started', label)
+            await until(() => ready, `${label}: Qt screenshot desktop not ready`)
+            assert.equal(window.isVisible(), !hideMain, label)
+            assert.equal(hooks.getDockRuntimeState().screenshotCaptureActive, true, label)
+            assert.equal(hooks.getDockRuntimeState().interactionSuspendCount, 1, label)
+            hooks.triggerViewVisibilityShortcut()
+            assert.equal(window.isVisible(), !hideMain, `${label}: shortcut interrupted screenshot`)
+            const pid = coordinator.host.pid
+            assert.ok(pid > 0)
+            process.kill(pid) // Only the helper launched by this isolated test.
+            await until(
+              () => js("window.__captureResult?.status === 'failed'"),
+              `${label}: screenshot remained pending`
+            )
+            await until(() => errors.length > 0, `${label}: Qt crash not reported`)
+            assert.equal(coordinator.active, null, label)
+            assert.equal(coordinator.host.ready, false, label)
+          } finally {
+            coordinator.cancel()
+            coordinator.host.removeListener('message', observe)
+            coordinator.onError = originalError
+            await js('window.__captureStop?.(); delete window.__captureStop')
+          }
           await until(() => window.isVisible(), `${label}: main view not restored`)
-          assert.equal(overlay.isDestroyed(), true, label)
           const state = hooks.getDockRuntimeState()
           assert.equal(state.screenshotCaptureActive, false, label)
           assert.equal(state.interactionSuspendCount, 0, label)

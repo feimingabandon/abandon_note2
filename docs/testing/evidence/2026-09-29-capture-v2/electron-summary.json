@@ -1,0 +1,30 @@
+[
+  {
+    "id": "tests/capture-lifecycle-electron.mjs",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/capture-lifecycle-electron.mjs"
+    ],
+    "startedAt": "2026-09-29T03:40:48.835Z",
+    "durationMs": 1365,
+    "code": 0,
+    "signal": null,
+    "launchError": null,
+    "status": "passed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\tmp\\test-runs\\2026-09-29T03-40-48-831Z-F2IEJV\\tests_capture-lifecycle-electron.mjs"
+  },
+  {
+    "id": "tests/capture-business-electron.mjs",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/capture-business-electron.mjs"
+    ],
+    "startedAt": "2026-09-29T03:40:50.220Z",
+    "durationMs": 5415,
+    "code": 0,
+    "signal": null,
+    "launchError": null,
+    "status": "passed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\tmp\\test-runs\\2026-09-29T03-40-48-831Z-F2IEJV\\tests_capture-business-electron.mjs"
+  }
+]

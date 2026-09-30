@@ -1,0 +1,26 @@
+适用于 .NET Framework MSBuild 版本 18.7.8+1ac568fee
+
+  Automatic MOC for target capture_core
+  capture_core.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_core.lib
+  Automatic MOC for target capture_ui
+  CaptureAppearance.cpp
+  capture_ui.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_ui.lib
+  Automatic MOC for target capture_ux_tests
+  ux_test.cpp
+  capture_ux_tests.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\capture_ux_tests.exe
+适用于 .NET Framework MSBuild 版本 18.7.8+1ac568fee
+
+  Automatic MOC for target capture_core
+  capture_core.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_core.lib
+  Automatic MOC for target capture_ui
+  capture_ui.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_ui.lib
+  Automatic MOC for target capture_ui_tests
+  capture_ui_tests.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\capture_ui_tests.exe
+适用于 .NET Framework MSBuild 版本 18.7.8+1ac568fee
+
+  Automatic MOC for target capture_core
+  capture_core.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_core.lib
+  Automatic MOC for target capture_ui
+  capture_ui.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_ui.lib
+  Automatic MOC for target AbandonCapture
+  AbandonCapture.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\AbandonCapture.exe

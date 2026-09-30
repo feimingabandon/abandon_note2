@@ -1,0 +1,21 @@
+********* Start testing of PinHaloTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : PinHaloTest::initTestCase()
+FAIL!  : PinHaloTest::contentGeometryAndExport() '!nativeRect(*edge).intersects(nativeRect(pin))' returned FALSE. ()
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(59) : failure location
+QWARN  : PinHaloTest::followsGeometryAndViewState() QWindowsWindow::setGeometry: Unable to set geometry 485x18+283+258 (frame: 485x18+283+258) on QWidgetWindow/"QWidgetClassWindow" on "G24H3SClassic". Resulting geometry: 486x18+282+257 (frame: 486x18+282+257) margins: 0, 0, 0, 0)
+QWARN  : PinHaloTest::followsGeometryAndViewState() QWindowsWindow::setGeometry: Unable to set geometry 485x18+283+475 (frame: 485x18+283+475) on QWidgetWindow/"QWidgetClassWindow" on "G24H3SClassic". Resulting geometry: 486x18+282+475 (frame: 486x18+282+475) margins: 0, 0, 0, 0)
+QWARN  : PinHaloTest::followsGeometryAndViewState() QWindowsWindow::setGeometry: Unable to set geometry 18x200+283+275 (frame: 18x200+283+275) on QWidgetWindow/"QWidgetClassWindow" on "G24H3SClassic". Resulting geometry: 18x200+282+275 (frame: 18x200+282+275) margins: 0, 0, 0, 0)
+QWARN  : PinHaloTest::followsGeometryAndViewState() QWindowsWindow::setGeometry: Unable to set geometry 560x18+283+258 (frame: 560x18+283+258) on QWidgetWindow/"QWidgetClassWindow" on "G24H3SClassic". Resulting geometry: 561x18+282+257 (frame: 561x18+282+257) margins: 0, 0, 0, 0)
+QWARN  : PinHaloTest::followsGeometryAndViewState() QWindowsWindow::setGeometry: Unable to set geometry 560x18+283+513 (frame: 560x18+283+513) on QWidgetWindow/"QWidgetClassWindow" on "G24H3SClassic". Resulting geometry: 561x18+282+513 (frame: 561x18+282+513) margins: 0, 0, 0, 0)
+QWARN  : PinHaloTest::followsGeometryAndViewState() QWindowsWindow::setGeometry: Unable to set geometry 18x238+283+275 (frame: 18x238+283+275) on QWidgetWindow/"QWidgetClassWindow" on "G24H3SClassic". Resulting geometry: 18x238+282+275 (frame: 18x238+282+275) margins: 0, 0, 0, 0)
+FAIL!  : PinHaloTest::followsGeometryAndViewState() Compared values are not the same
+   Actual   (nativeRect(*edges[0]).y() + nativeRect(*edges[0]).height()): 276
+   Expected (content.y())                                               : 275
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(73) : failure location
+PASS   : PinHaloTest::hideRestoreAndDestroy()
+PASS   : PinHaloTest::nativeOwnershipHitTestingAndDetection()
+PASS   : PinHaloTest::glowFalloffAndVisualEvidence()
+PASS   : PinHaloTest::cleanupTestCase()
+Totals: 5 passed, 2 failed, 0 skipped, 0 blacklisted, 365ms
+********* Finished testing of PinHaloTest *********

@@ -11,7 +11,10 @@ import {
   MAX_CALENDAR_DATE,
   parseDateKey
 } from '../../../../shared/calendar/calendar-date-rules.js'
-const props = defineProps({ visible: { type: Boolean, default: false } })
+const props = defineProps({
+  queue: { type: Object, default: null },
+  visible: { type: Boolean, default: false }
+})
 const emit = defineEmits(['update:visible'])
 const today = useTodayKey()
 const date = ref(today.value)
@@ -51,6 +54,7 @@ watch(today, (value) => {
 </script>
 <template>
   <AppModalShell
+    :queue="queue"
     :visible="visible"
     title="万年历"
     subtitle="农历 · 节气 · 传统黄历"

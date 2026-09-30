@@ -5,6 +5,13 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow, screen } from 'electron'
+import koffi from 'koffi'
+
+const setCursor = koffi.load('user32.dll').func('int SetCursorPos(int X, int Y)')
+function positionCursor(point) {
+  const physical = screen.dipToScreenPoint(point)
+  assert.ok(setCursor(physical.x, physical.y), 'test cursor could not be positioned')
+}
 
 const root =
   process.env.ABANDON_TEST_USER_DATA || mkdtempSync(join(tmpdir(), 'abandon-titlebar-native-drag-'))
@@ -54,6 +61,7 @@ const timeout = setTimeout(() => app.exit(1), 90_000)
 
 async function run() {
   let exitCode = 0
+  const originalCursor = screen.getCursorScreenPoint()
   try {
     const window = await until(
       () =>
@@ -115,6 +123,11 @@ async function run() {
         )
         const start = window.getBounds()
         const origin = { x: start.x + point.x, y: start.y + point.y }
+        // Repositioning an HWND may generate a native move at the real cursor.
+        // Keep that cursor aligned with Chromium input so it cannot replace the
+        // synthetic drag point with the pointer left by the preceding test.
+        positionCursor(origin)
+        await wait(40)
         window.webContents.sendInputEvent({
           type: 'mouseMove',
           ...point,
@@ -132,6 +145,7 @@ async function run() {
         await wait(60)
         for (const delta of [8, 24, 56, 96, 140]) {
           const current = window.getBounds()
+          positionCursor({ x: origin.x + delta, y: origin.y + Math.round(delta / 2) })
           window.webContents.sendInputEvent({
             type: 'mouseMove',
             x: origin.x + delta - current.x,
@@ -231,6 +245,7 @@ async function run() {
     console.error(error)
     exitCode = 1
   } finally {
+    positionCursor(originalCursor)
     clearTimeout(timeout)
     app.once('quit', () => process.exit(exitCode))
     app.quit()

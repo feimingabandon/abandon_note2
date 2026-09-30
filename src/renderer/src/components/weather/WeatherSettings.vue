@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import AppToggle from '../ui/AppToggle.vue'
 import BaseButton from '../ui/BaseButton.vue'
+import HelpButton from '../ui/HelpButton.vue'
 import ChinaAreaCascader from './ChinaAreaCascader.vue'
 import {
   normalizeWeatherLocation,
@@ -325,10 +326,9 @@ onMounted(() =>
   <div class="weather-settings">
     <div class="setting-item">
       <div class="setting-left">
-        <span class="setting-label">显示天气</span>
-        <span class="setting-hint-caption"
-          >窗口显示时每 30 分钟更新，恢复窗口后检查时效，也可手动更新</span
-        >
+        <span class="setting-label"
+          >显示天气<HelpButton text="窗口显示时每 30 分钟更新，恢复窗口后检查时效，也可手动更新。"
+        /></span>
       </div>
       <div class="setting-right">
         <AppToggle
@@ -339,25 +339,34 @@ onMounted(() =>
       </div>
     </div>
 
-    <div class="setting-item">
+    <div class="setting-item" data-search-text="当前地区 选择地区">
       <div class="setting-left">
-        <span class="setting-label">当前地区</span>
+        <span class="setting-label"
+          >当前地区<HelpButton
+            :text="
+              location
+                ? `${locationLabel}；坐标 ${location.latitude}, ${location.longitude}。位置只保存在本机。`
+                : '请选择地区。位置只保存在本机。'
+            "
+        /></span>
       </div>
       <div class="setting-right weather-settings__current-location">
-        <span class="setting-value">{{ locationLabel }}</span>
-        <span class="setting-hint-caption">
-          {{ location ? `${location.latitude}, ${location.longitude}` : '位置只保存在本机' }}
-        </span>
+        <ChinaAreaCascader
+          :options="divisionTree"
+          :display-value="locationLabel === '未设置' ? '' : locationLabel"
+          :disabled="Boolean(busy)"
+          :title="locationLabel"
+          @complete="choose"
+        />
       </div>
     </div>
 
-    <div class="weather-settings__picker">
-      <ChinaAreaCascader
-        :options="divisionTree"
-        :display-value="locationLabel === '未设置' ? '' : locationLabel"
-        :disabled="Boolean(busy)"
-        @complete="choose"
-      />
+    <div
+      class="setting-item weather-settings__picker"
+      data-settings-search-item
+      data-search-text="选择地区 使用设备位置 定位"
+    >
+      <div class="setting-left"><span class="setting-label">设备位置</span></div>
       <BaseButton size="sm" :disabled="Boolean(busy)" @click.prevent="useDeviceLocation">
         {{ busy === 'locate' ? '定位中…' : '使用设备位置' }}
       </BaseButton>
@@ -371,14 +380,14 @@ onMounted(() =>
 <style scoped>
 .weather-settings .setting-item {
   display: flex;
-  min-height: 45rem;
+  min-height: max(40px, 2.85em);
   align-items: center;
   justify-content: space-between;
-  gap: 16rem;
-  padding: 10rem 14rem;
-  border-radius: 10rem;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 8rem;
   background: var(--ui-surface-subtle);
-  margin-bottom: 4rem;
+  margin-bottom: 2rem;
 }
 .weather-settings .setting-left {
   display: flex;
@@ -394,11 +403,14 @@ onMounted(() =>
   justify-content: flex-end;
 }
 .weather-settings__current-location {
-  max-width: 72%;
-  align-items: flex-end;
-  flex-direction: column;
-  gap: 3rem;
+  width: 156px;
+  max-width: 58%;
   text-align: right;
+}
+.weather-settings__current-location :deep(.china-area-cascader__trigger) {
+  min-height: 26px;
+  padding: 3px 7px;
+  font-size: var(--fs-secondary);
 }
 .weather-settings .setting-label {
   color: var(--text-color);
@@ -412,16 +424,8 @@ onMounted(() =>
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.weather-settings__picker {
-  display: flex;
-  align-items: center;
-  gap: 7rem;
-  padding: 8rem 14rem;
-  border-radius: 10rem;
-  background: var(--ui-surface-subtle);
-}
 .weather-settings__picker :deep(.base-btn) {
-  min-height: 34rem;
+  min-height: 26px;
   flex: 0 0 auto;
   white-space: nowrap;
 }

@@ -6,6 +6,7 @@ import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import MarkdownContent from '../markdown/MarkdownContent.vue'
 
 const props = defineProps({
+  queue: { type: Object, default: null },
   visible: { type: Boolean, default: false },
   checking: { type: Boolean, default: false },
   result: { type: Object, default: null }
@@ -14,21 +15,31 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'retry'])
 
 const actionError = ref('')
+const copyFeedback = ref('')
+const copyFailed = ref(false)
+let copyRequestId = 0
 const confirmVisible = ref(false)
 const pendingTarget = ref(null)
 
-const manualLinks = computed(() => [
-  {
-    target: 'gitcode',
-    label: 'GitCode',
-    url: props.result?.releaseLinks?.gitcode || ''
-  },
-  {
-    target: 'github',
-    label: 'GitHub',
-    url: props.result?.releaseLinks?.github || ''
-  }
-])
+const manualLinks = computed(() =>
+  [
+    {
+      target: 'download',
+      label: 'GitCode 安装包',
+      url: props.result?.downloadAvailable ? props.result.downloadUrl : ''
+    },
+    {
+      target: 'gitcode',
+      label: 'GitCode 发布页',
+      url: props.result?.releaseLinks?.gitcode
+    },
+    {
+      target: 'github',
+      label: 'GitHub 发布页',
+      url: props.result?.releaseLinks?.github
+    }
+  ].filter((link) => link.url)
+)
 
 const title = computed(() => {
   if (props.checking) return '正在检查更新'
@@ -98,6 +109,12 @@ const contentKey = computed(() => {
   return `${props.result?.status || 'idle'}-${props.result?.latestVersion || 'none'}`
 })
 
+watch([() => props.result, () => props.visible, () => props.checking], () => {
+  copyRequestId += 1
+  copyFeedback.value = ''
+  copyFailed.value = false
+})
+
 watch(
   () => props.result?.checkId,
   () => {
@@ -133,7 +150,23 @@ async function openUpdateTargetNow(target, label) {
     })
   } catch (error) {
     console.error(`[UpdateDialog] 打开${label}失败:`, error)
-    actionError.value = `无法打开${label}：${error.message}`
+    actionError.value = `无法打开${label}。请复制“手动下载”中的链接，粘贴到浏览器中下载。`
+  }
+}
+
+async function copyUpdateLink(link) {
+  const requestId = ++copyRequestId
+  copyFeedback.value = ''
+  copyFailed.value = false
+  try {
+    await window.api.writeClipboardText(link.url)
+    if (requestId !== copyRequestId) return
+    copyFeedback.value = `${link.label}链接已复制，可粘贴到浏览器中下载。`
+  } catch (error) {
+    console.error(`[UpdateDialog] 复制${link.label}链接失败:`, error)
+    if (requestId !== copyRequestId) return
+    copyFailed.value = true
+    copyFeedback.value = '复制失败，请选中下方完整链接，按 Ctrl+C 手动复制。'
   }
 }
 
@@ -155,6 +188,7 @@ function confirmOpenUpdateTarget() {
 
 <template>
   <AppModalShell
+    :queue="queue"
     :visible="visible"
     :title="title"
     eyebrow="Abandon Note"
@@ -223,23 +257,47 @@ function confirmOpenUpdateTarget() {
               </span>
             </section>
 
-            <section class="manual-section" aria-labelledby="manual-download-heading">
+            <section
+              v-if="manualLinks.length"
+              class="manual-section"
+              aria-labelledby="manual-download-heading"
+            >
               <div class="section-heading">
                 <strong id="manual-download-heading">手动下载</strong>
-                <span>进入 v{{ result.latestVersion }} 的发布页面查看说明或选择附件</span>
+                <span>无法打开浏览器时，可复制或选中完整链接，粘贴到浏览器中下载。</span>
               </div>
+              <p
+                v-if="copyFeedback"
+                class="copy-feedback"
+                :class="{ 'copy-feedback--error': copyFailed }"
+                role="status"
+              >
+                {{ copyFeedback }}
+              </p>
               <div class="manual-actions">
-                <button
-                  v-for="link in manualLinks"
-                  :key="link.target"
-                  class="manual-link"
-                  :title="`在浏览器中打开 ${link.label} v${result.latestVersion} 发布页`"
-                  @click="requestOpenUpdateTarget(link.target, `${link.label} 发布页`)"
-                >
-                  <span class="manual-link-label">{{ link.label }}：</span>
+                <div v-for="link in manualLinks" :key="link.target" class="manual-link">
+                  <div class="manual-link-heading">
+                    <strong class="manual-link-label">{{ link.label }}</strong>
+                    <div class="manual-link-actions">
+                      <BaseButton
+                        v-if="link.target !== 'download'"
+                        size="sm"
+                        :aria-label="`打开${link.label}`"
+                        @click="requestOpenUpdateTarget(link.target, link.label)"
+                      >
+                        打开 ↗
+                      </BaseButton>
+                      <BaseButton
+                        size="sm"
+                        :aria-label="`复制${link.label}链接`"
+                        @click="copyUpdateLink(link)"
+                      >
+                        复制链接
+                      </BaseButton>
+                    </div>
+                  </div>
                   <span class="manual-link-url">{{ link.url }}</span>
-                  <span class="manual-link-arrow" aria-hidden="true">↗</span>
-                </button>
+                </div>
               </div>
             </section>
           </template>
@@ -451,33 +509,28 @@ function confirmOpenUpdateTarget() {
 }
 
 .manual-link {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 4rem;
-  width: 100%;
-  min-height: 38rem;
-  padding: 8rem 10rem;
-  border: 1px solid var(--ui-border-control);
-  border-radius: 9rem;
-  color: var(--ui-accent);
-  background: var(--ui-surface-control);
-  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 6rem;
+  min-width: 0;
+  padding: 10rem 0;
   font-size: var(--fs-secondary);
-  text-align: left;
-  cursor: pointer;
-  transition:
-    border-color var(--motion-fast) ease,
-    background-color var(--motion-fast) ease,
-    transform var(--motion-control) var(--ease-standard);
 }
 
-.manual-link:hover {
-  border-color: var(--ui-accent);
+.manual-link + .manual-link {
+  border-top: 1px solid var(--ui-border-divider);
 }
 
-.manual-link:active {
-  transform: scale(0.98);
+.manual-link-heading,
+.manual-link-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6rem;
+}
+
+.manual-link-heading {
+  justify-content: space-between;
 }
 
 .manual-link-label {
@@ -485,13 +538,23 @@ function confirmOpenUpdateTarget() {
 }
 
 .manual-link-url {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  color: var(--text-color-secondary);
+  line-height: 1.5;
+  cursor: text;
+  user-select: text;
 }
 
-.manual-link-arrow {
-  font-size: var(--fs-body);
+.copy-feedback {
+  margin: 0;
+  color: var(--ui-accent);
+  font-size: var(--fs-secondary);
+  line-height: 1.5;
+}
+
+.copy-feedback--error {
+  color: var(--ui-danger);
 }
 
 .unsupported-card {

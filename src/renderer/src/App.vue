@@ -1,5 +1,6 @@
 <script setup>
 import EditingDraftDialog from './components/system/EditingDraftDialog.vue'
+import CaptureDelivery from './components/capture/CaptureDelivery.vue'
 import { editingDataGeneration } from './composables/useDraftProtection.js'
 import { defineAsyncComponent } from 'vue'
 /**
@@ -30,6 +31,7 @@ import UpdateDialog from './components/system/UpdateDialog.vue'
 import RemoteNoticeDialog from './components/system/RemoteNoticeDialog.vue'
 import FirstUseNoticeDialog from './components/system/FirstUseNoticeDialog.vue'
 import HolidayDataNoticeDialog from './components/system/HolidayDataNoticeDialog.vue'
+import ShortcutConflictDialog from './components/system/ShortcutConflictDialog.vue'
 import DailyReportDialog from './components/report/DailyReportDialog.vue'
 import DailyReportButton from './components/report/DailyReportButton.vue'
 import AppIcon from './components/ui/AppIcon.vue'
@@ -42,6 +44,7 @@ import { createMessageProvider } from './composables/useMessage.js' // 消息能
 import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
 import { retainModalBlur } from './utils/modalBlur.js'
+import { useQueuedModal, useModalRequest } from './composables/useQueuedModal.js'
 import { useTodayKey } from './composables/useTodayKey.js'
 import { usePresentationMode } from './composables/usePresentationMode.js'
 import { createQuickNoteEditSettingProvider } from './composables/useQuickNoteEditSetting.js'
@@ -66,13 +69,20 @@ const presentationMode = usePresentationMode()
 
 /** 设置面板显隐状态 */
 const showSettings = ref(false)
-const showUpdateDialog = ref(false)
-const showRemoteNoticeDialog = ref(false)
-const showFirstUseNotice = ref(false)
-const showHolidayDataNoticeDialog = ref(false)
-const showDailyReportDialog = ref(false)
-const showAlmanac = ref(false)
+const updateQueue = useModalRequest()
+const showUpdateDialog = updateQueue.requested
+const noticeQueue = useModalRequest()
+const showRemoteNoticeDialog = noticeQueue.requested
+const firstUseQueue = useModalRequest()
+const showFirstUseNotice = firstUseQueue.requested
+const holidayQueue = useModalRequest()
+const showHolidayDataNoticeDialog = holidayQueue.requested
+const reportQueue = useModalRequest()
+const showDailyReportDialog = reportQueue.requested
+const almanacQueue = useModalRequest()
+const showAlmanac = almanacQueue.requested
 const pendingHolidayDataNotice = ref(null)
+const showShortcutNotice = ref(false)
 const holidayNoticeTodayKey = useTodayKey()
 const pendingRemoteNotices = ref([])
 const updateChecking = ref(false)
@@ -106,22 +116,14 @@ let releaseEditorBackgroundBlur = null
 async function loadPendingRemoteNotices({ show = false } = {}) {
   try {
     pendingRemoteNotices.value = await window.api.listPendingRemoteNotices()
-    if (show && !showFirstUseNotice.value && pendingRemoteNotices.value.length) {
-      showRemoteNoticeDialog.value = true
-    }
+    if (show) showRemoteNoticeDialog.value = pendingRemoteNotices.value.length > 0
   } catch (error) {
     console.warn('[App] 读取未确认通知失败:', error)
   }
 }
 
 function maybeShowHolidayDataNotice() {
-  if (
-    pendingHolidayDataNotice.value?.required &&
-    !showFirstUseNotice.value &&
-    !showRemoteNoticeDialog.value &&
-    !showSettings.value &&
-    !showUpdateDialog.value
-  ) {
+  if (pendingHolidayDataNotice.value?.required) {
     showHolidayDataNoticeDialog.value = true
   }
 }
@@ -154,29 +156,12 @@ async function dismissHolidayDataNotice({ openSettingsAfter = false } = {}) {
 
 function closeRemoteNoticeDialog() {
   showRemoteNoticeDialog.value = false
-  maybeShowHolidayDataNotice()
 }
 
 function onRemoteNoticeAcknowledged(id) {
   pendingRemoteNotices.value = pendingRemoteNotices.value.filter((notice) => notice.id !== id)
   if (!pendingRemoteNotices.value.length) {
     showRemoteNoticeDialog.value = false
-    maybeShowHolidayDataNotice()
-  }
-}
-
-function showNextStartupNotice() {
-  if (pendingRemoteNotices.value.length) {
-    showRemoteNoticeDialog.value = true
-    return
-  }
-  maybeShowHolidayDataNotice()
-  if (
-    !showHolidayDataNoticeDialog.value &&
-    updateResult.value?.status === 'available' &&
-    !showUpdateDialog.value
-  ) {
-    showUpdateDialog.value = true
   }
 }
 
@@ -189,7 +174,6 @@ function onFirstUseCompleted({ route } = {}) {
       : '感谢你选择 Abandon 便签。你的使用，就是对我最大的肯定。',
     4200
   )
-  setTimeout(showNextStartupNotice, 240)
 }
 
 function openSettings() {
@@ -215,13 +199,7 @@ async function checkForUpdates({ showResult = true } = {}) {
   if (showResult) showUpdateDialog.value = true
   try {
     updateResult.value = await window.api.checkForUpdate()
-    if (
-      !showResult &&
-      updateResult.value?.status === 'available' &&
-      !showFirstUseNotice.value &&
-      !showHolidayDataNoticeDialog.value &&
-      !showRemoteNoticeDialog.value
-    ) {
+    if (!showResult && updateResult.value?.status === 'available') {
       showUpdateDialog.value = true
     }
   } catch (error) {
@@ -285,6 +263,7 @@ function toggleHelp() {
 
 /** 当前选中的便签 */
 const selectedNote = ref(null)
+const { visible: editorDisplayed, finishLeave: finishEditorQueue } = useQueuedModal(selectedNote)
 const noteEditorRef = ref(null)
 const noteEditorOverlayRef = ref(null)
 let noteEditorPreviousFocus = null
@@ -311,6 +290,7 @@ const compactBlocked = computed(
     showUpdateDialog.value ||
     showRemoteNoticeDialog.value ||
     showHolidayDataNoticeDialog.value ||
+    showShortcutNotice.value ||
     showDailyReportDialog.value ||
     showAlmanac.value ||
     templateInteractive.value ||
@@ -368,13 +348,7 @@ function revealFirstUseNoticeFromSnapshot(snapshot) {
   const pending = (snapshot?.values?.onboarding?.noticeVersion ?? 0) < FIRST_USE_NOTICE_VERSION
   if (!pending || showFirstUseNotice.value) return
 
-  // 恢复默认可能发生在设置面板内。首次须知使用更高的全局模态层覆盖设置面板，
-  // 阅读完成后用户仍可回到原来的设置上下文。
-  showUpdateDialog.value = false
-  showRemoteNoticeDialog.value = false
-  showHolidayDataNoticeDialog.value = false
-  showDailyReportDialog.value = false
-  showAlmanac.value = false
+  // 恢复默认后的须知也排队，不清除正在处理或等待中的业务弹窗。
   showFirstUseNotice.value = true
 }
 
@@ -491,10 +465,7 @@ async function onEditNote(note) {
   try {
     const fullNote = await window.api.getNote(note.id)
     if (!fullNote) throw new Error('便签不存在或已删除')
-    if (!releaseEditorBackgroundBlur) releaseEditorBackgroundBlur = retainModalBlur()
     selectedNote.value = fullNote
-    await nextTick()
-    focusModal(noteEditorOverlayRef.value)
   } catch (error) {
     if (openingFresh) {
       restoreFocusedElement(noteEditorPreviousFocus)
@@ -517,7 +488,16 @@ function finishEditorClose() {
   releaseEditorBlur()
   restoreFocusedElement(noteEditorPreviousFocus)
   noteEditorPreviousFocus = null
+  finishEditorQueue()
 }
+
+watch(editorDisplayed, async (visible) => {
+  if (!visible) return
+  noteEditorPreviousFocus = captureFocusedElement()
+  if (!releaseEditorBackgroundBlur) releaseEditorBackgroundBlur = retainModalBlur()
+  await nextTick()
+  if (editorDisplayed.value) focusModal(noteEditorOverlayRef.value)
+})
 
 function onEditorKeydown(event) {
   if (event.key === 'Escape') {
@@ -599,6 +579,7 @@ onUnmounted(() => {
           showUpdateDialog ||
           showRemoteNoticeDialog ||
           showHolidayDataNoticeDialog ||
+          showShortcutNotice ||
           showDailyReportDialog ||
           showAlmanac
         "
@@ -613,7 +594,7 @@ onUnmounted(() => {
           <!-- 设置和帮助按钮组 -->
           <TitlebarActions :style-variant="titlebarStyle">
             <ViewSwitcher :active-view="VIEW_MODES.LIST" :style-variant="titlebarStyle" />
-            <AlmanacLauncher v-model:visible="showAlmanac" />
+            <AlmanacLauncher v-model:visible="showAlmanac" :queue="almanacQueue" />
             <DailyReportButton @open="openDailyReport" />
             <button
               class="titlebar-btn titlebar-btn-template"
@@ -707,7 +688,7 @@ onUnmounted(() => {
     <!-- 便签编辑弹窗：复用 NoteEditor，底层列表保持可见但不可交互。 -->
     <Transition name="app-editor-modal" @after-leave="finishEditorClose">
       <div
-        v-if="selectedNote"
+        v-if="editorDisplayed"
         ref="noteEditorOverlayRef"
         class="app-editor-overlay"
         data-modal-layer="note-editor"
@@ -741,6 +722,11 @@ onUnmounted(() => {
     </Transition>
 
     <!-- 设置面板关闭动画结束后将 visible 置为 false，随后真正卸载组件。 -->
+    <CaptureDelivery @created="onCreateNote" />
+    <ShortcutConflictDialog
+      v-model:visible="showShortcutNotice"
+      @open-settings="showSettings = true"
+    />
     <SettingsPanel
       v-if="showSettings"
       v-model:visible="showSettings"
@@ -750,12 +736,14 @@ onUnmounted(() => {
 
     <FirstUseNoticeDialog
       v-if="showFirstUseNotice"
+      :queue="firstUseQueue"
       :visible="showFirstUseNotice"
       @completed="onFirstUseCompleted"
     />
 
     <UpdateDialog
       v-model:visible="showUpdateDialog"
+      :queue="updateQueue"
       :checking="updateChecking"
       :result="updateResult"
       @retry="checkForUpdates({ showResult: true })"
@@ -763,6 +751,7 @@ onUnmounted(() => {
 
     <RemoteNoticeDialog
       v-if="showRemoteNoticeDialog && pendingRemoteNotices.length"
+      :queue="noticeQueue"
       :notices="pendingRemoteNotices"
       @close="closeRemoteNoticeDialog"
       @acknowledged="onRemoteNoticeAcknowledged"
@@ -770,13 +759,14 @@ onUnmounted(() => {
 
     <HolidayDataNoticeDialog
       v-if="pendingHolidayDataNotice"
+      :queue="holidayQueue"
       :visible="showHolidayDataNoticeDialog"
       :year="pendingHolidayDataNotice.year"
       @dismiss="dismissHolidayDataNotice()"
       @open-settings="dismissHolidayDataNotice({ openSettingsAfter: true })"
     />
 
-    <DailyReportDialog v-model:visible="showDailyReportDialog" />
+    <DailyReportDialog v-model:visible="showDailyReportDialog" :queue="reportQueue" />
 
     <!-- 应用内消息弹窗（Apple 风格 Toast，固定顶部居中） -->
     <EditingDraftDialog />

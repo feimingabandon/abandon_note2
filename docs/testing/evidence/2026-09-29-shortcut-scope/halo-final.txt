@@ -1,0 +1,14 @@
+********* Start testing of PinHaloTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : PinHaloTest::initTestCase()
+QINFO  : PinHaloTest::contentGeometryAndExport() Pin DPR: 1
+PASS   : PinHaloTest::contentGeometryAndExport()
+PASS   : PinHaloTest::followsGeometryAndViewState()
+PASS   : PinHaloTest::hideRestoreAndDestroy()
+SKIP   : PinHaloTest::nativeOwnershipHitTestingAndDetection() Interactive desktop is locked; native hit testing needs an unlocked session
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(148) : failure location
+PASS   : PinHaloTest::clippedPerimeterAndResourceCleanup()
+PASS   : PinHaloTest::glowFalloffAndVisualEvidence()
+PASS   : PinHaloTest::cleanupTestCase()
+Totals: 7 passed, 0 failed, 1 skipped, 0 blacklisted, 547ms
+********* Finished testing of PinHaloTest *********

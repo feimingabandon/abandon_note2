@@ -18,6 +18,23 @@ describe('main-window z-order transaction wiring', () => {
     expect(transition).toContain("writeApplicationSetting('window.zOrderMode', previousMode)")
     expect(transition).toContain("logger.error('window.z-order-rollback'")
     expect(transition).toContain("logger.error('window.z-order-persistence-rollback'")
+    expect(transition).toContain('pendingWindowZOrderMode = normalized')
+    expect(transition).toContain('pendingWindowZOrderMode = previousMode')
+    expect(transition).toContain('pendingWindowZOrderMode = null')
+  })
+
+  it('preserves the pending layer across settings refreshes and verifies the bottom controller', () => {
+    const source = readFileSync(MAIN_PATH, 'utf8')
+    expect(source).toContain('pendingWindowZOrderMode ?? resolvedSettings.window.zOrderMode')
+    const confirm = source.slice(
+      source.indexOf('async function confirmWindowZOrder('),
+      source.indexOf('async function persistWindowZOrderMode(')
+    )
+    expect(confirm).toContain('getWindowZOrderStatus(window)')
+    expect(confirm).toContain(
+      'nativeZOrder?.enabled && nativeZOrder.requestedMatches && nativeZOrder.anchored'
+    )
+    expect(confirm).toContain("logger.warn('window.z-order-confirm'")
   })
 
   it('converts Electron or native bridge exceptions into a failed runtime result', () => {

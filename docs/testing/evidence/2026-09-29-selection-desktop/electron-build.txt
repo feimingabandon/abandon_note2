@@ -1,0 +1,50 @@
+vite v7.3.6 building ssr environment for production...
+transforming...
+✓ 113 modules transformed.
+rendering chunks...
+out/main/capture-image.js                          2.91 kB
+out/main/chunks/diagnostic-sanitize-BhfJqlWa.js    7.22 kB
+out/main/log-writer.js                            23.24 kB
+out/main/index.js                                 39.80 kB
+out/main/chunks/index-BqGDVjsc.js                913.94 kB
+✓ built in 574ms
+vite v7.3.6 building ssr environment for production...
+transforming...
+✓ 14 modules transformed.
+rendering chunks...
+out/preload/sticky.js  31.42 kB
+out/preload/index.js   52.56 kB
+✓ built in 35ms
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 375 modules transformed.
+rendering chunks...
+../../out/renderer/index.html                                      0.88 kB
+../../out/renderer/week.html                                       1.14 kB
+../../out/renderer/month.html                                      1.14 kB
+../../out/renderer/sticky.html                                     2.71 kB
+../../out/renderer/assets/alipay-appreciation-qr-CuuAqscD.jpg    128.62 kB
+../../out/renderer/assets/wechat-appreciation-qr-AHghVZNA.png    202.60 kB
+../../out/renderer/assets/OPPOSans-Medium-fM0Cdx-2.woff2       4,863.20 kB
+../../out/renderer/assets/OPPOSans-Bold-Che2ZB0o.woff2         4,923.74 kB
+../../out/renderer/assets/TimePicker-CI2AZbXe.css                  4.29 kB
+../../out/renderer/assets/sticky-PPxK2ot_.css                      5.61 kB
+../../out/renderer/assets/HelpPage-PpKPjJa6.css                   25.28 kB
+../../out/renderer/assets/TemplatePage-BxrFWPKC.css               38.42 kB
+../../out/renderer/assets/SettingsPanel-Br1fdvID.css              46.66 kB
+../../out/renderer/assets/MonthApp-qNdbpQiN.css                   51.35 kB
+../../out/renderer/assets/index-BgQapFGN.css                      57.21 kB
+../../out/renderer/assets/usePresentationMode-noymSpn2.css       173.05 kB
+../../out/renderer/assets/month-C-kpi0nK.js                        0.68 kB
+../../out/renderer/assets/week-DPUPzcZC.js                         0.72 kB
+../../out/renderer/assets/scrollMotion-k444B7ZP.js                 1.37 kB
+../../out/renderer/assets/TimePicker-Djhm1Zwi.js                   9.15 kB
+../../out/renderer/assets/sticky-c-uzYwXH.js                       9.86 kB
+../../out/renderer/assets/HelpPage-CZs9Ws7C.js                    73.66 kB
+../../out/renderer/assets/TemplatePage-r2wWJdmi.js               108.27 kB
+../../out/renderer/assets/MonthApp-BgN0CqC7.js                   205.40 kB
+../../out/renderer/assets/SettingsPanel-CAfUdOr7.js              235.63 kB
+../../out/renderer/assets/installErrorCapture-BXv2ICsa.js        304.73 kB
+../../out/renderer/assets/index-9KdAid3g.js                      656.00 kB
+../../out/renderer/assets/usePresentationMode-CyCeI5Py.js        822.63 kB
+✓ built in 1.64s

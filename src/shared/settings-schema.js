@@ -295,6 +295,15 @@ const definitions = [
     remark: '全视图共享的主界面图标颜色（black / white）'
   },
   {
+    id: 'shortcuts.enabled',
+    path: ['shortcuts', 'enabled'],
+    // Session state only. Ignore the persisted gate from older versions.
+    defaultValue: true,
+    parse: parseBoolean,
+    serialize: (value) => (value ? '1' : '0'),
+    remark: '本次运行的全局快捷键总开关，重启恢复启用'
+  },
+  {
     id: 'shortcuts.viewVisibility',
     path: ['shortcuts', 'viewVisibility'],
     db: { type: 'shortcuts', key: 'view_visibility' },
@@ -302,6 +311,15 @@ const definitions = [
     parse: normalizeViewVisibilityShortcut,
     serialize: String,
     remark: '全视图共享的显示或隐藏当前视图快捷键'
+  },
+  {
+    id: 'shortcuts.screenshot',
+    path: ['shortcuts', 'screenshot'],
+    db: { type: 'shortcuts', key: 'screenshot' },
+    defaultValue: 'F1',
+    parse: normalizeViewVisibilityShortcut,
+    serialize: String,
+    remark: '全局截图快捷键'
   },
   {
     id: 'css.bgColor',

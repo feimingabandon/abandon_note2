@@ -1,0 +1,15 @@
+********* Start testing of PinHaloTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : PinHaloTest::initTestCase()
+QINFO  : PinHaloTest::contentGeometryAndExport() Pin DPR: 1.5
+PASS   : PinHaloTest::contentGeometryAndExport()
+PASS   : PinHaloTest::followsGeometryAndViewState()
+FAIL!  : PinHaloTest::hideRestoreAndDestroy() Compared values are not the same
+   Actual   (haloWindows(*pin).size()): 2
+   Expected (4)                       : 4
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(119) : failure location
+PASS   : PinHaloTest::nativeOwnershipHitTestingAndDetection()
+PASS   : PinHaloTest::glowFalloffAndVisualEvidence()
+PASS   : PinHaloTest::cleanupTestCase()
+Totals: 6 passed, 1 failed, 0 skipped, 0 blacklisted, 19533ms
+********* Finished testing of PinHaloTest *********

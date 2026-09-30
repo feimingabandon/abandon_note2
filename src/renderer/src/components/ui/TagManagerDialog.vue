@@ -7,7 +7,9 @@ import TagEditorForm from './TagEditorForm.vue'
 import { useMessage } from '../../composables/useMessage.js'
 
 const props = defineProps({
+  queue: { type: Object, default: null },
   visible: { type: Boolean, default: false },
+  childModal: { type: Boolean, default: false },
   createOnOpen: { type: Boolean, default: false }
 })
 const emit = defineEmits(['update:visible'])
@@ -283,6 +285,8 @@ async function confirmDelete() {
 
 <template>
   <AppModalShell
+    :queue="queue"
+    :child-modal="childModal"
     :visible="visible"
     title="标签管理"
     :subtitle="`共 ${tags.length} 个标签`"

@@ -51,6 +51,7 @@ watch(html, async () => {
     />
     <!-- eslint-enable vue/no-v-html -->
     <AppModalShell
+      child-modal
       :visible="Boolean(enlarged)"
       :title="enlarged?.alt || '图片预览'"
       aria-label="图片预览"

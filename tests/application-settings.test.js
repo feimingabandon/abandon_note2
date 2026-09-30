@@ -168,7 +168,7 @@ describe('application view settings', () => {
   })
 
   it('keeps the view visibility shortcut in the application scope', () => {
-    expect(readApplicationSettings().shortcuts.viewVisibility).toBe('')
+    expect(readApplicationSettings().shortcuts.viewVisibility).toBe('F2')
 
     writeApplicationSetting('shortcuts.viewVisibility', 'Control+Alt+N')
 
@@ -184,6 +184,18 @@ describe('application view settings', () => {
     )
   })
 
+  it('ignores the retired master gate while preserving configured shortcuts', () => {
+    db.rowsByScope.set('application', [{ type: 'shortcuts', key: 'enabled', value: '0' }])
+    writeApplicationSetting('shortcuts.screenshot', 'F2')
+    writeApplicationSetting('shortcuts.viewVisibility', 'Control+Alt+N')
+    expect(() => writeApplicationSetting('shortcuts.enabled', false)).toThrow()
+    expect(readApplicationSettings().shortcuts).toEqual({
+      enabled: true,
+      screenshot: 'F2',
+      viewVisibility: 'Control+Alt+N'
+    })
+  })
+
   it('restores every user-configurable application setting without deleting runtime metadata', () => {
     db.rowsByScope.set('application', [
       { type: 'application', key: 'active_view', value: 'month' },
@@ -192,13 +204,14 @@ describe('application view settings', () => {
     writeApplicationSetting('appearance.titlebarIconScale', 145)
     writeApplicationSetting('appearance.iconColor', 'white')
     writeApplicationSetting('shortcuts.viewVisibility', 'Control+Alt+N')
+    writeApplicationSetting('shortcuts.screenshot', 'F2')
     writeApplicationSetting('weather.enabled', true)
 
     expect(resetApplicationSettingsToDefaults()).toBeGreaterThan(3)
     expect(readApplicationSettings()).toMatchObject({
       activeView: 'month',
       appearance: { titlebarIconScale: 100, iconColor: 'black' },
-      shortcuts: { viewVisibility: '' },
+      shortcuts: { enabled: true, viewVisibility: 'F2', screenshot: 'F1' },
       weather: { enabled: false, location: null }
     })
     expect(db.rowsByScope.get('application')).toEqual(

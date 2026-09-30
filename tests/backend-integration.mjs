@@ -107,7 +107,7 @@ try {
   `)
   const savedNote = compatibilityDb.prepare('SELECT * FROM notes WHERE id = ?').get(note.id)
   createDatabaseSchema(compatibilityDb)
-  assert.equal(compatibilityDb.pragma('user_version', { simple: true }), 16)
+  assert.equal(compatibilityDb.pragma('user_version', { simple: true }), DATABASE_SCHEMA_VERSION)
   assert.deepEqual(
     compatibilityDb.prepare('SELECT * FROM notes WHERE id = ?').get(note.id),
     savedNote
@@ -127,7 +127,7 @@ try {
   compatibilityDb = new Database(compatibilityPath)
   createDatabaseSchema(compatibilityDb)
   createDatabaseSchema(compatibilityDb)
-  assert.equal(compatibilityDb.pragma('user_version', { simple: true }), 16)
+  assert.equal(compatibilityDb.pragma('user_version', { simple: true }), DATABASE_SCHEMA_VERSION)
   assert.deepEqual(
     compatibilityDb.prepare('SELECT * FROM notes WHERE id = ?').get(note.id),
     savedNote

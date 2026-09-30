@@ -1,5 +1,7 @@
 import { clipboard } from 'electron'
 import { getDb } from '../db/db.js'
+import { editPendingReminder } from '../db/db-reminders.js'
+import { normalizeReminderChannels } from '../../shared/reminder-rules.js'
 import {
   completeNote,
   countActiveNotes,
@@ -123,7 +125,8 @@ export function registerBusinessIpcHandlers({
   getViewMode = () => null,
   platform = process.platform,
   diagnosticLogger = null,
-  onNotePurged = () => {}
+  onNotePurged = () => {},
+  onRemindersChanged = () => {}
 }) {
   const authorizedIpc = createMainWindowIpc(rawIpcMain, getAuthorizedWindows, '便签业务数据')
   const observedNoteChannels = new Set([
@@ -180,6 +183,12 @@ export function registerBusinessIpcHandlers({
   }
   const broadcastNoteChange = (reason, result, payload = {}) => {
     if (!result) return result
+    // Presentation failures cannot turn a committed database mutation into a failure.
+    try {
+      onRemindersChanged()
+    } catch (error) {
+      console.error('[reminders] refresh failed', error)
+    }
     const id = Number(result?.id ?? payload.id)
     sendToWindows(getBroadcastWindows, 'notes:changed', {
       reason,
@@ -380,6 +389,20 @@ export function registerBusinessIpcHandlers({
         requestedNotifyEnabled: fields.notifyEnabled,
         currentTime: timestamp
       })
+      let channels =
+        fields.reminderChannels === undefined
+          ? current.status === 'initialized'
+            ? normalizeReminderChannels(undefined, fields.notifyEnabled)
+            : current.reminder_channels
+          : normalizeReminderChannels(fields.reminderChannels)
+      if (
+        schedule.status === 'completed' ||
+        (current.status === 'initialized' && schedule.status === 'in_progress')
+      )
+        channels = 0
+      if (fields.pendingReminder !== undefined && channels) {
+        editPendingReminder(id, fields.pendingReminder, timestamp)
+      }
       const submittedColorRanges = fields.contentColorRanges ?? fields.content_color_ranges
       const contentColorRanges =
         submittedColorRanges === undefined
@@ -388,7 +411,7 @@ export function registerBusinessIpcHandlers({
 
       db.prepare(
         `UPDATE notes SET
-           content = ?, content_color_ranges = ?, status = ?, is_pinned = ?, notify_enabled = ?, effective_at = ?, duration_days = ?, duration_kind = ?,
+            content = ?, content_color_ranges = ?, status = ?, is_pinned = ?, notify_enabled = ?, reminder_channels = ?, effective_at = ?, duration_days = ?, duration_kind = ?,
            finished_at = ?, updated_at = ?
          WHERE id = ? AND is_deleted = 0`
       ).run(
@@ -396,7 +419,8 @@ export function registerBusinessIpcHandlers({
         JSON.stringify(contentColorRanges),
         schedule.status,
         fields.isPinned ? 1 : 0,
-        schedule.notifyEnabled,
+        schedule.status === 'initialized' && channels ? 1 : 0,
+        channels,
         schedule.effectiveAt,
         duration.durationDays,
         duration.durationKind,

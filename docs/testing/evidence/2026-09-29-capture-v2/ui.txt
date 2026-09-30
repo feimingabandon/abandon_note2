@@ -1,0 +1,58 @@
+********* Start testing of UiTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : UiTest::initTestCase()
+PASS   : UiTest::nativeControlDetection()
+PASS   : UiTest::newTools(line)
+PASS   : UiTest::newTools(polyline)
+PASS   : UiTest::newTools(marker)
+PASS   : UiTest::newTools(blur)
+PASS   : UiTest::newTools(eraser)
+PASS   : UiTest::completionGestures(enter)
+PASS   : UiTest::completionGestures(double)
+PASS   : UiTest::completionGestures(middle)
+PASS   : UiTest::completionGestures(source)
+PASS   : UiTest::selectionPrecisionAndSpace()
+PASS   : UiTest::currentObjectParametersAndHistory()
+PASS   : UiTest::textDraftParametersAndReopen()
+PASS   : UiTest::pinTransformsEditingAndDisplay()
+PASS   : UiTest::pinDocumentHandoffAndRecovery()
+PASS   : UiTest::quickSaveAndCancellation()
+PASS   : UiTest::interruptedAnnotation(矩形/escape)
+PASS   : UiTest::interruptedAnnotation(矩形/right-click)
+PASS   : UiTest::interruptedAnnotation(矩形/undo)
+PASS   : UiTest::interruptedAnnotation(矩形/full-screen)
+PASS   : UiTest::interruptedAnnotation(椭圆/escape)
+PASS   : UiTest::interruptedAnnotation(椭圆/right-click)
+PASS   : UiTest::interruptedAnnotation(椭圆/undo)
+PASS   : UiTest::interruptedAnnotation(椭圆/full-screen)
+PASS   : UiTest::interruptedAnnotation(箭头/escape)
+PASS   : UiTest::interruptedAnnotation(箭头/right-click)
+PASS   : UiTest::interruptedAnnotation(箭头/undo)
+PASS   : UiTest::interruptedAnnotation(箭头/full-screen)
+PASS   : UiTest::interruptedAnnotation(画笔/escape)
+PASS   : UiTest::interruptedAnnotation(画笔/right-click)
+PASS   : UiTest::interruptedAnnotation(画笔/undo)
+PASS   : UiTest::interruptedAnnotation(画笔/full-screen)
+PASS   : UiTest::interruptedAnnotation(马赛克/escape)
+PASS   : UiTest::interruptedAnnotation(马赛克/right-click)
+PASS   : UiTest::interruptedAnnotation(马赛克/undo)
+PASS   : UiTest::interruptedAnnotation(马赛克/full-screen)
+PASS   : UiTest::systemCloseCleansUpAllOverlays()
+PASS   : UiTest::selectionAndExport()
+PASS   : UiTest::resizeHandles()
+PASS   : UiTest::pinLimitsAndOriginalPixels()
+PASS   : UiTest::saveDialogCancellation()
+PASS   : UiTest::annotationToolsAndChineseInput()
+QINFO  : UiTest::realDesktopSessionAndPins() {"type":"ready","version":1}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"6263b6c8-5767-4af8-a007-a9ef949fc102","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"action":"source","deliveryId":"b8436133-3123-47ee-ae21-d26d2795e48f","height":30,"sessionId":"6263b6c8-5767-4af8-a007-a9ef949fc102","type":"output","width":20}
+QINFO  : UiTest::realDesktopSessionAndPins() {"count":1,"type":"pins"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"6263b6c8-5767-4af8-a007-a9ef949fc102","status":"pinned","type":"finished"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"6d354565-f064-4a3a-8101-d2a43b608e4b","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"6d354565-f064-4a3a-8101-d2a43b608e4b","status":"cancelled","type":"finished"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"b1770bd3-9272-47b4-886c-e5e9ee112bb5","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"b1770bd3-9272-47b4-886c-e5e9ee112bb5","status":"cancelled","type":"finished"}
+PASS   : UiTest::realDesktopSessionAndPins()
+PASS   : UiTest::cleanupTestCase()
+Totals: 45 passed, 0 failed, 0 skipped, 0 blacklisted, 2662ms
+********* Finished testing of UiTest *********

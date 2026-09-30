@@ -1,0 +1,28 @@
+********* Start testing of SelectionTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : SelectionTest::initTestCase()
+PASS   : SelectionTest::snappingVisibilityAndBounds()
+PASS   : SelectionTest::movementKeepsSizeAndExactAlignment()
+PASS   : SelectionTest::newSelectionBypassAndPrecision()
+PASS   : SelectionTest::resizeHandles(0)
+PASS   : SelectionTest::resizeHandles(1)
+PASS   : SelectionTest::resizeHandles(2)
+PASS   : SelectionTest::resizeHandles(3)
+PASS   : SelectionTest::resizeHandles(4)
+PASS   : SelectionTest::resizeHandles(5)
+PASS   : SelectionTest::resizeHandles(6)
+PASS   : SelectionTest::resizeHandles(7)
+PASS   : SelectionTest::clickSelectionMoveAndSpace()
+PASS   : SelectionTest::composition(left-negative-mixed)
+PASS   : SelectionTest::composition(above-negative-portrait)
+PASS   : SelectionTest::composition(vertical-offset)
+PASS   : SelectionTest::composition(physical-gap)
+PASS   : SelectionTest::composition(odd-fractional)
+PASS   : SelectionTest::compositionRejectsInvalidAndHugeLayouts()
+PASS   : SelectionTest::virtualScreensSelectionToolbarAndPin(positive)
+PASS   : SelectionTest::virtualScreensSelectionToolbarAndPin(negative)
+FAIL!  : SelectionTest::pinDragUsesPhysicalCoordinates() 'pin.placeAtPhysicalGeometry(QRect(100000, 100000, 300, 160))' returned FALSE. ()
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\selection_test.cpp(317) : failure location
+PASS   : SelectionTest::cleanupTestCase()
+Totals: 22 passed, 1 failed, 0 skipped, 0 blacklisted, 348ms
+********* Finished testing of SelectionTest *********

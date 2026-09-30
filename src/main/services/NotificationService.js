@@ -1,6 +1,7 @@
 import { Notification } from 'electron'
 import { pathToFileURL } from 'url'
 import { sendNotificationSafely } from './notification-guard.js'
+import { SNOOZE_MINUTES } from '../../shared/reminder-rules.js'
 
 function escapeToastXml(value) {
   return String(value)
@@ -27,6 +28,7 @@ export class NotificationService {
     this.icon = icon
     this.platform = platform
     this.revealApplication = revealApplication
+    this.reminders = new Map()
   }
 
   notifyFailure(scene, title, body, error) {
@@ -83,5 +85,55 @@ export class NotificationService {
   trySend(body, options) {
     if (!this.capability.supported) return false
     return sendNotificationSafely((...args) => this.send(...args), body, options)
+  }
+
+  sendReminder(round, onFailed) {
+    if (!this.capability.supported || !Notification.isSupported()) return false
+    this.closeReminder(round.id)
+    const title = round.from_template ? '循环便签提醒' : '便签提醒'
+    const body = String(round.content || '（空内容）').slice(0, 1000)
+    const root = `${this.appProtocol}://notification`
+    const action = (label, path) =>
+      `<action content="${escapeToastXml(label)}" activationType="protocol" arguments="${escapeToastXml(root + path)}"/>`
+    // Five protocol buttons reuse the existing single-instance/cold-start path.
+    const toastXml = `<toast launch="${root}/open" activationType="protocol"><visual><binding template="ToastGeneric">
+      <image placement="appLogoOverride" src="${escapeToastXml(pathToFileURL(this.icon).href)}"/>
+      <text>${escapeToastXml(title)}</text><text>${escapeToastXml(body)}</text>
+      </binding></visual><actions>
+      ${SNOOZE_MINUTES.map((m) => action(`${m} 分钟后`, `/snooze?round=${encodeURIComponent(round.id)}&minutes=${m}`)).join('')}
+      ${action('自定义时间…', `/custom?round=${encodeURIComponent(round.id)}`)}
+      </actions><audio silent="false"/></toast>`
+    const notification = new Notification({
+      id: round.id,
+      groupId: 'note-reminders',
+      title,
+      body,
+      icon: this.icon,
+      silent: false,
+      ...(this.platform === 'win32' ? { toastXml } : {})
+    })
+    if (this.platform !== 'win32') notification.on('click', () => this.revealApplication?.())
+    notification.on('failed', (_event, error) => onFailed?.(error))
+    this.reminders.set(round.id, notification)
+    notification.show()
+    return true
+  }
+
+  closeReminder(id) {
+    const notification = this.reminders.get(id)
+    if (!notification) return
+    this.reminders.delete(id)
+    notification.removeAllListeners()
+    notification.close()
+  }
+
+  reconcileReminders(ids) {
+    for (const id of this.reminders.keys()) if (!ids.has(id)) this.closeReminder(id)
+  }
+
+  dispose() {
+    // Keep delivered Windows notifications actionable across app restarts.
+    for (const notification of this.reminders.values()) notification.removeAllListeners()
+    this.reminders.clear()
   }
 }

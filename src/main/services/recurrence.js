@@ -2,6 +2,7 @@
 import { getDueTemplates, recordTemplateFailure } from '../db/db-templates.js'
 import { createRecurringNoteSnapshot, deleteNote } from '../db/db-notes.js'
 import { getDb } from '../db/db-connection.js'
+import { enqueueReminder } from '../db/db-reminders.js'
 import { calculateNextRunInRange, normalizeRecurrenceRule } from './recurrence-rules.js'
 
 export { calculateNextRun, normalizeRecurrenceRule } from './recurrence-rules.js'
@@ -114,8 +115,10 @@ export function runRecurringTemplates({ now = Date.now() } = {}) {
           content: template.content,
           effectiveAt: scheduledAt,
           isPinned: template.is_pinned,
+          reminderChannels: template.reminder_channels,
           tagIds
         })
+        if (template.reminder_channels) enqueueReminder(note.id, scheduledAt, timestamp)
         const nextRunAt = calculateNextRunInRange(rule, scheduledAt, template.schedule_anchor_at, {
           startAt: template.start_at ?? template.schedule_anchor_at,
           endAt: template.end_at

@@ -1,0 +1,11 @@
+********* Start testing of PinHaloTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : PinHaloTest::initTestCase()
+QWARN  : PinHaloTest::nativeOwnershipHitTestingAndDetection() Unexpected halo hit 11096 QPoint(429,212) canvas QRect(100,100 720x480) pin QRect(250,220 360x160)
+FAIL!  : PinHaloTest::nativeOwnershipHitTestingAndDetection() Compared pointers are not the same
+   Actual   (hit)                                   : 000000000002114E
+   Expected (reinterpret_cast<HWND>(canvas.winId())): 00000000002C0D92
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\pin_halo_test.cpp(174) : failure location
+PASS   : PinHaloTest::cleanupTestCase()
+Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 128ms
+********* Finished testing of PinHaloTest *********

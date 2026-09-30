@@ -3,6 +3,7 @@ import AppModalShell from '../ui/AppModalShell.vue'
 import BaseButton from '../ui/BaseButton.vue'
 
 defineProps({
+  queue: { type: Object, default: null },
   visible: { type: Boolean, default: false },
   year: { type: Number, required: true }
 })
@@ -12,6 +13,7 @@ const emit = defineEmits(['dismiss', 'open-settings'])
 
 <template>
   <AppModalShell
+    :queue="queue"
     :visible="visible"
     title="节假日数据需要更新"
     :subtitle="`${year} 年数据尚未安装`"

@@ -1,0 +1,12 @@
+double_click_selection: x=0 y=0 width=800 height=600
+double_click_output: none
+middle_click_output: none
+ctrl_right_selection: x=101 y=100 width=200 height=150
+shift_right_selection: x=100 y=100 width=201 height=150
+toolbar_checked_actions: 0
+shift_rectangle: width=130 height=50
+right_click_text_added_strokes: 0
+space_toolbar_visible: true
+pin_ctrl_wheel: width=330 opacity=1.00
+pin_middle_click_reset: width=150 height=100 opacity=0.50
+pin_space_toolbars: 0

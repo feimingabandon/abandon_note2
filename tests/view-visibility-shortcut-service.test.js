@@ -18,6 +18,41 @@ function createHarness({ rejected = [] } = {}) {
 }
 
 describe('ViewVisibilityShortcutService', () => {
+  it('recovers a released startup conflict without rewriting settings or replacing a working binding', () => {
+    const rejected = ['F2']
+    const { service, globalShortcut, callbacks } = createHarness({ rejected })
+    expect(service.initialize('F2').error.code).toBe('conflict')
+    expect(service.retryRegistration().registered).toBe(false)
+    rejected.length = 0
+    expect(service.retryRegistration()).toMatchObject({
+      configured: 'F2',
+      registered: true,
+      error: null
+    })
+    const binding = callbacks.get('F2')
+    globalShortcut.register.mockClear()
+    expect(service.retryRegistration().registered).toBe(true)
+    expect(globalShortcut.register).not.toHaveBeenCalled()
+    expect(callbacks.get('F2')).toBe(binding)
+  })
+
+  it('does not enable disabled or cleared shortcuts or end an active recording during retry', () => {
+    const { service, globalShortcut } = createHarness()
+    service.initialize('F2', { enabled: false })
+    service.retryRegistration()
+    expect(globalShortcut.register).not.toHaveBeenCalled()
+    service.setEnabled(true)
+    service.beginCapture(7)
+    globalShortcut.register.mockClear()
+    expect(service.retryRegistration()).toMatchObject({ capturing: true, registered: false })
+    expect(globalShortcut.register).not.toHaveBeenCalled()
+    service.endCapture(7)
+    service.initialize('')
+    globalShortcut.register.mockClear()
+    service.retryRegistration()
+    expect(globalShortcut.register).not.toHaveBeenCalled()
+  })
+
   it('restores the saved shortcut at startup and invokes the visibility callback', () => {
     const { callbacks, onTrigger, service } = createHarness()
 

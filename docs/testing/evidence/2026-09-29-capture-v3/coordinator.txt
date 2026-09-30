@@ -1,0 +1,9 @@
+
+ RUN  v4.1.10 C:/addFile/idea/项目/abandon/abandon_note2
+
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+   Start at  13:01:37
+   Duration  928ms (transform 35ms, setup 0ms, import 52ms, tests 766ms, environment 0ms)
+

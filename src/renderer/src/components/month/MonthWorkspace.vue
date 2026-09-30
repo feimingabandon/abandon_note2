@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useQueuedModal } from '../../composables/useQueuedModal.js'
 import { useSharedMinuteClock } from '../../composables/useSharedMinuteClock.js'
 import { useWeatherRecovery } from '../../composables/useWeatherRecovery.js'
 import { buildDisplayableWeatherByDate } from '../../utils/noteWeather.js'
@@ -108,6 +109,8 @@ const panelOpen = ref(false)
 const dayPanelSize = ref(defaultDayPanelSize)
 const creatorDate = ref('')
 const editingNote = ref(null)
+const { visible: creatorDisplayed, finishLeave: finishCreatorLeave } = useQueuedModal(creatorDate)
+const { visible: editorDisplayed, finishLeave: finishEditorLeave } = useQueuedModal(editingNote)
 const editorRef = ref(null)
 const workspaceBodyRef = ref(null)
 const calendarSurfaceRef = ref(null)
@@ -958,7 +961,7 @@ watch(todayKey, (next, previous) => {
   if (next !== previous) queueNotesRefresh()
 })
 watch(
-  () => [creatorDate.value, editingNote.value?.id || null],
+  () => [creatorDisplayed.value, editorDisplayed.value],
   async ([nextCreator, nextEditor], [previousCreator, previousEditor]) => {
     const open = Boolean(nextCreator || nextEditor)
     const wasOpen = Boolean(previousCreator || previousEditor)
@@ -1068,9 +1071,9 @@ onBeforeUnmount(() => {
     </div>
 
     <Teleport to="body">
-      <Transition name="month-modal">
+      <Transition name="month-modal" @after-leave="finishCreatorLeave">
         <div
-          v-if="creatorDate"
+          v-if="creatorDisplayed"
           ref="creatorOverlayRef"
           class="month-modal-overlay"
           data-modal-layer="month-note-creator"
@@ -1087,9 +1090,9 @@ onBeforeUnmount(() => {
         </div>
       </Transition>
 
-      <Transition name="month-modal">
+      <Transition name="month-modal" @after-leave="finishEditorLeave">
         <div
-          v-if="editingNote"
+          v-if="editorDisplayed"
           ref="editorOverlayRef"
           class="month-modal-overlay"
           data-modal-layer="month-note-editor"

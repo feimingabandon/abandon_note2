@@ -10,7 +10,7 @@ describe('便签正文局部文字颜色', () => {
     const ipc = read('../src/main/ipc/register-business-ipc.js')
     const preload = read('../src/preload/index.js')
 
-    expect(schema).toContain('export const DATABASE_SCHEMA_VERSION = 16')
+    expect(Number(schema.match(/DATABASE_SCHEMA_VERSION = (\d+)/)[1])).toBeGreaterThanOrEqual(16)
     expect(schema).toContain("content_color_ranges TEXT  NOT NULL DEFAULT '[]'")
     expect(notes).toContain('reconcileNoteTextColorRanges(')
     expect(notes).toContain('export function updateNoteTextColor(')

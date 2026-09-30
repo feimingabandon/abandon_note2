@@ -1,0 +1,21 @@
+********* Start testing of UiTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : UiTest::initTestCase()
+PASS   : UiTest::nativeControlDetection()
+PASS   : UiTest::pinTransformsEditingAndDisplay()
+PASS   : UiTest::pinDocumentHandoffAndRecovery()
+PASS   : UiTest::systemCloseCleansUpAllOverlays()
+PASS   : UiTest::pinLimitsAndOriginalPixels()
+QINFO  : UiTest::realDesktopSessionAndPins() {"type":"ready","version":1}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"d98b5703-6049-4775-80cb-c9ff342705f3","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"action":"source","deliveryId":"b5d32d75-3a6f-4f02-b468-e73923023840","height":30,"sessionId":"d98b5703-6049-4775-80cb-c9ff342705f3","type":"output","width":20}
+QINFO  : UiTest::realDesktopSessionAndPins() {"count":1,"type":"pins"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"d98b5703-6049-4775-80cb-c9ff342705f3","status":"pinned","type":"finished"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"07e49ded-9f01-4476-aab9-bac96fc6986a","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"07e49ded-9f01-4476-aab9-bac96fc6986a","status":"cancelled","type":"finished"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"29daf27d-6b86-4234-9aa7-cd58b9d94df1","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"29daf27d-6b86-4234-9aa7-cd58b9d94df1","status":"cancelled","type":"finished"}
+PASS   : UiTest::realDesktopSessionAndPins()
+PASS   : UiTest::cleanupTestCase()
+Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 2116ms
+********* Finished testing of UiTest *********

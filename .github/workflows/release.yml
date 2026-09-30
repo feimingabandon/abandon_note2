@@ -80,7 +80,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Compile Windows blur engine
+      - name: Set up Qt for capture engine
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          modules: qtimageformats
+          cache: true
+
+      - name: Compile Windows native engines
         run: npm run build:native:win
 
       - name: Verify blur engine

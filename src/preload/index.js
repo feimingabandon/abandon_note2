@@ -106,12 +106,15 @@ const api = {
   // ---- 设置桥接（双向通信，均返回 Promise） ----
   /** 按共享 schema ID 写入设置；数据库键名和校验不暴露给 renderer */
   setSettingValue: (id, value) => ipcRenderer.invoke('set-setting-value', id, value),
-  beginViewVisibilityShortcutCapture: () =>
-    ipcRenderer.invoke('shortcut:view-visibility-capture-start'),
-  endViewVisibilityShortcutCapture: () =>
-    ipcRenderer.invoke('shortcut:view-visibility-capture-end'),
+  beginViewVisibilityShortcutCapture: (action = 'viewVisibility') =>
+    ipcRenderer.invoke('shortcut:view-visibility-capture-start', action),
+  endViewVisibilityShortcutCapture: (action = 'viewVisibility') =>
+    ipcRenderer.invoke('shortcut:view-visibility-capture-end', action),
   setViewVisibilityShortcut: (accelerator) =>
     ipcRenderer.invoke('shortcut:view-visibility-set', accelerator),
+  getShortcutStartupNotice: () => ipcRenderer.invoke('shortcuts:startup-notice'),
+  dismissShortcutStartupNotice: () => ipcRenderer.invoke('shortcuts:dismiss-startup-notice'),
+  retryShortcuts: () => ipcRenderer.invoke('shortcuts:retry'),
   /** 原子更新小黑条模式与贴边方向多选 */
   setDockConfig: (config) => ipcRenderer.invoke('set-dock-config', config),
   /** 获取 DB 值覆盖共享默认值后的完整设置快照 */
@@ -384,7 +387,22 @@ const api = {
 
   // ---- 截图 ----
   /** 捕获全屏截图，返回 data URL */
-  captureScreen: () => ipcRenderer.invoke('screenshot:capture'),
+  captureScreen: (options) => ipcRenderer.invoke('screenshot:capture', options),
+  acknowledgeScreenshot: (delivery) => ipcRenderer.invoke('screenshot:ack', delivery),
+  cancelScreenshot: (token) => ipcRenderer.invoke('screenshot:cancel', token),
+  invalidateScreenshotSource: (token) => ipcRenderer.invoke('screenshot:source-gone', token),
+  setCaptureShortcut: (key, accelerator) =>
+    ipcRenderer.invoke('shortcut:capture-set', key, accelerator),
+  onScreenshotDelivery: (callback) => {
+    const handler = (_event, delivery) => callback(delivery)
+    ipcRenderer.on('screenshot:delivery', handler)
+    return () => ipcRenderer.removeListener('screenshot:delivery', handler)
+  },
+  onScreenshotFinished: (callback) => {
+    const handler = (_event, result) => callback(result)
+    ipcRenderer.on('screenshot:finished', handler)
+    return () => ipcRenderer.removeListener('screenshot:finished', handler)
+  },
   /** 截图窗口已经显示；后续选区和裁剪不再属于“启动中” */
   onScreenshotReady: (callback) => {
     const handler = () => callback()

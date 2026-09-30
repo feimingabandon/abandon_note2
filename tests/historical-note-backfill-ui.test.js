@@ -12,7 +12,7 @@ describe('历史便签补录界面与业务边界', () => {
     expect(panel).toContain('canScheduleNoteNotification(effectiveTimestamp.value, Date.now())')
     expect(panel).toContain("{ label: '昨天', getValue: () => dateAtDefaultScheduleTime(-1) }")
     expect(panel).toContain("{ label: '一周前', getValue: () => dateAtDefaultScheduleTime(-7) }")
-    expect(panel).toContain('历史补录将直接进入进行中，不发送系统提醒。')
+    expect(panel).toContain('历史补录将直接进入进行中，不触发提醒。')
     expect(panel).not.toContain(':min-date="today"')
   })
 
@@ -33,7 +33,7 @@ describe('历史便签补录界面与业务边界', () => {
     expect(businessIpc).toContain('const schedule = resolveNoteDraftSchedule({')
     expect(businessIpc).toContain('if (requestedStatus !== original.status)')
     expect(businessIpc).toContain('schedule.status')
-    expect(businessIpc).toContain('schedule.notifyEnabled')
+    expect(businessIpc).toContain("schedule.status === 'initialized' && channels ? 1 : 0")
     expect(businessIpc).toContain('schedule.finishedAt')
   })
 })

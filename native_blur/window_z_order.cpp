@@ -246,10 +246,15 @@ void CALLBACK WinEventProc(
     HWINEVENTHOOK,
     DWORD event,
     HWND,
-    LONG,
-    LONG,
+    LONG objectId,
+    LONG childId,
     DWORD,
     DWORD) {
+    // 控件内部的无障碍树重排不改变顶层 Z 序，不能为它遍历整个桌面。
+    if (event == EVENT_OBJECT_REORDER &&
+        (objectId != OBJID_WINDOW || childId != CHILDID_SELF)) return;
+    // 隐藏/最小化期间保留拦截器，显示时由窗口消息重新锚定。
+    if (!g_target || !IsWindowVisible(g_target) || IsIconic(g_target)) return;
     QueueSync(
         event == EVENT_SYSTEM_FOREGROUND
             ? SyncReason::ForegroundEvent

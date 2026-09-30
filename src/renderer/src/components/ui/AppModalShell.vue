@@ -1,6 +1,7 @@
 <script setup>
-import { nextTick, onBeforeUnmount, ref, useSlots, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, toValue, useSlots, watch } from 'vue'
 import { retainModalBlur } from '../../utils/modalBlur.js'
+import { useQueuedModal } from '../../composables/useQueuedModal.js'
 import {
   captureFocusedElement,
   focusModal,
@@ -10,6 +11,8 @@ import {
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
+  queue: { type: Object, default: null },
+  childModal: { type: Boolean, default: false },
   title: { type: String, default: '' },
   subtitle: { type: String, default: '' },
   eyebrow: { type: String, default: '' },
@@ -25,9 +28,22 @@ const props = defineProps({
   flush: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['update:visible', 'close'])
+const emit = defineEmits(['update:visible', 'close', 'opened'])
 const slots = useSlots()
 const dialogRef = ref(null)
+const localQueue = useQueuedModal(() => !props.queue && props.visible, {
+  child: () => props.childModal
+})
+const displayed = computed(() => props.visible && toValue((props.queue || localQueue).visible))
+// Record mounting as soon as Vue assigns the DOM ref, before a caller's nextTick
+// can close the request. A mounted card must retain its ticket through leave.
+watch(
+  dialogRef,
+  (element) => {
+    if (element) (props.queue || localQueue).markPresented()
+  },
+  { flush: 'sync' }
+)
 let releaseBackgroundBlur = null
 let previouslyFocused = null
 let focusFrame = null
@@ -40,6 +56,11 @@ function acquireBlur() {
 function freeBlur() {
   releaseBackgroundBlur?.()
   releaseBackgroundBlur = null
+}
+
+function afterLeave() {
+  freeBlur()
+  ;(props.queue || localQueue).finishLeave()
 }
 
 function close() {
@@ -56,7 +77,7 @@ function scheduleModalFocus() {
   if (focusFrame !== null) cancelAnimationFrame(focusFrame)
   focusFrame = requestAnimationFrame(() => {
     focusFrame = null
-    focusModal(dialogRef.value)
+    if (displayed.value) focusModal(dialogRef.value)
   })
 }
 
@@ -80,14 +101,16 @@ function onKeydown(event) {
 }
 
 watch(
-  () => props.visible,
+  displayed,
   async (visible) => {
     if (visible) {
       previouslyFocused = captureFocusedElement()
       acquireBlur()
       await nextTick()
+      if (!displayed.value) return
+      emit('opened')
       scheduleModalFocus()
-    } else {
+    } else if (previouslyFocused) {
       scheduleFocusRestore()
     }
   },
@@ -98,14 +121,15 @@ onBeforeUnmount(() => {
   if (focusFrame !== null) cancelAnimationFrame(focusFrame)
   restoreFocusedElement(previouslyFocused)
   freeBlur()
+  props.queue?.finishLeave()
 })
 </script>
 
 <template>
   <Teleport to="body">
-    <Transition name="app-modal" @after-leave="freeBlur">
+    <Transition name="app-modal" @after-leave="afterLeave">
       <div
-        v-if="visible"
+        v-if="displayed"
         class="app-modal-overlay"
         data-modal-layer="app-modal"
         data-keep-settings-open

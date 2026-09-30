@@ -3,6 +3,7 @@ import { useDraftProtection } from '../../composables/useDraftProtection.js'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import TagSelector from '../ui/TagSelector.vue'
+import ReminderChannelPicker from '../note/ReminderChannelPicker.vue'
 import AppToggle from '../ui/AppToggle.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import TimePicker from '../ui/TimePicker.vue'
@@ -37,7 +38,6 @@ const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotif
   reason: ''
 }
 const systemNotificationsSupported = systemNotificationCapability.supported
-const systemNotificationUnavailableReason = systemNotificationCapability.reason
 
 function currentTimeOfDay() {
   const current = new Date()
@@ -55,7 +55,7 @@ const yearDates = ref([{ month: 1, day: 1 }])
 const timeOfDay = ref(currentTimeOfDay())
 const startAt = ref('')
 const endAt = ref('')
-const notifyEnabled = ref(systemNotificationsSupported)
+const reminderChannels = ref(systemNotificationsSupported ? 1 : 0)
 const isPinned = ref(false)
 const tagIds = ref([])
 const previewAt = ref(null)
@@ -161,8 +161,11 @@ function loadInitial(template) {
     ? formatTemplateDateTime(template.start_at ?? template.schedule_anchor_at)
     : ''
   endAt.value = template ? formatTemplateDateTime(template.end_at) : ''
-  notifyEnabled.value =
-    systemNotificationsSupported && (template ? Number(template.notify_enabled) === 1 : true)
+  reminderChannels.value = template
+    ? Number(template.reminder_channels ?? (template.notify_enabled ? 1 : 0))
+    : systemNotificationsSupported
+      ? 1
+      : 0
   isPinned.value = template ? Number(template.is_pinned) === 1 : false
   tagIds.value = (template?.tags || []).map((tag) => tag.id)
 }
@@ -201,7 +204,7 @@ const currentSnapshot = computed(() =>
     recurrenceRule: recurrenceRule.value,
     startAt: parsedStartAt.value,
     endAt: parsedEndAt.value,
-    notifyEnabled: systemNotificationsSupported && notifyEnabled.value,
+    reminderChannels: reminderChannels.value,
     isPinned: isPinned.value,
     tagIds: tagIds.value
   })
@@ -328,7 +331,7 @@ function submit() {
     recurrenceRule: recurrenceRule.value,
     startAt: Number.isFinite(parsedStartAt.value) ? parsedStartAt.value : null,
     endAt: Number.isFinite(parsedEndAt.value) ? parsedEndAt.value : null,
-    notifyEnabled: systemNotificationsSupported && notifyEnabled.value,
+    reminderChannels: reminderChannels.value,
     isPinned: isPinned.value,
     tagIds: [...tagIds.value]
   })
@@ -365,7 +368,7 @@ const protectedDraft = useDraftProtection({
     timeOfDay,
     startAt,
     endAt,
-    notifyEnabled,
+    reminderChannels,
     isPinned,
     tagIds
   },
@@ -447,21 +450,10 @@ const protectedDraft = useDraftProtection({
         </span>
       </div>
       <div class="tf-notification-field">
-        <div class="tf-row">
-          <label
-            >模板生成便签时是否通知
-            <HelpButton
-              :text="
-                systemNotificationsSupported
-                  ? '到达生成节点时，由模板发送通知；生成的便签本身不带系统通知。'
-                  : systemNotificationUnavailableReason
-              "
-          /></label>
-          <AppToggle v-model="notifyEnabled" :disabled="!systemNotificationsSupported" />
-        </div>
-        <p v-if="!systemNotificationsSupported" class="tf-platform-note">
-          {{ systemNotificationUnavailableReason }}
-        </p>
+        <ReminderChannelPicker
+          v-model="reminderChannels"
+          help-text="生成实例使用这些提醒方式；稍后提醒只属于本次实例。"
+        />
       </div>
       <div class="tf-row">
         <label

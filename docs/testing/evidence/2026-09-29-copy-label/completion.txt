@@ -1,0 +1,10 @@
+********* Start testing of UiTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : UiTest::initTestCase()
+PASS   : UiTest::completionGestures(enter)
+PASS   : UiTest::completionGestures(double)
+PASS   : UiTest::completionGestures(middle)
+PASS   : UiTest::completionGestures(source)
+PASS   : UiTest::cleanupTestCase()
+Totals: 6 passed, 0 failed, 0 skipped, 0 blacklisted, 73ms
+********* Finished testing of UiTest *********

@@ -1,0 +1,42 @@
+********* Start testing of UiTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : UiTest::initTestCase()
+PASS   : UiTest::interruptedAnnotation(矩形/escape)
+PASS   : UiTest::interruptedAnnotation(矩形/right-click)
+PASS   : UiTest::interruptedAnnotation(矩形/undo)
+PASS   : UiTest::interruptedAnnotation(矩形/full-screen)
+PASS   : UiTest::interruptedAnnotation(椭圆/escape)
+PASS   : UiTest::interruptedAnnotation(椭圆/right-click)
+PASS   : UiTest::interruptedAnnotation(椭圆/undo)
+PASS   : UiTest::interruptedAnnotation(椭圆/full-screen)
+PASS   : UiTest::interruptedAnnotation(箭头/escape)
+PASS   : UiTest::interruptedAnnotation(箭头/right-click)
+PASS   : UiTest::interruptedAnnotation(箭头/undo)
+PASS   : UiTest::interruptedAnnotation(箭头/full-screen)
+PASS   : UiTest::interruptedAnnotation(画笔/escape)
+PASS   : UiTest::interruptedAnnotation(画笔/right-click)
+PASS   : UiTest::interruptedAnnotation(画笔/undo)
+PASS   : UiTest::interruptedAnnotation(画笔/full-screen)
+PASS   : UiTest::interruptedAnnotation(马赛克/escape)
+PASS   : UiTest::interruptedAnnotation(马赛克/right-click)
+PASS   : UiTest::interruptedAnnotation(马赛克/undo)
+PASS   : UiTest::interruptedAnnotation(马赛克/full-screen)
+PASS   : UiTest::systemCloseCleansUpAllOverlays()
+PASS   : UiTest::selectionAndExport()
+PASS   : UiTest::resizeHandles()
+PASS   : UiTest::pinLimitsAndOriginalPixels()
+PASS   : UiTest::saveDialogCancellation()
+PASS   : UiTest::annotationToolsAndChineseInput()
+QINFO  : UiTest::realDesktopSessionAndPins() {"type":"ready","version":1}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"84dcda8b-346f-424f-b572-9b1718430b08","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"action":"source","deliveryId":"0451ee39-4bf0-49e8-a331-3ac22d16d2e1","height":30,"sessionId":"84dcda8b-346f-424f-b572-9b1718430b08","type":"output","width":20}
+QINFO  : UiTest::realDesktopSessionAndPins() {"count":1,"type":"pins"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"84dcda8b-346f-424f-b572-9b1718430b08","status":"pinned","type":"finished"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"e124dde7-b669-4a08-b8cb-8cfff7181f8f","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"e124dde7-b669-4a08-b8cb-8cfff7181f8f","status":"cancelled","type":"finished"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"8ad63de0-6970-425b-87b4-a890517c1947","type":"captureReady"}
+QINFO  : UiTest::realDesktopSessionAndPins() {"sessionId":"8ad63de0-6970-425b-87b4-a890517c1947","status":"cancelled","type":"finished"}
+PASS   : UiTest::realDesktopSessionAndPins()
+PASS   : UiTest::cleanupTestCase()
+Totals: 29 passed, 0 failed, 0 skipped, 0 blacklisted, 1253ms
+********* Finished testing of UiTest *********

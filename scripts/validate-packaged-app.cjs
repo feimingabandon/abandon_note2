@@ -7,6 +7,22 @@ const { extractAll, listPackage } = require('@electron/asar')
 const { resolveNativeTarget } = require('./package-native-plan.cjs')
 
 const projectRoot = path.resolve(__dirname, '..')
+const captureRuntimeFiles = Object.freeze([
+  'AbandonCapture.exe',
+  'capture_host.dll',
+  'Qt6Core.dll',
+  'Qt6Gui.dll',
+  'Qt6Widgets.dll',
+  'Qt6Network.dll',
+  'platforms/qwindows.dll',
+  'imageformats/qjpeg.dll',
+  'imageformats/qwebp.dll',
+  'msvcp140.dll',
+  'vcruntime140.dll',
+  'vcruntime140_1.dll',
+  'LICENSE',
+  'THIRD_PARTY.md'
+])
 
 async function getExpectedNativeAbiVersion() {
   const moduleUrl = pathToFileURL(
@@ -65,6 +81,8 @@ async function validatePackagedApp(context, dependencies = {}) {
 
   const windowsBlurPath = path.join(resourcesDir, 'native_blur', 'blur_engine.dll')
   if (target.requiresWindowsBlur) {
+    for (const file of captureRuntimeFiles)
+      await access(path.join(resourcesDir, 'native_capture', file))
     await access(windowsBlurPath)
     const expectedAbiVersion = await getExpectedNativeAbiVersion()
     const validateAbi = dependencies.validateWindowsNativeAbi || validateWindowsNativeAbi
@@ -82,6 +100,7 @@ async function validatePackagedApp(context, dependencies = {}) {
     '/build/',
     '/docs/',
     '/native_blur/',
+    '/native_capture/',
     '/output/',
     '/scripts/',
     '/src/',
@@ -106,6 +125,9 @@ async function validatePackagedApp(context, dependencies = {}) {
   const extractionRoot = await mkdtemp(path.join(tmpdir(), 'abandon-asar-verify-'))
   try {
     extractAll(asarPath, extractionRoot)
+    for (const entry of ['out/preload/reminder.js', 'out/renderer/reminder.html']) {
+      await access(path.join(extractionRoot, entry))
+    }
   } finally {
     await rm(extractionRoot, { recursive: true, force: true })
   }
@@ -117,3 +139,4 @@ exports.default = validatePackagedApp
 exports.exists = exists
 exports.getExpectedNativeAbiVersion = getExpectedNativeAbiVersion
 exports.validateWindowsNativeAbi = validateWindowsNativeAbi
+exports.captureRuntimeFiles = captureRuntimeFiles

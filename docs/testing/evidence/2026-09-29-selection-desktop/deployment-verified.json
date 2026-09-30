@@ -1,0 +1,15 @@
+{
+  "Replaced": true,
+  "StoppedOwnedHelperPid": 32232,
+  "ParentStopped": false,
+  "Files": [
+    {
+      "Path": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\native_capture\\build\\bin\\AbandonCapture.exe",
+      "Hash": "711AD570FD1635BF530ADA4A5CEA060887A5E070B822865499D40217FB3F9AB0"
+    },
+    {
+      "Path": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\native_capture\\deploy\\AbandonCapture.exe",
+      "Hash": "711AD570FD1635BF530ADA4A5CEA060887A5E070B822865499D40217FB3F9AB0"
+    }
+  ]
+}

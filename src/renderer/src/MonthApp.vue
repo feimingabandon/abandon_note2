@@ -1,5 +1,7 @@
 <script setup>
+import { useModalRequest } from './composables/useQueuedModal.js'
 import EditingDraftDialog from './components/system/EditingDraftDialog.vue'
+import CaptureDelivery from './components/capture/CaptureDelivery.vue'
 import { editingDataGeneration } from './composables/useDraftProtection.js'
 import { defineAsyncComponent } from 'vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -16,6 +18,7 @@ import UpdateDialog from './components/system/UpdateDialog.vue'
 import RemoteNoticeDialog from './components/system/RemoteNoticeDialog.vue'
 import FirstUseNoticeDialog from './components/system/FirstUseNoticeDialog.vue'
 import HolidayDataNoticeDialog from './components/system/HolidayDataNoticeDialog.vue'
+import ShortcutConflictDialog from './components/system/ShortcutConflictDialog.vue'
 import DailyReportDialog from './components/report/DailyReportDialog.vue'
 import DailyReportButton from './components/report/DailyReportButton.vue'
 import AppIcon from './components/ui/AppIcon.vue'
@@ -53,12 +56,18 @@ const locked = ref(defaults.window.lockState)
 const zOrderMode = ref(defaults.window.zOrderMode)
 const titlebarStyle = ref(defaults.appearance.titlebarStyle)
 const showSettings = ref(false)
-const showUpdateDialog = ref(false)
-const showRemoteNoticeDialog = ref(false)
-const showFirstUseNotice = ref(false)
-const showHolidayDataNoticeDialog = ref(false)
-const showDailyReportDialog = ref(false)
-const showAlmanac = ref(false)
+const updateQueue = useModalRequest()
+const showUpdateDialog = updateQueue.requested
+const noticeQueue = useModalRequest()
+const showRemoteNoticeDialog = noticeQueue.requested
+const firstUseQueue = useModalRequest()
+const showFirstUseNotice = firstUseQueue.requested
+const holidayQueue = useModalRequest()
+const showHolidayDataNoticeDialog = holidayQueue.requested
+const reportQueue = useModalRequest()
+const showDailyReportDialog = reportQueue.requested
+const almanacQueue = useModalRequest()
+const showAlmanac = almanacQueue.requested
 const templatePanelRef = ref(null)
 const helpPanelRef = ref(null)
 const templateWorkspace = useSlidingWorkspace({ getElement: () => templatePanelRef.value })
@@ -82,6 +91,7 @@ const {
   onTransitionCancel: onHelpTransitionCancel
 } = helpWorkspace
 const pendingHolidayDataNotice = ref(null)
+const showShortcutNotice = ref(false)
 const holidayNoticeTodayKey = useTodayKey()
 const calendarBusinessModalOpen = ref(false)
 const pendingRemoteNotices = ref([])
@@ -109,6 +119,7 @@ const compactBlocked = computed(
     showUpdateDialog.value ||
     showRemoteNoticeDialog.value ||
     showHolidayDataNoticeDialog.value ||
+    showShortcutNotice.value ||
     showDailyReportDialog.value ||
     showAlmanac.value ||
     templateInteractive.value ||
@@ -228,33 +239,21 @@ function revealFirstUseNoticeFromSnapshot(snapshot) {
   const pending = (snapshot?.values?.onboarding?.noticeVersion ?? 0) < FIRST_USE_NOTICE_VERSION
   if (!pending || showFirstUseNotice.value) return
 
-  showUpdateDialog.value = false
-  showRemoteNoticeDialog.value = false
-  showHolidayDataNoticeDialog.value = false
-  showDailyReportDialog.value = false
-  showAlmanac.value = false
+  // 恢复默认后的须知进入同一队列，不打断当前操作。
   showFirstUseNotice.value = true
 }
 
 async function loadPendingRemoteNotices({ show = false } = {}) {
   try {
     pendingRemoteNotices.value = await window.api.listPendingRemoteNotices()
-    if (show && !showFirstUseNotice.value && pendingRemoteNotices.value.length) {
-      showRemoteNoticeDialog.value = true
-    }
+    if (show) showRemoteNoticeDialog.value = pendingRemoteNotices.value.length > 0
   } catch (error) {
     console.warn('[MonthApp] 读取未确认通知失败:', error)
   }
 }
 
 function maybeShowHolidayDataNotice() {
-  if (
-    pendingHolidayDataNotice.value?.required &&
-    !showFirstUseNotice.value &&
-    !showRemoteNoticeDialog.value &&
-    !showSettings.value &&
-    !showUpdateDialog.value
-  ) {
+  if (pendingHolidayDataNotice.value?.required) {
     showHolidayDataNoticeDialog.value = true
   }
 }
@@ -287,23 +286,13 @@ async function dismissHolidayDataNotice({ openSettingsAfter = false } = {}) {
 
 function closeRemoteNoticeDialog() {
   showRemoteNoticeDialog.value = false
-  maybeShowHolidayDataNotice()
 }
 
 function onRemoteNoticeAcknowledged(id) {
   pendingRemoteNotices.value = pendingRemoteNotices.value.filter((notice) => notice.id !== id)
   if (!pendingRemoteNotices.value.length) {
     showRemoteNoticeDialog.value = false
-    maybeShowHolidayDataNotice()
   }
-}
-
-function showNextStartupNotice() {
-  if (pendingRemoteNotices.value.length) {
-    showRemoteNoticeDialog.value = true
-    return
-  }
-  maybeShowHolidayDataNotice()
 }
 
 function onFirstUseCompleted({ route } = {}) {
@@ -315,7 +304,6 @@ function onFirstUseCompleted({ route } = {}) {
       : '感谢你选择 Abandon 便签。你的使用，就是对我最大的肯定。',
     4200
   )
-  setTimeout(showNextStartupNotice, 240)
 }
 
 async function checkForUpdates() {
@@ -413,6 +401,7 @@ onUnmounted(() => {
           showUpdateDialog ||
           showRemoteNoticeDialog ||
           showHolidayDataNoticeDialog ||
+          showShortcutNotice ||
           showDailyReportDialog ||
           showAlmanac
         "
@@ -425,7 +414,7 @@ onUnmounted(() => {
         >
           <TitlebarActions :style-variant="titlebarStyle">
             <ViewSwitcher :active-view="viewMode" :style-variant="titlebarStyle" />
-            <AlmanacLauncher v-model:visible="showAlmanac" />
+            <AlmanacLauncher v-model:visible="showAlmanac" :queue="almanacQueue" />
             <DailyReportButton month-view @open="openDailyReport" />
             <button
               class="titlebar-btn titlebar-btn-template month-titlebar-btn"
@@ -511,6 +500,11 @@ onUnmounted(() => {
         </div>
       </div>
     </WindowPresentation>
+    <CaptureDelivery />
+    <ShortcutConflictDialog
+      v-model:visible="showShortcutNotice"
+      @open-settings="showSettings = true"
+    />
     <SettingsPanel
       v-if="showSettings"
       v-model:visible="showSettings"
@@ -520,29 +514,33 @@ onUnmounted(() => {
     />
     <FirstUseNoticeDialog
       v-if="showFirstUseNotice"
+      :queue="firstUseQueue"
       :visible="showFirstUseNotice"
       @completed="onFirstUseCompleted"
     />
     <UpdateDialog
       v-model:visible="showUpdateDialog"
+      :queue="updateQueue"
       :checking="updateChecking"
       :result="updateResult"
       @retry="checkForUpdates"
     />
     <RemoteNoticeDialog
       v-if="showRemoteNoticeDialog && pendingRemoteNotices.length"
+      :queue="noticeQueue"
       :notices="pendingRemoteNotices"
       @close="closeRemoteNoticeDialog"
       @acknowledged="onRemoteNoticeAcknowledged"
     />
     <HolidayDataNoticeDialog
       v-if="pendingHolidayDataNotice"
+      :queue="holidayQueue"
       :visible="showHolidayDataNoticeDialog"
       :year="pendingHolidayDataNotice.year"
       @dismiss="dismissHolidayDataNotice()"
       @open-settings="dismissHolidayDataNotice({ openSettingsAfter: true })"
     />
-    <DailyReportDialog v-model:visible="showDailyReportDialog" />
+    <DailyReportDialog v-model:visible="showDailyReportDialog" :queue="reportQueue" />
     <EditingDraftDialog />
     <MessageToast />
   </div>

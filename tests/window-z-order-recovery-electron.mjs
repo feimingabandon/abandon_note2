@@ -48,6 +48,8 @@ const user32 = koffi.load('user32.dll')
 const getStyle = user32.func('intptr_t GetWindowLongPtrW(intptr_t hwnd, int index)')
 const native = koffi.load(process.env.ABANDON_INTEGRATION_NATIVE_DLL)
 const synchronized = native.func('Blur_IsZOrderSynchronized', 'int', [])
+const setBottom = native.func('WindowZOrder_SetBottom', 'int', ['intptr_t', 'int'])
+const readBottom = native.func('WindowZOrder_GetStatusJson', 'str', ['intptr_t'])
 function nativeTop(window) {
   return Boolean(Number(getStyle(window.getNativeWindowHandle().readBigUInt64LE(), -20)) & 8)
 }
@@ -192,6 +194,73 @@ async function run() {
         `${view}: show callback restored the obsolete bottom mode`
       )
       window.setAlwaysOnTop = originalSetTop
+      const originalIsTop = window.isAlwaysOnTop.bind(window)
+      const bottomStatus = () =>
+        JSON.parse(readBottom(window.getNativeWindowHandle().readBigUInt64LE()))
+      // Force exactly one asynchronous confirmation retry, then let a real lock IPC
+      // refresh persisted settings while the requested bottom mode is not saved yet.
+      for (const enabled of [false, true]) {
+        await changeMode('normal')
+        await js(`window.api.setBlurConfig({enabled:${enabled}})`)
+        let injected = false
+        let lockChange
+        window.isAlwaysOnTop = () => {
+          if (!injected && new Error().stack.includes('confirmWindowZOrder')) {
+            injected = true
+            lockChange = new Promise((done, reject) => {
+              setImmediate(() => js('window.api.toggleLock()').then(done, reject))
+            })
+            return true
+          }
+          return originalIsTop()
+        }
+        try {
+          assert.equal((await changeMode('bottom')).mode, 'bottom')
+          assert.equal(injected, true)
+          assert.equal((await lockChange).changed, true)
+          assert.equal(bottomStatus().enabled, true, `${view}: lock removed pending bottom mode`)
+          assert.equal(bottomStatus().anchored, true)
+          assert.equal(
+            await js('window.api.getSettingsSnapshot().then(s => s.values.window.zOrderMode)'),
+            'bottom'
+          )
+        } finally {
+          window.isAlwaysOnTop = originalIsTop
+        }
+        await wait(600)
+        await js('window.api.toggleLock()')
+      }
+
+      // A non-topmost HWND alone does not prove bottom mode. Remove the real native
+      // controller during confirmation, first once (recover), then every time (reject).
+      for (const persistent of [false, true]) {
+        await changeMode('normal')
+        let removed = 0
+        window.isAlwaysOnTop = () => {
+          if ((persistent || removed === 0) && new Error().stack.includes('confirmWindowZOrder')) {
+            assert.equal(setBottom(window.getNativeWindowHandle().readBigUInt64LE(), 0), 1)
+            removed++
+          }
+          return originalIsTop()
+        }
+        try {
+          if (persistent) {
+            await assert.rejects(changeMode('bottom'), /窗口层级/)
+            assert.equal(bottomStatus().enabled, false)
+            assert.equal(
+              await js('window.api.getSettingsSnapshot().then(s => s.values.window.zOrderMode)'),
+              'normal'
+            )
+          } else {
+            assert.equal((await changeMode('bottom')).mode, 'bottom')
+            assert.equal(bottomStatus().enabled, true)
+            assert.equal(bottomStatus().anchored, true)
+          }
+          assert.ok(removed > 0)
+        } finally {
+          window.isAlwaysOnTop = originalIsTop
+        }
+      }
       for (const mode of ['top', 'bottom', 'top', 'normal', 'top']) {
         await changeMode(mode)
         assert.equal(

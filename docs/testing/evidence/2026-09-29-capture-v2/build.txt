@@ -1,0 +1,28 @@
+-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.
+-- Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR) 
+-- Configuring done (0.2s)
+-- Generating done (0.2s)
+-- Build files have been written to: C:/addFile/idea/项目/abandon/abandon_note2/native_capture/build
+适用于 .NET Framework MSBuild 版本 18.7.8+1ac568fee
+
+  Automatic MOC for target capture_core
+  capture_input_driver.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\capture_input_driver.exe
+  capture_host.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\capture_host.dll
+  capture_core.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_core.lib
+  Automatic MOC for target capture_core_tests
+  Automatic MOC for target capture_ui
+  Automatic MOC for target capture_clipboard_tests
+  capture_clipboard_tests.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\capture_clipboard_tests.exe
+  capture_core_tests.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\capture_core_tests.exe
+  AnnotationEditor.cpp
+  CaptureEngine.cpp
+  正在生成代码...
+  capture_ui.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\Release\capture_ui.lib
+  Automatic MOC for target AbandonCapture
+  Automatic MOC for target capture_ui_tests
+  AbandonCapture.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\AbandonCapture.exe
+  ui_test.cpp
+  capture_ui_tests.vcxproj -> C:\addFile\idea\项目\abandon\abandon_note2\native_capture\build\bin\capture_ui_tests.exe
+Warning: Translations will not be available due to the following error.
+C:\addFile\idea\
+Cannot open C:/addFile/idea/

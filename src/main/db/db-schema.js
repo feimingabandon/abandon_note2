@@ -2,9 +2,22 @@
  * 数据库结构版本只能递增，删除功能也不能回退已写入数据库的版本号。
  * V16 曾为已撤销的独立极简视图增加布局表，便签结构仍兼容 V15。
  * 保留 V16 兼容号；新库不创建废弃表，已有库保留该表及数据但不再使用。
- * V15 → V16 仅由迁移事务提交版本号，后续结构变更必须从 V17 开始。
+ * V17 增加多方式提醒和独立提醒任务，版本号仅由迁移事务提交。
  */
-export const DATABASE_SCHEMA_VERSION = 16
+import { createReminderSchema } from './db-reminders.js'
+
+export const DATABASE_SCHEMA_VERSION = 17
+
+function migrateToVersion17(db) {
+  for (const table of ['notes', 'note_templates']) {
+    if (!hasColumn(db, table, 'reminder_channels')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN reminder_channels INTEGER NOT NULL DEFAULT 0
+        CHECK(reminder_channels BETWEEN 0 AND 7);
+        UPDATE ${table} SET reminder_channels = CASE WHEN notify_enabled = 1 THEN 1 ELSE 0 END;`)
+    }
+  }
+  createReminderSchema(db)
+}
 
 function hasTable(db, tableName) {
   return Boolean(
@@ -297,6 +310,10 @@ function ensureCalendarNoteIndexes(db) {
 }
 
 function migrateDatabaseSchema(db, existingVersion) {
+  const missingReminders =
+    !hasColumn(db, 'notes', 'reminder_channels') ||
+    !hasColumn(db, 'note_templates', 'reminder_channels') ||
+    !hasTable(db, 'note_reminders')
   const missingDurationDays = !hasColumn(db, 'notes', 'duration_days')
   const missingTagIds =
     !hasColumn(db, 'note_tags', 'tag_id') || !hasColumn(db, 'template_tags', 'tag_id')
@@ -330,6 +347,7 @@ function migrateDatabaseSchema(db, existingVersion) {
   )
   if (
     existingVersion >= DATABASE_SCHEMA_VERSION &&
+    !missingReminders &&
     !missingDurationDays &&
     !missingTagIds &&
     !missingTagSortOrder &&
@@ -367,6 +385,7 @@ function migrateDatabaseSchema(db, existingVersion) {
     }
     if (existingVersion < 14 || missingContentColorRanges) migrateToVersion14(db)
     if (existingVersion < 15 || missingTemplateTimeRange) migrateToVersion15(db)
+    if (existingVersion < 17 || missingReminders) migrateToVersion17(db)
     if (existingVersion < DATABASE_SCHEMA_VERSION) {
       db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
     }
@@ -475,6 +494,7 @@ export function createNotesSchema(db) {
       is_deleted          INTEGER NOT NULL DEFAULT 0 CHECK(is_deleted IN (0, 1)),
       is_pinned           INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0, 1)),
       notify_enabled      INTEGER NOT NULL DEFAULT 0 CHECK(notify_enabled IN (0, 1)),
+      reminder_channels   INTEGER NOT NULL DEFAULT 0 CHECK(reminder_channels BETWEEN 0 AND 7),
       effective_at        INTEGER NOT NULL,
       duration_days       INTEGER NOT NULL DEFAULT 1
                           CHECK(duration_days >= 1 AND duration_days <= 365),
@@ -498,6 +518,7 @@ export function createNotesSchema(db) {
       recurrence_rule         TEXT    NOT NULL,
       is_pinned               INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0, 1)),
       notify_enabled          INTEGER NOT NULL DEFAULT 1 CHECK(notify_enabled IN (0, 1)),
+      reminder_channels       INTEGER NOT NULL DEFAULT 1 CHECK(reminder_channels BETWEEN 0 AND 7),
       is_paused               INTEGER NOT NULL DEFAULT 0 CHECK(is_paused IN (0, 1)),
       is_deleted              INTEGER NOT NULL DEFAULT 0 CHECK(is_deleted IN (0, 1)),
       deleted_at              INTEGER,

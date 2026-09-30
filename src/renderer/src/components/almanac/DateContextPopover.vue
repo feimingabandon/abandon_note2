@@ -75,6 +75,8 @@ onMounted(async () => {
   if (disposed) return
   observer = new ResizeObserver(reposition)
   observer.observe(panel.value)
+  // 列表筛选按钮收放时，摘要锚点的宽度和位置会同步变化。
+  observer.observe(props.anchor)
   reposition()
   focusFrame = requestAnimationFrame(() =>
     panel.value?.querySelector('button')?.focus({ preventScroll: true })

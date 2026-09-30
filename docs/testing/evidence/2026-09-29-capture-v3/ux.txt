@@ -1,0 +1,21 @@
+********* Start testing of UxTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : UxTest::initTestCase()
+QWARN  : UxTest::parametersKeepFocusAndValues() QFontDatabase: Cannot find font directory C:/addFile/idea/???/abandon/abandon_note2/tmp/toolchains/qt/6.8.3/msvc2022_64/lib/fonts.
+Note that Qt no longer ships fonts. Deploy some (from https://dejavu-fonts.github.io/ for example) or switch to fontconfig.
+PASS   : UxTest::parametersKeepFocusAndValues()
+PASS   : UxTest::continuousStrokes()
+PASS   : UxTest::textHandlesAndRotatedHit()
+QWARN  : UxTest::textInputTransformsWithDocument() This plugin does not support propagateSizeHints()
+PASS   : UxTest::textInputTransformsWithDocument()
+PASS   : UxTest::keyboardEditsCurrentObject()
+QWARN  : UxTest::textRightClickCommitsAndMenuKeepsKeys() This plugin does not support propagateSizeHints()
+QWARN  : UxTest::textRightClickCommitsAndMenuKeepsKeys() This plugin does not support raise()
+QWARN  : UxTest::textRightClickCommitsAndMenuKeepsKeys() This plugin does not support grabbing the keyboard
+PASS   : UxTest::textRightClickCommitsAndMenuKeepsKeys()
+PASS   : UxTest::editedCroppedEffectResamples()
+PASS   : UxTest::toolbarLayoutAndTheme()
+PASS   : UxTest::syntheticVisualEvidence()
+PASS   : UxTest::cleanupTestCase()
+Totals: 11 passed, 0 failed, 0 skipped, 0 blacklisted, 151ms
+********* Finished testing of UxTest *********

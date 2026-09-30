@@ -23,6 +23,7 @@ export const APPLICATION_SETTING_IDS = Object.freeze([
   'appearance.titlebarIconScale',
   'appearance.iconColor',
   'shortcuts.viewVisibility',
+  'shortcuts.screenshot',
   'calendar.recurringPreviewEnabled',
   'notes.tagColorEnabled',
   'interaction.doubleClickQuickEdit',
@@ -55,7 +56,12 @@ const WEEK_SETTINGS_INITIALIZED_ROW = Object.freeze({
 const APPLICATION_SETTING_DB_KEYS = new Set([
   'appearance:titlebar_icon_scale',
   'appearance:icon_color',
+  'shortcuts:enabled', // Retired persistent gate must not enter per-view settings.
   'shortcuts:view_visibility',
+  'shortcuts:screenshot',
+  // Retired shortcuts remain excluded from per-view inheritance.
+  'shortcuts:clipboard_pin',
+  'shortcuts:toggle_pins',
   'remote:receive_notices',
   'remote:upload_device_info',
   'weather:enabled',

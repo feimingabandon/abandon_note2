@@ -1,5 +1,6 @@
 /** 循环模板 CRUD、标签快照配置与可恢复删除。 */
 import { getDb } from './db-connection.js'
+import { normalizeReminderChannels } from '../../shared/reminder-rules.js'
 import { measureSyncPerformance } from '../logging/operation-performance.js'
 import { calculateNextRunInRange, normalizeRecurrenceRule } from '../services/recurrence-rules.js'
 import { requireSingleAssignedTagId } from '../../shared/tag-rules.js'
@@ -101,6 +102,7 @@ export function createTemplate(
     recurrenceRule,
     content = '',
     notifyEnabled = true,
+    reminderChannels,
     isPinned = false,
     tagIds = [],
     startAt = null,
@@ -109,6 +111,7 @@ export function createTemplate(
   timestamp = now()
 ) {
   const db = getDb()
+  const channels = normalizeReminderChannels(reminderChannels, notifyEnabled)
   const normalizedContent = normalizeContent(content)
   const normalizedRule = normalizeRecurrenceRule(recurrenceRule)
   const normalizedTags = normalizeTagIds(tagIds)
@@ -128,17 +131,18 @@ export function createTemplate(
     const result = db
       .prepare(
         `INSERT INTO note_templates (
-         content, recurrence_rule, is_pinned, notify_enabled, is_paused, is_deleted,
+         content, recurrence_rule, is_pinned, notify_enabled, reminder_channels, is_paused, is_deleted,
            deleted_at, schedule_anchor_at, start_at, end_at, next_run_at, last_generated_at,
            last_generated_note_id, consecutive_failures, last_error, last_failed_at,
            pause_reason, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, 0, 0, NULL, ?, ?, ?, ?, NULL, NULL, 0, NULL, NULL, NULL, ?, ?)`
+         ) VALUES (?, ?, ?, ?, ?, 0, 0, NULL, ?, ?, ?, ?, NULL, NULL, 0, NULL, NULL, NULL, ?, ?)`
       )
       .run(
         normalizedContent,
         JSON.stringify(normalizedRule),
         isPinned ? 1 : 0,
-        notifyEnabled ? 1 : 0,
+        channels ? 1 : 0,
+        channels,
         scheduleAnchorAt,
         range.startAt,
         range.endAt,
@@ -159,6 +163,10 @@ export function updateTemplate(id, fields = {}, timestamp = now()) {
   return db.transaction(() => {
     const old = getTemplateRow(db, templateId)
     if (!old || old.is_deleted) throw new Error('模板不存在或已删除')
+    const channels =
+      fields.reminderChannels === undefined && fields.notifyEnabled === undefined
+        ? old.reminder_channels
+        : normalizeReminderChannels(fields.reminderChannels, fields.notifyEnabled)
 
     const content = fields.content === undefined ? old.content : normalizeContent(fields.content)
     let oldRule = null
@@ -203,7 +211,7 @@ export function updateTemplate(id, fields = {}, timestamp = now()) {
 
     db.prepare(
       `UPDATE note_templates SET
-         content = ?, recurrence_rule = ?, is_pinned = ?, notify_enabled = ?,
+         content = ?, recurrence_rule = ?, is_pinned = ?, notify_enabled = ?, reminder_channels = ?,
          schedule_anchor_at = ?, start_at = ?, end_at = ?, next_run_at = ?, is_paused = ?,
          updated_at = ?
        WHERE id = ? AND is_deleted = 0`
@@ -211,7 +219,8 @@ export function updateTemplate(id, fields = {}, timestamp = now()) {
       content,
       JSON.stringify(rule),
       fields.isPinned === undefined ? old.is_pinned : fields.isPinned ? 1 : 0,
-      fields.notifyEnabled === undefined ? old.notify_enabled : fields.notifyEnabled ? 1 : 0,
+      channels ? 1 : 0,
+      channels,
       scheduleAnchorAt,
       range.startAt,
       range.endAt,
