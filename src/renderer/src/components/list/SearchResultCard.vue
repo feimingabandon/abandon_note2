@@ -1,4 +1,7 @@
 <script setup>
+import { isComposingInput } from '../../utils/inputComposition.js'
+import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
+import { pointerMenuStyle } from '../../utils/anchoredPopover.js'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import StatusRing from './StatusRing.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
@@ -189,6 +192,7 @@ let menuTrigger = null
 const showPurgeDialog = ref(false)
 
 function closeContextMenu(restoreFocus = false) {
+  if (restoreFocus?.type === 'scroll' && contextMenuRef.value?.contains(restoreFocus.target)) return
   if (restoreFocus === true && menuTrigger?.isConnected) menuTrigger.focus({ preventScroll: true })
   contextMenuVisible.value = false
   document.removeEventListener('pointerdown', onContextMenuOutside)
@@ -203,8 +207,10 @@ function onContextMenuOutside(event) {
 }
 
 function onContextMenuKeydown(event) {
+  if (isComposingInput(event)) return
   if (event.key === 'Escape') {
     event.preventDefault()
+    event.stopPropagation()
     closeContextMenu(true)
     return
   }
@@ -241,11 +247,7 @@ async function openContextMenu(event) {
 
   const rect = contextMenuRef.value?.getBoundingClientRect()
   if (!rect) return
-  const gap = 8
-  contextMenuStyle.value = {
-    left: `${Math.max(gap, Math.min(x, window.innerWidth - rect.width - gap))}px`,
-    top: `${Math.max(gap, Math.min(y, window.innerHeight - rect.height - gap))}px`
-  }
+  contextMenuStyle.value = pointerMenuStyle(x, y, contextMenuRef.value)
   contextMenuRef.value?.querySelector('button:not(:disabled)')?.focus({ preventScroll: true })
   document.addEventListener('pointerdown', onContextMenuOutside)
   document.addEventListener('keydown', onContextMenuKeydown)
@@ -385,7 +387,7 @@ onUnmounted(() => {
     </div>
 
     <Teleport to="body">
-      <Transition name="src-context-menu">
+      <Transition :css="false" @enter="enterPopover" @leave="leavePopover">
         <div
           v-if="contextMenuVisible"
           ref="contextMenuRef"
@@ -584,9 +586,12 @@ onUnmounted(() => {
   position: fixed;
   z-index: var(--z-global-popover);
   width: 128rem;
-  overflow: hidden;
-  border-radius: 10rem;
-  box-shadow: 0 12rem 34rem rgba(0, 0, 0, 0.22);
+  overflow: auto;
+  overscroll-behavior: contain;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  border-radius: var(--ui-menu-radius);
+  box-shadow: var(--ui-menu-shadow);
 }
 .src-context-menu {
   display: grid;
@@ -603,6 +608,7 @@ onUnmounted(() => {
 }
 .src-context-menu button {
   width: 100%;
+  min-height: var(--ui-menu-row-height);
   padding: 7rem 9rem;
   border: 0;
   border-radius: 6rem;
@@ -619,28 +625,19 @@ onUnmounted(() => {
 .src-context-menu button:hover:not(:disabled),
 .src-context-menu button:focus-visible:not(:disabled) {
   outline: none;
-  background: var(--ui-fill-hover);
+  background: var(--ui-menu-highlight);
+  color: var(--ui-menu-on-highlight);
 }
 .src-context-menu button:disabled {
   opacity: 0.38;
   cursor: default;
 }
-.src-context-menu .src-context-menu__delete {
+.src-context-menu button.src-context-menu__delete {
   color: var(--ui-danger);
 }
-.src-context-menu .src-context-menu__delete:hover:not(:disabled),
-.src-context-menu .src-context-menu__delete:focus-visible:not(:disabled) {
-  background: color-mix(in srgb, var(--ui-danger) 11%, transparent);
-}
-.src-context-menu-enter-active,
-.src-context-menu-leave-active {
-  transition:
-    opacity 130ms ease,
-    transform 180ms cubic-bezier(0.32, 0.72, 0, 1);
-}
-.src-context-menu-enter-from,
-.src-context-menu-leave-to {
-  opacity: 0;
-  transform: translateY(-4px) scale(0.98);
+.src-context-menu button.src-context-menu__delete:hover:not(:disabled),
+.src-context-menu button.src-context-menu__delete:focus-visible:not(:disabled) {
+  background: var(--ui-danger-solid);
+  color: var(--ui-on-danger);
 }
 </style>

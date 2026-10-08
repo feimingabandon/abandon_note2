@@ -1,8 +1,10 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
-import { ownPopover, releasePopover } from '../../utils/anchoredPopover.js'
-import { focusModal, trapModalTab } from '../../utils/modalFocus.js'
+import { popoverStyle } from '../../utils/anchoredPopover.js'
+import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
+import { isComposingInput } from '../../utils/inputComposition.js'
+import { focusModal } from '../../utils/modalFocus.js'
 import {
   MAX_CALENDAR_YEAR,
   MIN_CALENDAR_YEAR,
@@ -24,8 +26,14 @@ const panelStyle = ref({})
 const viewYear = ref(new Date().getFullYear())
 const viewMonth = ref(new Date().getMonth() + 1)
 const monthDirection = ref('next')
-let panelResizeObserver = null
 let focusFrame = null
+const { onKeydown: onPanelKeydown } = usePopoverLifecycle(
+  open,
+  triggerRef,
+  panelRef,
+  updatePosition,
+  { dialog: true }
+)
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
 
 const selectedParts = computed(() => {
@@ -57,13 +65,13 @@ function updatePosition() {
   const triggerRect = triggerRef.value?.getBoundingClientRect()
   const panelRect = panelRef.value?.getBoundingClientRect()
   if (!triggerRect || !panelRect) return
-  const left = Math.max(12, Math.min(window.innerWidth - panelRect.width - 12, triggerRect.left))
-  const belowTop = triggerRect.bottom + 7
-  const top =
-    belowTop + panelRect.height <= window.innerHeight - 12
-      ? belowTop
-      : Math.max(12, triggerRect.top - panelRect.height - 7)
-  panelStyle.value = { left: `${left}px`, top: `${top}px` }
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize)
+  const font = parseFloat(getComputedStyle(triggerRef.value).fontSize)
+  panelStyle.value = popoverStyle(
+    triggerRect,
+    Math.max(310 * rem, 16 * font),
+    panelRef.value.scrollHeight + 2
+  )
 }
 
 async function openPanel() {
@@ -71,27 +79,17 @@ async function openPanel() {
   open.value = true
   await nextTick()
   if (!open.value || !panelRef.value) return
-  panelResizeObserver?.disconnect()
-  // 切月的 out-in 过渡会先移除旧网格，再插入新网格；按实际尺寸重定位。
-  panelResizeObserver = new ResizeObserver(updatePosition)
-  panelResizeObserver.observe(panelRef.value)
   updatePosition()
-  ownPopover(panelRef.value, triggerRef.value)
   focusFrame = requestAnimationFrame(() => {
     focusFrame = null
     if (open.value) focusModal(panelRef.value, '.date-picker-panel__day.is-selected:not(:disabled)')
   })
-  window.addEventListener('resize', updatePosition)
 }
 
 function closePanel({ restoreFocus = false } = {}) {
-  releasePopover(panelRef.value)
   if (focusFrame !== null) cancelAnimationFrame(focusFrame)
   focusFrame = null
   open.value = false
-  panelResizeObserver?.disconnect()
-  panelResizeObserver = null
-  window.removeEventListener('resize', updatePosition)
   if (restoreFocus) triggerRef.value?.querySelector('button')?.focus({ preventScroll: true })
 }
 
@@ -127,7 +125,7 @@ function onDocumentPointerDown(event) {
 }
 
 function onDocumentKeydown(event) {
-  if (event.key !== 'Escape' || !open.value || event.isComposing) return
+  if (event.key !== 'Escape' || !open.value || isComposingInput(event)) return
   // 捕获阶段先关闭日期浮层，避免触发器上的 Escape 被外层模态抢先处理。
   event.preventDefault()
   event.stopPropagation()
@@ -145,12 +143,9 @@ document.addEventListener('pointerdown', onDocumentPointerDown)
 document.addEventListener('keydown', onDocumentKeydown, true)
 
 onBeforeUnmount(() => {
-  releasePopover(panelRef.value)
   if (focusFrame !== null) cancelAnimationFrame(focusFrame)
-  panelResizeObserver?.disconnect()
   document.removeEventListener('pointerdown', onDocumentPointerDown)
   document.removeEventListener('keydown', onDocumentKeydown, true)
-  window.removeEventListener('resize', updatePosition)
 })
 </script>
 
@@ -192,7 +187,7 @@ onBeforeUnmount(() => {
           :style="panelStyle"
           role="dialog"
           :aria-label="ariaLabel"
-          @keydown="trapModalTab($event, panelRef)"
+          @keydown="onPanelKeydown"
         >
           <header class="date-picker-panel__header">
             <button
@@ -218,7 +213,11 @@ onBeforeUnmount(() => {
             <span v-for="weekday in WEEKDAYS" :key="weekday">{{ weekday }}</span>
           </div>
           <Transition :name="`date-picker-month-${monthDirection}`" mode="out-in">
-            <div :key="`${viewYear}-${viewMonth}`" class="date-picker-panel__calendar">
+            <div
+              :key="`${viewYear}-${viewMonth}`"
+              class="date-picker-panel__calendar"
+              data-popover-grid="7"
+            >
               <button
                 v-for="cell in cells"
                 :key="cell.key"
@@ -306,11 +305,12 @@ onBeforeUnmount(() => {
   z-index: var(--z-global-popover);
   width: min(310rem, calc(100vw - 24px));
   padding: 10rem;
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--surface-float-border);
-  border-radius: 13rem;
+  border-radius: var(--ui-menu-radius);
   background: var(--surface-float);
-  box-shadow: 0 18rem 48rem rgba(0, 0, 0, 0.28);
+  box-shadow: var(--ui-menu-shadow);
   color: var(--text-color);
   transform-origin: top center;
 }
@@ -408,11 +408,11 @@ onBeforeUnmount(() => {
   cursor: default;
 }
 .date-picker-panel__day.is-today span {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, #0a84ff 54%, transparent);
-  color: #0a84ff;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 54%, transparent);
+  color: var(--ui-accent);
 }
 .date-picker-panel__day.is-selected span {
-  background: #0a84ff;
+  background: var(--ui-primary);
   box-shadow: none;
   color: #fff;
 }
@@ -429,7 +429,7 @@ onBeforeUnmount(() => {
   border: 0;
   border-radius: 8rem;
   background: transparent;
-  color: #0a84ff;
+  color: var(--ui-accent);
   font: inherit;
   font-size: var(--fs-secondary);
   cursor: pointer;

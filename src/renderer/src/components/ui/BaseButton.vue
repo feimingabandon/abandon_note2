@@ -13,7 +13,9 @@
 defineProps({
   variant: { type: String, default: 'default' },
   size: { type: String, default: 'md' },
-  disabled: { type: Boolean, default: false }
+  disabled: { type: Boolean, default: false },
+  loading: { type: Boolean, default: false },
+  type: { type: String, default: 'button' }
 })
 
 const emit = defineEmits(['click'])
@@ -22,8 +24,10 @@ const emit = defineEmits(['click'])
 <template>
   <button
     class="base-btn"
+    :type="type"
     :class="[`btn--${variant}`, `btn--${size}`]"
-    :disabled="disabled"
+    :disabled="disabled || loading"
+    :aria-busy="loading || undefined"
     @click="emit('click', $event)"
   >
     <slot />
@@ -37,7 +41,9 @@ const emit = defineEmits(['click'])
   justify-content: center;
   border: none;
   border-radius: 8rem;
-  padding: 9rem 16rem;
+  gap: 6rem;
+  min-height: max(28px, 30rem);
+  padding: 6rem 12rem;
   font-size: var(--fs-body);
   font-family: inherit;
   font-weight: 500;
@@ -54,6 +60,13 @@ const emit = defineEmits(['click'])
 
 .base-btn:hover:not(:disabled) {
   background-color: var(--ui-surface-control-hover);
+}
+.base-btn:focus-visible {
+  outline: 1px solid var(--ui-border-hover);
+  outline-offset: 2px;
+}
+.base-btn[aria-haspopup]:active:not(:disabled) {
+  transform: none;
 }
 .base-btn:active:not(:disabled) {
   transform: scale(0.98);
@@ -75,21 +88,35 @@ const emit = defineEmits(['click'])
 }
 
 .btn--danger {
-  background-color: rgba(255, 59, 48, 0.35);
-  color: var(--text-color);
+  background-color: var(--ui-danger-solid);
+  color: var(--ui-on-danger);
 }
 .btn--danger:hover:not(:disabled) {
-  background-color: rgba(255, 59, 48, 0.55);
+  background-color: var(--ui-danger-hover);
+}
+.btn--text,
+.btn--icon {
+  background: transparent;
+}
+.btn--icon {
+  min-width: max(28px, 30rem);
+  padding: 5rem;
+}
+.btn--text:hover:not(:disabled),
+.btn--icon:hover:not(:disabled) {
+  background: var(--ui-fill-hover);
 }
 
 /* ---- 尺寸 ---- */
 .btn--sm {
-  padding: 6rem 12rem;
+  min-height: max(26px, 26rem);
+  padding: 4rem 10rem;
   font-size: var(--fs-secondary);
   border-radius: 6rem;
 }
 .btn--lg {
-  padding: 12rem 24rem;
+  min-height: max(28px, 34rem);
+  padding: 8rem 16rem;
   font-size: var(--fs-body);
 }
 </style>

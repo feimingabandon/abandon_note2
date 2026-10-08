@@ -1,0 +1,33 @@
+{
+  "createdAt": "2026-09-30T08:47:58.643Z",
+  "files": [
+    {
+      "path": "src/renderer/src/components/system/AppTitlebar.vue",
+      "sha256": "d0ed656edeb60e2ae43d4ddaa0586bbfd88ca9cd746c535ab06790d0de2ede4a"
+    },
+    {
+      "path": "src/renderer/src/components/system/TitlebarActions.vue",
+      "sha256": "135f970def50d01bc6b5677ffbd8b2fa9264e89fb4d2a8ab10028b3e4cac672f"
+    },
+    {
+      "path": "src/renderer/src/components/ui/MonthDayPicker.vue",
+      "sha256": "45956320ad462f61bd0d3c0fcdef3ee97a6e627898c8c2790596f46f3720f249"
+    },
+    {
+      "path": "src/renderer/src/components/ui/FontSizeInput.vue",
+      "sha256": "4de174593fc92adca9d346af3949ad66854f72e85313d2a373b512755a668fce"
+    },
+    {
+      "path": "tests/ui-components-electron.mjs",
+      "sha256": "827a21c2e87afa77c6d4fe61ab7d4743d6823b847e989ee15eb8bd9b5e925b10"
+    },
+    {
+      "path": "tests/ui-responsive-electron.mjs",
+      "sha256": "f6a43b615f1ea0053b127b97e408e65af514c53602cdc6adc9d8df122e270d3b"
+    },
+    {
+      "path": "tests/titlebar-icon-scale-electron.mjs",
+      "sha256": "614109dd3e1d4aa562f7fc33f420befb44565c9c0caf370a19ebfa7ad8b1023c"
+    }
+  ]
+}

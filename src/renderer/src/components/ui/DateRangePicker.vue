@@ -1,6 +1,10 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
+import { popoverStyle } from '../../utils/anchoredPopover.js'
+import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
+import { isComposingInput } from '../../utils/inputComposition.js'
+import BaseButton from './BaseButton.vue'
 
 const props = defineProps({
   start: { type: String, default: '' },
@@ -20,6 +24,13 @@ const open = ref(false)
 const triggerRef = ref(null)
 const panelRef = ref(null)
 const panelStyle = ref({})
+const { close: closePopover, onKeydown: onPanelKeydown } = usePopoverLifecycle(
+  open,
+  triggerRef,
+  panelRef,
+  updatePosition,
+  { dialog: true, focus: true }
+)
 const draftStart = ref('')
 const draftEnd = ref('')
 const now = new Date()
@@ -121,32 +132,27 @@ function updatePosition() {
   const rect = triggerRef.value?.getBoundingClientRect()
   const panelRect = panelRef.value?.getBoundingClientRect()
   if (!rect || !panelRect) return
-  const left = Math.max(
-    12,
-    Math.min(window.innerWidth - panelRect.width - 12, rect.right - panelRect.width)
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize)
+  const font = parseFloat(getComputedStyle(triggerRef.value).fontSize)
+  const width = Math.max(330 * rem, 18 * font)
+  panelStyle.value = popoverStyle(
+    { ...rect.toJSON(), left: rect.right - width },
+    width,
+    panelRef.value.scrollHeight + 2
   )
-  const belowTop = rect.bottom + 7
-  const top =
-    belowTop + panelRect.height <= window.innerHeight - 12
-      ? belowTop
-      : Math.max(12, rect.top - panelRect.height - 7)
-  panelStyle.value = { left: `${left}px`, top: `${top}px` }
 }
 
 function openPanel() {
   syncDraft()
   open.value = true
-  nextTick(updatePosition)
-  window.addEventListener('resize', updatePosition)
 }
 
-function closePanel() {
-  open.value = false
-  window.removeEventListener('resize', updatePosition)
+function closePanel(restore = false) {
+  closePopover(restore)
 }
 
 function togglePanel() {
-  if (open.value) closePanel()
+  if (open.value) closePanel(true)
   else openPanel()
 }
 
@@ -181,14 +187,14 @@ function clearRange() {
   emit('update:start', '')
   emit('update:end', '')
   emit('change', { start: '', end: '' })
-  closePanel()
+  closePanel(true)
 }
 
 function applyRange() {
   emit('update:start', draftStart.value)
   emit('update:end', draftEnd.value)
   emit('change', { start: draftStart.value, end: draftEnd.value })
-  closePanel()
+  closePanel(true)
 }
 
 function onDocumentPointer(event) {
@@ -198,7 +204,10 @@ function onDocumentPointer(event) {
 }
 
 function onDocumentKeydown(event) {
-  if (event.key === 'Escape' && open.value) closePanel()
+  if (event.key !== 'Escape' || !open.value || isComposingInput(event)) return
+  event.preventDefault()
+  event.stopPropagation()
+  closePanel(true)
 }
 
 watch(
@@ -209,12 +218,11 @@ watch(
 )
 
 document.addEventListener('mousedown', onDocumentPointer)
-document.addEventListener('keydown', onDocumentKeydown)
+document.addEventListener('keydown', onDocumentKeydown, true)
 
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocumentPointer)
-  document.removeEventListener('keydown', onDocumentKeydown)
-  window.removeEventListener('resize', updatePosition)
+  document.removeEventListener('keydown', onDocumentKeydown, true)
 })
 </script>
 
@@ -269,6 +277,7 @@ onBeforeUnmount(() => {
         :style="panelStyle"
         role="dialog"
         aria-label="选择日期范围"
+        @keydown="onPanelKeydown"
       >
         <header class="drp-header">
           <button
@@ -295,7 +304,7 @@ onBeforeUnmount(() => {
         </div>
 
         <Transition :name="`drp-month-${monthDirection}`" mode="out-in">
-          <div :key="`${viewYear}-${viewMonth}`" class="drp-calendar">
+          <div :key="`${viewYear}-${viewMonth}`" class="drp-calendar" data-popover-grid="7">
             <button
               v-for="cell in calendarCells"
               :key="cell.key"
@@ -326,15 +335,15 @@ onBeforeUnmount(() => {
         </div>
 
         <footer class="drp-footer">
-          <button type="button" class="drp-clear" @click="clearRange">清除</button>
-          <button
-            type="button"
+          <BaseButton variant="text" class="drp-clear" @click="clearRange">清除</BaseButton>
+          <BaseButton
+            variant="primary"
             class="drp-done"
             :disabled="!draftStart || !draftEnd"
             @click="applyRange"
           >
             完成
-          </button>
+          </BaseButton>
         </footer>
       </section>
     </Transition>
@@ -456,9 +465,10 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   padding: 10rem;
   border: 1px solid var(--surface-float-border);
-  border-radius: 13rem;
+  border-radius: var(--ui-menu-radius);
   background: var(--surface-float);
-  box-shadow: 0 18rem 48rem rgba(0, 0, 0, 0.28);
+  box-shadow: var(--ui-menu-shadow);
+  overscroll-behavior: contain;
   color: var(--text-color);
 }
 .drp-header {
@@ -559,23 +569,23 @@ onBeforeUnmount(() => {
   color: color-mix(in srgb, var(--text-color) 28%, transparent);
 }
 .drp-day.is-today span {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, #0a84ff 54%, transparent);
-  color: #0a84ff;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 54%, transparent);
+  color: var(--ui-accent);
 }
 .drp-day.is-range::before {
-  background: color-mix(in srgb, #0a84ff 13%, transparent);
+  background: color-mix(in srgb, var(--ui-accent) 13%, transparent);
 }
 .drp-day.is-start::before {
   left: 50%;
-  background: color-mix(in srgb, #0a84ff 13%, transparent);
+  background: color-mix(in srgb, var(--ui-accent) 13%, transparent);
 }
 .drp-day.is-end::before {
   right: 50%;
-  background: color-mix(in srgb, #0a84ff 13%, transparent);
+  background: color-mix(in srgb, var(--ui-accent) 13%, transparent);
 }
 .drp-day.is-start span,
 .drp-day.is-end span {
-  background: #0a84ff;
+  background: var(--ui-primary);
   box-shadow: none;
   color: white;
 }
@@ -594,26 +604,9 @@ onBeforeUnmount(() => {
   padding-top: 7rem;
   border-top: 1px solid var(--ui-border-divider);
 }
-.drp-footer button {
-  min-width: 60rem;
-  height: 30rem;
-  border: 0;
-  border-radius: 8rem;
-  font: inherit;
-  font-size: var(--fs-secondary);
-  cursor: pointer;
-}
-.drp-clear {
-  background: transparent;
-  color: var(--text-color-secondary);
-}
-.drp-done {
-  background: #0a84ff;
-  color: white;
-}
-.drp-done:disabled {
-  opacity: 0.34;
-  cursor: default;
+.drp-footer {
+  flex-wrap: wrap;
+  gap: 8rem;
 }
 .drp-month-next-enter-active,
 .drp-month-next-leave-active,

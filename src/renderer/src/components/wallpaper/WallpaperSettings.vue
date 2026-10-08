@@ -591,6 +591,17 @@ onBeforeUnmount(() => {
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
 }
+@container (max-width: 380px) {
+  .wp-blur-control {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .wp-blur-control > span:first-child {
+    grid-column: 1 / -1;
+  }
+  .wp-blur-control :deep(.slider-root) {
+    min-width: 0;
+  }
+}
 .wp-library-toggle {
   display: flex;
   width: 100%;

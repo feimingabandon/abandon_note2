@@ -207,7 +207,7 @@ onUnmounted(() => {
 
 <template>
   <Teleport to="body">
-    <Transition name="ipv" @after-leave="freeModalBlur">
+    <Transition name="ipv" appear @after-leave="freeModalBlur">
       <div
         v-if="visible"
         ref="overlayRef"

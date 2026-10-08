@@ -127,7 +127,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <Transition name="app-modal" @after-leave="afterLeave">
+    <Transition name="app-modal" appear @after-leave="afterLeave">
       <div
         v-if="displayed"
         class="app-modal-overlay"
@@ -192,6 +192,8 @@ onBeforeUnmount(() => {
 }
 
 .app-modal-card {
+  max-width: 100%;
+  max-height: 100%;
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -324,5 +326,17 @@ onBeforeUnmount(() => {
 .app-modal-enter-from .app-modal-card,
 .app-modal-leave-to .app-modal-card {
   transform: translateY(8rem);
+}
+.app-modal-footer {
+  flex-wrap: wrap;
+}
+@media (max-width: 360px) {
+  .app-modal-overlay {
+    padding: 8px;
+  }
+  .app-modal-header {
+    gap: 8rem;
+    padding: 12rem;
+  }
 }
 </style>

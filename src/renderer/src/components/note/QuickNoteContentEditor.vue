@@ -265,7 +265,9 @@ async function copyDraft() {
   position: fixed;
   z-index: var(--z-global-editor);
   width: min(360px, calc(100vw - 24px));
-  padding: 9px 10px 7px;
+  padding: 12px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
   border: 1px solid var(--ui-border-control);
   border-radius: 14px;
   background: var(--surface-float);
@@ -279,16 +281,9 @@ async function copyDraft() {
     box-shadow 150ms ease;
 }
 
-.quick-note-editor:focus-within {
-  border-color: color-mix(in srgb, var(--ui-accent) 72%, transparent);
-  box-shadow:
-    0 0 0 3px var(--ui-accent-subtle),
-    0 14px 34px color-mix(in srgb, var(--text-color) 18%, transparent);
-}
-
 .quick-note-editor__field label {
   display: block;
-  padding: 2px 6px 0;
+  padding: 2px 6px 4px;
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
   line-height: 1.3;
@@ -299,6 +294,7 @@ async function copyDraft() {
   display: block;
   width: 100%;
   min-height: 84px;
+  border-radius: 8px;
   max-height: min(210px, calc(100vh - 180px));
   padding: 5px 6px;
   overflow: auto;

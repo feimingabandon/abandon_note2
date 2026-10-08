@@ -1,0 +1,2 @@
+# Failed run caches remain available locally, but are not review artifacts.
+**/temp-*/

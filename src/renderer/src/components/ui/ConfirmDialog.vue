@@ -90,6 +90,7 @@ watch(
       acquireModalBlur()
       rendered.value = true
       await nextTick()
+      void cardRef.value?.offsetWidth
       if (focusFrame !== null) cancelAnimationFrame(focusFrame)
       focusFrame = requestAnimationFrame(() => {
         focusFrame = null

@@ -1,0 +1,10 @@
+********* Start testing of UiTest *********
+Config: Using QtTest library 6.8.3, Qt 6.8.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+PASS   : UiTest::initTestCase()
+FAIL!  : UiTest::completionReturnsToRequestingForm() Compared values are not the same
+   Actual   (primary->defaultAction()->data().toString()): "copy"
+   Expected (expected)                                   : "source"
+C:\addFile\idea\项目\abandon\abandon_note2\native_capture\tests\ui_test.cpp(34) : failure location
+PASS   : UiTest::cleanupTestCase()
+Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 19ms
+********* Finished testing of UiTest *********

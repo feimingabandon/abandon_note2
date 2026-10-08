@@ -543,7 +543,7 @@ onBeforeUnmount(() => {
   transform: scale(0.98);
 }
 .help-page :is(button, summary, input, h2):focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: 3px;
 }
 .help-page :is(h1, h2, h3, p) {
@@ -578,7 +578,7 @@ onBeforeUnmount(() => {
   border-color: var(--ui-border-hover);
 }
 .help-search-field:focus-within {
-  border-color: var(--ui-accent);
+  border-color: var(--ui-border-hover);
 }
 .help-search-field input {
   flex: 1;

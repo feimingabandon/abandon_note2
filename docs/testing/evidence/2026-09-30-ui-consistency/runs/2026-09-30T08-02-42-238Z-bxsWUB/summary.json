@@ -1,0 +1,31 @@
+[
+  {
+    "id": "reminders-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/reminders-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T08:02:42.242Z",
+    "durationMs": 40063,
+    "code": 1,
+    "signal": null,
+    "launchError": null,
+    "status": "failed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\runs\\2026-09-30T08-02-42-238Z-bxsWUB\\reminders-electron",
+    "preservedTemporary": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\runs\\2026-09-30T08-02-42-238Z-bxsWUB\\reminders-electron\\temp-2f8qMg"
+  },
+  {
+    "id": "ui-responsive-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/ui-responsive-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T08:03:22.315Z",
+    "durationMs": 11287,
+    "code": 0,
+    "signal": null,
+    "launchError": null,
+    "status": "passed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\runs\\2026-09-30T08-02-42-238Z-bxsWUB\\ui-responsive-electron"
+  }
+]

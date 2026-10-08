@@ -98,4 +98,17 @@ defineProps({
 .titlebar-actions-group--microsoft :deep(.titlebar-btn-help.is-active) {
   background-color: color-mix(in srgb, #0078d4 18%, transparent);
 }
+
+@media (max-width: 420px) {
+  .titlebar-actions-group {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+  .titlebar-actions-group--apple {
+    gap: 6px;
+  }
+  .titlebar-actions-group :deep(.titlebar-btn) {
+    flex-shrink: 0;
+  }
+}
 </style>

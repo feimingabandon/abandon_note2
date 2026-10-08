@@ -1,0 +1,321 @@
+[
+  {
+    "run": "2026-09-30T07-53-59-791Z-UudVEW",
+    "results": [
+      {
+        "id": "ui-components-electron",
+        "status": "failed",
+        "code": 1,
+        "durationMs": 6726
+      },
+      {
+        "id": "ui-responsive-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 11235
+      },
+      {
+        "id": "titlebar-icon-scale-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 2411
+      },
+      {
+        "id": "calendar-font-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 9056
+      },
+      {
+        "id": "draft-dialog-ui-electron",
+        "status": "failed",
+        "code": 1,
+        "durationMs": 4054
+      },
+      {
+        "id": "template-quarterly-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 2126
+      },
+      {
+        "id": "modal-queue-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 6034
+      },
+      {
+        "id": "reminders-electron",
+        "status": "failed",
+        "code": 1,
+        "durationMs": 17227
+      },
+      {
+        "id": "settings-scroll-memory-electron",
+        "status": "failed",
+        "code": 1,
+        "durationMs": 6739
+      },
+      {
+        "id": "presentation-mode-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 10047
+      },
+      {
+        "id": "titlebar-native-drag-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 22766
+      }
+    ]
+  },
+  {
+    "run": "2026-09-30T07-57-10-926Z-mMjxGx",
+    "results": [
+      {
+        "id": "ui-components-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 10234
+      },
+      {
+        "id": "draft-dialog-ui-electron",
+        "status": "failed",
+        "code": 1,
+        "durationMs": 3915
+      },
+      {
+        "id": "reminders-electron",
+        "status": "failed",
+        "code": 1,
+        "durationMs": 39457
+      },
+      {
+        "id": "settings-scroll-memory-electron",
+        "status": "failed",
+        "code": 1,
+        "durationMs": 23861
+      }
+    ]
+  },
+  {
+    "run": "2026-09-30T08-00-47-870Z-gyXMw5",
+    "results": [
+      {
+        "id": "draft-dialog-ui-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 12363
+      },
+      {
+        "id": "reminders-electron",
+        "status": "failed",
+        "code": 1,
+        "durationMs": 1919
+      },
+      {
+        "id": "settings-scroll-memory-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 53628
+      },
+      {
+        "id": "ui-components-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 10175
+      },
+      {
+        "id": "ui-responsive-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 11236
+      }
+    ]
+  },
+  {
+    "run": "2026-09-30T08-02-42-238Z-bxsWUB",
+    "results": [
+      {
+        "id": "reminders-electron",
+        "status": "failed",
+        "code": 1,
+        "durationMs": 40063
+      },
+      {
+        "id": "ui-responsive-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 11287
+      }
+    ]
+  },
+  {
+    "run": "2026-09-30T08-04-52-861Z-AojgDk",
+    "results": [
+      {
+        "id": "reminders-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 41793
+      },
+      {
+        "id": "ui-responsive-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 11292
+      }
+    ]
+  },
+  {
+    "run": "2026-09-30T08-08-03-149Z-pX6Lxq",
+    "results": [
+      {
+        "id": "components-dpi-1",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 10231
+      },
+      {
+        "id": "components-dpi-1.25",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 10302
+      },
+      {
+        "id": "components-dpi-1.5",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 10267
+      },
+      {
+        "id": "components-dpi-2",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 10259
+      },
+      {
+        "id": "responsive",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 14643
+      },
+      {
+        "id": "restart",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 847
+      },
+      {
+        "id": "template-quarterly",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 2264
+      }
+    ]
+  },
+  {
+    "run": "2026-09-30T08-11-24-296Z-6JTWY2",
+    "results": [
+      {
+        "id": "components-dpi-1",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 10284
+      },
+      {
+        "id": "components-dpi-1.25",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 10303
+      },
+      {
+        "id": "components-dpi-1.5",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 10389
+      },
+      {
+        "id": "components-dpi-2",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 10309
+      },
+      {
+        "id": "responsive",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 14547
+      },
+      {
+        "id": "restart",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 849
+      },
+      {
+        "id": "template-quarterly",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 2159
+      }
+    ]
+  },
+  {
+    "run": "2026-09-30T08-15-58-434Z-rvHrlW",
+    "results": [
+      {
+        "id": "month-context-menu-electron",
+        "status": "failed",
+        "code": 1,
+        "durationMs": 13721
+      },
+      {
+        "id": "quick-note-edit-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 7542
+      }
+    ]
+  },
+  {
+    "run": "2026-09-30T08-17-37-833Z-SDeEP5",
+    "results": [
+      {
+        "id": "month-context-menu-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 12114
+      },
+      {
+        "id": "maturity-electron",
+        "status": "failed",
+        "code": 1,
+        "durationMs": 5723
+      }
+    ]
+  },
+  {
+    "run": "2026-09-30T08-19-51-429Z-Ec4hOu",
+    "results": [
+      {
+        "id": "maturity-electron",
+        "status": "failed",
+        "code": 1,
+        "durationMs": 5778
+      }
+    ]
+  },
+  {
+    "run": "2026-09-30T08-20-45-469Z-ELwzSH",
+    "results": [
+      {
+        "id": "maturity-electron",
+        "status": "passed",
+        "code": 0,
+        "durationMs": 6578
+      }
+    ]
+  }
+]

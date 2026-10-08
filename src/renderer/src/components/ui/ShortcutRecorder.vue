@@ -367,8 +367,7 @@ onBeforeUnmount(() => {
 
 .shortcut-recorder-field:focus-visible,
 .is-recording .shortcut-recorder-field {
-  border-color: var(--ui-accent);
-  box-shadow: 0 0 0 2px var(--ui-accent-subtle);
+  border-color: var(--ui-border-hover);
 }
 
 .shortcut-recorder-field:disabled {

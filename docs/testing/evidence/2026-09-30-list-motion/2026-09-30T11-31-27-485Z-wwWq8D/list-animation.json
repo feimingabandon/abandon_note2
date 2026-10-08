@@ -1,0 +1,337 @@
+{
+  "status": "failed",
+  "error": "Error: Script failed to execute, this normally means an error was thrown. Check the renderer console for the error.\n    at node:electron/js2c/sandbox_bundle:2:104135\n    at IpcRendererInternal.<anonymous> (node:electron/js2c/sandbox_bundle:2:98639)\n    at IpcRendererInternal.emit (node:electron/js2c/sandbox_bundle:2:37735)\n    at Object.onMessage (node:electron/js2c/sandbox_bundle:2:97705)",
+  "results": [
+    {
+      "name": "earlier collapse and first reopen animate through intermediate heights",
+      "animations": [
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "836.9375px",
+              "opacity": "1"
+            },
+            {
+              "height": "0px",
+              "opacity": 0
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "0px",
+              "opacity": "0"
+            },
+            {
+              "height": "833.34375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "0px",
+              "opacity": "0"
+            },
+            {
+              "height": "836.9375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "310.65625px",
+              "opacity": "0.371185"
+            },
+            {
+              "height": "870.9375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "376.109375px",
+              "opacity": "0.444651"
+            },
+            {
+              "height": "2448.8125px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        }
+      ]
+    },
+    {
+      "name": "reversing earlier collapse resumes its displayed height",
+      "animations": [
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "2448.8125px",
+              "opacity": "1"
+            },
+            {
+              "height": "0px",
+              "opacity": 0
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "343.375px",
+              "opacity": "0.140226"
+            },
+            {
+              "height": "2448.8125px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        }
+      ]
+    },
+    {
+      "name": "slow earlier query obeys close then reopen intent",
+      "animations": [
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "2448.8125px",
+              "opacity": "1"
+            },
+            {
+              "height": "0px",
+              "opacity": 0
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "0px",
+              "opacity": "0"
+            },
+            {
+              "height": "833.34375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "0px",
+              "opacity": "0"
+            },
+            {
+              "height": "836.9375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        }
+      ]
+    },
+    {
+      "name": "ordinary scroll does not abort new visible card entry",
+      "animations": [
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "36",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 0,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "finished"
+        }
+      ]
+    },
+    {
+      "name": "tag disclosure allows reversal and pending query cancellation",
+      "animations": [
+        {
+          "id": "nl-tag-group-1",
+          "classes": "list-disclosure nl-tag-group-content",
+          "frames": [
+            {
+              "height": "0px",
+              "opacity": "0"
+            },
+            {
+              "height": "844.34375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-tag-group-1",
+          "classes": "list-disclosure nl-tag-group-content",
+          "frames": [
+            {
+              "height": "0px",
+              "opacity": "0"
+            },
+            {
+              "height": "847.9375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "nl-tag-group-1",
+          "classes": "list-disclosure nl-tag-group-content",
+          "frames": [
+            {
+              "height": "847.9375px",
+              "opacity": "1"
+            },
+            {
+              "height": "0px",
+              "opacity": 0
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-tag-group-1",
+          "classes": "list-disclosure nl-tag-group-content",
+          "frames": [
+            {
+              "height": "119.46875px",
+              "opacity": "0.140907"
+            },
+            {
+              "height": "847.9375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        }
+      ]
+    },
+    {
+      "name": "tag pagination keeps existing nodes and does not replay their entry",
+      "animations": []
+    }
+  ]
+}

@@ -245,7 +245,7 @@ onBeforeUnmount(() => {
   opacity: 1;
 }
 .sg-btn:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: -1px;
 }
 .sg-btn--taiji {

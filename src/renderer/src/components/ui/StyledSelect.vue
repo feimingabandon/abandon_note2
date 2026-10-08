@@ -1,6 +1,12 @@
 <script setup>
-import { popoverStyle, ownPopover, releasePopover } from '../../utils/anchoredPopover.js'
+import {
+  popoverStyle,
+  measurePopoverContent,
+  ownPopover,
+  releasePopover
+} from '../../utils/anchoredPopover.js'
 import { isComposingInput } from '../../utils/inputComposition.js'
+import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
 /**
  * StyledSelect.vue — 自定义下拉选择组件
  *
@@ -39,6 +45,13 @@ const open = ref(false)
 const wrapperRef = ref(null)
 const panelRef = ref(null)
 const panelStyle = ref({})
+usePopoverLifecycle(open, wrapperRef, panelRef, updatePanelPosition)
+watch(
+  () => props.disabled,
+  (disabled) => {
+    if (disabled) open.value = false
+  }
+)
 
 // ============ Computed ============
 const displayLabel = computed(() => {
@@ -70,11 +83,10 @@ function toggle() {
 function updatePanelPosition() {
   if (!wrapperRef.value) return
   const rect = wrapperRef.value.getBoundingClientRect()
-  panelStyle.value = popoverStyle(
-    rect,
-    Math.max(rect.width, panelRef.value?.scrollWidth || rect.width),
-    Math.min(320, panelRef.value?.scrollHeight || 256)
-  )
+  const natural = measurePopoverContent(panelRef.value)
+  const width = Math.min(Math.max(rect.width, natural?.width || rect.width), window.innerWidth - 16)
+  const fitted = measurePopoverContent(panelRef.value, width)
+  panelStyle.value = popoverStyle(rect, width, fitted?.height || 256)
 }
 
 function select(opt) {
@@ -173,6 +185,7 @@ onBeforeUnmount(() => {
     <!-- 触发器 -->
     <button
       class="sel-trigger"
+      type="button"
       :class="{ 'is-open': open, 'is-disabled': disabled }"
       :disabled="disabled"
       :aria-label="ariaLabel || undefined"
@@ -201,6 +214,7 @@ onBeforeUnmount(() => {
           v-if="open"
           ref="panelRef"
           class="sel-panel-wrap"
+          :class="sizeClass"
           :style="panelStyle"
           @keydown="onPanelKeydown"
           @click.stop
@@ -211,6 +225,7 @@ onBeforeUnmount(() => {
                 v-for="opt in options"
                 :key="opt.value"
                 class="sel-option"
+                type="button"
                 role="option"
                 :aria-selected="modelValue === opt.value"
                 :class="{ 'is-active': modelValue === opt.value, 'is-disabled': opt.disabled }"
@@ -233,6 +248,8 @@ onBeforeUnmount(() => {
 /* ============ 容器 ============ */
 .sel-wrapper {
   display: inline-block;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* ============ 触发器 ============ */
@@ -262,8 +279,7 @@ onBeforeUnmount(() => {
   border-color: var(--ui-border-hover);
 }
 .sel-trigger:focus-visible {
-  border-color: var(--ui-accent);
-  box-shadow: 0 0 0 3rem var(--ui-accent-subtle);
+  border-color: var(--ui-border-hover);
 }
 .sel-trigger.is-open {
   border-color: var(--ui-border-hover);
@@ -303,9 +319,7 @@ onBeforeUnmount(() => {
 /* ============ 下拉面板 ============ */
 .sel-panel-wrap {
   border-radius: 12rem;
-  box-shadow:
-    0 12rem 32rem rgba(0, 0, 0, 0.18),
-    0 2rem 8rem rgba(0, 0, 0, 0.08);
+  box-shadow: var(--ui-menu-shadow);
   overflow: hidden;
   transform-origin: top center;
   will-change: clip-path;
@@ -318,7 +332,7 @@ onBeforeUnmount(() => {
 }
 .sel-panel {
   display: grid;
-  min-width: max-content;
+  min-width: 0;
   gap: 1rem;
   padding: 5rem;
   max-height: calc(var(--popover-available-height) - 2px);
@@ -330,7 +344,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6rem;
   width: 100%;
-  min-height: 34rem;
+  min-height: var(--ui-menu-row-height);
   padding: 5rem 8rem;
   font-size: inherit;
   font-family: inherit;
@@ -349,7 +363,7 @@ onBeforeUnmount(() => {
 .sel-option:hover:not(.is-disabled),
 .sel-option:focus-visible:not(.is-disabled) {
   color: var(--ui-on-primary);
-  background-color: var(--ui-accent);
+  background-color: var(--ui-menu-highlight);
 }
 .sel-option.is-active {
   font-weight: 600;
@@ -374,11 +388,10 @@ onBeforeUnmount(() => {
   color: currentColor;
 }
 .sel-option-label {
-  overflow: hidden;
   line-height: 1.2;
   text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* ============ 尺寸变体 ============ */

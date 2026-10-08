@@ -174,9 +174,6 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
     background 150ms ease,
     color 150ms ease;
 }
-.setting-help-btn:focus-visible {
-  box-shadow: 0 0 0 2px color-mix(in srgb, #0a84ff 24%, transparent);
-}
 .setting-help-btn:hover {
   background: var(--ui-fill-hover);
   color: var(--text-color);

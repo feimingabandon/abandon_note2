@@ -261,7 +261,22 @@ function parseListFilter(value, fallback) {
   }
 }
 
+export const UI_SCALES = Object.freeze([0.9, 1, 1.1, 1.25, 1.5])
+export function normalizeUiScale(value) {
+  const number = Number(value)
+  return UI_SCALES.includes(number) ? number : 1
+}
+
 const definitions = [
+  {
+    id: 'appearance.uiScale',
+    path: ['appearance', 'uiScale'],
+    db: { type: 'appearance', key: 'ui_scale' },
+    defaultValue: 1,
+    parse: normalizeUiScale,
+    serialize: String,
+    remark: '主视图与软件提醒窗口的界面缩放'
+  },
   {
     id: 'appearance.titlebarStyle',
     path: ['appearance', 'titlebarStyle'],

@@ -625,7 +625,7 @@ onBeforeUnmount(() => {
   </section>
 
   <Teleport to="body">
-    <Transition name="tp-modal" @after-leave="finishEditClose">
+    <Transition name="tp-modal" appear @after-leave="finishEditClose">
       <div
         v-if="editDisplayed"
         ref="editOverlayRef"

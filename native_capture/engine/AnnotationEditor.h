@@ -28,6 +28,7 @@ public:
   QString tool = "select";
   QAction *addAction(QString id, QString label, QString tooltip);
   QAction *action(const QString &id) const;
+  void setPrimaryAction(const QString &id);
   QTextEdit *textWidget() const { return textEdit; }
   bool gesturing() const { return !gesture.isEmpty(); }
   void choose(QString name);

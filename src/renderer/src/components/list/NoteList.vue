@@ -14,6 +14,7 @@ import draggable from 'vuedraggable'
 import TagSelector from '../ui/TagSelector.vue'
 import FilterTabs from '../ui/FilterTabs.vue'
 import NoteCard from './NoteCard.vue'
+import ListDisclosure from './ListDisclosure.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import TagManagerDialog from '../ui/TagManagerDialog.vue'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
@@ -62,11 +63,16 @@ const modeOptions = [
 const sortModeLabel = computed(
   () => modeOptions.find((option) => option.value === sortMode.value)?.label || '时间线'
 )
-/** 三种模式使用完整的依次离场、切换、依次进场。 */
+/** 模式切换只保留最新意图，使用短离场和统一入场。 */
 let modeSwitchRunning = false
 let modePresenceSwitching = false
+let pendingSortMode = null
 async function selectSortMode(nextMode) {
-  if (nextMode === sortMode.value || modeSwitchRunning || replayRefreshRunning) return
+  if (modeSwitchRunning || replayRefreshRunning) {
+    pendingSortMode = nextMode
+    return
+  }
+  if (nextMode === sortMode.value) return
   if (nextMode !== 'tag-group') exitTagGroupSortMode()
   modeSwitchRunning = true
   const previousMode = sortMode.value
@@ -117,7 +123,14 @@ async function selectSortMode(nextMode) {
   } finally {
     modePresenceSwitching = false
     modeSwitchRunning = false
+    resumePendingSortMode()
   }
+}
+
+function resumePendingSortMode() {
+  const nextMode = pendingSortMode
+  pendingSortMode = null
+  if (nextMode && nextMode !== sortMode.value) void selectSortMode(nextMode)
 }
 
 // 筛选面板 chip 的轻量错峰；便签本身的进出场由列表 ID 差分协调器统一处理。
@@ -435,7 +448,8 @@ async function loadEarlier() {
     })
     if (requestSeq !== earlierRequestSeq || parentLoadSeq !== loadSeq) return
     const newNotes = result.notes || []
-    const before = newNotes.length ? captureVisibleCardLayout() : null
+    // First expansion is owned by the disclosure, pagination by card presence.
+    const before = newNotes.length && earlierOffset.value > 0 ? captureVisibleCardLayout() : null
     noteList.value = [...noteList.value, ...newNotes]
     for (const n of newNotes) {
       earlierIds.value.add(n.id)
@@ -471,12 +485,18 @@ function collapseEarlier() {
   // 折叠时作废尚未返回的分页请求，避免响应把隐藏的日期组重新插回列表。
   earlierRequestSeq++
   earlierLoading.value = false
+  collapsedGroups.value['earlier'] = true
+  // Keep the rendered content until the closing animation completes; reversing
+  // midway reuses the same DOM and resumes from its currently displayed height.
+}
+
+function clearCollapsedEarlier() {
+  if (!collapsedGroups.value.earlier) return
   noteList.value = noteList.value.filter((n) => !earlierIds.value.has(n.id))
   earlierIds.value = new Set()
   earlierOffset.value = 0
   earlierHasMore.value = false
   earlierLimit.value = 10
-  collapsedGroups.value['earlier'] = true
 }
 
 /** 主容器滚动触底检测（更早展开 + 有更多数据时自动加载） */
@@ -657,11 +677,16 @@ async function loadTagGroupPage(group, { reset = false, limit = null } = {}) {
     if (generation !== tagGroupGeneration || !tagGroups.value.includes(group)) {
       return { status: 'cancelled' }
     }
+    const before = !reset && group.expanded ? captureVisibleCardLayout() : null
     const notes = result.notes || []
     group.notes = reset ? notes : [...group.notes, ...notes]
     group.total = Number(result.total) || 0
     group.hasMore = group.notes.length < group.total
     delete group.requestedCount
+    if (before) {
+      await nextTick()
+      if (generation === tagGroupGeneration && group.expanded) animateRetainedCards(before)
+    }
     return { status: 'success' }
   } catch (error) {
     delete group.requestedCount
@@ -764,13 +789,7 @@ async function loadTagGroupsData({ showLoading = true, preserveAnchor = false } 
 }
 
 async function toggleTagGroup(group) {
-  if (
-    tagGroupSortMode.value ||
-    tagGroupSortPreparing.value ||
-    tagGroupDragging.value ||
-    group.opening
-  )
-    return
+  if (tagGroupSortMode.value || tagGroupSortPreparing.value || tagGroupDragging.value) return
 
   if (group.expanded) {
     group.expanded = false
@@ -778,36 +797,26 @@ async function toggleTagGroup(group) {
     return
   }
 
+  group.expanded = true
+  expandedTagGroupKeys.add(group.key)
+  if (group.opening) return
   if (group.notes.length === 0 && group.total > 0) {
     // 先记录展开意图，后台快照即使先返回也能接续这次展开。
-    expandedTagGroupKeys.add(group.key)
     const openingRequest = ++group.openingRequest
     group.opening = true
     try {
-      const loadResult = await loadTagGroupPage(group, { reset: true })
-      if (loadResult?.status === 'cancelled' || group.openingRequest !== openingRequest) return
-
-      // 首次加载完成后另起一个渲染周期再挂载面板，确保进入动画测得完整卡片高度。
-      await nextTick()
-      if (tagGroupDragging.value || !tagGroups.value.includes(group)) return
-
-      group.expanded = true
-      expandedTagGroupKeys.add(group.key)
+      await loadTagGroupPage(group, { reset: true })
     } finally {
-      group.opening = false
+      if (group.openingRequest === openingRequest) group.opening = false
     }
-    return
   }
-
-  if (tagGroupDragging.value || !tagGroups.value.includes(group)) return
-  group.expanded = true
-  expandedTagGroupKeys.add(group.key)
 }
 
 function collapseAllTagGroups() {
   expandedTagGroupKeys.clear()
   tagGroups.value.forEach((group) => {
     if (group.opening) group.openingRequest++
+    group.opening = false
     group.expanded = false
   })
 }
@@ -1026,6 +1035,12 @@ const timelineGroups = computed(() => {
 
 /** “更早”可能尚未展开，因此同时检查它的总数。 */
 const timelineIsEmpty = computed(() => totalRendered.value === 0 && !earlierHasData.value)
+const recentTimelineGroups = computed(() =>
+  timelineGroups.value.filter((g) => !g.group.startsWith('date-'))
+)
+const earlierTimelineGroups = computed(() =>
+  timelineGroups.value.filter((g) => g.group.startsWith('date-'))
+)
 
 /** 更早折叠状态 */
 const collapsedGroups = ref({ earlier: false })
@@ -1346,6 +1361,7 @@ async function replayListRefresh() {
     animateRetainedCards(new Map())
   } finally {
     replayRefreshRunning = false
+    resumePendingSortMode()
   }
 }
 
@@ -1456,7 +1472,12 @@ onMounted(async () => {
   await loadFilterState()
   if (weatherEnabled.value) void loadWeatherForecast()
   // 统一入口：根据当前模式加载（时间线 / 自定义 / 标签分组）
-  await switchMode(sortMode.value)
+  const result = await switchMode(sortMode.value)
+  if (result?.status === 'success') {
+    await nextTick()
+    animateRetainedCards(new Map())
+    animateAuxiliaryIn()
+  }
 })
 
 let notesChangedTimer = null
@@ -1513,6 +1534,9 @@ const stopTagsChanged = window.api.onTagsChanged?.(() => {
 })
 
 onUnmounted(() => {
+  pendingSortMode = null
+  for (const animation of panelMotions.values()) animation.cancel()
+  panelMotions.clear()
   presenceMotionSeq++
   loadSeq++
   exitTagGroupSortMode()
@@ -1549,48 +1573,39 @@ watch(
 )
 
 // ============================================================
-// 面板展开/折叠动画（真实高度过渡 + 苹果风缓动，避免卡顿）
+// 工具栏面板按 out-in 交换；与列表分组使用同一高度节奏。
 // ============================================================
 const PANEL_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)'
+const panelMotions = new Map()
 
-function onPanelEnter(el, done) {
+function animatePanel(el, done, open) {
+  const previous = panelMotions.get(el)
+  const height = previous || !open ? el.getBoundingClientRect().height : 0
+  const opacity = previous || !open ? getComputedStyle(el).opacity : '0'
+  previous?.cancel()
   el.style.overflow = 'hidden'
-  el.style.willChange = 'height'
-  el.style.height = '0'
-  el.style.opacity = '0'
-  void el.offsetHeight // 强制回流
-  el.style.transition = `height 320ms ${PANEL_EASING}, opacity 320ms ease`
-  el.style.height = el.scrollHeight + 'px'
-  el.style.opacity = '1'
-  const onEnd = (e) => {
-    if (e.propertyName !== 'height') return
-    el.removeEventListener('transitionend', onEnd)
-    el.style.height = ''
-    el.style.overflow = ''
-    el.style.transition = ''
-    el.style.willChange = ''
-    done()
-  }
-  el.addEventListener('transitionend', onEnd)
+  const animation = el.animate(
+    [
+      { height: `${height}px`, opacity },
+      { height: open ? `${el.scrollHeight}px` : '0px', opacity: open ? 1 : 0 }
+    ],
+    { duration: open ? 260 : 200, easing: PANEL_EASING, fill: 'both' }
+  )
+  panelMotions.set(el, animation)
+  animation.finished.then(
+    () => {
+      if (panelMotions.get(el) !== animation) return
+      panelMotions.delete(el)
+      el.style.overflow = ''
+      done()
+      animation.cancel()
+    },
+    () => {}
+  )
 }
 
-function onPanelLeave(el, done) {
-  el.style.overflow = 'hidden'
-  el.style.willChange = 'height'
-  el.style.height = el.scrollHeight + 'px'
-  el.style.opacity = '1'
-  void el.offsetHeight // 强制回流
-  el.style.transition = `height 280ms ${PANEL_EASING}, opacity 280ms ease`
-  el.style.height = '0'
-  el.style.opacity = '0'
-  const onEnd = (e) => {
-    if (e.propertyName !== 'height') return
-    el.removeEventListener('transitionend', onEnd)
-    el.style.willChange = ''
-    done()
-  }
-  el.addEventListener('transitionend', onEnd)
-}
+const onPanelEnter = (el, done) => animatePanel(el, done, true)
+const onPanelLeave = (el, done) => animatePanel(el, done, false)
 
 defineExpose({
   refresh: refreshInBackground,
@@ -1686,7 +1701,7 @@ defineExpose({
         <div v-if="timelineIsEmpty" class="nl-empty-state">暂无便签</div>
         <template v-else>
           <div
-            v-for="g in timelineGroups"
+            v-for="g in recentTimelineGroups"
             :key="g.group"
             class="nl-group nl-section"
             :class="{ 'nl-group--earlier-toggle': g.group === 'earlier' }"
@@ -1694,7 +1709,13 @@ defineExpose({
             <div
               class="nl-group-label-row"
               :class="{ 'nl-group-label-row--earlier': g.group === 'earlier' }"
+              :role="g.group === 'earlier' ? 'button' : undefined"
+              :tabindex="g.group === 'earlier' ? 0 : undefined"
+              :aria-expanded="g.group === 'earlier' ? !collapsedGroups.earlier : undefined"
+              :aria-controls="g.group === 'earlier' ? 'nl-earlier-content' : undefined"
               @click="g.group === 'earlier' && toggleGroupCollapse('earlier')"
+              @keydown.enter.prevent="g.group === 'earlier' && toggleGroupCollapse('earlier')"
+              @keydown.space.prevent="g.group === 'earlier' && toggleGroupCollapse('earlier')"
             >
               <span class="nl-group-label">{{ g.label }}</span>
               <span class="nl-group-count">· {{ g.count ?? g.items.length }}条</span>
@@ -1731,18 +1752,44 @@ defineExpose({
               />
             </template>
           </div>
-          <!-- 更早加载提示 -->
-          <div v-if="!collapsedGroups['earlier'] && earlierLoading" class="nl-earlier-hint">
-            加载中…
-          </div>
           <div
-            v-else-if="
-              !collapsedGroups['earlier'] && earlierHasData && !earlierHasMore && earlierOffset > 0
-            "
+            v-if="!collapsedGroups.earlier && earlierLoading && earlierOffset === 0"
             class="nl-earlier-hint"
           >
-            没有更多便签
+            加载中…
           </div>
+          <ListDisclosure
+            id="nl-earlier-content"
+            :open="!collapsedGroups.earlier && earlierOffset > 0"
+            @closed="clearCollapsedEarlier"
+          >
+            <div class="nl-earlier-content-inner">
+              <div v-for="g in earlierTimelineGroups" :key="g.group" class="nl-group nl-section">
+                <div class="nl-group-label-row">
+                  <span class="nl-group-label">{{ g.label }}</span>
+                  <span class="nl-group-count">· {{ g.items.length }}条</span>
+                  <span v-if="lastRefreshLabel" class="nl-group-refresh-time"
+                    >· 刷新 {{ lastRefreshLabel }}</span
+                  >
+                </div>
+                <NoteCard
+                  v-for="note in g.items"
+                  :key="note.id"
+                  :minimal="minimalMode"
+                  :note="note"
+                  :weather="weatherForNote(note)"
+                  show-date-context
+                  :status-transition="statusTransitionFor(note.id)"
+                  @edit="emit('edit', $event)"
+                  @status-action="onCardStatusAction"
+                />
+              </div>
+              <div v-if="earlierLoading" class="nl-earlier-hint">加载中…</div>
+              <div v-else-if="earlierHasData && !earlierHasMore" class="nl-earlier-hint">
+                没有更多便签
+              </div>
+            </div>
+          </ListDisclosure>
         </template>
       </div>
       <!-- 底部计数 -->
@@ -1843,7 +1890,7 @@ defineExpose({
                   <svg
                     v-if="!tagGroupSortMode"
                     class="nl-tag-group-chevron"
-                    :class="{ 'nl-tag-group-chevron--open': group.expanded || group.opening }"
+                    :class="{ 'nl-tag-group-chevron--open': group.expanded }"
                     width="14"
                     height="14"
                     viewBox="0 0 16 16"
@@ -1861,51 +1908,48 @@ defineExpose({
                 </button>
                 <span class="nl-tag-group-count">{{ group.total }}</span>
               </div>
-              <Transition :css="false" @enter="onPanelEnter" @leave="onPanelLeave">
-                <div
-                  v-if="group.expanded"
-                  :id="`nl-tag-group-${group.id ?? 'untagged'}`"
-                  class="nl-tag-group-content"
-                >
-                  <div class="nl-tag-group-content-inner">
-                    <div v-if="group.total === 0" class="nl-tag-group-empty">
-                      当前状态下暂无便签
-                    </div>
-                    <template v-else>
-                      <NoteCard
-                        v-for="note in group.notes"
-                        :key="note.id"
-                        :minimal="minimalMode"
-                        :note="note"
-                        :weather="weatherForNote(note)"
-                        show-date-context
-                        allow-create-tag
-                        :status-transition="statusTransitionFor(note.id)"
-                        @edit="emit('edit', $event)"
-                        @status-action="onCardStatusAction"
-                        @create-tag="openCreateTagManager"
-                      />
-                      <div v-if="group.loading" class="nl-tag-group-hint">加载中…</div>
-                      <button
-                        v-else-if="group.error"
-                        type="button"
-                        class="nl-tag-group-more"
-                        @click="retryTagGroup(group)"
-                      >
-                        加载失败，点击重试
-                      </button>
-                      <button
-                        v-else-if="group.hasMore"
-                        type="button"
-                        class="nl-tag-group-more"
-                        @click="loadTagGroupPage(group)"
-                      >
-                        显示更多
-                      </button>
-                    </template>
-                  </div>
+              <div v-if="group.opening && group.expanded" class="nl-tag-group-hint">加载中…</div>
+              <ListDisclosure
+                :id="`nl-tag-group-${group.id ?? 'untagged'}`"
+                :open="group.expanded && !group.opening"
+                class="nl-tag-group-content"
+              >
+                <div class="nl-tag-group-content-inner">
+                  <div v-if="group.total === 0" class="nl-tag-group-empty">当前状态下暂无便签</div>
+                  <template v-else>
+                    <NoteCard
+                      v-for="note in group.notes"
+                      :key="note.id"
+                      :minimal="minimalMode"
+                      :note="note"
+                      :weather="weatherForNote(note)"
+                      show-date-context
+                      allow-create-tag
+                      :status-transition="statusTransitionFor(note.id)"
+                      @edit="emit('edit', $event)"
+                      @status-action="onCardStatusAction"
+                      @create-tag="openCreateTagManager"
+                    />
+                    <div v-if="group.loading" class="nl-tag-group-hint">加载中…</div>
+                    <button
+                      v-else-if="group.error"
+                      type="button"
+                      class="nl-tag-group-more"
+                      @click="retryTagGroup(group)"
+                    >
+                      加载失败，点击重试
+                    </button>
+                    <button
+                      v-else-if="group.hasMore"
+                      type="button"
+                      class="nl-tag-group-more"
+                      @click="loadTagGroupPage(group)"
+                    >
+                      显示更多
+                    </button>
+                  </template>
                 </div>
-              </Transition>
+              </ListDisclosure>
             </section>
           </template>
         </draggable>
@@ -2211,8 +2255,8 @@ defineExpose({
   opacity: 0.52;
   white-space: nowrap;
 }
-.nl-group--earlier-toggle + .nl-section {
-  margin-top: 8rem;
+.nl-earlier-content-inner {
+  padding-top: 8rem;
 }
 
 /* 折叠箭头：收起时旋转 -90° */
@@ -2290,7 +2334,7 @@ defineExpose({
   cursor: pointer;
 }
 .nl-tag-group-toggle:focus-visible {
-  outline: 1px solid #007aff;
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: 1px;
   border-radius: 5rem;
 }
@@ -2510,8 +2554,6 @@ defineExpose({
    把间距放到内层 .nl-panel-inner，其高度仍计入外层 scrollHeight，动画即可平滑收到 0。
    外层 overflow 由 onPanelEnter / onPanelLeave 钩子在动画期间接管，动画结束后还原，
    避免常驻裁剪掉选中标签的 box-shadow 光晕。 */
-.nl-panel-inner {
-}
 
 /* ===== 标签筛选栏 ===== */
 .nl-tags {
@@ -2564,5 +2606,15 @@ defineExpose({
 .nl-status-chip:active {
   transform: scale(0.98);
   transition-duration: 70ms;
+}
+/* Content reflows instead of shrinking its font with the window. */
+@media (max-width: 420px) {
+  .nl-toolbar {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .nl-toolbar-controls {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
 }
 </style>

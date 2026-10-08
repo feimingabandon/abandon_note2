@@ -1,0 +1,64 @@
+{
+  "appId": "AbandonReminderProbe-71dba539-2acd-4a85-92f7-977d375af068",
+  "events": [
+    {
+      "kind": "loaded",
+      "cold": false,
+      "args": [
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\AbandonReminderProbe-71dba539-2acd-4a85-92f7-977d375af068\\electron.exe"
+      ],
+      "pid": 34232
+    },
+    {
+      "kind": "boot",
+      "cold": false,
+      "pid": 34232
+    },
+    {
+      "kind": "shown",
+      "pid": 34232
+    },
+    {
+      "kind": "action",
+      "payload": {
+        "id": "eee4c5fc-45c5-445b-969c-1ce3f14cdb86",
+        "action": "snooze",
+        "minutes": 30
+      },
+      "cold": false,
+      "pid": 34232
+    },
+    {
+      "kind": "quit",
+      "pid": 34232
+    },
+    {
+      "kind": "loaded",
+      "cold": true,
+      "args": [
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\AbandonReminderProbe-71dba539-2acd-4a85-92f7-977d375af068\\electron.exe",
+        "abandonreminderprobe-71dba539-2acd-4a85-92f7-977d375af068://notification/custom?round=eee4c5fc-45c5-445b-969c-1ce3f14cdb86"
+      ],
+      "pid": 36236
+    },
+    {
+      "kind": "boot",
+      "cold": true,
+      "pid": 36236
+    },
+    {
+      "kind": "action",
+      "payload": {
+        "id": "eee4c5fc-45c5-445b-969c-1ce3f14cdb86",
+        "action": "custom"
+      },
+      "cold": true,
+      "pid": 36236
+    },
+    {
+      "kind": "quit",
+      "pid": 36236
+    }
+  ],
+  "tested": "Windows toast accepted; real protocol warm preset and cold custom callbacks; no UI click"
+}

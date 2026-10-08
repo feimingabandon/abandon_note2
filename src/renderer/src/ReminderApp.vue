@@ -132,9 +132,6 @@ onBeforeUnmount(() => stop?.())
 
 <style>
 /* This independent window uses the shared theme on an opaque reading surface. */
-html {
-  font-size: 1px;
-}
 body {
   background: rgb(var(--bg-color));
   color: var(--text-color);
@@ -149,7 +146,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 18px;
+  padding: 14rem 18rem;
   border-bottom: 1px solid var(--ui-border-divider);
   -webkit-app-region: drag;
 }
@@ -159,32 +156,32 @@ body {
 }
 .reminder-header span {
   color: var(--ui-accent);
-  margin-left: 8px;
+  margin-left: 8rem;
 }
 .reminder-header button {
   -webkit-app-region: no-drag;
-  font-size: 24px;
-  padding: 0 8px;
+  font-size: 24rem;
+  padding: 0 8rem;
 }
 .reminder-list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 18px;
+  padding: 0 18rem;
 }
 .reminder-card {
-  padding: 18px 0;
+  padding: 18rem 0;
   border-bottom: 1px solid var(--ui-border-divider);
 }
 .reminder-time {
   opacity: 0.65;
   font-size: var(--fs-secondary);
-  margin-bottom: 8px;
+  margin-bottom: 8rem;
 }
 .reminder-content {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 150px;
+  max-height: 150rem;
   overflow-y: auto;
   line-height: 1.6;
 }
@@ -193,8 +190,8 @@ body {
 .reminder-custom {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 8rem;
+  margin-top: 12rem;
 }
 .reminder-window button {
   cursor: pointer;
@@ -202,14 +199,14 @@ body {
   color: inherit;
   background: var(--ui-surface-control);
   border: 1px solid var(--ui-border-control);
-  border-radius: 8px;
-  padding: 7px 10px;
+  border-radius: 8rem;
+  padding: 7rem 10rem;
 }
 .reminder-window button:hover {
   border-color: var(--ui-border-hover);
 }
 .reminder-window button:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: 2px;
 }
 .reminder-window button:disabled {
@@ -226,7 +223,7 @@ body {
 }
 .reminder-message,
 .reminder-empty {
-  padding: 12px 18px;
+  padding: 12rem 18rem;
   font-size: var(--fs-secondary);
   overflow-wrap: anywhere;
 }

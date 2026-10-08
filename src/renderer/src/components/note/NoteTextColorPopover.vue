@@ -229,8 +229,7 @@ onBeforeUnmount(removeListeners)
   font-size: var(--fs-secondary);
 }
 .nl-text-color-popover__custom:focus-within {
-  border-color: var(--ui-accent);
-  box-shadow: 0 0 0 2px var(--ui-accent-subtle);
+  border-color: var(--ui-border-hover);
 }
 .nl-text-color-popover__custom input {
   width: 34px;

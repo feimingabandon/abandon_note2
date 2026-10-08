@@ -5,6 +5,11 @@
  * 已解析的值映射为 CSS 自定义属性，避免 App 与 SettingsPanel 各维护一套映射。
  */
 import { reportEvidence } from './diagnosticEvidence.js'
+import { normalizeUiScale } from '../../../shared/settings-schema.js'
+
+export function applyUiScale(value, root = document.documentElement) {
+  root.style.setProperty('--ui-scale', String(normalizeUiScale(value)))
+}
 
 const GLASS_PRESETS = Object.freeze({
   select: { blurRatio: 1.2, blurMax: 16, opacityRatio: 1.6, opacityMax: 0.72 },
@@ -48,6 +53,7 @@ export function applyGlassBaseSettings({ blur, opacity }, root = document.docume
 }
 
 export function applySettingsSnapshot(snapshot, root = document.documentElement) {
+  applyUiScale(snapshot?.values?.appearance?.uiScale, root)
   const titlebarIconScale = snapshot?.values?.appearance?.titlebarIconScale
   if (titlebarIconScale !== undefined) applyTitlebarIconScale(titlebarIconScale, root)
   applyIconColor(snapshot?.values?.appearance?.iconColor, root)

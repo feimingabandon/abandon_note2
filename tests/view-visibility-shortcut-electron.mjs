@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
+import koffi from 'koffi'
 import { app, BrowserWindow, globalShortcut, Menu, nativeImage, Tray } from 'electron'
 
 const require = createRequire(import.meta.url)
@@ -329,6 +330,87 @@ async function runViewVisibilityShortcutTest() {
       async () => !(await shortcutSnapshot(listWindow)).runtime.capturing,
       'Esc 没有取消快捷键录制'
     )
+
+    await js(`window.api.setWindowZOrderMode('normal')`)
+    const user32 = koffi.load('user32.dll')
+    const foreground = user32.func('intptr_t GetForegroundWindow()')
+    const getWindow = user32.func('intptr_t GetWindow(intptr_t hwnd, uint32_t command)')
+    const handle = (window) => window.getNativeWindowHandle().readBigUInt64LE()
+    const isAbove = (upper, lower) => {
+      for (
+        let candidate = getWindow(handle(upper), 2);
+        candidate;
+        candidate = getWindow(candidate, 2)
+      ) {
+        if (BigInt(candidate) === handle(lower)) return true
+      }
+      return false
+    }
+    const coveredBy = new BrowserWindow({
+      width: 600,
+      height: 400,
+      show: false,
+      webPreferences: { sandbox: true }
+    })
+    try {
+      await coveredBy.loadURL(
+        'data:text/html,<title>Visibility regression cover</title><p>Foreground test window</p>'
+      )
+      const coverMain = async () => {
+        coveredBy.setBounds(listWindow.getBounds())
+        coveredBy.show()
+        coveredBy.moveTop()
+        coveredBy.focus()
+        await waitUntil(
+          () =>
+            BigInt(foreground()) === handle(coveredBy) &&
+            !listWindow.isFocused() &&
+            isAbove(coveredBy, listWindow),
+          '前提失败：测试窗口未遮住主窗口'
+        )
+      }
+      const expectActivated = async (label) => {
+        await waitUntil(
+          () =>
+            listWindow.isVisible() &&
+            !listWindow.isMinimized() &&
+            listWindow.isFocused() &&
+            BigInt(foreground()) === handle(listWindow) &&
+            isAbove(listWindow, coveredBy),
+          label
+        )
+        assert.equal(listWindow.isAlwaysOnTop(), false, '显示操作不应改变正常层级')
+      }
+      for (const [name, trigger] of [
+        ['shortcut', () => hooks.triggerViewVisibilityShortcut()],
+        ['tray', () => hooks.triggerTrayClick()]
+      ]) {
+        await coverMain()
+        assert.equal(listWindow.isVisible(), true)
+        trigger()
+        await expectActivated(name + ': 被遮挡时一次操作应置前并激活')
+        trigger()
+        await waitUntil(() => !listWindow.isVisible(), name + ': 前台窗口应隐藏')
+        trigger()
+        await expectActivated(name + ': 隐藏后一次操作应显示并激活')
+        listWindow.minimize()
+        await waitUntil(() => listWindow.isMinimized(), '未进入最小化')
+        trigger()
+        await expectActivated(name + ': 最小化后一次操作应恢复并激活')
+      }
+      await coverMain()
+      await hooks.openMainWindowFromTray()
+      await expectActivated('托盘打开主窗口应置前并激活')
+      assert.equal(
+        await js('window.api.getSettingsSnapshot().then(s=>s.values.window.zOrderMode)'),
+        'normal'
+      )
+      console.log(
+        'visibility: covered, foreground, hidden and minimized states passed for shortcut and tray; native foreground/z-order verified'
+      )
+    } finally {
+      coveredBy.destroy()
+    }
 
     globalThis.__ABANDON_WINDOW_TEST_HOOKS__.triggerViewVisibilityShortcut()
     await waitUntil(() => !listWindow.isVisible(), '快捷键回调没有把当前视图隐藏到托盘')

@@ -1,5 +1,11 @@
 <script setup>
-import { popoverStyle, ownPopover, releasePopover } from '../../utils/anchoredPopover.js'
+import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
+import {
+  popoverStyle,
+  measurePopoverContent,
+  ownPopover,
+  releasePopover
+} from '../../utils/anchoredPopover.js'
 import { isComposingInput } from '../../utils/inputComposition.js'
 /** 轻量标签选择器：外层优先展示当前选中标签，其余遵循全局手动顺序。 */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -131,10 +137,15 @@ async function onRefresh() {
   await loadTags()
 }
 
+usePopoverLifecycle(panelOpen, panelButtonRef, panelRef, updatePanelPosition)
+
 function updatePanelPosition() {
   const rect = panelButtonRef.value?.getBoundingClientRect()
   if (!rect) return
-  panelPosition.value = popoverStyle(rect, 360, Math.min(420, panelRef.value?.scrollHeight || 420))
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
+  const width = Math.min(360 * rem, window.innerWidth - 16)
+  const natural = measurePopoverContent(panelRef.value, width)
+  panelPosition.value = popoverStyle(rect, width, Math.min(420 * rem, natural?.height || 420 * rem))
 }
 
 async function openPanel() {
@@ -143,7 +154,7 @@ async function openPanel() {
   await nextTick()
   updatePanelPosition()
   ownPopover(panelRef.value, panelButtonRef.value)
-  panelInputRef.value?.focus()
+  panelInputRef.value?.focus({ preventScroll: true })
 }
 
 function closePanel() {
@@ -183,11 +194,20 @@ function onDocumentKeydown(event) {
     } else items[next]?.focus()
     return
   }
-  if (['ArrowDown', 'ArrowUp'].includes(event.key) && panelRef.value?.contains(event.target)) {
+  if (
+    ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) &&
+    panelRef.value?.contains(event.target)
+  ) {
     event.preventDefault()
     const items = [...panelRef.value.querySelectorAll('input, button:not(:disabled)')]
     const index = items.indexOf(document.activeElement)
-    items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus()
+    const target =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? items.length - 1
+          : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+    items[target]?.focus()
   }
 }
 
@@ -483,7 +503,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--surface-float-border);
   border-radius: 10rem;
   background: var(--surface-float);
-  box-shadow: 0 10rem 30rem rgba(0, 0, 0, 0.24);
+  box-shadow: var(--ui-menu-shadow);
   color: var(--text-color);
   transform-origin: top right;
 }
@@ -499,7 +519,7 @@ onBeforeUnmount(() => {
   background: var(--ui-surface-control);
 }
 .ts-search:focus-within {
-  border-color: #007aff;
+  border-color: var(--ui-border-hover);
 }
 .ts-search svg {
   width: 15rem;
@@ -523,9 +543,7 @@ onBeforeUnmount(() => {
 }
 .ts-panel-list {
   min-height: 0;
-  flex: 1;
-  min-height: 80rem;
-  flex: 1;
+  flex: 0 1 auto;
   padding: 0 6rem 6rem;
 }
 .ts-list-heading {
@@ -545,7 +563,7 @@ onBeforeUnmount(() => {
 .ts-list-heading span {
   min-width: 0;
   overflow: hidden;
-  color: #007aff;
+  color: var(--ui-accent);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -558,11 +576,11 @@ onBeforeUnmount(() => {
 .ts-panel-select {
   display: flex;
   min-width: 0;
-  height: 34rem;
+  min-height: 34rem;
   flex: 1;
   align-items: center;
   gap: 8rem;
-  padding: 0 8rem;
+  padding: 6rem 8rem;
   border: 0;
   background: transparent;
   color: var(--text-color);
@@ -586,16 +604,15 @@ onBeforeUnmount(() => {
 .ts-panel-name {
   min-width: 0;
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .ts-check {
   width: 15rem;
   height: 15rem;
   flex: 0 0 auto;
   fill: none;
-  stroke: #007aff;
+  stroke: var(--ui-accent);
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2;
@@ -612,7 +629,7 @@ onBeforeUnmount(() => {
   border: 0;
   border-top: 1px solid var(--ui-border-divider);
   background: transparent;
-  color: #007aff;
+  color: var(--ui-accent);
   font: inherit;
   font-size: var(--fs-secondary);
   text-align: left;

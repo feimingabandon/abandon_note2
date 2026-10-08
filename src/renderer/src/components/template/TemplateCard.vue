@@ -389,9 +389,6 @@ onBeforeUnmount(() => {
   background: var(--ui-fill-hover);
   color: color-mix(in srgb, var(--text-color) 82%, transparent);
 }
-.tc-disclosure:focus-visible {
-  box-shadow: 0 0 0 2rem color-mix(in srgb, var(--accent-color) 22%, transparent);
-}
 .tc-meta {
   flex-wrap: wrap;
   align-items: flex-end;

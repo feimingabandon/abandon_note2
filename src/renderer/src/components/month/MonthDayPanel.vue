@@ -256,6 +256,9 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .month-day-panel {
+  --fs-body: clamp(13rem, calc(var(--font-size-base) * 0.88), 17rem);
+  --fs-secondary: clamp(11rem, calc(var(--font-size-base) * 0.72), 14rem);
+  font-size: var(--fs-body);
   position: relative;
   display: flex;
   min-width: 0;

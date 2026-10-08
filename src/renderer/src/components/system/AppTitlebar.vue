@@ -19,6 +19,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { WINDOW_Z_ORDER_MODES } from '../../../../shared/settings-schema.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 import AppIcon from '../ui/AppIcon.vue'
+import { popoverStyle } from '../../utils/anchoredPopover.js'
+import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
+import { isComposingInput } from '../../utils/inputComposition.js'
 
 const props = defineProps({
   title: {
@@ -66,6 +69,7 @@ const zOrderTriggerRef = ref(null)
 const zOrderMenuRef = ref(null)
 const zOrderMenuOpen = ref(false)
 const zOrderMenuStyle = ref({})
+usePopoverLifecycle(zOrderMenuOpen, zOrderTriggerRef, zOrderMenuRef, updateZOrderMenuPosition)
 const zOrderChanging = ref(false)
 const lockChanging = ref(false)
 let zOrderGuardTimer = null
@@ -108,13 +112,15 @@ function updateZOrderMenuPosition() {
   const trigger = zOrderTriggerRef.value
   if (!trigger) return
   const rect = trigger.getBoundingClientRect()
-  const width = 188
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize)
+  const font = parseFloat(getComputedStyle(trigger.parentElement).fontSize)
+  const width = Math.max(188 * rem, 10 * font)
   const preferredLeft = props.styleVariant === 'microsoft' ? rect.right - width : rect.left
-  zOrderMenuStyle.value = {
-    top: `${rect.bottom + 7}px`,
-    left: `${Math.min(Math.max(8, preferredLeft), window.innerWidth - width - 8)}px`,
-    width: `${width}px`
-  }
+  zOrderMenuStyle.value = popoverStyle(
+    { ...rect.toJSON(), left: preferredLeft },
+    width,
+    zOrderMenuRef.value ? zOrderMenuRef.value.scrollHeight + 2 : 180 * rem
+  )
 }
 
 async function focusActiveZOrderOption() {
@@ -136,7 +142,7 @@ function toggleZOrderMenu() {
 function closeZOrderMenu({ restoreFocus = false } = {}) {
   if (!zOrderMenuOpen.value) return
   zOrderMenuOpen.value = false
-  if (restoreFocus) nextTick(() => zOrderTriggerRef.value?.focus({ preventScroll: true }))
+  if (restoreFocus) zOrderTriggerRef.value?.focus({ preventScroll: true })
 }
 
 async function selectZOrderMode(mode) {
@@ -156,6 +162,7 @@ async function selectZOrderMode(mode) {
 }
 
 function onZOrderMenuKeydown(event) {
+  if (isComposingInput(event)) return
   const items = [...(zOrderMenuRef.value?.querySelectorAll('[role="menuitemradio"]') || [])]
   if (!items.length) return
   const currentIndex = Math.max(0, items.indexOf(document.activeElement))
@@ -164,8 +171,13 @@ function onZOrderMenuKeydown(event) {
   if (event.key === 'ArrowUp') targetIndex = (currentIndex - 1 + items.length) % items.length
   if (event.key === 'Home') targetIndex = 0
   if (event.key === 'End') targetIndex = items.length - 1
+  if (event.key === 'Tab') {
+    closeZOrderMenu({ restoreFocus: true })
+    return
+  }
   if (event.key === 'Escape') {
     event.preventDefault()
+    event.stopPropagation()
     closeZOrderMenu({ restoreFocus: true })
     return
   }
@@ -459,12 +471,10 @@ watch(
 
 onMounted(() => {
   document.addEventListener('pointerdown', onDocumentPointerDown, true)
-  window.addEventListener('resize', updateZOrderMenuPosition)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
-  window.removeEventListener('resize', updateZOrderMenuPosition)
   if (titlebarDragPointerId !== null) void finishTitlebarPointer(null, 'component-unmount')
   else removeTitlebarPointerListeners()
   if (zOrderGuardTimer) clearTimeout(zOrderGuardTimer)
@@ -587,9 +597,9 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--ui-border-divider); /* 标题栏底部分割线 */
 }
 
-/* Apple 导航栏保持原有总高。按钮最多吃掉新增的上下留白，达到高度上限后不再增大。 */
+/* 单行保留原有高度；窄窗换行时由内容撑高，避免按钮覆盖正文。 */
 .app-titlebar--apple {
-  height: calc(18rem + 29px);
+  min-height: calc(18rem + 29px);
   padding-block: 0;
 }
 
@@ -818,12 +828,12 @@ onBeforeUnmount(() => {
   color: var(--text-color);
   background: var(--surface-float);
   border: 1px solid var(--surface-float-border);
-  border-radius: 12rem;
-  box-shadow:
-    0 12rem 32rem rgba(0, 0, 0, 0.18),
-    0 2rem 8rem rgba(0, 0, 0, 0.08);
+  border-radius: var(--ui-menu-radius);
+  box-shadow: var(--ui-menu-shadow);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   transform-origin: top center;
-  will-change: clip-path;
+  will-change: opacity, transform;
   -webkit-app-region: no-drag;
 }
 
@@ -833,7 +843,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6rem;
   width: 100%;
-  min-height: 34rem;
+  min-height: var(--ui-menu-row-height);
   padding: 5rem 8rem;
   color: inherit;
   text-align: left;
@@ -849,8 +859,8 @@ onBeforeUnmount(() => {
 
 .z-order-option:hover,
 .z-order-option:focus-visible {
-  color: #fff;
-  background: var(--ui-accent);
+  color: var(--ui-menu-on-highlight);
+  background: var(--ui-menu-highlight);
 }
 
 .z-order-option-label {
@@ -879,5 +889,20 @@ onBeforeUnmount(() => {
 .z-order-option:hover .z-order-option-check,
 .z-order-option:focus-visible .z-order-option-check {
   color: currentColor;
+}
+@media (max-width: 420px) {
+  .app-titlebar {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-inline: 8px;
+  }
+  .traffic-lights,
+  .app-titlebar-actions {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+  .app-titlebar-interaction-surface {
+    min-width: 12px;
+  }
 }
 </style>

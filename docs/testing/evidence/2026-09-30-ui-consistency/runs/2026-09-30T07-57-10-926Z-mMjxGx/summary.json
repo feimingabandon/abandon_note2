@@ -1,0 +1,61 @@
+[
+  {
+    "id": "ui-components-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/ui-components-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T07:57:10.930Z",
+    "durationMs": 10234,
+    "code": 0,
+    "signal": null,
+    "launchError": null,
+    "status": "passed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\runs\\2026-09-30T07-57-10-926Z-mMjxGx\\ui-components-electron"
+  },
+  {
+    "id": "draft-dialog-ui-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/draft-dialog-ui-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T07:57:21.185Z",
+    "durationMs": 3915,
+    "code": 1,
+    "signal": null,
+    "launchError": null,
+    "status": "failed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\runs\\2026-09-30T07-57-10-926Z-mMjxGx\\draft-dialog-ui-electron",
+    "preservedTemporary": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\runs\\2026-09-30T07-57-10-926Z-mMjxGx\\draft-dialog-ui-electron\\temp-9z1oSa"
+  },
+  {
+    "id": "reminders-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/reminders-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T07:57:25.108Z",
+    "durationMs": 39457,
+    "code": 1,
+    "signal": null,
+    "launchError": null,
+    "status": "failed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\runs\\2026-09-30T07-57-10-926Z-mMjxGx\\reminders-electron",
+    "preservedTemporary": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\runs\\2026-09-30T07-57-10-926Z-mMjxGx\\reminders-electron\\temp-0t5kic"
+  },
+  {
+    "id": "settings-scroll-memory-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/settings-scroll-memory-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T07:58:04.573Z",
+    "durationMs": 23861,
+    "code": 1,
+    "signal": null,
+    "launchError": null,
+    "status": "failed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\runs\\2026-09-30T07-57-10-926Z-mMjxGx\\settings-scroll-memory-electron",
+    "preservedTemporary": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\runs\\2026-09-30T07-57-10-926Z-mMjxGx\\settings-scroll-memory-electron\\temp-TJzg1u"
+  }
+]

@@ -1,7 +1,7 @@
 /* ============================================================
  * tokens.css — 全局基础样式（唯一全局样式文件）
  * ============================================================
- * 职责：CSS Reset + 响应式根字号 + 全局变量 + 背景容器
+ * 职责：CSS Reset + 稳定根字号与界面缩放 + 全局变量 + 背景容器
  * 使用方：src/renderer/src/main.js 导入
  * ============================================================ */
 
@@ -60,6 +60,7 @@ html {
 /* 全局统一纵向滚动容器 —— 全站一处定义、各处 class="scroll-y" 复用 */
 .scroll-y {
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* 清除列表默认样式 */
@@ -67,18 +68,11 @@ ul {
   list-style: none;
 }
 
-/* ---- 响应式根字号 ----
- * 公式：1rem = 窗口宽度 / 480
- * 设计基准 1920px 屏：默认窗口宽 480px（25%）→ 1rem = 1px
- */
+/* 100% 下保留 1rem = 1 CSS px 的设计单位。窗口宽度只影响布局。
+ * Windows DPI 已由 Chromium 处理，不再乘 devicePixelRatio。 */
 html {
-  font-size: calc(100vw / 480);
-}
-
-/* 月视图默认占据工作区 70%，不能沿用窄列表的 480px 设计基准，否则所有 rem
- * 元素会随宽屏放大三倍。以 1440px 为基准并设置上下限，缩放窗口时仍保持响应式。 */
-html.month-view {
-  font-size: clamp(0.75px, calc(100vw / 1440), 1.35px);
+  --ui-scale: 1;
+  font-size: calc(1px * var(--ui-scale));
 }
 
 /* ---- 全局 CSS 自定义属性（Design Tokens） ---- */
@@ -131,6 +125,15 @@ html.month-view {
   --ui-status-progress: #ff9f0a;
   --ui-status-completed: #30d158;
   --ui-danger: #ff453a;
+  --ui-danger-solid: #c9342b;
+  --ui-danger-hover: #b12c24;
+  --ui-on-danger: #fff;
+  --ui-menu-highlight: var(--ui-primary);
+  --ui-menu-on-highlight: var(--ui-on-primary);
+  --ui-control-radius: 6rem;
+  --ui-menu-radius: 10rem;
+  --ui-menu-row-height: max(28px, 30rem);
+  --ui-menu-shadow: 0 8rem 20rem rgba(0, 0, 0, 0.12), 0 1rem 4rem rgba(0, 0, 0, 0.06);
   --ui-accent: #0a84ff;
   --ui-accent-subtle: color-mix(in srgb, var(--ui-accent) 15%, transparent);
   --ui-warning: rgb(255, 149, 0);
@@ -142,7 +145,7 @@ html.month-view {
 
   /* 高频交互浮层使用稳定的实体表面，而非局部毛玻璃。
    * 背景色与文字色均来自运行时设置，因此主题改变时会同步更新。 */
-  --surface-float: rgb(var(--bg-color) / 0.94);
+  --surface-float: color-mix(in srgb, rgb(var(--bg-color)) 96%, var(--text-color) 4%);
   --surface-float-border: var(--ui-border-control);
 
   /* ---- 层级令牌 ----
@@ -168,7 +171,8 @@ html.month-view {
   /* ---- Motion Tokens：克制、连续的 Apple 风格反馈 ---- */
   --motion-fast: 120ms;
   --motion-control: 180ms;
-  --motion-panel: 300ms;
+  --motion-panel: 260ms;
+  --motion-panel-exit: 220ms;
   --ease-standard: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -246,13 +250,13 @@ html.is-system-glass-active .month-root.app-bg {
   will-change: filter;
 }
 
-/* Keyboard focus remains visible even when individual controls reset outline. */
-button:focus-visible,
-a:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
-[tabindex]:focus-visible {
-  outline: 2px solid var(--ui-accent);
+/* Text caret and the existing control edge identify input focus; never add nested rings. */
+html body :is(input, textarea, [contenteditable='true']):focus {
+  outline: none;
+}
+/* Keyboard-only navigation uses a restrained neutral cue, with no blue halo. */
+:where(button, a, summary, [tabindex]):focus-visible {
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: 2px;
 }
 /* Stable gutters expose long content without changing width on hover. */

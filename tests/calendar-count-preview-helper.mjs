@@ -5,7 +5,10 @@ export async function verifyCalendarCountPreview(window, waitUntil) {
   const isWeek = await window.webContents.executeJavaScript(
     `document.querySelector('.month-grid').getAttribute('aria-label') === '周历'`
   )
-  const total = isWeek ? 10 : 3
+  let total = isWeek ? 40 : 3
+  // The responsive week canvas now has a readable minimum height. Ten notes
+  // fit even in a short window, so establish real overflow before testing it.
+  const compactHeight = isWeek ? 560 : 280
   window.setSize(720, 900)
   await waitUntil(() => window.getBounds().height === 900, '数量标记测试未进入大窗口')
   const key = await window.webContents.executeJavaScript(`(() => {
@@ -35,12 +38,27 @@ export async function verifyCalendarCountPreview(window, waitUntil) {
     return { tag: badge.tagName, text: badge.textContent.trim(), overflow: badge.classList.contains('is-overflow'),
       title: badge.title, color: style.color, background: style.backgroundColor }
   })()`)
+  if (isWeek) {
+    window.setSize(720, compactHeight)
+    const crowded = await waitUntil(async () => {
+      const badge = await readBadge()
+      return badge?.text === String(total) && badge.overflow ? badge : null
+    }, '数量标记测试未建立实际溢出前提')
+    const visible = Number(crowded.title.match(/已显示 (\d+) 条/)?.[1])
+    assert.ok(Number.isInteger(visible) && visible > 0 && visible < total)
+    total = visible + 1
+    const extraIds = ids.splice(total)
+    await window.webContents.executeJavaScript(
+      `Promise.all(${JSON.stringify(extraIds)}.map((id) => window.api.deleteNote(id)))`
+    )
+    window.setSize(720, 900)
+  }
   const normal = await waitUntil(async () => {
     const badge = await readBadge()
     return badge?.text === String(total) && !badge.overflow ? badge : null
   }, '所有便签显示后数量标记未恢复普通状态')
   assert.equal(normal.tag, 'SPAN')
-  window.setSize(720, 280)
+  window.setSize(720, compactHeight)
   const overflow = await waitUntil(async () => {
     const badge = await readBadge()
     return badge?.overflow ? badge : null

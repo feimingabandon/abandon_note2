@@ -110,7 +110,7 @@ const emit = defineEmits(['update:name', 'update:color', 'update:color-text', 'c
   padding: 7rem 10rem;
 }
 .tm-editor-form input:focus {
-  border-color: #007aff;
+  border-color: var(--ui-border-hover);
 }
 .tm-editor-color-row {
   display: flex;

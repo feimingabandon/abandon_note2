@@ -39,21 +39,6 @@ describe('便签列表高度动画结构', () => {
     expect(openChevron).toContain('transform: rotate(90deg);')
   })
 
-  it('首次展开先加载便签，再挂载面板执行完整高度动画', () => {
-    const source = readFileSync(NOTE_LIST_PATH, 'utf8')
-    const toggleGroup = source.match(
-      /async function toggleTagGroup\(group\) \{([\s\S]*?)\n\}\n\nfunction collapseAllTagGroups/
-    )?.[1]
-
-    expect(toggleGroup).toBeTruthy()
-    expect(toggleGroup).toMatch(
-      /const loadResult = await loadTagGroupPage\(group, \{ reset: true \}\)/
-    )
-    expect(toggleGroup).toMatch(
-      /if \(loadResult\?\.status === 'cancelled' \|\| group\.openingRequest !== openingRequest\) return/
-    )
-    expect(toggleGroup.indexOf('await nextTick()')).toBeLessThan(
-      toggleGroup.indexOf('group.expanded = true')
-    )
-  })
+  // First-load height, reversal and slow-query intent are exercised against real
+  // Chromium animation frames in note-list-animation-electron.mjs.
 })

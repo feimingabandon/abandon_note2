@@ -38,8 +38,8 @@ import AppIcon from './components/ui/AppIcon.vue'
 import NoteList from './components/list/NoteList.vue'
 import NoteEditor from './components/note/NoteEditor.vue'
 import ActionBar from './components/list/ActionBar.vue'
-const TemplatePage = defineAsyncComponent(() => import('./components/template/TemplatePage.vue'))
-const HelpPage = defineAsyncComponent(() => import('./components/help/HelpPage.vue'))
+import TemplatePage from './components/template/TemplatePage.vue'
+import HelpPage from './components/help/HelpPage.vue'
 import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
 import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
@@ -686,7 +686,7 @@ onUnmounted(() => {
       </div>
     </WindowPresentation>
     <!-- 便签编辑弹窗：复用 NoteEditor，底层列表保持可见但不可交互。 -->
-    <Transition name="app-editor-modal" @after-leave="finishEditorClose">
+    <Transition name="app-editor-modal" appear @after-leave="finishEditorClose">
       <div
         v-if="editorDisplayed"
         ref="noteEditorOverlayRef"

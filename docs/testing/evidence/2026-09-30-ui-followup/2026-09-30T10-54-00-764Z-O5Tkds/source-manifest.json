@@ -1,0 +1,348 @@
+{
+  "files": [
+    {
+      "path": "scripts/test-manifest.cjs",
+      "sha256": "9b7e5a93a93901bfd92fa1a1e9601bf53af4575557b84f684616be0a50a854c7"
+    },
+    {
+      "path": "src/main/index.js",
+      "sha256": "b75a407c13b1ad8bfa3f269d7baf7afc5afd4b3bd0543bb71ac31e258c14d473"
+    },
+    {
+      "path": "src/main/settings/application-settings.js",
+      "sha256": "c604607a15c94f4200803e01a9c29509b271cf3b359da08510ce3b0aa0680363"
+    },
+    {
+      "path": "src/renderer/src/App.vue",
+      "sha256": "0225eff4813aedbf3d512949cbf6db68da68131da80eb0c33a9b2b06a142317a"
+    },
+    {
+      "path": "src/renderer/src/MonthApp.vue",
+      "sha256": "b2b84e046bd152f4a799ba743dd0745a785105edb0ca32c362cdc3880f324cb9"
+    },
+    {
+      "path": "src/renderer/src/ReminderApp.vue",
+      "sha256": "dc046bd929ec7334f0f22c2ba28c08817d3bfccb9698d3f809edee1bb41c9307"
+    },
+    {
+      "path": "src/renderer/src/assets/tokens.css",
+      "sha256": "8539db7417f62d8df8b5fb1e0a4d882ad8b5e0159cfe6785b961439c2e23bfc0"
+    },
+    {
+      "path": "src/renderer/src/components/almanac/DateContextBadge.vue",
+      "sha256": "743bf9271030c168fc8b218bd488a590c6b11c34bba16eeb7cba0e15bbe84f14"
+    },
+    {
+      "path": "src/renderer/src/components/help/HelpPage.vue",
+      "sha256": "2b2d612690432e258bc9739b9d95022075aec24a41965649ec4a20df39daa546"
+    },
+    {
+      "path": "src/renderer/src/components/list/NewNotePanel.vue",
+      "sha256": "ac489238ccac2cad8c5b3ce7e9d580ce688d70cca183369bb59feda079cb4f80"
+    },
+    {
+      "path": "src/renderer/src/components/list/NoteCard.vue",
+      "sha256": "7fc56d6d45e871e733bc11ae6b64b25f6219d60b951a56a31b07ff8ceac07010"
+    },
+    {
+      "path": "src/renderer/src/components/list/NoteList.vue",
+      "sha256": "15f5378cca463b75a7d714c4989dde0cc34bea4cfe8f0f840bd4923285088974"
+    },
+    {
+      "path": "src/renderer/src/components/list/SearchResultCard.vue",
+      "sha256": "83c20b8c41cfd826d1319e15c6df02457076b7219b1c83dc2cdba242d4e57d08"
+    },
+    {
+      "path": "src/renderer/src/components/markdown/notice-markdown.css",
+      "sha256": "cceca742e4f9e3741aec0ccd2e278cb3c06da986caae77f01728f9372270b53a"
+    },
+    {
+      "path": "src/renderer/src/components/month/MonthCalendarGrid.vue",
+      "sha256": "00398be87bf3aa22881c2e4a94c8c2eb49ef552a0e6c594f5ba9b25462ffaf0f"
+    },
+    {
+      "path": "src/renderer/src/components/month/MonthCalendarToolbar.vue",
+      "sha256": "3f00f727e517cf413a7a1e350cab5d85fafe7133983c794c1b55d2195b499f82"
+    },
+    {
+      "path": "src/renderer/src/components/month/MonthDayPanel.vue",
+      "sha256": "5b1c4143e791bd58df17ad06b9b4d671f70cc71b712d64c0a3f8a9e886df61b1"
+    },
+    {
+      "path": "src/renderer/src/components/month/MonthNoteCreator.vue",
+      "sha256": "787d7552c3df72bdec8bf01438128702f192157a2e0d95d0f7a41071d24bdd34"
+    },
+    {
+      "path": "src/renderer/src/components/month/MonthWorkspace.vue",
+      "sha256": "3f693b342d593cbf79704f2e4986f7f7a0e6a1745664c6b8ed50d8310c313e53"
+    },
+    {
+      "path": "src/renderer/src/components/note/ImagePicker.vue",
+      "sha256": "0b8e3c0efe5b9d12a171d62646d5e6774d5fbd95daf6ce46ff1dcb0c9fc78047"
+    },
+    {
+      "path": "src/renderer/src/components/note/ImagePreview.vue",
+      "sha256": "819f306680ef657ad43748fc0ad9bd3876ce55e7ae888f86dd50d80eee551904"
+    },
+    {
+      "path": "src/renderer/src/components/note/NoteDurationField.vue",
+      "sha256": "8351505ab06e1faa172e689f36ca942edca61eebb453597d6f71e000f2081f77"
+    },
+    {
+      "path": "src/renderer/src/components/note/NoteEditor.vue",
+      "sha256": "124f2bde9cfc4d9e2bd0b57da7e82f9ec39e02274d8337d043f6d151feca6a21"
+    },
+    {
+      "path": "src/renderer/src/components/note/NoteTextColorPopover.vue",
+      "sha256": "b0be3d3b8505291ab5f113a53a92203f8c22e5be529863c0f36d47a9fe236e5c"
+    },
+    {
+      "path": "src/renderer/src/components/note/QuickNoteContentEditor.vue",
+      "sha256": "f0459e2c6696dfd00c3d8bf892a9c03343e6badbd10a098d8bb3b99ba974e207"
+    },
+    {
+      "path": "src/renderer/src/components/note/ReminderChannelPicker.vue",
+      "sha256": "88b35f5351b670bd09af65dc6aadc2620738ebd7b6319bcfc97dc0300767373d"
+    },
+    {
+      "path": "src/renderer/src/components/system/AppTitlebar.vue",
+      "sha256": "d0ed656edeb60e2ae43d4ddaa0586bbfd88ca9cd746c535ab06790d0de2ede4a"
+    },
+    {
+      "path": "src/renderer/src/components/system/SettingsControlPopover.vue",
+      "sha256": "ed3114680ead834b7b22240be43e2e3492e0df683ef9cb7b929f537ca7aa34e3"
+    },
+    {
+      "path": "src/renderer/src/components/system/SettingsPanel.vue",
+      "sha256": "d3aec6e86e6a18a41f307d1171f9f28a924b913f3a9cda17fb0c06b847858005"
+    },
+    {
+      "path": "src/renderer/src/components/system/TitlebarActions.vue",
+      "sha256": "135f970def50d01bc6b5677ffbd8b2fa9264e89fb4d2a8ab10028b3e4cac672f"
+    },
+    {
+      "path": "src/renderer/src/components/system/ViewSwitcher.vue",
+      "sha256": "ced3cb71d24a5162e309bd85de342613845afcb4c3be945eb1750a37bf885f5b"
+    },
+    {
+      "path": "src/renderer/src/components/template/TemplateCard.vue",
+      "sha256": "4205c8cec1ee7438a9a10ee8ef9b25cc887fea77b3098041fb2b0c2700fa02e4"
+    },
+    {
+      "path": "src/renderer/src/components/template/TemplateForm.vue",
+      "sha256": "3d1a0ecf46dba14c1d79aec91563d536f3f0604ec011ded9cd98da51a87a1d8e"
+    },
+    {
+      "path": "src/renderer/src/components/template/TemplatePage.vue",
+      "sha256": "571e59cc2d72846f7c7c20d49d5e6883361b851992641f9bf47d47e4a91e5517"
+    },
+    {
+      "path": "src/renderer/src/components/ui/AppModalShell.vue",
+      "sha256": "be73685a3cde5c2bf4d72d64f6c52f7f7441abd3ec2f24753d3f9c5f1fd8a8d6"
+    },
+    {
+      "path": "src/renderer/src/components/ui/AppToggle.vue",
+      "sha256": "514ff79e16c23704beedac04c08d0a5c6ab18b4a1262132247e5cc8a90711b3f"
+    },
+    {
+      "path": "src/renderer/src/components/ui/BaseButton.vue",
+      "sha256": "7ba358965aa321997c4ab9b967fea8f7dccea11b9ef626fd3bbfc6ab7912bd82"
+    },
+    {
+      "path": "src/renderer/src/components/ui/ConfirmDialog.vue",
+      "sha256": "356618683c75cd79e1e8d711244dde677f44f2b9667383b24cd85b59f5b9edcc"
+    },
+    {
+      "path": "src/renderer/src/components/ui/DatePicker.vue",
+      "sha256": "a47d5e2b1391d839d734b3893be916412c7728c16923971c863fb6d5a85d0215"
+    },
+    {
+      "path": "src/renderer/src/components/ui/DateRangePicker.vue",
+      "sha256": "8b6b3040f55130ab7c463a95696317ce911d7bf317123715b4d67cb5ca9a5872"
+    },
+    {
+      "path": "src/renderer/src/components/ui/DateTimePicker.vue",
+      "sha256": "7343f61078ceefd0dff5e46b7bdf209dfa36ab17debded1667e24e5cadcc81b1"
+    },
+    {
+      "path": "src/renderer/src/components/ui/FilterTabs.vue",
+      "sha256": "918198bfb86560207b7864fba834039ff945888a4999a1e2dd41b60ad5831567"
+    },
+    {
+      "path": "src/renderer/src/components/ui/FontSizeInput.vue",
+      "sha256": "32c33fa61696811e06203d337f83ab8173cdf84b932960c880370ae284690a36"
+    },
+    {
+      "path": "src/renderer/src/components/ui/HelpButton.vue",
+      "sha256": "b8804ddf7e4240b867b8897ff864d9b26dfdd486910e2b5d743d6e9498c21663"
+    },
+    {
+      "path": "src/renderer/src/components/ui/MonthDayPicker.vue",
+      "sha256": "45956320ad462f61bd0d3c0fcdef3ee97a6e627898c8c2790596f46f3720f249"
+    },
+    {
+      "path": "src/renderer/src/components/ui/NumberStepper.vue",
+      "sha256": "62a5b1ad4f3418abe81ff47dd9ca90c9702551641d5eee2a79201b4ea5dfa98c"
+    },
+    {
+      "path": "src/renderer/src/components/ui/ShortcutRecorder.vue",
+      "sha256": "abfe5a3b1641bd86bb70ce8de27b902f238b1ce19fc33906c00ab1a60b2088e1"
+    },
+    {
+      "path": "src/renderer/src/components/ui/StyledSelect.vue",
+      "sha256": "1dc964b848652cc33af9d17c0f459bb7f3f6361688d0fc4d41e2cd39f8c250c9"
+    },
+    {
+      "path": "src/renderer/src/components/ui/TagEditorForm.vue",
+      "sha256": "fe6826ce3a5f1f8f1eb2bebeee43892215edaebbc55d0a5ec0da265517e606b7"
+    },
+    {
+      "path": "src/renderer/src/components/ui/TagManagerDialog.vue",
+      "sha256": "e8b0a15ad8fa5e3c59125bb571835ec7b4d3bf1cecb764a9f526b35d801da457"
+    },
+    {
+      "path": "src/renderer/src/components/ui/TagSelector.vue",
+      "sha256": "79786e905280ad17e9c4b31ddfee90f4970011bf7f2448774d082644342f954d"
+    },
+    {
+      "path": "src/renderer/src/components/ui/TimePicker.vue",
+      "sha256": "72494b5f35de97a915e44e069dea80398dca7e3635aec2748b7a0ea548e2c40d"
+    },
+    {
+      "path": "src/renderer/src/components/ui/TimeSpinner.vue",
+      "sha256": "d19dd9d2f397b9e0baa79da8cf9eae55400468cf79f58b83f206580ae7c59f6f"
+    },
+    {
+      "path": "src/renderer/src/components/wallpaper/WallpaperSettings.vue",
+      "sha256": "cc66e1f6d6e55c03a3249265162ce3dd866dcf26a105cb47106ecc812402540f"
+    },
+    {
+      "path": "src/renderer/src/components/weather/ChinaAreaCascader.vue",
+      "sha256": "f710ef789095fdfb43188cc5ee457175cba2edcd8a69515305dcc42c5eab9cad"
+    },
+    {
+      "path": "src/renderer/src/components/weather/WeatherSettings.vue",
+      "sha256": "01e24c15e444231bd7a72c73bb45e8c9dbbad2f4efa88ab4fab4b771aab89012"
+    },
+    {
+      "path": "src/renderer/src/composables/useNotePresenceMotion.js",
+      "sha256": "33a9c71c256fb512df7f2128ad60896729e1c596646d47775a2b8f3ed45cdc81"
+    },
+    {
+      "path": "src/renderer/src/composables/useSlidingWorkspace.js",
+      "sha256": "66a7ef16d32ec37154bc9aaf0b843449d7b5ff799807e9b24bc44f27fe8405c1"
+    },
+    {
+      "path": "src/renderer/src/utils/anchoredPopover.js",
+      "sha256": "1c3b2f82474cfbfc359fba44de8d51cd741fcef6694b152b65e0e321d5895994"
+    },
+    {
+      "path": "src/renderer/src/utils/applySettingsSnapshot.js",
+      "sha256": "57c8284301e0678de3e31334c85ed3fceea0d2fbd1219dd8ee8baf7885b2c1fe"
+    },
+    {
+      "path": "src/renderer/src/utils/popoverMotion.js",
+      "sha256": "e42b0e821ee394fb058a54354fd0e0776cc74eb580aa877f4d82586edf711ede"
+    },
+    {
+      "path": "src/shared/settings-schema.js",
+      "sha256": "ae37343bebb53903203b5bd0775bb9c514bcb2337ecd877cc843fa79ac3da7ea"
+    },
+    {
+      "path": "tests/application-settings.test.js",
+      "sha256": "0550feb4065ae7a79f717b003f0453f5cc789d035ab9c058d63a70dffbbce284"
+    },
+    {
+      "path": "tests/calendar-count-preview-helper.mjs",
+      "sha256": "04dc0bfa096ceb580917a398ed17a0962d41e183a5d576c116d76a89de52b3ab"
+    },
+    {
+      "path": "tests/capture-business-electron.mjs",
+      "sha256": "61d5353a63532a90e93b75953c23012b254635916be5daf669f96928889e3fd3"
+    },
+    {
+      "path": "tests/draft-dialog-ui-electron.mjs",
+      "sha256": "7416358bd940d6a60fe127a9f6d09c0d350a7b9a8828f8c8488168c7918164d5"
+    },
+    {
+      "path": "tests/maturity-electron.mjs",
+      "sha256": "9ac67081d749c671e36e1fcd1adfd4da66447f167abfcb47237fea42c07bdd30"
+    },
+    {
+      "path": "tests/month-context-menu-electron.mjs",
+      "sha256": "996790637ad222b0a72af24b1ea68e000db7ed93c9415b959aa3b672179b7798"
+    },
+    {
+      "path": "tests/reminders-electron.mjs",
+      "sha256": "7de5448166732386e51e45b97f52d27750bc8b68095ed86ba902cc2497fa3a2b"
+    },
+    {
+      "path": "tests/settings-scroll-memory-electron.mjs",
+      "sha256": "0317b23de1307f7bd1811762127fcfb9313612bb6ba9adc469dad876e11c40a2"
+    },
+    {
+      "path": "tests/styled-select-menu.test.js",
+      "sha256": null
+    },
+    {
+      "path": "tests/titlebar-icon-scale-electron.mjs",
+      "sha256": "614109dd3e1d4aa562f7fc33f420befb44565c9c0caf370a19ebfa7ad8b1023c"
+    },
+    {
+      "path": "tests/titlebar-icon-scale-ui.test.js",
+      "sha256": "40c59e11a3eea0fc86703b3f930b7c54d8a22b286b648a6743b01fc7ec7da35e"
+    },
+    {
+      "path": "tests/view-visibility-shortcut-electron.mjs",
+      "sha256": "efd589d20b2144c63ae11222ec68b1b03772748c0bd8ecddbff71b6702a7e5da"
+    },
+    {
+      "path": "src/renderer/src/composables/usePopoverLifecycle.js",
+      "sha256": "105930d2340e0bb24e8f6437f9130a27bfa10e7050eba2b6cb3a7f01f77b6079"
+    },
+    {
+      "path": "src/renderer/src/utils/weatherSelectionPath.js",
+      "sha256": "667d0c56f98928bffc03baeb271a04199aa1a8a7b5d04a6cd6f94dd7aa0cbf2e"
+    },
+    {
+      "path": "tests/fixtures/ui-components.vue",
+      "sha256": "3681274e3c395a897e80a04d76bbe8022eaaf7a10f1f7cfb57cbf6ed30c21454"
+    },
+    {
+      "path": "tests/fixtures/ui-feedback.vue",
+      "sha256": "e06ed66dd66a732bcd4589d454ae4140f1df1a8f5835938cedd4657ee14864b6"
+    },
+    {
+      "path": "tests/helpers/ui-fixture.cjs",
+      "sha256": "96033ab62a844fd46e5e778d08218815a58aa7c8780aeba2944adbace9704d28"
+    },
+    {
+      "path": "tests/ui-components-electron.mjs",
+      "sha256": "827a21c2e87afa77c6d4fe61ab7d4743d6823b847e989ee15eb8bd9b5e925b10"
+    },
+    {
+      "path": "tests/ui-feedback-app-electron.mjs",
+      "sha256": "7617026a49c3a3d97fbcbdc68e70f37000d0eb596ed9789ec1be93663ee8c1da"
+    },
+    {
+      "path": "tests/ui-feedback-electron.mjs",
+      "sha256": "266bc4865c59911013e69ff67f7d807d0a61899e20e0d113d0d536f1e59eafb4"
+    },
+    {
+      "path": "tests/ui-popover-motion.test.js",
+      "sha256": "136a9eb628f9449c0ee3291e2983eba3647a809178228eef16d382fe2c2b50da"
+    },
+    {
+      "path": "tests/ui-responsive-electron.mjs",
+      "sha256": "f6a43b615f1ea0053b127b97e408e65af514c53602cdc6adc9d8df122e270d3b"
+    },
+    {
+      "path": "tests/ui-scale.test.js",
+      "sha256": "a5a1897f66ea4b2ad5a3ebf586ddfded616809855cec92e3f3a565a551ec3468"
+    },
+    {
+      "path": "tests/weather-selection-path.test.js",
+      "sha256": "ce97971d6939aff0363966fe30eca15b512a52f2ed484cb4b737ee863c71bcf9"
+    }
+  ]
+}

@@ -116,9 +116,8 @@ watch(
 }
 
 .number-stepper:focus-within {
-  border-color: color-mix(in srgb, #0a84ff 72%, transparent);
+  border-color: var(--ui-border-hover);
   background: var(--ui-surface-control);
-  box-shadow: 0 0 0 3rem color-mix(in srgb, #0a84ff 14%, transparent);
 }
 
 .number-stepper input {

@@ -34,7 +34,8 @@ function updatePosition() {
     close(panelRef.value?.contains(document.activeElement))
     return
   }
-  const width = Math.min(props.width, window.innerWidth - 16)
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
+  const width = Math.min(props.width * rem, window.innerWidth - 16)
   const settings = triggerRef.value.closest('.settings-panel')
   panelStyle.value = {
     ...popoverStyle(
@@ -43,7 +44,8 @@ function updatePosition() {
       contentRef.value.scrollHeight + 2
     ),
     '--fs-body': getComputedStyle(settings || triggerRef.value).fontSize,
-    '--fs-secondary': getComputedStyle(triggerRef.value).fontSize
+    '--fs-secondary': getComputedStyle(triggerRef.value).fontSize,
+    fontSize: getComputedStyle(settings || triggerRef.value).fontSize
   }
 }
 function toggle() {
@@ -88,6 +90,7 @@ watch(open, async (value) => {
   if (!open.value) return
   ownedPanel = panelRef.value
   ownPopover(ownedPanel, triggerRef.value)
+  updatePosition()
   observer = new ResizeObserver(updatePosition)
   observer.observe(contentRef.value)
   observer.observe(triggerRef.value)
@@ -197,7 +200,7 @@ onBeforeUnmount(() => {
 }
 .settings-control-trigger:focus-visible,
 .settings-control-heading button:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: 2px;
 }
 .settings-control-trigger:disabled {

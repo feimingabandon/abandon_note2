@@ -1,0 +1,14 @@
+{
+  "id": "ui-feedback-electron",
+  "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+  "args": [
+    "tests/ui-feedback-electron.mjs"
+  ],
+  "startedAt": "2026-09-30T09:50:14.546Z",
+  "durationMs": 18881,
+  "code": 0,
+  "signal": null,
+  "launchError": null,
+  "status": "passed",
+  "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\user-feedback\\2026-09-30T09-50-14-440Z-dgz5aT\\ui-feedback-electron"
+}

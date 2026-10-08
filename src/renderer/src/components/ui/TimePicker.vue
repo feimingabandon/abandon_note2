@@ -1,6 +1,9 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import TimeSpinner from './TimeSpinner.vue'
+import BaseButton from './BaseButton.vue'
+import { popoverStyle } from '../../utils/anchoredPopover.js'
+import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 
 const props = defineProps({
@@ -16,6 +19,10 @@ const open = ref(false)
 const wrapperRef = ref(null)
 const panelRef = ref(null)
 const panelStyle = ref({})
+const popover = usePopoverLifecycle(open, wrapperRef, panelRef, updatePanelPosition, {
+  dialog: true,
+  focus: true
+})
 const hour = ref(9)
 const minute = ref(0)
 
@@ -44,23 +51,14 @@ function syncDraft() {
 }
 
 function updatePanelPosition() {
-  const triggerRect = wrapperRef.value?.getBoundingClientRect()
-  if (!triggerRect) return
-
-  const remSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
-  const panelRect = panelRef.value?.getBoundingClientRect()
-  const panelWidth = panelRect?.width || 224 * remSize
-  const panelHeight = panelRect?.height || 230 * remSize
-  const left = Math.max(
-    10,
-    Math.min(window.innerWidth - panelWidth - 10, triggerRect.right - panelWidth)
+  const rect = wrapperRef.value?.getBoundingClientRect()
+  if (!rect) return
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
+  panelStyle.value = popoverStyle(
+    rect,
+    224 * rem,
+    panelRef.value ? panelRef.value.scrollHeight + 2 : 350 * rem
   )
-  const below = triggerRect.bottom + 6
-  const top =
-    below + panelHeight <= window.innerHeight - 10
-      ? below
-      : Math.max(10, triggerRect.top - panelHeight - 6)
-  panelStyle.value = { left: `${left}px`, top: `${top}px` }
 }
 
 async function openPanel() {
@@ -70,14 +68,10 @@ async function openPanel() {
   open.value = true
   await nextTick()
   updatePanelPosition()
-  window.addEventListener('resize', updatePanelPosition)
-  window.addEventListener('scroll', updatePanelPosition, true)
 }
 
 function closePanel() {
   open.value = false
-  window.removeEventListener('resize', updatePanelPosition)
-  window.removeEventListener('scroll', updatePanelPosition, true)
 }
 
 function togglePanel() {
@@ -89,7 +83,7 @@ function commit() {
   const value = displayTime.value
   if (value !== props.modelValue) emit('update:modelValue', value)
   emit('change', value)
-  closePanel()
+  popover.close(true)
 }
 
 function chooseNow() {
@@ -106,8 +100,15 @@ function onDocumentPointer(event) {
 }
 
 function onDocumentKeydown(event) {
-  if (event.key === 'Escape' && open.value) closePanel()
+  if (open.value && !event.defaultPrevented) popover.onKeydown(event)
 }
+
+watch(
+  () => props.disabled,
+  (value) => {
+    if (value) popover.close()
+  }
+)
 
 watch(
   () => props.modelValue,
@@ -125,8 +126,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocumentPointer)
   document.removeEventListener('keydown', onDocumentKeydown)
-  window.removeEventListener('resize', updatePanelPosition)
-  window.removeEventListener('scroll', updatePanelPosition, true)
 })
 </script>
 
@@ -152,8 +151,8 @@ onBeforeUnmount(() => {
     <Teleport to="body">
       <Transition
         :css="false"
-        @enter="(element, done) => enterPopover(element, done, 'reveal')"
-        @leave="(element, done) => leavePopover(element, done, 'reveal')"
+        @enter="(element, done) => enterPopover(element, done, 'dropdown')"
+        @leave="(element, done) => leavePopover(element, done, 'dropdown')"
       >
         <section
           v-if="open"
@@ -162,6 +161,7 @@ onBeforeUnmount(() => {
           :style="panelStyle"
           role="dialog"
           :aria-label="ariaLabel"
+          @keydown="popover.onKeydown"
         >
           <header>
             <span>{{ panelTitle }}</span>
@@ -181,10 +181,21 @@ onBeforeUnmount(() => {
           </div>
 
           <footer>
-            <button type="button" class="time-picker__now" @click="chooseNow">现在</button>
+            <BaseButton variant="text" size="sm" class="time-picker__now" @click="chooseNow"
+              >现在</BaseButton
+            >
             <div>
-              <button type="button" class="time-picker__cancel" @click="closePanel">取消</button>
-              <button type="button" class="time-picker__done" @click="commit">完成</button>
+              <BaseButton
+                variant="text"
+                size="sm"
+                class="time-picker__cancel"
+                @click="popover.close(true)"
+              >
+                取消
+              </BaseButton>
+              <BaseButton variant="primary" size="sm" class="time-picker__done" @click="commit"
+                >完成</BaseButton
+              >
             </div>
           </footer>
         </section>
@@ -224,8 +235,7 @@ onBeforeUnmount(() => {
   border-color: var(--ui-border-hover);
 }
 .time-picker__trigger.is-open {
-  border-color: color-mix(in srgb, #0a84ff 72%, transparent);
-  box-shadow: 0 0 0 3rem color-mix(in srgb, #0a84ff 12%, transparent);
+  border-color: var(--ui-border-hover);
 }
 .time-picker__trigger:disabled {
   opacity: 0.4;
@@ -247,13 +257,14 @@ onBeforeUnmount(() => {
   display: flex;
   box-sizing: border-box;
   width: 224rem;
-  height: 230rem;
+  height: 250rem;
   flex-direction: column;
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--surface-float-border);
   border-radius: 13rem;
   background: var(--surface-float);
-  box-shadow: 0 18rem 48rem rgba(0, 0, 0, 0.28);
+  box-shadow: var(--ui-menu-shadow);
   color: var(--text-color);
   transform-origin: top center;
   will-change: clip-path, opacity, transform;
@@ -269,15 +280,16 @@ onBeforeUnmount(() => {
   font-size: var(--fs-secondary);
 }
 .time-picker__panel header strong {
-  color: #0a84ff;
+  color: var(--ui-accent);
   font-size: var(--fs-body);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
 }
 .time-picker__spinners {
+  flex-shrink: 0;
   display: grid;
-  flex: 1;
-  min-height: 0;
+  flex: 1 0 150rem;
+  min-height: 150rem;
   grid-template-columns: 1fr 14rem 1fr;
   align-items: stretch;
   padding: 5rem 18rem 2rem;
@@ -313,43 +325,9 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 5rem;
 }
-.time-picker__panel footer button {
-  min-width: 52rem;
-  height: 29rem;
-  padding: 0 9rem;
-  border: 0;
-  border-radius: 7rem;
-  font: inherit;
-  font-size: var(--fs-secondary);
-  cursor: pointer;
-  transition:
-    background-color var(--motion-fast) ease,
-    color var(--motion-fast) ease,
-    transform var(--motion-fast) var(--ease-standard);
-}
-.time-picker__panel footer button:active {
-  transform: scale(0.98);
-}
-.time-picker__now {
-  background: color-mix(in srgb, #0a84ff 10%, transparent);
-  color: #0a84ff;
-}
-.time-picker__now:hover {
-  background: color-mix(in srgb, #0a84ff 17%, transparent);
-}
-.time-picker__cancel {
-  background: transparent;
-  color: var(--text-color-secondary);
-}
-.time-picker__cancel:hover {
-  background: var(--ui-fill-hover);
-  color: var(--text-color);
-}
-.time-picker__done {
-  background: #0a84ff;
-  color: #fff;
-}
-.time-picker__done:hover {
-  background: #0077ed;
+.time-picker__panel footer {
+  flex-wrap: wrap;
+  gap: 6rem;
+  padding: 8rem 10rem;
 }
 </style>

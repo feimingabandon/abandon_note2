@@ -237,9 +237,17 @@ async function runTitlebarIconScaleTest() {
       'Apple 圆形按钮或图标没有随设置放大',
       appleInitial
     )
-    assert.ok(
-      Math.abs(appleLarge.headerHeight - appleInitial.headerHeight) < 0.1,
-      'Apple 图标放大改变了导航栏高度'
+    assert.ok(appleLarge.headerHeight >= appleInitial.headerHeight, '窄窗标题栏必须容纳放大的图标')
+    assert.equal(
+      await listWindow.webContents.executeJavaScript(`(() => {
+        const header = document.querySelector('.app-titlebar').getBoundingClientRect()
+        return [...document.querySelectorAll('.app-titlebar button')].every(button => {
+          const rect = button.getBoundingClientRect()
+          return rect.top >= header.top && rect.bottom <= header.bottom && rect.left >= 0 && rect.right <= innerWidth
+        })
+      })()`),
+      true,
+      'Apple 图标放大后换行按钮不能溢出导航栏'
     )
 
     assert.equal(await setSliderTo(listWindow, 'Home'), true)

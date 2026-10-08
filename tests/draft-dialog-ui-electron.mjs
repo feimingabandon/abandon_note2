@@ -8,7 +8,6 @@ import { app, BrowserWindow, dialog } from 'electron'
 
 const root = mkdtempSync(join(tmpdir(), 'abandon-draft-conflict-ui-'))
 app.setPath('userData', root)
-app.commandLine.appendSwitch('disable-gpu')
 process.env.ABANDON_INTEGRATION_TEST = '1'
 process.env.ABANDON_INTEGRATION_APP_ROOT = process.cwd()
 process.env.ABANDON_INTEGRATION_NATIVE_DLL = resolve('native_blur/build/bin/blur_engine.dll')
@@ -202,10 +201,10 @@ async function run() {
         'search result'
       )
       const scroll = await js(
-        "(async()=>{const c=document.querySelector('.settings-panel .panel-body');c.scrollTop=0;const samples=[];document.querySelector('.settings-search-results button').click();for(let i=0;i<65;i++){await new Promise(requestAnimationFrame);samples.push(c.scrollTop)}return {samples,focused:!!document.activeElement.closest('.settings-section')}})()"
+        "(async()=>{const c=document.querySelector('.settings-panel .panel-body');c.scrollTop=0;const samples=[];document.querySelector('.settings-search-results button').click();const deadline=performance.now()+6000;while(performance.now()<deadline){await new Promise(requestAnimationFrame);samples.push(c.scrollTop);if(document.activeElement.closest('.settings-section'))break}return {samples,focused:!!document.activeElement.closest('.settings-section')}})()"
       )
       assert.ok(new Set(scroll.samples.map(Math.round)).size > 8, JSON.stringify(scroll))
-      assert.ok(scroll.samples.at(-1) > 100)
+      assert.ok(scroll.samples.at(-1) > 100, JSON.stringify(scroll))
       await until(
         () => js("Boolean(document.activeElement.closest('.settings-section'))"),
         'settings search focuses target section after scroll animation'

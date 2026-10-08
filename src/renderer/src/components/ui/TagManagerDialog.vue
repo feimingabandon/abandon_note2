@@ -445,7 +445,7 @@ async function confirmDelete() {
   padding: 7rem 10rem;
 }
 .tm-toolbar input:focus {
-  border-color: #007aff;
+  border-color: var(--ui-border-hover);
 }
 .tm-edit,
 .tm-delete {

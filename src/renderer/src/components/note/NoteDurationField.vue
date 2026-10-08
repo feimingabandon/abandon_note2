@@ -46,7 +46,7 @@ function updateKind(kind) {
           <StyledSelect
             :model-value="kind"
             :options="durationOptions"
-            width="116rem"
+            width="max(116rem, 8.5em)"
             size="sm"
             aria-label="持续方式"
             @update:model-value="updateKind"
@@ -94,6 +94,11 @@ function updateKind(kind) {
   gap: 6rem;
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
+}
+
+.note-duration-field__control :deep(.sel-trigger),
+.note-duration-field__control :deep(.number-stepper) {
+  height: max(32rem, 2em);
 }
 
 .note-duration-enter-active,

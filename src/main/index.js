@@ -206,6 +206,7 @@ const PRELOAD_ROOT = join(APP_ROOT, 'out', 'preload')
 const RENDERER_ROOT = join(APP_ROOT, 'out', 'renderer')
 const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'appearance.titlebarStyle',
+  'appearance.uiScale',
   'appearance.titlebarIconScale',
   'appearance.iconColor',
   'css.bgColor',
@@ -895,6 +896,7 @@ function syncBlurConfigFromResolved() {
 function refreshResolvedSettings({ incrementRevision = false } = {}) {
   const applicationSettings = readApplicationSettings()
   const nextSettings = resolveSettingsRows(getAllSettings(getActiveWindowName()), activeViewMode)
+  nextSettings.appearance.uiScale = applicationSettings.appearance.uiScale
   nextSettings.appearance.titlebarIconScale = applicationSettings.appearance.titlebarIconScale
   nextSettings.appearance.iconColor = applicationSettings.appearance.iconColor
   nextSettings.shortcuts = {
@@ -1082,6 +1084,7 @@ function initializeBlurRuntime() {
 
 function broadcastSettingsChanged(snapshot = getResolvedSettingsSnapshot()) {
   weatherRuntime?.settingsChanged()
+  reminderService?.popup?.send()
   const payload = diagnosticBroadcast(snapshot)
   for (const window of getApplicationWindows()) {
     if (
@@ -3920,22 +3923,41 @@ async function persistWindowZOrderMode(mode) {
  * 托盘点击统一切换逻辑：
  * - 贴边隐藏 → 滑出（doShow）
  * - 贴边可见 → 滑入（doHide）
- * - 非贴边   → 显示/隐藏到托盘
+ * - 正常层级被其他窗口遮住、最小化或隐藏 → 恢复并激活
+ * - 已在前台 → 隐藏到托盘（贴边时滑入）
  */
-function toggleWindow() {
+function toggleWindow(source = 'tray-click') {
   const visualWindow = getActiveVisualWindow()
   if (!visualWindow || visualWindow.isDestroyed()) return
-  logger.info('dock.tray', '用户点击托盘图标', { snapshot: getDockDiagnosticSnapshot() })
+  logger.info('window.visibility-toggle', '用户切换主窗口显示状态', {
+    source,
+    focused: mainWindow.isFocused(),
+    snapshot: getDockDiagnosticSnapshot()
+  })
+
+  // Visible includes covered and minimized windows. A show request must reveal
+  // these in one action, without changing the user's persistent z-order mode.
+  if (
+    mainWindow.isMinimized() ||
+    (!isDockHidden &&
+      zOrderMode === WINDOW_Z_ORDER_MODES.NORMAL &&
+      mainWindow.isVisible() &&
+      !mainWindow.isFocused())
+  ) {
+    openMainWindow()
+    return
+  }
 
   // 原生线程延迟清理期间不允许重新贴边，但托盘的基本显示/隐藏必须仍然可用。
   if (nativeEdgeCleanupPending) {
     if (mainWindow.isVisible()) hideToTray()
-    else mainWindow.show()
+    else openMainWindow()
     return
   }
 
   if (isDockHidden) {
-    doShow('tray-click')
+    doShow(source)
+    focusMainWindow(source)
     return
   }
   // 托盘点击可能晚于移动、显示或设置事件；选择“滑入”前以实时几何和
@@ -3952,9 +3974,7 @@ function toggleWindow() {
   if (mainWindow.isVisible()) {
     hideToTray()
   } else {
-    mainWindow.show()
-    // show 事件会同步方向；这里再做一次幂等同步，避免平台不发 show。
-    syncVisibleDockSide({ source: 'tray-show', snap: true })
+    openMainWindow()
   }
 }
 
@@ -3977,20 +3997,27 @@ function handleViewVisibilityShortcut() {
     return
   }
   logger.info('shortcut.view-visibility-trigger', '显示/隐藏快捷键已触发', metadata)
-  toggleWindow()
+  toggleWindow('view-visibility-shortcut')
+}
+
+function focusMainWindow(source) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM) mainWindow.moveTop()
+  mainWindow.focus()
+  reassertBottomWindowZOrder(source)
 }
 
 function openMainWindow() {
   const visualWindow = getActiveVisualWindow()
   if (!visualWindow || visualWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
   if (isDockHidden) {
     doShow('open-main-window')
   } else {
     mainWindow.show()
     syncVisibleDockSide({ source: 'open-main-window', snap: true })
   }
-  mainWindow.focus()
-  reassertBottomWindowZOrder('open-main-window')
+  focusMainWindow('open-main-window')
 }
 
 async function openMainWindowFromTray() {
@@ -4316,6 +4343,7 @@ if (process.env.ABANDON_INTEGRATION_TEST === '1') {
     handleDisplayTopologyChange: handleDockDisplayTopologyChange,
     getBlurRuntimeHealth: () => (blurInitialized ? getBlurRuntimeHealth() : null),
     triggerViewVisibilityShortcut: () => viewVisibilityShortcutService?.handleTrigger(),
+    triggerTrayClick: () => tray?.emit('click'),
     getTrayMenuTemplate: buildTrayMenuTemplate,
     getReminderService: () => reminderService,
     triggerScreenshotShortcut: () => captureShortcutService?.services.screenshot.handleTrigger(),

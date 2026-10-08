@@ -1,0 +1,47 @@
+{
+  "status": "passed",
+  "dpi": "1",
+  "profile": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\user-feedback\\2026-09-30T09-52-48-572Z-DAa9c1\\ui-components-electron\\temp-U2R4FO\\abandon-ui-components-YD6a03",
+  "results": [
+    {
+      "name": "real keyboard focus and switch state",
+      "status": "passed"
+    },
+    {
+      "name": "Teleport font, normal Tab order, disabled closure",
+      "status": "passed"
+    },
+    {
+      "name": "font presets use click and keyboard outside clipped parent",
+      "status": "passed"
+    },
+    {
+      "name": "font preset height recovers after viewport growth and reopening",
+      "status": "passed"
+    },
+    {
+      "name": "yearly date panel scrolls to real confirm and cancel targets",
+      "status": "passed"
+    },
+    {
+      "name": "dialog focus, grid navigation, cascade keyboard and Escape",
+      "status": "passed"
+    },
+    {
+      "name": "stable font across widths and independent scale",
+      "status": "passed"
+    },
+    {
+      "name": "date and range share bounds, grid keys and IME-safe dismissal",
+      "status": "passed"
+    },
+    {
+      "name": "date/time edge bounds, scrollable confirmation and paired color",
+      "status": "passed"
+    },
+    {
+      "name": "unfinished animations reverse without a jump",
+      "status": "passed"
+    }
+  ]
+}

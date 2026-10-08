@@ -333,6 +333,8 @@ onMounted(() =>
       <div class="setting-right">
         <AppToggle
           v-model="enabled"
+          size="sm"
+          aria-label="显示天气"
           :disabled="Boolean(busy)"
           @update:model-value="persistEnabled"
         />
@@ -353,6 +355,7 @@ onMounted(() =>
       <div class="setting-right weather-settings__current-location">
         <ChinaAreaCascader
           :options="divisionTree"
+          :model-value="location"
           :display-value="locationLabel === '未设置' ? '' : locationLabel"
           :disabled="Boolean(busy)"
           :title="locationLabel"

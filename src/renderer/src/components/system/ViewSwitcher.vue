@@ -4,6 +4,9 @@ import { VIEW_MODES } from '../../../../shared/settings-schema.js'
 import { useMessage } from '../../composables/useMessage.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 import AppIcon from '../ui/AppIcon.vue'
+import { measurePopoverContent, popoverStyle } from '../../utils/anchoredPopover.js'
+import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
+import { isComposingInput } from '../../utils/inputComposition.js'
 
 const props = defineProps({
   activeView: {
@@ -28,6 +31,7 @@ const triggerRef = ref(null)
 const menuRef = ref(null)
 const menuOpen = ref(false)
 const menuStyle = ref({})
+usePopoverLifecycle(menuOpen, triggerRef, menuRef, updateMenuPosition)
 const switching = ref(false)
 const stopSwitchListener = window.api.onMainViewSwitchFinished?.(() => {
   switching.value = false
@@ -42,13 +46,17 @@ function updateMenuPosition() {
   const trigger = triggerRef.value
   if (!trigger) return
   const rect = trigger.getBoundingClientRect()
-  const width = 132
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize)
+  const font = parseFloat(getComputedStyle(trigger.parentElement).fontSize)
+  const natural = measurePopoverContent(menuRef.value)
+  const width = Math.min(Math.max(144 * rem, 8 * font, natural?.width || 0), window.innerWidth - 16)
+  const fitted = measurePopoverContent(menuRef.value, width)
   const preferredLeft = props.styleVariant === 'microsoft' ? rect.right - width : rect.left
-  menuStyle.value = {
-    top: `${rect.bottom + 7}px`,
-    left: `${Math.min(Math.max(8, preferredLeft), window.innerWidth - width - 8)}px`,
-    width: `${width}px`
-  }
+  menuStyle.value = popoverStyle(
+    { ...rect.toJSON(), left: preferredLeft },
+    width,
+    fitted?.height || 180 * rem
+  )
 }
 
 async function focusActiveOption() {
@@ -68,7 +76,7 @@ function toggleMenu() {
 function closeMenu({ restoreFocus = false } = {}) {
   if (!menuOpen.value) return
   menuOpen.value = false
-  if (restoreFocus) nextTick(() => triggerRef.value?.focus({ preventScroll: true }))
+  if (restoreFocus) triggerRef.value?.focus({ preventScroll: true })
 }
 
 async function switchView(targetView) {
@@ -88,6 +96,7 @@ async function switchView(targetView) {
 }
 
 function onMenuKeydown(event) {
+  if (isComposingInput(event)) return
   const items = [...(menuRef.value?.querySelectorAll('[role="menuitemradio"]') || [])]
   if (!items.length) return
   const currentIndex = Math.max(0, items.indexOf(document.activeElement))
@@ -96,8 +105,13 @@ function onMenuKeydown(event) {
   if (event.key === 'ArrowUp') targetIndex = (currentIndex - 1 + items.length) % items.length
   if (event.key === 'Home') targetIndex = 0
   if (event.key === 'End') targetIndex = items.length - 1
+  if (event.key === 'Tab') {
+    closeMenu({ restoreFocus: true })
+    return
+  }
   if (event.key === 'Escape') {
     event.preventDefault()
+    event.stopPropagation()
     closeMenu({ restoreFocus: true })
     return
   }
@@ -123,15 +137,11 @@ function onPopoverLeave(element, done) {
 
 onMounted(() => {
   document.addEventListener('pointerdown', onDocumentPointerDown, true)
-  window.addEventListener('resize', updateMenuPosition)
-  window.addEventListener('scroll', updateMenuPosition, true)
 })
 
 onBeforeUnmount(() => {
   stopSwitchListener?.()
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
-  window.removeEventListener('resize', updateMenuPosition)
-  window.removeEventListener('scroll', updateMenuPosition, true)
 })
 </script>
 
@@ -211,12 +221,12 @@ onBeforeUnmount(() => {
   color: var(--text-color);
   background: var(--surface-float);
   border: 1px solid var(--surface-float-border);
-  border-radius: 12rem;
-  box-shadow:
-    0 12rem 32rem rgba(0, 0, 0, 0.18),
-    0 2rem 8rem rgba(0, 0, 0, 0.08);
+  border-radius: var(--ui-menu-radius);
+  box-shadow: var(--ui-menu-shadow);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   transform-origin: top center;
-  will-change: clip-path;
+  will-change: opacity, transform;
   -webkit-app-region: no-drag;
 }
 
@@ -226,7 +236,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6rem;
   width: 100%;
-  min-height: 34rem;
+  min-height: var(--ui-menu-row-height);
   padding: 5rem 8rem;
   color: inherit;
   text-align: left;
@@ -242,8 +252,8 @@ onBeforeUnmount(() => {
 
 .view-switcher__option:hover,
 .view-switcher__option:focus-visible {
-  color: #fff;
-  background: var(--ui-accent);
+  color: var(--ui-menu-on-highlight);
+  background: var(--ui-menu-highlight);
 }
 
 .view-switcher__option-check {
@@ -269,12 +279,11 @@ onBeforeUnmount(() => {
 }
 
 .view-switcher__option-label {
-  overflow: hidden;
   font-size: var(--fs-body);
   font-weight: 400;
   line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .view-switcher__option.is-active .view-switcher__option-label {

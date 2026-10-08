@@ -3,6 +3,7 @@ import { useModalRequest } from '../../composables/useQueuedModal.js'
 import { reportEvidence } from '../../utils/diagnosticEvidence.js'
 import { useSettingsSearch } from '../../composables/useSettingsSearch.js'
 import { stopScrollInertia } from '../../utils/smoothScroll.js'
+import { ownedPopovers } from '../../utils/anchoredPopover.js'
 /**
  * SettingsPanel.vue — 底部弹出式设置面板
  *
@@ -23,6 +24,7 @@ import { ref, watch, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import AppToggle from '../ui/AppToggle.vue'
 import BaseButton from '../ui/BaseButton.vue'
 import FontSizeInput from '../ui/FontSizeInput.vue'
+import StyledSelect from '../ui/StyledSelect.vue'
 import AppSlider from '../ui/AppSlider.vue'
 import ShortcutRecorder from '../ui/ShortcutRecorder.vue'
 import SettingsControlPopover from './SettingsControlPopover.vue'
@@ -36,6 +38,7 @@ import RemoteNoticeHistoryDialog from './RemoteNoticeHistoryDialog.vue'
 import WeatherSettings from '../weather/WeatherSettings.vue'
 import { useMessage } from '../../composables/useMessage.js' // 消息弹窗
 import {
+  applyUiScale,
   applyGlassBaseSettings,
   applyIconColor,
   applySettingsSnapshot,
@@ -53,6 +56,7 @@ import {
   createDefaultSettings,
   ICON_COLORS,
   TITLEBAR_ICON_SCALE_LIMITS,
+  UI_SCALES,
   VIEW_MODES
 } from '../../../../shared/settings-schema.js'
 
@@ -333,6 +337,8 @@ const onDocClick = (e) => {
   if (!rendered.value || !panelActive.value) return
   // 点击在设置面板内部 → 不关闭
   if (panelRef.value && panelRef.value.contains(e.target)) return
+  if (panelRef.value && ownedPopovers(panelRef.value).some((panel) => panel.contains(e.target)))
+    return
   // 设置页拥有的 Teleport 弹层不在 panelRef 内，但仍属于设置交互的一部分。
   if (e.target.closest('[data-keep-settings-open], .confirm-overlay')) return
   close()
@@ -386,6 +392,7 @@ watch(
       }
       rendered.value = true
       await nextTick()
+      void panelRef.value?.offsetWidth
       requestAnimationFrame(() => {
         if (componentUnmounted || !props.visible) return
         restoreScrollPosition()
@@ -399,6 +406,8 @@ watch(
 
 // ---- 基础样式设置 ----
 const titlebarStyle = ref(DEFAULT_SETTINGS.appearance.titlebarStyle)
+const uiScale = ref(DEFAULT_SETTINGS.appearance.uiScale)
+const uiScaleOptions = UI_SCALES.map((value) => ({ value, label: `${Math.round(value * 100)}%` }))
 const titlebarIconScale = ref(DEFAULT_SETTINGS.appearance.titlebarIconScale)
 const iconColor = ref(DEFAULT_SETTINGS.appearance.iconColor)
 const viewVisibilityShortcut = ref(DEFAULT_SETTINGS.shortcuts.viewVisibility)
@@ -1034,6 +1043,14 @@ watch(titlebarStyle, (v) => {
   )
 })
 
+watch(uiScale, (value) => {
+  applyUiScale(value, el)
+  if (!_settingsSynced || isResetting.value) return
+  persistSetting({ id: 'appearance.uiScale', value }).catch((error) =>
+    console.warn('[SettingsPanel] 保存界面缩放失败:', error)
+  )
+})
+
 watch(titlebarIconScale, (value) => {
   applyTitlebarIconScale(value, el)
   debouncedSave('appearance.titlebarIconScale', value)
@@ -1272,6 +1289,7 @@ function assignSettingsSnapshot(snapshot) {
   assignDockRuntime(snapshot.runtime?.dock)
 
   titlebarStyle.value = appearance.titlebarStyle
+  uiScale.value = appearance.uiScale
   titlebarIconScale.value = appearance.titlebarIconScale
   iconColor.value = appearance.iconColor
   viewVisibilityShortcut.value = shortcuts.viewVisibility
@@ -1385,6 +1403,7 @@ onMounted(async () => {
   await loadSettingsSnapshot()
   if (componentUnmounted) return
   await nextTick()
+  void panelRef.value?.offsetWidth
   openRaf = requestAnimationFrame(() => {
     openRaf = null
     if (!props.visible || componentUnmounted) return
@@ -1843,11 +1862,37 @@ async function retryScheduler() {
                   <div class="setting-right">
                     <AppToggle
                       v-model="windowBorder"
+                      aria-label="窗口边框"
+                      size="sm"
                       data-diagnostic-action="settings.windowBorder"
                     />
                   </div>
                 </div>
 
+                <div class="setting-item">
+                  <div class="setting-left">
+                    <span class="setting-label"
+                      >界面缩放<HelpButton
+                        text="统一调整主视图和软件提醒窗口的文字、图标与控件。桌面便签、灵动岛字号和截图工具保持各自设置；导航栏图标缩放在此基础上叠加。窗口宽度只调整布局，不自动改变字号。"
+                    /></span>
+                  </div>
+                  <div class="setting-right ui-scale-controls">
+                    <StyledSelect
+                      v-model="uiScale"
+                      :options="uiScaleOptions"
+                      aria-label="界面缩放"
+                      size="sm"
+                      width="84rem"
+                    />
+                    <BaseButton
+                      size="sm"
+                      variant="text"
+                      :disabled="uiScale === 1"
+                      @click="uiScale = 1"
+                      >恢复 100%</BaseButton
+                    >
+                  </div>
+                </div>
                 <!-- 字体大小（输入 + 下拉预设） -->
                 <div class="setting-item">
                   <div class="setting-left">
@@ -1999,6 +2044,8 @@ async function retryScheduler() {
                   <div class="setting-right">
                     <AppToggle
                       v-model="blurEnabled"
+                      aria-label="原生毛玻璃"
+                      size="sm"
                       data-diagnostic-action="settings.blurEnabled"
                     />
                   </div>
@@ -2272,10 +2319,11 @@ async function retryScheduler() {
                   <div class="setting-right">
                     <AppToggle
                       v-model="minimalMode"
+                      aria-label="极简模式"
+                      size="sm"
                       data-diagnostic-action="settings.minimalMode"
                       role="switch"
                       :aria-checked="minimalMode"
-                      aria-label="极简模式"
                     />
                   </div>
                 </div>
@@ -2293,6 +2341,8 @@ async function retryScheduler() {
                   <div class="setting-right">
                     <AppToggle
                       v-model="tagColorEnabled"
+                      aria-label="标签颜色"
+                      size="sm"
                       data-diagnostic-action="settings.tagColorEnabled"
                     />
                   </div>
@@ -2308,6 +2358,8 @@ async function retryScheduler() {
                   <div class="setting-right">
                     <AppToggle
                       v-model="doubleClickQuickEdit"
+                      aria-label="双击快速编辑正文"
+                      size="sm"
                       data-diagnostic-action="settings.doubleClickQuickEdit"
                     />
                   </div>
@@ -2422,6 +2474,8 @@ async function retryScheduler() {
                   <div class="setting-right">
                     <AppToggle
                       v-model="stickyAlwaysOnTop"
+                      aria-label="便利贴默认置顶"
+                      size="sm"
                       data-diagnostic-action="settings.stickyAlwaysOnTop"
                     />
                   </div>
@@ -2467,6 +2521,8 @@ async function retryScheduler() {
                   <div class="setting-right">
                     <AppToggle
                       v-model="hideMainViewDuringScreenshot"
+                      aria-label="截图时隐藏主视图"
+                      size="sm"
                       data-diagnostic-action="settings.hideMainViewDuringScreenshot"
                     />
                   </div>
@@ -2605,7 +2661,12 @@ async function retryScheduler() {
                     </span>
                   </div>
                   <div class="setting-right">
-                    <AppToggle v-model="autoStart" data-diagnostic-action="settings.autoStart" />
+                    <AppToggle
+                      v-model="autoStart"
+                      aria-label="开机自启"
+                      size="sm"
+                      data-diagnostic-action="settings.autoStart"
+                    />
                   </div>
                 </div>
               </section>
@@ -2646,6 +2707,8 @@ async function retryScheduler() {
                   <div class="setting-right">
                     <AppToggle
                       v-model="receiveRemoteNotices"
+                      aria-label="接收软件通知"
+                      size="sm"
                       data-diagnostic-action="settings.receiveRemoteNotices"
                       :disabled="remoteHealthStatus === 'retired'"
                     />
@@ -2662,6 +2725,8 @@ async function retryScheduler() {
                   <div class="setting-right">
                     <AppToggle
                       v-model="uploadDeviceInfo"
+                      aria-label="设备统计"
+                      size="sm"
                       data-diagnostic-action="settings.uploadDeviceInfo"
                       :disabled="remoteHealthStatus === 'retired'"
                     />
@@ -3022,8 +3087,8 @@ async function retryScheduler() {
 /* ---- 面板主体：设置页使用 1× 全局霜层基准 ---- */
 .settings-panel {
   /* 只缩小设置页及其内嵌控件，正文、便签和其他窗口仍使用用户的原字号。 */
-  --fs-body: clamp(12px, calc(var(--font-size-base) * 0.82), 16px);
-  --fs-secondary: max(11px, calc(var(--fs-body) * 0.86));
+  --fs-body: clamp(12rem, calc(var(--font-size-base) * 0.82), 16rem);
+  --fs-secondary: max(11rem, calc(var(--fs-body) * 0.86));
   --fs-title: calc(var(--fs-body) * 1.2);
   --settings-gutter: 16rem;
   --settings-gutter-start: var(--settings-gutter);
@@ -3039,7 +3104,7 @@ async function retryScheduler() {
   box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.3);
   transform: translateY(100%);
   transition:
-    transform 350ms var(--ease-standard),
+    transform var(--motion-panel-exit) var(--ease-standard),
     filter 100ms ease-out;
   pointer-events: auto;
   display: flex;
@@ -3051,6 +3116,7 @@ async function retryScheduler() {
 
 .settings-panel.active {
   transform: translateY(0);
+  transition-duration: var(--motion-panel), 100ms;
 }
 
 /* 月视图从右侧滑入；左边缘是贯穿整页的横向尺寸拖动区。 */
@@ -3236,6 +3302,7 @@ async function retryScheduler() {
 /* ---- 单条设置项（Flex 两列：左标签 + 右控件，space-between 平分多余空间）---- */
 .setting-item {
   display: flex;
+  flex-wrap: wrap;
   min-height: max(40px, 2.85em);
   align-items: center;
   justify-content: space-between;
@@ -3310,7 +3377,8 @@ async function retryScheduler() {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  max-width: 58%;
+  max-width: 100%;
+  flex-wrap: wrap;
   flex: 0 0 auto;
   justify-content: flex-end;
   margin-left: auto;
@@ -3356,7 +3424,7 @@ async function retryScheduler() {
   background: var(--ui-surface-control);
 }
 .settings-color-editor .color-hex-input:focus {
-  border-color: var(--ui-accent);
+  border-color: var(--ui-border-hover);
 }
 .settings-color-editor .color-hex-input.has-error {
   border-color: var(--ui-danger);
@@ -3370,7 +3438,7 @@ async function retryScheduler() {
   outline-offset: 2px;
 }
 .settings-color-editor .color-dot:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: 2px;
 }
 .holiday-summary-row {
@@ -3437,7 +3505,7 @@ async function retryScheduler() {
   transform: scale(0.98);
 }
 .titlebar-style-selector button:focus-visible {
-  outline: 2rem solid #0078d4;
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: 1rem;
 }
 
@@ -3483,7 +3551,7 @@ async function retryScheduler() {
   transform: scale(0.98);
 }
 .dock-reveal-mode-selector button:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: 1px;
 }
 .dock-reveal-mode-selector button:disabled {
@@ -3531,7 +3599,7 @@ async function retryScheduler() {
   background: var(--ui-fill-hover);
 }
 .dock-edge-selector button:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: 1px;
 }
 .dock-edge-selector button:active:not(:disabled) {
@@ -3718,7 +3786,7 @@ async function retryScheduler() {
   transition: border-color 150ms ease;
 }
 .color-hex-input:focus {
-  border-color: #0071e3;
+  border-color: var(--ui-border-hover);
 }
 .color-hex-input.has-error {
   border-color: rgba(255, 59, 48, 0.4);
@@ -3755,30 +3823,32 @@ async function retryScheduler() {
   }
 }
 
+.ui-scale-controls {
+  gap: 4rem;
+}
+@container (max-width: 300px) {
+  .settings-search p {
+    display: none;
+  }
+  .setting-item {
+    align-items: flex-start;
+  }
+  .setting-right {
+    max-width: 100%;
+  }
+  .setting-left {
+    flex-basis: 100%;
+  }
+  .shortcut-setting .setting-right {
+    max-width: 100%;
+  }
+}
+@media (max-height: 600px) {
+  .settings-panel {
+    min-height: min(400rem, 100%);
+  }
+}
 /* 仅设置页缩小控件，不改变编辑器与主页面的组件尺寸。 */
-.settings-panel :deep(.switch) {
-  width: 36px;
-  height: 20px;
-  border-radius: 10px;
-}
-.settings-panel :deep(.switch)::before {
-  content: '';
-  position: absolute;
-  inset: -4px;
-}
-.settings-panel :deep(.switch-thumb) {
-  left: 2px;
-  width: 16px;
-  height: 16px;
-}
-.settings-panel :deep(.switch.on .switch-thumb),
-.settings-panel :deep(.switch.on:active .switch-thumb) {
-  transform: translate(16px, -50%);
-}
-.settings-panel :deep(.switch:focus-visible) {
-  outline: 2px solid var(--ui-accent);
-  outline-offset: 3px;
-}
 .settings-panel :deep(.fsi-trigger) {
   min-height: 26px;
   padding: 3px 7px;
@@ -3859,7 +3929,6 @@ async function retryScheduler() {
 }
 .weather-refresh-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, #0a84ff 24%, transparent);
 }
 .weather-refresh-btn:active:not(:disabled) {
   transform: scale(0.98);

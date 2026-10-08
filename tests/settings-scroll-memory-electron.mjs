@@ -274,15 +274,17 @@ if (!phase) {
       assert.ok(dimensions.bodyOverflow <= 2, JSON.stringify(dimensions))
       assert.deepEqual(dimensions.rowOverflow, [], JSON.stringify(dimensions))
       assert.ok(Math.abs(dimensions.gutterDelta) <= 1, 'search and content gutters should align')
-      assert.ok(
-        dimensions.ordinaryRows.every((row) => row.sameLine),
-        JSON.stringify(dimensions)
-      )
+      if (!narrow)
+        assert.ok(
+          dimensions.ordinaryRows.every((row) => row.sameLine),
+          JSON.stringify(dimensions)
+        )
       const rightEdges = dimensions.ordinaryRows.map((row) => row.right)
-      assert.ok(
-        Math.max(...rightEdges) - Math.min(...rightEdges) < 2,
-        'control right edges diverged'
-      )
+      if (!narrow)
+        assert.ok(
+          Math.max(...rightEdges) - Math.min(...rightEdges) < 2,
+          'control right edges diverged'
+        )
       if (!narrow) {
         const heights = dimensions.ordinaryRows.map((row) => row.height)
         assert.ok(Math.max(...heights) - Math.min(...heights) < 2, JSON.stringify(dimensions))

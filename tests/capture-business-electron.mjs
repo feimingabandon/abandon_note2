@@ -209,7 +209,7 @@ app.once('ready', async () => {
     await until(() => hooks.nativeCaptureState().active, 'Draft capture did not start')
     await wait(180)
     await press('F')
-    await press('Enter', true)
+    await press('Enter')
     await until(
       () =>
         js(

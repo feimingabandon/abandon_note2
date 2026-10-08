@@ -333,7 +333,7 @@ onBeforeUnmount(() => {
   border-color: var(--ui-border-hover);
 }
 .reminder-channels__trigger:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: 2px;
 }
 .reminder-channels__trigger:disabled {
@@ -405,7 +405,7 @@ onBeforeUnmount(() => {
   color: var(--ui-accent);
 }
 .reminder-channels__option:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: -2px;
 }
 .reminder-channels__option:disabled {

@@ -20,6 +20,7 @@ export const VIEW_SETTINGS_SCOPES = Object.freeze({
  * 登记，持久化分流和“恢复默认设置”就会同步覆盖，避免新设置被漏掉。
  */
 export const APPLICATION_SETTING_IDS = Object.freeze([
+  'appearance.uiScale',
   'appearance.titlebarIconScale',
   'appearance.iconColor',
   'shortcuts.viewVisibility',
@@ -54,6 +55,7 @@ const WEEK_SETTINGS_INITIALIZED_ROW = Object.freeze({
 })
 
 const APPLICATION_SETTING_DB_KEYS = new Set([
+  'appearance:ui_scale',
   'appearance:titlebar_icon_scale',
   'appearance:icon_color',
   'shortcuts:enabled', // Retired persistent gate must not enter per-view settings.
@@ -105,6 +107,7 @@ export function readApplicationSettings() {
   return {
     activeView: normalizeViewMode(storedView),
     appearance: {
+      uiScale: applicationResolved.appearance.uiScale,
       titlebarIconScale: applicationResolved.appearance.titlebarIconScale,
       iconColor: applicationResolved.appearance.iconColor
     },

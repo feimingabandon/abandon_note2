@@ -125,6 +125,29 @@ async function quitApp() {
     )
     assert.equal(identity.packaged, true)
     assert.equal(resolve(identity.profile), profile)
+    // A fresh profile shows onboarding and may queue a software notice. Finish
+    // that setup before expecting the screenshot dialog to own the modal slot.
+    const prepareMainWindow = `(async () => {
+      const welcome = document.querySelector('.app-modal-card[aria-label="欢迎使用 Abandon 便签"]')
+      if (welcome) {
+        welcome.querySelector('button[data-modal-initial-focus]:not(:disabled)')?.click()
+        return false
+      }
+      const notice = document.querySelector('.app-modal-card[aria-label="软件通知"]')
+      if (notice) {
+        notice.querySelector('.app-modal-close:not(:disabled)')?.click()
+        return false
+      }
+      const snapshot = await window.api.getSettingsSnapshot()
+      return snapshot.values.onboarding.noticeVersion > 0 && !document.querySelector('.app-modal-card')
+    })()`
+    await until(
+      () =>
+        evaluate(
+          `Promise.all(captureTestElectron.BrowserWindow.getAllWindows().filter(w=>w.webContents.getURL().endsWith('/index.html')).map(w=>w.webContents.executeJavaScript(${JSON.stringify(prepareMainWindow)}))).then(results=>results.some(Boolean))`
+        ),
+      'Packaged main window did not finish first-use setup'
+    )
     await until(
       () =>
         evaluate(`globalThis.__ABANDON_WINDOW_TEST_HOOKS__?.nativeCaptureState().ready === true`),
@@ -150,8 +173,14 @@ async function quitApp() {
       'Packaged image worker/delivery failed'
     )
     const checkDraft = `!!document.querySelector('.app-modal-card[aria-label="截图新建便签"] .ip-thumb')`
-    const attached = await evaluate(
-      `Promise.all(captureTestElectron.BrowserWindow.getAllWindows().map(w=>w.webContents.executeJavaScript(${JSON.stringify(checkDraft)}).catch(()=>false))).then(results=>results.some(Boolean))`
+    // Native acknowledgement follows durable receipt; mounting the queued modal
+    // and importing its image finish asynchronously after the session ends.
+    const attached = await until(
+      () =>
+        evaluate(
+          `Promise.all(captureTestElectron.BrowserWindow.getAllWindows().map(w=>w.webContents.executeJavaScript(${JSON.stringify(checkDraft)}).catch(()=>false))).then(results=>results.some(Boolean))`
+        ),
+      'Packaged screenshot was not attached to a new draft'
     )
     assert.equal(attached, true)
     await evaluate(`(async () => {
@@ -214,6 +243,10 @@ async function quitApp() {
     console.log(`Packaged capture smoke passed: ${evidence}`)
   } catch (error) {
     console.error(error)
+    writeFileSync(
+      join(evidence, 'result.json'),
+      JSON.stringify({ status: 'failed', packageDir, error: error.stack }, null, 2)
+    )
     process.exitCode = 1
   } finally {
     socket?.close()

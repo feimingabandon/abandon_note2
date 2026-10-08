@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "results": [
+    "duration labels and invariant row height at all UI scales",
+    "scale menu complete text at 68px trigger",
+    "font checkmark and single neutral input surface",
+    "tag panel remains stable in modal after observers settle, filter and reopen",
+    "saved province city and district restored on every open",
+    "month and week picker buttons retain styles and centered anchors",
+    "quick editor labels separated from rounded input and no focus halo",
+    "scrolled removal clones clipped to scrollport and removed on scroll",
+    "completed exits can be cancelled and auxiliary entrance survives card entrance",
+    "initially visible modal plays actual entrance animation",
+    "screenshot thumbnail deletion keeps its original grid position and size"
+  ]
+}

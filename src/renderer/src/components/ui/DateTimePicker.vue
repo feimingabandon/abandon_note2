@@ -8,6 +8,10 @@
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import TimeSpinner from './TimeSpinner.vue'
+import BaseButton from './BaseButton.vue'
+import { popoverStyle } from '../../utils/anchoredPopover.js'
+import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
+import { isComposingInput } from '../../utils/inputComposition.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 
 const props = defineProps({
@@ -52,6 +56,16 @@ const open = ref(false)
 const wrapperRef = ref(null)
 const panelRef = ref(null)
 const panelStyle = ref({})
+const popover = usePopoverLifecycle(open, wrapperRef, panelRef, updatePanelPosition, {
+  dialog: true,
+  focus: true
+})
+watch(
+  () => props.disabled,
+  (disabled) => {
+    if (disabled) popover.close()
+  }
+)
 
 const year = ref(new Date().getFullYear())
 const month = ref(new Date().getMonth() + 1)
@@ -207,7 +221,7 @@ function onDateBlur() {
   inputDate.value = ''
 }
 function onDateKeydown(e) {
-  if (e.key === 'Enter') {
+  if (!isComposingInput(e) && e.key === 'Enter') {
     commitDate()
     e.target.blur()
   }
@@ -263,7 +277,7 @@ function onTimeBlur() {
   inputTime.value = ''
 }
 function onTimeKeydown(e) {
-  if (e.key === 'Enter') {
+  if (!isComposingInput(e) && e.key === 'Enter') {
     commitTime()
     e.target.blur()
   }
@@ -356,19 +370,8 @@ function selectDateCell(cell) {
 function updatePanelPosition() {
   if (!wrapperRef.value) return
   const rect = wrapperRef.value.getBoundingClientRect()
-  let left = rect.left
-  // 面板宽 320rem，防右侧溢出
-  const remSize = parseFloat(getComputedStyle(document.documentElement).fontSize)
-  const panelW = 320 * remSize
-  if (left + panelW > window.innerWidth - 8) {
-    left = Math.max(8, window.innerWidth - panelW - 8)
-  }
-  panelStyle.value = {
-    position: 'fixed',
-    top: rect.bottom + 4 + 'px',
-    left: left + 'px',
-    zIndex: 'var(--z-global-popover)'
-  }
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
+  panelStyle.value = popoverStyle(rect, 320 * rem, panelRef.value?.scrollHeight || 380 * rem)
 }
 
 function toggle() {
@@ -385,21 +388,11 @@ function toggle() {
   open.value = true
 }
 
-// 面板打开时监听窗口 resize，保持定位跟随
-watch(open, (val) => {
-  if (val) {
-    nextTick(() => updatePanelPosition())
-    window.addEventListener('resize', updatePanelPosition)
-  } else {
-    window.removeEventListener('resize', updatePanelPosition)
-  }
-})
-
 function confirm() {
   const val = buildValue()
   emit('update:modelValue', val)
   emit('change', val)
-  open.value = false
+  popover.close(true)
 }
 
 function doClear(e) {
@@ -436,7 +429,7 @@ function onDocClick(e) {
 }
 
 function onKeydown(e) {
-  if (e.key === 'Escape') open.value = false
+  if (open.value && !e.defaultPrevented) popover.onKeydown(e)
 }
 
 onMounted(() => {
@@ -447,20 +440,20 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick, true)
   document.removeEventListener('keydown', onKeydown)
-  window.removeEventListener('resize', updatePanelPosition)
 })
 
 function onEnter(el, done) {
-  enterPopover(el, done, 'reveal')
+  enterPopover(el, done, 'dropdown')
 }
 function onLeave(el, done) {
-  leavePopover(el, done, 'reveal')
+  leavePopover(el, done, 'dropdown')
 }
 </script>
 
 <template>
   <div ref="wrapperRef" class="dt-wrapper" :style="wrapperStyle">
     <button
+      type="button"
       class="dt-trigger"
       :class="{ 'is-open': open, 'is-disabled': disabled }"
       :disabled="disabled"
@@ -507,7 +500,16 @@ function onLeave(el, done) {
 
     <Teleport to="body">
       <Transition :css="false" @enter="onEnter" @leave="onLeave">
-        <div v-if="open" ref="panelRef" class="dt-panel-wrap" :style="panelStyle" @click.stop>
+        <div
+          v-if="open"
+          ref="panelRef"
+          class="dt-panel-wrap scroll-y"
+          :style="panelStyle"
+          role="dialog"
+          aria-label="选择日期时间"
+          @keydown="popover.onKeydown"
+          @click.stop
+        >
           <div class="dt-panel-glass">
             <div class="dt-panel">
               <!-- ===== 上：日期+时间可编辑区 ===== -->
@@ -621,7 +623,11 @@ function onLeave(el, done) {
                     <span v-for="w in WEEKDAYS" :key="w" class="dt-weekday">{{ w }}</span>
                   </div>
                   <Transition :name="`dt-month-${calendarDirection}`" mode="out-in">
-                    <div :key="`${viewYear}-${viewMonth}`" class="dt-calendar">
+                    <div
+                      :key="`${viewYear}-${viewMonth}`"
+                      class="dt-calendar"
+                      data-popover-grid="7"
+                    >
                       <button
                         v-for="(c, i) in calendarCells"
                         :key="i"
@@ -679,8 +685,12 @@ function onLeave(el, done) {
                   </button>
                 </div>
                 <div class="dt-footer-spacer" />
-                <button class="dt-btn dt-btn--now" @click="applyNowAndConfirm">此刻</button>
-                <button class="dt-btn dt-btn--confirm" @click="confirm">确认</button>
+                <BaseButton size="sm" variant="text" class="dt-btn--now" @click="applyNowAndConfirm"
+                  >此刻</BaseButton
+                >
+                <BaseButton size="sm" variant="primary" class="dt-btn--confirm" @click="confirm"
+                  >确认</BaseButton
+                >
               </div>
             </div>
           </div>
@@ -790,8 +800,9 @@ function onLeave(el, done) {
 /* ===== 面板 ===== */
 .dt-panel-wrap {
   border-radius: 10rem;
-  box-shadow: 0 12rem 34rem rgba(0, 0, 0, 0.26);
-  overflow: hidden;
+  box-shadow: var(--ui-menu-shadow);
+  overflow: auto;
+  overscroll-behavior: contain;
   transform-origin: top center;
   will-change: clip-path, transform, opacity;
 }
@@ -801,8 +812,9 @@ function onLeave(el, done) {
   border-radius: inherit;
 }
 .dt-panel {
-  width: 320rem;
-  height: 320rem;
+  width: 100%;
+  min-height: 380rem;
+  height: max(380rem, 26em);
   display: flex;
   flex-direction: column;
 }
@@ -1066,10 +1078,11 @@ function onLeave(el, done) {
 /* ===== 下：footer ===== */
 .dt-footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6rem;
   padding: 8rem 10rem;
-  flex: 1;
+  flex: 0 0 auto;
   min-height: 0;
 }
 .dt-shortcuts {
@@ -1099,35 +1112,8 @@ function onLeave(el, done) {
 .dt-footer-spacer {
   flex: 1;
 }
-.dt-btn {
-  padding: 6rem 14rem;
-  font-size: var(--fs-secondary);
-  font-family: inherit;
-  font-weight: 500;
-  border: none;
-  border-radius: 8rem;
-  cursor: pointer;
-  outline: none;
-  white-space: nowrap;
-  transition: background-color 150ms ease;
-}
-.dt-btn--now {
-  color: #0071e3;
-  background: rgba(0, 113, 227, 0.08);
-}
-.dt-btn--now:hover {
-  background: rgba(0, 113, 227, 0.16);
-}
-.dt-btn--confirm {
-  color: var(--text-color);
-  background: #0071e3;
-}
-.dt-btn--confirm:hover {
-  background: #0077ed;
-}
 .dt-nav-btn:active,
-.dt-sc-chip:active,
-.dt-btn:active {
+.dt-sc-chip:active {
   transform: scale(0.98);
   transition-duration: 70ms;
 }

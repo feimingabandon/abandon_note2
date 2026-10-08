@@ -485,6 +485,6 @@ onBeforeUnmount(() => {
   transform: scale(1.045);
 }
 .ts-list:focus-visible + .ts-indicator {
-  border-color: color-mix(in srgb, #0071e3 54%, transparent);
+  border-color: var(--ui-border-hover);
 }
 </style>

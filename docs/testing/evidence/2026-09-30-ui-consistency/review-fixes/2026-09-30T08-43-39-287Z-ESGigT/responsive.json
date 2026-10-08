@@ -1,0 +1,6 @@
+{
+  "status": "failed",
+  "profile": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\review-fixes\\2026-09-30T08-43-39-287Z-ESGigT\\ui-responsive-electron\\temp-BEjFur\\abandon-ui-responsive-hRYTnD",
+  "results": [],
+  "error": "AssertionError [ERR_ASSERTION]: apple titlebar at 240px\n+ actual - expected\n\n+ [\n+   '关闭',\n+   '窗口层级：始终置顶',\n+   '锁定主窗口',\n+   '切换主视图，当前为便签列表',\n+   '导出便签报表',\n+   '打开循环模板',\n+   '设置',\n+   '帮助'\n+ ]\n- []\n\n    at file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-responsive-electron.mjs:116:20\n    at async check (file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-responsive-electron.mjs:84:3)\n    at async run (file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-responsive-electron.mjs:105:7)"
+}

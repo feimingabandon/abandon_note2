@@ -1,0 +1,102 @@
+[
+  {
+    "id": "note-list-animation-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/note-list-animation-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T11:28:50.108Z",
+    "durationMs": 952,
+    "code": 1,
+    "signal": null,
+    "launchError": null,
+    "status": "failed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-list-motion\\2026-09-30T11-28-50-000Z-mzbgQX\\note-list-animation-electron",
+    "preservedTemporary": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-list-motion\\2026-09-30T11-28-50-000Z-mzbgQX\\note-list-animation-electron\\temp-XK1fox"
+  },
+  {
+    "id": "ui-feedback-app-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/ui-feedback-app-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T11:28:51.074Z",
+    "durationMs": 27492,
+    "code": 0,
+    "signal": null,
+    "launchError": null,
+    "status": "passed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-list-motion\\2026-09-30T11-28-50-000Z-mzbgQX\\ui-feedback-app-electron"
+  },
+  {
+    "id": "note-list-refresh-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/note-list-refresh-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T11:29:18.588Z",
+    "durationMs": 28992,
+    "code": 0,
+    "signal": null,
+    "launchError": null,
+    "status": "passed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-list-motion\\2026-09-30T11-28-50-000Z-mzbgQX\\note-list-refresh-electron"
+  },
+  {
+    "id": "note-list-tag-refresh-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/note-list-tag-refresh-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T11:29:47.603Z",
+    "durationMs": 25509,
+    "code": 1,
+    "signal": null,
+    "launchError": null,
+    "status": "failed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-list-motion\\2026-09-30T11-28-50-000Z-mzbgQX\\note-list-tag-refresh-electron",
+    "preservedTemporary": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-list-motion\\2026-09-30T11-28-50-000Z-mzbgQX\\note-list-tag-refresh-electron\\temp-mhao2y"
+  },
+  {
+    "id": "note-list-completion-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/note-list-completion-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T11:30:13.138Z",
+    "durationMs": 11515,
+    "code": 0,
+    "signal": null,
+    "launchError": null,
+    "status": "passed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-list-motion\\2026-09-30T11-28-50-000Z-mzbgQX\\note-list-completion-electron"
+  },
+  {
+    "id": "note-list-toolbar-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/note-list-toolbar-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T11:30:24.673Z",
+    "durationMs": 9842,
+    "code": 0,
+    "signal": null,
+    "launchError": null,
+    "status": "passed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-list-motion\\2026-09-30T11-28-50-000Z-mzbgQX\\note-list-toolbar-electron"
+  },
+  {
+    "id": "week-day-panel-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/week-day-panel-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T11:30:34.538Z",
+    "durationMs": 2865,
+    "code": 0,
+    "signal": null,
+    "launchError": null,
+    "status": "passed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-list-motion\\2026-09-30T11-28-50-000Z-mzbgQX\\week-day-panel-electron"
+  }
+]

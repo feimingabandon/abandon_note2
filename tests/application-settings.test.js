@@ -47,6 +47,16 @@ beforeEach(() => {
 })
 
 describe('application view settings', () => {
+  it('stores UI scale only at application scope and includes it in reset', () => {
+    writeApplicationSetting('appearance.uiScale', 1.25)
+    expect(readApplicationSettings().appearance.uiScale).toBe(1.25)
+    expect(db.rowsByScope.get('application')).toContainEqual(
+      expect.objectContaining({ key: 'ui_scale', value: '1.25' })
+    )
+    expect(db.rowsByScope.has('main')).toBe(false)
+    resetApplicationSettingsToDefaults()
+    expect(readApplicationSettings().appearance.uiScale).toBe(1)
+  })
   it('initializes lock and z-order once from the active legacy view, then shares them globally', () => {
     db.rowsByScope.set('main', [
       { type: 'system', key: 'lock_state', value: 'true' },

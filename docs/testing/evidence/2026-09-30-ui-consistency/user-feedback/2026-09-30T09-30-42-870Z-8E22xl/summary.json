@@ -1,0 +1,34 @@
+[
+  {
+    "id": "ui-feedback-electron",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+    "args": [
+      "tests/ui-feedback-electron.mjs"
+    ],
+    "startedAt": "2026-09-30T09:30:42.940Z",
+    "durationMs": 14363,
+    "code": 1,
+    "signal": null,
+    "launchError": null,
+    "status": "failed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\user-feedback\\2026-09-30T09-30-42-870Z-8E22xl\\ui-feedback-electron",
+    "preservedTemporary": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\user-feedback\\2026-09-30T09-30-42-870Z-8E22xl\\ui-feedback-electron\\temp-ghxRuz"
+  },
+  {
+    "id": "capture-primary",
+    "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\native_capture\\build\\bin\\capture_ui_tests.exe",
+    "args": [
+      "completionReturnsToRequestingForm",
+      "-o",
+      "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\user-feedback\\2026-09-30T09-30-42-870Z-8E22xl\\capture-primary.txt,txt"
+    ],
+    "startedAt": "2026-09-30T09:30:57.311Z",
+    "durationMs": 71,
+    "code": 1,
+    "signal": null,
+    "launchError": null,
+    "status": "failed",
+    "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\user-feedback\\2026-09-30T09-30-42-870Z-8E22xl\\capture-primary",
+    "preservedTemporary": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-ui-consistency\\user-feedback\\2026-09-30T09-30-42-870Z-8E22xl\\capture-primary\\temp-kgmuR4"
+  }
+]

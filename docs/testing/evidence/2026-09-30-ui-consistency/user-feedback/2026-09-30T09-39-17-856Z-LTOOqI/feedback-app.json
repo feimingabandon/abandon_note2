@@ -1,0 +1,18 @@
+{
+  "status": "failed",
+  "results": [
+    {
+      "name": "real new-note editor and tag panel in narrow layout",
+      "status": "passed"
+    },
+    {
+      "name": "first and repeated fullscreen workspaces animate with content",
+      "status": "passed"
+    },
+    {
+      "name": "settings scale menu remains legible against white dark and patterned surfaces",
+      "status": "passed"
+    }
+  ],
+  "error": "Error: calendar missing\n    at until (file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-feedback-app-electron.mjs:56:9)\n    at async file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-feedback-app-electron.mjs:203:9\n    at async check (file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-feedback-app-electron.mjs:85:3)\n    at async run (file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-feedback-app-electron.mjs:200:5)"
+}

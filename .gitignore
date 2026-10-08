@@ -27,3 +27,6 @@ docs/发布构建与应用更新流程.md
 /native_blur/build-transition/
 /native_capture/build/
 /native_capture/deploy/
+
+# Isolated Electron test profiles retained locally beside acceptance evidence
+/docs/testing/evidence/**/temp-*/

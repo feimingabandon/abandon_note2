@@ -16,7 +16,7 @@ describe('标签分组排序与右键入口', () => {
   it('通过独立按钮进入整行拖拽模式，并保持未分类不可拖动', () => {
     const list = readFileSync(NOTE_LIST_PATH, 'utf8')
 
-    expect(list).toContain('v-if="sortMode === \'tag-group\'"')
+    expect(list).toMatch(/v-(?:else-)?if="sortMode === 'tag-group'"/)
     expect(list).toContain('class="nl-tag-group-sort-toggle"')
     expect(list).toContain('@click="toggleTagGroupSortMode"')
     expect(list).toContain('handle=".nl-tag-group-sort-handle"')

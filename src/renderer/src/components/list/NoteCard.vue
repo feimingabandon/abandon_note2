@@ -1,4 +1,7 @@
 <script setup>
+import { isComposingInput } from '../../utils/inputComposition.js'
+import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
+import { pointerMenuStyle } from '../../utils/anchoredPopover.js'
 import { measureRendererLayout } from '../../utils/performanceDiagnostics.js'
 import { reminderChannelLabels } from '../../../../shared/reminder-rules.js'
 /**
@@ -476,7 +479,8 @@ function onTagPopoverOutside(event) {
   closeTags()
 }
 
-function closeContextMenu() {
+function closeContextMenu(event) {
+  if (event?.type === 'scroll' && contextMenuRef.value?.contains(event.target)) return
   contextMenuVisible.value = false
   document.removeEventListener('pointerdown', onContextMenuOutside)
   document.removeEventListener('keydown', onContextMenuKeydown)
@@ -490,7 +494,27 @@ function onContextMenuOutside(event) {
 }
 
 function onContextMenuKeydown(event) {
-  if (event.key === 'Escape') closeContextMenu()
+  if (isComposingInput(event)) return
+  if (event.key === 'Escape' || event.key === 'Tab') {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    closeContextMenu()
+    cardRef.value?.focus({ preventScroll: true })
+    return
+  }
+  const buttons = [...(contextMenuRef.value?.querySelectorAll('button:not(:disabled)') || [])]
+  if (!buttons.length || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const index = buttons.indexOf(document.activeElement)
+  const next =
+    event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? buttons.length - 1
+        : (index + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length
+  buttons[next]?.focus()
 }
 
 async function openContextMenu(event) {
@@ -510,11 +534,9 @@ async function openContextMenu(event) {
 
   const rect = contextMenuRef.value?.getBoundingClientRect()
   if (!rect) return
-  const gap = 8
-  contextMenuStyle.value = {
-    left: `${Math.max(gap, Math.min(event.clientX, window.innerWidth - rect.width - gap))}px`,
-    top: `${Math.max(gap, Math.min(event.clientY, window.innerHeight - rect.height - gap))}px`
-  }
+  contextMenuStyle.value = pointerMenuStyle(event.clientX, event.clientY, contextMenuRef.value)
+  cardRef.value.tabIndex = -1
+  contextMenuRef.value.querySelector('button:not(:disabled)')?.focus({ preventScroll: true })
   document.addEventListener('pointerdown', onContextMenuOutside)
   document.addEventListener('keydown', onContextMenuKeydown)
   window.addEventListener('resize', closeContextMenu)
@@ -902,7 +924,7 @@ async function toggleTags() {
     </Teleport>
 
     <Teleport to="body">
-      <Transition name="nl-context-menu">
+      <Transition :css="false" @enter="enterPopover" @leave="leavePopover">
         <div
           v-if="contextMenuVisible"
           ref="contextMenuRef"
@@ -1286,9 +1308,6 @@ async function toggleTags() {
   background: var(--ui-fill-hover);
   color: color-mix(in srgb, var(--text-color) 82%, transparent);
 }
-.nl-card-disclosure:focus-visible {
-  box-shadow: 0 0 0 2rem color-mix(in srgb, var(--accent-color) 22%, transparent);
-}
 .nl-card--completed .nl-card-text {
   font-weight: 400;
 }
@@ -1529,9 +1548,12 @@ async function toggleTags() {
   position: fixed;
   z-index: var(--z-global-popover);
   width: 128rem;
-  border-radius: 10rem;
-  box-shadow: 0 12rem 34rem rgba(0, 0, 0, 0.22);
-  overflow: hidden;
+  border-radius: var(--ui-menu-radius);
+  box-shadow: var(--ui-menu-shadow);
+  overflow: auto;
+  overscroll-behavior: contain;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
 }
 .nl-context-menu {
   display: grid;
@@ -1548,6 +1570,7 @@ async function toggleTags() {
 }
 .nl-context-menu button {
   width: 100%;
+  min-height: var(--ui-menu-row-height);
   padding: 7rem 9rem;
   border: 0;
   border-radius: 6rem;
@@ -1564,29 +1587,20 @@ async function toggleTags() {
 .nl-context-menu button:hover:not(:disabled),
 .nl-context-menu button:focus-visible:not(:disabled) {
   outline: none;
-  background: var(--ui-fill-hover);
+  background: var(--ui-menu-highlight);
+  color: var(--ui-menu-on-highlight);
 }
 .nl-context-menu button:disabled {
   opacity: 0.38;
   cursor: default;
 }
-.nl-context-menu .nl-context-menu__delete {
+.nl-context-menu button.nl-context-menu__delete {
   color: var(--ui-danger);
 }
-.nl-context-menu .nl-context-menu__delete:hover,
-.nl-context-menu .nl-context-menu__delete:focus-visible {
-  background: color-mix(in srgb, var(--ui-danger) 11%, transparent);
-}
-.nl-context-menu-enter-active,
-.nl-context-menu-leave-active {
-  transition:
-    opacity 130ms ease,
-    transform 180ms cubic-bezier(0.32, 0.72, 0, 1);
-}
-.nl-context-menu-enter-from,
-.nl-context-menu-leave-to {
-  opacity: 0;
-  transform: translateY(-4px) scale(0.98);
+.nl-context-menu button.nl-context-menu__delete:hover,
+.nl-context-menu button.nl-context-menu__delete:focus-visible {
+  background: var(--ui-danger-solid);
+  color: var(--ui-on-danger);
 }
 
 @media (max-width: 390px) {

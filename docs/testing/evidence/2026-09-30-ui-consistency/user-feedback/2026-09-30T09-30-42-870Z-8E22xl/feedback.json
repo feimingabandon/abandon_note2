@@ -1,0 +1,9 @@
+{
+  "status": "failed",
+  "results": [
+    "duration labels and invariant row height at all UI scales",
+    "scale menu complete text at 68px trigger",
+    "font checkmark and single neutral input surface"
+  ],
+  "error": "Error: Script failed to execute, this normally means an error was thrown. Check the renderer console for the error.\n    at node:electron/js2c/sandbox_bundle:2:104135\n    at IpcRendererInternal.<anonymous> (node:electron/js2c/sandbox_bundle:2:98639)\n    at IpcRendererInternal.emit (node:electron/js2c/sandbox_bundle:2:37735)\n    at Object.onMessage (node:electron/js2c/sandbox_bundle:2:97705)"
+}

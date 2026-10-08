@@ -1,4 +1,5 @@
 <script setup>
+import BaseButton from '../ui/BaseButton.vue'
 import { useDraftProtection } from '../../composables/useDraftProtection.js'
 /**
  * NoteEditor.vue — 便签修改草稿。
@@ -390,7 +391,7 @@ const protectedDraft = useDraftProtection({
 
       <div class="ne-field-row ne-stagger" style="animation-delay: 130ms">
         <label class="ne-field-label">置顶<HelpButton text="开启后便签将固定在列表顶部。" /></label>
-        <AppToggle v-model="isPinned" />
+        <AppToggle v-model="isPinned" aria-label="置顶" />
       </div>
 
       <div class="ne-field ne-group-gap ne-stagger" style="animation-delay: 160ms">
@@ -420,17 +421,23 @@ const protectedDraft = useDraftProtection({
     </div>
 
     <div class="ne-footer ne-stagger" style="animation-delay: 230ms">
-      <button class="ne-dismiss" :disabled="saving || attachmentsBusy" @click="requestClose">
+      <BaseButton
+        class="ne-dismiss"
+        :disabled="saving || attachmentsBusy"
+        variant="default"
+        @click="requestClose"
+      >
         {{ hasChanges ? '放弃修改' : '关闭' }}
-      </button>
-      <button
+      </BaseButton>
+      <BaseButton
         class="ne-submit"
         data-diagnostic-action="note.save"
         :disabled="!canSave || !hasChanges || saving || attachmentsBusy"
+        variant="primary"
         @click="handleSave"
       >
         {{ saving ? '保存中…' : attachmentsBusy ? '图片处理中…' : '保存修改' }}
-      </button>
+      </BaseButton>
     </div>
 
     <ConfirmDialog
@@ -545,52 +552,15 @@ const protectedDraft = useDraftProtection({
 }
 .ne-footer {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8rem;
   width: calc(100% - 28rem);
   margin: 0 14rem 14rem;
   flex-shrink: 0;
 }
-.ne-dismiss,
 .ne-submit {
-  padding: 10rem 16rem;
-  border: 0;
-  border-radius: 8rem;
-  font-family: inherit;
-  font-size: var(--fs-body);
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    background-color 150ms ease,
-    color 150ms ease,
-    transform 70ms ease;
-}
-.ne-dismiss {
-  background: color-mix(in srgb, var(--text-color) 8%, transparent);
-  color: var(--text-color-secondary);
-}
-.ne-dismiss:hover:not(:disabled) {
-  background: var(--ui-fill-hover);
-  color: var(--text-color);
-}
-.ne-submit {
-  flex: 1;
-  min-width: 104rem;
-  background: var(--ui-primary);
-  color: var(--ui-on-primary);
-}
-.ne-submit:hover:not(:disabled) {
-  background: var(--ui-primary-hover);
-}
-.ne-dismiss:active:not(:disabled),
-.ne-submit:active:not(:disabled) {
-  transform: scale(0.98);
-}
-.ne-dismiss:disabled,
-.ne-submit:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  flex: 1 1 104rem;
 }
 .ne-pending-reminder {
   display: grid;
@@ -605,5 +575,13 @@ const protectedDraft = useDraftProtection({
 }
 .ne-reminder-cancel input {
   accent-color: var(--ui-accent);
+}
+.ne-field-row {
+  flex-wrap: wrap;
+  gap: 6rem;
+}
+input,
+textarea {
+  max-width: 100%;
 }
 </style>

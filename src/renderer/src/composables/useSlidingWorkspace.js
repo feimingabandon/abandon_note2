@@ -84,6 +84,9 @@ export function useSlidingWorkspace({ getElement, propertyName = 'transform' }) 
     await nextTick()
     if (currentRevision !== revision || phase.value !== 'opening') return
     void getElement?.()?.offsetWidth
+    // Give the mounted closed state a paint before opening, including first use.
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    if (currentRevision !== revision || phase.value !== 'opening') return
     active.value = true
     scheduleCompletion('opening', currentRevision)
   }

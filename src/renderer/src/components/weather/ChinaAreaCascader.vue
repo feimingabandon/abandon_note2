@@ -1,10 +1,14 @@
 <script setup>
+import { weatherSelectionPath } from '../../utils/weatherSelectionPath.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
+import { isComposingInput } from '../../utils/inputComposition.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 
 const props = defineProps({
   options: { type: Array, default: () => [] },
   displayValue: { type: String, default: '' },
+  modelValue: { type: Object, default: null },
   disabled: { type: Boolean, default: false }
 })
 
@@ -16,7 +20,50 @@ const cityColumnRef = ref(null)
 const districtColumnRef = ref(null)
 const activeProvinceCode = ref('')
 const activeCityCode = ref('')
+const activeDistrictCode = ref('')
 const panelStyle = ref({})
+const popover = usePopoverLifecycle(open, triggerRef, panelRef, updatePanelPosition, {
+  focus: true
+})
+watch(
+  () => props.disabled,
+  (value) => {
+    if (value) popover.close()
+  }
+)
+async function onPanelKeydown(event) {
+  if (isComposingInput(event)) return
+  popover.onKeydown(event)
+  if (event.key === 'Tab') {
+    triggerRef.value?.focus()
+    open.value = false
+    return
+  }
+  const column = event.target.closest('[role="listbox"]')
+  if (!column) return
+  const options = [...column.querySelectorAll('button')]
+  const index = options.indexOf(document.activeElement)
+  if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault()
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? options.length - 1
+          : (index + (event.key === 'ArrowUp' ? -1 : 1) + options.length) % options.length
+    options[next]?.focus()
+  } else if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+    event.preventDefault()
+    if (event.key === 'ArrowRight') {
+      options[index]?.click()
+      await nextTick()
+    }
+    if (open.value)
+      (event.key === 'ArrowRight' ? column.nextElementSibling : column.previousElementSibling)
+        ?.querySelector('button')
+        ?.focus()
+  }
+}
 const selectionLocked = ref(false)
 
 const activeProvince = computed(
@@ -64,6 +111,7 @@ function updatePanelPosition() {
     // 写入实际可渲染高度，不能写 availableHeight。后者会以内联样式覆盖
     // CSS 的 294rem 上限，并在二次测量时把面板错误放大到整个上方空间。
     maxHeight: `${renderedHeight}px`,
+    '--popover-placement': shouldOpenAbove ? 'top' : 'bottom',
     zIndex: 'var(--z-global-popover)'
   }
 }
@@ -75,12 +123,20 @@ function toggle() {
     return
   }
   selectionLocked.value = false
+  const [province = '', city = '', district = ''] = weatherSelectionPath(
+    props.options,
+    props.modelValue
+  )
+  activeProvinceCode.value = province
+  activeCityCode.value = city
+  activeDistrictCode.value = district
   updatePanelPosition()
   open.value = true
 }
 
 function chooseProvince(province) {
   if (selectionLocked.value || props.disabled) return
+  activeDistrictCode.value = ''
   activeProvinceCode.value = province.code
   activeCityCode.value = ''
   // 列容器会被 Vue 复用；切换省份时必须清除上一省份留下的滚动位置，
@@ -94,6 +150,7 @@ function chooseProvince(province) {
 
 function chooseCity(city) {
   if (selectionLocked.value || props.disabled) return
+  activeDistrictCode.value = ''
   activeCityCode.value = city.code
   // 区县列同样是稳定 DOM，切换城市后从第一项开始展示。
   nextTick(() => {
@@ -119,7 +176,7 @@ function complete(candidate) {
     longitude: candidate.longitude ?? null,
     timezone: candidate.timezone || 'auto'
   })
-  open.value = false
+  popover.close(true)
 }
 
 function onEnter(element, done) {
@@ -138,7 +195,12 @@ function onDocumentPointerDown(event) {
 
 watch(open, (value) => {
   if (value) {
-    nextTick(updatePanelPosition)
+    nextTick(() => {
+      updatePanelPosition()
+      for (const option of panelRef.value?.querySelectorAll('[aria-selected="true"]') || []) {
+        option.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      }
+    })
     window.addEventListener('resize', updatePanelPosition)
     window.addEventListener('scroll', updatePanelPosition, true)
   } else {
@@ -197,18 +259,23 @@ onBeforeUnmount(() => {
           class="china-area-cascader__panel"
           data-keep-settings-open
           :style="panelStyle"
+          @keydown="onPanelKeydown"
           @pointerdown.stop
         >
           <div class="china-area-cascader__column scroll-y" role="listbox" aria-label="省级地区">
             <button
               v-for="province in options"
               :key="province.code"
+              role="option"
+              :aria-selected="activeProvinceCode === province.code"
               type="button"
               :class="{ 'is-active': activeProvinceCode === province.code }"
               @click="chooseProvince(province)"
             >
               <span>{{ province.name }}</span
-              ><span v-if="province.children?.length">›</span>
+              ><span aria-hidden="true">{{
+                activeProvinceCode === province.code ? '✓' : province.children?.length ? '›' : ''
+              }}</span>
             </button>
           </div>
           <div
@@ -222,12 +289,16 @@ onBeforeUnmount(() => {
               <button
                 v-for="city in cities"
                 :key="city.code"
+                role="option"
+                :aria-selected="activeCityCode === city.code"
                 type="button"
                 :class="{ 'is-active': activeCityCode === city.code }"
                 @click="chooseCity(city)"
               >
                 <span>{{ city.name }}</span
-                ><span v-if="city.children?.length">›</span>
+                ><span aria-hidden="true">{{
+                  activeCityCode === city.code ? '✓' : city.children?.length ? '›' : ''
+                }}</span>
               </button>
             </template>
           </div>
@@ -242,10 +313,14 @@ onBeforeUnmount(() => {
               <button
                 v-for="district in districts"
                 :key="district.code"
+                role="option"
+                :aria-selected="activeDistrictCode === district.code"
+                :class="{ 'is-active': activeDistrictCode === district.code }"
                 type="button"
                 @click="complete(district.candidate)"
               >
-                <span>{{ district.name }}</span>
+                <span>{{ district.name }}</span
+                ><span v-if="activeDistrictCode === district.code" aria-hidden="true">✓</span>
               </button>
             </template>
           </div>
@@ -282,8 +357,7 @@ onBeforeUnmount(() => {
   border-color: var(--ui-border-hover);
 }
 .china-area-cascader__trigger:focus-visible {
-  border-color: #0a84ff;
-  box-shadow: 0 0 0 2px color-mix(in srgb, #0a84ff 24%, transparent);
+  border-color: var(--ui-border-hover);
 }
 .china-area-cascader__trigger:disabled {
   cursor: not-allowed;
@@ -313,7 +387,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--surface-float-border);
   border-radius: 10rem;
   background: var(--surface-float);
-  box-shadow: 0 10rem 30rem rgb(0 0 0 / 0.24);
+  box-shadow: var(--ui-menu-shadow);
   transform-origin: top center;
   will-change: clip-path;
 }
@@ -349,7 +423,7 @@ onBeforeUnmount(() => {
   transform: scale(0.98);
 }
 .china-area-cascader__column button:focus-visible {
-  outline: 2px solid color-mix(in srgb, #0a84ff 42%, transparent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: -2px;
 }
 .china-area-cascader__column button.is-active {
@@ -357,9 +431,9 @@ onBeforeUnmount(() => {
   color: var(--text-color);
 }
 .china-area-cascader__column button span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .china-area-cascader__column button span:last-child:not(:first-child),
 .china-area-cascader__column p {

@@ -1,4 +1,5 @@
 <script setup>
+import BaseButton from '../ui/BaseButton.vue'
 import { useDraftProtection } from '../../composables/useDraftProtection.js'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import ResizableTextarea from '../ui/ResizableTextarea.vue'
@@ -460,7 +461,7 @@ const protectedDraft = useDraftProtection({
           >生成的便签是否置顶
           <HelpButton text="只决定以后生成的便签是否置顶，不会改变已经生成的便签。"
         /></label>
-        <AppToggle v-model="isPinned" />
+        <AppToggle v-model="isPinned" aria-label="生成的便签是否置顶" />
       </div>
       <div class="tf-field">
         <label>标签</label>
@@ -473,18 +474,19 @@ const protectedDraft = useDraftProtection({
     </div>
 
     <div class="tf-actions">
-      <button
+      <BaseButton
         v-if="showCancel"
         type="button"
         class="tf-secondary"
         :disabled="submitting"
+        variant="default"
         @click="emit('cancel')"
       >
         {{ hasChanges ? '放弃修改' : '关闭' }}
-      </button>
-      <button type="submit" class="tf-submit" :disabled="!canSubmit">
+      </BaseButton>
+      <BaseButton type="submit" class="tf-submit" :disabled="!canSubmit" variant="primary">
         {{ submitting ? '保存中…' : submitLabel }}
-      </button>
+      </BaseButton>
     </div>
   </form>
 </template>
@@ -558,7 +560,7 @@ label,
 }
 .tf-time-range .tf-row {
   display: grid;
-  grid-template-columns: max-content minmax(220rem, 320rem);
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 5rem;
 }
 .tf-date-picker {
@@ -616,41 +618,19 @@ label,
 }
 .tf-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 9rem;
   padding-top: 2rem;
 }
 .tf-submit,
 .tf-secondary {
-  flex: 1;
-  border: 0;
-  border-radius: 8rem;
-  padding: 10rem;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    transform 120ms ease,
-    opacity 160ms ease,
-    background 160ms ease;
+  flex: 1 1 110rem;
 }
-.tf-submit {
-  background: #0071e3;
-  color: white;
+.tf-row {
+  flex-wrap: wrap;
 }
-.tf-submit:disabled {
-  opacity: 0.38;
-  cursor: not-allowed;
-}
-.tf-secondary:disabled {
-  opacity: 0.38;
-  cursor: not-allowed;
-}
-.tf-submit:active:not(:disabled),
-.tf-secondary:active {
-  transform: scale(0.98);
-}
-.tf-secondary {
-  background: color-mix(in srgb, var(--text-color) 7%, transparent);
-  color: var(--text-color);
+input,
+textarea {
+  max-width: 100%;
 }
 </style>

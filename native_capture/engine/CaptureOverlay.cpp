@@ -37,16 +37,21 @@ CaptureOverlay::CaptureOverlay(QScreen *screen, QImage image, QString source,
     annotations->addAction("note", QStringLiteral("新建图文便签"), "Ctrl+N");
     annotations->addAction("background", QStringLiteral("用作应用背景"),
                            "Ctrl+B");
-  } else
+  } else {
     annotations->addAction("source",
                            origin == "background" ? QStringLiteral("使用背景")
                                                   : QStringLiteral("加入便签"),
-                           QStringLiteral("使用此次截图 · Ctrl+Enter"));
-  annotations->addHelp(QStringLiteral(
+                           QStringLiteral("使用此次截图 · Enter / 双击"));
+    annotations->setPrimaryAction("source");
+  }
+  const QString completionHelp = origin == "global"
+      ? QStringLiteral("Enter / 双击：复制；Ctrl+C：复制\n")
+      : QStringLiteral("Enter / 双击：放入来源页面；Ctrl+C：复制\n");
+  annotations->addHelp(completionHelp + QStringLiteral(
       "截图\n未框选时 Tab：切换窗口 / 控件识别\n"
       "拖动框选；Ctrl：暂停边缘吸附；框选时按住空格：移动选区\n"
       "方向键：微调；Ctrl / Shift+方向键：向外扩展 / 向内收缩选区\n"
-      "Enter / Ctrl+C / 双击：复制；中键 / Ctrl+T：原位贴图\n"
+      "中键 / Ctrl+T：原位贴图\n"
       "Ctrl+S：另存为；Ctrl+Shift+S：快速保存\n"
       "Ctrl+A / F：当前屏幕全选；R：上次选区\n"
       "空格：显隐工具栏；Alt：放大镜；C：复制颜色；Shift：切换颜色格式\n"
@@ -477,7 +482,7 @@ void CaptureOverlay::mouseDoubleClickEvent(QMouseEvent *e) {
   if (e->button() == Qt::LeftButton &&
       selection.contains(pixel(e->position()))) {
     drag.clear();
-    finish("copy");
+    finish(origin == "global" ? "copy" : "source");
   }
 }
 void CaptureOverlay::showError(const QString &message) {
@@ -559,7 +564,7 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *e) {
     return;
   }
   if (key == Qt::Key_Return || key == Qt::Key_Enter) {
-    finish(ctrl && origin != "global" ? "source" : "copy");
+    finish(origin == "global" ? "copy" : "source");
     return;
   }
   if (ctrl) {

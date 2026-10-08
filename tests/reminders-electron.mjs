@@ -50,8 +50,11 @@ async function setDateTime(window, selector, timestamp) {
   const pad = (n) => String(n).padStart(2, '0')
   const day = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
   const time = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-  await run(`document.querySelector(${JSON.stringify(selector)}).click()`)
+  await run(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'})`)
+  await wait(250)
+  await clickVisible(window, selector)
   await until(() => run('!!document.querySelector(".dt-panel-wrap")'), 'date picker opens')
+  await wait(250)
   for (const [placeholder, value] of [
     ['YYYY-MM-DD', day],
     ['HH:mm:ss', time]
@@ -271,6 +274,10 @@ async function checkChannelMenu(window) {
 }
 async function checkChannelMenuScroll(window) {
   const run = (code) => window.webContents.executeJavaScript(code)
+  // Make both clipping boundaries reachable regardless of responsive form/footer height.
+  await run(
+    `(()=>{const spacer=document.createElement('div');spacer.dataset.scrollFixture='true';spacer.style.cssText='height:180px;flex-shrink:0';document.querySelector('.app-editor-dialog .ne-body').append(spacer)})()`
+  )
   const trigger = '.app-editor-dialog .reminder-channels__trigger'
   const savedBounds = window.getBounds()
   const geometries = []
@@ -335,7 +342,11 @@ async function checkChannelMenuScroll(window) {
       await until(
         () => run('!document.querySelector(".reminder-channels__panel")'),
         'hidden anchor closes menu'
-      )
+      ).catch(async (error) => {
+        throw new Error(
+          error.message + ' ' + JSON.stringify({ height, direction, state: await state() })
+        )
+      })
       await wait(400)
       const hidden = await state()
       assert.equal(hidden.expanded, 'false')
@@ -373,6 +384,7 @@ async function checkChannelMenuScroll(window) {
     JSON.stringify(geometries, null, 2)
   )
   window.setBounds(savedBounds)
+  await run(`document.querySelector('[data-scroll-fixture]').remove()`)
   await wait(800)
   report(
     'channel scrolling: visible anchor follows, clipped anchor closes, focus/selection preserved, background/menu scroll ignored'
@@ -448,6 +460,20 @@ async function run() {
     const roundA = rows.reminders.find((r) => r.noteId === a.id)
     const roundB = rows.reminders.find((r) => r.noteId === b.id)
     report('hidden main → independent inactive popup, two rounds')
+    await js("window.api.setSettingValue('appearance.uiScale',1.5)")
+    await until(
+      () => pjs("getComputedStyle(document.documentElement).fontSize === '1.5px'"),
+      'reminder shares UI scale'
+    )
+    assert.equal(
+      await pjs("getComputedStyle(document.querySelector('.reminder-header')).paddingLeft"),
+      '27px'
+    )
+    await js("window.api.setSettingValue('appearance.uiScale',1)")
+    await until(
+      () => pjs("getComputedStyle(document.documentElement).fontSize === '1px'"),
+      'reminder scale resets'
+    )
 
     for (const [name, background, textColor] of [
       ['white', '255 255 255', '#111111'],

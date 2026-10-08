@@ -4,6 +4,9 @@ import AppIcon from '../ui/AppIcon.vue'
 import DateContextSummary from '../almanac/DateContextSummary.vue'
 import NumberStepper from '../ui/NumberStepper.vue'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
+import { popoverStyle, measurePopoverContent } from '../../utils/anchoredPopover.js'
+import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
+import { isComposingInput } from '../../utils/inputComposition.js'
 import {
   MAX_CALENDAR_YEAR,
   MIN_CALENDAR_YEAR,
@@ -43,6 +46,26 @@ const pickerOpen = ref(false)
 const pickerGuardVisible = ref(false)
 const pickerTriggerRef = ref(null)
 const pickerPanelRef = ref(null)
+const pickerStyle = ref({})
+const { onKeydown: onPickerKeydown } = usePopoverLifecycle(
+  pickerOpen,
+  pickerTriggerRef,
+  pickerPanelRef,
+  updatePickerPosition,
+  { dialog: true }
+)
+function updatePickerPosition() {
+  const rect = pickerTriggerRef.value?.getBoundingClientRect()
+  if (!rect || !pickerPanelRef.value) return
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize)
+  const font = parseFloat(getComputedStyle(pickerTriggerRef.value).fontSize)
+  const width = Math.min(Math.max(280 * rem, 14 * font), window.innerWidth - 16)
+  pickerStyle.value = popoverStyle(
+    { ...rect.toJSON(), left: (rect.left + rect.right - width) / 2 },
+    width,
+    measurePopoverContent(pickerPanelRef.value, width)?.height || 280 * rem
+  )
+}
 const rollDirection = ref('forward')
 const draftYear = ref(props.year)
 const draftMonth = ref(props.month)
@@ -200,7 +223,10 @@ function closePickerAndRestoreFocus() {
 }
 
 function onDocumentKeydown(event) {
-  if (event.key === 'Escape' && pickerOpen.value) closePickerAndRestoreFocus()
+  if (event.key !== 'Escape' || !pickerOpen.value || isComposingInput(event)) return
+  event.preventDefault()
+  event.stopPropagation()
+  closePickerAndRestoreFocus()
 }
 
 function finishPickerLeave() {
@@ -301,7 +327,6 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 
     <div class="month-toolbar__navigation" :aria-label="isWeekView ? '周导航' : '月份导航'">
       <button
-        ref="pickerTriggerRef"
         type="button"
         class="month-toolbar__month-arrow"
         :aria-label="isWeekView ? '上一周' : '上个月'"
@@ -314,8 +339,10 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
         </svg>
       </button>
       <button
+        ref="pickerTriggerRef"
         type="button"
         class="month-toolbar__title"
+        :title="isWeekView ? weekRangeLabel : `${year}年 ${month}月`"
         :class="{ 'is-open': pickerOpen }"
         :aria-label="isWeekView ? '选择日期' : '选择年份和月份'"
         aria-haspopup="dialog"
@@ -358,146 +385,158 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
         </svg>
       </button>
 
-      <div
-        v-if="pickerGuardVisible"
-        class="month-toolbar__picker-backdrop"
-        aria-hidden="true"
-        @pointerdown.stop
-        @click.stop="closePickerAndRestoreFocus"
-      />
+      <Teleport to="body">
+        <div
+          v-if="pickerGuardVisible"
+          class="month-toolbar__picker-backdrop"
+          aria-hidden="true"
+          @pointerdown.stop
+          @click.stop="closePickerAndRestoreFocus"
+        />
 
-      <Transition
-        :css="false"
-        @enter="onPickerEnter"
-        @leave="onPickerLeave"
-        @after-leave="finishPickerLeave"
-      >
-        <section
-          v-if="pickerOpen"
-          ref="pickerPanelRef"
-          class="month-toolbar__picker"
-          role="dialog"
-          :aria-label="isWeekView ? '选择日期' : '选择年月'"
-          :aria-busy="busy"
-          :inert="busy"
-          @click.stop
+        <Transition
+          :css="false"
+          @enter="onPickerEnter"
+          @leave="onPickerLeave"
+          @after-leave="finishPickerLeave"
         >
-          <template v-if="isWeekView">
-            <header class="month-toolbar__date-picker-header">
-              <button
-                type="button"
-                aria-label="上个月"
-                :disabled="pickerYear === MIN_CALENDAR_YEAR && pickerMonth === 1"
-                @click="movePickerMonth(-1)"
-              >
-                <svg viewBox="0 0 12 18" aria-hidden="true"><path d="m8.5 3-5 6 5 6" /></svg>
-              </button>
-              <button
-                type="button"
-                class="month-toolbar__date-picker-period"
-                aria-haspopup="dialog"
-                :aria-expanded="pickerPeriodOpen"
-                @click="pickerPeriodOpen = !pickerPeriodOpen"
-              >
-                {{ pickerMonthLabel }}
-                <svg viewBox="0 0 12 8" aria-hidden="true"><path d="m2 2 4 4 4-4" /></svg>
-              </button>
-              <button
-                type="button"
-                aria-label="下个月"
-                :disabled="pickerYear === MAX_CALENDAR_YEAR && pickerMonth === 12"
-                @click="movePickerMonth(1)"
-              >
-                <svg viewBox="0 0 12 18" aria-hidden="true"><path d="m3.5 3 5 6-5 6" /></svg>
-              </button>
-            </header>
-            <div v-if="pickerPeriodOpen" class="month-toolbar__date-picker-period-panel">
-              <div class="month-toolbar__date-picker-year">
+          <section
+            v-if="pickerOpen"
+            ref="pickerPanelRef"
+            class="month-toolbar__picker"
+            :style="pickerStyle"
+            role="dialog"
+            :aria-label="isWeekView ? '选择日期' : '选择年月'"
+            :aria-busy="busy"
+            :inert="busy"
+            @click.stop
+            @keydown="onPickerKeydown"
+          >
+            <template v-if="isWeekView">
+              <header class="month-toolbar__date-picker-header">
+                <button
+                  type="button"
+                  aria-label="上个月"
+                  :disabled="pickerYear === MIN_CALENDAR_YEAR && pickerMonth === 1"
+                  @click="movePickerMonth(-1)"
+                >
+                  <svg viewBox="0 0 12 18" aria-hidden="true"><path d="m8.5 3-5 6 5 6" /></svg>
+                </button>
+                <button
+                  type="button"
+                  class="month-toolbar__date-picker-period"
+                  aria-haspopup="dialog"
+                  :aria-expanded="pickerPeriodOpen"
+                  @click="pickerPeriodOpen = !pickerPeriodOpen"
+                >
+                  {{ pickerMonthLabel }}
+                  <svg viewBox="0 0 12 8" aria-hidden="true"><path d="m2 2 4 4 4-4" /></svg>
+                </button>
+                <button
+                  type="button"
+                  aria-label="下个月"
+                  :disabled="pickerYear === MAX_CALENDAR_YEAR && pickerMonth === 12"
+                  @click="movePickerMonth(1)"
+                >
+                  <svg viewBox="0 0 12 18" aria-hidden="true"><path d="m3.5 3 5 6-5 6" /></svg>
+                </button>
+              </header>
+              <div v-if="pickerPeriodOpen" class="month-toolbar__date-picker-period-panel">
+                <div class="month-toolbar__date-picker-year">
+                  <span>年份</span>
+                  <NumberStepper
+                    :model-value="pickerYear"
+                    :min="MIN_CALENDAR_YEAR"
+                    :max="MAX_CALENDAR_YEAR"
+                    :disabled="busy"
+                    aria-label="日期选择年份"
+                    @update:model-value="updatePickerYear"
+                  />
+                </div>
+                <div
+                  class="month-toolbar__date-picker-months"
+                  aria-label="选择月份"
+                  data-popover-grid="4"
+                >
+                  <button
+                    v-for="value in 12"
+                    :key="value"
+                    type="button"
+                    class="month-toolbar__date-picker-month"
+                    :class="{ 'is-active': pickerMonth === value }"
+                    :data-value="value"
+                    :aria-label="`选择${value}月`"
+                    :aria-pressed="pickerMonth === value"
+                    :disabled="busy"
+                    @click="choosePickerMonth(value)"
+                  >
+                    {{ value }}月
+                  </button>
+                </div>
+              </div>
+              <template v-else>
+                <div class="month-toolbar__date-picker-weekdays" aria-hidden="true">
+                  <span v-for="weekday in pickerWeekdays" :key="weekday">{{ weekday }}</span>
+                </div>
+                <Transition :name="`month-picker-${pickerMonthDirection}`" mode="out-in">
+                  <div
+                    :key="`${pickerYear}-${pickerMonth}`"
+                    class="month-toolbar__date-picker-days"
+                    data-popover-grid="7"
+                  >
+                    <button
+                      v-for="day in weekPickerDays"
+                      :key="day.key"
+                      type="button"
+                      class="month-toolbar__date-option"
+                      :class="{
+                        'is-other': !day.inCurrentMonth,
+                        'is-week': day.inCurrentWeek,
+                        'is-selected': day.isSelected,
+                        'is-today': day.isToday
+                      }"
+                      :disabled="busy || day.disabled"
+                      :aria-label="day.key"
+                      :aria-pressed="day.isSelected"
+                      :aria-current="day.isToday ? 'date' : undefined"
+                      @click="selectWeekDate(day)"
+                    >
+                      {{ day.day }}
+                    </button>
+                  </div>
+                </Transition>
+              </template>
+            </template>
+            <template v-else>
+              <div class="month-toolbar__picker-year">
                 <span>年份</span>
                 <NumberStepper
-                  :model-value="pickerYear"
+                  :model-value="draftYear"
                   :min="MIN_CALENDAR_YEAR"
                   :max="MAX_CALENDAR_YEAR"
                   :disabled="busy"
-                  aria-label="日期选择年份"
-                  @update:model-value="updatePickerYear"
+                  aria-label="年份"
+                  @update:model-value="updateYear"
                 />
               </div>
-              <div class="month-toolbar__date-picker-months" aria-label="选择月份">
+              <div class="month-toolbar__months" aria-label="月份" data-popover-grid="4">
                 <button
                   v-for="value in 12"
                   :key="value"
                   type="button"
-                  class="month-toolbar__date-picker-month"
-                  :class="{ 'is-active': pickerMonth === value }"
+                  class="month-toolbar__month-option"
+                  :class="{ 'is-active': draftMonth === value }"
                   :data-value="value"
-                  :aria-label="`选择${value}月`"
-                  :aria-pressed="pickerMonth === value"
                   :disabled="busy"
-                  @click="choosePickerMonth(value)"
+                  @click="updateMonth(value)"
                 >
-                  {{ value }}月
+                  {{ value }} 月
                 </button>
               </div>
-            </div>
-            <template v-else>
-              <div class="month-toolbar__date-picker-weekdays" aria-hidden="true">
-                <span v-for="weekday in pickerWeekdays" :key="weekday">{{ weekday }}</span>
-              </div>
-              <Transition :name="`month-picker-${pickerMonthDirection}`" mode="out-in">
-                <div :key="`${pickerYear}-${pickerMonth}`" class="month-toolbar__date-picker-days">
-                  <button
-                    v-for="day in weekPickerDays"
-                    :key="day.key"
-                    type="button"
-                    class="month-toolbar__date-option"
-                    :class="{
-                      'is-other': !day.inCurrentMonth,
-                      'is-week': day.inCurrentWeek,
-                      'is-selected': day.isSelected,
-                      'is-today': day.isToday
-                    }"
-                    :disabled="busy || day.disabled"
-                    :aria-label="day.key"
-                    :aria-pressed="day.isSelected"
-                    :aria-current="day.isToday ? 'date' : undefined"
-                    @click="selectWeekDate(day)"
-                  >
-                    {{ day.day }}
-                  </button>
-                </div>
-              </Transition>
             </template>
-          </template>
-          <template v-else>
-            <div class="month-toolbar__picker-year">
-              <span>年份</span>
-              <NumberStepper
-                :model-value="draftYear"
-                :min="MIN_CALENDAR_YEAR"
-                :max="MAX_CALENDAR_YEAR"
-                :disabled="busy"
-                aria-label="年份"
-                @update:model-value="updateYear"
-              />
-            </div>
-            <div class="month-toolbar__months" aria-label="月份">
-              <button
-                v-for="value in 12"
-                :key="value"
-                type="button"
-                class="month-toolbar__month-option"
-                :class="{ 'is-active': draftMonth === value }"
-                :data-value="value"
-                :disabled="busy"
-                @click="updateMonth(value)"
-              >
-                {{ value }} 月
-              </button>
-            </div>
-          </template>
-        </section>
-      </Transition>
+          </section>
+        </Transition>
+      </Teleport>
     </div>
 
     <div class="month-toolbar__trailing">
@@ -603,7 +642,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   background: var(--ui-fill-pressed);
   color: var(--ui-accent) !important;
 }
-.month-toolbar button {
+:is(.month-toolbar, .month-toolbar__picker) button {
   display: grid;
   height: 30rem;
   place-items: center;
@@ -614,29 +653,26 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   font: inherit;
   outline: none;
 }
-.month-toolbar button {
+:is(.month-toolbar, .month-toolbar__picker) button {
   min-width: 30rem;
   cursor: pointer;
-  font-size: 18rem;
+  font-size: var(--fs-secondary);
   transition:
     border-color 150ms ease,
     background-color 150ms ease,
     transform 120ms ease;
 }
-.month-toolbar button:hover:not(:disabled) {
+:is(.month-toolbar, .month-toolbar__picker) button:hover:not(:disabled) {
   background: var(--ui-fill-hover);
 }
-.month-toolbar button:focus-visible {
-  box-shadow: 0 0 0 2px color-mix(in srgb, #0a84ff 24%, transparent);
-}
-.month-toolbar button:disabled {
+:is(.month-toolbar, .month-toolbar__picker) button:disabled {
   cursor: default;
   opacity: 0.35;
 }
 .month-toolbar.is-busy button:disabled {
   opacity: 1;
 }
-.month-toolbar button:not([aria-haspopup]):active:not(:disabled) {
+:is(.month-toolbar, .month-toolbar__picker) button:not([aria-haspopup]):active:not(:disabled) {
   transform: scale(0.98);
 }
 .month-toolbar__today {
@@ -644,6 +680,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   padding: 0;
 }
 .month-toolbar__month-arrow {
+  flex: 0 0 30rem;
   width: 30rem;
   height: 30rem !important;
   padding: 0;
@@ -659,6 +696,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   stroke-width: 1.8;
 }
 .month-toolbar__title {
+  max-width: calc(100% - 78rem);
   display: flex !important;
   min-width: 0 !important;
   align-items: center;
@@ -688,6 +726,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   display: inline-grid;
   min-width: 0;
   width: 29ch;
+  max-width: 100%;
   place-items: center;
 }
 .month-toolbar__week-range {
@@ -774,20 +813,18 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   animation: month-toolbar-spin 520ms var(--ease-emphasized);
 }
 .month-toolbar__picker {
-  position: absolute;
-  z-index: var(--z-local-overlay);
-  top: calc(100% + 5rem);
-  left: 50%;
+  position: fixed;
+  z-index: var(--z-global-popover);
   width: 260rem;
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 12rem;
   border: 1px solid var(--surface-float-border);
-  border-radius: 10rem;
+  border-radius: var(--ui-menu-radius);
   background: var(--surface-float);
-  box-shadow: 0 10rem 30rem rgba(0, 0, 0, 0.24);
-  transform: translateX(-50%);
+  box-shadow: var(--ui-menu-shadow);
   transform-origin: top center;
-  will-change: clip-path;
+  will-change: opacity, transform;
 }
 .month-toolbar__date-picker-header {
   display: grid;
@@ -931,7 +968,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 }
 .month-toolbar__picker-backdrop {
   position: fixed;
-  z-index: var(--z-local-content);
+  z-index: var(--z-global-popover);
   inset: 0;
   cursor: default;
 }

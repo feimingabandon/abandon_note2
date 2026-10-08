@@ -1,4 +1,5 @@
 <script setup>
+import BaseButton from '../ui/BaseButton.vue'
 import { useDraftProtection } from '../../composables/useDraftProtection.js'
 /**
  * NewNotePanel.vue — 新建便签表单面板
@@ -51,7 +52,7 @@ let entranceAnimations = []
 
 function entranceItems() {
   const bodyItems = entranceBodyRef.value ? Array.from(entranceBodyRef.value.children) : []
-  return submitRef.value ? [...bodyItems, submitRef.value] : bodyItems
+  return submitRef.value?.$el ? [...bodyItems, submitRef.value?.$el] : bodyItems
 }
 
 function focusTextareaAtTop() {
@@ -82,7 +83,7 @@ async function replayEntrance() {
   const items = entranceItems()
   const step = items.length > 1 ? (ENTER_TOTAL_WINDOW - ENTER_DURATION) / (items.length - 1) : 0
   for (const element of items) {
-    if (element === submitRef.value) element.style.filter = 'opacity(0)'
+    if (element === submitRef.value?.$el) element.style.filter = 'opacity(0)'
     else element.style.opacity = '0'
     element.style.translate = '0 6px'
   }
@@ -92,7 +93,7 @@ async function replayEntrance() {
     if (!props.active || seq !== entranceSeq) return
     entranceAnimations = items.map((element, index) => {
       const keyframes =
-        element === submitRef.value
+        element === submitRef.value?.$el
           ? [
               { filter: 'opacity(0)', translate: '0 6px' },
               { filter: 'opacity(1)', translate: '0 0' }
@@ -383,7 +384,7 @@ defineExpose({
         <label class="nnp-field-label"
           >置顶<HelpButton text="开启后便签将固定在列表顶部，不受排序方式影响"
         /></label>
-        <AppToggle v-model="isPinned" />
+        <AppToggle v-model="isPinned" aria-label="置顶" />
       </div>
 
       <!-- 标签 -->
@@ -414,7 +415,7 @@ defineExpose({
     </div>
 
     <!-- 创建按钮（始终可见，不受面板内容滚动和底部渐隐影响） -->
-    <button
+    <BaseButton
       ref="submitRef"
       class="nnp-submit"
       :class="{
@@ -424,12 +425,13 @@ defineExpose({
       }"
       :disabled="submitState !== 'idle' || attachmentsBusy || !canCreate"
       data-diagnostic-action="note.create"
+      variant="primary"
       @click="handleCreate"
     >
       <Transition name="nnp-submit-label">
         <span :key="submitState" class="nnp-submit-label">{{ submitLabel }}</span>
       </Transition>
-    </button>
+    </BaseButton>
   </div>
 </template>
 
@@ -521,42 +523,20 @@ defineExpose({
 /* === 创建按钮 === */
 .nnp-submit {
   position: relative;
-  margin-top: 0;
   display: grid;
   place-items: center;
-  width: calc(100% - 28rem);
-  margin-left: 14rem;
-  margin-right: 14rem;
-  padding: 10rem 0;
-  font-size: var(--fs-body);
-  font-family: inherit;
-  font-weight: 600;
-  color: #fff;
-  background: #0071e3;
-  border: none;
-  border-radius: 8rem;
-  cursor: pointer;
-  outline: none;
   flex-shrink: 0;
-  transform: scale(1);
-  transition:
-    background-color 180ms ease,
-    opacity 170ms ease,
-    transform 170ms var(--ease-standard);
-}
-.nnp-submit:hover:not(:disabled) {
-  background: #0077ed;
-}
-.nnp-submit:disabled {
-  cursor: not-allowed;
+  width: calc(100% - 28rem);
+  margin: 0 14rem;
 }
 .nnp-submit.is-empty {
   opacity: 0.4;
   transform: scale(0.99);
 }
 .nnp-submit.is-success {
-  /* 苹果浅色模式 systemGreen（#34C759），比深色档 #30D158 更沉稳，与主蓝 #0071e3 同为压深调。 */
-  background: #34c759;
+  /* 创建成功使用可读的实心绿与白色前景，区别于正文状态标识。 */
+  background: #248a3d;
+  opacity: 1;
 }
 .nnp-submit-label {
   grid-area: 1 / 1;
@@ -575,10 +555,14 @@ defineExpose({
   opacity: 0;
   translate: 0 -2rem;
 }
-.nnp-submit:active:not(:disabled) {
-  transform: scale(0.98);
-  transition:
-    background-color var(--motion-fast) ease,
-    transform 70ms ease;
+
+.nnp-field-row,
+.nnp-field-inline {
+  flex-wrap: wrap;
+  gap: 6rem;
+}
+input,
+textarea {
+  max-width: 100%;
 }
 </style>

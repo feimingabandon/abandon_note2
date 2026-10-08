@@ -1,4 +1,6 @@
 <script setup>
+import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
+import { pointerMenuStyle } from '../../utils/anchoredPopover.js'
 import { measureRendererLayout } from '../../utils/performanceDiagnostics.js'
 import { isComposingInput } from '../../utils/inputComposition.js'
 import { useDraftProtection } from '../../composables/useDraftProtection.js'
@@ -293,7 +295,9 @@ function closeQuickCreator({ restoreFocus = false } = {}) {
   }
 }
 
-function closeContextMenu({ restoreFocus = false } = {}) {
+function closeContextMenu(options = {}) {
+  if (options.type === 'scroll' && contextMenuRef.value?.contains(options.target)) return
+  const { restoreFocus = false } = options
   if (!contextMenuVisible.value) return
   contextMenuVisible.value = false
   contextMenuTarget.value = null
@@ -441,9 +445,7 @@ async function openContextMenu(event, target) {
   const menu = contextMenuRef.value
   const rect = menu?.getBoundingClientRect()
   if (!menu || !rect) return
-  const gap = 8
-  contextMenuStyle.left = `${Math.max(gap, Math.min(event.clientX, window.innerWidth - rect.width - gap))}px`
-  contextMenuStyle.top = `${Math.max(gap, Math.min(event.clientY, window.innerHeight - rect.height - gap))}px`
+  Object.assign(contextMenuStyle, pointerMenuStyle(event.clientX, event.clientY, menu))
   const firstAction = menu.querySelector('button:not(:disabled)')
   if (firstAction) firstAction.focus()
   else menu.focus()
@@ -483,8 +485,14 @@ function runContextMenuAction(action) {
 }
 
 function onContextMenuKeydown(event) {
+  if (isComposingInput(event)) return
   if (event.key === 'Escape') {
     event.preventDefault()
+    event.stopPropagation()
+    closeContextMenu({ restoreFocus: true })
+    return
+  }
+  if (event.key === 'Tab') {
     closeContextMenu({ restoreFocus: true })
     return
   }
@@ -978,7 +986,7 @@ useDraftProtection({
     </div>
 
     <Teleport to="body">
-      <Transition name="month-cell-context-menu">
+      <Transition :css="false" @enter="enterPopover" @leave="leavePopover">
         <div
           v-if="contextMenuVisible"
           ref="contextMenuRef"
@@ -1306,7 +1314,7 @@ useDraftProtection({
   pointer-events: none;
 }
 .month-day-cell__count.is-overflow:focus-visible {
-  outline: 1px solid var(--ui-accent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: 2px;
 }
 .month-day-cell__count.is-hidden {
@@ -1404,7 +1412,7 @@ useDraftProtection({
   cursor: pointer;
 }
 .month-day-cell__quick-activate:focus-visible {
-  outline: 1px solid color-mix(in srgb, var(--ui-accent) 72%, transparent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: -3rem;
   border-radius: 7rem;
 }
@@ -1439,8 +1447,7 @@ useDraftProtection({
   pointer-events: auto;
 }
 .month-day-cell__quick-create.is-active:focus-within {
-  border-color: var(--ui-accent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 16%, transparent);
+  border-color: var(--ui-border-hover);
 }
 .month-day-cell__quick-create input {
   position: absolute;
@@ -1579,9 +1586,12 @@ useDraftProtection({
   position: fixed;
   z-index: var(--z-global-popover);
   width: 176rem;
-  overflow: hidden;
-  border-radius: 10rem;
-  box-shadow: 0 12rem 34rem rgba(0, 0, 0, 0.22);
+  overflow: auto;
+  overscroll-behavior: contain;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  border-radius: var(--ui-menu-radius);
+  box-shadow: var(--ui-menu-shadow);
   outline: none;
 }
 .month-cell-context-menu {
@@ -1594,6 +1604,7 @@ useDraftProtection({
 }
 .month-cell-context-menu button {
   width: 100%;
+  min-height: var(--ui-menu-row-height);
   padding: 7rem 9rem;
   border: 0;
   border-radius: 6rem;
@@ -1610,7 +1621,8 @@ useDraftProtection({
 .month-cell-context-menu button:hover:not(:disabled),
 .month-cell-context-menu button:focus-visible:not(:disabled) {
   outline: none;
-  background: var(--ui-fill-hover);
+  background: var(--ui-menu-highlight);
+  color: var(--ui-menu-on-highlight);
 }
 .month-cell-context-menu button:disabled {
   cursor: default;
@@ -1621,23 +1633,13 @@ useDraftProtection({
   margin: 3rem 4rem;
   background: color-mix(in srgb, var(--text-color) 10%, transparent);
 }
-.month-cell-context-menu .month-cell-context-menu__delete {
+.month-cell-context-menu button.month-cell-context-menu__delete {
   color: #ff453a;
 }
-.month-cell-context-menu .month-cell-context-menu__delete:hover,
-.month-cell-context-menu .month-cell-context-menu__delete:focus-visible {
-  background: color-mix(in srgb, #ff453a 11%, transparent);
-}
-.month-cell-context-menu-enter-active,
-.month-cell-context-menu-leave-active {
-  transition:
-    opacity 130ms ease,
-    transform 180ms cubic-bezier(0.32, 0.72, 0, 1);
-}
-.month-cell-context-menu-enter-from,
-.month-cell-context-menu-leave-to {
-  opacity: 0;
-  transform: translateY(-4px) scale(0.98);
+.month-cell-context-menu button.month-cell-context-menu__delete:hover,
+.month-cell-context-menu button.month-cell-context-menu__delete:focus-visible {
+  background: var(--ui-danger-solid);
+  color: var(--ui-on-danger);
 }
 
 .month-day-preview {

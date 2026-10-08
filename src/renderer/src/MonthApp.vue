@@ -22,8 +22,8 @@ import ShortcutConflictDialog from './components/system/ShortcutConflictDialog.v
 import DailyReportDialog from './components/report/DailyReportDialog.vue'
 import DailyReportButton from './components/report/DailyReportButton.vue'
 import AppIcon from './components/ui/AppIcon.vue'
-const TemplatePage = defineAsyncComponent(() => import('./components/template/TemplatePage.vue'))
-const HelpPage = defineAsyncComponent(() => import('./components/help/HelpPage.vue'))
+import TemplatePage from './components/template/TemplatePage.vue'
+import HelpPage from './components/help/HelpPage.vue'
 import { createMessageProvider } from './composables/useMessage.js'
 import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
 import { useTodayKey } from './composables/useTodayKey.js'

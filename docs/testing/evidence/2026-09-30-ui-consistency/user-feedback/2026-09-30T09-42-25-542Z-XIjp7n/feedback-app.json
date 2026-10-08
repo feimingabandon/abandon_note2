@@ -1,0 +1,25 @@
+{
+  "status": "passed",
+  "results": [
+    {
+      "name": "real new-note editor and tag panel in narrow layout",
+      "status": "passed"
+    },
+    {
+      "name": "real scrolled list filtering stays inside its scrollport",
+      "status": "passed"
+    },
+    {
+      "name": "first and repeated fullscreen workspaces animate with content",
+      "status": "passed"
+    },
+    {
+      "name": "settings scale menu remains legible against white dark and patterned surfaces",
+      "status": "passed"
+    },
+    {
+      "name": "real month/week picker position, styling and sidebar typography",
+      "status": "passed"
+    }
+  ]
+}

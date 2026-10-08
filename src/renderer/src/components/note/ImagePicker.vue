@@ -421,6 +421,22 @@ function thumbnailStyle(image) {
   }
 }
 
+function freezeLeavingThumbnail(element) {
+  // The group uses display:contents. Absolute positioning would otherwise resolve
+  // percentage widths against the whole picker, not the thumbnail's grid cell.
+  const { offsetLeft, offsetTop, offsetWidth, offsetHeight } = element
+  Object.assign(element.style, {
+    left: `${offsetLeft}px`,
+    top: `${offsetTop}px`,
+    width: `${offsetWidth}px`,
+    height: `${offsetHeight}px`
+  })
+}
+
+function releaseLeavingThumbnail(element) {
+  for (const property of ['left', 'top', 'width', 'height']) element.style.removeProperty(property)
+}
+
 function emitCount() {
   emit('count-change', images.value.length)
 }
@@ -628,7 +644,15 @@ function formatSize(bytes) {
     </div>
 
     <!-- 缩略图列表：新增、删除与补位保持连续 -->
-    <TransitionGroup v-else name="ip-thumb" tag="div" class="ip-thumb-list">
+    <TransitionGroup
+      v-else
+      name="ip-thumb"
+      tag="div"
+      class="ip-thumb-list"
+      @before-leave="freezeLeavingThumbnail"
+      @after-leave="releaseLeavingThumbnail"
+      @leave-cancelled="releaseLeavingThumbnail"
+    >
       <div
         v-for="(img, idx) in images"
         :key="img._key || img.id || `memory-${idx}`"
@@ -891,6 +915,11 @@ function formatSize(bytes) {
 }
 .ip-thumb-leave-active {
   position: absolute;
+  pointer-events: none;
+  /* TransitionGroup also measures leaving cells after the centered form shrinks.
+     Keep that FLIP translation off the removed image; only fade it in place. */
+  transform: none !important;
+  transition: opacity var(--motion-control) ease;
 }
 .ip-content-enter-active,
 .ip-content-leave-active {

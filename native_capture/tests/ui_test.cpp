@@ -12,6 +12,7 @@
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QToolButton>
 #include <QUuid>
 #include <QtTest>
 #include <windows.h>
@@ -19,6 +20,31 @@
 class UiTest : public QObject {
   Q_OBJECT
 private slots:
+  void completionReturnsToRequestingForm() {
+    QImage base(240, 180, QImage::Format_RGB32);
+    base.fill(Qt::white);
+    for (const QString origin : {"global", "note", "background"}) {
+      CaptureOverlay overlay(QGuiApplication::primaryScreen(), base, origin);
+      overlay.selection = base.rect();
+      const auto expected = origin == "global" ? QString("copy") : QString("source");
+      QString action;
+      overlay.output = [&](QString value, QImage) { action = value; };
+      auto primary = overlay.annotations->outputs->findChild<QToolButton *>("capturePrimary");
+      QVERIFY(primary);
+      QCOMPARE(primary->defaultAction()->data().toString(), expected);
+      primary->defaultAction()->trigger();
+      QCOMPARE(action, expected);
+      action.clear();
+      QTest::keyClick(&overlay, Qt::Key_Return);
+      QCOMPARE(action, expected);
+      action.clear();
+      QTest::mouseDClick(&overlay, Qt::LeftButton, Qt::NoModifier, QPoint(30, 30));
+      QCOMPARE(action, expected);
+      action.clear();
+      QTest::keyClick(&overlay, Qt::Key_C, Qt::ControlModifier);
+      QCOMPARE(action, QString("copy"));
+    }
+  }
   void completionFeedbackOutlivesOverlay() {
     QTemporaryDir temp;
     CaptureEngine engine("feedback-" + QUuid::createUuid().toString(), "token",
@@ -134,8 +160,8 @@ private slots:
   void completionGestures_data() {
     QTest::addColumn<QString>("gesture");
     QTest::addColumn<QString>("expected");
-    QTest::newRow("enter") << "enter" << "copy";
-    QTest::newRow("double") << "double" << "copy";
+    QTest::newRow("enter") << "enter" << "source";
+    QTest::newRow("double") << "double" << "source";
     QTest::newRow("middle") << "middle" << "pin";
     QTest::newRow("source") << "source" << "source";
   }

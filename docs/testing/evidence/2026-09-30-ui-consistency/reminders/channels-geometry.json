@@ -1,0 +1,54 @@
+[
+  {
+    "name": "white",
+    "left": 205,
+    "top": 284.5,
+    "right": 437,
+    "bottom": 444.5,
+    "width": 480,
+    "height": 720,
+    "scrollWidth": 480,
+    "fontSize": "14.4px",
+    "rem": 1,
+    "background": "rgba(255, 255, 255, 0.94)"
+  },
+  {
+    "name": "black",
+    "left": 205,
+    "top": 284.5,
+    "right": 437,
+    "bottom": 444.5,
+    "width": 480,
+    "height": 720,
+    "scrollWidth": 480,
+    "fontSize": "14.4px",
+    "rem": 1,
+    "background": "rgba(0, 0, 0, 0.94)"
+  },
+  {
+    "name": "wallpaper",
+    "left": 205,
+    "top": 284.5,
+    "right": 437,
+    "bottom": 444.5,
+    "width": 480,
+    "height": 720,
+    "scrollWidth": 480,
+    "fontSize": "14.4px",
+    "rem": 1,
+    "background": "rgba(240, 245, 255, 0.94)"
+  },
+  {
+    "name": "narrow-large-text",
+    "left": 85,
+    "top": 231,
+    "right": 317,
+    "bottom": 405,
+    "width": 360,
+    "height": 540,
+    "scrollWidth": 360,
+    "fontSize": "19.2px",
+    "rem": 1,
+    "background": "rgba(255, 255, 255, 0.94)"
+  }
+]

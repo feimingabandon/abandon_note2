@@ -1,0 +1,15 @@
+{
+  "id": "note-list-animation-electron",
+  "command": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\node_modules\\electron\\dist\\electron.exe",
+  "args": [
+    "tests/note-list-animation-electron.mjs"
+  ],
+  "startedAt": "2026-09-30T11:33:33.462Z",
+  "durationMs": 12119,
+  "code": 1,
+  "signal": null,
+  "launchError": null,
+  "status": "failed",
+  "directory": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-list-motion\\2026-09-30T11-33-33-352Z-Vc1wWB\\note-list-animation-electron",
+  "preservedTemporary": "C:\\addFile\\idea\\项目\\abandon\\abandon_note2\\docs\\testing\\evidence\\2026-09-30-list-motion\\2026-09-30T11-33-33-352Z-Vc1wWB\\note-list-animation-electron\\temp-p1iBb3"
+}

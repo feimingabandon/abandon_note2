@@ -1,4 +1,5 @@
 <script setup>
+import BaseButton from '../ui/BaseButton.vue'
 import { useDraftProtection } from '../../composables/useDraftProtection.js'
 import { computed, onBeforeUnmount, ref } from 'vue'
 import ColoredTextEditor from '../note/ColoredTextEditor.vue'
@@ -225,7 +226,7 @@ const protectedDraft = useDraftProtection({
       </div>
       <div class="month-creator__row">
         <label>置顶<HelpButton text="与便签列表共用同一置顶状态。" /></label>
-        <AppToggle v-model="isPinned" />
+        <AppToggle v-model="isPinned" aria-label="置顶" />
       </div>
       <div class="month-creator__field">
         <label
@@ -251,18 +252,19 @@ const protectedDraft = useDraftProtection({
       </div>
     </div>
     <footer>
-      <button type="button" :disabled="saving || attachmentsBusy" @click="requestClose">
+      <BaseButton type="button" :disabled="saving || attachmentsBusy" @click="requestClose">
         取消
-      </button>
-      <button
+      </BaseButton>
+      <BaseButton
         type="button"
         class="is-primary"
+        variant="primary"
         data-diagnostic-action="note.create"
         :disabled="saving || attachmentsBusy || !canCreate"
         @click="create"
       >
         {{ saving ? '创建中…' : attachmentsBusy ? '图片处理中…' : '创建便签' }}
-      </button>
+      </BaseButton>
     </footer>
 
     <ConfirmDialog
@@ -369,6 +371,7 @@ const protectedDraft = useDraftProtection({
 }
 .month-creator > footer {
   display: flex;
+  flex-wrap: wrap;
   min-height: 54rem;
   flex-shrink: 0;
   align-items: center;
@@ -377,25 +380,10 @@ const protectedDraft = useDraftProtection({
   padding: 0 15rem;
   border-top: 1px solid var(--ui-border-divider);
 }
-.month-creator > footer button {
-  height: 32rem;
-  padding: 0 14rem;
-  border: 0;
-  border-radius: 8rem;
-  background: rgb(var(--bg-color) / 0.1);
-  color: var(--text-color);
-  cursor: pointer;
-  font: inherit;
+.month-creator__row {
+  flex-wrap: wrap;
 }
-.month-creator > footer button.is-primary {
-  background: #0071e3;
-  color: white;
-}
-.month-creator > footer button.is-primary:hover:not(:disabled) {
-  background: #0077ed;
-}
-.month-creator > footer button:disabled {
-  cursor: default;
-  opacity: 0.45;
+.month-creator > footer {
+  padding-block: 8rem;
 }
 </style>

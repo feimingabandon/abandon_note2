@@ -331,9 +331,12 @@ async function run() {
       'document.querySelector(\'[aria-controls="nl-tag-group-' + data.tagId + '"]\').click()'
     )
     await wait(1500)
-    assert.equal(
-      await js("Boolean(document.querySelector('#nl-tag-group-" + data.tagId + "'))"),
-      false,
+    assert.deepEqual(
+      await js(`(()=>{const panel=document.querySelector('#nl-tag-group-${data.tagId}');return {
+        hidden: panel.getAttribute('aria-hidden') === 'true' && getComputedStyle(panel).display === 'none',
+        inert: panel.inert, cards: panel.querySelectorAll('.nl-card').length
+      }})()`),
+      { hidden: true, inert: true, cards: 0 },
       '旧查询不得重新展开收起的标签组'
     )
     await js(

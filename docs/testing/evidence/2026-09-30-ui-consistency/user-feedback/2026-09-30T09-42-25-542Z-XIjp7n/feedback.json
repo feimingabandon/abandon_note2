@@ -1,0 +1,13 @@
+{
+  "status": "failed",
+  "results": [
+    "duration labels and invariant row height at all UI scales",
+    "scale menu complete text at 68px trigger",
+    "font checkmark and single neutral input surface",
+    "tag panel remains stable in modal after observers settle, filter and reopen",
+    "saved province city and district restored on every open",
+    "month and week picker buttons retain styles and centered anchors",
+    "quick editor labels separated from rounded input and no focus halo"
+  ],
+  "error": "AssertionError [ERR_ASSERTION]: []\n    at file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-feedback-electron.mjs:199:14\n    at async check (file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-feedback-electron.mjs:38:3)\n    at async run (file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-feedback-electron.mjs:190:5)"
+}

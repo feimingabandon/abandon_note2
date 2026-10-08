@@ -1,0 +1,1121 @@
+{
+  "status": "failed",
+  "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert.ok(records.some((r) => r.frames.at(-1).opacity === 0 && r.state === 'finished'))\n\n    at file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/note-list-animation-electron.mjs:236:14\n    at async check (file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/note-list-animation-electron.mjs:44:3)\n    at async run (file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/note-list-animation-electron.mjs:230:5)",
+  "results": [
+    {
+      "name": "earlier collapse and first reopen animate through intermediate heights",
+      "animations": [
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "836.9375px",
+              "opacity": "1"
+            },
+            {
+              "height": "0px",
+              "opacity": 0
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "0px",
+              "opacity": "0"
+            },
+            {
+              "height": "833.34375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "0px",
+              "opacity": "0"
+            },
+            {
+              "height": "836.9375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "261px",
+              "opacity": "0.311869"
+            },
+            {
+              "height": "870.9375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "359.078125px",
+              "opacity": "0.422528"
+            },
+            {
+              "height": "2448.8125px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        }
+      ]
+    },
+    {
+      "name": "reversing earlier collapse resumes its displayed height",
+      "animations": [
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "2448.8125px",
+              "opacity": "1"
+            },
+            {
+              "height": "0px",
+              "opacity": 0
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "343.8125px",
+              "opacity": "0.140403"
+            },
+            {
+              "height": "2448.8125px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        }
+      ]
+    },
+    {
+      "name": "slow earlier query obeys close then reopen intent",
+      "animations": [
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "2448.8125px",
+              "opacity": "1"
+            },
+            {
+              "height": "0px",
+              "opacity": 0
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "0px",
+              "opacity": "0"
+            },
+            {
+              "height": "833.34375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-earlier-content",
+          "classes": "list-disclosure",
+          "frames": [
+            {
+              "height": "0px",
+              "opacity": "0"
+            },
+            {
+              "height": "836.9375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        }
+      ]
+    },
+    {
+      "name": "ordinary scroll does not abort new visible card entry",
+      "animations": [
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "36",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 0,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "finished"
+        }
+      ]
+    },
+    {
+      "name": "tag disclosure allows reversal and pending query cancellation",
+      "animations": [
+        {
+          "id": "nl-tag-group-1",
+          "classes": "list-disclosure nl-tag-group-content",
+          "frames": [
+            {
+              "height": "0px",
+              "opacity": "0"
+            },
+            {
+              "height": "844.34375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-tag-group-1",
+          "classes": "list-disclosure nl-tag-group-content",
+          "frames": [
+            {
+              "height": "0px",
+              "opacity": "0"
+            },
+            {
+              "height": "847.9375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "nl-tag-group-1",
+          "classes": "list-disclosure nl-tag-group-content",
+          "frames": [
+            {
+              "height": "847.9375px",
+              "opacity": "1"
+            },
+            {
+              "height": "0px",
+              "opacity": 0
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "nl-tag-group-1",
+          "classes": "list-disclosure nl-tag-group-content",
+          "frames": [
+            {
+              "height": "119.328125px",
+              "opacity": "0.14073"
+            },
+            {
+              "height": "847.9375px",
+              "opacity": 1
+            }
+          ],
+          "options": {
+            "duration": 260,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "both"
+          },
+          "state": "finished"
+        }
+      ]
+    },
+    {
+      "name": "tag pagination keeps existing nodes and does not replay their entry",
+      "animations": []
+    },
+    {
+      "name": "rapid mode selection settles on the last choice",
+      "animations": [
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "3",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "2",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "1",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "35",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "34",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "33",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-tag-group-header nl-tag-group-header--expanded",
+          "frames": [
+            {
+              "opacity": "1",
+              "transform": "translateX(0)"
+            },
+            {
+              "opacity": 0,
+              "transform": "translateX(6px)"
+            }
+          ],
+          "options": {
+            "duration": 180,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-tag-group-header",
+          "frames": [
+            {
+              "opacity": "1",
+              "transform": "translateX(0)"
+            },
+            {
+              "opacity": 0,
+              "transform": "translateX(6px)"
+            }
+          ],
+          "options": {
+            "duration": 180,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-footer-count",
+          "frames": [
+            {
+              "opacity": "1",
+              "transform": "translateX(0)"
+            },
+            {
+              "opacity": 0,
+              "transform": "translateX(6px)"
+            }
+          ],
+          "options": {
+            "duration": 180,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-zone-label",
+          "frames": [
+            {
+              "opacity": 0,
+              "transform": "translateX(6px)"
+            },
+            {
+              "opacity": "1",
+              "transform": "translateX(0)"
+            }
+          ],
+          "options": {
+            "duration": 220,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "",
+          "classes": "nl-footer-count",
+          "frames": [
+            {
+              "opacity": 0,
+              "transform": "translateX(6px)"
+            },
+            {
+              "opacity": "1",
+              "transform": "translateX(0)"
+            }
+          ],
+          "options": {
+            "duration": 220,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "36",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 0,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "35",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 16,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "34",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 32,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "33",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 48,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "32",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 64,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "31",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 64,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "30",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 64,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "cancelled"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "36",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "35",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "34",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "33",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "32",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "31",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress nl-card--draggable",
+          "note": "30",
+          "frames": [
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            },
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            }
+          ],
+          "options": {
+            "duration": 160,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-zone-label",
+          "frames": [
+            {
+              "opacity": "1",
+              "transform": "translateX(0)"
+            },
+            {
+              "opacity": 0,
+              "transform": "translateX(6px)"
+            }
+          ],
+          "options": {
+            "duration": 180,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-footer-count",
+          "frames": [
+            {
+              "opacity": "1",
+              "transform": "translateX(0)"
+            },
+            {
+              "opacity": 0,
+              "transform": "translateX(6px)"
+            }
+          ],
+          "options": {
+            "duration": 180,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "forwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-group-label-row",
+          "frames": [
+            {
+              "opacity": 0,
+              "transform": "translateX(6px)"
+            },
+            {
+              "opacity": "1",
+              "transform": "translateX(0)"
+            }
+          ],
+          "options": {
+            "duration": 220,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-group-label-row nl-group-label-row--earlier",
+          "frames": [
+            {
+              "opacity": 0,
+              "transform": "translateX(6px)"
+            },
+            {
+              "opacity": "1",
+              "transform": "translateX(0)"
+            }
+          ],
+          "options": {
+            "duration": 220,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-group-label-row",
+          "frames": [
+            {
+              "opacity": 0,
+              "transform": "translateX(6px)"
+            },
+            {
+              "opacity": "1",
+              "transform": "translateX(0)"
+            }
+          ],
+          "options": {
+            "duration": 220,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-footer-count",
+          "frames": [
+            {
+              "opacity": 0,
+              "transform": "translateX(6px)"
+            },
+            {
+              "opacity": "1",
+              "transform": "translateX(0)"
+            }
+          ],
+          "options": {
+            "duration": 220,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "36",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 0,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "3",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 16,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "2",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 32,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "1",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 48,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "35",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 64,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "finished"
+        },
+        {
+          "id": "",
+          "classes": "nl-card nl-card--in_progress",
+          "note": "34",
+          "frames": [
+            {
+              "opacity": 0,
+              "translate": "4px 0"
+            },
+            {
+              "opacity": "1",
+              "translate": "0 0"
+            }
+          ],
+          "options": {
+            "duration": 200,
+            "delay": 64,
+            "easing": "cubic-bezier(0.32, 0.72, 0, 1)",
+            "fill": "backwards"
+          },
+          "state": "finished"
+        }
+      ]
+    }
+  ]
+}

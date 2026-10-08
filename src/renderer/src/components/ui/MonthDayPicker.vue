@@ -1,5 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { popoverStyle } from '../../utils/anchoredPopover.js'
+import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 import { normalizeYearDates } from '../../utils/templateRules.js'
 
@@ -15,6 +17,10 @@ const open = ref(false)
 const triggerRef = ref(null)
 const panelRef = ref(null)
 const panelStyle = ref({})
+const popover = usePopoverLifecycle(open, triggerRef, panelRef, updatePosition, {
+  dialog: true,
+  focus: true
+})
 const viewMonth = ref(0)
 const monthDirection = ref('next')
 const draftDates = ref([])
@@ -55,17 +61,14 @@ const calendarCells = computed(() => {
 })
 
 function updatePosition() {
-  const triggerRect = triggerRef.value?.getBoundingClientRect()
-  const panelRect = panelRef.value?.getBoundingClientRect()
-  if (!triggerRect || !panelRect) return
-
-  const left = Math.max(12, Math.min(window.innerWidth - panelRect.width - 12, triggerRect.left))
-  const belowTop = triggerRect.bottom + 7
-  const top =
-    belowTop + panelRect.height <= window.innerHeight - 12
-      ? belowTop
-      : Math.max(12, triggerRect.top - panelRect.height - 7)
-  panelStyle.value = { left: `${left}px`, top: `${top}px` }
+  const rect = triggerRef.value?.getBoundingClientRect()
+  if (!rect) return
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
+  panelStyle.value = popoverStyle(
+    rect,
+    320 * rem,
+    panelRef.value ? panelRef.value.scrollHeight + 2 : 350 * rem
+  )
 }
 
 function openPanel(month = selectedDates.value[0]?.month || 1) {
@@ -73,14 +76,10 @@ function openPanel(month = selectedDates.value[0]?.month || 1) {
   viewMonth.value = month - 1
   open.value = true
   nextTick(updatePosition)
-  window.addEventListener('resize', updatePosition)
-  window.addEventListener('scroll', updatePosition, true)
 }
 
 function closePanel() {
   open.value = false
-  window.removeEventListener('resize', updatePosition)
-  window.removeEventListener('scroll', updatePosition, true)
 }
 
 function togglePanel() {
@@ -109,7 +108,7 @@ function toggleDate(cell) {
 
 function applySelection() {
   emit('update:modelValue', normalizeYearDates(draftDates.value))
-  closePanel()
+  popover.close(true)
 }
 
 function removeDate(date) {
@@ -129,7 +128,7 @@ function onDocumentPointer(event) {
 }
 
 function onDocumentKeydown(event) {
-  if (event.key === 'Escape' && open.value) closePanel()
+  if (open.value && !event.defaultPrevented) popover.onKeydown(event)
 }
 
 onMounted(() => {
@@ -140,8 +139,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocumentPointer)
   document.removeEventListener('keydown', onDocumentKeydown)
-  window.removeEventListener('resize', updatePosition)
-  window.removeEventListener('scroll', updatePosition, true)
 })
 </script>
 
@@ -194,6 +191,7 @@ onBeforeUnmount(() => {
         :style="panelStyle"
         role="dialog"
         aria-label="选择每年生成日期"
+        @keydown="popover.onKeydown"
       >
         <header class="mdp-header">
           <button type="button" aria-label="上个月" @click="moveMonth(-1)">
@@ -210,7 +208,7 @@ onBeforeUnmount(() => {
         </div>
 
         <Transition :name="`mdp-month-${monthDirection}`" mode="out-in">
-          <div :key="viewMonth" class="mdp-calendar">
+          <div :key="viewMonth" class="mdp-calendar" data-popover-grid="7">
             <button
               v-for="cell in calendarCells"
               :key="cell.key"
@@ -230,7 +228,7 @@ onBeforeUnmount(() => {
         <footer class="mdp-footer">
           <span>已选 {{ draftDates.length }} 个日期</span>
           <div>
-            <button type="button" class="mdp-cancel" @click="closePanel">取消</button>
+            <button type="button" class="mdp-cancel" @click="popover.close(true)">取消</button>
             <button
               type="button"
               class="mdp-done"
@@ -354,12 +352,14 @@ onBeforeUnmount(() => {
 .mdp-panel {
   position: fixed;
   z-index: var(--z-global-popover);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   width: min(310rem, calc(100vw - 24px));
   padding: 10rem;
   border: 1px solid var(--surface-float-border);
   border-radius: 13rem;
   background: var(--surface-float);
-  box-shadow: 0 18rem 48rem rgba(0, 0, 0, 0.28);
+  box-shadow: var(--ui-menu-shadow);
   color: var(--text-color);
   transform-origin: top center;
   will-change: opacity, transform;
@@ -454,15 +454,16 @@ onBeforeUnmount(() => {
   color: color-mix(in srgb, var(--text-color) 28%, transparent);
 }
 .mdp-day.is-selected span {
-  background: #0a84ff;
+  background: var(--ui-primary);
   color: white;
   font-weight: 600;
 }
 .mdp-day.is-selected:hover span {
-  background: #0077ed;
+  background: var(--ui-primary-hover);
 }
 .mdp-footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8rem;
@@ -478,7 +479,8 @@ onBeforeUnmount(() => {
 }
 .mdp-footer button {
   min-width: 58rem;
-  height: 30rem;
+  min-height: max(28px, 30rem);
+  padding: 4rem 8rem;
   border: 0;
   border-radius: 8rem;
   font: inherit;
@@ -497,11 +499,11 @@ onBeforeUnmount(() => {
   background: var(--ui-fill-hover);
 }
 .mdp-done {
-  background: #0a84ff;
+  background: var(--ui-primary);
   color: white;
 }
 .mdp-done:hover:not(:disabled) {
-  background: #0077ed;
+  background: var(--ui-primary-hover);
 }
 .mdp-footer button:active:not(:disabled) {
   transform: scale(0.98);

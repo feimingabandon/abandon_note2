@@ -1,0 +1,11 @@
+{
+  "status": "passed",
+  "results": [
+    "list: app dialog, Escape, backdrop, cancel button and hide release busy state; hidden quit visible; drafts remain",
+    "list: settings search has intermediate animation frames and focuses target section",
+    "month: app dialog, Escape, backdrop, cancel button and hide release busy state; hidden quit visible; drafts remain",
+    "month: settings search has intermediate animation frames and focuses target section",
+    "week: app dialog, Escape, backdrop, cancel button and hide release busy state; hidden quit visible; drafts remain",
+    "week: settings search has intermediate animation frames and focuses target section"
+  ]
+}

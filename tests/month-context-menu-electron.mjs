@@ -439,6 +439,13 @@ async function runContextMenuTests() {
     assert.equal(previewState.besideCell, true, '预览窗没有优先显示在日期格左侧或右侧')
     assert.equal(previewState.hasModalScrim, false, '当日便签预览不得显示蒙层')
 
+    await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(
+          `Array.from(document.querySelectorAll('.month-day-preview__status-action')).some(button => button.getAttribute('aria-label')?.includes('重新进行：右键菜单跨日便签') && !button.disabled)`
+        ),
+      '前一次状态过渡尚未完成，预览操作仍然禁用'
+    )
     await monthWindow.webContents.executeJavaScript(`(() => {
       const button = Array.from(document.querySelectorAll('.month-day-preview__status-action')).find(
         (item) => item.getAttribute('aria-label')?.includes('重新进行：右键菜单跨日便签')

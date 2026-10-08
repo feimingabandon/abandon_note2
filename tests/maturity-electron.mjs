@@ -346,8 +346,17 @@ async function run() {
     await js("document.querySelector('.titlebar-btn-template').click()")
     await until(() => js("!document.querySelector('.tp-filter-button')"), 'template closed')
     await openEditor(id)
+    await js("document.querySelector('.app-editor .ts-more').scrollIntoView({block:'center'})")
+    await new Promise((resolve) => setTimeout(resolve, 300))
     await js("document.querySelector('.app-editor .ts-more').click()")
     await until(() => js("Boolean(document.querySelector('.ts-panel'))"), 'tags panel')
+    await until(
+      () => js("Boolean(document.activeElement.closest('.ts-panel'))"),
+      'tag search receives focus'
+    )
+    await js(
+      "Promise.all(document.querySelector('.ts-panel').getAnimations().map(animation => animation.finished.catch(() => {})))"
+    )
     const tagBounds = await js(
       "(()=>{const r=document.querySelector('.ts-panel').getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,bottom:r.bottom,w:innerWidth,h:innerHeight}})()"
     )

@@ -1,0 +1,15 @@
+{
+  "status": "passed",
+  "results": [
+    "view cancellation preserves window",
+    "view navigation reuses the window and restores drafts without automatic database writes",
+    "quick conflict keeps database and local draft",
+    "renderer crash recovers and preserves draft journal",
+    "restore IPC returns retained note",
+    "deleted search result restores through keyboard-accessible menu",
+    "settings lazy load, search, navigation and theme captures",
+    "select keyboard focus and narrow-window bounds",
+    "tag popover narrow-window bounds and focus restoration",
+    "quit cancellation preserves editing"
+  ]
+}

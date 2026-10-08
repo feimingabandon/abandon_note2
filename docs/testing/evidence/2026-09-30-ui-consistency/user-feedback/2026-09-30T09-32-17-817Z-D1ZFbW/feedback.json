@@ -1,0 +1,9 @@
+{
+  "status": "failed",
+  "results": [
+    "duration labels and invariant row height at all UI scales",
+    "scale menu complete text at 68px trigger",
+    "font checkmark and single neutral input surface"
+  ],
+  "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert.ok(await js(`document.querySelector('.ts-panel-list').clientHeight>80`))\n\n    at file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-feedback-electron.mjs:67:12\n    at async check (file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-feedback-electron.mjs:24:33)\n    at async run (file:///C:/addFile/idea/%E9%A1%B9%E7%9B%AE/abandon/abandon_note2/tests/ui-feedback-electron.mjs:59:3)"
+}

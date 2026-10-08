@@ -1071,7 +1071,7 @@ onBeforeUnmount(() => {
     </div>
 
     <Teleport to="body">
-      <Transition name="month-modal" @after-leave="finishCreatorLeave">
+      <Transition name="month-modal" appear @after-leave="finishCreatorLeave">
         <div
           v-if="creatorDisplayed"
           ref="creatorOverlayRef"
@@ -1090,7 +1090,7 @@ onBeforeUnmount(() => {
         </div>
       </Transition>
 
-      <Transition name="month-modal" @after-leave="finishEditorLeave">
+      <Transition name="month-modal" appear @after-leave="finishEditorLeave">
         <div
           v-if="editorDisplayed"
           ref="editorOverlayRef"
@@ -1153,6 +1153,7 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 .month-workspace__body {
+  container: calendar-workspace / inline-size;
   display: flex;
   overflow: hidden;
   transition: filter 180ms ease;
@@ -1161,6 +1162,7 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 .month-workspace__calendar {
+  isolation: isolate;
   container: calendar-pane / inline-size;
   position: relative;
   display: flex;
@@ -1171,6 +1173,8 @@ onBeforeUnmount(() => {
   padding: 12rem 15rem 15rem;
 }
 .month-workspace__calendar-body {
+  overflow: auto;
+  scrollbar-width: thin;
   position: relative;
   display: flex;
   min-width: 0;
@@ -1287,6 +1291,25 @@ onBeforeUnmount(() => {
 .month-modal-leave-to > * {
   opacity: 0;
   transform: translateY(10rem) scale(0.985);
+}
+/* Preserve seven readable columns; scroll only the calendar canvas. */
+.month-workspace__calendar-body :deep(.month-grid) {
+  min-width: max(560rem, 42em);
+  min-height: 380rem;
+}
+@container calendar-workspace (max-width: 900px) {
+  .month-workspace__side {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: var(--z-local-top);
+    width: min(380rem, 100%) !important;
+    max-width: 100%;
+    background: rgb(var(--bg-color));
+    box-shadow: var(--ui-menu-shadow);
+  }
+  .month-workspace__side :deep(.month-day-panel__resize) {
+    display: none;
+  }
 }
 </style>
 

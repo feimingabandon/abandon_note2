@@ -265,6 +265,26 @@ QAction *AnnotationEditor::addAction(QString id, QString label,
           [this, id] { emit actionRequested(id); });
   return a;
 }
+void AnnotationEditor::setPrimaryAction(const QString &id) {
+  auto target = action(id);
+  if (!target || id == "copy") return;
+  // Form captures return to their owner by default; copy remains an explicit alternative.
+  auto copy = action("copy");
+  if (copy) {
+    if (auto button = outputs->widgetForAction(copy))
+      button->setObjectName("captureCopyAlternate");
+    outputs->removeAction(copy);
+    copy->setIcon(Capture::actionIcon("copy"));
+    copy->setToolTip(QStringLiteral("复制截图并退出 · Ctrl+C"));
+    more->addAction(copy);
+  }
+  more->removeAction(target);
+  target->setIcon(Capture::actionIcon(id, true));
+  outputs->addAction(target);
+  auto button = qobject_cast<QToolButton *>(outputs->widgetForAction(target));
+  button->setObjectName("capturePrimary");
+  button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+}
 Capture::Stroke *AnnotationEditor::current() {
   return hasCurrent() ? &doc.strokes[doc.editable] : nullptr;
 }

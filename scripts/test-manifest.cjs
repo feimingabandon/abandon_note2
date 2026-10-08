@@ -35,6 +35,7 @@ const windowFrameTests = Object.freeze([
 ])
 
 const electronFeatureTests = Object.freeze([
+  'tests/note-list-animation-electron.mjs',
   'tests/note-list-toolbar-electron.mjs',
   'tests/note-list-tag-refresh-electron.mjs',
   'tests/note-list-refresh-electron.mjs',
@@ -71,6 +72,10 @@ const electronFeatureTests = Object.freeze([
 // These suites are intentionally excluded from routine regression because they
 // create acceptance artifacts, require extra host tools, or exercise large data sets.
 const acceptanceTests = Object.freeze([
+  'tests/ui-components-electron.mjs',
+  'tests/ui-responsive-electron.mjs',
+  'tests/ui-feedback-electron.mjs',
+  'tests/ui-feedback-app-electron.mjs',
   'tests/maturity-db.mjs',
   'tests/maturity-electron.mjs',
   'tests/maturity-regressions-electron.mjs',

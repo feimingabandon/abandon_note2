@@ -138,7 +138,7 @@ watch(
   color: var(--text-color);
 }
 .date-context-badge:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 1px solid var(--ui-border-hover);
   outline-offset: 1px;
 }
 .date-context-badge__almanac {
