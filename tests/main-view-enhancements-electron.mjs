@@ -119,12 +119,25 @@ function getViewWindow(mode) {
 
 async function waitForView(mode) {
   const window = await waitUntil(() => getViewWindow(mode), `${mode} 主视图没有创建`)
+  activeTestWindow = window
   await waitUntil(
     () =>
       window.webContents.executeJavaScript(
         `document.querySelector('.view-switcher__trigger[data-active-view="${mode}"] .view-switcher__trigger-icon')?.dataset.iconName === 'switch-view'`
       ),
     `${mode} 主视图切换入口没有显示当前视图`
+  )
+  // View navigation reuses the BrowserWindow but replaces its rendering surface.
+  // DOM/SQLite readiness can precede showing and painting that new document.
+  await waitUntil(
+    () =>
+      window.isVisible() &&
+      !window.isMinimized() &&
+      window.webContents.executeJavaScript(`document.visibilityState === 'visible'`),
+    `${mode} 主视图没有完成显示`
+  )
+  await window.webContents.executeJavaScript(
+    'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
   )
   return window
 }

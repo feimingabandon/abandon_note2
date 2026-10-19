@@ -218,6 +218,38 @@ async function runQuarterlyTemplateTest() {
     }))()`)
     assert.deepEqual(lifecycleFields.labels, ['开始时间', '结束时间'])
     assert.equal(lifecycleFields.pickers, 2)
+    await waitUntil(
+      () =>
+        listWindow.webContents.executeJavaScript(`(() => {
+          const content = document.querySelector('.app-template-panel .tcp-content.visible')
+          return content && !content.getAnimations().some(animation =>
+            !['finished', 'idle'].includes(animation.playState))
+        })()`),
+      '循环模板表单入场动画没有结束'
+    )
+    // The lifecycle fields sit below the 58vh form's scrollport on narrow
+    // windows. A popover correctly closes while its anchor remains clipped.
+    await listWindow.webContents.executeJavaScript(`(async () => {
+      const trigger = document.querySelector('.app-template-panel .tf-time-range .dt-trigger')
+      trigger.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' })
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    })()`)
+    await waitUntil(
+      () =>
+        listWindow.webContents.executeJavaScript(`(() => {
+          const trigger = document.querySelector('.app-template-panel .tf-time-range .dt-trigger')
+          const body = trigger?.closest('.tcp-body')
+          if (!trigger || trigger.disabled || !body) return false
+          const rect = trigger.getBoundingClientRect()
+          const bounds = body.getBoundingClientRect()
+          const target = document.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
+          return rect.width > 0 && rect.height > 0 &&
+            rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1 &&
+            rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1 &&
+            (target === trigger || trigger.contains(target))
+        })()`),
+      '模板开始时间触发器滚动后必须可见且可命中'
+    )
     await listWindow.webContents.executeJavaScript(
       `document.querySelector('.app-template-panel .tf-time-range .dt-trigger').click()`
     )
@@ -226,7 +258,8 @@ async function runQuarterlyTemplateTest() {
         listWindow.webContents.executeJavaScript(`(() => {
           const trigger = document.querySelector('.app-template-panel .tf-time-range .dt-wrapper')
           const panel = document.querySelector('.dt-panel-wrap')
-          if (!trigger || !panel) return null
+          if (!trigger || !panel || panel.getAnimations().some(animation =>
+            !['finished', 'idle'].includes(animation.playState))) return null
           const triggerRect = trigger.getBoundingClientRect()
           const row = trigger.closest('.tf-row')
           const rowRect = row.getBoundingClientRect()
