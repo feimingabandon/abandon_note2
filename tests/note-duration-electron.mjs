@@ -143,14 +143,19 @@ try {
 
 async function runTests() {
   let failure = null
+  let restoreRendererExecution = () => {}
   try {
     const window = await waitUntil(() => getListWindow(), '列表主窗口未启动', 10000)
     activeTestWindow = window
-    const executeJavaScript = window.webContents.executeJavaScript.bind(window.webContents)
+    const originalExecuteJavaScript = window.webContents.executeJavaScript
+    const executeJavaScript = originalExecuteJavaScript.bind(window.webContents)
     window.webContents.executeJavaScript = (code, ...args) =>
       executeJavaScript(code, ...args).catch((error) => {
         throw new Error(`${error.message}\nscript=${code}`, { cause: error })
       })
+    restoreRendererExecution = () => {
+      if (!window.isDestroyed()) window.webContents.executeJavaScript = originalExecuteJavaScript
+    }
     await waitUntil(() => window.isVisible(), '列表主窗口未显示')
     await dismissStartupShortcutNotice(window)
 
@@ -563,6 +568,33 @@ async function runTests() {
     assert.match(confirmText, /直到标记完成/)
     assert.doesNotMatch(confirmText, /持续 \d+ 天/)
 
+    // Finish the tested user interaction before the lifecycle destroys windows;
+    // do not tear down Chromium while this modal is still entering/holding blur.
+    await window.webContents.executeJavaScript(`(() => {
+      const dialog = document.querySelector('.confirm-card.active[aria-label="提前执行便签？"]')
+      const cancel = Array.from(dialog.querySelectorAll('.confirm-actions button'))
+        .find(button => button.textContent.trim() === '取消' && !button.disabled)
+      cancel.click()
+    })()`)
+    await waitUntil(
+      () =>
+        window.webContents.executeJavaScript(`(() => {
+          const scene = document.querySelector('.app-scene')
+          return !document.querySelector('.confirm-overlay') && scene && !scene.inert
+        })()`),
+      '多日便签提前执行取消后未释放确认框与主视图'
+    )
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `window.api.getNote(${created.id}).then(note => note.status)`
+      ),
+      'initialized',
+      '取消提前执行不得开始便签'
+    )
+    await window.webContents.executeJavaScript(
+      'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
+    )
+
     report(
       'legacy migration, animated duration field, create, edit and early-start confirmation passed'
     )
@@ -570,6 +602,7 @@ async function runTests() {
     console.error(error)
     failure = error
   } finally {
+    restoreRendererExecution()
     await lifecycle.finish({
       completed: !failure,
       error: failure,

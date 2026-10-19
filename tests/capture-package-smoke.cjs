@@ -442,19 +442,35 @@ async function connectToApp() {
 }
 async function press(args) {
   assert.equal(await stillOwned(current.helper), true, 'helper owner changed before driver input')
-  const result = await execute(driver, [String(current.helper.pid), ...args], {
-    windowsHide: true,
-    timeout: remainingTimeout(10000),
-    maxBuffer: 1024 * 1024,
-    env: childEnvironment()
-  })
-  report.phases.push({
-    phase: 'native-driver',
-    launch: current.index,
-    args,
-    stdout: result.stdout,
-    stderr: result.stderr
-  })
+  try {
+    const result = await execute(driver, [String(current.helper.pid), ...args], {
+      windowsHide: true,
+      timeout: remainingTimeout(10000),
+      maxBuffer: 1024 * 1024,
+      env: childEnvironment()
+    })
+    report.phases.push({
+      phase: 'native-driver',
+      launch: current.index,
+      args,
+      stdout: result.stdout,
+      stderr: result.stderr
+    })
+  } catch (error) {
+    report.phases.push({
+      phase: 'native-driver',
+      launch: current.index,
+      args,
+      failed: true,
+      code: error.code ?? null,
+      signal: error.signal ?? null,
+      stdout: error.stdout ?? '',
+      stderr: error.stderr ?? '',
+      killed: error.killed ?? false,
+      error: error.stack || error.message
+    })
+    throw error
+  }
 }
 async function createPattern() {
   const result = await evaluate(
@@ -693,9 +709,44 @@ async function cleanupOwned() {
     }
     const first = await connectToApp()
     await createPattern()
+    // Observe the actual helper protocol before dispatch. "started" only means
+    // the request was sent; captureReady follows native overlay creation/show.
+    await evaluate(`(() => {
+      globalThis.capturePackageReadyMessages = [];
+      globalThis.capturePackageReadyObserver = message => {
+        if (!['captureReady', 'error', 'finished'].includes(message.type)) return;
+        const {type, sessionId, status, message: description, displays} = message;
+        capturePackageReadyMessages.push({type, sessionId, status, message: description, displays});
+      };
+      __ABANDON_WINDOW_TEST_HOOKS__.captureCoordinator().host.on('message', capturePackageReadyObserver);
+      return true;
+    })()`)
     const started = await evaluate('__ABANDON_WINDOW_TEST_HOOKS__.startNativeCapture()')
     assert.equal(started.status, 'started')
-    await wait(250)
+    const readiness = {
+      phase: 'native-capture-readiness',
+      launch: current.index,
+      sessionId: started.sessionId,
+      messages: []
+    }
+    report.phases.push(readiness)
+    await until(async () => {
+      readiness.messages = await evaluate(
+        `capturePackageReadyMessages.filter(message => message.sessionId === ${JSON.stringify(started.sessionId)})`
+      )
+      const terminal = readiness.messages.find((message) =>
+        ['error', 'finished'].includes(message.type)
+      )
+      if (terminal)
+        throw new Error('Native capture ended before captureReady: ' + JSON.stringify(terminal))
+      return readiness.messages.some((message) => message.type === 'captureReady')
+    }, 'packaged native overlay did not report captureReady for the current session')
+    await evaluate(`(() => {
+      __ABANDON_WINDOW_TEST_HOOKS__.captureCoordinator().host.removeListener('message', capturePackageReadyObserver);
+      delete globalThis.capturePackageReadyObserver;
+      delete globalThis.capturePackageReadyMessages;
+      return true;
+    })()`)
     await press(['F'])
     await press(['N', 'ctrl'])
     await until(
