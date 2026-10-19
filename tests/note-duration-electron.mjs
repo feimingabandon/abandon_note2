@@ -146,6 +146,11 @@ async function runTests() {
   try {
     const window = await waitUntil(() => getListWindow(), '列表主窗口未启动', 10000)
     activeTestWindow = window
+    const executeJavaScript = window.webContents.executeJavaScript.bind(window.webContents)
+    window.webContents.executeJavaScript = (code, ...args) =>
+      executeJavaScript(code, ...args).catch((error) => {
+        throw new Error(`${error.message}\nscript=${code}`, { cause: error })
+      })
     await waitUntil(() => window.isVisible(), '列表主窗口未显示')
     await dismissStartupShortcutNotice(window)
 
@@ -249,31 +254,56 @@ async function runTests() {
         ),
       '标签筛选面板没有载入新增标签'
     )
+    await waitUntil(
+      () =>
+        window.webContents.executeJavaScript(`(() => {
+        const panel = document.querySelector('.nl-panel-wrap')
+        return panel && !panel.getAnimations().some(animation => animation.playState === 'running')
+      })()`),
+      '标签筛选面板入场动画没有完成'
+    )
     await window.webContents.executeJavaScript(
       `document.querySelector('.nl-tags .ts-more').click()`
     )
     await waitUntil(
-      () => window.webContents.executeJavaScript(`Boolean(document.querySelector('.ts-panel'))`),
+      () =>
+        window.webContents.executeJavaScript(`(() => {
+        const panel = document.querySelector('.ts-panel')
+        return panel && !panel.getAnimations().some(animation => animation.playState === 'running')
+      })()`),
       '标签下拉面板未打开'
     )
     await window.webContents.executeJavaScript(`(() => {
       const row = Array.from(document.querySelectorAll('.ts-panel-row')).find((node) => node.textContent.includes('空层级测试'))
       row.querySelector('.ts-panel-select').click()
     })()`)
-    await waitUntil(
+    // The fixed stacking context owns z-index; the card clone inside it is auto.
+    // Capture both live layers together before the short exit animation removes them.
+    const filterLayers = await waitUntil(
       () =>
-        window.webContents.executeJavaScript(
-          `Boolean(document.querySelector('[data-presence-clone]'))`
-        ),
+        window.webContents.executeJavaScript(`(() => {
+          const clone = document.querySelector('[data-presence-clone]')
+          const layer = clone?.closest('[data-presence-layer]')
+          const popover = document.querySelector('.ts-panel')
+          if (!layer || !popover) return null
+          const layerStyle = getComputedStyle(layer)
+          const popoverStyle = getComputedStyle(popover)
+          return {
+            presence: Number.parseInt(layerStyle.zIndex, 10),
+            popover: Number.parseInt(popoverStyle.zIndex, 10),
+            sharedRoot: layer.parentElement === document.body && popover.parentElement === document.body,
+            fixedLayers: layerStyle.position === 'fixed' && popoverStyle.position === 'fixed'
+          }
+        })()`),
       '标签筛选没有生成便签退场副本'
     )
-    const filterLayers = await window.webContents.executeJavaScript(`(() => ({
-      presence: Number.parseInt(getComputedStyle(document.querySelector('[data-presence-clone]')).zIndex, 10),
-      popover: Number.parseInt(getComputedStyle(document.querySelector('.ts-panel')).zIndex, 10)
-    }))()`)
     assert.ok(
-      filterLayers.presence < filterLayers.popover,
-      `便签退场层必须低于标签面板层，实际为 ${filterLayers.presence} / ${filterLayers.popover}`
+      Number.isFinite(filterLayers.presence) &&
+        Number.isFinite(filterLayers.popover) &&
+        filterLayers.sharedRoot &&
+        filterLayers.fixedLayers &&
+        filterLayers.presence < filterLayers.popover,
+      `便签退场层必须与标签浮层处于同一根节点且层级更低：${JSON.stringify(filterLayers)}`
     )
     await window.webContents.executeJavaScript(`(() => {
       const row = Array.from(document.querySelectorAll('.ts-panel-row')).find((node) => node.textContent.includes('空层级测试'))
@@ -349,6 +379,10 @@ async function runTests() {
       shortcut.click()
       document.querySelector('.dt-btn--confirm').click()
     })()`)
+    await waitUntil(
+      () => window.webContents.executeJavaScript(`!document.querySelector('.dt-panel-wrap')`),
+      '生效时间选择器首次确认后未关闭'
+    )
     assert.equal(
       await window.webContents.executeJavaScript(
         `document.querySelector('.nnp-body .note-duration-field .sel-trigger').textContent.trim()`

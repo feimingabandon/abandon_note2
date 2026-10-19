@@ -36,8 +36,9 @@ export async function dismissStartupShortcutNotice(window) {
   await waitUntil(
     () =>
       window.webContents.executeJavaScript(`(() => {
-        const scene = document.querySelector('.app-scene')
-        return !document.querySelector(${JSON.stringify(NOTICE)}) && scene && !scene.inert
+        const scenes = Array.from(document.querySelectorAll('.app-scene, .month-scene'))
+        return !document.querySelector(${JSON.stringify(NOTICE)}) && scenes.length > 0 &&
+          scenes.every(scene => !scene.inert)
       })()`),
     'Startup shortcut notice did not finish leaving or release the product scene'
   )

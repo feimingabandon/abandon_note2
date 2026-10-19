@@ -37,6 +37,25 @@ const cli = (args, directory = privateRoot()) =>
   })
 
 describe('focused planning and dispatch', () => {
+  it('keeps Qt targets on capture when app and blur builds share the selected scope', () => {
+    const plan = focused.createFocusedPlan([
+      '--file',
+      'native_capture/tests/core_test.cpp',
+      '--file',
+      'tests/window-border-electron.mjs',
+      '--file',
+      'tests/window-motion-diagnostics-native.mjs'
+    ])
+    const builds = focused.createFocusedJobs(plan).filter((entry) => entry.resultKind === 'build')
+    expect(builds.map((entry) => entry.id).sort()).toEqual([
+      'build-app',
+      'build-capture',
+      'build-native'
+    ])
+    for (const build of builds) {
+      expect(build.metadata.qtNames).toEqual(build.id === 'build-capture' ? ['capture_core'] : [])
+    }
+  })
   it('dispatches the isolated renderer fixture with its own verified result mode', async () => {
     const file = 'tests/renderer-resource-lifetime-electron.mjs'
     const plan = focused.createFocusedPlan(['--file', file, '--plan'])

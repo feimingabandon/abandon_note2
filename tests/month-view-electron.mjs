@@ -373,6 +373,26 @@ async function runMonthViewTests() {
     )
     await setDayPanelOpen(monthWindow, false)
 
+    // The compact layout above may legitimately leave zero event lanes. Give
+    // the real-note/bar scenarios room to paint while retaining the earlier
+    // small-window assertions; keep a 24px margin away from native dock edges.
+    const eventLayoutSize = {
+      width: Math.min(workArea.width - 48, Math.max(expectedBounds.width, 960)),
+      height: Math.min(workArea.height - 48, Math.max(expectedBounds.height, 720))
+    }
+    monthWindow.setBounds({
+      x: workArea.x + Math.round((workArea.width - eventLayoutSize.width) / 2),
+      y: workArea.y + Math.round((workArea.height - eventLayoutSize.height) / 2),
+      ...eventLayoutSize
+    })
+    await waitUntil(() => {
+      const bounds = monthWindow.getBounds()
+      return bounds.width === eventLayoutSize.width && bounds.height === eventLayoutSize.height
+    }, '真实便签横条场景没有进入可绘制事件的窗口尺寸')
+    await monthWindow.webContents.executeJavaScript(
+      'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
+    )
+
     const adjacentMonthState = await monthWindow.webContents.executeJavaScript(`(() => {
       const pad = (value) => String(value).padStart(2, '0')
       const now = new Date()
@@ -450,21 +470,26 @@ async function runMonthViewTests() {
       const trigger = document.querySelector('.traffic-lights .light-pin')
       trigger.click()
       await new Promise((resolve) => setTimeout(resolve, 40))
+      const menu = document.querySelector('.z-order-menu')
+      const animation = menu.getAnimations()[0]
       return {
         popup: trigger.getAttribute('aria-haspopup'),
         expanded: trigger.getAttribute('aria-expanded'),
+        placement: getComputedStyle(menu).getPropertyValue('--popover-placement').trim() || 'bottom',
+        animationDuration: animation?.effect?.getTiming().duration,
         menuRect: (() => {
-          const rect = document.querySelector('.z-order-menu').getBoundingClientRect()
+          const rect = menu.getBoundingClientRect()
           return { width: rect.width, height: rect.height }
         })(),
-        animationFrames: (() => {
-          const animation = document.querySelector('.z-order-menu').getAnimations()[0]
-          return animation?.effect?.getKeyframes().map((frame) => ({
+        animationFrames: animation?.effect?.getKeyframes().map(frame => {
+          const matrix = new DOMMatrixReadOnly(frame.transform || 'none')
+          return {
             clipPath: frame.clipPath || '',
-            transform: frame.transform || '',
-            opacity: frame.opacity ?? ''
-          })) || []
-        })(),
+            opacity: frame.opacity ?? '',
+            translation: [matrix.m41, matrix.m42],
+            unstretched: matrix.m11 === 1 && matrix.m22 === 1 && matrix.m12 === 0 && matrix.m21 === 0
+          }
+        }) || [],
         descriptions: document.querySelectorAll('.z-order-option-description').length,
         options: Array.from(document.querySelectorAll('.z-order-option'), (option) => ({
           text: option.querySelector('.z-order-option-label')?.textContent.trim(),
@@ -490,17 +515,25 @@ async function runMonthViewTests() {
     assert.equal(zOrderMenuState.options[0].checked, 'true')
     assert.equal(zOrderMenuState.descriptions, 0, 'macOS 风格层级菜单不应保留双行说明文字')
     assert.equal(zOrderMenuState.animationFrames.length, 2, '窗口层级菜单必须启动统一下拉动效')
-    assert.equal(
-      zOrderMenuState.animationFrames[0].clipPath.includes('100%'),
-      true,
-      '窗口层级菜单应从顶部向下裁剪展开'
+    assert.equal(zOrderMenuState.animationDuration, 180, '窗口层级菜单应播放完整进入动效')
+    assert.deepEqual(
+      zOrderMenuState.animationFrames.map((frame) => Number(frame.opacity)),
+      [0, 1],
+      '窗口层级菜单必须从透明淡入到完整可见'
     )
-    assert.equal(
-      zOrderMenuState.animationFrames.some(
-        (frame) => Boolean(frame.transform) || frame.opacity !== ''
+    assert.deepEqual(
+      zOrderMenuState.animationFrames.map((frame) => frame.translation),
+      [
+        { top: [0, 4], bottom: [0, -4], left: [4, 0], right: [-4, 0] }[zOrderMenuState.placement],
+        [0, 0]
+      ],
+      '窗口层级菜单必须按实际展开方向从触发器附近轻移 4px 到定位位置'
+    )
+    assert.ok(
+      zOrderMenuState.animationFrames.every(
+        (frame) => frame.unstretched && ['', 'none'].includes(frame.clipPath)
       ),
-      false,
-      '窗口层级菜单不应继续使用位移、缩放或淡入动画'
+      '普通下拉菜单不得拉伸文字或使用大面板的 reveal 裁剪'
     )
     assert.ok(zOrderMenuState.menuRect.width <= 200, '窗口层级菜单应保持 macOS 式紧凑宽度')
     assert.ok(zOrderMenuState.menuRect.height <= 130, '窗口层级菜单不应继续使用三行大卡片布局')
@@ -1341,33 +1374,54 @@ async function runMonthViewTests() {
       return { start: style.gridColumnStart, end: style.gridColumnEnd }
     })()`)
     assert.equal(sameWeekSpan.end, 'span 3', '同周横条必须连续跨过三个日期格及其间隙')
-    const eventBarLayout = await monthWindow.webContents.executeJavaScript(`(() => {
-      const first = document.querySelector('.month-event-bar')
-      const currentLane = Number(first.style.getPropertyValue('--event-lane')) || 0
-      const second = first.cloneNode(true)
-      second.style.setProperty('--event-lane', String(currentLane + 1))
-      second.setAttribute('aria-hidden', 'true')
-      first.parentElement.append(second)
-      const firstRect = first.getBoundingClientRect()
-      const secondRect = second.getBoundingClientRect()
-      const text = first.querySelector('.month-event-bar__text')
-      const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
-      const result = {
-        gapInRem: (secondRect.top - firstRect.bottom) / rem,
-        textAlign: getComputedStyle(text).textAlign,
-        whiteSpace: getComputedStyle(text).whiteSpace,
-        textOverflow: getComputedStyle(text).textOverflow
-      }
-      second.remove()
-      return result
-    })()`)
+    // cloneNode does not copy WAAPI presence/FLIP animations. Measure final
+    // layout only after the complete seeded batch and real grid bars settle.
+    const eventBarLayout = await waitUntil(
+      () =>
+        monthWindow.webContents.executeJavaScript(`(() => {
+          const count = document.querySelector('.month-day-cell[data-date="${seededCalendar.overflowKey}"] .month-day-cell__count')
+          const bars = Array.from(document.querySelectorAll('.month-grid .month-event-bar'))
+          if (count?.textContent.trim() !== '10' || !bars.length || bars.some(bar =>
+              bar.getAnimations().some(animation => !['finished', 'idle'].includes(animation.playState)))) return null
+          const first = bars.find(bar => bar.dataset.preview === '同周连续测试')
+          if (!first) return null
+          const currentLane = Number(first.style.getPropertyValue('--event-lane')) || 0
+          const second = first.cloneNode(true)
+          second.style.setProperty('--event-lane', String(currentLane + 1))
+          second.setAttribute('aria-hidden', 'true')
+          first.parentElement.append(second)
+          try {
+            const firstRect = first.getBoundingClientRect()
+            const secondRect = second.getBoundingClientRect()
+            const text = first.querySelector('.month-event-bar__text')
+            const css = getComputedStyle(text)
+            const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
+            return {
+              gapInRem: (secondRect.top - firstRect.bottom) / rem,
+              currentLane,
+              firstHeight: firstRect.height,
+              secondHeight: secondRect.height,
+              lanePitch: secondRect.top - firstRect.top,
+              rem,
+              textAlign: css.textAlign,
+              whiteSpace: css.whiteSpace,
+              textOverflow: css.textOverflow,
+              overflowX: css.overflowX
+            }
+          } finally {
+            second.remove()
+          }
+        })()`),
+      '便签批量数据或横条入场、补位动画没有完成，无法测量静态间距'
+    )
     assert.ok(
       eventBarLayout.gapInRem >= 2 && eventBarLayout.gapInRem <= 4,
-      '便签横条之间只应保留必要间距'
+      `便签横条之间只应保留必要间距：${JSON.stringify(eventBarLayout)}`
     )
     assert.equal(eventBarLayout.textAlign, 'left', '便签摘要必须左对齐')
     assert.equal(eventBarLayout.whiteSpace, 'nowrap', '日期格摘要不得换行')
     assert.equal(eventBarLayout.textOverflow, 'ellipsis', '过长摘要必须使用省略号')
+    assert.equal(eventBarLayout.overflowX, 'hidden', '过长摘要必须裁切在日期横条内')
 
     await monthWindow.webContents.executeJavaScript(
       `document.querySelector('.month-event-bar[data-preview="同周连续测试"]').click()`
@@ -1524,12 +1578,12 @@ async function runMonthViewTests() {
         effectiveAt: Date.now() + 10 * 60 * 1000,
         notifyEnabled: true
       })
-      const save = (note, effectiveAt, notifyEnabled = true) => window.api.saveNoteDraft({
+      const save = (note, effectiveAt, notifyEnabled = true, status = note.status) => window.api.saveNoteDraft({
         id: note.id,
         expectedVersion: note.editVersion,
         fields: {
           content: note.content,
-          status: note.status,
+          status,
           effectiveAt,
           durationDays: note.duration_days,
           notifyEnabled,
@@ -1544,25 +1598,40 @@ async function runMonthViewTests() {
         const backfilled = await save(created, backfillAt)
         const correctedAt = backfillAt - 60 * 60 * 1000
         const corrected = await save(backfilled, correctedAt)
+        const futureAt = Date.now() + 10 * 60 * 1000
         let futureError = ''
         try {
-          await save(corrected, Date.now() + 10 * 60 * 1000)
+          await save(corrected, futureAt)
         } catch (error) {
           futureError = error.message
         }
+        const afterFutureReject = await window.api.getNote(corrected.id)
         const completed = await window.api.completeNote(corrected.id)
+        const completedCorrectedAt = correctedAt - 60 * 60 * 1000
+        const completedCorrected = await save(completed, completedCorrectedAt, false)
         let completedError = ''
         try {
-          await save(completed, correctedAt - 60 * 60 * 1000, false)
+          await save(completedCorrected, futureAt, false)
         } catch (error) {
           completedError = error.message
         }
+        const afterCompletedReject = await window.api.getNote(completedCorrected.id)
+        // The main-process rule treats an explicit initialized status as the
+        // cancellation intention; the draft IPC has no separate confirm flag.
+        const rescheduled = await save(completedCorrected, futureAt, true, 'initialized')
         return {
           created,
           backfilled,
           corrected,
+          afterFutureReject,
+          completed,
+          completedCorrected,
+          afterCompletedReject,
+          rescheduled,
           backfillAt,
           correctedAt,
+          completedCorrectedAt,
+          futureAt,
           nearFutureError,
           futureError,
           completedError
@@ -1590,8 +1659,33 @@ async function runMonthViewTests() {
       scheduleEditResult.corrected.finished_at,
       scheduleEditResult.backfilled.finished_at
     )
-    assert.match(scheduleEditResult.futureError, /只能修正为当前或过去时间/)
-    assert.match(scheduleEditResult.completedError, /已完成便签的生效时间不可修改/)
+    assert.match(scheduleEditResult.futureError, /未来生效的便签只能设置为未开始/)
+    assert.deepEqual(
+      scheduleEditResult.afterFutureReject,
+      scheduleEditResult.corrected,
+      '进行中便签提交非法未来状态时不得部分修改记录'
+    )
+    assert.equal(scheduleEditResult.completedCorrected.status, 'completed')
+    assert.equal(
+      scheduleEditResult.completedCorrected.effective_at,
+      scheduleEditResult.completedCorrectedAt
+    )
+    assert.equal(
+      scheduleEditResult.completedCorrected.finished_at,
+      scheduleEditResult.completed.finished_at,
+      '已完成便签校正合法历史生效时间必须保留实际完成时间'
+    )
+    assert.match(scheduleEditResult.completedError, /改为未来预约需明确取消完成并选择未开始/)
+    assert.deepEqual(
+      scheduleEditResult.afterCompletedReject,
+      scheduleEditResult.completedCorrected,
+      '已完成便签未明确取消完成的未来改期不得部分修改记录'
+    )
+    assert.equal(scheduleEditResult.rescheduled.status, 'initialized')
+    assert.equal(scheduleEditResult.rescheduled.effective_at, scheduleEditResult.futureAt)
+    assert.equal(scheduleEditResult.rescheduled.finished_at, null)
+    assert.equal(scheduleEditResult.rescheduled.notify_enabled, 1)
+    assert.equal(scheduleEditResult.rescheduled.created_at, scheduleEditResult.created.created_at)
 
     // 日期侧栏保留完整属性新建器；日期格底部改为不遮挡日历的快速创建器。
     const todayKey = await monthWindow.webContents.executeJavaScript(`(() => {

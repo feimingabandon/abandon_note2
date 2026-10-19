@@ -58,6 +58,7 @@ const releaseRendererDomainRules = Object.freeze({
     'tests/historical-note-move-electron.mjs'
   ],
   'src/renderer/src/components/month/MonthCalendarToolbar.vue': [
+    'tests/almanac-weather-electron.mjs',
     'tests/ui-interaction-standard.test.js',
     'tests/titlebar-icon-scale-ui.test.js',
     'tests/calendar-recurring-preview-ui.test.js',

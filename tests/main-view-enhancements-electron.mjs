@@ -253,26 +253,62 @@ async function assertDayPanelWeatherLayout(window) {
     () =>
       window.webContents.executeJavaScript(`(() => {
         const weather = document.querySelector('.month-day-panel__weather')
+        const panel = weather?.closest('.month-day-panel')
         const summary = weather?.querySelector('.weather-brief')
         const button = summary?.querySelector('.weather-brief__button')
         const rows = summary?.querySelector('.weather-brief__rows')
-        if (!weather || !summary || !button || !rows) return null
+        if (!weather || !panel || !summary || !button || !rows) return null
+        if (panel.classList.contains('month-side-panel-enter-active') ||
+            panel.getAnimations().some(animation => animation.playState === 'running')) return null
+        const panelRect = panel.getBoundingClientRect()
+        if (panelRect.width <= 0 || Number(getComputedStyle(panel).opacity) < 0.99) return null
         const summaryRect = summary.getBoundingClientRect()
         const weatherRect = weather.getBoundingClientRect()
+        const buttonRect = button.getBoundingClientRect()
+        const contains = (outer, inner) => inner.left >= outer.left - 1 &&
+          inner.right <= outer.right + 1 && inner.top >= outer.top - 1 &&
+          inner.bottom <= outer.bottom + 1 && inner.width > 0 && inner.height > 0
+        const rowLayout = Array.from(rows.children, row => {
+          const content = row.querySelector('.overflow-fade__content')
+          const rect = row.getBoundingClientRect()
+          const css = getComputedStyle(row)
+          const overflow = Boolean(content && content.scrollWidth > row.clientWidth + 1)
+          return {
+            inside: contains(buttonRect, rect),
+            top: rect.top,
+            bottom: rect.bottom,
+            hasContent: Boolean(content?.textContent.trim()),
+            clipped: css.overflowX === 'hidden' && css.whiteSpace === 'nowrap',
+            overflow,
+            faded: row.classList.contains('is-overflowing') && css.maskImage.includes('linear-gradient')
+          }
+        })
         return {
-          inside: summaryRect.left >= weatherRect.left && summaryRect.right <= weatherRect.right,
-          overflow: summary.scrollWidth > summary.clientWidth + 1,
+          inside: contains(weatherRect, summaryRect),
+          buttonInside: contains(summaryRect, buttonRect),
+          visible: buttonRect.left >= -1 && buttonRect.right <= innerWidth + 1 &&
+            buttonRect.top >= -1 && buttonRect.bottom <= innerHeight + 1,
           rowCount: rows.children.length,
+          rowLayout,
           date: summary.dataset.date,
           selectedDate: document.querySelector('.month-day-cell.is-selected')?.dataset.date,
           popup: button.getAttribute('aria-haspopup')
         }
       })()`),
-    '日期侧栏天气没有显示'
+    '日期侧栏天气没有显示或入场动画没有结束'
   )
+  // Long row content may exceed scrollWidth: the painted row must stay inside
+  // its button and clip/fade the excess instead of requiring the text to fit.
   assert.ok(
-    layout.inside && !layout.overflow && layout.rowCount === 2,
-    `日期侧栏应复用不溢出的双行天气摘要：${JSON.stringify(layout)}`
+    layout.inside &&
+      layout.buttonInside &&
+      layout.visible &&
+      layout.rowCount === 2 &&
+      layout.rowLayout[0].bottom <= layout.rowLayout[1].top + 1 &&
+      layout.rowLayout.every(
+        (row) => row.inside && row.hasContent && row.clipped && (!row.overflow || row.faded)
+      ),
+    `日期侧栏双行天气摘要及按钮应保持在边界内，长文本必须裁切并渐隐：${JSON.stringify(layout)}`
   )
   assert.equal(layout.date, layout.selectedDate, '侧栏天气日期必须与所选日期同步')
   assert.equal(layout.popup, 'dialog', '侧栏天气应提供统一详情浮层入口')

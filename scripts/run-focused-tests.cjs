@@ -234,7 +234,7 @@ function createFocusedJobs(
     if (entry.role === 'build')
       return require('./test-build-jobs.cjs').createBuildJob(entry, plan, {
         nodeExecutable,
-        qtNames,
+        qtNames: entry.id === 'build-capture' ? qtNames : [],
         env
       })
     if (entry.runtime === 'qt')

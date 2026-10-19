@@ -307,31 +307,33 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 <template>
   <header class="month-toolbar" :class="{ 'is-busy': busy }">
     <div class="month-toolbar__leading">
-      <button
-        type="button"
-        class="month-toolbar__today"
-        :disabled="busy"
-        title="定位到今天"
-        aria-label="定位到今天"
-        @click="goToday"
-      >
-        <AppIcon name="locate-current" class="month-toolbar__action-icon" />
-      </button>
-      <button
-        type="button"
-        class="month-toolbar__refresh"
-        :disabled="busy || refreshing || refreshSpinActive"
-        title="刷新"
-        :aria-label="isWeekView ? '刷新周视图' : '刷新月视图'"
-        @click="emit('refresh')"
-      >
-        <AppIcon
-          name="taiji"
-          class="month-toolbar__refresh-icon"
-          :class="{ 'is-spinning': refreshSpinActive }"
-          @animationend="finishRefreshSpin"
-        />
-      </button>
+      <div class="month-toolbar__actions">
+        <button
+          type="button"
+          class="month-toolbar__today"
+          :disabled="busy"
+          title="定位到今天"
+          aria-label="定位到今天"
+          @click="goToday"
+        >
+          <AppIcon name="locate-current" class="month-toolbar__action-icon" />
+        </button>
+        <button
+          type="button"
+          class="month-toolbar__refresh"
+          :disabled="busy || refreshing || refreshSpinActive"
+          title="刷新"
+          :aria-label="isWeekView ? '刷新周视图' : '刷新月视图'"
+          @click="emit('refresh')"
+        >
+          <AppIcon
+            name="taiji"
+            class="month-toolbar__refresh-icon"
+            :class="{ 'is-spinning': refreshSpinActive }"
+            @animationend="finishRefreshSpin"
+          />
+        </button>
+      </div>
       <DateContextSummary v-if="weatherEnabled" kind="weather" :forecast="forecast" />
     </div>
 
@@ -551,37 +553,39 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 
     <div class="month-toolbar__trailing">
       <DateContextSummary v-if="almanacEnabled" kind="almanac" :forecast="forecast" />
-      <button
-        type="button"
-        class="month-toolbar__recurring-preview month-toolbar__recurring-preview-toggle"
-        :class="{ 'is-active': recurringPreviewEnabled }"
-        :disabled="busy || recurringPreviewSaving"
-        :title="`${recurringPreviewEnabled ? '隐藏' : '显示'}循环便签预览`"
-        :aria-label="`${recurringPreviewEnabled ? '隐藏' : '显示'}循环便签预览`"
-        role="switch"
-        :aria-checked="recurringPreviewEnabled"
-        @click="emit('update:recurring-preview-enabled', !recurringPreviewEnabled)"
-      >
-        <AppIcon name="recurrence" class="month-toolbar__action-icon" />
-      </button>
-      <HistoricalNoteMoveControl
-        :disabled="busy"
-        @open-change="onHistoricalMoveOpenChange"
-        @moved="emit('historical-notes-moved', $event)"
-      />
-      <button
-        type="button"
-        class="month-toolbar__day-panel-toggle"
-        :class="{ 'is-open': dayPanelOpen }"
-        :disabled="busy"
-        :aria-label="dayPanelOpen ? '收起日期列表' : '展开日期列表'"
-        aria-controls="month-day-panel"
-        :aria-expanded="dayPanelOpen"
-        :title="dayPanelOpen ? '收起日期列表' : '展开日期列表'"
-        @click="emit('toggle-day-panel')"
-      >
-        <AppIcon name="date-panel" class="month-toolbar__action-icon" />
-      </button>
+      <div class="month-toolbar__actions">
+        <button
+          type="button"
+          class="month-toolbar__recurring-preview month-toolbar__recurring-preview-toggle"
+          :class="{ 'is-active': recurringPreviewEnabled }"
+          :disabled="busy || recurringPreviewSaving"
+          :title="`${recurringPreviewEnabled ? '隐藏' : '显示'}循环便签预览`"
+          :aria-label="`${recurringPreviewEnabled ? '隐藏' : '显示'}循环便签预览`"
+          role="switch"
+          :aria-checked="recurringPreviewEnabled"
+          @click="emit('update:recurring-preview-enabled', !recurringPreviewEnabled)"
+        >
+          <AppIcon name="recurrence" class="month-toolbar__action-icon" />
+        </button>
+        <HistoricalNoteMoveControl
+          :disabled="busy"
+          @open-change="onHistoricalMoveOpenChange"
+          @moved="emit('historical-notes-moved', $event)"
+        />
+        <button
+          type="button"
+          class="month-toolbar__day-panel-toggle"
+          :class="{ 'is-open': dayPanelOpen }"
+          :disabled="busy"
+          :aria-label="dayPanelOpen ? '收起日期列表' : '展开日期列表'"
+          aria-controls="month-day-panel"
+          :aria-expanded="dayPanelOpen"
+          :title="dayPanelOpen ? '收起日期列表' : '展开日期列表'"
+          @click="emit('toggle-day-panel')"
+        >
+          <AppIcon name="date-panel" class="month-toolbar__action-icon" />
+        </button>
+      </div>
     </div>
   </header>
 </template>
@@ -614,7 +618,20 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
   flex: 1 1 0;
   margin-inline-end: 20rem;
 }
-.month-toolbar__leading > button {
+.month-toolbar__actions {
+  display: flex;
+  /* 按最多三个 30rem 操作和两个 5rem 间距对齐左右操作区，让两侧摘要等宽。 */
+  flex: 0 0 100rem;
+  align-items: center;
+  gap: 5rem;
+}
+.month-toolbar__leading .month-toolbar__actions {
+  justify-content: flex-start;
+}
+.month-toolbar__trailing .month-toolbar__actions {
+  justify-content: flex-end;
+}
+.month-toolbar__actions > button {
   flex-shrink: 0;
 }
 .month-toolbar__navigation {

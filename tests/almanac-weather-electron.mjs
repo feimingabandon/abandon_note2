@@ -193,7 +193,7 @@ async function run() {
           !bounds.overflow,
         JSON.stringify(bounds)
       )
-      assert.ok(bounds.scroll, '长宜忌应在内容区域滚动')
+      assert.ok(bounds.scroll, `长宜忌应在内容区域滚动: ${JSON.stringify(bounds)}`)
       writeFileSync(
         join(output, `list-${theme}.png`),
         (await win.webContents.capturePage()).toPNG()
@@ -207,7 +207,20 @@ async function run() {
         '背景模糊未解除'
       )
       const toolbar = await js(
-        `(()=>{const left=(document.querySelector('.nl-toolbar-left') || document.querySelector('.nl-toolbar-controls')).getBoundingClientRect();const center=document.querySelector('.nl-toolbar-controls').getBoundingClientRect();const brief=document.querySelector('.almanac-brief').getBoundingClientRect();return {fits:center.right<=left.left+1,inside:brief.left>=0&&brief.right<=innerWidth}})()`
+        `(() => {
+          const toolbar = document.querySelector('.nl-toolbar')
+          const controls = toolbar.querySelector('.nl-toolbar-controls').getBoundingClientRect()
+          const summary = toolbar.querySelector('.nl-toolbar-right .date-context-summary').getBoundingClientRect()
+          const brief = toolbar.querySelector('.almanac-brief').getBoundingClientRect()
+          // Narrow windows place summaries on the next row. Compare the actual
+          // boxes; long summary text intentionally fades within its own box.
+          const fits = controls.right <= summary.left + 1 || summary.right <= controls.left + 1 ||
+            controls.bottom <= summary.top + 1 || summary.bottom <= controls.top + 1
+          const inViewport = rect => rect.left >= 0 && rect.right <= innerWidth &&
+            rect.top >= 0 && rect.bottom <= innerHeight
+          return { fits, inside: inViewport(summary) && inViewport(brief),
+            controls: controls.toJSON(), summary: summary.toJSON() }
+        })()`
       )
       assert.ok(toolbar.fits && toolbar.inside, JSON.stringify(toolbar))
       writeFileSync(
@@ -220,6 +233,18 @@ async function run() {
       await until(
         () => js('document.querySelectorAll(".almanac-window__group").length===2'),
         '摘要未打开详情'
+      )
+      // A summary correctly opens today's date. Restore the fixed long-content
+      // day before the next theme and the later date-picker checks.
+      await js(
+        'window.dispatchEvent(new CustomEvent("abandon:open-almanac",{detail:{dateKey:"2026-09-28"}}))'
+      )
+      await until(
+        () =>
+          js(
+            'document.querySelector(".almanac-window")?.dataset.date==="2026-09-28" && document.querySelector(".date-context-details__almanac")?.dataset.date==="2026-09-28" && document.querySelectorAll(".almanac-window__group").length===2'
+          ),
+        '长宜忌日期未恢复'
       )
     }
     await js(`window.api.setSettingValue('css.fontSizeBase',28)`)
@@ -458,6 +483,29 @@ async function clickDateContext(win, js, selector) {
   win.webContents.sendInputEvent({ type: 'mouseUp', ...point })
 }
 
+async function readPopoverWeatherDetails(js) {
+  return js(`(() => {
+    const root = document.querySelector('.date-context-popover__weather')
+    const current = root?.querySelector('.date-context-details__current')
+    const forecast = root?.querySelector('.date-context-details__forecast')
+    const text = (scope, selector) => scope?.querySelector(selector)?.textContent.trim() || ''
+    const currentWind = Array.from(current?.querySelectorAll('.date-context-details__metrics > div') || [])
+      .find(metric => text(metric, 'dt') === '当前风速')
+    return {
+      current: current ? {
+        condition: text(current, '.date-context-details__eyebrow'),
+        provenance: text(current, '.date-context-details__provenance'),
+        wind: text(currentWind, 'dd')
+      } : null,
+      forecast: forecast ? {
+        heading: text(forecast, '.date-context-details__eyebrow'),
+        condition: text(forecast, '.date-context-details__condition'),
+        provenance: text(forecast, '.date-context-details__provenance')
+      } : null
+    }
+  })()`)
+}
+
 async function verifyDateContextPopover(win, js, selector, hasWeather, screenshot, inline = true) {
   await until(() => win.isVisible() && !win.isMinimized(), '日期详情测试前窗口未显示')
   win.focus()
@@ -511,21 +559,19 @@ async function verifyDateContextPopover(win, js, selector, hasWeather, screensho
     assert.equal(weather, '', '天气关闭后详情不应显示天气或未获取占位')
   }
   if (hasWeather) {
-    const text = weather.replace(/\s+/g, ' ')
+    const details = await readPopoverWeatherDetails(js)
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
-    assert.match(text, /全天预报 .*雷阵雨/)
-    assert.match(text, /CMA GRAPES/)
-    assert.match(text, /降水概率由 Open-Meteo · 自动模型 补充/)
+    assert.equal(details.forecast?.heading, '全天预报')
+    assert.match(details.forecast?.condition || '', /雷阵雨/)
+    assert.match(details.forecast?.provenance || '', /CMA GRAPES/)
+    assert.match(details.forecast?.provenance || '', /降水概率由 Open-Meteo · 自动模型 补充/)
     if (date === today) {
-      assert.match(text, /当前 🌙 晴/)
-      assert.match(text, /天气时刻/)
-      assert.match(text, /当前模型估算/)
-      assert.match(text, /当前风速 12 km\/h/)
+      assert.equal((details.current?.condition || '').replace(/\s+/g, ''), '当前🌙晴')
+      assert.match(details.current?.provenance || '', /天气时刻/)
+      assert.match(details.current?.provenance || '', /当前模型估算/)
+      assert.equal((details.current?.wind || '').replace(/\s+/g, ''), '12km/h')
     } else {
-      assert.ok(
-        !text.includes('当前风速') && !text.includes('天气时刻'),
-        '其他日期不应显示今天的当前天气'
-      )
+      assert.equal(details.current, null, '其他日期不应显示今天的当前天气')
     }
   }
   await until(() => js(`window.__dateContextMotion.includes('opacity')`), '小浮层必须播放展开动画')
@@ -595,10 +641,9 @@ async function verifyToolbarDateContext(win, js, hasWeather, screenshot) {
       // Both entry points receive the same current reading and daily forecast.
       await clickDateContext(win, js, `.${kind}-brief__button`)
       await until(
-        () =>
-          js(
-            `document.querySelector('.date-context-popover__weather')?.textContent.includes('当前风速 12 km/h')`
-          ),
+        async () =>
+          ((await readPopoverWeatherDetails(js)).current?.wind || '').replace(/\s+/g, '') ===
+          '12km/h',
         '工具栏详情应显示当前体感和风速'
       )
       await js(`document.querySelector('.date-context-popover__header button').click()`)
