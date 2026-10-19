@@ -2,8 +2,10 @@ import { mkdirSync, readdirSync, readFileSync, appendFileSync, writeFileSync } f
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
-import { app, BrowserWindow, dialog, nativeImage } from 'electron'
+import { app, BrowserWindow, dialog, nativeImage, screen } from 'electron'
+import { DEFAULT_STICKY_WIDTH } from '../src/main/sticky/stickyConstants.js'
 import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
 
 const require = createRequire(import.meta.url)
 const lifecycle = createElectronGuiResultLifecycle({
@@ -115,6 +117,7 @@ async function runTest() {
       () => window.webContents.executeJavaScript(`Boolean(window.api?.getDiagnosticState)`),
       '诊断桥未就绪'
     )
+    await dismissStartupShortcutNotice(window)
     const initialState = await window.webContents.executeJavaScript(
       `window.api.getDiagnosticState()`
     )
@@ -330,6 +333,25 @@ async function runTest() {
         .join('\n') + '\n'
     )
     const originalSaveDialog = dialog.showSaveDialog
+    // Sticky creation intentionally rejects overlap with the visible main
+    // window. Reserve real desktop space on the 1024px-wide Windows runner.
+    const workArea = screen.getDisplayMatching(window.getBounds()).workArea
+    const mainBounds = {
+      x: workArea.x + 24,
+      y: workArea.y + 24,
+      width: Math.min(window.getBounds().width, workArea.width - DEFAULT_STICKY_WIDTH - 48),
+      height: Math.min(window.getBounds().height, workArea.height - 48)
+    }
+    const [minimumWidth, minimumHeight] = window.getMinimumSize()
+    assert.ok(
+      mainBounds.width >= minimumWidth && mainBounds.height >= minimumHeight,
+      `测试桌面无法同时容纳主窗口和真实便利贴：${JSON.stringify({ workArea, mainBounds })}`
+    )
+    window.setBounds(mainBounds)
+    await waitUntil(() => {
+      const bounds = window.getBounds()
+      return Object.keys(mainBounds).every((key) => bounds[key] === mainBounds[key])
+    }, '诊断主窗口没有为真实便利贴留出桌面空间')
     await window.webContents.executeJavaScript(`window.api.createSticky(${evidence.id})`)
     const sticky = await waitUntil(
       () =>
@@ -337,6 +359,14 @@ async function runTest() {
           candidate.webContents.getURL().includes('/sticky.html')
         ),
       '便利贴测试窗口未创建'
+    )
+    const stickyBounds = sticky.getBounds()
+    assert.ok(
+      stickyBounds.x >= mainBounds.x + mainBounds.width ||
+        stickyBounds.x + stickyBounds.width <= mainBounds.x ||
+        stickyBounds.y >= mainBounds.y + mainBounds.height ||
+        stickyBounds.y + stickyBounds.height <= mainBounds.y,
+      '真实便利贴必须出现在主窗口外部'
     )
     await waitUntil(
       () =>

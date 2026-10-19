@@ -190,6 +190,23 @@ async function run() {
         downloadAvailable: false
       }
     })
+    // Another running copy can own the default shortcuts. Defer that real
+    // notice before testing onboarding's queue; the next modal keeps the scene inert.
+    if (await js('window.api.getShortcutStartupNotice().then(items => items.length > 0)')) {
+      const shortcutNotice = '[aria-label="快捷键启用提示"]'
+      await until(() => exists(shortcutNotice), 'startup shortcut notice')
+      await js(`(() => {
+        const dialog = document.querySelector(${JSON.stringify('[aria-label="快捷键启用提示"]')})
+        const button = Array.from(dialog.querySelectorAll('.app-modal-footer button'))
+          .find(node => node.textContent.trim() === '稍后处理' && !node.disabled)
+        if (!button) throw new Error('Shortcut notice defer button is unavailable')
+        button.click()
+      })()`)
+      await until(
+        async () => !(await exists(shortcutNotice)),
+        'startup shortcut notice finished leaving'
+      )
+    }
     await until(() => exists(welcome), 'startup onboarding')
     notices = [{ id: 101, title: 'FIFO notice', body: 'Queued notification' }]
     current.webContents.send('remote-notices:changed')
@@ -216,11 +233,11 @@ async function run() {
       `document.querySelector('.titlebar-btn-daily-report').click(); window.dispatchEvent(new CustomEvent('abandon:open-almanac'))`
     )
     await until(() => exists('[aria-label="便签报表"]'), 'report requested first in same tick')
-    assert.equal(await exists('[aria-label="万年历"]'), false)
+    assert.equal(await exists('[aria-label="天气与宜忌"]'), false)
     await click('[aria-label="便签报表"] .app-modal-close')
-    await until(() => exists('[aria-label="万年历"]'), 'almanac requested second')
+    await until(() => exists('[aria-label="天气与宜忌"]'), 'almanac requested second')
     assert.equal(await exists('[aria-label="便签报表"]'), false)
-    await click('[aria-label="万年历"] .app-modal-close')
+    await click('[aria-label="天气与宜忌"] .app-modal-close')
     await until(async () => (await labels()).length === 0, 'batched requests drained')
     report('same tick: report → almanac, regardless of component order')
 

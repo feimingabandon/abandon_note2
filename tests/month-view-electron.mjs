@@ -1291,6 +1291,8 @@ async function runMonthViewTests() {
 
     // 同周连续、跨周拆段与每日便签总数。切到下个月后再造测试数据，
     // 避免当前日期越过固定网格下标时把 09:00 误变成过去时间。
+    // 侧栏已单独覆盖；收起后为六行月份保留可绘制横条的空间。
+    await setDayPanelOpen(monthWindow, false)
     await waitUntil(
       () =>
         monthWindow.webContents.executeJavaScript(

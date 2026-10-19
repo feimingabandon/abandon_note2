@@ -136,13 +136,40 @@ async function openShortcutEditor(window, action) {
   const js = (code) => window.webContents.executeJavaScript(code)
   await waitUntil(
     () =>
+      js(`(() => {
+        const panel = document.querySelector('.settings-panel.active')
+        return panel && !panel.getAnimations().some(animation =>
+          !['finished', 'idle'].includes(animation.playState))
+      })()`),
+    '设置入场动画未结束'
+  )
+  await waitUntil(
+    () =>
       js(`Boolean(document.querySelector('[data-shortcut="${action}"] button:not(:disabled)'))`),
     '快捷键摘要未就绪'
   )
-  await js(`(() => {
+  // Scroll after the panel has restored its opening position. Opening the
+  // recorder during that movement can put its anchor outside the panel body.
+  await js(`(async () => {
     const trigger = document.querySelector('[data-shortcut="${action}"] button');
     trigger.scrollIntoView({ block: 'center', behavior: 'instant' });
-    if (trigger.getAttribute('aria-expanded') !== 'true') trigger.click();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  })()`)
+  await waitUntil(
+    () =>
+      js(`(() => {
+        const trigger = document.querySelector('[data-shortcut="${action}"] button')
+        const body = trigger?.closest('.panel-body')
+        if (!trigger || trigger.disabled || !body) return false
+        const rect = trigger.getBoundingClientRect()
+        const bounds = body.getBoundingClientRect()
+        return rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1
+      })()`),
+    '快捷键摘要没有稳定显示在设置滚动区域内'
+  )
+  await js(`(() => {
+    const trigger = document.querySelector('[data-shortcut="${action}"] button')
+    if (trigger.getAttribute('aria-expanded') !== 'true') trigger.click()
   })()`)
   await waitUntil(
     () =>
@@ -714,13 +741,39 @@ async function verifyStartupConflict() {
       true
     )
     await releaseTestShortcut('F2')
+    await waitUntil(
+      () =>
+        js(`(() => {
+          const status = document.querySelector('#shortcut-status-viewVisibility')
+          const panel = status?.closest('.settings-control-panel')
+          const retry = Array.from(status?.parentElement.querySelectorAll('button') || [])
+            .find(button => button.textContent.trim() === '重试启用')
+          return panel && retry && !retry.disabled && !panel.getAnimations().some(animation =>
+            !['finished', 'idle'].includes(animation.playState))
+        })()`),
+      '设置中的快捷键重试按钮尚未可操作'
+    )
     await js(
-      `Array.from(document.querySelector('#shortcut-status-viewVisibility').parentElement.querySelectorAll('button')).find(b => b.textContent.trim() === '重试启用').click()`
+      `Array.from(document.querySelector('#shortcut-status-viewVisibility').parentElement.querySelectorAll('button')).find(b => b.textContent.trim() === '重试启用' && !b.disabled).click()`
     )
     await waitUntil(
       async () => (await shortcutSnapshot(window)).runtime.registered,
       '设置中重试没有恢复'
-    )
+    ).catch(async (error) => {
+      console.error(
+        'settings retry evidence',
+        await js(`window.api.getSettingsSnapshot().then(snapshot => ({
+          runtime: snapshot.runtime.shortcuts.viewVisibility,
+          status: document.querySelector('#shortcut-status-viewVisibility')?.textContent,
+          expanded: document.querySelector('[data-shortcut="viewVisibility"] button')?.getAttribute('aria-expanded'),
+          buttons: Array.from(document.querySelector('#shortcut-status-viewVisibility')?.parentElement.querySelectorAll('button') || [],
+            button => ({ text: button.textContent.trim(), disabled: button.disabled })),
+          scrollTop: document.querySelector('.settings-panel .panel-body')?.scrollTop
+        }))`)
+      )
+      throw error
+    })
+    assert.equal(globalShortcut.isRegistered('F2'), true, '设置中重试必须恢复真实 F2 注册')
     assert.equal(
       await js(
         'document.querySelector("#shortcut-status-viewVisibility").textContent.includes("已启用")'

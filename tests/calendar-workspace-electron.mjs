@@ -27,15 +27,27 @@ const scenarios = []
 const calendarLayouts = []
 const gates = []
 let rendererWeather = false
-function hold(channel, transform = (data) => data) {
+function hold(channel, transform = (data) => data, { captureAll = false } = {}) {
   let release
-  const gate = { channel, transform, hit: false, released: false }
+  const gate = {
+    channel,
+    transform,
+    captureAll,
+    capturing: true,
+    hit: false,
+    hits: 0,
+    released: false
+  }
   gate.promise = new Promise((done) => {
     release = done
   })
   gate.release = () => {
+    gate.capturing = false
     gate.released = true
     release()
+  }
+  gate.stopCapturing = () => {
+    gate.capturing = false
   }
   gates.push(gate)
   return gate
@@ -43,6 +55,15 @@ function hold(channel, transform = (data) => data) {
 const originalHandle = ipcMain.handle.bind(ipcMain)
 ipcMain.handle = (channel, listener) =>
   originalHandle(channel, async (event, ...args) => {
+    // Claim at dispatch so a collected remount burst cannot accidentally hold
+    // responses from the next component generation.
+    const gate = gates.find(
+      (entry) => entry.channel === channel && entry.capturing && (entry.captureAll || !entry.hit)
+    )
+    if (gate) {
+      gate.hit = true
+      gate.hits += 1
+    }
     const relevant = [
       'calendar:get-month',
       'calendar:get-week',
@@ -70,9 +91,7 @@ ipcMain.handle = (channel, listener) =>
         }
       }
     }
-    const gate = gates.find((entry) => entry.channel === channel && !entry.hit)
     if (gate) {
-      gate.hit = true
       await gate.promise
       result = gate.transform(result)
     }
@@ -145,9 +164,19 @@ async function requestShutdown(error = null) {
       scenarios,
       calendarLayouts,
       trace,
-      gates: gates.map(({ channel, hit, released }) => ({ channel, hit, released })),
+      gates: gates.map(({ channel, captureAll, hit, hits, released }) => ({
+        channel,
+        captureAll,
+        hit,
+        hits,
+        released
+      })),
       counts: recorder.report({ cleanup: { status: 'preserved' } }).assertions
     }
+    // Preserve layout/IPC diagnostics even if Chromium cannot capture a frame.
+    // Capture failure must still fail evidence collection and the process.
+    const summaryPath = join(root, 'calendar-workspace-evidence.json')
+    writeFileSync(summaryPath, JSON.stringify(summary, null, 2), { flag: 'wx' })
     if (current && !current.isDestroyed()) {
       let captureTimeout
       const screenshot = await Promise.race([
@@ -160,11 +189,7 @@ async function requestShutdown(error = null) {
       writeFileSync(join(root, 'calendar-workspace-final.png'), png, { flag: 'wx' })
       summary.screenshotSha256 = createHash('sha256').update(png).digest('hex')
     }
-    writeFileSync(
-      join(root, 'calendar-workspace-evidence.json'),
-      JSON.stringify(summary, null, 2),
-      { flag: 'wx' }
-    )
+    writeFileSync(summaryPath, JSON.stringify(summary, null, 2))
     evidence = {
       status: 'complete',
       artifacts: [
@@ -229,6 +254,8 @@ app.once('quit', (_event, code) => {
 
 async function verifyCalendarLayout(mode) {
   const originalBounds = current.getBounds()
+  let sawOverflow = false
+  let sawFittingRows = false
   const originalScale = await js(
     'window.api.getSettingsSnapshot().then(snapshot=>snapshot.values.appearance.uiScale)'
   )
@@ -237,6 +264,11 @@ async function verifyCalendarLayout(mode) {
     const canvas = document.querySelector('.month-workspace__calendar-body')
     const grid = canvas.querySelector('.month-grid')
     const rows = Array.from(grid.querySelectorAll('.month-week'))
+    const activeAnimations = document.getAnimations().filter(animation => {
+      const target = animation.effect?.target
+      return !['finished', 'idle'].includes(animation.playState) && target instanceof Element &&
+        (target.contains(canvas) || canvas.contains(target))
+    }).length
     const rect = element => {
       const box = element.getBoundingClientRect()
       return { top: box.top, bottom: box.bottom, height: box.height }
@@ -256,6 +288,11 @@ async function verifyCalendarLayout(mode) {
     const scrollbar = readScrollbar(reference)
     reference.remove()
     return { clientHeight: canvas.clientHeight, scrollHeight: canvas.scrollHeight,
+      clientWidth: canvas.clientWidth, scrollWidth: canvas.scrollWidth,
+      minimumGridHeight: Number.parseFloat(getComputedStyle(grid).minHeight),
+      dayCount: grid.querySelectorAll('.month-day-cell').length,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      activeAnimations,
       scale: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
       scrollbar: readScrollbar(canvas), sharedScrollbar: scrollbar,
       rows: rows.map(row => {
@@ -279,12 +316,40 @@ async function verifyCalendarLayout(mode) {
         ...(scale === 1.5 ? [240] : [])
       ]) {
         current.setContentSize(1344, height)
-        await wait(250)
-        const layout = await readLayout()
+        let layout
+        let previousGeometry = ''
+        let stableSamples = 0
+        await until(async () => {
+          await js(
+            'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
+          )
+          const sample = { ...(await readLayout()), contentBounds: current.getContentBounds() }
+          const geometry = JSON.stringify(sample)
+          const rendererMatchesWindow =
+            sample.viewport.width === sample.contentBounds.width &&
+            sample.viewport.height === sample.contentBounds.height
+          stableSamples =
+            !sample.activeAnimations && rendererMatchesWindow && geometry === previousGeometry
+              ? stableSamples + 1
+              : 0
+          previousGeometry = geometry
+          layout = sample
+          return stableSamples >= 2
+        }, `${mode} at ${height}px / ${scale} layout and animations settled`)
         calendarLayouts.push({ mode, scale, requestedHeight: height, ...layout })
         if (mode === 'week') assert.equal(layout.rows.length, 1)
         else
           assert.ok([5, 6].includes(layout.rows.length), 'month uses its actual five or six rows')
+        assert.equal(layout.dayCount, layout.rows.length * 7, `${mode} retains every date cell`)
+        assert.ok(
+          layout.scrollWidth <= layout.clientWidth + 1,
+          `${mode} calendar has no horizontal overflow`
+        )
+        assert.ok(
+          layout.minimumGridHeight >=
+            (27 + layout.rows.length * 60 + (layout.rows.length - 1) * 7) * scale - 0.5,
+          `${mode} minimum grid preserves the weekday header and every date row`
+        )
         assert.deepEqual(layout.scrollbar, layout.sharedScrollbar, `${mode} uses shared scrollbar`)
         assert.equal(
           layout.scrollbar.width,
@@ -304,6 +369,10 @@ async function verifyCalendarLayout(mode) {
           `${mode} scrollbar uses theme colors`
         )
         for (const row of layout.rows) {
+          assert.ok(
+            row.cell.height >= 60 * scale - 0.5,
+            `${mode} date row keeps its minimum height`
+          )
           assert.ok(row.header.top >= row.cell.top, `${mode} date header stays in its cell`)
           assert.ok(
             row.header.bottom <= row.footer.top + 0.5,
@@ -315,14 +384,17 @@ async function verifyCalendarLayout(mode) {
           )
         }
         const overflows = layout.scrollHeight > layout.clientHeight + 1
-        if (height !== 478 || mode === 'week' || scale === 1.5) {
-          assert.equal(
-            overflows,
-            height === 240 || (mode === 'month' && height !== 900),
-            `${mode} at ${height}px / ${scale} scrolls only when date rows do not fit`
-          )
-        }
-        if (height === 240) {
+        // Native constraints can change the requested content size. The actual
+        // canvas and the grid's minimum row geometry determine whether it scrolls.
+        const rowsNeedScrolling = layout.minimumGridHeight > layout.clientHeight + 1
+        assert.equal(
+          overflows,
+          rowsNeedScrolling,
+          `${mode} at ${height}px / ${scale} scrolls only when date rows do not fit`
+        )
+        sawOverflow ||= overflows
+        sawFittingRows ||= !overflows
+        if (rowsNeedScrolling) {
           await js(`document.querySelector('.month-workspace__calendar-body').scrollTop = 10000`)
           const scrolled = await js(`(() => {
             const canvas = document.querySelector('.month-workspace__calendar-body')
@@ -345,6 +417,8 @@ async function verifyCalendarLayout(mode) {
         }
       }
     }
+    assert.equal(sawOverflow, true, `${mode} exercised rows that require vertical scrolling`)
+    assert.equal(sawFittingRows, true, `${mode} exercised rows that fit without scrolling`)
     scenarios.push(`${mode} actual window layout: 90/100/150 percent, tall/short, shared scrollbar`)
     await js("window.api.setSettingValue('appearance.uiScale', 1)")
     current.setContentSize(1344, 478)
@@ -495,10 +569,14 @@ async function run() {
     scenarios.push('production same-document clear: delayed old calendar result')
 
     await rememberRoot()
-    const staleSettings = hold('get-settings-snapshot')
+    // Toolbar children also initialize from settings. Hold the entire old
+    // remount's dispatch burst so MonthWorkspace itself is suspended as intended.
+    const staleSettings = hold('get-settings-snapshot', undefined, { captureAll: true })
     trace.length = 0
     await clearWorkspace()
     await until(() => staleSettings.hit, 'old remounted settings pending')
+    staleSettings.stopCapturing()
+    assert.equal(queryStarts('calendar:get-month').length, 0)
     await clearWorkspace()
     await until(stableCalendar, 'fresh calendar while old settings pending')
     assert.equal(await newRootIsSameDocument(), true)

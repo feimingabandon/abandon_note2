@@ -2,8 +2,9 @@ import { mkdirSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, screen } from 'electron'
 import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
 
 const lifecycle = createElectronGuiResultLifecycle({
   app,
@@ -94,6 +95,30 @@ async function waitForView(mode) {
     `${mode} 主视图尚未渲染完成`
   )
   return window
+}
+
+async function prepareCalendarEventViewport(window) {
+  await waitUntil(() => window.isVisible(), '日历视图没有显示')
+  // Compact calendars may intentionally expose counts without any event lanes.
+  // These cases exercise painted bars; keep the window inside the work area.
+  const bounds = window.getBounds()
+  const { workArea } = screen.getDisplayMatching(bounds)
+  const width = Math.min(workArea.width - 48, Math.max(bounds.width, 960))
+  const height = Math.min(workArea.height - 48, Math.max(bounds.height, 720))
+  const targetBounds = {
+    x: workArea.x + Math.round((workArea.width - width) / 2),
+    y: workArea.y + Math.round((workArea.height - height) / 2),
+    width,
+    height
+  }
+  window.setBounds(targetBounds)
+  await waitUntil(() => {
+    const actual = window.getBounds()
+    return Object.entries(targetBounds).every(([key, value]) => actual[key] === value)
+  }, '日历横条场景没有进入工作区内的测试尺寸')
+  await window.webContents.executeJavaScript(
+    'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
+  )
 }
 
 async function chooseView(window, mode) {
@@ -262,6 +287,7 @@ async function runQuickNoteEditTest() {
   try {
     const listWindow = await waitForView('list')
     activeWindow = listWindow
+    await dismissStartupShortcutNotice(listWindow)
     const noteId = await listWindow.webContents.executeJavaScript(`(async () => {
       const note = await window.api.createNote({ content: '列表快速编辑原文' })
       return note.id
@@ -387,6 +413,7 @@ async function runQuickNoteEditTest() {
     await chooseView(listWindow, 'month')
     const monthWindow = await waitForView('month')
     activeWindow = monthWindow
+    await prepareCalendarEventViewport(monthWindow)
     const eventSelector = `.month-event-bar[data-note-id="${noteId}"]`
     await waitUntil(
       () =>
@@ -425,6 +452,7 @@ async function runQuickNoteEditTest() {
     await chooseView(monthWindow, 'week')
     const weekWindow = await waitForView('week')
     activeWindow = weekWindow
+    await prepareCalendarEventViewport(weekWindow)
     await waitUntil(
       () =>
         weekWindow.webContents.executeJavaScript(

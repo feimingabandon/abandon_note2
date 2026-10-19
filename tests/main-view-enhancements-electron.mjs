@@ -184,9 +184,17 @@ async function calendarToolbarAppearance(window) {
       document.querySelector('.month-toolbar [data-icon-name="' + name + '"]')
     )
     const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize)
+    const toolbarStyle = getComputedStyle(toolbar)
+    const navigation = toolbar.querySelector('.month-toolbar__navigation').getBoundingClientRect()
+    const leading = toolbar.querySelector('.month-toolbar__leading').getBoundingClientRect()
+    const trailing = toolbar.querySelector('.month-toolbar__trailing').getBoundingClientRect()
     return {
       toolbarHeight: toolbar?.getBoundingClientRect().height ?? 0,
-      summaryHeight: document.querySelector('.date-context-summary')?.getBoundingClientRect().height ?? 0,
+      summaryHeight: Math.max(0, ...Array.from(toolbar.querySelectorAll('.date-context-summary'),
+        summary => summary.getBoundingClientRect().height)),
+      navigationHeight: navigation.height,
+      stackedNavigation: toolbarStyle.gridTemplateAreas.includes('navigation navigation'),
+      navigationBelowSummaries: navigation.top >= Math.max(leading.bottom, trailing.bottom) - 1,
       rootFontSize,
       todayText: today?.textContent.trim() ?? '',
       todayLabel: today?.getAttribute('aria-label') ?? '',
@@ -208,10 +216,20 @@ async function calendarToolbarAppearance(window) {
 
 async function assertCalendarToolbarAppearance(window) {
   const initial = await calendarToolbarAppearance(window)
+  // At the calendar's narrow breakpoint, the navigation occupies its own
+  // 36rem row below the summary row, separated by the standard 4rem gap.
+  const expectedToolbarHeight = initial.stackedNavigation
+    ? Math.max(
+        76 * initial.rootFontSize,
+        Math.max(30 * initial.rootFontSize, initial.summaryHeight) +
+          Math.max(36 * initial.rootFontSize, initial.navigationHeight) +
+          4 * initial.rootFontSize
+      )
+    : Math.max(36 * initial.rootFontSize, initial.summaryHeight, initial.navigationHeight)
   assert.ok(
-    Math.abs(initial.toolbarHeight - Math.max(36 * initial.rootFontSize, initial.summaryHeight)) <
-      1,
-    `日历工具栏应在 36rem 基础上适配双行摘要，不能裁切文字或额外撑高：${JSON.stringify(initial)}`
+    Math.abs(initial.toolbarHeight - expectedToolbarHeight) < 1 &&
+      (!initial.stackedNavigation || initial.navigationBelowSummaries),
+    `日历工具栏应按当前单行或双行布局容纳摘要和导航，不能裁切文字或额外撑高：${JSON.stringify(initial)}`
   )
   assert.equal(initial.todayText, '', '定位到今天入口不应继续显示文字')
   assert.equal(initial.todayLabel, '定位到今天')

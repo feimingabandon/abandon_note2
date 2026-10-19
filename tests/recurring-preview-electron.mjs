@@ -2,7 +2,7 @@ import { mkdirSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, screen } from 'electron'
 import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
 
 app.commandLine.appendSwitch('disable-gpu')
@@ -74,6 +74,29 @@ function viewWindow(view) {
     (window) =>
       !window.isDestroyed() &&
       new RegExp(`/${view}\\.html(?:$|[?#])`).test(window.webContents.getURL())
+  )
+}
+
+async function prepareCalendarEventViewport(window) {
+  // Preview assertions need painted event lanes, which compact calendars may
+  // legitimately omit. Reserve room without extending beyond the work area.
+  const bounds = window.getBounds()
+  const { workArea } = screen.getDisplayMatching(bounds)
+  const width = Math.min(workArea.width - 48, Math.max(bounds.width, 960))
+  const height = Math.min(workArea.height - 48, Math.max(bounds.height, 720))
+  const targetBounds = {
+    x: workArea.x + Math.round((workArea.width - width) / 2),
+    y: workArea.y + Math.round((workArea.height - height) / 2),
+    width,
+    height
+  }
+  window.setBounds(targetBounds)
+  await waitUntil(() => {
+    const actual = window.getBounds()
+    return Object.entries(targetBounds).every(([key, value]) => actual[key] === value)
+  }, '循环预览横条场景没有进入工作区内的测试尺寸')
+  await window.webContents.executeJavaScript(
+    'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
   )
 }
 
@@ -178,6 +201,7 @@ async function run() {
     const monthWindow = await waitUntil(() => viewWindow('month'), '月视图没有启动', 10000)
     activeWindow = monthWindow
     await waitUntil(() => monthWindow.isVisible(), '月视图没有显示')
+    await prepareCalendarEventViewport(monthWindow)
 
     const target = new Date(Date.now() + 10 * 60 * 1000)
     target.setSeconds(0, 0)
@@ -232,6 +256,7 @@ async function run() {
     const weekWindow = await waitUntil(() => viewWindow('week'), '没有切换到周视图', 10000)
     activeWindow = weekWindow
     await waitUntil(() => weekWindow.isVisible(), '周视图没有显示')
+    await prepareCalendarEventViewport(weekWindow)
     await ensureDateVisible(weekWindow, targetDateKey, 'week')
     await waitUntil(
       () =>

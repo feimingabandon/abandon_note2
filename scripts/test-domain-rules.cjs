@@ -7,6 +7,9 @@ const domainRules = Object.freeze({
   ...releaseRendererDomainRules,
   'tests/helpers/startup-shortcut-notice.mjs': [
     'tests/main-view-enhancements-electron.mjs',
+    'tests/logging-actions-electron.mjs',
+    'tests/quick-note-edit-electron.mjs',
+    'tests/template-quarterly-electron.mjs',
     'tests/note-duration-electron.mjs',
     'tests/week-view-electron.mjs',
     'tests/month-view-electron.mjs',

@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
 
 const require = createRequire(import.meta.url)
 const WAIT_STEP_MS = 25
@@ -112,6 +113,7 @@ async function runQuarterlyTemplateTest() {
   try {
     listWindow = await waitUntil(() => getListWindow(), '列表主窗口没有启动', 10000)
     await waitUntil(() => listWindow.isVisible(), '列表主窗口没有显示')
+    await dismissStartupShortcutNotice(listWindow)
     await waitUntil(
       () =>
         listWindow.webContents.executeJavaScript(
@@ -126,7 +128,11 @@ async function runQuarterlyTemplateTest() {
     await waitUntil(
       () =>
         listWindow.webContents.executeJavaScript(
-          `document.querySelector('.app-template-panel')?.classList.contains('active')`
+          `(() => {
+            const panel = document.querySelector('.app-template-panel.active')
+            return panel && panel.parentElement.classList.contains('is-interactive') &&
+              !panel.getAnimations().some(animation => animation.playState === 'running')
+          })()`
         ),
       '循环模板工作区没有打开'
     )
@@ -222,9 +228,19 @@ async function runQuarterlyTemplateTest() {
           const panel = document.querySelector('.dt-panel-wrap')
           if (!trigger || !panel) return null
           const triggerRect = trigger.getBoundingClientRect()
+          const row = trigger.closest('.tf-row')
+          const rowRect = row.getBoundingClientRect()
+          const rowStyle = getComputedStyle(row)
+          const labelRect = row.querySelector('label').getBoundingClientRect()
+          const sharesLabelRow = triggerRect.top < labelRect.bottom - 1 &&
+            triggerRect.bottom > labelRect.top + 1
+          const availableTriggerWidth = row.clientWidth -
+            parseFloat(rowStyle.paddingLeft) - parseFloat(rowStyle.paddingRight) -
+            (sharesLabelRow ? labelRect.width + parseFloat(rowStyle.columnGap) : 0)
           const panelRect = panel.getBoundingClientRect()
           return {
             trigger: { left: triggerRect.left, right: triggerRect.right, width: triggerRect.width },
+            field: { left: rowRect.left, right: rowRect.right, availableTriggerWidth },
             panel: { left: panelRect.left, right: panelRect.right, top: panelRect.top,
               bottom: panelRect.bottom, width: panelRect.width, height: panelRect.height },
             viewportWidth: window.innerWidth,
@@ -241,8 +257,19 @@ async function runQuarterlyTemplateTest() {
         })()`),
       '模板开始时间选择面板没有打开'
     )
+    // The flexible field may wrap below its label and use less than 220rem
+    // in a narrow viewport; its separate popover still follows the clamp below.
     assert.ok(
-      lifecyclePickerLayout.trigger.width >= 220 * lifecyclePickerLayout.remSize - 3,
+      lifecyclePickerLayout.field.availableTriggerWidth > 0 &&
+        lifecyclePickerLayout.trigger.width > 0 &&
+        lifecyclePickerLayout.trigger.width >=
+          Math.min(
+            220 * lifecyclePickerLayout.remSize,
+            lifecyclePickerLayout.field.availableTriggerWidth
+          ) -
+            3 &&
+        lifecyclePickerLayout.trigger.left >= lifecyclePickerLayout.field.left - 1 &&
+        lifecyclePickerLayout.trigger.right <= lifecyclePickerLayout.field.right + 1,
       JSON.stringify(lifecyclePickerLayout)
     )
     // The picker uses its 320rem content width, independently of a flexible form trigger.
