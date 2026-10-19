@@ -10,15 +10,18 @@
 
 #include "blur_engine.h"
 #include "blur_effects.h"
+#include "window_motion_diagnostics.h"
 
 #include <windows.ui.composition.interop.h>
 #include <DispatcherQueue.h>
 #include <dwmapi.h>
 #include <shellscalingapi.h>
+#include <imm.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <sstream>
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "user32.lib")
@@ -49,6 +52,66 @@ Engine& Engine::Instance() {
 }
 
 bool Engine::s_classRegistered = false;
+
+void Engine::TraceZOrder(const char* stage, std::uint64_t request,
+    long long value, DWORD error) const noexcept {
+    if (!m_zTraceEnabled.load()) return;
+    const DWORD savedError = ::GetLastError();
+    try {
+        ZOrderTraceEntry row;
+        row.tick = GetTickCount64(); row.stage = stage; row.request = request;
+        row.thread = GetCurrentThreadId(); row.value = value; row.error = error;
+        const HWND parent = m_parentHwnd.load(), overlay = m_messageHwnd.load();
+        row.parent = reinterpret_cast<std::uintptr_t>(parent);
+        row.overlay = reinterpret_cast<std::uintptr_t>(overlay);
+        row.parentTopmost = parent && IsWindow(parent)
+            ? ((GetWindowLongPtrW(parent, GWL_EXSTYLE) & WS_EX_TOPMOST) ? 1 : 0) : -1;
+        row.overlayTopmost = overlay && IsWindow(overlay)
+            ? ((GetWindowLongPtrW(overlay, GWL_EXSTYLE) & WS_EX_TOPMOST) ? 1 : 0) : -1;
+        row.pending = m_zOrderSyncPending.load();
+        std::lock_guard<std::mutex> lock(m_zTraceMutex);
+        row.sequence = ++m_zTraceSequence;
+        m_zTraceEntries[(row.sequence - 1) % m_zTraceEntries.size()] = row;
+    } catch (...) { /* Diagnostic collection cannot change native operation results. */ }
+    ::SetLastError(savedError);
+}
+
+const char* Engine::GetZOrderDiagnosticJson() const {
+    thread_local std::string snapshot;
+    try {
+        std::array<ZOrderTraceEntry, 256> rows;
+        std::uint64_t total;
+        { std::lock_guard<std::mutex> lock(m_zTraceMutex); rows = m_zTraceEntries; total = m_zTraceSequence; }
+        std::ostringstream text;
+        text << "{\"enabled\":" << (m_zTraceEnabled.load() ? "true" : "false")
+            << ",\"desktopReorderEnabled\":" << (m_acceptDesktopReorder.load() ? "true" : "false")
+            << ",\"overlayImeDisabled\":" << (m_disableOverlayIme.load() ? "true" : "false")
+            << ",\"disableOverlayImeReturned\":" << m_disableOverlayImeReturned.load()
+            << ",\"generation\":" << m_zTraceGeneration.load()
+            << ",\"parent\":" << reinterpret_cast<std::uintptr_t>(m_parentHwnd.load())
+            << ",\"overlay\":" << reinterpret_cast<std::uintptr_t>(m_messageHwnd.load())
+            << ",\"pending\":" << (m_zOrderSyncPending.load() ? "true" : "false")
+            << ",\"requests\":" << m_zTraceRequests.load() << ",\"posts\":" << m_zTracePosts.load()
+            << ",\"dispatches\":" << m_zTraceDispatches.load() << ",\"syncStarts\":" << m_zTraceSyncStarts.load()
+            << ",\"syncEnds\":" << m_zTraceSyncEnds.load()
+            << ",\"winEventStarts\":" << m_zTraceWinEventStarts.load() << ",\"winEventEnds\":" << m_zTraceWinEventEnds.load()
+            << ",\"staPhase\":\"" << m_zTraceStaPhase.load() << "\",\"predicate\":\"" << m_zTracePredicate.load()
+            << "\",\"total\":" << total << ",\"dropped\":" << (total > rows.size() ? total - rows.size() : 0)
+            << ",\"nonAtomic\":true,\"events\":[";
+        const auto first = total > rows.size() ? total - rows.size() + 1 : 1;
+        for (std::uint64_t sequence = first; sequence <= total; ++sequence) {
+            const auto& row = rows[(sequence - 1) % rows.size()];
+            if (sequence != first) text << ',';
+            text << "{\"seq\":" << row.sequence << ",\"tick\":" << row.tick << ",\"stage\":\"" << row.stage
+                << "\",\"request\":" << row.request << ",\"thread\":" << row.thread << ",\"value\":" << row.value
+                << ",\"error\":" << row.error << ",\"parent\":" << row.parent << ",\"overlay\":" << row.overlay
+                << ",\"parentTopmost\":" << row.parentTopmost << ",\"overlayTopmost\":" << row.overlayTopmost
+                << ",\"pending\":" << (row.pending ? "true" : "false") << '}';
+        }
+        text << "]}"; snapshot = text.str();
+    } catch (...) { snapshot = "{\"error\":\"diagnostic-read-failed\"}"; }
+    return snapshot.c_str();
+}
 
 void Engine::RecordNativeFailure(const char* stage, long long nativeCode) {
     // stage 仅来自固定 ASCII 常量，不含用户数据。必须在其他 Win32 调用之前捕获错误码。
@@ -90,6 +153,21 @@ BlurConfig NormalizeBlurConfig(const BlurConfig& config) {
 
 bool Engine::Initialize(HWND parentHwnd) {
     if (m_initialized.load()) return true;
+    wchar_t traceSetting[2]{};
+    m_zTraceEnabled.store(GetEnvironmentVariableW(L"ABANDON_NATIVE_Z_ORDER_TRACE", traceSetting, 2) == 1 && traceSetting[0] == L'1');
+    wchar_t integrationSetting[2]{}, desktopReorderSetting[2]{};
+    // Only owned integration runs with tracing may restore the old filter for causal A/B checks.
+    const bool disableDesktopReorder = m_zTraceEnabled.load() &&
+        GetEnvironmentVariableW(L"ABANDON_INTEGRATION_TEST", integrationSetting, 2) == 1 && integrationSetting[0] == L'1' &&
+        GetEnvironmentVariableW(L"ABANDON_NATIVE_DESKTOP_REORDER_TEST", desktopReorderSetting, 2) == 1 && desktopReorderSetting[0] == L'0';
+    m_acceptDesktopReorder.store(!disableDesktopReorder);
+    wchar_t overlayImeSetting[2]{};
+    const bool enableOverlayImeForControl = m_zTraceEnabled.load() &&
+        GetEnvironmentVariableW(L"ABANDON_INTEGRATION_TEST", integrationSetting, 2) == 1 && integrationSetting[0] == L'1' &&
+        GetEnvironmentVariableW(L"ABANDON_NATIVE_OVERLAY_IME_TEST", overlayImeSetting, 2) == 1 && overlayImeSetting[0] == L'0';
+    m_disableOverlayIme.store(!enableOverlayImeForControl);
+    m_disableOverlayImeReturned.store(-1);
+    m_zTraceGeneration.fetch_add(1);
     if (m_threadAbandoned.load()) {
         m_lastError.store(BlurErrorCode::UnknownFailure);
         return false;
@@ -294,24 +372,30 @@ bool Engine::MoveParentAndOverlay(
     int physicalX,
     int physicalY,
     DWORD syncTimeoutMs) {
+    auto* diagnostic = WindowMotionDiagnostics::CurrentMove();
+    const bool measuring = diagnostic && diagnostic->enabled;
+    const auto fail = [&](const char* stage) {
+        if (diagnostic) diagnostic->failureStage = stage;
+        return false;
+    };
     const HWND overlayHwnd = m_messageHwnd.load();
     if (parentHwnd != m_parentHwnd.load() ||
         !parentHwnd || !IsWindow(parentHwnd) ||
         !overlayHwnd || !IsWindow(overlayHwnd)) {
-        return false;
+        return fail("paired-invalid-window");
     }
 
     RECT parentBefore{};
-    if (!GetWindowRect(parentHwnd, &parentBefore)) return false;
+    if (!GetWindowRect(parentHwnd, &parentBefore)) return fail("paired-read-before");
     const int width = parentBefore.right - parentBefore.left;
     const int height = parentBefore.bottom - parentBefore.top;
-    if (width <= 0 || height <= 0) return false;
+    if (width <= 0 || height <= 0) return fail("paired-invalid-size");
 
     // 将 Electron HWND 和 Overlay HWND 置于同一窗口位置批次。Overlay 虽属于
     // STA 线程，但 Win32 HWND 位置可由其他线程提交；Composition 对象
     // 不在此处访问。第二个操作同时使 Overlay 紧贴父窗口后方。
     HDWP deferred = BeginDeferWindowPos(2);
-    if (!deferred) return false;
+    if (!deferred) return fail("begin-defer");
     deferred = DeferWindowPos(
         deferred,
         parentHwnd,
@@ -321,7 +405,7 @@ bool Engine::MoveParentAndOverlay(
         0,
         0,
         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-    if (!deferred) return false;
+    if (!deferred) return fail("defer-parent");
     deferred = DeferWindowPos(
         deferred,
         overlayHwnd,
@@ -331,38 +415,76 @@ bool Engine::MoveParentAndOverlay(
         width,
         height,
         SWP_NOACTIVATE);
-    if (!deferred || !EndDeferWindowPos(deferred)) return false;
+    if (!deferred) return fail("defer-overlay");
+    const auto deferStarted = WindowMotionDiagnostics::Clock(measuring);
+    const BOOL positionsCommitted = EndDeferWindowPos(deferred);
+    if (diagnostic) {
+        diagnostic->endDeferMs = WindowMotionDiagnostics::Elapsed(deferStarted, measuring);
+        diagnostic->endDeferSucceeded = positionsCommitted != FALSE;
+    }
+    if (!positionsCommitted) return fail("end-defer");
 
     // 这个同步消息是一个有界 STA barrier。它使更早排队的几何请求
     // 收敛，并由 Overlay 所在 STA 重读父窗口最终物理边界、更新
     // Visual 尺寸。SMTO_BLOCK 避免等待时在 Electron 主线程重入执行。
     DWORD_PTR syncResult = 0;
-    if (!SendMessageTimeoutW(
+    const auto barrierStarted = WindowMotionDiagnostics::Clock(measuring);
+    // Do not clear the sender's last error for diagnostics: SendMessageTimeout
+    // may leave it unchanged on failure. Expose that ambiguity in the sample.
+    const DWORD barrierPriorError = measuring ? ::GetLastError() : ERROR_SUCCESS;
+    const auto barrierReturned = SendMessageTimeoutW(
             overlayHwnd,
             WM_BLUR_UPDATE_GEOMETRY,
             1, // 同步请求不清理可能仍在队列中的异步 pending 标记。
-            0,
+            // An integer association id survives sender timeout; never pass a
+            // pointer to sender stack storage to this cross-thread message.
+            measuring ? static_cast<LPARAM>(diagnostic->sequence) : 0,
             SMTO_ABORTIFHUNG | SMTO_BLOCK,
             std::max<DWORD>(1, syncTimeoutMs),
-            &syncResult) || syncResult != 1) {
-        return false;
+            &syncResult);
+    const DWORD barrierError = measuring && !barrierReturned ? ::GetLastError() : ERROR_SUCCESS;
+    if (diagnostic) {
+        diagnostic->barrierStarted = barrierStarted;
+        diagnostic->barrierFinished = WindowMotionDiagnostics::Clock(measuring);
+        diagnostic->barrierMs = WindowMotionDiagnostics::Elapsed(barrierStarted, measuring);
+        diagnostic->barrierAttempted = true;
+        diagnostic->barrierTransportSucceeded = barrierReturned != 0;
+        diagnostic->barrierError = barrierError;
+        diagnostic->barrierPriorError = barrierPriorError;
+        diagnostic->barrierErrorMayBeStale = !barrierReturned && barrierError == barrierPriorError;
+        diagnostic->barrierTimeoutMs = std::max<DWORD>(1, syncTimeoutMs);
+        diagnostic->barrierResult = syncResult;
+        WindowMotionDiagnostics::MatchBarrierService(*diagnostic);
     }
+    if (!barrierReturned) return fail("barrier-timeout-or-transport-failure");
+    if (syncResult != 1) return fail("barrier-service-failure");
 
+    const auto verifyStarted = WindowMotionDiagnostics::Clock(measuring);
     RECT parentAfter{};
     RECT overlayAfter{};
-    if (!GetWindowRect(parentHwnd, &parentAfter) ||
-        !GetWindowRect(overlayHwnd, &overlayAfter) ||
-        !EqualRect(&parentAfter, &overlayAfter)) {
-        return false;
+    const bool rectsRead = GetWindowRect(parentHwnd, &parentAfter) &&
+        GetWindowRect(overlayHwnd, &overlayAfter);
+    const bool rectsMatch = rectsRead && EqualRect(&parentAfter, &overlayAfter);
+    if (diagnostic) {
+        diagnostic->rectsRead = rectsRead;
+        diagnostic->rectsMatch = rectsMatch;
+        diagnostic->targetMatches = rectsRead && parentAfter.left == physicalX && parentAfter.top == physicalY;
+        diagnostic->parentAfter = parentAfter;
+        diagnostic->overlayAfter = overlayAfter;
+    }
+    if (!rectsMatch) {
+        if (diagnostic) diagnostic->verifyMs = WindowMotionDiagnostics::Elapsed(verifyStarted, measuring);
+        return fail(rectsRead ? "paired-rect-mismatch" : "paired-read-after");
     }
     // WinEvent/IME 窗口可能在验证瞬间改变层级。几何已经一致时
     // 不因短暂的 Z-order 检查结果中止动画，交给既有去重队列自愈。
     if (!IsZOrderAdjacent()) QueueZOrderSync();
+    if (diagnostic) diagnostic->verifyMs = WindowMotionDiagnostics::Elapsed(verifyStarted, measuring);
     return true;
 }
 
 void Engine::ReSyncZOrder() {
-    QueueZOrderSync();
+    QueueZOrderSync("ffi-resync");
 }
 
 void Engine::Show() { if (HWND hwnd = m_messageHwnd.load()) PostMessage(hwnd, WM_BLUR_SHOW, 0, 0); }
@@ -374,6 +496,12 @@ Engine::~Engine() { Destroy(); }
 // ============================================================
 
 void Engine::StaThreadProc(HWND parentHwnd) {
+    // This thread only paints the transparent background. It must never take text input.
+    // Disable its default IME before COM/DispatcherQueue can create any window.
+    if (m_disableOverlayIme.load()) {
+        m_disableOverlayImeReturned.store(ImmDisableIME(GetCurrentThreadId()));
+        TraceZOrder("overlay-disable-ime-return", 0, m_disableOverlayImeReturned.load());
+    }
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(hr)) {
         m_lastError.store(BlurErrorCode::ComInitializationFailed);
@@ -451,9 +579,16 @@ void Engine::StaThreadProc(HWND parentHwnd) {
 
     MSG msg{};
     BOOL messageResult = 0;
-    while (m_running.load() && (messageResult = GetMessage(&msg, nullptr, 0, 0)) > 0) {
+    while (m_running.load()) {
+        m_zTraceStaPhase.store("get-message");
+        TraceZOrder("pump-get-message-enter");
+        messageResult = GetMessage(&msg, nullptr, 0, 0);
+        TraceZOrder("pump-get-message-return", 0, msg.message);
+        if (messageResult <= 0) break;
+        m_zTraceStaPhase.store("dispatch-message");
         TranslateMessage(&msg);
         DispatchMessage(&msg);
+        TraceZOrder("pump-dispatch-return", 0, msg.message);
     }
 
     if (messageResult == -1) {
@@ -771,41 +906,57 @@ void Engine::HandleDpiChanged(WPARAM wParam, LPARAM lParam) {
     }
 }
 
-bool Engine::SyncGeometryFromParent() {
+bool Engine::SyncGeometryFromParent(std::uint64_t diagnosticSequence) {
+    WindowMotionDiagnostics::GeometryScope diagnostic(diagnosticSequence);
+    auto& sample = diagnostic.Sample();
     if (!m_overlayHwnd || !IsWindow(m_overlayHwnd)) {
+        sample.failureStage = "invalid-overlay";
         m_lastError.store(BlurErrorCode::OverlayWindowFailed);
         m_runtimeHealthy.store(false);
         return false;
     }
     const HWND parentHwnd = m_parentHwnd.load();
     if (!parentHwnd || !IsWindow(parentHwnd)) {
+        sample.failureStage = "invalid-parent";
         m_lastError.store(BlurErrorCode::InvalidParentWindow);
         m_runtimeHealthy.store(false);
         return false;
     }
     RECT rect{};
     if (!GetWindowRect(parentHwnd, &rect)) {
+        sample.failureStage = "read-parent";
         m_lastError.store(BlurErrorCode::UnknownFailure);
         m_runtimeHealthy.store(false);
         return false;
     }
 
-    if (!SetWindowPos(m_overlayHwnd, parentHwnd,
+    const auto setPositionStarted = WindowMotionDiagnostics::Clock(sample.enabled);
+    const BOOL positioned = SetWindowPos(m_overlayHwnd, parentHwnd,
         rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
-        SWP_NOACTIVATE)) {
+        SWP_NOACTIVATE);
+    sample.setPositionMs = WindowMotionDiagnostics::Elapsed(setPositionStarted, sample.enabled);
+    sample.setPositionSucceeded = positioned != FALSE;
+    if (!positioned) {
+        sample.failureStage = "set-overlay-position";
         m_lastError.store(BlurErrorCode::UnknownFailure);
         m_runtimeHealthy.store(false);
         return false;
     }
+    const auto visualStarted = WindowMotionDiagnostics::Clock(sample.enabled);
     try {
         UpdateVisualSize();
     }
     catch (...) {
+        sample.visualMs = WindowMotionDiagnostics::Elapsed(visualStarted, sample.enabled);
+        sample.failureStage = "update-visual-size";
         m_lastError.store(BlurErrorCode::EffectGraphFailed);
         m_runtimeHealthy.store(false);
         return false;
     }
+    sample.visualMs = WindowMotionDiagnostics::Elapsed(visualStarted, sample.enabled);
+    sample.visualSucceeded = true;
     if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
+    sample.success = true;
     return true;
 }
 
@@ -901,16 +1052,23 @@ bool Engine::SyncAndShow() {
 }
 
 bool Engine::SyncZOrder() {
+    m_zTraceSyncStarts.fetch_add(1);
+    TraceZOrder("sync-enter");
+    const auto finish = [&](bool result) {
+        m_zTraceSyncEnds.fetch_add(1);
+        TraceZOrder("sync-return", 0, result);
+        return result;
+    };
     if (!m_overlayHwnd || !IsWindow(m_overlayHwnd)) {
         m_lastError.store(BlurErrorCode::OverlayWindowFailed);
         m_runtimeHealthy.store(false);
-        return false;
+        return finish(false);
     }
     const HWND parentHwnd = m_parentHwnd.load();
     if (!parentHwnd || !IsWindow(parentHwnd)) {
         m_lastError.store(BlurErrorCode::InvalidParentWindow);
         m_runtimeHealthy.store(false);
-        return false;
+        return finish(false);
     }
 
     // 父窗口隐藏时维持“背景层也隐藏”的强不变量。Z-order 修复请求可以来自
@@ -918,7 +1076,7 @@ bool Engine::SyncZOrder() {
     if (!IsWindowVisible(parentHwnd)) {
         ShowWindow(m_overlayHwnd, SW_HIDE);
         if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
-        return true;
+        return finish(true);
     }
 
     const bool parentTopmost =
@@ -930,36 +1088,49 @@ bool Engine::SyncZOrder() {
     // 正确时直接返回，避免重复 SetWindowPos 让 DWM 在中间状态提交一帧。
     if (IsZOrderAdjacent()) {
         if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
-        return true;
+        return finish(true);
     }
 
     // 只在置顶分组真正变化时切换 band。否则 DWM 可能在两次
     // SetWindowPos 之间提交一帧，造成 Overlay 瞬间盖住 Electron。
     if (parentTopmost != overlayTopmost) {
-        if (!SetWindowPos(m_overlayHwnd, parentTopmost ? HWND_TOPMOST : HWND_NOTOPMOST,
-            0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) {
+        TraceZOrder("sync-band-set-enter", reinterpret_cast<std::uintptr_t>(m_overlayHwnd), parentTopmost, overlayTopmost);
+        const BOOL changed = SetWindowPos(m_overlayHwnd, parentTopmost ? HWND_TOPMOST : HWND_NOTOPMOST,
+            0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        const DWORD changeError = changed ? 0 : ::GetLastError();
+        TraceZOrder("sync-band-set-return", 0, changed, changeError);
+        if (!changed) {
             m_lastError.store(BlurErrorCode::UnknownFailure);
             m_runtimeHealthy.store(false);
-            return false;
+            return finish(false);
         }
     }
     // 焦点切换的常规路径只提交一次：紧贴在 Electron 正后方。
-    if (!SetWindowPos(m_overlayHwnd, parentHwnd,
-        0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) {
+    TraceZOrder("sync-adjacency-set-enter");
+    const BOOL positioned = SetWindowPos(m_overlayHwnd, parentHwnd,
+        0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    const DWORD positionError = positioned ? 0 : ::GetLastError();
+    TraceZOrder("sync-adjacency-set-return", 0, positioned, positionError);
+    if (!positioned) {
         m_lastError.store(BlurErrorCode::UnknownFailure);
         m_runtimeHealthy.store(false);
-        return false;
+        return finish(false);
     }
     if (m_runtimeHealthy.load()) m_lastError.store(BlurErrorCode::None);
-    return true;
+    return finish(true);
 }
 
 bool Engine::IsZOrderAdjacent() const {
+    const bool tracing = m_zTraceEnabled.load();
+    const auto finish = [&](bool result, const char* reason) {
+        if (tracing) m_zTracePredicate.store(reason);
+        return result;
+    };
     const HWND overlayHwnd = m_messageHwnd.load();
     const HWND parentHwnd = m_parentHwnd.load();
     if (!overlayHwnd || !IsWindow(overlayHwnd) ||
         !parentHwnd || !IsWindow(parentHwnd)) {
-        return false;
+        return finish(false, "invalid-window");
     }
 
     const bool parentTopmost =
@@ -967,39 +1138,49 @@ bool Engine::IsZOrderAdjacent() const {
     const bool overlayTopmost =
         (GetWindowLongPtrW(overlayHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
 
-    if (parentTopmost != overlayTopmost) return false;
+    if (parentTopmost != overlayTopmost) return finish(false, "band-mismatch");
 
     RECT parentRect{};
-    if (!GetWindowRect(parentHwnd, &parentRect)) return false;
+    if (!GetWindowRect(parentHwnd, &parentRect)) return finish(false, "parent-rect-failed");
 
     // Electron 后方可能存在不可见的 IME/辅助 HWND，不能要求 GW_HWNDNEXT
     // 立即等于 Overlay。只有可见且与主窗口相交的窗口夹在中间时，才会覆盖
     // BlurOverlay 并造成“桌面模糊、其他程序清晰透出”。
     HWND candidate = GetWindow(parentHwnd, GW_HWNDNEXT);
+    std::uint64_t visited = 0;
     while (candidate) {
-        if (candidate == overlayHwnd) return true;
+        ++visited;
+        if (tracing && (visited & (visited - 1)) == 0)
+            TraceZOrder("predicate-scan-progress", reinterpret_cast<std::uintptr_t>(candidate), visited);
+        if (candidate == overlayHwnd) return finish(true, "overlay-reached");
 
         if (IsWindowVisible(candidate)) {
             RECT candidateRect{};
             RECT intersection{};
             if (GetWindowRect(candidate, &candidateRect) &&
                 IntersectRect(&intersection, &parentRect, &candidateRect)) {
-                return false;
+                return finish(false, "intersecting-window");
             }
         }
         candidate = GetWindow(candidate, GW_HWNDNEXT);
     }
-    return false;
+    return finish(false, "overlay-not-reached");
 }
 
-void Engine::QueueZOrderSync() {
+void Engine::QueueZOrderSync(const char* source) {
+    const auto request = m_zTraceRequests.fetch_add(1) + 1;
+    TraceZOrder(source, request);
     if (HWND hwnd = m_messageHwnd.load()) {
-        if (m_zOrderSyncPending.exchange(true)) return;
-        if (!PostMessage(hwnd, WM_BLUR_SYNC_ZORDER, 0, 0)) {
+        if (m_zOrderSyncPending.exchange(true)) { TraceZOrder("queue-deduplicated", request); return; }
+        TraceZOrder("queue-post-enter", request);
+        const BOOL posted = PostMessage(hwnd, WM_BLUR_SYNC_ZORDER, m_zTraceEnabled.load() ? request : 0, 0);
+        const DWORD postError = posted ? 0 : ::GetLastError();
+        if (!posted) {
             m_zOrderSyncPending.store(false);
             m_lastError.store(BlurErrorCode::UnknownFailure);
             m_runtimeHealthy.store(false);
-        }
+        } else m_zTracePosts.fetch_add(1);
+        TraceZOrder("queue-post-return", request, posted, postError);
     } else if (m_initialized.load()) {
         m_lastError.store(BlurErrorCode::OverlayWindowFailed);
         m_runtimeHealthy.store(false);
@@ -1031,18 +1212,28 @@ void CALLBACK Engine::WinEventProc(
     UNREFERENCED_PARAMETER(eventTime);
 
     auto& engine = Engine::Instance();
-    if (event != EVENT_SYSTEM_FOREGROUND && event != EVENT_OBJECT_REORDER) return;
+    engine.m_zTraceWinEventStarts.fetch_add(1);
+    engine.TraceZOrder("win-event-enter", 0, event);
+    engine.TraceZOrder("win-event-arguments", reinterpret_cast<std::uintptr_t>(hwnd), objectId, static_cast<DWORD>(childId));
+    const auto finish = [&] { engine.m_zTraceWinEventEnds.fetch_add(1); engine.TraceZOrder("win-event-return", 0, event); };
+    if (event != EVENT_SYSTEM_FOREGROUND && event != EVENT_OBJECT_REORDER) { finish(); return; }
+    // SetWindowPos reports top-level desktop Z-order through the desktop CLIENT object.
+    // Other CLIENT reorder events describe control trees and remain irrelevant.
+    const bool desktopReorder = engine.m_acceptDesktopReorder.load() &&
+        hwnd == GetDesktopWindow() && objectId == OBJID_CLIENT && childId == CHILDID_SELF;
     if (event == EVENT_OBJECT_REORDER &&
-        (objectId != OBJID_WINDOW || childId != CHILDID_SELF)) {
-        return;
+        ((objectId != OBJID_WINDOW && !desktopReorder) || childId != CHILDID_SELF)) {
+        engine.TraceZOrder("win-event-reorder-filtered");
+        finish(); return;
     }
 
     HWND overlay = engine.m_messageHwnd.load();
-    if (!overlay || !IsWindowVisible(overlay)) return;
+    if (!overlay || !IsWindowVisible(overlay)) { engine.TraceZOrder("win-event-overlay-hidden"); finish(); return; }
 
     // Win10 可能在第三方窗口切换层级后把它插到 Electron 与 Overlay 之间。
     // 只有两者不再相邻时才去重投递修复，避免自己的 SetWindowPos 形成反馈循环。
-    if (!engine.IsZOrderAdjacent()) engine.QueueZOrderSync();
+    if (!engine.IsZOrderAdjacent()) engine.QueueZOrderSync("win-event-resync");
+    finish();
 }
 
 // ============================================================
@@ -1061,13 +1252,22 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     if (!self) return DefWindowProc(hwnd, msg, wParam, lParam);
 
     switch (msg) {
+    case WM_WINDOWPOSCHANGING:
+    case WM_WINDOWPOSCHANGED:
+        if (lParam) {
+            const auto* position = reinterpret_cast<const WINDOWPOS*>(lParam);
+            self->TraceZOrder(msg == WM_WINDOWPOSCHANGING ? "overlay-position-changing" : "overlay-position-changed",
+                reinterpret_cast<std::uintptr_t>(position->hwnd), reinterpret_cast<long long>(position->hwndInsertAfter), position->flags);
+        }
+        return DefWindowProc(hwnd, msg, wParam, lParam);
+
     case WM_BLUR_UPDATE_GEOMETRY:
         // wParam=1 是 WindowMotion_MoveWindow 的同步几何请求。它可能
         // 越过已 Post 但尚未取出的异步消息，因此不能提前清除
         // pending；真正的队列消息取出时再清除。
         if (wParam == 0) self->m_geometryUpdatePending.store(false);
         // 在 HWND 所属的 DPI-aware STA 线程直接读取物理坐标，避免 JS DIP 换算和跨线程数据竞争。
-        if (!self->SyncGeometryFromParent()) {
+        if (!self->SyncGeometryFromParent(wParam == 1 ? static_cast<std::uint64_t>(lParam) : 0)) {
             ShowWindow(hwnd, SW_HIDE);
             return 0;
         }
@@ -1142,8 +1342,11 @@ LRESULT CALLBACK Engine::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         return 0;
 
     case WM_BLUR_SYNC_ZORDER:
+        self->m_zTraceDispatches.fetch_add(1);
+        self->TraceZOrder("sync-dispatch-enter", wParam);
         self->m_zOrderSyncPending.store(false);
         self->SyncZOrder();
+        self->TraceZOrder("sync-dispatch-return", wParam);
         return 0;
 
     case WM_BLUR_DESTROY:

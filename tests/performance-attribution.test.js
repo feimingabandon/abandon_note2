@@ -187,9 +187,11 @@ describe('bounded performance attribution', () => {
 
   it('measures synchronous database reading and hydration without changing DTOs or logging SQL', () => {
     const rows = [{ id: 1, content: 'private-database-note' }]
+    const statements = []
     setDb({
       prepare: (sql) => ({
         all: () => {
+          statements.push(sql)
           time += 80
           return sql.includes('SELECT n.*') ? rows : []
         }
@@ -197,12 +199,19 @@ describe('bounded performance attribution', () => {
     })
     const result = queryRecentNotes({ cutoffTime: 0 })
     expect(result[0].content).toBe('private-database-note')
+    // Current DTO hydration includes reminders as well as tags and attachments.
+    // Pin the observed calls so an extra read cannot silently change the timing fixture.
+    expect(statements).toHaveLength(4)
+    expect(statements[0]).toMatch(/SELECT n\.\* FROM notes/)
+    expect(statements[1]).toMatch(/FROM note_reminders/)
+    expect(statements[2]).toMatch(/FROM note_tags/)
+    expect(statements[3]).toMatch(/FROM note_attachments/)
     const batch = drainOperationPerformance()
     expect(batch.entries.find((entry) => entry.operation === 'queryRecentNotes')).toMatchObject({
-      maxMs: 240,
+      maxMs: 320,
       metrics: { resultRows: { total: 1 } }
     })
-    expect(batch.entries.find((entry) => entry.operation === 'toNoteListItems').maxMs).toBe(160)
+    expect(batch.entries.find((entry) => entry.operation === 'toNoteListItems').maxMs).toBe(240)
     expect(JSON.stringify(batch)).not.toMatch(/SELECT|private-database-note/)
   })
 })

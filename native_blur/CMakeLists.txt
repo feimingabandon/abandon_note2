@@ -23,6 +23,7 @@ set(SOURCES
     blur_api.cpp
     window_z_order.cpp
     window_motion_edge_monitor.cpp
+    window_motion_diagnostics.cpp
     reveal_handle_renderer.cpp
     reveal_handle_resources.rc
 )
@@ -33,6 +34,7 @@ set(HEADERS
     window_z_order.h
     blur_effects.h
     window_motion_edge_monitor.h
+    window_motion_diagnostics.h
     reveal_handle_renderer.h
     reveal_handle_resource.h
 )
@@ -61,6 +63,7 @@ target_link_libraries(blur_engine PRIVATE
     dcomp
     shell32
     user32
+    imm32
     comctl32
     gdi32
     WindowsApp   # Windows Runtime (UWP) umbrella library
@@ -86,3 +89,17 @@ set_target_properties(blur_engine PROPERTIES
 add_custom_command(TARGET blur_engine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E echo "DLL built: $<TARGET_FILE:blur_engine>"
 )
+
+# This focused collector executable is built only when its target is requested.
+# It never loads the product DLL, opens a window or runs during normal builds.
+add_executable(window_motion_diagnostics_test EXCLUDE_FROM_ALL
+    tests/window_motion_diagnostics_test.cpp
+    window_motion_diagnostics.cpp
+)
+target_include_directories(window_motion_diagnostics_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(window_motion_diagnostics_test PRIVATE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    _WIN32_WINNT=0x0A00
+)
+target_compile_options(window_motion_diagnostics_test PRIVATE /W3 /utf-8 /permissive-)

@@ -6,13 +6,14 @@
 #include "blur_engine.h"
 #include "window_motion_edge_monitor.h"
 #include "window_z_order.h"
+#include "window_motion_diagnostics.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
 #include <winternl.h>
 
 namespace {
-constexpr int kNativeAbiVersion = 18;
+constexpr int kNativeAbiVersion = 22;
 }
 
 int AbandonNative_GetAbiVersion(void) {
@@ -127,6 +128,10 @@ int Blur_IsZOrderSynchronized(void) {
     return BlurEngine::Engine::Instance().IsZOrderSynchronized() ? 1 : 0;
 }
 
+const char* Blur_GetZOrderDiagnosticJson(void) {
+    return BlurEngine::Engine::Instance().GetZOrderDiagnosticJson();
+}
+
 int Blur_GetLastErrorCode(void) {
     return static_cast<int>(BlurEngine::Engine::Instance().GetLastError());
 }
@@ -154,6 +159,7 @@ const char* Blur_GetLastErrorMessage(void) {
 const char* WindowMotion_GetSnapshotJson(void* hwndValue) {
     thread_local char json[768]{};
     const HWND hwnd = static_cast<HWND>(hwndValue);
+    WindowMotionDiagnostics::SnapshotScope diagnostic(hwnd);
     RECT windowRect{}, clientRect{};
     MONITORINFO monitorInfo{};
     monitorInfo.cbSize = sizeof(monitorInfo);
@@ -164,6 +170,7 @@ const char* WindowMotion_GetSnapshotJson(void* hwndValue) {
         ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
         : nullptr;
     const bool monitorValid = monitor && GetMonitorInfoW(monitor, &monitorInfo);
+    diagnostic.SetResult(windowValid && monitorValid, windowValid ? &windowRect : nullptr);
 
     sprintf_s(
         json,
@@ -267,15 +274,26 @@ int WindowMotion_IsEdgeExposed(void* hwndValue, int side) {
 
 int WindowMotion_MoveWindow(void* hwndValue, int physicalX, int physicalY) {
     const HWND hwnd = static_cast<HWND>(hwndValue);
-    if (!hwnd || !IsWindow(hwnd)) return 0;
+    WindowMotionDiagnostics::MoveScope diagnostic(hwnd, physicalX, physicalY);
+    auto& sample = diagnostic.Sample();
+    if (!hwnd || !IsWindow(hwnd)) {
+        sample.failureStage = "invalid-window";
+        return 0;
+    }
 
     auto& engine = BlurEngine::Engine::Instance();
     if (engine.IsInitialized() && engine.GetParentWindow() == hwnd) {
-        if (engine.MoveParentAndOverlay(hwnd, physicalX, physicalY)) return 1;
+        sample.path = "paired";
+        if (engine.MoveParentAndOverlay(hwnd, physicalX, physicalY)) {
+            sample.success = true;
+            return 1;
+        }
 
         // 同步 Overlay 路径异常时仍保证主窗口可移动，并留下一个
         // 异步自愈请求；返回 0 让 JS 动画及时中止，避免继续扩大窄缝。
-        SetWindowPos(
+        sample.fallbackAttempted = true;
+        const auto fallbackStarted = WindowMotionDiagnostics::Clock(sample.enabled);
+        const BOOL fallbackMoved = SetWindowPos(
             hwnd,
             nullptr,
             physicalX,
@@ -283,10 +301,13 @@ int WindowMotion_MoveWindow(void* hwndValue, int physicalX, int physicalY) {
             0,
             0,
             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        sample.fallbackMoveMs = WindowMotionDiagnostics::Elapsed(fallbackStarted, sample.enabled);
+        sample.fallbackSucceeded = fallbackMoved != FALSE;
         engine.UpdateGeometry();
         return 0;
     }
 
+    const auto directStarted = WindowMotionDiagnostics::Clock(sample.enabled);
     const BOOL moved = SetWindowPos(
         hwnd,
         nullptr,
@@ -295,8 +316,26 @@ int WindowMotion_MoveWindow(void* hwndValue, int physicalX, int physicalY) {
         0,
         0,
         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-    if (!moved) return 0;
+    sample.directMoveMs = WindowMotionDiagnostics::Elapsed(directStarted, sample.enabled);
+    if (!moved) {
+        sample.failureStage = "direct-set-position";
+        return 0;
+    }
+    sample.success = true;
     return 1;
+}
+
+void WindowMotion_SetDiagnosticLease(int remainingMs) {
+    WindowMotionDiagnostics::SetLease(remainingMs);
+}
+
+const char* WindowMotion_DrainDiagnosticsJson(void) {
+    try {
+        return WindowMotionDiagnostics::DrainJson();
+    } catch (...) {
+        // Diagnostic serialization failure must not unwind across the C ABI.
+        return "{\"schemaVersion\":1,\"observations\":1,\"coverage\":{\"serializationFailed\":true}}";
+    }
 }
 
 int WindowMotion_ArmEdgeMonitor(

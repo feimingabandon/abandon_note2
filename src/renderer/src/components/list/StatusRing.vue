@@ -11,7 +11,7 @@ const props = defineProps({
 const emit = defineEmits(['activate'])
 
 const STATUS_META = {
-  initialized: { label: '待开始', action: '提前开始', color: 'var(--ui-status-pending)' },
+  initialized: { label: '未开始', action: '提前开始', color: 'var(--ui-status-pending)' },
   in_progress: { label: '进行中', action: '标记完成', color: 'var(--ui-status-progress)' },
   completed: { label: '已完成', action: '重新进行', color: 'var(--ui-status-completed)' },
   deleted: { label: '已删除', action: '', color: 'var(--ui-danger)' }
@@ -265,7 +265,7 @@ function activate() {
   transform: rotate(-90deg);
 }
 
-/* 待开始 → 进行中：三角先蓄力再向右推动，橙色从右上接触点向整环闭合。 */
+/* 未开始 → 进行中：三角先蓄力再向右推动，橙色从右上接触点向整环闭合。 */
 .sr-control--playing.sr-control--initialized-to-in_progress .sr-icon--play {
   opacity: 1;
   animation: sr-play-launch 420ms cubic-bezier(0.32, 0.72, 0, 1) both;

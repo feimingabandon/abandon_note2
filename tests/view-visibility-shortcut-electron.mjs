@@ -1,16 +1,41 @@
-import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import koffi from 'koffi'
 import { app, BrowserWindow, globalShortcut, Menu, nativeImage, Tray } from 'electron'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
+import { assessStandaloneReport } from '../scripts/test-result-adapters.cjs'
 
 const require = createRequire(import.meta.url)
 const WAIT_STEP_MS = 25
+const stage = process.env.ABANDON_SHORTCUT_TEST_STAGE
+const suite = 'tests/view-visibility-shortcut-electron.mjs'
+const mode = 'electron-legacy-window-fixture'
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite,
+  mode,
+  prefix: 'abandon-note-view-shortcut-e2e-',
+  metadata: {
+    legacyFixture: true,
+    stage: stage || 'controller',
+    runtimeAppBootstrap: Boolean(stage),
+    diskDatabase: true,
+    realWindows: true,
+    mainProcessRestart: true,
+    assertionCounterScope: stage
+      ? 'actual business assert calls in this child process'
+      : 'actual controller protocol assertions; child business totals are separately reported'
+  },
+  timeoutMs: stage ? 45000 : 210000
+})
+const { assert } = lifecycle
 
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
@@ -73,14 +98,16 @@ async function shortcutSnapshot(window) {
   }))`)
 }
 
-const stage = process.env.ABANDON_SHORTCUT_TEST_STAGE
-const testUserData =
-  process.env.ABANDON_SHORTCUT_TEST_PROFILE ||
-  mkdtempSync(join(tmpdir(), 'abandon-note-view-shortcut-e2e-'))
-const evidence = process.env.ABANDON_SHORTCUT_TEST_EVIDENCE
+const testUserData = lifecycle.root
+const evidence =
+  process.env.ABANDON_SHORTCUT_TEST_EVIDENCE ||
+  (stage ? process.env.ABANDON_TEST_EVIDENCE_DIR : null)
 const trayPresentation = {}
+const originalTrayMethods = new Map()
+let activeWindow = null
 for (const method of ['setImage', 'setToolTip']) {
   const original = Tray.prototype[method]
+  originalTrayMethods.set(method, original)
   Tray.prototype[method] = function (value) {
     trayPresentation[method] =
       method === 'setImage'
@@ -89,7 +116,21 @@ for (const method of ['setImage', 'setToolTip']) {
     return original.call(this, value)
   }
 }
-let exitCode = 0
+
+function restoreTestPatches() {
+  for (const [method, original] of originalTrayMethods) Tray.prototype[method] = original
+  app.releaseSingleInstanceLock()
+}
+
+async function finishShortcutStage(completed, error) {
+  await lifecycle.finish({
+    completed: completed && !error,
+    error,
+    window: activeWindow,
+    summary: { stage, profile: app.getPath('userData') },
+    restore: restoreTestPatches
+  })
+}
 
 async function openShortcutEditor(window, action) {
   const js = (code) => window.webContents.executeJavaScript(code)
@@ -113,9 +154,13 @@ async function openShortcutEditor(window, action) {
 }
 
 async function runViewVisibilityShortcutTest() {
+  let completed = false
+  let failure = null
   try {
     const listWindow = await waitUntil(() => getListWindow(), '列表主窗口没有按隔离设置启动', 10000)
+    activeWindow = listWindow
     await waitUntil(() => listWindow.isVisible(), '列表主窗口渲染就绪后没有显示')
+    await dismissStartupShortcutNotice(listWindow)
     await waitUntil(
       () =>
         listWindow.webContents.executeJavaScript(
@@ -144,14 +189,17 @@ async function runViewVisibilityShortcutTest() {
     const trayToggle = () =>
       hooks.getTrayMenuTemplate().find((item) => item.id === 'toggle-global-shortcuts')
     const screenshotKey = 'Control+Alt+Shift+F9'
+    const screenshotCopyKey = 'Control+Alt+Shift+F8'
     let shortcuts = await allShortcuts()
     assert.deepEqual(shortcuts.values, {
       enabled: true,
       viewVisibility: 'Control+Alt+F10',
-      screenshot: 'F1'
+      screenshot: 'F1',
+      screenshotCopy: 'Control+F1'
     })
     // The old persisted disabled value must not affect a new app session.
     assert.equal(shortcuts.runtime.screenshot.enabled, true)
+    assert.equal(shortcuts.runtime.screenshotCopy.enabled, true)
     assert.equal(shortcuts.runtime.viewVisibility.registered, true)
     assert.equal(trayToggle().type, 'checkbox')
     assert.equal(trayToggle().label, '禁用全部快捷键（本次运行）')
@@ -175,11 +223,12 @@ async function runViewVisibilityShortcutTest() {
     }
     shortcuts = await allShortcuts()
     assert.equal(shortcuts.runtime.screenshot.registered, false)
+    assert.equal(shortcuts.runtime.screenshotCopy.registered, false)
     assert.equal(shortcuts.runtime.viewVisibility.registered, false)
     assert.equal(globalShortcut.isRegistered('Control+Alt+F10'), false)
     assert.equal(globalShortcut.isRegistered('Control+Alt+Shift+F6'), false)
     assert.equal(globalShortcut.isRegistered('Control+Alt+Shift+F7'), false)
-    assert.equal(await js('document.querySelectorAll("[data-shortcut]").length'), 2)
+    assert.equal(await js('document.querySelectorAll("[data-shortcut]").length'), 3)
     assert.equal(await js('document.querySelectorAll(".shortcut-recorder").length'), 0)
     assert.equal(trayToggle().checked, true)
     for (const label of ['剪贴板贴图', '显示/隐藏全部贴图']) {
@@ -193,11 +242,17 @@ async function runViewVisibilityShortcutTest() {
       (await js(`window.api.setCaptureShortcut('screenshot', '${screenshotKey}')`)).status,
       'saved'
     )
+    assert.equal(
+      (await js(`window.api.setCaptureShortcut('screenshotCopy', '${screenshotCopyKey}')`)).status,
+      'saved'
+    )
     await js("window.api.beginViewVisibilityShortcutCapture('screenshot')")
     await js("window.api.endViewVisibilityShortcutCapture('screenshot')")
     assert.equal(globalShortcut.isRegistered(screenshotKey), false)
+    assert.equal(globalShortcut.isRegistered(screenshotCopyKey), false)
     hooks.triggerViewVisibilityShortcut()
     hooks.triggerScreenshotShortcut()
+    hooks.triggerScreenshotShortcut('screenshotCopy')
     await wait(100)
     assert.equal(listWindow.isVisible(), true)
     assert.equal(hooks.nativeCaptureState().active, false)
@@ -206,6 +261,8 @@ async function runViewVisibilityShortcutTest() {
     assert.ok(trayPresentation.setImage.equals(normalIcon))
     assert.equal(trayPresentation.setToolTip, '便签')
     assert.equal(globalShortcut.isRegistered(screenshotKey), true)
+    assert.equal(globalShortcut.isRegistered(screenshotCopyKey), true)
+    assert.equal((await allShortcuts()).runtime.screenshotCopy.registered, true)
     assert.equal(globalShortcut.isRegistered('Control+Alt+F10'), true)
     await openShortcutEditor(listWindow, 'screenshot')
     await waitUntil(
@@ -229,6 +286,7 @@ async function runViewVisibilityShortcutTest() {
     }
     trayToggle().click()
     assert.equal(globalShortcut.isRegistered(screenshotKey), false)
+    assert.equal(globalShortcut.isRegistered(screenshotCopyKey), false)
     assert.equal(globalShortcut.isRegistered('Control+Alt+F10'), false)
     await waitUntil(
       () =>
@@ -445,9 +503,15 @@ async function runViewVisibilityShortcutTest() {
 
     assert.equal((await allShortcuts()).values.enabled, false)
     assert.equal((await allShortcuts()).values.screenshot, 'F1')
+    assert.equal((await allShortcuts()).values.screenshotCopy, 'Control+F1')
+    assert.equal((await allShortcuts()).runtime.screenshotCopy.registered, false)
     assert.equal(trayToggle().checked, true)
     assert.equal(
       (await js(`window.api.setCaptureShortcut('screenshot', '${screenshotKey}')`)).status,
+      'saved'
+    )
+    assert.equal(
+      (await js(`window.api.setCaptureShortcut('screenshotCopy', '${screenshotCopyKey}')`)).status,
       'saved'
     )
     assert.equal(
@@ -460,6 +524,7 @@ async function runViewVisibilityShortcutTest() {
       assert.equal((await allShortcuts()).values.enabled, false)
       assert.equal(trayToggle().checked, true)
       assert.equal(globalShortcut.isRegistered(screenshotKey), false)
+      assert.equal(globalShortcut.isRegistered(screenshotCopyKey), false)
     }
     listWindow.hide()
     await hooks.openMainWindowFromTray()
@@ -467,22 +532,23 @@ async function runViewVisibilityShortcutTest() {
     assert.equal((await allShortcuts()).values.enabled, false)
     assert.equal(trayToggle().checked, true)
     process.stderr.write('session gate, tray badge, settings refresh and view switching passed\n')
+    completed = true
   } catch (error) {
     console.error(error)
-    exitCode = 1
+    failure = error
   } finally {
-    process.exitCode = exitCode
-    app.releaseSingleInstanceLock()
-    app.once('quit', () => {
-      process.exit(exitCode)
-    })
-    app.quit()
+    await finishShortcutStage(completed, failure)
   }
 }
 
 async function verifyRestart() {
+  let completed = false
+  let failure = null
   try {
     const window = await waitUntil(() => getListWindow(), '重启后没有列表窗口', 10000)
+    activeWindow = window
+    await waitUntil(() => window.isVisible(), '重启后列表窗口没有显示')
+    await dismissStartupShortcutNotice(window)
     await waitUntil(
       () => globalThis.__ABANDON_WINDOW_TEST_HOOKS__?.nativeCaptureState().ready,
       '重启后截图组件未就绪',
@@ -492,9 +558,10 @@ async function verifyRestart() {
     assert.deepEqual(snapshot.values.shortcuts, {
       enabled: true,
       viewVisibility: 'Control+Alt+F10',
-      screenshot: 'Control+Alt+Shift+F9'
+      screenshot: 'Control+Alt+Shift+F9',
+      screenshotCopy: 'Control+Alt+Shift+F8'
     })
-    for (const shortcut of ['viewVisibility', 'screenshot']) {
+    for (const shortcut of ['viewVisibility', 'screenshot', 'screenshotCopy']) {
       assert.equal(snapshot.runtime.shortcuts[shortcut].enabled, true)
       assert.equal(snapshot.runtime.shortcuts[shortcut].registered, true)
       assert.equal(globalShortcut.isRegistered(snapshot.values.shortcuts[shortcut]), true)
@@ -505,18 +572,18 @@ async function verifyRestart() {
     assert.equal(item.checked, false)
     assert.equal(trayPresentation.setToolTip, '便签')
     process.stderr.write('same-profile restart restores enabled shortcuts and saved bindings\n')
+    completed = true
   } catch (error) {
     console.error(error)
-    exitCode = 1
+    failure = error
   } finally {
-    process.exitCode = exitCode
-    app.releaseSingleInstanceLock()
-    app.once('quit', () => process.exit(exitCode))
-    app.quit()
+    await finishShortcutStage(completed, failure)
   }
 }
 
 async function verifyStartupConflict() {
+  let completed = false
+  let failure = null
   try {
     const releaseTestShortcut = async (accelerator) => {
       globalShortcut.unregister(accelerator)
@@ -529,15 +596,19 @@ async function verifyStartupConflict() {
       }, `测试按键 ${accelerator} 仍被系统占用`)
     }
     const window = await waitUntil(() => getListWindow(), '冲突测试主窗口未创建', 10000)
+    activeWindow = window
     const js = (code) => window.webContents.executeJavaScript(code)
     await waitUntil(() => js('Boolean(window.api)'), 'preload 未就绪')
     const failures = await js('window.api.getShortcutStartupNotice()')
-    assert.deepEqual(failures.map((item) => item.accelerator).sort(), ['F1', 'F2'])
+    assert.deepEqual(failures.map((item) => item.accelerator).sort(), ['Ctrl + F1', 'F1', 'F2'])
     const snapshot = await js('window.api.getSettingsSnapshot()')
     assert.equal(snapshot.values.shortcuts.viewVisibility, 'F2')
+    assert.equal(snapshot.values.shortcuts.screenshotCopy, 'Control+F1')
+    assert.equal(snapshot.runtime.shortcuts.screenshotCopy.registered, false)
+    assert.equal(snapshot.runtime.shortcuts.screenshotCopy.error.code, 'conflict')
     const selector = '.app-modal-card[aria-label="快捷键启用提示"]'
     await waitUntil(() => js(`Boolean(document.querySelector('${selector}'))`), '启动冲突没有弹窗')
-    assert.equal(await js(`document.querySelector('${selector}').querySelectorAll('li').length`), 2)
+    assert.equal(await js(`document.querySelector('${selector}').querySelectorAll('li').length`), 3)
     assert.equal(await js('document.querySelector(".app-scene").inert'), true)
     const click = (label) =>
       js(
@@ -575,7 +646,7 @@ async function verifyStartupConflict() {
     await releaseTestShortcut('F2')
     await click('重试启用')
     await waitUntil(
-      () => js(`document.querySelector('${selector}').querySelectorAll('li').length === 1`),
+      () => js(`document.querySelector('${selector}').querySelectorAll('li').length === 2`),
       '释放 F2 后没有局部恢复'
     ).catch(async (error) => {
       console.error(
@@ -590,9 +661,22 @@ async function verifyStartupConflict() {
     await releaseTestShortcut('F1')
     await click('重试启用')
     await waitUntil(
-      () => js(`document.querySelector('${selector}').textContent.includes('快捷键已恢复')`),
-      '释放 F1 后没有恢复'
+      () => js(`document.querySelector('${selector}').querySelectorAll('li').length === 1`),
+      '释放 F1 后应只剩快速截图复制冲突'
     )
+    const partial = await js('window.api.getSettingsSnapshot()')
+    assert.equal(partial.runtime.shortcuts.screenshot.registered, true)
+    assert.equal(partial.runtime.shortcuts.screenshotCopy.registered, false)
+    assert.equal(partial.runtime.shortcuts.screenshotCopy.error.code, 'conflict')
+    await releaseTestShortcut('Control+F1')
+    await click('重试启用')
+    await waitUntil(
+      () => js(`document.querySelector('${selector}').textContent.includes('快捷键已恢复')`),
+      '释放 Control+F1 后没有全部恢复'
+    )
+    const recovered = await js('window.api.getSettingsSnapshot()')
+    assert.equal(recovered.runtime.shortcuts.screenshotCopy.registered, true)
+    assert.equal(globalShortcut.isRegistered('Control+F1'), true)
     await click('完成')
     await waitUntil(() => js(`!document.querySelector('${selector}')`), '冲突提示没有关闭')
     assert.deepEqual(await js('window.api.getShortcutStartupNotice()'), [])
@@ -646,64 +730,152 @@ async function verifyStartupConflict() {
     process.stderr.write(
       'F2 default, startup conflict dialog, partial recovery, settings retry, disabled guard and view navigation passed\n'
     )
+    completed = true
   } catch (error) {
     console.error(error)
-    exitCode = 1
+    failure = error
   } finally {
-    process.exitCode = exitCode
-    app.releaseSingleInstanceLock()
-    app.once('quit', () => process.exit(exitCode))
-    app.quit()
+    await finishShortcutStage(completed, failure)
   }
 }
 
 async function runSessions() {
-  let code = 0
+  const parentEvidence = process.env.ABANDON_TEST_EVIDENCE_DIR || testUserData
+  const sessions = []
+  const childBusinessAssertions = { total: 0, passed: 0, failed: 0, skipped: 0 }
+  let completed = false
+  let failure = null
   try {
     for (const childStage of ['startup-conflict', 'session', 'restart']) {
-      await new Promise((done, reject) => {
+      const childProfile = join(
+        testUserData,
+        childStage === 'startup-conflict' ? 'startup-conflict-profile' : 'shared-profile'
+      )
+      const childEvidence = join(parentEvidence, 'shortcut-stages', childStage)
+      const childToken = randomBytes(24).toString('hex')
+      mkdirSync(childProfile, { recursive: true })
+      mkdirSync(childEvidence, { recursive: true })
+      const childEnv = {
+        ...process.env,
+        ABANDON_SHORTCUT_TEST_STAGE: childStage,
+        ABANDON_SHORTCUT_TEST_PROFILE: childProfile,
+        ABANDON_SHORTCUT_TEST_EVIDENCE: childEvidence,
+        ABANDON_TEST_USER_DATA: childProfile,
+        ABANDON_TEST_EVIDENCE_DIR: childEvidence,
+        ABANDON_TEST_RESULT_FILE: join(childEvidence, 'standalone.json'),
+        ABANDON_TEST_RUN_TOKEN: childToken
+      }
+      delete childEnv.ELECTRON_RUN_AS_NODE
+      const startedMs = Date.now()
+      const result = await new Promise((done, reject) => {
         const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
-          env: {
-            ...process.env,
-            ABANDON_SHORTCUT_TEST_STAGE: childStage,
-            ABANDON_SHORTCUT_TEST_PROFILE:
-              childStage === 'startup-conflict'
-                ? join(testUserData, 'startup-conflict')
-                : testUserData
-          },
+          env: childEnv,
           windowsHide: true,
-          stdio: 'inherit'
+          stdio: ['ignore', 'pipe', 'pipe']
+        })
+        let stdout = ''
+        let stderr = ''
+        let timedOut = false
+        child.stdout.on('data', (chunk) => {
+          stdout += chunk
+          process.stdout.write(chunk)
+        })
+        child.stderr.on('data', (chunk) => {
+          stderr += chunk
+          process.stderr.write(chunk)
         })
         const timeout = setTimeout(() => {
+          timedOut = true
           child.kill()
-          reject(new Error(`Shortcut ${childStage} session timed out`))
         }, 60000)
         child.once('error', (error) => {
           clearTimeout(timeout)
           reject(error)
         })
-        child.once('exit', (status) => {
+        child.once('close', (code, signal) => {
           clearTimeout(timeout)
-          if (status === 0) done()
-          else reject(new Error(`Shortcut ${childStage} session exited ${status}`))
+          done({ code, signal, timedOut, pid: child.pid, stdout, stderr })
         })
       })
+      writeFileSync(join(childEvidence, 'process.json'), JSON.stringify(result, null, 2), {
+        flag: 'wx'
+      })
+      const session = {
+        stage: childStage,
+        profile: childProfile,
+        evidenceDirectory: childEvidence,
+        runToken: childToken,
+        pid: result.pid,
+        exitCode: result.code,
+        signal: result.signal,
+        timedOut: result.timedOut
+      }
+      sessions.push(session)
+      assert.equal(result.timedOut, false, `Shortcut ${childStage} session timed out`)
+      assert.equal(result.code, 0, `Shortcut ${childStage} session failed: ${result.stderr}`)
+      assert.equal(result.signal, null, `${childStage} must reach a normal process exit`)
+      const assessment = assessStandaloneReport(
+        { directory: childEvidence, startedMs },
+        { file: suite, suite, runToken: childToken, mode }
+      )
+      session.assessment = assessment
+      assert.equal(
+        assessment.status,
+        'passed',
+        `${childStage} result must be verified: ${assessment.reason || ''}`
+      )
+      const childReport = JSON.parse(readFileSync(join(childEvidence, 'standalone.json'), 'utf8'))
+      const guiEvidence = JSON.parse(readFileSync(join(childEvidence, 'gui-evidence.json'), 'utf8'))
+      session.report = childReport
+      assert.equal(childReport.metadata.stage, childStage)
+      assert.equal(childReport.profileOwnership, 'runner', 'the parent retains profile ownership')
+      assert.equal(childReport.cleanup.reachedWillQuit, true)
+      assert.equal(childReport.cleanup.windowsClosed, true)
+      assert.equal(guiEvidence.profile, childProfile, 'the child must use its assigned profile')
+      for (const key of Object.keys(childBusinessAssertions)) {
+        childBusinessAssertions[key] += childReport.assertions[key]
+      }
     }
+    assert.equal(sessions.length, 3)
+    assert.equal(new Set(sessions.map((session) => session.pid)).size, 3)
+    assert.equal(new Set(sessions.map((session) => session.runToken)).size, 3)
+    assert.equal(new Set(sessions.map((session) => session.evidenceDirectory)).size, 3)
+    assert.notEqual(sessions[0].profile, sessions[1].profile)
+    assert.equal(
+      sessions[1].profile,
+      sessions[2].profile,
+      'session and restart must share the exact isolated on-disk profile'
+    )
+    completed = true
   } catch (error) {
     console.error(error)
-    code = 1
+    failure = error
   } finally {
-    try {
-      rmSync(testUserData, { recursive: true, force: true })
-    } catch {
-      /* Crashpad may briefly hold the test profile. */
-    }
-    app.exit(code)
+    await lifecycle.finish({
+      completed,
+      error: failure,
+      summary: {
+        sessions,
+        childBusinessAssertions,
+        assertionCounterScope:
+          'parent protocol assertions are counted by this result; childBusinessAssertions is the sum of actual child lifecycle recorder results, without replay'
+      },
+      restore: restoreTestPatches
+    })
   }
 }
 
 if (!stage) {
-  app.whenReady().then(runSessions)
+  const controllerProfile = join(testUserData, 'controller-profile')
+  mkdirSync(controllerProfile)
+  app.setPath('userData', controllerProfile)
+  app
+    .whenReady()
+    .then(runSessions)
+    .catch((error) => {
+      console.error(error)
+      void lifecycle.finish({ error, restore: restoreTestPatches })
+    })
 } else
   try {
     app.setPath('userData', testUserData)
@@ -727,6 +899,7 @@ if (!stage) {
       app.once('ready', () => {
         globalShortcut.register('F1', () => {})
         globalShortcut.register('F2', () => {})
+        globalShortcut.register('Control+F1', () => {})
       })
     }
 
@@ -747,5 +920,5 @@ if (!stage) {
     )
   } catch (error) {
     console.error(error)
-    app.exit(1)
+    void lifecycle.finish({ error, window: activeWindow, restore: restoreTestPatches })
   }

@@ -13,7 +13,7 @@ describe('note duration modes', () => {
     for (const label of ['仅当天', '指定天数', '持续到完成']) expect(field).toContain(label)
     expect(field).toContain(':min="2"')
     for (const source of [listCreator, calendarCreator]) {
-      expect(source).toContain('ref(NOTE_DURATION_KINDS.SINGLE_DAY)')
+      expect(source).toContain('useNewNotePreferences()')
       expect(source).toContain('v-model:kind="durationKind"')
       expect(source).toContain('durationKind: durationKind.value')
     }
@@ -22,15 +22,14 @@ describe('note duration modes', () => {
     expect(editor).toMatch(/durationKind:\s*note\.duration_kind/)
   })
 
-  it('removes the historical move control and APIs', () => {
+  it('restores historical single-day moves with an independent shared automatic setting', () => {
     const toolbar = readSource('src/renderer/src/components/month/MonthCalendarToolbar.vue')
     const preload = readSource('src/preload/index.js')
-    const main = readSource('src/main/index.js')
     const settings = readSource('src/shared/settings-schema.js')
 
-    expect(toolbar).not.toContain('HistoricalNoteMoveControl')
-    expect(preload).not.toContain('moveHistoricalNotesToToday')
-    expect(main).not.toContain('automaticNoteMoveTask')
+    expect(toolbar).toContain('HistoricalNoteMoveControl')
+    expect(preload).toContain('moveHistoricalNotesToToday')
     expect(settings).not.toContain('notes.autoMoveYesterday')
+    expect(settings).toContain('notes.autoMoveToToday')
   })
 })

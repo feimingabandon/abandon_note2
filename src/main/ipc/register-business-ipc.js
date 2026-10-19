@@ -1,15 +1,15 @@
 import { clipboard } from 'electron'
 import { getDb } from '../db/db.js'
-import { editPendingReminder } from '../db/db-reminders.js'
-import { normalizeReminderChannels } from '../../shared/reminder-rules.js'
+import {
+  previewHistoricalNotesToToday,
+  moveHistoricalNotesToToday
+} from '../db/db-historical-note-move.js'
 import {
   completeNote,
   countActiveNotes,
   createNote,
   deleteNote,
   getNoteById,
-  resolveNoteDurationUpdate,
-  normalizeRequiredNoteContent,
   queryCustomNormal,
   queryCustomPinned,
   queryCompactNote,
@@ -46,6 +46,7 @@ import {
   getTemplateById,
   listTemplates,
   pauseTemplate,
+  previewTemplateNextRun,
   purgeTemplate,
   restoreTemplate,
   resumeTemplate,
@@ -55,7 +56,6 @@ import {
   addImageRecord,
   cleanupStagedImage,
   commitStagedImage,
-  deleteImageFile,
   deleteImageRecordAndFile,
   getImageBase64,
   getImageCount,
@@ -63,25 +63,19 @@ import {
   getImageThumbnail,
   listImageRecords,
   purgeNoteAndFiles,
-  restoreStagedImageDeletion,
-  stageImage,
-  stageImageDeletion
+  stageImage
 } from '../db/db-images.js'
-import { calculateNextRun, normalizeRecurrenceRule } from '../services/recurrence-rules.js'
+import { compensateFailedNoteAssets } from '../db/image-addition-compensation.js'
 import { enforceSystemNotificationPolicy } from '../../shared/notification-policy.js'
-import { requireSingleAssignedTagId } from '../../shared/tag-rules.js'
 import {
   MAX_ATTACHMENTS_PER_NOTE,
   assertAttachmentBatchWithinLimit
 } from '../../shared/attachment-rules.js'
 import {
-  assertCreatableNoteEffectiveTime,
-  resolveNoteDraftSchedule
-} from '../../shared/note-scheduling-rules.js'
-import {
-  normalizeNoteTextColorRanges,
-  reconcileNoteTextColorRanges
-} from '../../shared/note-text-color-rules.js'
+  createNoteWithAssets,
+  normalizeNoteCreateOptions,
+  saveNoteDraft
+} from '../notes/note-commands.js'
 import { createMainWindowIpc } from './ipc-authorization.js'
 import { checkpoint, diagnosticBroadcast } from '../logging/operation-context.js'
 import { observeNoteMutation } from '../logging/persistence-evidence.js'
@@ -114,7 +108,7 @@ function sendToWindows(getWindows, channel, payload) {
 /**
  * 注册便签、标签、循环模板和附件相关 IPC。
  *
- * 这里是业务数据边界：负责 renderer 请求编排、跨 SQLite/文件系统事务补偿，
+ * 这里是业务数据边界：负责授权、请求观察与提交后广播，完整便签命令承担跨资源事务，
  * 不负责应用生命周期、窗口创建或调度器启动。
  */
 export function registerBusinessIpcHandlers({
@@ -123,8 +117,8 @@ export function registerBusinessIpcHandlers({
   getAuthorizedWindows = getMainWindow,
   getBroadcastWindows = getMainWindow,
   getViewMode = () => null,
-  platform = process.platform,
   diagnosticLogger = null,
+  runMutation = (operation) => operation(),
   onNotePurged = () => {},
   onRemindersChanged = () => {}
 }) {
@@ -141,6 +135,28 @@ export function registerBusinessIpcHandlers({
     'notes:start-progress',
     'notes:complete',
     'notes:reopen'
+  ])
+  const mutationChannels = new Set([
+    ...observedNoteChannels,
+    'notes:move-historical-to-today',
+    'notes:reorder-custom',
+    'notes:update-custom-order',
+    'tags:create',
+    'tags:update',
+    'tags:delete',
+    'tags:update-order',
+    'note-tags:bind',
+    'note-tags:unbind',
+    'note-tags:set',
+    'templates:create',
+    'templates:update',
+    'templates:delete',
+    'templates:pause',
+    'templates:resume',
+    'templates:restore',
+    'templates:purge',
+    'images:save-batch',
+    'images:delete'
   ])
   const readDiagnosticNote = (id, { relations = false } = {}) => {
     const db = getDb()
@@ -159,28 +175,20 @@ export function registerBusinessIpcHandlers({
   }
   const ipcMain = {
     handle(channel, handler) {
+      const observed = observedNoteChannels.has(channel)
+        ? (event, ...args) => observeNoteMutation(handler, readDiagnosticNote, event, args, channel)
+        : handler
       authorizedIpc.handle(
         channel,
-        observedNoteChannels.has(channel)
-          ? (event, ...args) =>
-              observeNoteMutation(handler, readDiagnosticNote, event, args, channel)
-          : handler
+        mutationChannels.has(channel)
+          ? (event, ...args) => runMutation(() => observed(event, ...args))
+          : observed
       )
       return this
     }
   }
-  const enforceNotificationPolicy = (payload) => enforceSystemNotificationPolicy(payload, platform)
-  const normalizeUserCreateOptions = (payload) => {
-    const options = enforceNotificationPolicy(payload)
-    const hasExplicitEffectiveAt =
-      options.effectiveAt !== undefined &&
-      options.effectiveAt !== null &&
-      options.effectiveAt !== ''
-    if (hasExplicitEffectiveAt) {
-      options.effectiveAt = assertCreatableNoteEffectiveTime(options.effectiveAt)
-    }
-    return options
-  }
+  const enforceNotificationPolicy = enforceSystemNotificationPolicy
+  const normalizeUserCreateOptions = normalizeNoteCreateOptions
   const broadcastNoteChange = (reason, result, payload = {}) => {
     if (!result) return result
     // Presentation failures cannot turn a committed database mutation into a failure.
@@ -224,55 +232,9 @@ export function registerBusinessIpcHandlers({
     return broadcastNoteChange('create', createNote(normalizeUserCreateOptions(options)))
   })
 
-  ipcMain.handle('notes:create-with-assets', async (_event, { options, images, tagIds }) => {
-    const db = getDb()
-    const normalizedTagIds = requireSingleAssignedTagId(tagIds || [])
-    const batch = Array.isArray(images) ? images : []
-    assertAttachmentBatchWithinLimit(batch)
-    const writtenFiles = []
-    const stagedImages = []
-
-    try {
-      for (const image of batch) stagedImages.push(await stageImage(image.base64, image.ext))
-    } catch (error) {
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      throw error
-    }
-
-    const transaction = db.transaction(() => {
-      const note = createNote(normalizeUserCreateOptions(options), {
-        allowEmptyContent: stagedImages.length > 0
-      })
-      if (!note?.id) throw new Error('创建便签失败')
-
-      for (const staged of stagedImages) {
-        const { relativePath, fileSize } = commitStagedImage(note.id, staged)
-        writtenFiles.push(relativePath)
-        addImageRecord({ noteId: note.id, filePath: relativePath, fileSize })
-      }
-
-      if (normalizedTagIds.length > 0) {
-        db.prepare('DELETE FROM note_tags WHERE note_id = ?').run(note.id)
-        const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_id) VALUES (?, ?)')
-        for (const tagId of normalizedTagIds) insertTag.run(note.id, tagId)
-      }
-
-      return getNoteById(note.id)
-    })
-
-    let created
-    try {
-      created = transaction()
-    } catch (error) {
-      await Promise.all(writtenFiles.map(deleteImageFile))
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      console.error('[notes:create-with-assets] 创建失败，已回滚并清理文件:', error)
-      throw error
-    }
-    // SQLite has committed: notification failures must never remove committed files.
-    await Promise.all(stagedImages.map(cleanupStagedImage))
-    return broadcastNoteChange('create', created)
-  })
+  ipcMain.handle('notes:create-with-assets', async (_event, payload) =>
+    broadcastNoteChange('create', await createNoteWithAssets(payload))
+  )
 
   ipcMain.handle('notes:restore', (_event, { id }) =>
     broadcastNoteChange('restore', restoreNote(id), { id })
@@ -296,180 +258,15 @@ export function registerBusinessIpcHandlers({
     return broadcastNoteChange('text-color', updateNoteTextColor(id, payload), { id })
   })
 
-  ipcMain.handle('notes:save-draft', async (_event, payload = {}) => {
-    const db = getDb()
-    const id = Number(payload.id)
-    const fields = enforceNotificationPolicy(payload.fields)
-    const tagIds = requireSingleAssignedTagId(payload.tagIds || [])
-    const addedImages = Array.isArray(payload.addedImages) ? payload.addedImages : []
-    const deletedImageIds = [
-      ...new Set(
-        (Array.isArray(payload.deletedImageIds) ? payload.deletedImageIds : [])
-          .map(Number)
-          .filter((imageId) => Number.isInteger(imageId) && imageId > 0)
-      )
-    ]
-
-    if (!Number.isInteger(id) || id <= 0) throw new Error('无效的便签 ID')
-    const original = getNoteById(id)
-    if (!original) throw new Error('便签不存在或已删除')
-    const assertDraftVersion = (note) => {
-      if (!note) throw new Error('便签不存在或已删除')
-      if (typeof payload.expectedVersion !== 'string' || !payload.expectedVersion) {
-        throw new Error('缺少便签编辑版本，请重新打开编辑器')
-      }
-      if (note.editVersion !== payload.expectedVersion) {
-        throw new Error('便签已发生变化，当前草稿尚未保存；请保留草稿后重新打开编辑器')
-      }
-    }
-    assertDraftVersion(original)
-
-    const duration = resolveNoteDurationUpdate(original, fields)
-    const requestedStatus = String(fields.status || original.status)
-    if (requestedStatus !== original.status) {
-      throw new Error(`不允许的状态修改：${original.status} → ${requestedStatus}`)
-    }
-
-    const ownedDeletedRows = deletedImageIds.length
-      ? db
-          .prepare(
-            `SELECT id, file_path FROM note_attachments
-             WHERE note_id = ? AND id IN (${deletedImageIds.map(() => '?').join(',')})`
-          )
-          .all(id, ...deletedImageIds)
-      : []
-    if (ownedDeletedRows.length !== deletedImageIds.length) {
-      throw new Error('附件不存在或不属于当前便签')
-    }
-
-    const finalAttachmentCount =
-      original.attachments.length - deletedImageIds.length + addedImages.length
-    const requestedContent = String(fields.content ?? '')
-    const content =
-      finalAttachmentCount > 0 ? requestedContent : normalizeRequiredNoteContent(requestedContent)
-
-    const remaining =
-      MAX_ATTACHMENTS_PER_NOTE - original.attachments.length + deletedImageIds.length
-    assertAttachmentBatchWithinLimit(addedImages, { maxCount: remaining })
-
-    const stagedImages = []
-    const writtenFiles = []
-    try {
-      for (const image of addedImages) stagedImages.push(await stageImage(image.base64, image.ext))
-    } catch (error) {
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      throw error
-    }
-
-    const stagedDeletions = []
-    try {
-      for (const row of ownedDeletedRows) stagedDeletions.push(stageImageDeletion(row.file_path))
-    } catch (error) {
-      for (const staged of stagedDeletions.reverse()) restoreStagedImageDeletion(staged)
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      throw error
-    }
-
-    const transaction = db.transaction(() => {
-      const current = getNoteById(id)
-      // 大附件暂存期间其他 IPC / 调度器仍可修改便签，提交前必须再次核对。
-      assertDraftVersion(current)
-
-      const timestamp = Date.now()
-      const requestedEffectiveAt =
-        fields.effectiveAt === undefined || fields.effectiveAt === null || fields.effectiveAt === ''
-          ? current.effective_at
-          : fields.effectiveAt
-      const schedule = resolveNoteDraftSchedule({
-        status: current.status,
-        currentEffectiveAt: current.effective_at,
-        currentNotifyEnabled: current.notify_enabled,
-        currentFinishedAt: current.finished_at,
-        requestedEffectiveAt,
-        requestedNotifyEnabled: fields.notifyEnabled,
-        currentTime: timestamp
-      })
-      let channels =
-        fields.reminderChannels === undefined
-          ? current.status === 'initialized'
-            ? normalizeReminderChannels(undefined, fields.notifyEnabled)
-            : current.reminder_channels
-          : normalizeReminderChannels(fields.reminderChannels)
-      if (
-        schedule.status === 'completed' ||
-        (current.status === 'initialized' && schedule.status === 'in_progress')
-      )
-        channels = 0
-      if (fields.pendingReminder !== undefined && channels) {
-        editPendingReminder(id, fields.pendingReminder, timestamp)
-      }
-      const submittedColorRanges = fields.contentColorRanges ?? fields.content_color_ranges
-      const contentColorRanges =
-        submittedColorRanges === undefined
-          ? reconcileNoteTextColorRanges(current.content_color_ranges, current.content, content)
-          : normalizeNoteTextColorRanges(submittedColorRanges, content)
-
-      db.prepare(
-        `UPDATE notes SET
-            content = ?, content_color_ranges = ?, status = ?, is_pinned = ?, notify_enabled = ?, reminder_channels = ?, effective_at = ?, duration_days = ?, duration_kind = ?,
-           finished_at = ?, updated_at = ?
-         WHERE id = ? AND is_deleted = 0`
-      ).run(
-        content,
-        JSON.stringify(contentColorRanges),
-        schedule.status,
-        fields.isPinned ? 1 : 0,
-        schedule.status === 'initialized' && channels ? 1 : 0,
-        channels,
-        schedule.effectiveAt,
-        duration.durationDays,
-        duration.durationKind,
-        schedule.finishedAt,
-        timestamp,
-        id
-      )
-
-      db.prepare('DELETE FROM note_tags WHERE note_id = ?').run(id)
-      const insertTag = db.prepare('INSERT INTO note_tags (note_id, tag_id) VALUES (?, ?)')
-      for (const tagId of tagIds) insertTag.run(id, tagId)
-
-      if (deletedImageIds.length) {
-        db.prepare(
-          `DELETE FROM note_attachments
-           WHERE note_id = ? AND id IN (${deletedImageIds.map(() => '?').join(',')})`
-        ).run(id, ...deletedImageIds)
-      }
-
-      for (const staged of stagedImages) {
-        const { relativePath, fileSize } = commitStagedImage(id, staged)
-        writtenFiles.push(relativePath)
-        addImageRecord({ noteId: id, filePath: relativePath, fileSize })
-      }
-
-      return getNoteById(id)
+  ipcMain.handle('notes:save-draft', async (_event, payload = {}) =>
+    broadcastNoteChange('update', await saveNoteDraft(payload), {
+      id: Number(payload.id)
     })
+  )
 
-    let updated
-    try {
-      updated = transaction()
-    } catch (error) {
-      await Promise.all(writtenFiles.map(deleteImageFile))
-      await Promise.all(stagedImages.map(cleanupStagedImage))
-      for (const staged of stagedDeletions.reverse()) restoreStagedImageDeletion(staged)
-      throw error
-    }
-    await Promise.all([
-      ...stagedImages.map(cleanupStagedImage),
-      ...stagedDeletions.map(cleanupStagedImage)
-    ])
-    return broadcastNoteChange('update', updated, { id })
-  })
-
-  ipcMain.handle('notes:delete', (_event, { id }) => {
-    const deleted = deleteNote(id)
-    if (deleted) sendToWindows(getBroadcastWindows, 'notes:changed', { reason: 'deletion', id })
-    return deleted
-  })
+  ipcMain.handle('notes:delete', (_event, { id }) =>
+    broadcastNoteChange('deletion', deleteNote(id), { id })
+  )
 
   ipcMain.handle('notes:purge', async (_event, { id }) => {
     const noteId = Number(id)
@@ -482,12 +279,19 @@ export function registerBusinessIpcHandlers({
         attachmentCount: Array.isArray(note?.attachments) ? note.attachments.length : null
       })
       onNotePurged(noteId)
-      sendToWindows(getBroadcastWindows, 'notes:changed', { reason: 'purge', id: noteId })
+      broadcastNoteChange('purge', purged, { id: noteId })
     }
     return purged
   })
 
   ipcMain.handle('notes:get', (_event, { id }) => getNoteById(id))
+  ipcMain.handle('notes:preview-historical-move', (_event, selection = {}) =>
+    previewHistoricalNotesToToday(selection)
+  )
+  ipcMain.handle('notes:move-historical-to-today', (_event, selection = {}) => {
+    const result = moveHistoricalNotesToToday(selection)
+    return result.count > 0 ? broadcastNoteChange('manual-historical-move', result) : result
+  })
   ipcMain.handle('notes:query-pinned', (_event, options) => queryPinnedNotes(options || {}))
   ipcMain.handle('notes:query-recent', (_event, options) => queryRecentNotes(options || {}))
   ipcMain.handle('notes:query-compact', () => queryCompactNote())
@@ -587,13 +391,8 @@ export function registerBusinessIpcHandlers({
     }
     return purged
   })
-  ipcMain.handle(
-    'templates:preview-next-run',
-    (_event, { recurrenceRule, afterTimestamp } = {}) => {
-      const after = Number.isFinite(Number(afterTimestamp)) ? Number(afterTimestamp) : Date.now()
-      const rule = normalizeRecurrenceRule(recurrenceRule)
-      return calculateNextRun(rule, after, after)
-    }
+  ipcMain.handle('templates:preview-next-run', (_event, fields = {}) =>
+    previewTemplateNextRun(fields)
   )
 
   ipcMain.handle('images:save-batch', async (_event, { noteId, images }) => {
@@ -602,12 +401,12 @@ export function registerBusinessIpcHandlers({
     assertAttachmentBatchWithinLimit(batch, { maxCount: remaining })
 
     const db = getDb()
-    const writtenFiles = []
+    const writtenImages = []
     const stagedImages = []
     try {
       for (const image of batch) stagedImages.push(await stageImage(image.base64, image.ext))
     } catch (error) {
-      await Promise.all(stagedImages.map(cleanupStagedImage))
+      await compensateFailedNoteAssets({ stagedImages })
       throw error
     }
 
@@ -615,7 +414,7 @@ export function registerBusinessIpcHandlers({
       const results = []
       for (const staged of stagedImages) {
         const { relativePath, fileSize } = commitStagedImage(noteId, staged)
-        writtenFiles.push(relativePath)
+        writtenImages.push({ relativePath, staged })
         results.push(addImageRecord({ noteId, filePath: relativePath, fileSize }))
       }
       return results
@@ -625,8 +424,7 @@ export function registerBusinessIpcHandlers({
     try {
       results = transaction()
     } catch (error) {
-      await Promise.all(writtenFiles.map(deleteImageFile))
-      await Promise.all(stagedImages.map(cleanupStagedImage))
+      await compensateFailedNoteAssets({ writtenImages, stagedImages })
       throw error
     }
     await Promise.all(stagedImages.map(cleanupStagedImage))

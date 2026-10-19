@@ -9,6 +9,10 @@ const workspace = readFileSync(
   new URL('../src/renderer/src/components/month/MonthWorkspace.vue', import.meta.url),
   'utf8'
 )
+const preferences = readFileSync(
+  new URL('../src/renderer/src/composables/useCalendarWorkspacePreferences.js', import.meta.url),
+  'utf8'
+)
 const eventBar = readFileSync(
   new URL('../src/renderer/src/components/month/MonthEventBar.vue', import.meta.url),
   'utf8'
@@ -28,8 +32,9 @@ describe('calendar recurring preview UI wiring', () => {
   })
 
   it('persists one shared setting and requests previews for every calendar reload path', () => {
-    expect(workspace).toContain("setSettingValue('calendar.recurringPreviewEnabled', next)")
-    expect(workspace).toContain('includeRecurringPreviews: recurringPreviewEnabled.value')
+    expect(preferences).toContain("setSettingValue('calendar.recurringPreviewEnabled', next)")
+    expect(preferences).toContain('includeRecurringPreviews: recurringPreviewEnabled.value')
+    expect(workspace).toContain('requestOptions: calendarPreferences.requestOptions')
     expect(workspace).toContain('window.api.onTemplatesChanged?.(queueNotesRefresh)')
     expect(workspace).toContain(':recurring-previews="calendarData.recurringPreviews || []"')
   })

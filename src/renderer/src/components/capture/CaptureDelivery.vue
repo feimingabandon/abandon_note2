@@ -176,7 +176,7 @@ onBeforeUnmount(() => {
   <ConfirmDialog
     v-model:visible="discardVisible"
     title="放弃这张便签草稿？"
-    message="草稿中的文字和截图尚未保存。"
+    message="草稿中的正文、备注和截图尚未保存。"
     confirm-text="放弃草稿"
     @confirm="discard"
   />

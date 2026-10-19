@@ -1,4 +1,4 @@
-const { access, mkdtemp, rm } = require('node:fs/promises')
+const { access, mkdtemp, readdir, rm } = require('node:fs/promises')
 const { execFileSync } = require('node:child_process')
 const { tmpdir } = require('node:os')
 const path = require('node:path')
@@ -62,6 +62,21 @@ async function exists(target) {
   }
 }
 
+function validateNativeBinaryPaths(paths, target) {
+  for (const entry of paths) {
+    const relativePath = entry.replaceAll('\\', '/')
+    if (
+      target.binaryScopes.some((scope) => relativePath.startsWith(scope + '/')) &&
+      /\.(?:node|dll|exe|dylib|so(?:\.\d+)*)$/i.test(relativePath) &&
+      !target.required.includes(relativePath)
+    ) {
+      throw new Error(
+        `Unexpected native module in ${target.platform}-${target.arch} package: ${relativePath}`
+      )
+    }
+  }
+}
+
 async function validatePackagedApp(context, dependencies = {}) {
   const target = resolveNativeTarget(context)
   const resourcesDir = context.packager.getResourcesDir(context.appOutDir)
@@ -71,29 +86,32 @@ async function validatePackagedApp(context, dependencies = {}) {
     await access(path.join(modulesDir, relativePath))
   }
 
-  for (const relativePath of target.forbidden) {
-    if (await exists(path.join(modulesDir, relativePath))) {
-      throw new Error(
-        `Unexpected native module in ${target.platform}-${target.arch} package: ${relativePath}`
-      )
-    }
-  }
-
-  const windowsBlurPath = path.join(resourcesDir, 'native_blur', 'blur_engine.dll')
-  if (target.requiresWindowsBlur) {
-    for (const file of captureRuntimeFiles)
-      await access(path.join(resourcesDir, 'native_capture', file))
-    await access(windowsBlurPath)
-    const expectedAbiVersion = await getExpectedNativeAbiVersion()
-    const validateAbi = dependencies.validateWindowsNativeAbi || validateWindowsNativeAbi
-    validateAbi(windowsBlurPath, expectedAbiVersion)
-  } else if (await exists(windowsBlurPath)) {
-    throw new Error(
-      `Windows blur DLL must not be included in ${target.platform}-${target.arch} package`
+  // 物理目录可能含 ASAR 索引之外的残留文件，须独立验证两个已知原生模块目录。
+  for (const scope of target.binaryScopes) {
+    const entries = await readdir(path.join(modulesDir, scope), { recursive: true })
+    validateNativeBinaryPaths(
+      entries.map((entry) => scope + '/' + entry),
+      target
     )
   }
 
+  const windowsBlurPath = path.join(resourcesDir, 'native_blur', 'blur_engine.dll')
+  for (const file of captureRuntimeFiles)
+    await access(path.join(resourcesDir, 'native_capture', file))
+  await access(windowsBlurPath)
+  const expectedAbiVersion = await getExpectedNativeAbiVersion()
+  const validateAbi = dependencies.validateWindowsNativeAbi || validateWindowsNativeAbi
+  validateAbi(windowsBlurPath, expectedAbiVersion)
+
   const asarPath = path.join(resourcesDir, 'app.asar')
+  const asarEntries = listPackage(asarPath).map((entry) => entry.replaceAll('\\', '/'))
+  // 外来二进制也可能被错误地直接装入 ASAR，不能只检查 unpacked。
+  validateNativeBinaryPaths(
+    asarEntries
+      .filter((entry) => entry.startsWith('/node_modules/'))
+      .map((entry) => entry.slice('/node_modules/'.length)),
+    target
+  )
   const forbiddenAsarPrefixes = [
     '/.audit-unpacked/',
     '/.git/',
@@ -109,14 +127,12 @@ async function validatePackagedApp(context, dependencies = {}) {
     '/tools/'
   ]
   const forbiddenAsarFiles = new Set(['/AGENTS.md'])
-  const leakedEntry = listPackage(asarPath)
-    .map((entry) => entry.replaceAll('\\', '/'))
-    .find(
-      (entry) =>
-        forbiddenAsarFiles.has(entry) ||
-        entry.startsWith('/electron-builder.') ||
-        forbiddenAsarPrefixes.some((prefix) => entry.startsWith(prefix))
-    )
+  const leakedEntry = asarEntries.find(
+    (entry) =>
+      forbiddenAsarFiles.has(entry) ||
+      entry.startsWith('/electron-builder.') ||
+      forbiddenAsarPrefixes.some((prefix) => entry.startsWith(prefix))
+  )
 
   if (leakedEntry) {
     throw new Error(`Development file leaked into app.asar: ${leakedEntry}`)

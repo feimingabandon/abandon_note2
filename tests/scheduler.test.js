@@ -1,7 +1,11 @@
+import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Scheduler } from '../src/main/services/scheduler.js'
 
-afterEach(() => vi.useRealTimers())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 describe('scheduler context', () => {
   it('keeps successful ticks silent', () => {
@@ -135,25 +139,49 @@ describe('scheduler context', () => {
     expect(scheduler.getHealth().watchdogRunning).toBe(false)
   })
 
-  it('uses the in-app fallback without creating a native notification when disabled', () => {
+  it('uses the in-app fallback if the Windows notification cannot be created', () => {
     const scheduler = new Scheduler()
     const fallback = vi.fn()
-    const warningSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    scheduler.systemNotificationsEnabled = false
-    scheduler.systemNotificationsDisabledReason = 'macOS 系统通知已关闭'
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const error = new Error('Windows notification creation failed')
+    const Notification = vi.fn(function () {
+      throw error
+    })
     scheduler.onAlertNotifyFailed = fallback
-    scheduler._Notification = vi.fn()
+    scheduler._Notification = { Notification }
 
     scheduler._sendAlert()
 
-    expect(scheduler._Notification).not.toHaveBeenCalled()
+    expect(Notification).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '便签调度器异常', urgency: 'critical' })
+    )
     expect(fallback).toHaveBeenCalledWith(
       '便签调度器异常',
       '定时任务引擎连续恢复失败，请重启应用以恢复正常。',
-      expect.objectContaining({ message: 'macOS 系统通知已关闭' })
+      error
     )
-    warningSpy.mockRestore()
-    errorSpy.mockRestore()
+  })
+
+  it('uses the same fallback if Windows reports a failed notification after submission', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const scheduler = new Scheduler()
+    const fallback = vi.fn()
+    const notification = new EventEmitter()
+    notification.show = vi.fn()
+    scheduler._Notification = {
+      Notification: vi.fn(function () {
+        return notification
+      })
+    }
+    scheduler.onAlertNotifyFailed = fallback
+    scheduler._sendAlert()
+    expect(notification.show).toHaveBeenCalledOnce()
+    const error = new Error('Windows notification delivery failed')
+    notification.emit('failed', {}, error)
+    expect(fallback).toHaveBeenCalledWith(
+      '便签调度器异常',
+      '定时任务引擎连续恢复失败，请重启应用以恢复正常。',
+      error
+    )
   })
 })

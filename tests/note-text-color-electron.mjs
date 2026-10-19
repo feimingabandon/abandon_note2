@@ -1,10 +1,26 @@
-import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/note-text-color-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-note-text-color-',
+  timeoutMs: 150000,
+  metadata: {
+    realWindows: true,
+    productMainProcess: true,
+    softwareRendering: true,
+    diskDatabase: true
+  }
+})
+const { assert } = lifecycle
 
 const require = createRequire(import.meta.url)
 const report = (message) => process.stderr.write(`[note-text-color-e2e] ${message}\n`)
@@ -139,7 +155,7 @@ async function selectTextareaText(window, selector, start, end) {
   })()`)
 }
 
-const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-text-color-'))
+const testUserData = lifecycle.root
 
 try {
   app.setPath('userData', testUserData)
@@ -161,13 +177,13 @@ try {
   app.once('ready', () => void run())
 } catch (error) {
   report(`setup failed: ${error?.stack || error}`)
-  rmSync(testUserData, { recursive: true, force: true })
-  app.exit(1)
+  void lifecycle.finish({ error })
 }
 
 async function run() {
   try {
     const window = await waitUntil(listWindow, '列表窗口没有创建')
+    await dismissStartupShortcutNotice(window)
     await waitUntil(
       () =>
         window.webContents.executeJavaScript(
@@ -385,17 +401,9 @@ async function run() {
     report(
       'list selection, full edit/create drafts, persistence, relocation, deletion and clear-all passed'
     )
-    app.exit(0)
+    await lifecycle.finish({ completed: true, window })
   } catch (error) {
     report(`failed: ${error?.stack || error}`)
-    app.exit(1)
+    await lifecycle.finish({ error, window: listWindow() })
   }
 }
-
-app.on('will-quit', () => {
-  try {
-    rmSync(testUserData, { recursive: true, force: true })
-  } catch {
-    // Electron 退出时可能仍短暂占用临时数据库，不覆盖测试结果。
-  }
-})

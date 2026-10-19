@@ -24,7 +24,7 @@ const emit = defineEmits(['edit', 'deleted'])
 const { showMessage } = useMessage()
 
 const STATUS_META = {
-  initialized: { label: '待开始', color: 'var(--ui-status-pending)' },
+  initialized: { label: '未开始', color: 'var(--ui-status-pending)' },
   in_progress: { label: '进行中', color: 'var(--ui-status-progress)' },
   completed: { label: '已完成', color: 'var(--ui-status-completed)' },
   deleted: { label: '已删除', color: 'var(--ui-danger)' }

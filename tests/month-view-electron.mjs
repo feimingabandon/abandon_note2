@@ -1,11 +1,28 @@
-import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow, powerMonitor, screen } from 'electron'
 import koffi from 'koffi'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/month-view-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-note-month-e2e-',
+  metadata: {
+    legacyFixture: true,
+    runtimeAppBootstrap: true,
+    diskDatabase: true,
+    realWindows: true,
+    nativeCursorMovement: true
+  },
+  timeoutMs: 240000
+})
+const { assert } = lifecycle
 
 const WAIT_STEP_MS = 25
 const require = createRequire(import.meta.url)
@@ -121,9 +138,9 @@ function getMonthWindow() {
   )
 }
 
-const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-month-e2e-'))
-let exitCode = 0
+const testUserData = lifecycle.root
 let originalCursor = null
+let activeWindow = null
 
 try {
   app.setPath('userData', testUserData)
@@ -154,11 +171,12 @@ try {
   app.once('ready', () => void runMonthViewTests())
 } catch (error) {
   report(`setup failed: ${error?.stack || error}`)
-  rmSync(testUserData, { recursive: true, force: true })
-  app.exit(1)
+  void lifecycle.finish({ error })
 }
 
 async function runMonthViewTests() {
+  let completed = false
+  let failure = null
   try {
     report('electron app ready')
 
@@ -167,8 +185,10 @@ async function runMonthViewTests() {
       '月视图主窗口未按持久化的 active_view 启动',
       10000
     )
+    activeWindow = monthWindow
     report('month window created')
     await waitUntil(() => monthWindow.isVisible(), '月视图渲染就绪后没有显示')
+    await dismissStartupShortcutNotice(monthWindow)
 
     const display = screen.getDisplayMatching(monthWindow.getBounds())
     const workArea = display.workArea
@@ -2352,29 +2372,25 @@ async function runMonthViewTests() {
     report(
       'month view integration passed: calendar grid, panel persistence, multi-day layout, daily counts, CRUD, navbar, settings, native top dock and dock-state recovery'
     )
+    completed = true
   } catch (error) {
     console.error(error)
-    exitCode = 1
+    failure = error
   } finally {
     if (originalCursor) {
       try {
         const user32 = koffi.load('user32.dll')
         const setCursorPos = user32.func('int SetCursorPos(int X, int Y)')
         setCursorPos(originalCursor.x, originalCursor.y)
-      } catch {
-        exitCode = 1
+      } catch (error) {
+        failure ||= error
       }
     }
-    process.exitCode = exitCode
-    app.releaseSingleInstanceLock()
-    app.once('quit', () => {
-      try {
-        rmSync(testUserData, { recursive: true, force: true })
-      } catch {
-        // Crashpad 可能直到进程完全退出才释放最后一个句柄；测试结果不应被临时目录清理覆盖。
-      }
-      process.exit(exitCode)
+    await lifecycle.finish({
+      completed: completed && !failure,
+      error: failure,
+      window: activeWindow,
+      restore: () => app.releaseSingleInstanceLock()
     })
-    app.quit()
   }
 }

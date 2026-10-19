@@ -62,6 +62,7 @@ let scrollPending = false
 let loadingMore = false
 let saveEditSequence = 0
 let editPreviousFocus = null
+let disposed = false
 
 const PAGE_FIRST = 10
 const PAGE_MORE = 20
@@ -185,6 +186,7 @@ const {
 })
 
 function finishRefreshSpin() {
+  if (disposed) return
   clearTimeout(refreshSpinTimer)
   refreshSpinTimer = setTimeout(() => {
     refreshing.value = false
@@ -193,6 +195,7 @@ function finishRefreshSpin() {
 }
 
 async function loadTemplateData() {
+  if (disposed) return false
   const requestSeq = ++loadSeq
   loading.value = true
   try {
@@ -216,6 +219,7 @@ async function loadTemplateData() {
 
 /** 主动刷新或筛选变化：完全复用首页列表的依次退场、更新、依次入场节奏。 */
 async function replayListRefresh({ fetch = false, spin = false, initial = false } = {}) {
+  if (disposed) return false
   if (spin) {
     clearTimeout(refreshSpinTimer)
     refreshing.value = true
@@ -248,6 +252,7 @@ async function replayListRefresh({ fetch = false, spin = false, initial = false 
 
 /** 数据发生增删改时保留现有卡片，并通过 FLIP 平滑完成移除、插入和重排。 */
 async function refreshInBackground({ before, reenterIds = [] } = {}) {
+  if (disposed) return false
   const motionSeq = ++presenceMotionSeq
   cancelCurrentPresenceExits()
   const previousLayout = before || captureVisibleCardLayout()
@@ -264,7 +269,7 @@ function refresh(options = {}) {
 }
 
 async function loadMoreTemplates() {
-  if (loadingMore || !hasMoreTemplates.value) return
+  if (disposed || loadingMore || !hasMoreTemplates.value) return
   loadingMore = true
   try {
     const before = captureVisibleCardLayout()
@@ -446,12 +451,14 @@ watch(
 
 onMounted(async () => {
   await replayListRefresh({ fetch: true, initial: true })
+  if (disposed) return
   measureFilterContent()
   filterResizeObserver = new ResizeObserver(measureFilterContent)
   if (filterContentRef.value) filterResizeObserver.observe(filterContentRef.value)
   stopChanged = window.api.onTemplatesChanged?.(() => refreshInBackground())
 })
 onBeforeUnmount(() => {
+  disposed = true
   presenceMotionSeq++
   loadSeq++
   saveEditSequence++

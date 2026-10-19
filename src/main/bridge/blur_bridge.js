@@ -1,4 +1,5 @@
 import { measureSyncPerformance } from '../logging/operation-performance.js'
+import { registerNativeMotionDiagnostics } from '../logging/window-motion-diagnostics.js'
 /**
  * blur_bridge.js — Node.js 到 C++ DLL 的 koffi FFI 桥接层
  */
@@ -6,6 +7,7 @@ import { measureSyncPerformance } from '../logging/operation-performance.js'
 import { join } from 'path'
 import { app } from 'electron'
 import { NATIVE_ABI_VERSION } from '../../shared/native-abi-version.js'
+import { getWindowsPlatformCompatibility } from '../../shared/platform-support.js'
 
 let koffi = null
 let lib = null
@@ -122,10 +124,6 @@ function getNativeError(fallback) {
 export function detectCapabilities() {
   const { platform } = process
 
-  if (platform === 'darwin') {
-    return { supported: true, platform: 'macOS', strategy: 'vibrancy' }
-  }
-
   if (platform === 'win32') {
     // 不在 JavaScript 中用 os.release() 拦截旧版本：Windows 兼容模式可能把
     // 已支持的 Win10 1909 等系统报告成较早版本。原生 DLL 使用 RtlGetVersion()
@@ -133,7 +131,11 @@ export function detectCapabilities() {
     return { supported: true, platform: 'Windows', strategy: 'dcomp' }
   }
 
-  return { supported: false, platform, reason: '不支持' }
+  return {
+    supported: false,
+    platform,
+    reason: getWindowsPlatformCompatibility(platform).error.message
+  }
 }
 
 function getDllPath() {
@@ -210,6 +212,7 @@ function initNative() {
     loaded.Blur_IsInitialized = loaded.func('Blur_IsInitialized', 'int', [])
     loaded.Blur_IsHealthy = loaded.func('Blur_IsHealthy', 'int', [])
     loaded.Blur_IsZOrderSynchronized = loaded.func('Blur_IsZOrderSynchronized', 'int', [])
+    loaded.Blur_GetZOrderDiagnosticJson = loaded.func('Blur_GetZOrderDiagnosticJson', 'str', [])
     loaded.Blur_IsSupported = loaded.func('Blur_IsSupported', 'int', [])
     loaded.Blur_GetLastErrorCode = loaded.func('Blur_GetLastErrorCode', 'int', [])
     loaded.Blur_GetLastErrorMessage = loaded.func('Blur_GetLastErrorMessage', 'str', [])
@@ -219,6 +222,16 @@ function initNative() {
       'int',
       'int'
     ])
+    loaded.WindowMotion_SetDiagnosticLease = loaded.func(
+      'WindowMotion_SetDiagnosticLease',
+      'void',
+      ['int']
+    )
+    loaded.WindowMotion_DrainDiagnosticsJson = loaded.func(
+      'WindowMotion_DrainDiagnosticsJson',
+      'str',
+      []
+    )
     loaded.WindowMotion_GetSnapshotJson = loaded.func('WindowMotion_GetSnapshotJson', 'str', [
       'intptr_t'
     ])
@@ -274,6 +287,10 @@ function initNative() {
       'intptr_t'
     ])
     lib = loaded
+    registerNativeMotionDiagnostics({
+      setLease: (durationMs) => loaded.WindowMotion_SetDiagnosticLease(durationMs),
+      drain: () => loaded.WindowMotion_DrainDiagnosticsJson()
+    })
     return true
   } catch (e) {
     console.warn('[blur] DLL 加载失败:', e)
@@ -287,9 +304,8 @@ function initNative() {
 }
 
 export function getNativeRuntimeCompatibility() {
-  if (process.platform !== 'win32') {
-    return { success: true, required: false, platform: process.platform }
-  }
+  const platformCompatibility = getWindowsPlatformCompatibility()
+  if (!platformCompatibility.success) return platformCompatibility
   const success = initNative()
   return {
     success,
@@ -304,7 +320,6 @@ export function getNativeRuntimeCompatibility() {
 export function initialize(mainWindow) {
   const caps = detectCapabilities()
   if (!caps.supported) return { success: false, error: caps.reason }
-  if (caps.platform === 'macOS') return { success: true, strategy: 'vibrancy' }
 
   if (!initNative()) return { success: false, error: 'DLL 加载失败' }
   if (!lib.Blur_IsSupported()) {
@@ -403,31 +418,38 @@ export function getRuntimeHealth() {
 }
 
 export function getWindowMotionSnapshot(window) {
-  if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
-    return null
-  }
-  try {
-    return JSON.parse(lib.WindowMotion_GetSnapshotJson(getWindowHandleValue(window)))
-  } catch (error) {
-    const wrapped = new Error(`读取 Windows 物理窗口边界失败：${error?.message || String(error)}`, {
-      cause: error
-    })
-    wrapped.code = 'WINDOW_MOTION_SNAPSHOT_FAILED'
-    throw wrapped
-  }
+  return measureNativeOperation('motion.snapshot', () => {
+    if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
+      return null
+    }
+    try {
+      return JSON.parse(lib.WindowMotion_GetSnapshotJson(getWindowHandleValue(window)))
+    } catch (error) {
+      const wrapped = new Error(
+        `读取 Windows 物理窗口边界失败：${error?.message || String(error)}`,
+        {
+          cause: error
+        }
+      )
+      wrapped.code = 'WINDOW_MOTION_SNAPSHOT_FAILED'
+      throw wrapped
+    }
+  })
 }
 
 export function moveWindowPhysical(window, physicalX, physicalY) {
-  if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
-    return false
-  }
-  return Boolean(
-    lib.WindowMotion_MoveWindow(
-      getWindowHandleValue(window),
-      Math.round(physicalX),
-      Math.round(physicalY)
+  return measureNativeOperation('motion.move', () => {
+    if (process.platform !== 'win32' || !window || window.isDestroyed() || !initNative()) {
+      return false
+    }
+    return Boolean(
+      lib.WindowMotion_MoveWindow(
+        getWindowHandleValue(window),
+        Math.round(physicalX),
+        Math.round(physicalY)
+      )
     )
-  )
+  })
 }
 
 export function setWindowAlwaysOnBottom(window, enabled) {

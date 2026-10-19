@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs'
+import { parse } from '@babel/parser'
+import traverseModule from '@babel/traverse'
 import { describe, expect, it } from 'vitest'
 
 const MAIN_PROCESS_PATH = new URL('../src/main/index.js', import.meta.url)
@@ -25,20 +27,54 @@ const SETTINGS_PANEL_PATH = new URL(
   import.meta.url
 )
 
+const readMainOwner = (path) =>
+  readFileSync(new URL('../src/main/' + path, import.meta.url), 'utf8')
+function functionSource(source, name) {
+  let found
+  function visit(node) {
+    if (!node || typeof node !== 'object') return
+    if (node.type === 'FunctionDeclaration' && node.id?.name === name) found = node
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach(visit)
+      else if (value && typeof value === 'object') visit(value)
+    }
+  }
+  visit(parse(source, { sourceType: 'module' }).program)
+  expect(found, 'actual function must exist: ' + name).toBeTruthy()
+  return source.slice(found.start, found.end)
+}
+
 describe('single-window presentation architecture', () => {
+  it('never captures a later lexical runtime alias eagerly during entry assembly', () => {
+    const source = readFileSync(MAIN_PROCESS_PATH, 'utf8')
+    const eagerReferences = []
+    const traverse = traverseModule.default ?? traverseModule
+    traverse(parse(source, { sourceType: 'module' }), {
+      ReferencedIdentifier(path) {
+        // Function bodies retain providers for later operation; direct arguments are eager.
+        if (path.getFunctionParent()) return
+        const binding = path.scope.getBinding(path.node.name)
+        if (!binding || binding.kind === 'hoisted' || binding.path.node.start <= path.node.start)
+          return
+        eagerReferences.push({ name: path.node.name, line: path.node.loc.start.line })
+      }
+    })
+    expect(eagerReferences).toEqual([])
+    expect(source).toContain('initialViewMode: VIEW_MODES.LIST')
+  })
+
   it('commits compact and expanded bounds once without creating another BrowserWindow', () => {
     const source = readFileSync(MAIN_PROCESS_PATH, 'utf8')
-    const transaction = source.slice(
-      source.indexOf('async function performPresentationModeCommit'),
-      source.indexOf('async function recoverExpandedPresentation')
-    )
-    const windowCreation = source.slice(
-      source.indexOf('function createWindow('),
-      source.indexOf('function setDockPosition(')
-    )
+    const host = readMainOwner('windows/main-window-host.js')
+    const runtime = readMainOwner('windows/presentation-runtime.js')
+    const transaction = functionSource(runtime, 'performPresentationModeCommit')
+    const windowCreation = functionSource(source, 'createWindow')
 
-    expect((source.match(/new BrowserWindow\(/g) || []).length).toBe(1)
-    expect(windowCreation).toContain('presentationModeController.initialize(mainWindow)')
+    expect((host.match(/new BrowserWindow\(/g) || []).length).toBe(1)
+    expect(source).not.toContain('new BrowserWindow(')
+    expect(windowCreation).toContain(
+      'presentationRuntime.initialize(getMainWindow(), normalBounds)'
+    )
     expect(transaction).not.toContain('new BrowserWindow(')
     expect(transaction).not.toContain('setShape(')
     expect(transaction).not.toContain('requestAnimationFrame')
@@ -55,43 +91,43 @@ describe('single-window presentation architecture', () => {
 
   it('persists compact size only and keeps view switching on the reused window', () => {
     const source = readFileSync(MAIN_PROCESS_PATH, 'utf8')
-    const resizePersistence = source.slice(
-      source.indexOf('function persistCompactWindowSize('),
-      source.indexOf('const scheduleVisibleBlurRestore')
-    )
-    const switchView = source.slice(
-      source.indexOf('async function switchMainView(targetMode)'),
-      source.indexOf('async function switchMainViewFromTray')
-    )
-    const dockGeometryReconciliation = source.slice(
-      source.indexOf('function scheduleDockGeometryReconciliation()'),
-      source.indexOf('function createStableDockBounds(')
-    )
+    const runtime = readMainOwner('windows/presentation-runtime.js')
+    const navigation = readMainOwner('windows/main-view-navigation.js')
+    const writes = readMainOwner('settings/settings-write-coordinator.js')
+    const dock = readMainOwner('window-motion/dock-runtime.js')
+    const resizePersistence = [
+      'persistCompactWindowSize',
+      'flushCompactWindowSizePersistence',
+      'finishCompactWindowResize'
+    ]
+      .map((name) => functionSource(runtime, name))
+      .join('\n')
+    const switchView = functionSource(navigation, 'switchMainView')
+    const dockGeometryReconciliation = functionSource(dock, 'scheduleDockGeometryReconciliation')
 
     expect(resizePersistence).toContain("id: 'window.compactWidth'")
     expect(resizePersistence).toContain("id: 'window.compactHeight'")
     expect(resizePersistence).toContain("flushCompactWindowSizePersistence('pointer-finish')")
     expect(resizePersistence).not.toContain('geometry.posX')
     expect(resizePersistence).not.toContain('geometry.posY')
-    expect(source).toContain('scheduleCompactWindowSizePersistence(stableCompactBounds)')
-    expect(source).toContain(
+    expect(functionSource(runtime, 'handleResize')).toContain(
+      'scheduleCompactWindowSizePersistence(stableCompactBounds)'
+    )
+    expect(writes).toContain(
       'writeApplicationSettings(applicationEntries.map(({ id, value }) => ({ id, value })))'
     )
     expect(dockGeometryReconciliation).toContain('if (isCompactPresentationActive()) return')
     expect(
       dockGeometryReconciliation.indexOf('if (isCompactPresentationActive()) return')
-    ).toBeLessThan(dockGeometryReconciliation.indexOf('const bounds = mainWindow.getBounds()'))
-    const realResizeListener = source.slice(
-      source.indexOf("mainWindow.on('resize', () =>"),
-      source.indexOf("mainWindow.on('move', () =>")
-    )
-    expect(realResizeListener).toContain('presentationModeController.isCompact()')
-    expect(realResizeListener).toContain('stableCompactBounds = { ...mainWindow.getBounds() }')
-    expect(realResizeListener).toContain(
-      'scheduleCompactWindowSizePersistence(stableCompactBounds)'
-    )
+    ).toBeLessThan(dockGeometryReconciliation.indexOf('const bounds = getMainWindow().getBounds()'))
+    const realWindow = functionSource(source, 'createWindow')
+    expect(realWindow).toContain('presentationRuntime.handleResize(getMainWindow().getBounds())')
+    const resizeHandler = functionSource(runtime, 'handleResize')
+    expect(resizeHandler).toContain('presentationModeController.isCompact()')
+    expect(resizeHandler).toContain('stableCompactBounds = { ...bounds }')
+    expect(resizeHandler).toContain('scheduleCompactWindowSizePersistence(stableCompactBounds)')
     expect(switchView).toContain("exitCompactPresentation({ source: 'view-switch'")
-    expect(switchView).toContain('const reusedWindow = mainWindow')
+    expect(switchView).toContain('const reusedWindow = getMainWindow()')
     expect(switchView).not.toContain('createWindow(')
     expect(switchView).not.toContain('.destroy()')
   })
@@ -161,9 +197,13 @@ describe('single-window presentation architecture', () => {
     expect(titlebar).toContain("scope: 'titlebar.drag.renderer'")
     expect(titlebar).toContain('hasPointerCapture')
     expect(titlebar).toContain("finishTitlebarPointer(event, 'pointercancel')")
-    expect(main).toContain("logger.info('titlebar.drag-lifecycle'")
-    expect(main).toContain('nativeZOrderBeforeReassert')
-    expect(main).toContain('nativeZOrderAfterReassert')
+    const drag = readMainOwner('windows/window-drag-controller.js')
+    expect(main).toContain('begin: beginTitlebarWindowDrag')
+    expect(main).toContain('} = windowDragController')
+    expect(main).toContain('beginTitlebarWindowDrag(payload.point, payload.diagnostics)')
+    expect(drag).toContain("logger.info('titlebar.drag-lifecycle'")
+    expect(drag).toContain('nativeZOrderBeforeReassert')
+    expect(drag).toContain('nativeZOrderAfterReassert')
   })
 
   it('keeps locked windows expanded and explains why compact mode is unavailable', () => {
@@ -171,12 +211,13 @@ describe('single-window presentation architecture', () => {
     const listApp = readFileSync(LIST_APP_PATH, 'utf8')
     const monthApp = readFileSync(MONTH_APP_PATH, 'utf8')
     const message = '窗口已锁定：切换为灵动岛会改变窗口位置和尺寸，请先解锁'
-    const enterCompact = main.slice(
-      main.indexOf('function enterCompactPresentation(anchor)'),
-      main.indexOf('function exitCompactPresentation')
+    const enterCompact = functionSource(
+      readMainOwner('windows/presentation-runtime.js'),
+      'enterCompactPresentation'
     )
+    expect(main).toContain('isWindowLocked: () => isLocked')
 
-    expect(enterCompact).toContain('if (isLocked)')
+    expect(enterCompact).toContain('if (isWindowLocked())')
     expect(enterCompact).toContain(message)
     for (const source of [listApp, monthApp]) {
       const requestCompact = source.slice(
@@ -206,10 +247,9 @@ describe('single-window presentation architecture', () => {
   })
 
   it('discards renderer acknowledgements after a presentation transaction settles', () => {
-    const source = readFileSync(MAIN_PROCESS_PATH, 'utf8')
-    const broadcaster = source.slice(
-      source.indexOf('function broadcastPresentationModeState()'),
-      source.indexOf('function acknowledgePresentationRenderer')
+    const broadcaster = functionSource(
+      readMainOwner('windows/presentation-runtime.js'),
+      'broadcastPresentationModeState'
     )
 
     expect(broadcaster).toContain(

@@ -12,19 +12,21 @@ import { almanacSummary } from '../../../../shared/calendar/almanac-display.js'
 
 const props = defineProps({
   kind: { type: String, required: true },
+  dateKey: { type: String, default: '' },
   forecast: { type: Object, default: null }
 })
 const today = useTodayKey()
+const date = computed(() => props.dateKey || today.value)
 const minute = useSharedMinuteClock()
 const weather = computed(
   () =>
     buildDisplayableWeatherByDate(props.forecast, Math.max(minute.value, Date.now())).get(
-      today.value
+      date.value
     ) || null
 )
 const currentWeather = computed(() => {
   const current = buildDisplayableCurrentWeather(props.forecast, Math.max(minute.value, Date.now()))
-  return current?.date === today.value ? current : null
+  return current?.date === date.value ? current : null
 })
 const weatherHeadline = computed(() => {
   const current = currentWeather.value
@@ -37,7 +39,7 @@ const weatherHeadline = computed(() => {
 })
 const weatherDetail = computed(() => {
   const day = weather.value
-  if (!day) return currentWeather.value?.updateLabel || '查看今日天气与宜忌'
+  if (!day) return currentWeather.value?.updateLabel || '查看所选日期详情'
   return (
     [
       currentWeather.value
@@ -53,7 +55,7 @@ const weatherDetail = computed(() => {
 })
 const weatherTitle = computed(
   () =>
-    `${today.value}\n${weatherHeadline.value}\n${weatherDetail.value}\n${currentWeather.value?.validTimeLabel || ''}\n${currentWeather.value?.updateLabel || weather.value?.updateLabel || ''}\n点击查看天气与宜忌详情`
+    `${date.value}\n${weatherHeadline.value}\n${weatherDetail.value}\n${currentWeather.value?.validTimeLabel || ''}\n${currentWeather.value?.updateLabel || weather.value?.updateLabel || ''}\n点击查看天气与宜忌详情`
 )
 function terms(group, fallback) {
   return almanacSummary(group, fallback, Infinity)
@@ -64,14 +66,13 @@ function terms(group, fallback) {
   <div
     class="date-context-summary"
     :class="kind === 'almanac' ? 'almanac-brief' : 'weather-brief'"
-    :data-date="today"
+    :data-date="date"
   >
     <DateContextBadge
       class="date-context-summary__button"
       :class="kind === 'almanac' ? 'almanac-brief__button' : 'weather-brief__button'"
-      :date-key="today"
+      :date-key="date"
       :weather="weather"
-      :current-weather="currentWeather"
       :display-mode="kind"
       :summary-title="kind === 'weather' ? weatherTitle : ''"
     >
@@ -92,7 +93,7 @@ function terms(group, fallback) {
           >
         </span>
         <span v-else class="date-context-summary__rows">
-          <span>今日宜忌</span>
+          <span>{{ date === today ? '今日宜忌' : '当日宜忌' }}</span>
           <OverflowFade>{{ loading ? '正在读取' : error || '该日期暂无宜忌' }}</OverflowFade>
         </span>
       </template>
@@ -120,13 +121,22 @@ function terms(group, fallback) {
 .date-context-summary__rows {
   display: grid;
   min-width: 0;
-  gap: 1rem;
+  gap: 2rem;
+  font-variant-numeric: tabular-nums;
   animation: date-summary-reveal var(--motion-control) var(--ease-standard);
+}
+.weather-brief__rows > :first-child {
+  color: var(--text-color);
+  font-weight: 500;
+}
+.weather-brief__rows > :last-child {
+  color: var(--text-color-secondary);
 }
 .almanac-brief__line {
   display: flex;
   min-width: 0;
-  gap: 5rem;
+  align-items: baseline;
+  gap: 6rem;
 }
 .almanac-brief__line b {
   flex: 0 0 auto;

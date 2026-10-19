@@ -1,13 +1,11 @@
-import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
 import { clearDb, setDb } from '../src/main/db/db-connection.js'
 import { createDatabaseSchema } from '../src/main/db/db-schema.js'
-import { getNoteById, updateNote } from '../src/main/db/db-notes.js'
+import { deleteNote, getNoteById } from '../src/main/db/db-notes.js'
 import {
   countDesktopStickyRecords,
   deleteAllDesktopStickyRecords,
@@ -15,13 +13,27 @@ import {
   hasDesktopStickyRecord,
   insertDesktopStickyRecord,
   listDesktopStickyRecords,
-  updateDesktopStickyContentsByNoteId,
   updateDesktopStickyRecord
 } from '../src/main/db/db-desktop-stickies.js'
 import { ElectronStickyService } from '../src/main/sticky/ElectronStickyService.js'
+import { saveStickyNoteContent } from '../src/main/notes/sticky-note-commands.js'
+import { createBusinessMutationAdmission } from '../src/main/application/business-mutation-admission.js'
+import { flushLogs } from '../src/main/logging/logger.js'
+import { createAssertionRecorder, prepareTestProfile } from './helpers/test-result-recorder.cjs'
 
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const testRoot = mkdtempSync(join(tmpdir(), 'abandon-sticky-persistence-'))
+const recorder = createAssertionRecorder({
+  suite: 'tests/sticky-persistence-electron.mjs',
+  mode: 'electron-ready-memory-sqlite-real-sticky-windows',
+  metadata: {
+    sqlite: 'real-memory',
+    windows: 'real-Electron-renderer',
+    desktopZOrder: process.platform === 'win32'
+  }
+})
+const { assert } = recorder
+const profile = prepareTestProfile({ prefix: 'abandon-sticky-persistence-' })
+const testRoot = profile.directory
 app.setPath('userData', testRoot)
 app.on('window-all-closed', () => {})
 
@@ -68,6 +80,8 @@ async function createWindowsZOrderInspector() {
 
 async function runTests() {
   let exitCode = 0
+  let completed = false
+  let failure = null
   try {
     database = new Database(':memory:')
     database.pragma('foreign_keys = ON')
@@ -92,7 +106,8 @@ async function runTests() {
       delete: deleteDesktopStickyRecord,
       deleteAll: deleteAllDesktopStickyRecords
     }
-    const createService = () =>
+    const noteBroadcasts = []
+    const createService = (admission = null) =>
       new ElectronStickyService({
         getMainWindow: () => null,
         getNoteById: (id) => (id === noteId ? getNoteById(id) : null),
@@ -102,22 +117,21 @@ async function runTests() {
           cornerRadius: 0,
           alwaysOnTop: true
         }),
-        stickyRepository: repository,
-        saveContent: ({ noteId: sourceNoteId, content, expectedContent, updatedAt }) =>
-          database.transaction(() => {
-            const currentNote = getNoteById(sourceNoteId)
-            if (!currentNote) throw new Error('来源便签不存在或已被删除')
-            if (currentNote.content !== expectedContent) {
-              updateDesktopStickyContentsByNoteId(sourceNoteId, currentNote.content, updatedAt)
-              return { conflict: true, content: currentNote.content }
-            }
-            const updatedNote = updateNote(sourceNoteId, { content })
-            if (!updatedNote) throw new Error('来源便签不存在或已被删除')
-            if (updateDesktopStickyContentsByNoteId(sourceNoteId, content, updatedAt) < 1) {
-              throw new Error('便利贴记录不存在')
-            }
-            return { conflict: false, note: updatedNote }
-          })(),
+        stickyRepository: admission
+          ? Object.fromEntries(
+              Object.entries(repository).map(([name, command]) => [
+                name,
+                ['insert', 'update', 'delete', 'deleteAll'].includes(name)
+                  ? (...args) => admission.run(() => command(...args))
+                  : command
+              ])
+            )
+          : repository,
+        runMutation: admission?.run,
+        bindMutationContinuation: admission?.bindContinuation,
+        saveContent: saveStickyNoteContent,
+        onNoteChanged: (note) =>
+          noteBroadcasts.push({ id: note.id, inTransaction: database.inTransaction }),
         preloadPath: join(workspaceRoot, 'out', 'preload', 'sticky.js'),
         rendererFile: join(workspaceRoot, 'out', 'renderer', 'sticky.html')
       })
@@ -274,8 +288,24 @@ async function runTests() {
     assert.equal(entry.window.isAlwaysOnTop(), true, '恢复后的便利贴没有保持置顶')
     assert.equal(entry.content, '双击编辑并失焦保存后的正文', '恢复后的便利贴正文不是最新值')
 
+    entry.window.webContents.forcefullyCrashRenderer()
+    await waitUntil(
+      () => service.registry.get(created.id)?.ready && service.registry.get(created.id) !== entry,
+      '便利贴异常后未自动恢复',
+      10000
+    )
+    entry = service.registry.get(created.id)
+    assert.equal(service.rendererRecoveryAttempts.size, 1, '恢复后必须保留一次重试限制')
+    assert.equal(service.rendererRecoveryTimers.size, 0, '已执行的恢复定时器必须释放')
+    entry.window.webContents.forcefullyCrashRenderer()
+    await waitUntil(() => !service.registry.has(created.id), '第二次异常未释放旧窗口')
+    await wait(700)
+    assert.equal(service.registry.size, 0, '重复异常不得触发无限恢复')
+    assert.equal(service.rendererRecoveryAttempts.size, 1)
     assert.equal(service.close(created.id), true)
     assert.equal(countDesktopStickyRecords(), 0, '用户明确关闭后必须删除便利贴记录')
+    assert.equal(service.rendererRecoveryAttempts.size, 0, '删除后不得保留历史异常恢复记录')
+    assert.equal(service.rendererRecoveryTimers.size, 0)
 
     const firstDuplicate = await service.create({ noteId })
     const secondDuplicate = await service.create({ noteId })
@@ -382,19 +412,157 @@ async function runTests() {
     assert.equal(await interruptedRestoration, 0)
     assert.equal(service.list().length, 0)
     assert.equal(countDesktopStickyRecords(), 0, '关闭全部不得让恢复队列重新打开已删除记录')
+
+    const transactionSticky = await service.create({ noteId })
+    const transactionEntry = service.registry.get(transactionSticky.id)
+    const originalContent = getNoteById(noteId).content
+    const broadcastsBeforeFailure = noteBroadcasts.length
+    database.exec(`CREATE TRIGGER reject_sticky_update BEFORE UPDATE ON desktop_stickies
+      BEGIN SELECT RAISE(ABORT, 'injected sticky snapshot SQL failure'); END`)
+    assert.throws(
+      () =>
+        service.updateContentForSender(transactionEntry.webContentsId, {
+          content: '不得提交的来源正文',
+          expectedContent: originalContent
+        }),
+      /injected sticky snapshot SQL failure/
+    )
+    assert.equal(
+      getNoteById(noteId).content,
+      originalContent,
+      'sticky 快照 SQL 失败必须回滚来源正文'
+    )
+    assert.equal(listDesktopStickyRecords()[0].content, originalContent)
+    assert.equal(transactionEntry.content, originalContent)
+    assert.equal(noteBroadcasts.length, broadcastsBeforeFailure, '未提交事务不得广播')
+    database.exec('DROP TRIGGER reject_sticky_update')
+    assert.deepEqual(
+      service.updateContentForSender(transactionEntry.webContentsId, {
+        content: '事务补偿后成功的正文',
+        expectedContent: originalContent
+      }),
+      { content: '事务补偿后成功的正文', conflict: false }
+    )
+    assert.equal(getNoteById(noteId).content, '事务补偿后成功的正文')
+    assert.equal(listDesktopStickyRecords()[0].content, '事务补偿后成功的正文')
+    assert.deepEqual(
+      noteBroadcasts.at(-1),
+      { id: noteId, inTransaction: false },
+      '广播只能在成功事务结束后发生'
+    )
+    const broadcastsBeforeConflict = noteBroadcasts.length
+    assert.deepEqual(
+      service.updateContentForSender(transactionEntry.webContentsId, {
+        content: '过期文本不得覆盖',
+        expectedContent: originalContent
+      }),
+      { content: '事务补偿后成功的正文', conflict: true }
+    )
+    assert.equal(
+      noteBroadcasts.length,
+      broadcastsBeforeConflict,
+      '冲突只回填 sticky，不广播便签修改'
+    )
+    deleteNote(noteId)
+    assert.throws(
+      () =>
+        service.updateContentForSender(transactionEntry.webContentsId, {
+          content: '删除后的来源不能保存',
+          expectedContent: '事务补偿后成功的正文'
+        }),
+      /来源便签不存在或已被删除/
+    )
+    assert.equal(listDesktopStickyRecords()[0].content, '事务补偿后成功的正文')
+    service.dispose()
+    deleteAllDesktopStickyRecords()
+    // Prepare one valid fixture row for the separate final-bounds shutdown path.
+    database.prepare('UPDATE notes SET is_deleted = 0 WHERE id = ?').run(noteId)
+    const admission = createBusinessMutationAdmission()
+    service = createService(admission)
+    service.initialize()
+    const finalSticky = await admission.run(() => service.create({ noteId }))
+    const finalEntry = service.registry.get(finalSticky.id)
+    const moved = {
+      ...finalEntry.window.getBounds(),
+      x: finalEntry.bounds.x + 17,
+      y: finalEntry.bounds.y + 13
+    }
+    finalEntry.window.setBounds(moved)
+    finalEntry.bounds = finalEntry.window.getBounds()
+    service.scheduleBoundsPersistence(finalEntry)
+    assert.ok(finalEntry.boundsPersistTimer, 'Final bounds must still be waiting for debounce')
+    const expectedFinalBounds = { ...finalEntry.bounds }
+    admission.preventNewMutations()
+    await admission.drain()
+    admission.runCleanup(() => service.dispose())
+    const finalRecord = listDesktopStickyRecords().find((record) => record.id === finalSticky.id)
+    assert.deepEqual(
+      finalRecord.bounds,
+      expectedFinalBounds,
+      'Sealed shutdown must persist final real-window bounds before closing'
+    )
+    assert.equal(finalEntry.window.isDestroyed(), true)
+    assert.equal(finalEntry.boundsPersistTimer, null)
+    assert.equal(service.registry.size, 0)
+    assert.throws(() => admission.run(() => insertDesktopStickyRecord(finalRecord)), /正在退出/)
     console.log('sticky persistence electron test passed')
+    completed = true
   } catch (error) {
     console.error(error)
+    failure = error
     exitCode = 1
   } finally {
-    if (comparisonWindow && !comparisonWindow.isDestroyed()) comparisonWindow.destroy()
-    service?.dispose()
-    clearDb()
-    database?.close()
+    const cleanupErrors = []
+    for (const release of [
+      () => {
+        if (comparisonWindow && !comparisonWindow.isDestroyed()) comparisonWindow.destroy()
+      },
+      () => service?.dispose(),
+      clearDb,
+      () => database?.close()
+    ]) {
+      try {
+        release()
+      } catch (error) {
+        cleanupErrors.push(error.message)
+        console.error(error)
+        exitCode = 1
+      }
+    }
+    let evidence = { status: 'complete' }
     try {
-      rmSync(testRoot, { recursive: true, force: true })
-    } catch {
-      // Electron 子进程完全退出前可能仍短暂持有临时目录。
+      const flush = await flushLogs()
+      evidence = { status: flush.incomplete ? 'incomplete' : 'complete', flush }
+    } catch (error) {
+      evidence = { status: 'failed', reason: error.message }
+      console.error(error)
+      exitCode = 1
+    }
+    const preserveProfile = Boolean(exitCode || evidence.status !== 'complete')
+    if (profile.ownership === 'script' && !preserveProfile) {
+      try {
+        rmSync(testRoot, { recursive: true, force: true })
+      } catch (error) {
+        cleanupErrors.push(error.message)
+        console.error(error)
+        exitCode = 1
+      }
+    }
+    try {
+      recorder.finish({
+        completed,
+        error: failure,
+        evidence,
+        profileOwnership: profile.ownership,
+        cleanup: {
+          status: cleanupErrors.length ? 'failed' : preserveProfile ? 'preserved' : 'complete',
+          ...(cleanupErrors.length ? { error: cleanupErrors.join('\n') } : {}),
+          ...(preserveProfile || cleanupErrors.length ? { preservedProfile: testRoot } : {})
+        }
+      })
+    } catch (error) {
+      console.error(error)
+      exitCode = 1
     }
     app.exit(exitCode)
   }

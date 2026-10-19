@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks'
 import { drainOperationPerformance } from './operation-performance.js'
 import { diagnosticState } from './diagnostic-state.js'
+import { flushWindowMotionDiagnostics } from './window-motion-diagnostics.js'
 
 const IDLE_REPORT_MS = 30000
 const GAP_MS = 15000
@@ -252,6 +253,7 @@ export function startPerformanceDiagnostics({
   })
   function stop() {
     if (stopped) return
+    flushWindowMotionDiagnostics('quit')
     reportOperations('quit')
     stopped = true
     clearTimer(timer)
@@ -265,6 +267,7 @@ export function startPerformanceDiagnostics({
     flush: (requestId) => {
       exportRequestId = requestId
       try {
+        flushWindowMotionDiagnostics('export', requestId)
         // 即使资源采样仍在限频窗口内，也提交未满一个周期的操作统计。
         reportOperations('export')
         return sample('export')

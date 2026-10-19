@@ -1,10 +1,26 @@
-import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/quick-note-edit-electron.mjs',
+  mode: 'real-app-native-double-click-quick-edit-list-month-week',
+  prefix: 'abandon-note-quick-edit-',
+  timeoutMs: 180000,
+  metadata: {
+    realRendererAndPreload: true,
+    realDiskDatabase: true,
+    nativePointerInput: true,
+    domControlInput: true,
+    views: ['list', 'month', 'week']
+  }
+})
+const { assert } = lifecycle
 
 const WAIT_STEP_MS = 25
 const require = createRequire(import.meta.url)
@@ -20,10 +36,13 @@ async function waitUntil(predicate, message, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const value = await predicate()
-    if (value) return value
+    if (value) {
+      assert.ok(value, message)
+      return value
+    }
     await wait(WAIT_STEP_MS)
   }
-  throw new Error(message)
+  assert.fail(message)
 }
 
 function seedListView(userDataPath) {
@@ -161,7 +180,20 @@ async function verifySidebarDoubleClick(window, selector) {
   await wait(350)
 }
 
-async function quickEdit(window, { selector, content, renderedContent }) {
+function businessState(note) {
+  return {
+    status: note.status,
+    effective_at: note.effective_at,
+    finished_at: note.finished_at,
+    duration_kind: note.duration_kind,
+    duration_days: note.duration_days,
+    notify_enabled: note.notify_enabled,
+    reminder_channels: note.reminder_channels
+  }
+}
+
+async function quickEdit(window, { selector, content, renderedContent, noteId }) {
+  const before = await window.webContents.executeJavaScript(`window.api.getNote(${Number(noteId)})`)
   assert.equal(await dispatchDoubleClick(window, selector), true, `找不到双击目标：${selector}`)
   await waitUntil(
     () =>
@@ -189,9 +221,16 @@ async function quickEdit(window, { selector, content, renderedContent }) {
     () => window.webContents.executeJavaScript(renderedContent),
     '保存后的正文没有刷新到当前视图'
   )
+  const after = await window.webContents.executeJavaScript(`window.api.getNote(${Number(noteId)})`)
+  assert.equal(after.content, content, '快捷正文已经持久化')
+  assert.deepEqual(
+    businessState(after),
+    businessState(before),
+    '快捷正文修改保留状态、精确时间、持续方式和提醒'
+  )
 }
 
-const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-quick-edit-'))
+const testUserData = lifecycle.root
 
 try {
   app.setPath('userData', testUserData)
@@ -214,13 +253,15 @@ try {
   app.once('ready', () => void runQuickNoteEditTest())
 } catch (error) {
   report(`setup failed: ${error?.stack || error}`)
-  rmSync(testUserData, { recursive: true, force: true })
-  app.exit(1)
+  void lifecycle.finish({ error })
 }
 
 async function runQuickNoteEditTest() {
+  let activeWindow
+  const checkedViews = []
   try {
     const listWindow = await waitForView('list')
+    activeWindow = listWindow
     const noteId = await listWindow.webContents.executeJavaScript(`(async () => {
       const note = await window.api.createNote({ content: '列表快速编辑原文' })
       return note.id
@@ -243,6 +284,7 @@ async function runQuickNoteEditTest() {
       }).observe(document.body, { childList: true, subtree: true })
     })()`)
     await quickEdit(listWindow, {
+      noteId,
       selector: cardSelector,
       content: '列表失焦保存正文',
       renderedContent: `document.querySelector(${JSON.stringify(
@@ -260,6 +302,7 @@ async function runQuickNoteEditTest() {
       )
       await wait(200)
       await quickEdit(listWindow, {
+        noteId,
         selector: cardSelector,
         content: minimal ? '极简双击编辑正文' : '列表双击编辑正文',
         renderedContent: `document.querySelector(${JSON.stringify(cardSelector + ' .nl-card-text')})?.textContent.trim() === '${minimal ? '极简双击编辑正文' : '列表双击编辑正文'}'`
@@ -339,9 +382,11 @@ async function runQuickNoteEditTest() {
       `window.api.setSettingValue('interaction.doubleClickQuickEdit', true)`
     )
     await wait(100)
+    checkedViews.push('list')
 
     await chooseView(listWindow, 'month')
     const monthWindow = await waitForView('month')
+    activeWindow = monthWindow
     const eventSelector = `.month-event-bar[data-note-id="${noteId}"]`
     await waitUntil(
       () =>
@@ -366,6 +411,7 @@ async function runQuickNoteEditTest() {
       '点击外部后，延迟的单击计时器不应重新打开全文浮层'
     )
     await quickEdit(monthWindow, {
+      noteId,
       selector: eventSelector,
       content: '月视图失焦保存正文',
       renderedContent: `document.querySelector(${JSON.stringify(
@@ -374,9 +420,11 @@ async function runQuickNoteEditTest() {
     })
 
     await verifySidebarDoubleClick(monthWindow, cardSelector)
+    checkedViews.push('month')
 
     await chooseView(monthWindow, 'week')
     const weekWindow = await waitForView('week')
+    activeWindow = weekWindow
     await waitUntil(
       () =>
         weekWindow.webContents.executeJavaScript(
@@ -385,6 +433,7 @@ async function runQuickNoteEditTest() {
       '便签没有出现在周视图'
     )
     await quickEdit(weekWindow, {
+      noteId,
       selector: eventSelector,
       content: '周视图失焦保存正文',
       renderedContent: `document.querySelector(${JSON.stringify(
@@ -393,6 +442,7 @@ async function runQuickNoteEditTest() {
     })
 
     await verifySidebarDoubleClick(weekWindow, cardSelector)
+    checkedViews.push('week')
 
     assert.equal(
       await weekWindow.webContents.executeJavaScript(
@@ -404,17 +454,9 @@ async function runQuickNoteEditTest() {
     report(
       'native double-click: list/minimal/colored text/month/week/sidebar, no color popup flash, disabled native selection, blur-save and validation passed'
     )
-    app.exit(0)
+    await lifecycle.finish({ completed: true, window: activeWindow, summary: { checkedViews } })
   } catch (error) {
     report(`failed: ${error?.stack || error}`)
-    app.exit(1)
+    await lifecycle.finish({ error, window: activeWindow, summary: { checkedViews } })
   }
 }
-
-app.on('will-quit', () => {
-  try {
-    rmSync(testUserData, { recursive: true, force: true })
-  } catch {
-    // Electron 退出时可能仍短暂占用临时数据库，不覆盖测试结果。
-  }
-})

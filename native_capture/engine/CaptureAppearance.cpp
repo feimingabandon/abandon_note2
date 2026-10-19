@@ -4,12 +4,27 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QResizeEvent>
 #include <QWheelEvent>
 
 namespace Capture {
+static QPainterPath chromeOutline(const QSize &size) {
+  QPainterPath path;
+  path.addRoundedRect(QRectF(QPointF(), QSizeF(size)), 4, 4);
+  return path;
+}
 class ChromePanel final : public QWidget {
 public:
-  using QWidget::QWidget;
+  explicit ChromePanel(QWidget *parent) : QWidget(parent) {
+    setAttribute(Qt::WA_TranslucentBackground);
+    setAutoFillBackground(false);
+  }
+  void resizeEvent(QResizeEvent *event) override {
+    QWidget::resizeEvent(event);
+    // Clip the actual Windows/child region as well as painting a rounded face.
+    // Unpainted rectangular corners must never expose an opaque backing store.
+    setMask(QRegion(chromeOutline(size()).toFillPolygon().toPolygon()));
+  }
   // Empty toolbar space is still chrome, never an input target on the image.
   void mousePressEvent(QMouseEvent *event) override { event->accept(); }
   void mouseReleaseEvent(QMouseEvent *event) override { event->accept(); }
@@ -17,15 +32,32 @@ public:
   void wheelEvent(QWheelEvent *event) override { event->accept(); }
   void paintEvent(QPaintEvent *) override {
     QPainter p(this);
+    if (isWindow()) {
+      p.setCompositionMode(QPainter::CompositionMode_Source);
+      p.fillRect(rect(), Qt::transparent);
+      p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    }
     p.setRenderHint(QPainter::Antialiasing);
     auto edge = qApp->palette().windowText().color();
     edge.setAlphaF(.12);
     p.setPen(QPen(edge, 1));
     p.setBrush(qApp->palette().window());
-    p.drawRoundedRect(QRectF(rect()).adjusted(.5, .5, -.5, -.5), 10, 10);
+    p.drawRoundedRect(QRectF(rect()).adjusted(.5, .5, -.5, -.5), 4, 4);
   }
 };
 QWidget *createChromePanel(QWidget *parent) { return new ChromePanel(parent); }
+class ChromeMenu final : public QMenu {
+public:
+  explicit ChromeMenu(QWidget *parent) : QMenu(parent) {
+    setAttribute(Qt::WA_TranslucentBackground);
+    setAttribute(Qt::WA_NoMouseReplay);
+  }
+  void resizeEvent(QResizeEvent *event) override {
+    QMenu::resizeEvent(event);
+    setMask(QRegion(chromeOutline(size()).toFillPolygon().toPolygon()));
+  }
+};
+QMenu *createChromeMenu(QWidget *parent) { return new ChromeMenu(parent); }
 // Project-authored vector icons. Render paths at the requested device scale;
 // no font glyphs, fixed-resolution source pixmaps or external icon runtime.
 class ActionIcon final : public QIconEngine {
@@ -44,7 +76,7 @@ public:
                  rect.y() + (rect.height() - side) / 2);
     p->scale(side / 24., side / 24.);
     QColor ink =
-        primary ? QColor(Qt::white) : qApp->palette().windowText().color();
+        primary ? QColor("#0071e3") : qApp->palette().windowText().color();
     if (!primary && state == QIcon::On)
       ink = QColor("#0071e3");
     if (mode == QIcon::Disabled)
@@ -74,9 +106,7 @@ public:
       line(5, 19, 19, 5);
       if (name == "arrow")
         path({{10, 5}, {19, 5}, {19, 14}});
-    } else if (name == "polyline")
-      path({{4, 17}, {9, 7}, {15, 17}, {20, 7}});
-    else if (name == "select")
+    } else if (name == "select")
       path({{5, 3},
             {5, 19},
             {9, 15},
@@ -101,15 +131,14 @@ public:
       for (int y = 4; y <= 14; y += 10)
         for (int x = 4; x <= 14; x += 10)
           p->drawRoundedRect(QRectF(x, y, 6, 6), 1, 1);
-    } else if (name == "blur") {
-      p->drawEllipse(QRectF(7, 7, 10, 10));
-      for (int i = 0; i < 8; ++i) {
-        p->save();
-        p->translate(12, 12);
-        p->rotate(i * 45);
-        line(0, -9, 0, -8);
-        p->restore();
-      }
+    } else if (name == "parameters") {
+      line(5, 6, 19, 6);
+      line(5, 12, 19, 12);
+      line(5, 18, 19, 18);
+      p->setBrush(qApp->palette().window());
+      p->drawEllipse(QPointF(9, 6), 2, 2);
+      p->drawEllipse(QPointF(15, 12), 2, 2);
+      p->drawEllipse(QPointF(10, 18), 2, 2);
     } else if (name == "eraser") {
       path({{3, 14}, {13, 4}, {21, 12}, {13, 20}, {9, 20}, {3, 14}});
       line(8, 9, 16, 17);
@@ -215,22 +244,28 @@ QString chromeStyle() {
   // fill-pressed in tokens.css. Only accent/on-primary are fixed semantic
   // colors.
   return QString(R"(
-    QWidget#annotationPanel{background:%1;border:1px solid %3;border-radius:10px;}
-    QToolBar{border:0;spacing:3px;padding:0;background:transparent;}
-    QToolBar::separator{background:%3;width:1px;margin:7px 5px;}
-    QToolButton{color:%2;background:transparent;border:1px solid transparent;border-radius:6px;padding:5px;}
+    QWidget#annotationPanel{background:transparent;}
+    QToolBar{border:0;spacing:2px;padding:0;background:transparent;}
+    QToolBar::separator{background:%3;width:1px;margin:6px 4px;}
+    QToolButton{color:%2;background:transparent;border:1px solid transparent;border-radius:5px;padding:4px;}
     QToolButton:hover{background:%4;}
-    QToolButton:pressed{background:%5;padding-top:6px;padding-bottom:4px;}
-    QToolButton:checked{background:%6;}
-    QToolButton:focus{border-color:#0071e3;}
-    QToolButton#capturePrimary{background:#0071e3;color:white;padding-left:9px;padding-right:9px;}
-    QToolButton#capturePrimary:hover{background:#0064c8;}
-    QToolButton::menu-indicator{image:none;width:0;}
+    QToolButton:pressed{background:%5;}
+    QToolButton[popupTrigger="true"]:pressed{background:transparent;}
+    QToolButton:checked{background:%6;color:#0071e3;}
+    QToolButton:focus{border-color:%7;}
+    QToolButton#capturePrimary{color:#0071e3;padding-left:6px;padding-right:6px;}
+    QToolButton::menu-indicator{width:10px;}
+    QToolButton#captureMore::menu-indicator{image:none;width:0;}
+    QToolButton::menu-button{border:0;width:12px;}
     QSpinBox,QComboBox{color:%2;background:%1;border:1px solid %3;border-radius:5px;min-height:26px;padding:0 5px;}
     QSpinBox:hover,QComboBox:hover{border-color:%7;}
-    QSpinBox:focus,QComboBox:focus{border-color:#0071e3;}
+    QSpinBox:focus,QComboBox:focus{border-color:%7;}
+    QComboBox::drop-down{border:0;background:transparent;width:16px;}
+    QComboBox#annotationMosaicMode::down-arrow,QComboBox#annotationFont::down-arrow{image:none;}
+    QComboBox QAbstractItemView{color:%2;background:%1;border:1px solid %3;selection-background-color:%4;selection-color:%2;outline:0;}
     QLabel{color:%2;background:transparent;}
-    QMenu{color:%2;background:%1;border:1px solid %3;padding:5px;}
+    QLabel#captureHint{color:%2;background:%1;border:1px solid %3;border-radius:6px;padding:5px 8px;}
+    QMenu{color:%2;background:%1;border:1px solid %3;border-radius:4px;padding:5px;}
     QMenu::item{padding:7px 18px;border-radius:4px;}
     QMenu::item:selected{background:%4;}
     QMenu::item:disabled{color:%7;}

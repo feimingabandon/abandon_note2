@@ -5,7 +5,7 @@ const { dirname, delimiter, join, resolve } = require('node:path')
 const os = require('node:os')
 const electron = require('electron')
 const manifest = require('./test-manifest.cjs')
-const { createRunDirectory, runJobs } = require('./test-runner.cjs')
+const { createRunDirectory, runJobs, summarizeResults } = require('./test-runner.cjs')
 
 function createJobs() {
   const nodeJob = (id, args, extra = {}) => ({ id, command: process.execPath, args, ...extra })
@@ -18,24 +18,32 @@ function createJobs() {
   })
   return [
     nodeJob('unit', ['node_modules/vitest/vitest.mjs', 'run']),
-    nodeJob('lint-source', ['node_modules/eslint/bin/eslint.js', 'src', '--no-cache']),
-    nodeJob('lint-tests', [
-      'node_modules/eslint/bin/eslint.js',
-      'tests',
-      'scripts/test-manifest.cjs',
-      'scripts/test-runner.cjs',
-      'scripts/run-full-tests.cjs',
-      'scripts/run-electron-node-tests.cjs',
-      'scripts/run-electron-window-tests.cjs',
-      '--no-cache'
-    ]),
+    nodeJob('lint-source', ['node_modules/eslint/bin/eslint.js', 'src', '--no-cache'], {
+      resultKind: 'check'
+    }),
+    nodeJob(
+      'lint-tests',
+      [
+        'node_modules/eslint/bin/eslint.js',
+        'tests',
+        'scripts/test-manifest.cjs',
+        'scripts/test-runner.cjs',
+        'scripts/run-full-tests.cjs',
+        'scripts/run-electron-node-tests.cjs',
+        'scripts/run-electron-window-tests.cjs',
+        '--no-cache'
+      ],
+      { resultKind: 'check' }
+    ),
     {
       id: 'build-native',
+      resultKind: 'build',
       command: 'powershell.exe',
       args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'native_blur/build.ps1']
     },
     {
       id: 'build-capture',
+      resultKind: 'build',
       command: 'powershell.exe',
       args: [
         '-NoProfile',
@@ -43,11 +51,42 @@ function createJobs() {
         'Bypass',
         '-File',
         'native_capture/build.ps1',
-        '-Test'
-      ]
+        '-Test',
+        '-TestName',
+        'capture_core,capture_ui,capture_ux,capture_selection,capture_pin_halo,capture_polish,capture_clipboard',
+        '-InputDriver'
+      ],
+      prepare: ({ directory }) => ({
+        args: [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          'native_capture/build.ps1',
+          '-Test',
+          '-TestName',
+          'capture_core,capture_ui,capture_ux,capture_selection,capture_pin_halo,capture_polish,capture_clipboard',
+          '-InputDriver',
+          '-ResultDirectory',
+          directory
+        ]
+      }),
+      metadata: {
+        scope: 'explicit-full-only',
+        limits: [
+          'Legacy build result does not certify individual Qt business counts; use focused Qt targets'
+        ]
+      }
     },
-    nodeJob('build-app', ['node_modules/electron-vite/bin/electron-vite.js', 'build']),
-    nodeJob('build-notice-preview', ['scripts/build-notice-preview.mjs']),
+    nodeJob('build-app', ['node_modules/electron-vite/bin/electron-vite.js', 'build'], {
+      resultKind: 'build'
+    }),
+    nodeJob('build-notice-preview', ['scripts/build-notice-preview.mjs'], { resultKind: 'build' }),
+    ...manifest.focusedNativeTests.map((file) => ({
+      ...guiJob(file),
+      gui: false,
+      requires: ['build-native']
+    })),
     ...[...manifest.databaseTests, 'tests/maturity-db.mjs'].map((file) => ({
       id: file,
       command: electron,
@@ -55,6 +94,8 @@ function createJobs() {
       electronNode: true
     })),
     ...[
+      ...manifest.focusedDatabaseTests,
+      ...manifest.focusedGuiTests,
       ...manifest.storageTests,
       ...manifest.windowFrameTests,
       ...manifest.electronFeatureTests,
@@ -63,16 +104,6 @@ function createJobs() {
     ].map(guiJob)
   ].map((job) => {
     const artifacts = {
-      'build-capture': [
-        'native_capture/build/capture-polish-results.txt',
-        'native_capture/build/capture-selection-results.txt',
-        'native_capture/build/capture-pin-halo-results.txt',
-        'native_capture/build/capture-ux-results.txt',
-        'native_capture/build/capture-core-results.txt',
-        'native_capture/build/capture-ui-results.txt',
-        'native_capture/build/capture-clipboard-results.txt',
-        'native_capture/build/Testing/Temporary/LastTest.log'
-      ],
       'tests/draft-dialog-ui-electron.mjs': ['tmp/draft-dialog-ui-results.json'],
       'tests/help-center-electron.mjs': ['tmp/help-center-qa'],
       'tests/notice-admin-electron.mjs': ['tmp/notice-markdown-qa'],
@@ -134,13 +165,23 @@ function snapshot() {
 function selectJobs(all, requested) {
   for (const id of requested)
     if (!all.some((job) => job.id === id)) throw new Error(`Unknown test: ${id}`)
-  // Explicit selection is a retest using the recorded existing build, not a full run.
-  // If a build IS selected, its failure must still block its selected dependants.
-  return requested.length
-    ? all
-        .filter((job) => requested.includes(job.id))
-        .map((job) => ({ ...job, requires: job.requires?.filter((id) => requested.includes(id)) }))
-    : all
+  if (!requested.length) return all
+  const selected = new Set()
+  const visiting = new Set()
+  const ordered = []
+  function visit(id) {
+    if (selected.has(id)) return
+    if (visiting.has(id)) throw new Error('Cyclic build dependency: ' + id)
+    const job = all.find((entry) => entry.id === id)
+    if (!job) throw new Error('Unknown required build: ' + id)
+    visiting.add(id)
+    for (const dependency of job.requires || []) visit(dependency)
+    visiting.delete(id)
+    selected.add(id)
+    ordered.push(job)
+  }
+  for (const id of requested) visit(id)
+  return ordered
 }
 
 async function main() {
@@ -167,11 +208,11 @@ async function main() {
   process.stdout.write(`Test evidence: ${directory}\n`)
   const results = await runJobs(jobs, { directory, cwd: resolve('.'), env })
   writeFileSync(join(directory, 'ending-snapshot.json'), JSON.stringify(snapshot(), null, 2) + '\n')
-  const failures = results.filter((result) => result.status !== 'passed')
+  const summary = summarizeResults(results)
   process.stdout.write(
-    `Completed: ${results.length - failures.length}/${results.length} passed. Evidence: ${directory}\n`
+    `Completed: ${summary.verifiedPassed}/${summary.total} verified; ${summary.legacyUnproven} legacy unproven; ${summary.unverified} unverified; ${summary.failed} failed; ${summary.blocked} blocked. Evidence: ${directory}\n`
   )
-  process.exitCode = failures.length ? 1 : 0
+  process.exitCode = summary.successful ? 0 : 1
 }
 
 if (require.main === module)

@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import TimeSpinner from './TimeSpinner.vue'
 import BaseButton from './BaseButton.vue'
-import { popoverStyle } from '../../utils/anchoredPopover.js'
+import { measurePopoverContent, popoverStyle } from '../../utils/anchoredPopover.js'
 import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 
@@ -54,11 +54,9 @@ function updatePanelPosition() {
   const rect = wrapperRef.value?.getBoundingClientRect()
   if (!rect) return
   const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
-  panelStyle.value = popoverStyle(
-    rect,
-    224 * rem,
-    panelRef.value ? panelRef.value.scrollHeight + 2 : 350 * rem
-  )
+  const width = Math.min(224 * rem, Math.max(0, window.innerWidth - 16))
+  const natural = measurePopoverContent(panelRef.value, width)
+  panelStyle.value = popoverStyle(rect, width, natural?.height || 250 * rem)
 }
 
 async function openPanel() {
@@ -163,20 +161,22 @@ onBeforeUnmount(() => {
           :aria-label="ariaLabel"
           @keydown="popover.onKeydown"
         >
-          <header>
-            <span>{{ panelTitle }}</span>
-            <strong>{{ displayTime }}</strong>
-          </header>
+          <div class="time-picker__scroll scroll-y">
+            <header>
+              <span>{{ panelTitle }}</span>
+              <strong>{{ displayTime }}</strong>
+            </header>
 
-          <div class="time-picker__spinners">
-            <div>
-              <span>时</span>
-              <TimeSpinner v-model="hour" :max="24" :visible="open" />
-            </div>
-            <i aria-hidden="true">:</i>
-            <div>
-              <span>分</span>
-              <TimeSpinner v-model="minute" :max="60" :visible="open" />
+            <div class="time-picker__spinners">
+              <div>
+                <span>时</span>
+                <TimeSpinner v-model="hour" :max="24" :visible="open" />
+              </div>
+              <i aria-hidden="true">:</i>
+              <div>
+                <span>分</span>
+                <TimeSpinner v-model="minute" :max="60" :visible="open" />
+              </div>
             </div>
           </div>
 
@@ -257,9 +257,9 @@ onBeforeUnmount(() => {
   display: flex;
   box-sizing: border-box;
   width: 224rem;
-  height: 250rem;
+  min-height: 0;
   flex-direction: column;
-  overflow: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
   border: 1px solid var(--surface-float-border);
   border-radius: 13rem;
@@ -269,12 +269,20 @@ onBeforeUnmount(() => {
   transform-origin: top center;
   will-change: clip-path, opacity, transform;
 }
+.time-picker__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
 .time-picker__panel header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4rem 8rem;
   min-height: 42rem;
-  padding: 0 13rem;
+  padding: 8rem 13rem;
   border-bottom: 1px solid var(--ui-border-divider);
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
@@ -286,10 +294,8 @@ onBeforeUnmount(() => {
   letter-spacing: 0.02em;
 }
 .time-picker__spinners {
-  flex-shrink: 0;
   display: grid;
-  flex: 1 0 150rem;
-  min-height: 150rem;
+  height: max(162rem, 9em);
   grid-template-columns: 1fr 14rem 1fr;
   align-items: stretch;
   padding: 5rem 18rem 2rem;
@@ -317,12 +323,15 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex: 0 0 auto;
   min-height: 44rem;
   padding: 0 10rem;
   border-top: 1px solid var(--ui-border-divider);
 }
 .time-picker__panel footer > div {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 5rem;
 }
 .time-picker__panel footer {

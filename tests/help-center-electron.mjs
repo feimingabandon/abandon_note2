@@ -1,14 +1,24 @@
-import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
 
 const require = createRequire(import.meta.url)
-const userData = mkdtempSync(join(tmpdir(), 'abandon-help-center-'))
-const qaDir = resolve('tmp/help-center-qa')
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/help-center-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-help-center-',
+  timeoutMs: 150000,
+  metadata: { realWindows: true, productMainProcess: true, softwareRendering: true }
+})
+const { assert } = lifecycle
+const userData = lifecycle.root
+const qaDir = join(process.env.ABANDON_TEST_EVIDENCE_DIR || userData, 'help-center-qa')
 mkdirSync(qaDir, { recursive: true })
 app.commandLine.appendSwitch('disable-gpu')
 // 禁用浏览器原生 smooth 仍应有应用自身的连续导航动效。
@@ -177,6 +187,7 @@ app.once('ready', () => void run())
 async function run() {
   try {
     let window = await findView('list')
+    await dismissStartupShortcutNotice(window)
     for (const mode of ['list', 'month', 'week']) {
       if (mode !== 'list') window = await navigateView(window, mode)
       window.setMinimumSize(320, 360)
@@ -380,18 +391,14 @@ async function run() {
     process.stderr.write(
       'help center: all views, full-text search, IME, anchors, reading restoration, narrow layout and theme screenshots passed\n'
     )
-    app.exit(0)
+    await lifecycle.finish({
+      completed: true,
+      window: BrowserWindow.getAllWindows().find((window) => !window.isDestroyed()),
+      summary: { qaDir }
+    })
   } catch (error) {
     process.stderr.write(`${error.stack}\n`)
     const window = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed())
-    if (window) writeFileSync(join(qaDir, 'failure.png'), (await window.capturePage()).toPNG())
-    app.exit(1)
+    await lifecycle.finish({ error, window, summary: { qaDir } })
   }
 }
-app.on('will-quit', () => {
-  try {
-    rmSync(userData, { recursive: true, force: true })
-  } catch {
-    /* 退出时可能仍持有数据库。 */
-  }
-})

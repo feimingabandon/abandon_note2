@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-const MAIN_PATH = new URL('../src/main/index.js', import.meta.url)
+const MAIN_PATH = new URL('../src/main/settings/settings-write-coordinator.js', import.meta.url)
 
 describe('native blur settings main-process wiring', () => {
   it('reapplies the native material when its CSS-derived tint settings change', () => {

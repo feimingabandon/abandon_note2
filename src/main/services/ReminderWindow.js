@@ -10,6 +10,7 @@ export class ReminderWindow {
     rendererUrl,
     getSettings,
     onAction,
+    onDismissAll,
     reportError = console.error
   }) {
     Object.assign(this, {
@@ -18,6 +19,7 @@ export class ReminderWindow {
       rendererUrl,
       getSettings,
       onAction,
+      onDismissAll,
       reportError
     })
     this.window = null
@@ -26,25 +28,38 @@ export class ReminderWindow {
     this.focusRequest = 0
     this.focusOnReady = false
     this.disposed = false
-    this.channels = ['reminders:state', 'reminders:action', 'reminders:ready', 'reminders:hide']
+    this.channels = []
     this.ipcMain = ipcMain
     const ipc = createMainWindowIpc(ipcMain, () => this.window, '便签提醒')
-    ipc.handle('reminders:state', () => this.snapshot())
-    ipc.handle('reminders:action', (_event, payload) => {
-      if (!this.rows.some((r) => r.id === payload?.id))
-        throw new Error('提醒已更新，请使用最新提醒')
-      return this.onAction(payload)
-    })
-    ipc.handle('reminders:ready', () => {
-      this.send()
-      this.present()
-      if (this.focusOnReady && this.rows.length) this.focusRound(this.focusId)
-      return true
-    })
-    ipc.handle('reminders:hide', () => {
-      this.hideAll()
-      return true
-    })
+    const handle = (channel, handler) => {
+      ipc.handle(channel, handler)
+      this.channels.push(channel)
+    }
+    try {
+      handle('reminders:state', () => this.snapshot())
+      handle('reminders:action', (_event, payload) => {
+        if (!this.rows.some((r) => r.id === payload?.id))
+          throw new Error('提醒已更新，请使用最新提醒')
+        return this.onAction(payload)
+      })
+      handle('reminders:ready', () => {
+        this.send()
+        this.present()
+        if (this.focusOnReady && this.rows.length) this.focusRound(this.focusId)
+        return true
+      })
+      handle('reminders:hide', () => {
+        this.hideAll()
+        return true
+      })
+    } catch (error) {
+      try {
+        this.dispose()
+      } catch (cleanupError) {
+        this.reportError('[reminders] partial IPC cleanup failed', cleanupError)
+      }
+      throw error
+    }
   }
 
   snapshot() {
@@ -170,20 +185,31 @@ export class ReminderWindow {
   }
 
   hideAll() {
-    for (const row of [...this.rows]) {
-      try {
-        this.onAction({ id: row.id, action: 'dismiss' })
-      } catch (error) {
-        this.reportError('[reminders] dismiss failed', error)
-      }
+    try {
+      this.onDismissAll(this.rows.map((row) => row.id))
+    } catch (error) {
+      this.reportError('[reminders] dismiss failed', error)
     }
     this.window?.hide()
   }
 
   dispose() {
+    if (this.disposed) return
     this.disposed = true
-    for (const channel of this.channels) this.ipcMain.removeHandler(channel)
-    this.window?.destroy()
+    const failures = []
+    for (const channel of this.channels.splice(0)) {
+      try {
+        this.ipcMain.removeHandler(channel)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    try {
+      this.window?.destroy()
+    } catch (error) {
+      failures.push(error)
+    }
     this.window = null
+    if (failures.length) throw new AggregateError(failures, '提醒窗口释放失败')
   }
 }

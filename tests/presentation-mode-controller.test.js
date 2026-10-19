@@ -9,6 +9,36 @@ function windowStub() {
 }
 
 describe('PresentationModeController', () => {
+  it('only updates the current operation target and returns independent snapshots', async () => {
+    const window = windowStub()
+    const controller = new PresentationModeController()
+    controller.initialize(window)
+    let release
+    const gate = new Promise((resolve) => {
+      release = resolve
+    })
+    const pending = controller.request(
+      window,
+      PRESENTATION_MODES.COMPACT,
+      { anchor: { x: 1, y: 2 } },
+      { perform: () => gate }
+    )
+    const id = controller.snapshot().operation.id
+    expect(controller.setOperationTargetBounds(id + 1, { x: 5 })).toBe(false)
+    const bounds = { x: 5, y: 6, width: 100, height: 30 }
+    expect(controller.setOperationTargetBounds(id, bounds)).toBe(true)
+    bounds.x = -10
+    const snapshot = controller.snapshot()
+    snapshot.operation.targetBounds.x = -20
+    snapshot.operation.context.anchor.x = -20
+    expect(controller.snapshot().operation).toMatchObject({
+      targetBounds: { x: 5 },
+      context: { anchor: { x: 1 } }
+    })
+    release()
+    await pending
+    expect(controller.setOperationTargetBounds(id, bounds)).toBe(false)
+  })
   it('serializes requests and follows only the latest desired mode', async () => {
     const window = windowStub()
     const calls = []

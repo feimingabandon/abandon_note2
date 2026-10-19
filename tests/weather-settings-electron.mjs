@@ -1,10 +1,21 @@
-import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/weather-settings-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-note-weather-settings-e2e-',
+  timeoutMs: 150000,
+  metadata: { realWindows: true, legacyFixture: true }
+})
+const { assert, root: testUserData } = lifecycle
+let activeTestWindow = null
 
 const WAIT_STEP_MS = 25
 const require = createRequire(import.meta.url)
@@ -59,9 +70,6 @@ function getListWindow() {
   )
 }
 
-const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-weather-settings-e2e-'))
-let exitCode = 0
-
 try {
   app.setPath('userData', testUserData)
   process.env.ABANDON_INTEGRATION_TEST = '1'
@@ -84,13 +92,14 @@ try {
   app.once('ready', () => void runWeatherSettingsTest())
 } catch (error) {
   report(`setup failed: ${error?.stack || error}`)
-  rmSync(testUserData, { recursive: true, force: true })
-  app.exit(1)
+  void lifecycle.finish({ error, window: activeTestWindow })
 }
 
 async function runWeatherSettingsTest() {
+  let failure = null
   try {
     const listWindow = await waitUntil(getListWindow, '列表主窗口未启动', 10000)
+    activeTestWindow = listWindow
     await waitUntil(() => listWindow.isVisible(), '列表视图渲染就绪后没有显示')
     listWindow.setSize(445, 852)
 
@@ -110,6 +119,41 @@ async function runWeatherSettingsTest() {
           `Boolean(document.querySelector('.china-area-cascader__trigger:not(:disabled)'))`
         ),
       '中国行政区划没有加载'
+    )
+
+    const almanacDefault = await listWindow.webContents.executeJavaScript(`(() => {
+      const toggle = document.querySelector('.weather-settings [role="switch"][aria-label="显示宜忌"]')
+      return { exists: Boolean(toggle), checked: toggle?.getAttribute('aria-checked') }
+    })()`)
+    assert.deepEqual(almanacDefault, { exists: true, checked: 'true' }, '宜忌开关应默认开启')
+    await listWindow.webContents.executeJavaScript(
+      `document.querySelector('.weather-settings [role="switch"][aria-label="显示宜忌"]').click()`
+    )
+    await waitUntil(
+      () =>
+        listWindow.webContents.executeJavaScript(`(async () => {
+          const snapshot = await window.api.getSettingsSnapshot()
+          return snapshot.values.almanac.enabled === false && snapshot.values.weather.enabled === false
+        })()`),
+      '关闭宜忌后未独立保存，或意外开启了天气'
+    )
+    await waitUntil(
+      () =>
+        listWindow.webContents.executeJavaScript(
+          `!document.querySelector('.weather-settings [role="switch"][aria-label="显示宜忌"]').disabled`
+        ),
+      '宜忌保存结束后开关没有恢复可用'
+    )
+    await listWindow.webContents.executeJavaScript(
+      `document.querySelector('.weather-settings [role="switch"][aria-label="显示宜忌"]').click()`
+    )
+    await waitUntil(
+      () =>
+        listWindow.webContents.executeJavaScript(`(async () => {
+          const snapshot = await window.api.getSettingsSnapshot()
+          return snapshot.values.almanac.enabled === true && snapshot.values.weather.enabled === false
+        })()`),
+      '没有地区时应允许独立重新开启宜忌，天气继续关闭'
     )
 
     const prepared = await listWindow.webContents.executeJavaScript(`(async () => {
@@ -406,13 +450,13 @@ async function runWeatherSettingsTest() {
     )
     report('manual province-city-district selection persisted successfully')
   } catch (error) {
-    exitCode = 1
+    failure = error
     report(error?.stack || error)
   } finally {
-    app.exit(exitCode)
-    setTimeout(() => {
-      rmSync(testUserData, { recursive: true, force: true })
-      process.exit(exitCode)
-    }, 100)
+    await lifecycle.finish({
+      completed: !failure,
+      error: failure,
+      window: activeTestWindow
+    })
   }
 }

@@ -18,6 +18,7 @@ export function createWeatherRefreshController({
   let generation = 0
   const pending = new Map()
   const states = new Map()
+  let disposed = false
   function synchronize() {
     const settings = getSettings()
     const next = JSON.stringify([Boolean(settings?.enabled), settings?.location || null])
@@ -50,12 +51,13 @@ export function createWeatherRefreshController({
     state.retryAt = Math.max(now() + delay, state.serverUntil)
   }
   function refresh({ manual = false, trigger = 'automatic' } = {}) {
+    if (disposed) return Promise.resolve(null)
     const context = synchronize()
     const { settings, key } = context
     if (!settings?.enabled || !key || (!manual && !canAutoRefresh())) return Promise.resolve(null)
     const taskKey = `${context.generation}:${key}`
     if (pending.has(taskKey)) return pending.get(taskKey)
-    const isCurrent = () => synchronize().generation === context.generation
+    const isCurrent = () => !disposed && synchronize().generation === context.generation
     const request = (async () => {
       const cached = await service.getForecast(settings.location, { cacheOnly: true })
       if (!isCurrent()) return null
@@ -121,10 +123,11 @@ export function createWeatherRefreshController({
     return request
   }
   async function read() {
+    if (disposed) return null
     const context = synchronize()
     if (!context.settings?.enabled || !context.key) return null
     const cached = await service.getForecast(context.settings.location, { cacheOnly: true })
-    if (synchronize().generation !== context.generation) return null
+    if (disposed || synchronize().generation !== context.generation) return null
     if (cached) {
       if (weatherAge(cached, now()) >= WEATHER_REFRESH_MS)
         void refresh({ trigger: 'cache-expired' }).catch(() => {})
@@ -139,12 +142,17 @@ export function createWeatherRefreshController({
     read,
     refresh,
     settingsChanged() {
+      if (disposed) return
       const before = generation
       synchronize()
       if (before !== generation) {
         // Changing settings is an explicit opportunity to recover invalid parameters.
         for (const state of states.values()) state.blocked = false
       }
+    },
+    dispose() {
+      disposed = true
+      generation += 1
     }
   }
 }

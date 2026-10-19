@@ -190,7 +190,7 @@ function onKeydown(event) {
     ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Escape'].includes(event.key)
   )
     cancelNavigation()
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+  if (event.ctrlKey && event.key.toLowerCase() === 'f') {
     event.preventDefault()
     event.stopPropagation()
     searchInput.value?.focus()
@@ -277,7 +277,7 @@ onBeforeUnmount(() => {
         >
           清除
         </button>
-        <kbd v-else>Ctrl / ⌘ F</kbd>
+        <kbd v-else>Ctrl + F</kbd>
       </div>
       <span class="help-search-hint">搜索所有视图的功能说明 · 多个关键词用空格分隔</span>
     </div>

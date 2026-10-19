@@ -1,13 +1,23 @@
-import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs'
+import { readdirSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
 
-const root = mkdtempSync(join(tmpdir(), 'abandon-reminders-e2e-'))
-const evidence = resolve('docs/testing/evidence/note-reminders')
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/reminders-electron.mjs',
+  mode: 'real-app-reminder-popup-tray-and-editing',
+  prefix: 'abandon-reminders-e2e-',
+  timeoutMs: 120000,
+  metadata: { realRendererAndPreload: true, diskDatabase: true, nativeToastUiClick: false }
+})
+const { assert } = lifecycle
+const root = lifecycle.root
+mkdirSync(root, { recursive: true })
+const evidence = resolve(process.env.ABANDON_TEST_EVIDENCE_DIR || root)
 mkdirSync(evidence, { recursive: true })
 app.setPath('userData', root)
 process.env.ABANDON_INTEGRATION_TEST = '1'
@@ -28,8 +38,8 @@ for (const row of [
 seed.close()
 
 const wait = (ms) => new Promise((done) => setTimeout(done, ms))
-async function until(fn, label) {
-  const end = Date.now() + 15000
+async function until(fn, label, timeoutMs = 15000) {
+  const end = Date.now() + timeoutMs
   while (Date.now() < end) {
     const result = await fn()
     if (result) return result
@@ -765,6 +775,69 @@ async function run() {
     }
     report('template, month and week forms persist channel combinations')
 
+    const removalNotes = []
+    for (const content of ['逻辑删除即时撤销提醒验收', '永久清除即时撤销提醒验收']) {
+      removalNotes.push(
+        await js(
+          `window.api.createNote({content:${JSON.stringify(content)},effectiveAt:${Date.now() + 180000},reminderChannels:6})`
+        )
+      )
+    }
+    db.prepare('UPDATE notes SET effective_at=? WHERE id IN (?,?)').run(
+      Date.now() - 1000,
+      ...removalNotes.map((note) => note.id)
+    )
+    await js('window.api.retryScheduler()')
+    const removalRounds = removalNotes.map((note) =>
+      db.prepare("SELECT id FROM note_reminders WHERE note_id=? AND state='active'").get(note.id)
+    )
+    assert.ok(removalRounds.every(Boolean), 'removal fixtures have active reminder rounds')
+    await until(
+      () =>
+        pjs(
+          `['逻辑删除即时撤销提醒验收','永久清除即时撤销提醒验收'].every(text => Array.from(document.querySelectorAll('.reminder-card')).some(card => card.textContent.includes(text)))`
+        ),
+      'active removal reminders render'
+    )
+    assert.ok(removalRounds.every((round) => service.tray.ids.has(round.id)))
+    assert.notEqual(service.tray.timer, null, 'active removal reminders blink in the tray')
+    // Disable tick recovery for this assertion: only the actual removal IPC may
+    // reconcile the already active popup/tray rows, without waiting for a minute.
+    const scheduledTick = service.tick
+    service.tick = () => {}
+    try {
+      for (const [index, method] of ['deleteNote', 'purgeNote'].entries()) {
+        const note = removalNotes[index]
+        const round = removalRounds[index]
+        assert.equal(await js(`window.api.${method}(${note.id})`), true)
+        assert.equal(service.activeIds.has(round.id), false, method + ' reconciles active IDs')
+        assert.equal(service.tray.ids.has(round.id), false, method + ' removes the tray round')
+        assert.equal(
+          service.popup.rows.some((row) => row.id === round.id),
+          false,
+          method + ' removes the popup row before IPC resolves'
+        )
+        await until(
+          () =>
+            pjs(
+              `Array.from(document.querySelectorAll('.reminder-card')).every(card => !card.textContent.includes(${JSON.stringify(note.content)}))`
+            ),
+          method + ' updates the rendered popup immediately',
+          2000
+        )
+        if (index === 0) {
+          assert.ok(service.activeIds.has(removalRounds[1].id), 'unrelated reminder stays active')
+          assert.ok(service.tray.ids.has(removalRounds[1].id), 'unrelated tray round remains')
+        }
+      }
+      assert.equal(service.tray.ids.size, 0)
+      assert.equal(service.tray.timer, null, 'removing the last active round stops blinking')
+      assert.equal(popup.isVisible(), false, 'removing the last active round hides the popup')
+    } finally {
+      service.tick = scheduledTick
+    }
+    report('delete and purge immediately reconcile active popup/tray reminders without a tick')
+
     // Only the reminder renderer is authorized for reminder actions.
     const denied = await main.webContents.executeJavaScript(`window.api.getNote(${b.id})`)
     assert.equal(denied.id, b.id)
@@ -792,19 +865,15 @@ async function run() {
     assert.equal(service.tray.timer, null)
     report('REMINDERS_ELECTRON_OK')
     db.close()
-    app.exit(0)
+    await lifecycle.finish({ completed: true, window: main })
   } catch (error) {
     process.stderr.write(
       String(error.stack || error) + '\nRenderer errors: ' + JSON.stringify(errors) + '\n'
     )
     db?.close()
-    app.exit(1)
+    await lifecycle.finish({ error, window: main })
   }
 }
-setTimeout(() => {
-  process.stderr.write('REMINDERS_ELECTRON_TIMEOUT\n')
-  app.exit(1)
-}, 90000)
 app.once('ready', () => void run())
 const require = createRequire(import.meta.url)
 require(resolve('out/main/index.js'))

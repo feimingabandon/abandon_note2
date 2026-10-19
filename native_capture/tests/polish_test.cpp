@@ -56,6 +56,7 @@ private slots:
     colorControl(first)->setCurrentIndex(1);
     firstEditor.choose("mosaic");
     sizeControl(first)->setValue(28);
+    first.findChild<QSpinBox *>("annotationMosaicBlock")->setValue(18);
     firstEditor.choose("text");
     sizeControl(first)->setValue(36);
     first.findChild<QFontComboBox *>("annotationFont")
@@ -81,6 +82,11 @@ private slots:
                QColor("#e13c39"));
       editor.choose("mosaic");
       QCOMPARE(sizeControl(fresh)->value(), 28);
+      QCOMPARE(fresh.findChild<QSpinBox *>("annotationMosaicBlock")->value(),
+               18);
+      QCOMPARE(
+          fresh.findChild<QComboBox *>("annotationMosaicMode")->currentIndex(),
+          0);
       editor.choose("pen");
       QCOMPARE(sizeControl(fresh)->value(), 7);
       editor.choose("text");
@@ -99,6 +105,7 @@ private slots:
     PinWindow pin(document(), path);
     pin.annotations->choose("mosaic");
     QCOMPARE(sizeControl(pin)->value(), 28);
+    QCOMPARE(pin.findChild<QSpinBox *>("annotationMosaicBlock")->value(), 18);
   }
   void invalidPreferencesFallBack() {
     QTemporaryDir temp;
@@ -109,7 +116,7 @@ private slots:
       settings.setValue("annotation/fontFamily", QString(500, 'x'));
       settings.setValue("annotation/fontSize", 99999);
       settings.setValue("annotation/width/pen", -4);
-      settings.setValue("annotation/width/blur", "bad");
+      settings.setValue("annotation/brushSize/mosaic", "bad");
     }
     auto doc = document();
     QWidget canvas;
@@ -120,8 +127,8 @@ private slots:
              QColor("#0071e3"));
     editor.choose("pen");
     QCOMPARE(sizeControl(canvas)->value(), 3);
-    editor.choose("blur");
-    QCOMPARE(sizeControl(canvas)->value(), 12);
+    editor.choose("mosaic");
+    QCOMPARE(sizeControl(canvas)->value(), 32);
   }
   void preferencesReloadInNewProcess() {
     const auto supplied = qEnvironmentVariable("CAPTURE_POLISH_PREFS");
@@ -233,8 +240,9 @@ private slots:
     o->annotations->choose("arrow");
     QVERIFY(o->hint->text().contains(QStringLiteral("Tab 切换直线/箭头")));
     QVERIFY(!o->hint->text().contains(QStringLiteral("窗口")));
-    o->annotations->choose("polyline");
-    QVERIFY(o->hint->text().contains(QStringLiteral("右键完成折线")));
+    o->annotations->choose("pen");
+    QVERIFY(!o->annotations->action("polyline"));
+    QVERIFY(o->hint->text().contains(QStringLiteral("拖动绘制")));
     o->annotations->choose("text");
     point(o->annotations, QEvent::MouseButtonPress, {80, 80}, Qt::LeftButton,
           Qt::LeftButton);
@@ -353,7 +361,7 @@ private slots:
   }
   void drawing4kTiming_data() {
     QTest::addColumn<QString>("tool");
-    for (QString tool : {"pen", "mosaic", "blur"})
+    for (QString tool : {"pen", "mosaic", "eraser"})
       QTest::newRow(qPrintable(tool)) << tool;
   }
   void drawing4kTiming() {

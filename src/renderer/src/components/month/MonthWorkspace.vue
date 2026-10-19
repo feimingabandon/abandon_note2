@@ -1,10 +1,10 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useQueuedModal } from '../../composables/useQueuedModal.js'
+import { useCalendarWorkspaceModel } from '../../composables/useCalendarWorkspaceModel.js'
+import { useCalendarWorkspacePreferences } from '../../composables/useCalendarWorkspacePreferences.js'
 import { useSharedMinuteClock } from '../../composables/useSharedMinuteClock.js'
 import { useWeatherRecovery } from '../../composables/useWeatherRecovery.js'
-import { buildDisplayableWeatherByDate } from '../../utils/noteWeather.js'
-import { weatherFreshness } from '../../../../shared/weather-freshness.js'
 import MonthCalendarToolbar from './MonthCalendarToolbar.vue'
 import MonthCalendarGrid from './MonthCalendarGrid.vue'
 import MonthDayPanel from './MonthDayPanel.vue'
@@ -19,17 +19,6 @@ import {
   restoreFocusedElement,
   trapModalTab
 } from '../../utils/modalFocus.js'
-import {
-  MAX_CALENDAR_DATE,
-  MAX_CALENDAR_YEAR,
-  MIN_CALENDAR_DATE,
-  MIN_CALENDAR_YEAR,
-  addCalendarDays,
-  buildWeekGrid,
-  dateKeyFromParts,
-  dateOrdinal,
-  parseDateKey
-} from '../../../../shared/calendar/calendar-date-rules.js'
 import { createDefaultSettings, VIEW_MODES } from '../../../../shared/settings-schema.js'
 import { notesCoveringDate } from '../../../../shared/calendar/calendar-event-layout.js'
 import {
@@ -49,21 +38,56 @@ const props = defineProps({
   }
 })
 const emit = defineEmits(['modal-state-change', 'ready'])
-const now = new Date()
-const initialDateKey = dateKeyFromParts(now.getFullYear(), now.getMonth() + 1, now.getDate())
 const isWeekView = computed(() => props.viewMode === VIEW_MODES.WEEK)
 const calendarViewLabel = computed(() => (isWeekView.value ? '周视图' : '月视图'))
-const viewYear = ref(now.getFullYear())
-const viewMonth = ref(now.getMonth() + 1)
-const weekAnchorKey = ref(initialDateKey)
-const firstWeekDateKey = buildWeekGrid(MIN_CALENDAR_DATE).weekStart
-const lastWeekDateKey = buildWeekGrid(MAX_CALENDAR_DATE).weekEnd
 const todayKey = useTodayKey()
 const defaultDayPanelSize = createDefaultSettings(props.viewMode).ui.dayPanelSize
-const calendarData = ref({ days: [], notes: [], recurringPreviews: [] })
+const calendarPreferences = useCalendarWorkspacePreferences({
+  api: window.api,
+  clock: useSharedMinuteClock(),
+  refreshCalendar: () => refreshCalendarContent(),
+  notify: showMessage
+})
+const {
+  recurringPreviewEnabled,
+  recurringPreviewSaving,
+  quickCreateUntilCompleted,
+  weatherEnabled,
+  weatherForecast,
+  weatherState,
+  weatherError,
+  weatherByDate,
+  loadWeather,
+  updateRecurringPreviewEnabled
+} = calendarPreferences
+const calendarModel = useCalendarWorkspaceModel({
+  api: window.api,
+  getViewMode: () => props.viewMode,
+  todayKey,
+  presentation: {
+    requestOptions: calendarPreferences.requestOptions,
+    replacePeriod: replaceCalendarData,
+    refreshPeriod: presentCalendarRefresh,
+    focusDate: focusCalendarDate
+  }
+})
+const {
+  viewYear,
+  viewMonth,
+  weekAnchorKey,
+  calendarData,
+  loading,
+  refreshing,
+  transitioning,
+  loadError
+} = calendarModel
+const selectedKey = computed({
+  get: () => calendarModel.selectedKey.value,
+  set: (key) => calendarModel.selectDate(key)
+})
 const refreshCauses = createRefreshCauses(props.viewMode)
 function traceCalendarLoad(metadata, work) {
-  const expectedSequence = loadSequence + 1
+  const expectedSequence = calendarModel.sequence + 1
   return traceViewRefresh(
     props.viewMode,
     metadata,
@@ -74,7 +98,7 @@ function traceCalendarLoad(metadata, work) {
       weekStart: calendarData.value.weekStart,
       ...summarizeViewNotes(calendarData.value.notes)
     }),
-    () => loadSequence === expectedSequence
+    () => calendarModel.sequence === expectedSequence
   )
 }
 watch(
@@ -88,23 +112,6 @@ watch(
     }),
   { flush: 'post' }
 )
-const recurringPreviewEnabled = ref(false)
-const recurringPreviewSaving = ref(false)
-const weatherEnabled = ref(false)
-const weatherForecast = ref(null)
-const weatherNow = useSharedMinuteClock()
-// The minute clock schedules ageing; a just-received response can be newer than
-// its last tick and must be evaluated against the actual receipt time immediately.
-const weatherState = computed(() =>
-  weatherFreshness(weatherForecast.value, Math.max(weatherNow.value, Date.now()))
-)
-const weatherLoading = ref(false)
-const weatherError = ref('')
-const loading = ref(true)
-const refreshing = ref(false)
-const transitioning = ref(false)
-const loadError = ref('')
-const selectedKey = ref('')
 const panelOpen = ref(false)
 const dayPanelSize = ref(defaultDayPanelSize)
 const creatorDate = ref('')
@@ -129,23 +136,19 @@ let stopTemplatesListener = null
 let stopHolidayDataListener = null
 let stopWeatherSettingsListener = null
 let stopWeatherForecastListener = null
-let loadSequence = 0
-let weatherLoadSequence = 0
 let resizeCleanup = null
 let notesChangedTimer = null
 let previouslyFocused = null
 let modalFocusFrame = null
-let pendingWeekNavigation = null
-let activeWeekNavigationSelection = ''
 
 const selectedNotes = computed(() =>
   selectedKey.value
     ? notesCoveringDate(calendarData.value.notes, selectedKey.value, todayKey.value)
     : []
 )
-const modalOpen = computed(() => Boolean(creatorDate.value || editingNote.value))
-const weatherByDate = computed(() =>
-  buildDisplayableWeatherByDate(weatherForecast.value, Math.max(weatherNow.value, Date.now()))
+const historicalMoveOpen = ref(false)
+const modalOpen = computed(() =>
+  Boolean(creatorDate.value || editingNote.value || historicalMoveOpen.value)
 )
 const selectedWeather = computed(() => weatherByDate.value.get(selectedKey.value) || null)
 const earlyStartMessage = computed(() => {
@@ -158,79 +161,6 @@ const earlyStartMessage = computed(() => {
   }
   return '该便签尚未到达生效时间。提前执行后，生效时间将改为当前时间。是否确认提前执行？'
 })
-function calendarRequestOptions() {
-  return { includeRecurringPreviews: recurringPreviewEnabled.value }
-}
-
-async function loadWeather({ quiet = false } = {}) {
-  const sequence = ++weatherLoadSequence
-  weatherLoading.value = true
-  weatherError.value = ''
-  try {
-    const forecast = await window.api.getWeatherForecast()
-    if (sequence !== weatherLoadSequence) return
-    weatherForecast.value = forecast
-    if (weatherForecast.value?.warning) weatherError.value = weatherForecast.value.warning
-  } catch (error) {
-    if (sequence !== weatherLoadSequence) return
-    weatherForecast.value = null
-    weatherError.value = error?.message || '天气获取失败'
-    if (!quiet) showMessage('warning', weatherError.value)
-  } finally {
-    if (sequence === weatherLoadSequence) weatherLoading.value = false
-  }
-}
-
-function daysInMonth(year, month) {
-  return new Date(year, month, 0).getDate()
-}
-
-function selectedKeyForMonth(year, month) {
-  if (!selectedKey.value) return ''
-  const selected = parseDateKey(selectedKey.value)
-  return dateKeyFromParts(year, month, Math.min(selected.day, daysInMonth(year, month)))
-}
-
-function monthIndex(year, month) {
-  return year * 12 + month - 1
-}
-
-function monthMotionDirection(targetYear, targetMonth) {
-  const difference =
-    monthIndex(targetYear, targetMonth) - monthIndex(viewYear.value, viewMonth.value)
-  if (difference > 0) return 'forward'
-  if (difference < 0) return 'backward'
-  return null
-}
-
-function weekMotionDirection(targetKey) {
-  const currentKey = calendarData.value.weekStart || weekAnchorKey.value
-  const difference = dateOrdinal(targetKey) - dateOrdinal(currentKey)
-  if (difference > 0) return 'forward'
-  if (difference < 0) return 'backward'
-  return null
-}
-
-function weekContains(dateKey) {
-  return Boolean(
-    calendarData.value.weekStart &&
-    calendarData.value.weekEnd &&
-    dateKey >= calendarData.value.weekStart &&
-    dateKey <= calendarData.value.weekEnd
-  )
-}
-
-function syncCalendarPeriod(data) {
-  if (isWeekView.value) {
-    weekAnchorKey.value = data.anchorDate || data.weekStart || weekAnchorKey.value
-    const anchor = parseDateKey(weekAnchorKey.value)
-    viewYear.value = anchor.year
-    viewMonth.value = anchor.month
-  } else {
-    viewYear.value = data.year
-    viewMonth.value = data.month
-  }
-}
 
 function canAnimateCalendar() {
   return calendarSurfaceRef.value && typeof calendarSurfaceRef.value.animate === 'function'
@@ -309,270 +239,87 @@ async function waitForAnimations(animations) {
   await Promise.all(animations.map(waitForAnimation))
 }
 
-async function replaceCalendarData(data, { direction, nextSelection = '' } = {}) {
+async function replaceCalendarData(
+  data,
+  { direction, nextSelection = '', sequence = calendarModel.sequence } = {}
+) {
   const outgoing = startCalendarAnimation(direction, 'out')
   await waitForAnimation(outgoing)
+  if (calendarModel.disposed || sequence !== calendarModel.sequence) {
+    outgoing?.cancel()
+    return false
+  }
 
-  calendarData.value = data
-  syncCalendarPeriod(data)
-  if (nextSelection) selectedKey.value = nextSelection
+  calendarModel.commitPeriod(data, { nextSelection })
   await nextTick()
+  if (calendarModel.disposed || sequence !== calendarModel.sequence) {
+    outgoing?.cancel()
+    return false
+  }
 
   const incoming = startCalendarAnimation(direction, 'in')
   outgoing?.cancel()
   await waitForAnimation(incoming)
   incoming?.cancel()
+  return !calendarModel.disposed && sequence === calendarModel.sequence
+}
+
+async function presentCalendarRefresh(data, { manual, sequence }) {
+  const outgoing = manual ? startRefreshContentAnimation('out') : []
+  if (manual) await waitForAnimations(outgoing)
+  if (calendarModel.disposed || sequence !== calendarModel.sequence) {
+    outgoing.forEach((animation) => animation.cancel())
+    return { status: 'cancelled' }
+  }
+  calendarModel.replaceData(data)
+  await nextTick()
+  if (!calendarModel.isCurrent(sequence)) {
+    outgoing.forEach((animation) => animation.cancel())
+    return { status: 'cancelled' }
+  }
+  if (manual) {
+    outgoing.forEach((animation) => animation.cancel())
+    const incoming = startRefreshContentAnimation('in')
+    await waitForAnimations(incoming)
+    incoming.forEach((animation) => animation.cancel())
+  }
+  return { status: 'success' }
 }
 
 async function loadMonth(year = viewYear.value, month = viewMonth.value) {
-  return traceCalendarLoad({ reason: 'load-month', year, month }, () => loadMonthData(year, month))
-}
-async function loadMonthData(year, month) {
-  const sequence = ++loadSequence
-  loading.value = true
-  loadError.value = ''
-  try {
-    const data = await window.api.getMonthCalendarData(year, month, calendarRequestOptions())
-    if (sequence !== loadSequence) return { status: 'cancelled' }
-    calendarData.value = data
-    syncCalendarPeriod(data)
-    return { status: 'success' }
-  } catch (error) {
-    if (sequence !== loadSequence) return { status: 'cancelled' }
-    console.error('[MonthWorkspace] 加载月历失败:', error)
-    loadError.value = error.message || '月历加载失败'
-    return { status: 'error' }
-  } finally {
-    if (sequence === loadSequence) loading.value = false
-  }
-}
-
-async function loadWeek(anchorDate = weekAnchorKey.value) {
-  return traceCalendarLoad({ reason: 'load-week', anchorDate }, () => loadWeekData(anchorDate))
-}
-async function loadWeekData(anchorDate) {
-  const sequence = ++loadSequence
-  loading.value = true
-  loadError.value = ''
-  try {
-    const data = await window.api.getWeekCalendarData(anchorDate, calendarRequestOptions())
-    if (sequence !== loadSequence) return { status: 'cancelled' }
-    calendarData.value = data
-    syncCalendarPeriod(data)
-    if (!selectedKey.value) selectedKey.value = anchorDate
-    return { status: 'success' }
-  } catch (error) {
-    if (sequence !== loadSequence) return { status: 'cancelled' }
-    console.error('[MonthWorkspace] 加载周历失败:', error)
-    loadError.value = error.message || '周历加载失败'
-    return { status: 'error' }
-  } finally {
-    if (sequence === loadSequence) loading.value = false
-  }
-}
-
-async function navigateMonth(year, month, { shiftSelection = true, selectionKey = null } = {}) {
-  if (transitioning.value) return false
-  let targetYear = year
-  let targetMonth = month
-  while (targetMonth < 1) {
-    targetMonth += 12
-    targetYear -= 1
-  }
-  while (targetMonth > 12) {
-    targetMonth -= 12
-    targetYear += 1
-  }
-  if (targetYear < MIN_CALENDAR_YEAR || targetYear > MAX_CALENDAR_YEAR) return false
-  if (targetYear === viewYear.value && targetMonth === viewMonth.value) return true
-  const direction = monthMotionDirection(targetYear, targetMonth)
-  const nextSelection =
-    selectionKey ??
-    (shiftSelection ? selectedKeyForMonth(targetYear, targetMonth) : selectedKey.value)
-  const sequence = ++loadSequence
-  transitioning.value = true
-  loading.value = true
-  loadError.value = ''
-  try {
-    const data = await window.api.getMonthCalendarData(
-      targetYear,
-      targetMonth,
-      calendarRequestOptions()
-    )
-    if (sequence !== loadSequence) return false
-    await replaceCalendarData(data, { direction, nextSelection })
-    return true
-  } catch (error) {
-    if (sequence !== loadSequence) return false
-    console.error('[MonthWorkspace] 切换月历失败:', error)
-    loadError.value = error.message || '月历加载失败'
-    return false
-  } finally {
-    if (sequence === loadSequence) loading.value = false
-    transitioning.value = false
-  }
-}
-
-async function navigateWeek(
-  anchorDate,
-  { selectionKey = anchorDate, focusIfCurrent = false } = {}
-) {
-  if (transitioning.value) {
-    pendingWeekNavigation = { anchorDate, selectionKey, focusIfCurrent }
-    return false
-  }
-  parseDateKey(anchorDate)
-  activeWeekNavigationSelection = selectionKey
-  if (weekContains(anchorDate)) {
-    selectedKey.value = selectionKey
-    if (focusIfCurrent) {
-      transitioning.value = true
-      try {
-        await focusCalendarDate(selectionKey)
-      } finally {
-        transitioning.value = false
-        continuePendingWeekNavigation(anchorDate)
-      }
-    } else {
-      activeWeekNavigationSelection = ''
-    }
-    return true
-  }
-
-  const direction = weekMotionDirection(anchorDate)
-  const sequence = ++loadSequence
-  transitioning.value = true
-  loading.value = true
-  loadError.value = ''
-  try {
-    const data = await window.api.getWeekCalendarData(anchorDate, calendarRequestOptions())
-    if (sequence !== loadSequence) return false
-    await replaceCalendarData(data, { direction, nextSelection: selectionKey })
-    return true
-  } catch (error) {
-    if (sequence !== loadSequence) return false
-    console.error('[MonthWorkspace] 切换周历失败:', error)
-    loadError.value = error.message || '周历加载失败'
-    activeWeekNavigationSelection = ''
-    return false
-  } finally {
-    if (sequence === loadSequence) loading.value = false
-    transitioning.value = false
-    continuePendingWeekNavigation(anchorDate)
-  }
-}
-
-function continuePendingWeekNavigation(completedAnchor = '') {
-  const pending = pendingWeekNavigation
-  pendingWeekNavigation = null
-  if (pending && pending.anchorDate !== completedAnchor) {
-    void navigateWeek(pending.anchorDate, pending)
-  } else {
-    activeWeekNavigationSelection = ''
-  }
-}
-
-function currentWeekNavigationSelection() {
-  return (
-    pendingWeekNavigation?.selectionKey ||
-    activeWeekNavigationSelection ||
-    selectedKey.value ||
-    weekAnchorKey.value
+  return traceCalendarLoad({ reason: 'load-month', year, month }, () =>
+    calendarModel.loadMonth(year, month)
   )
 }
-
-function goPrevious() {
-  if (isWeekView.value) {
-    const currentSelection = currentWeekNavigationSelection()
-    const target = addCalendarDays(currentSelection, -7)
-    if (target < firstWeekDateKey) return
-    void navigateWeek(target, { selectionKey: target })
-  } else {
-    void navigateMonth(viewYear.value, viewMonth.value - 1)
-  }
+async function loadWeek(anchorDate = weekAnchorKey.value) {
+  return traceCalendarLoad({ reason: 'load-week', anchorDate }, () =>
+    calendarModel.loadWeek(anchorDate)
+  )
 }
-function goNext() {
-  if (isWeekView.value) {
-    const currentSelection = currentWeekNavigationSelection()
-    const target = addCalendarDays(currentSelection, 7)
-    if (target > lastWeekDateKey) return
-    void navigateWeek(target, { selectionKey: target })
-  } else {
-    void navigateMonth(viewYear.value, viewMonth.value + 1)
-  }
-}
-function jumpTo({ year, month }) {
-  void navigateMonth(year, month)
-}
-function jumpToDate(dateKey) {
-  void navigateWeek(dateKey, { selectionKey: dateKey, focusIfCurrent: true })
-}
+const { goPrevious, goNext, jumpTo, jumpToDate, goToday } = calendarModel
 
 async function refreshCalendarContent({ manual = false, diagnosticCauses } = {}) {
   return traceCalendarLoad({ reason: manual ? 'manual' : 'refresh', ...diagnosticCauses }, () =>
-    refreshCalendarData({ manual })
+    calendarModel.refresh({ manual })
   )
 }
-async function refreshCalendarData({ manual = false } = {}) {
-  if (refreshing.value || transitioning.value) return
-  if (manual) refreshing.value = true
-  transitioning.value = true
-  const sequence = ++loadSequence
-  loadError.value = ''
-  try {
-    const data = isWeekView.value
-      ? await window.api.getWeekCalendarData(weekAnchorKey.value, calendarRequestOptions())
-      : await window.api.getMonthCalendarData(
-          viewYear.value,
-          viewMonth.value,
-          calendarRequestOptions()
-        )
-    if (sequence !== loadSequence) return { status: 'cancelled' }
-    const outgoing = manual ? startRefreshContentAnimation('out') : []
-    if (manual) await waitForAnimations(outgoing)
-    calendarData.value = data
-    await nextTick()
-    if (manual) {
-      outgoing.forEach((animation) => animation.cancel())
-      const incoming = startRefreshContentAnimation('in')
-      await waitForAnimations(incoming)
-      incoming.forEach((animation) => animation.cancel())
-    }
-    return { status: 'success' }
-  } catch (error) {
-    if (sequence !== loadSequence) return { status: 'cancelled' }
-    console.error('[MonthWorkspace] 同步日历失败:', error)
-    loadError.value = error.message || `${calendarViewLabel.value}同步失败`
-    return { status: 'error' }
-  } finally {
-    if (manual) refreshing.value = false
-    transitioning.value = false
-    if (isWeekView.value) continuePendingWeekNavigation()
-  }
-}
-
 function refreshCalendar() {
   void refreshCalendarContent({ manual: true })
 }
 
-async function updateRecurringPreviewEnabled(nextValue) {
-  if (recurringPreviewSaving.value) return
-  const next = Boolean(nextValue)
-  const previous = recurringPreviewEnabled.value
-  if (next === previous) return
-
-  recurringPreviewEnabled.value = next
-  recurringPreviewSaving.value = true
-  try {
-    await window.api.setSettingValue('calendar.recurringPreviewEnabled', next)
-    await refreshCalendarContent()
-  } catch (error) {
-    recurringPreviewEnabled.value = previous
-    console.error('[MonthWorkspace] 保存循环便签预览设置失败:', error)
-    showMessage('error', error?.message || '无法切换循环便签预览')
-    await refreshCalendarContent()
-  } finally {
-    recurringPreviewSaving.value = false
+async function onHistoricalNotesMoved() {
+  const today = todayKey.value
+  const alreadyInPeriod = isWeekView.value
+    ? today >= calendarData.value.weekStart && today <= calendarData.value.weekEnd
+    : today.startsWith(`${viewYear.value}-${String(viewMonth.value).padStart(2, '0')}-`)
+  // The command's broadcast is already queued. Navigation reads fresh data itself;
+  // an unchanged period needs one content refresh after focusing today.
+  clearTimeout(notesChangedTimer)
+  notesChangedTimer = null
+  const diagnosticCauses = refreshCauses.take()
+  await goToday()
+  if (alreadyInPeriod && !calendarModel.disposed) {
+    await refreshCalendarContent({ diagnosticCauses })
   }
 }
 
@@ -601,24 +348,7 @@ function setStatusTransition(noteId, state) {
   else statusTransitions.delete(noteId)
 }
 
-function mergeCalendarNote(updated, { preserveEffectiveAt = false } = {}) {
-  calendarData.value = {
-    ...calendarData.value,
-    notes: calendarData.value.notes.map((note) =>
-      note.id === updated.id
-        ? {
-            ...note,
-            ...updated,
-            effective_at: preserveEffectiveAt ? note.effective_at : updated.effective_at,
-            tags: Array.isArray(updated.tags) ? updated.tags : note.tags,
-            attachment_count: Number.isFinite(Number(updated.attachment_count))
-              ? Number(updated.attachment_count)
-              : note.attachment_count
-          }
-        : note
-    )
-  }
-}
+const mergeCalendarNote = calendarModel.patchNote
 
 function onCardStatusAction(note) {
   if (note.status === 'initialized') {
@@ -667,10 +397,7 @@ async function confirmDeleteNote() {
   try {
     const deleted = await window.api.deleteNote(note.id)
     if (!deleted) throw new Error('便签不存在或已被删除')
-    calendarData.value = {
-      ...calendarData.value,
-      notes: calendarData.value.notes.filter((item) => Number(item.id) !== Number(note.id))
-    }
+    calendarModel.removeNote(note.id)
     showMessage('success', '便签已删除')
   } catch (error) {
     console.error('[MonthWorkspace] 删除便签失败:', note.id, error)
@@ -729,31 +456,6 @@ async function executeCardStatusAction(note) {
   }
 }
 
-async function goToday() {
-  if (isWeekView.value) {
-    await navigateWeek(todayKey.value, {
-      selectionKey: todayKey.value,
-      focusIfCurrent: true
-    })
-    return
-  }
-  const today = parseDateKey(todayKey.value)
-  if (today.year === viewYear.value && today.month === viewMonth.value) {
-    selectedKey.value = todayKey.value
-    transitioning.value = true
-    try {
-      await focusCalendarDate(todayKey.value)
-    } finally {
-      transitioning.value = false
-    }
-    return
-  }
-  await navigateMonth(today.year, today.month, {
-    shiftSelection: false,
-    selectionKey: todayKey.value
-  })
-}
-
 async function selectDate(day) {
   if (!(day?.isActive ?? day?.inCurrentMonth)) return
   selectedKey.value = day.key
@@ -787,14 +489,7 @@ function onQuickCreateOpened(day) {
   selectedKey.value = day.key
 }
 
-function onQuickCreated(created) {
-  if (!created?.id) return
-  if (calendarData.value.notes.some((note) => Number(note.id) === Number(created.id))) return
-  calendarData.value = {
-    ...calendarData.value,
-    notes: [...calendarData.value.notes, created]
-  }
-}
+const onQuickCreated = calendarModel.addNote
 
 function closeCreator() {
   creatorDate.value = ''
@@ -859,6 +554,7 @@ function onBusinessModalKeydown(event, type) {
 }
 
 function queueNotesRefresh(payload) {
+  if (calendarModel.disposed) return
   if (payload) refreshCauses.add(payload)
   clearTimeout(notesChangedTimer)
   notesChangedTimer = setTimeout(() => {
@@ -915,8 +611,8 @@ function startPanelResize(event) {
 onMounted(async () => {
   try {
     const snapshot = await window.api.getSettingsSnapshot()
-    weatherEnabled.value = Boolean(snapshot?.values?.weather?.enabled)
-    recurringPreviewEnabled.value = Boolean(snapshot?.values?.calendar?.recurringPreviewEnabled)
+    if (calendarModel.disposed) return
+    calendarPreferences.applyInitialSettings(snapshot)
     dayPanelSize.value = Math.min(
       50,
       Math.max(25, Number(snapshot?.values?.ui?.dayPanelSize) || defaultDayPanelSize)
@@ -924,36 +620,21 @@ onMounted(async () => {
   } catch (error) {
     console.warn('[MonthWorkspace] 读取日期侧栏设置失败:', error)
   }
+  if (calendarModel.disposed) return
   stopNotesListener = window.api.onNotesChanged?.(queueNotesRefresh)
   stopTemplatesListener = window.api.onTemplatesChanged?.(queueNotesRefresh)
   stopHolidayDataListener = window.api.onHolidayDataChanged?.(queueNotesRefresh)
   stopWeatherSettingsListener = window.api.onSettingsChanged?.((snapshot) => {
-    const nextRecurringPreviewEnabled = Boolean(snapshot?.values?.calendar?.recurringPreviewEnabled)
-    if (nextRecurringPreviewEnabled !== recurringPreviewEnabled.value) {
-      recurringPreviewEnabled.value = nextRecurringPreviewEnabled
-      queueNotesRefresh()
-    }
-    weatherEnabled.value = Boolean(snapshot?.values?.weather?.enabled)
-    if (weatherEnabled.value && snapshot?.values?.weather?.location) {
-      void loadWeather({ quiet: true })
-    } else {
-      weatherLoadSequence += 1
-      weatherForecast.value = null
-      weatherError.value = ''
-    }
+    if (calendarPreferences.applySettings(snapshot).previewChanged) queueNotesRefresh()
   })
   stopWeatherForecastListener = window.api.onWeatherForecastUpdated?.((forecast) => {
-    if (!weatherEnabled.value) return
-    weatherLoadSequence += 1
-    weatherLoading.value = false
-    weatherForecast.value = forecast
-    weatherError.value = forecast?.warning || ''
+    calendarPreferences.acceptForecast(forecast)
   })
   const calendarLoadPromise = isWeekView.value ? loadWeek(todayKey.value) : loadMonth()
   // 日历可见性只依赖本地数据；天气网络请求在后台补齐，不能阻塞窗口就绪。
   if (weatherEnabled.value) void loadWeather({ quiet: true })
   await calendarLoadPromise
-  emit('ready')
+  if (!calendarModel.disposed) emit('ready')
 })
 
 watch(modalOpen, (open) => emit('modal-state-change', open), { immediate: true })
@@ -976,6 +657,8 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  calendarModel.dispose()
+  calendarPreferences.dispose()
   stopNotesListener?.()
   stopTemplatesListener?.()
   stopHolidayDataListener?.()
@@ -1038,8 +721,10 @@ onBeforeUnmount(() => {
           @refresh="refreshCalendar"
           @update:recurring-preview-enabled="updateRecurringPreviewEnabled"
           @toggle-day-panel="toggleDayPanel"
+          @historical-move-open-change="historicalMoveOpen = $event"
+          @historical-notes-moved="onHistoricalNotesMoved"
         />
-        <div ref="calendarSurfaceRef" class="month-workspace__calendar-body">
+        <div ref="calendarSurfaceRef" class="month-workspace__calendar-body scroll-y">
           <MonthCalendarGrid
             :view-mode="viewMode"
             :days="calendarData.days"
@@ -1047,6 +732,7 @@ onBeforeUnmount(() => {
             :recurring-previews="calendarData.recurringPreviews || []"
             :selected-key="selectedKey"
             :today-key="todayKey"
+            :quick-create-until-completed="quickCreateUntilCompleted"
             :weather-by-date="weatherByDate"
             :status-transitions="statusTransitions"
             @select-date="selectDate"
@@ -1174,7 +860,6 @@ onBeforeUnmount(() => {
 }
 .month-workspace__calendar-body {
   overflow: auto;
-  scrollbar-width: thin;
   position: relative;
   display: flex;
   min-width: 0;
@@ -1295,7 +980,6 @@ onBeforeUnmount(() => {
 /* Preserve seven readable columns; scroll only the calendar canvas. */
 .month-workspace__calendar-body :deep(.month-grid) {
   min-width: max(560rem, 42em);
-  min-height: 380rem;
 }
 @container calendar-workspace (max-width: 900px) {
   .month-workspace__side {

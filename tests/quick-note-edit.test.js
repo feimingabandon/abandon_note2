@@ -43,8 +43,11 @@ describe('双击快速编辑正文', () => {
     const monthApp = read('../src/renderer/src/MonthApp.vue')
     const panel = read('../src/renderer/src/components/system/SettingsPanel.vue')
 
-    expect(listApp).toContain('createQuickNoteEditSettingProvider()')
-    expect(monthApp).toContain('createQuickNoteEditSettingProvider()')
+    expect(listApp).toContain('useWorkspaceRuntime({')
+    expect(monthApp).toContain('useWorkspaceRuntime({')
+    expect(read('../src/renderer/src/composables/useWorkspaceRuntime.js')).toContain(
+      'createQuickNoteEditSettingProvider()'
+    )
     expect(panel).toContain('v-model="doubleClickQuickEdit"')
     expect(panel).toContain('双击快速编辑正文')
     expect(panel).toContain("debouncedSave('interaction.doubleClickQuickEdit', v)")

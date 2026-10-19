@@ -2,14 +2,14 @@
 /**
  * DateTimePicker.vue
  *
- * 布局：dt-panel 固定宽高，内部 flex 2:7:1 分割上/中/下
+ * 布局：面板按可用空间约束，日期内容内部滚动，确认操作始终可见
  * 视图切换：v-show（DOM 常驻，布局已解好）
  * 滚动定位：nextTick + el.scrollTop = value（瞬间完成，不触发外层跳动）
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import TimeSpinner from './TimeSpinner.vue'
 import BaseButton from './BaseButton.vue'
-import { popoverStyle } from '../../utils/anchoredPopover.js'
+import { measurePopoverContent, popoverStyle } from '../../utils/anchoredPopover.js'
 import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
 import { isComposingInput } from '../../utils/inputComposition.js'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
@@ -22,6 +22,9 @@ const props = defineProps({
   clearable: { type: Boolean, default: true },
   minDate: { type: Date, default: null },
   defaultTime: { type: String, default: '' },
+  // Optional relative intent: resolve "now" at submission rather than freezing a click timestamp.
+  relativeNow: { type: Boolean, default: false },
+  relativeNowLabel: { type: String, default: '保存时取当前时间' },
   shortcuts: {
     type: Array,
     default: () => [
@@ -82,11 +85,13 @@ const calendarDirection = ref('next')
 // 可编辑输入框的临时值
 const inputDate = ref('')
 const inputTime = ref('')
+let relativeNowBaseline = null
 
 // ==================== 计算属性 ====================
-const displayText = computed(() =>
-  props.modelValue ? props.modelValue.replace('T', ' ') : props.placeholder
-)
+const displayText = computed(() => {
+  if (props.relativeNow && props.modelValue === 'now') return props.relativeNowLabel
+  return props.modelValue ? props.modelValue.replace('T', ' ') : props.placeholder
+})
 const wrapperStyle = computed(() =>
   props.width ? { width: typeof props.width === 'number' ? props.width + 'px' : props.width } : {}
 )
@@ -184,6 +189,10 @@ function parseDateTimeParts(val) {
 }
 
 function parseValue(val) {
+  if (props.relativeNow && val === 'now') {
+    setFromDate(new Date())
+    return true
+  }
   const parts = parseDateTimeParts(val)
   if (!parts) return false
   ;[year.value, month.value, day.value, hour.value, minute.value, second.value] = parts
@@ -371,7 +380,23 @@ function updatePanelPosition() {
   if (!wrapperRef.value) return
   const rect = wrapperRef.value.getBoundingClientRect()
   const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 1
-  panelStyle.value = popoverStyle(rect, 320 * rem, panelRef.value?.scrollHeight || 380 * rem)
+  const width = Math.min(320 * rem, Math.max(0, window.innerWidth - 16))
+  // The last viewport-limited box is not the natural height of the picker.
+  const natural = measurePopoverContent(panelRef.value, width)
+  const fontSize = parseFloat(getComputedStyle(wrapperRef.value).fontSize) || 17 * rem
+  const height = natural?.height || Math.max(380 * rem, 24 * fontSize)
+  const style = popoverStyle(rect, width, height)
+  const visibleHeight = Math.min(height, Math.max(0, window.innerHeight - 16))
+  if (parseFloat(style.maxHeight) < visibleHeight) {
+    // Keep the complete date/time dialog readable when neither side of its
+    // trigger fits. Only a smaller viewport should require content scrolling.
+    const preferredTop =
+      style['--popover-placement'] === 'top' ? rect.top - 6 - visibleHeight : rect.bottom + 6
+    style.top = `${Math.max(8, Math.min(preferredTop, window.innerHeight - 8 - visibleHeight))}px`
+    style.maxHeight = `${visibleHeight}px`
+    style['--popover-available-height'] = `${visibleHeight}px`
+  }
+  panelStyle.value = style
 }
 
 function toggle() {
@@ -381,6 +406,8 @@ function toggle() {
     return
   }
   if (!parseValue(props.modelValue)) resetToDefault()
+  relativeNowBaseline =
+    props.relativeNow && (!props.modelValue || props.modelValue === 'now') ? buildValue() : null
   viewYear.value = year.value
   viewMonth.value = month.value - 1
   currentView.value = 'calendar'
@@ -389,7 +416,16 @@ function toggle() {
 }
 
 function confirm() {
-  const val = buildValue()
+  if (props.disabled) return
+  const draftValue = buildValue()
+  // Opening and confirming a relative value without editing must preserve its
+  // submission-time intent. A changed date or time still commits an exact value.
+  const val =
+    props.relativeNow &&
+    (!props.modelValue || props.modelValue === 'now') &&
+    draftValue === relativeNowBaseline
+      ? 'now'
+      : draftValue
   emit('update:modelValue', val)
   emit('change', val)
   popover.close(true)
@@ -412,6 +448,13 @@ function applyShortcut(sc) {
 }
 
 function applyNowAndConfirm() {
+  if (props.disabled) return
+  if (props.relativeNow) {
+    emit('update:modelValue', 'now')
+    emit('change', 'now')
+    popover.close(true)
+    return
+  }
   applyShortcut({ getValue: () => new Date() })
   confirm()
 }
@@ -503,7 +546,7 @@ function onLeave(el, done) {
         <div
           v-if="open"
           ref="panelRef"
-          class="dt-panel-wrap scroll-y"
+          class="dt-panel-wrap"
           :style="panelStyle"
           role="dialog"
           aria-label="选择日期时间"
@@ -512,179 +555,192 @@ function onLeave(el, done) {
         >
           <div class="dt-panel-glass">
             <div class="dt-panel">
-              <!-- ===== 上：日期+时间可编辑区 ===== -->
-              <div class="dt-time-header">
-                <div
-                  class="dt-header-field"
-                  :class="{ active: currentView === 'calendar' }"
-                  @click="currentView = 'calendar'"
-                >
-                  <span class="dt-header-field-label">日期</span>
-                  <input
-                    class="dt-header-input"
-                    :value="inputDate || dateDisplay"
-                    placeholder="YYYY-MM-DD"
-                    @focus="onDateFocus"
-                    @input="onDateInput"
-                    @blur="onDateBlur"
-                    @keydown="onDateKeydown"
-                  />
-                </div>
-                <span class="dt-header-sep" />
-                <div
-                  class="dt-header-field"
-                  :class="{ active: currentView === 'time' }"
-                  @click="switchToTime"
-                >
-                  <span class="dt-header-field-label">时间</span>
-                  <input
-                    class="dt-header-input"
-                    :value="inputTime || timeDisplay"
-                    placeholder="HH:mm:ss"
-                    @focus="onTimeFocus"
-                    @input="onTimeInput"
-                    @blur="onTimeBlur"
-                    @keydown="onTimeKeydown"
-                  />
-                </div>
-              </div>
-              <div class="dt-divider" />
-
-              <!-- ===== 中：内容区（双视图常驻，通过透明度与水平位移切换） ===== -->
-              <div class="dt-content">
-                <div
-                  class="dt-view dt-view--calendar"
-                  :class="{ 'is-active': currentView === 'calendar' }"
-                  :inert="currentView !== 'calendar'"
-                  :aria-hidden="currentView !== 'calendar'"
-                >
-                  <div class="dt-header-nav">
-                    <button class="dt-nav-btn" title="上一年" @click="prevYear">
-                      <svg width="12" height="12" viewBox="0 0 12 12">
-                        <path
-                          d="M8 2L4 6l4 4"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                          fill="none"
-                          stroke-linecap="round"
-                        />
-                        <path
-                          d="M11 2L7 6l4 4"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                          fill="none"
-                          stroke-linecap="round"
-                        />
-                      </svg>
-                    </button>
-                    <button class="dt-nav-btn" title="上一月" @click="prevMonth">
-                      <svg width="10" height="10" viewBox="0 0 10 10">
-                        <path
-                          d="M7 2L3 5l4 3"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                          fill="none"
-                          stroke-linecap="round"
-                        />
-                      </svg>
-                    </button>
-                    <button class="dt-nav-label" @click="goToToday">{{ yearMonthLabel }}</button>
-                    <button class="dt-nav-btn" title="下一月" @click="nextMonth">
-                      <svg width="10" height="10" viewBox="0 0 10 10">
-                        <path
-                          d="M3 2l4 3-4 3"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                          fill="none"
-                          stroke-linecap="round"
-                        />
-                      </svg>
-                    </button>
-                    <button class="dt-nav-btn" title="下一年" @click="nextYear">
-                      <svg width="12" height="12" viewBox="0 0 12 12">
-                        <path
-                          d="M4 2l4 4-4 4"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                          fill="none"
-                          stroke-linecap="round"
-                        />
-                        <path
-                          d="M1 2l4 4-4 4"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                          fill="none"
-                          stroke-linecap="round"
-                        />
-                      </svg>
-                    </button>
-                  </div>
-                  <div class="dt-weekdays">
-                    <span v-for="w in WEEKDAYS" :key="w" class="dt-weekday">{{ w }}</span>
-                  </div>
-                  <Transition :name="`dt-month-${calendarDirection}`" mode="out-in">
+              <div class="dt-panel-scroll scroll-y">
+                <div class="dt-panel-body">
+                  <!-- ===== 上：日期+时间可编辑区 ===== -->
+                  <div class="dt-time-header">
                     <div
-                      :key="`${viewYear}-${viewMonth}`"
-                      class="dt-calendar"
-                      data-popover-grid="7"
+                      class="dt-header-field"
+                      :class="{ active: currentView === 'calendar' }"
+                      @click="currentView = 'calendar'"
                     >
-                      <button
-                        v-for="(c, i) in calendarCells"
-                        :key="i"
-                        class="dt-cell"
-                        :class="{
-                          'is-other': c.type !== 'curr',
-                          'is-today': c.isToday,
-                          'is-sel': c.isSelected,
-                          'is-disabled': c.isDisabled
-                        }"
-                        :disabled="c.isDisabled"
-                        @click="selectDateCell(c)"
-                      >
-                        {{ c.day }}
-                      </button>
+                      <span class="dt-header-field-label">日期</span>
+                      <input
+                        class="dt-header-input"
+                        :value="inputDate || dateDisplay"
+                        placeholder="YYYY-MM-DD"
+                        @focus="onDateFocus"
+                        @input="onDateInput"
+                        @blur="onDateBlur"
+                        @keydown="onDateKeydown"
+                      />
                     </div>
-                  </Transition>
-                </div>
+                    <span class="dt-header-sep" />
+                    <div
+                      class="dt-header-field"
+                      :class="{ active: currentView === 'time' }"
+                      @click="switchToTime"
+                    >
+                      <span class="dt-header-field-label">时间</span>
+                      <input
+                        class="dt-header-input"
+                        :value="inputTime || timeDisplay"
+                        placeholder="HH:mm:ss"
+                        @focus="onTimeFocus"
+                        @input="onTimeInput"
+                        @blur="onTimeBlur"
+                        @keydown="onTimeKeydown"
+                      />
+                    </div>
+                  </div>
+                  <div class="dt-divider" />
 
-                <div
-                  class="dt-view dt-view--time"
-                  :class="{ 'is-active': currentView === 'time' }"
-                  :inert="currentView !== 'time'"
-                  :aria-hidden="currentView !== 'time'"
-                >
-                  <div class="dt-time-picker">
-                    <div class="dt-sp-col">
-                      <div class="dt-sp-label">时</div>
-                      <TimeSpinner v-model="hour" :max="24" :visible="currentView === 'time'" />
+                  <!-- ===== 中：内容区（双视图常驻，通过透明度与水平位移切换） ===== -->
+                  <div class="dt-content">
+                    <div
+                      class="dt-view dt-view--calendar"
+                      :class="{ 'is-active': currentView === 'calendar' }"
+                      :inert="currentView !== 'calendar'"
+                      :aria-hidden="currentView !== 'calendar'"
+                    >
+                      <div class="dt-header-nav">
+                        <button class="dt-nav-btn" title="上一年" @click="prevYear">
+                          <svg width="12" height="12" viewBox="0 0 12 12">
+                            <path
+                              d="M8 2L4 6l4 4"
+                              stroke="currentColor"
+                              stroke-width="1.2"
+                              fill="none"
+                              stroke-linecap="round"
+                            />
+                            <path
+                              d="M11 2L7 6l4 4"
+                              stroke="currentColor"
+                              stroke-width="1.2"
+                              fill="none"
+                              stroke-linecap="round"
+                            />
+                          </svg>
+                        </button>
+                        <button class="dt-nav-btn" title="上一月" @click="prevMonth">
+                          <svg width="10" height="10" viewBox="0 0 10 10">
+                            <path
+                              d="M7 2L3 5l4 3"
+                              stroke="currentColor"
+                              stroke-width="1.2"
+                              fill="none"
+                              stroke-linecap="round"
+                            />
+                          </svg>
+                        </button>
+                        <button class="dt-nav-label" @click="goToToday">
+                          {{ yearMonthLabel }}
+                        </button>
+                        <button class="dt-nav-btn" title="下一月" @click="nextMonth">
+                          <svg width="10" height="10" viewBox="0 0 10 10">
+                            <path
+                              d="M3 2l4 3-4 3"
+                              stroke="currentColor"
+                              stroke-width="1.2"
+                              fill="none"
+                              stroke-linecap="round"
+                            />
+                          </svg>
+                        </button>
+                        <button class="dt-nav-btn" title="下一年" @click="nextYear">
+                          <svg width="12" height="12" viewBox="0 0 12 12">
+                            <path
+                              d="M4 2l4 4-4 4"
+                              stroke="currentColor"
+                              stroke-width="1.2"
+                              fill="none"
+                              stroke-linecap="round"
+                            />
+                            <path
+                              d="M1 2l4 4-4 4"
+                              stroke="currentColor"
+                              stroke-width="1.2"
+                              fill="none"
+                              stroke-linecap="round"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                      <div class="dt-weekdays">
+                        <span v-for="w in WEEKDAYS" :key="w" class="dt-weekday">{{ w }}</span>
+                      </div>
+                      <Transition :name="`dt-month-${calendarDirection}`" mode="out-in">
+                        <div
+                          :key="`${viewYear}-${viewMonth}`"
+                          class="dt-calendar"
+                          data-popover-grid="7"
+                        >
+                          <button
+                            v-for="(c, i) in calendarCells"
+                            :key="i"
+                            class="dt-cell"
+                            :class="{
+                              'is-other': c.type !== 'curr',
+                              'is-today': c.isToday,
+                              'is-sel': c.isSelected,
+                              'is-disabled': c.isDisabled
+                            }"
+                            :disabled="c.isDisabled"
+                            @click="selectDateCell(c)"
+                          >
+                            {{ c.day }}
+                          </button>
+                        </div>
+                      </Transition>
                     </div>
-                    <div class="dt-sp-col">
-                      <div class="dt-sp-label">分</div>
-                      <TimeSpinner v-model="minute" :max="60" :visible="currentView === 'time'" />
+
+                    <div
+                      class="dt-view dt-view--time"
+                      :class="{ 'is-active': currentView === 'time' }"
+                      :inert="currentView !== 'time'"
+                      :aria-hidden="currentView !== 'time'"
+                    >
+                      <div class="dt-time-picker">
+                        <div class="dt-sp-col">
+                          <div class="dt-sp-label">时</div>
+                          <TimeSpinner v-model="hour" :max="24" :visible="currentView === 'time'" />
+                        </div>
+                        <div class="dt-sp-col">
+                          <div class="dt-sp-label">分</div>
+                          <TimeSpinner
+                            v-model="minute"
+                            :max="60"
+                            :visible="currentView === 'time'"
+                          />
+                        </div>
+                        <div class="dt-sp-col">
+                          <div class="dt-sp-label">秒</div>
+                          <TimeSpinner
+                            v-model="second"
+                            :max="60"
+                            :visible="currentView === 'time'"
+                          />
+                        </div>
+                      </div>
                     </div>
-                    <div class="dt-sp-col">
-                      <div class="dt-sp-label">秒</div>
-                      <TimeSpinner v-model="second" :max="60" :visible="currentView === 'time'" />
-                    </div>
+                  </div>
+
+                  <div class="dt-shortcuts">
+                    <button
+                      v-for="(sc, i) in shortcuts"
+                      :key="i"
+                      class="dt-sc-chip"
+                      @click="applyShortcut(sc)"
+                    >
+                      {{ sc.label }}
+                    </button>
                   </div>
                 </div>
               </div>
-
               <div class="dt-divider" />
 
-              <!-- ===== 下：按钮区 ===== -->
+              <!-- Confirm stays in view even when the calendar needs scrolling. -->
               <div class="dt-footer">
-                <div class="dt-shortcuts">
-                  <button
-                    v-for="(sc, i) in shortcuts"
-                    :key="i"
-                    class="dt-sc-chip"
-                    @click="applyShortcut(sc)"
-                  >
-                    {{ sc.label }}
-                  </button>
-                </div>
-                <div class="dt-footer-spacer" />
                 <BaseButton size="sm" variant="text" class="dt-btn--now" @click="applyNowAndConfirm"
                   >此刻</BaseButton
                 >
@@ -801,7 +857,7 @@ function onLeave(el, done) {
 .dt-panel-wrap {
   border-radius: 10rem;
   box-shadow: var(--ui-menu-shadow);
-  overflow: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
   transform-origin: top center;
   will-change: clip-path, transform, opacity;
@@ -813,8 +869,18 @@ function onLeave(el, done) {
 }
 .dt-panel {
   width: 100%;
-  min-height: 380rem;
-  height: max(380rem, 26em);
+  min-height: 0;
+  max-height: calc(var(--popover-available-height, 100vh) - 2px);
+  display: flex;
+  flex-direction: column;
+}
+.dt-panel-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.dt-panel-body {
   display: flex;
   flex-direction: column;
 }
@@ -830,7 +896,7 @@ function onLeave(el, done) {
   display: flex;
   align-items: stretch;
   padding: 0;
-  flex: 2;
+  flex: 0 0 auto;
   min-height: 0;
 }
 .dt-header-field {
@@ -888,8 +954,8 @@ function onLeave(el, done) {
 /* ===== 中：内容区 ===== */
 .dt-content {
   position: relative;
-  flex: 7;
-  min-height: 0;
+  flex: 1 0 max(250rem, 14em);
+  min-height: max(250rem, 14em);
   overflow: hidden;
 }
 .dt-view {
@@ -1080,6 +1146,7 @@ function onLeave(el, done) {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 6rem;
   padding: 8rem 10rem;
   flex: 0 0 auto;
@@ -1089,6 +1156,8 @@ function onLeave(el, done) {
   display: flex;
   flex-wrap: wrap;
   gap: 4rem;
+  flex: 0 0 auto;
+  padding: 8rem 10rem;
 }
 .dt-sc-chip {
   padding: 4rem 8rem;
@@ -1108,9 +1177,6 @@ function onLeave(el, done) {
 }
 .dt-sc-chip:hover {
   border-color: var(--ui-border-hover);
-}
-.dt-footer-spacer {
-  flex: 1;
 }
 .dt-nav-btn:active,
 .dt-sc-chip:active {

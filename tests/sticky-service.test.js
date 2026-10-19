@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const electronState = vi.hoisted(() => ({
   handlers: new Map(),
   instances: [],
-  nextWebContentsId: 100
+  nextWebContentsId: 100,
+  failRegistration: null
 }))
 
 vi.mock('electron', () => {
@@ -83,7 +84,10 @@ vi.mock('electron', () => {
   return {
     BrowserWindow,
     ipcMain: {
-      handle: (channel, handler) => electronState.handlers.set(channel, handler),
+      handle: (channel, handler) => {
+        if (channel === electronState.failRegistration) throw new Error('handler already exists')
+        electronState.handlers.set(channel, handler)
+      },
       removeHandler: (channel) => electronState.handlers.delete(channel)
     },
     screen: {
@@ -98,6 +102,9 @@ vi.mock('electron', () => {
 })
 
 import { ElectronStickyService } from '../src/main/sticky/ElectronStickyService.js'
+import { createBusinessMutationAdmission } from '../src/main/application/business-mutation-admission.js'
+import { ReminderWindow } from '../src/main/services/ReminderWindow.js'
+import { ipcMain } from 'electron'
 
 function createService(
   mainBounds = { x: 1440, y: 25, width: 480, height: 930 },
@@ -179,10 +186,231 @@ beforeEach(() => {
   electronState.handlers.clear()
   electronState.instances.length = 0
   electronState.nextWebContentsId = 100
+  electronState.failRegistration = null
   vi.restoreAllMocks()
 })
 
+describe('sticky renderer recovery resource lifetime', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('invalidates an already running restore batch without clearing a new lifecycle batch', async () => {
+    const repository = createRepository([
+      persistedRecord({ id: 'old-1' }),
+      persistedRecord({ id: 'old-2' })
+    ])
+    const { service } = createService(undefined, undefined, repository)
+    service.initialize()
+    const releases = []
+    const open = vi
+      .spyOn(service, 'openEntry')
+      .mockImplementation(() => new Promise((resolve) => releases.push(resolve)))
+    const oldBatch = service.restoreMissing()
+    service.dispose()
+    repository.records.clear()
+    repository.records.set('new-1', persistedRecord({ id: 'new-1' }))
+    service.initialize()
+    const newBatch = service.restoreMissing()
+    releases[0]()
+    expect(await oldBatch).toBe(0)
+    expect(open.mock.calls.map(([record]) => record.id)).toEqual(['old-1', 'new-1'])
+    expect(service.restorePromise).toBe(newBatch)
+    releases[1]()
+    await newBatch
+    expect(service.restorePromise).toBe(null)
+    service.dispose()
+  })
+
+  it('does not accumulate recovery records or timers across crashed and deleted stickies', async () => {
+    const repository = createRepository()
+    const { service } = createService(undefined, undefined, repository)
+    service.initialized = true
+    const restore = vi.spyOn(service, 'restoreMissing')
+    for (let cycle = 0; cycle < 100; cycle++) {
+      const { entry } = await completeCreation(service)
+      entry.window.webContentsListeners.get('render-process-gone')({}, { reason: 'crashed' })
+      expect(service.rendererRecoveryAttempts.size).toBe(1)
+      expect(service.rendererRecoveryTimers.size).toBe(1)
+      expect(service.close(entry.id)).toBe(true)
+      expect(service.rendererRecoveryAttempts.size).toBe(0)
+      expect(service.rendererRecoveryTimers.size).toBe(0)
+    }
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(restore).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(repository.records.size).toBe(0)
+    service.dispose()
+  })
+
+  it('retains the one-retry guard for a persisted sticky after its recovery timer finishes', async () => {
+    const record = persistedRecord()
+    const repository = createRepository([record])
+    const { service } = createService(undefined, undefined, repository)
+    service.initialized = true
+    const restore = vi.spyOn(service, 'restoreMissing').mockResolvedValue(0)
+    service.scheduleRendererRecovery(record.id)
+    service.scheduleRendererRecovery(record.id)
+    await vi.advanceTimersByTimeAsync(500)
+    service.scheduleRendererRecovery(record.id)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(restore).toHaveBeenCalledOnce()
+    expect(service.rendererRecoveryAttempts.size).toBe(1)
+    expect(service.rendererRecoveryTimers.size).toBe(0)
+    service.dispose()
+    expect(repository.records.size).toBe(1)
+    expect(service.rendererRecoveryAttempts.size).toBe(0)
+  })
+
+  it('preserves the retry guard when deleting the persisted record fails', () => {
+    const record = persistedRecord()
+    const repository = createRepository([record])
+    const { service } = createService(undefined, undefined, repository)
+    service.initialized = true
+    service.scheduleRendererRecovery(record.id)
+    repository.delete.mockImplementationOnce(() => {
+      throw new Error('injected SQL failure')
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(service.close(record.id)).toBe(false)
+    expect(service.rendererRecoveryAttempts.size).toBe(1)
+    expect(repository.records.size).toBe(1)
+    expect(service.close(record.id)).toBe(true)
+    expect(service.rendererRecoveryAttempts.size).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+    service.dispose()
+  })
+
+  it('prunes a crashed sticky deleted by a source-note cascade without resetting other guards', () => {
+    const removed = persistedRecord()
+    const kept = persistedRecord({ id: 'sticky-other', noteId: 2 })
+    const repository = createRepository([removed, kept])
+    const { service } = createService(undefined, undefined, repository)
+    service.initialized = true
+    service.scheduleRendererRecovery(removed.id)
+    service.scheduleRendererRecovery(kept.id)
+    repository.records.delete(removed.id)
+    service.discardByNoteId(removed.noteId)
+    expect([...service.rendererRecoveryAttempts.keys()]).toEqual([kept.id])
+    expect([...service.rendererRecoveryTimers.keys()]).toEqual([kept.id])
+    service.dispose()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['closeAll', 'discardAllRuntime', 'dispose'])(
+    '%s cancels pending recovery and removes historical guards',
+    async (method) => {
+      const record = persistedRecord()
+      const repository = createRepository([record])
+      const { service } = createService(undefined, undefined, repository)
+      service.initialized = true
+      const restore = vi.spyOn(service, 'restoreMissing')
+      service.scheduleRendererRecovery(record.id)
+      service[method]()
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(restore).not.toHaveBeenCalled()
+      expect(service.rendererRecoveryAttempts.size).toBe(0)
+      expect(service.rendererRecoveryTimers.size).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+      service.dispose()
+    }
+  )
+
+  it('does not recover a deleted sticky when its timer has fired but the continuation is pending', async () => {
+    const record = persistedRecord()
+    const repository = createRepository([record])
+    const { service } = createService(undefined, undefined, repository)
+    service.initialized = true
+    const restore = vi.spyOn(service, 'restoreMissing')
+    service.scheduleRendererRecovery(record.id)
+    vi.advanceTimersByTime(500)
+    service.close(record.id)
+    await Promise.resolve()
+    expect(restore).not.toHaveBeenCalled()
+    expect(service.rendererRecoveryAttempts.size).toBe(0)
+    service.dispose()
+  })
+
+  it('does not let an old timer continuation consume a new lifecycle recovery attempt', async () => {
+    const record = persistedRecord()
+    const repository = createRepository([record])
+    const { service } = createService(undefined, undefined, repository)
+    service.initialize()
+    const restore = vi.spyOn(service, 'restoreMissing').mockResolvedValue(0)
+    service.scheduleRendererRecovery(record.id)
+    vi.advanceTimersByTime(500)
+    service.dispose()
+    service.initialize()
+    service.scheduleRendererRecovery(record.id)
+    await Promise.resolve()
+    expect(restore).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(restore).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+})
+
 describe('ElectronStickyService creation lifecycle', () => {
+  it('reclaims only successful sticky registrations when initialization fails', () => {
+    const foreign = () => true
+    electronState.handlers.set('sticky:ready', foreign)
+    electronState.failRegistration = 'sticky:ready'
+    const { service } = createService()
+    const stop = vi.spyOn(service.displayManager, 'stop')
+    expect(() => service.initialize()).toThrow('handler already exists')
+    expect(electronState.handlers.size).toBe(1)
+    expect(electronState.handlers.get('sticky:ready')).toBe(foreign)
+    expect(stop).toHaveBeenCalledOnce()
+    service.dispose()
+    expect(stop).toHaveBeenCalledOnce()
+    expect(service.initialized).toBe(false)
+  })
+
+  it('reclaims a partial reminder window constructor without removing foreign handlers', () => {
+    const foreign = () => true
+    electronState.handlers.set('reminders:action', foreign)
+    electronState.failRegistration = 'reminders:action'
+    expect(
+      () => new ReminderWindow({ ipcMain, getSettings: () => ({}), onAction: vi.fn() })
+    ).toThrow('handler already exists')
+    expect(electronState.handlers.size).toBe(1)
+    expect(electronState.handlers.get('reminders:action')).toBe(foreign)
+    expect(electronState.instances).toEqual([])
+  })
+
+  it('completes a previously admitted create from an independent ready IPC while clear is draining', async () => {
+    const admission = createBusinessMutationAdmission(),
+      repository = createRepository()
+    const gated = { ...repository }
+    for (const name of ['insert', 'update', 'delete', 'deleteAll']) {
+      gated[name] = (...args) => admission.run(() => repository[name](...args))
+    }
+    const { service, mainWindow } = createService(undefined, undefined, gated, {
+      runMutation: admission.run,
+      bindMutationContinuation: admission.bindContinuation
+    })
+    service.initialize()
+    const created = electronState.handlers.get('sticky:create')(
+      { sender: mainWindow.webContents },
+      { noteId: 1 }
+    )
+    const entry = [...service.registry.values()][0]
+    const cleared = admission.clear(() => {
+      repository.records.clear()
+      service.discardAllRuntime()
+    })
+    expect(admission.snapshot().clearing).toBe(true)
+    expect(repository.insert).not.toHaveBeenCalled()
+    // A separate invocation deliberately has no create AsyncLocalStorage ancestry.
+    electronState.handlers.get('sticky:ready')({ sender: { id: entry.webContentsId } })
+    expect((await created).ok).toBe(true)
+    await cleared
+    expect(repository.insert).toHaveBeenCalledOnce()
+    expect(repository.records.size).toBe(0)
+    expect(service.registry.size).toBe(0)
+    expect(entry.window.isDestroyed()).toBe(true)
+    service.dispose()
+  })
+
   it('persists a ready sticky and removes it only after an explicit close', async () => {
     const repository = createRepository()
     const { service } = createService(undefined, undefined, repository)

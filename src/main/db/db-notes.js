@@ -11,6 +11,10 @@ import { createHash } from 'node:crypto'
 import { NOTE_DURATION_KINDS } from '../../shared/calendar/calendar-date-rules.js'
 import { normalizeAssignedTagIds } from '../../shared/tag-rules.js'
 import {
+  resolveNoteCreateSchedule,
+  resolveNoteDraftSchedule
+} from '../../shared/note-scheduling-rules.js'
+import {
   applyNoteTextColorRange,
   normalizeNoteTextColorRanges,
   reconcileNoteTextColorRanges,
@@ -117,14 +121,17 @@ function normalizeQueryOffset(value) {
 
 /**
  * 创建便签。
- * 只有未来生效的便签进入 initialized，且仅此状态可以保留待触发提醒。
- * finished_at 按当前产品语义记录最近一次状态写入时间，创建时同步初始化。
+ * 创建与编辑使用同一时间基础：未来未开始，当前/历史允许进行中或已完成。
+ * completed 的 finished_at 是实际完成时间；兼容非完成旧记录的状态时间值。
  */
 export function createNote(
   {
     content = '',
     contentColorRanges = [],
+    remark = '',
     effectiveAt = null,
+    status: requestedStatus,
+    finishedAt: requestedFinishedAt,
     durationDays = MIN_NOTE_DURATION_DAYS,
     durationKind,
     noteType = 'one_time',
@@ -141,11 +148,14 @@ export function createNote(
     : normalizeRequiredNoteContent(content)
   const normalizedDuration = normalizeNoteDuration({ durationKind, durationDays })
   const normalizedColorRanges = normalizeNoteTextColorRanges(contentColorRanges, normalizedContent)
-  const parsedEffectiveAt = Number(effectiveAt)
-  const hasExplicitTime = Number.isFinite(parsedEffectiveAt) && parsedEffectiveAt > 0
-  const effAt = hasExplicitTime ? parsedEffectiveAt : ts
-  const hasFutureEffectiveTime = effAt > ts
-  const status = hasFutureEffectiveTime ? 'initialized' : 'in_progress'
+  const schedule = resolveNoteCreateSchedule({
+    requestedEffectiveAt: effectiveAt,
+    requestedStatus,
+    requestedFinishedAt,
+    requestedNotifyEnabled: Boolean(normalizeReminderChannels(reminderChannels, notifyEnabled)),
+    currentTime: ts
+  })
+  const { status } = schedule
   const channels =
     status === 'initialized' ? normalizeReminderChannels(reminderChannels, notifyEnabled) : 0
   const pendingNotification = channels ? 1 : 0
@@ -153,22 +163,23 @@ export function createNote(
   const result = getDb()
     .prepare(
       `INSERT INTO notes (
-         note_type, content, content_color_ranges, status, is_pinned, notify_enabled, reminder_channels,
+         note_type, content, content_color_ranges, remark, status, is_pinned, notify_enabled, reminder_channels,
          effective_at, duration_days, duration_kind, finished_at, sort_order, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       noteType,
       normalizedContent,
       JSON.stringify(normalizedColorRanges),
+      String(remark ?? ''),
       status,
       isPinned ? 1 : 0,
       pendingNotification,
       channels,
-      effAt,
+      schedule.effectiveAt,
       normalizedDuration.durationDays,
       normalizedDuration.durationKind,
-      ts,
+      schedule.finishedAt,
       sortOrder,
       ts,
       ts
@@ -391,7 +402,9 @@ export function countActiveNotes() {
 
 function transitionNote(id, targetStatus, { setEffectiveAtToNow = false } = {}) {
   const db = getDb()
-  const current = db.prepare('SELECT status FROM notes WHERE id = ? AND is_deleted = 0').get(id)
+  const current = db
+    .prepare('SELECT status, effective_at, finished_at FROM notes WHERE id = ? AND is_deleted = 0')
+    .get(id)
   if (!current) return null
 
   if (!TRANSITIONS[current.status]?.has(targetStatus)) {
@@ -400,23 +413,22 @@ function transitionNote(id, targetStatus, { setEffectiveAtToNow = false } = {}) 
   }
 
   const ts = now()
-  const result = setEffectiveAtToNow
-    ? db
-        .prepare(
-          `UPDATE notes
-          SET status = ?, effective_at = ?, notify_enabled = 0, reminder_channels = 0,
-             finished_at = ?, updated_at = ?
-         WHERE id = ? AND status = ? AND is_deleted = 0`
-        )
-        .run(targetStatus, ts, ts, ts, id, current.status)
-    : db
-        .prepare(
-          `UPDATE notes
-          SET status = ?, notify_enabled = 0, reminder_channels = 0,
-             finished_at = ?, updated_at = ?
-         WHERE id = ? AND status = ? AND is_deleted = 0`
-        )
-        .run(targetStatus, ts, ts, id, current.status)
+  const schedule = resolveNoteDraftSchedule({
+    status: current.status,
+    currentEffectiveAt: current.effective_at,
+    currentFinishedAt: current.finished_at,
+    requestedEffectiveAt: setEffectiveAtToNow ? null : undefined,
+    requestedStatus: targetStatus,
+    currentTime: ts
+  })
+  const result = db
+    .prepare(
+      `UPDATE notes
+       SET status = ?, effective_at = ?, notify_enabled = 0, reminder_channels = 0,
+           finished_at = ?, updated_at = ?
+       WHERE id = ? AND status = ? AND is_deleted = 0`
+    )
+    .run(schedule.status, schedule.effectiveAt, schedule.finishedAt, ts, id, current.status)
 
   return result.changes === 1 ? getNoteById(id) : null
 }

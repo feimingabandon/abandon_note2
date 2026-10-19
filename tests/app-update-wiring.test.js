@@ -17,7 +17,7 @@ describe('应用更新入口接线', () => {
 
   it('由主进程重新验证检查身份后再打开外部地址', () => {
     const preload = read('src/preload/index.js')
-    const main = read('src/main/index.js')
+    const main = read('src/main/ipc/register-app-ipc.js')
     expect(preload).toContain("ipcRenderer.invoke('update:open-link', request)")
     expect(main).toContain('appUpdateService.getExternalUrl(request)')
   })

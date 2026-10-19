@@ -258,7 +258,7 @@ function onInputKeydown(event) {
   if (event.key === 'Enter') {
     event.preventDefault()
     submitSearch()
-  } else if ((event.ctrlKey || event.metaKey) && event.key === 'Backspace') {
+  } else if (event.ctrlKey && event.key === 'Backspace') {
     event.preventDefault()
     clearQuery()
   } else if (event.key === 'Escape') {

@@ -46,7 +46,7 @@ app.setName(${JSON.stringify(appId)})
 app.setPath('userData', ${JSON.stringify(path.join(root, 'profile'))})
 app.setAppUserModelId(${JSON.stringify(appId)})
 app.setToastActivatorCLSID(${JSON.stringify(clsid)})
-const service = new NotificationService({appProtocol:${JSON.stringify(scheme)},platform:'win32',capability:{supported:true},icon:${JSON.stringify(path.resolve('resources/icon.png'))}})
+const service = new NotificationService({appProtocol:${JSON.stringify(scheme)},capability:{supported:true},icon:${JSON.stringify(path.resolve('resources/icon.png'))}})
 function handle(argv) {
   const payload = argv.map(arg => parseReminderProtocol(arg,${JSON.stringify(scheme)})).find(Boolean)
   if (payload) {

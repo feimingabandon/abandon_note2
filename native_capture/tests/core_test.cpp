@@ -5,6 +5,72 @@
 class CoreTest : public QObject {
   Q_OBJECT
 private slots:
+  void mosaicBrushFollowsPathAndPreservesCrop() {
+    Capture::ImageDocument d;
+    d.base = QImage(160, 120, QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < 120; ++y)
+      for (int x = 0; x < 160; ++x)
+        d.base.setPixelColor(x, y,
+                             QColor((x * 13 + y * 7) % 256,
+                                    (x * 11 + y * 3) % 256,
+                                    (x * 3 + y * 17) % 256));
+    d.append({"pen", {{10, 20}, {150, 20}}, Qt::red, 8});
+    const auto before = d.render();
+    Capture::Stroke brush{
+        "mosaic", {{30, 30}, {100, 30}, {100, 90}}, Qt::black, 12};
+    brush.mosaicBrush = true;
+    brush.brushSize = 20;
+    brush.clipBounds = {25, 25, 100, 80};
+    d.append(brush);
+    const auto painted = d.render();
+    QVERIFY(painted != before);
+    QCOMPARE(painted.pixelColor(60, 60),
+             before.pixelColor(60, 60)); // Inside the box, outside the path.
+    QCOMPARE(painted.pixelColor(60, 22),
+             before.pixelColor(60, 22)); // Brush radius clipped to edit area.
+    QVERIFY(painted.pixelColor(60, 30) != before.pixelColor(60, 30));
+    QVERIFY(painted.pixelColor(100, 60) != before.pixelColor(100, 60));
+    const QRect area(45, 27, 80, 70);
+    auto cropped = d.cropped(area);
+    QCOMPARE(cropped.render(), painted.copy(area));
+    cropped.undo();
+    QCOMPARE(cropped.render(), before.copy(area));
+    cropped.redo();
+    QCOMPARE(cropped.render(), painted.copy(area));
+    QCOMPARE(cropped.cropped({5, 5, 50, 50}).render(),
+             painted.copy(area).copy(5, 5, 50, 50));
+    d.undo();
+    auto redoCrop = d.cropped(area);
+    redoCrop.redo();
+    QCOMPARE(redoCrop.render(), painted.copy(area));
+    cropped.append({"eraser", {{10, 3}, {60, 3}}, Qt::black, 20});
+    QCOMPARE(cropped.render().pixelColor(20, 3),
+             cropped.base.pixelColor(20, 3));
+    cropped.undo();
+    QCOMPARE(cropped.render(), painted.copy(area));
+    d.redo();
+    d.strokes.last().points << QPointF(120, 90);
+    QCOMPARE(d.render().pixelColor(60, 30),
+             painted.pixelColor(60, 30)); // Grid stays put as the path grows.
+    QCOMPARE(d.base.pixelColor(60, 60), before.pixelColor(60, 60));
+  }
+  void mosaicAndEraserSingleClickAreRound() {
+    Capture::ImageDocument d;
+    d.base = QImage(80, 80, QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < 80; ++y)
+      for (int x = 0; x < 80; ++x)
+        d.base.setPixelColor(x, y, (x + y) % 2 ? Qt::white : Qt::black);
+    Capture::Stroke brush{"mosaic", {{40, 40}, {40, 40}}, Qt::black, 12};
+    brush.mosaicBrush = true;
+    brush.brushSize = 20;
+    d.append(brush);
+    const auto painted = d.render();
+    QVERIFY(painted.pixelColor(40, 40) != d.base.pixelColor(40, 40));
+    QCOMPARE(painted.pixelColor(31, 31), d.base.pixelColor(31, 31));
+    d.append({"eraser", {{40, 40}, {40, 40}}, Qt::black, 10});
+    QCOMPARE(d.render().pixelColor(40, 40), d.base.pixelColor(40, 40));
+    QCOMPARE(d.render().pixelColor(47, 40), painted.pixelColor(47, 40));
+  }
   void pinPlacementAcrossScreens() {
     QCOMPARE(
         Capture::visiblePinGeometry({900, 700, 400, 300}, {0, 0, 1000, 800}),

@@ -8,14 +8,41 @@
 #include <QInputMethodEvent>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPainterPathStroker>
 #include <QPointer>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QStyleOptionComboBox>
 #include <QToolButton>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QtMath>
 #include <algorithm>
+
+// The styled native drop-down must keep an explicit disclosure indicator in
+// both themes. Draw the small vector chevron without an asset dependency.
+template <typename Base> class ParameterComboBox final : public Base {
+public:
+  explicit ParameterComboBox(QWidget *parent) : Base(parent) {}
+
+protected:
+  void paintEvent(QPaintEvent *event) override {
+    Base::paintEvent(event);
+    QStyleOptionComboBox option;
+    this->initStyleOption(&option);
+    const auto arrow = this->style()->subControlRect(
+        QStyle::CC_ComboBox, &option, QStyle::SC_ComboBoxArrow, this);
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    auto ink = this->palette().windowText().color();
+    ink.setAlphaF(this->isEnabled() ? .6 : .28);
+    p.setPen(QPen(ink, 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    const QPointF center = arrow.center();
+    p.drawLine(center + QPointF(-3, -1.5), center + QPointF(0, 1.5));
+    p.drawLine(center + QPointF(0, 1.5), center + QPointF(3, -1.5));
+  }
+};
 
 class ColorSwatch final : public QToolButton {
   QColor color;
@@ -31,10 +58,12 @@ public:
     edge.setAlphaF(.2);
     p.setPen(QPen(edge, 1));
     p.setBrush(color);
-    p.drawEllipse(center, 8, 8);
+    p.drawEllipse(center, isDown() ? 7.8 : 8, isDown() ? 7.8 : 8);
     if (isChecked() || hasFocus()) {
       p.setBrush(Qt::NoBrush);
-      p.setPen(QPen(QColor("#0071e3"), 1.5));
+      auto focus = qApp->palette().windowText().color();
+      focus.setAlphaF(.4);
+      p.setPen(QPen(isChecked() ? QColor("#0071e3") : focus, 1));
       p.drawEllipse(center, 11, 11);
     }
   }
@@ -47,48 +76,66 @@ AnnotationEditor::AnnotationEditor(QWidget *parent,
   loadPreferences();
   editBounds = doc.base.rect();
   panel = Capture::createChromePanel(canvas);
+  panel->setCursor(Qt::ArrowCursor);
   panel->setObjectName("annotationPanel");
-  panel->setAttribute(Qt::WA_TranslucentBackground);
-  panel->setAttribute(Qt::WA_StyledBackground);
   panel->setStyleSheet(Capture::chromeStyle());
   auto layout = new QVBoxLayout(panel);
-  layout->setContentsMargins(8, 7, 8, 7);
-  layout->setSpacing(7);
+  layout->setContentsMargins(6, 5, 6, 5);
+  layout->setSpacing(4);
   auto row = new QHBoxLayout;
-  row->setSpacing(9);
+  row->setSpacing(6);
   toolbar = new QToolBar(panel);
   toolbar->setObjectName("annotationTools");
-  toolbar->setIconSize({20, 20});
-  toolbar->setMinimumWidth(34);
+  toolbar->setIconSize({18, 18});
+  toolbar->setMinimumWidth(160);
   outputs = new QToolBar(panel);
   outputs->setObjectName("annotationOutputs");
-  outputs->setIconSize({20, 20});
+  outputs->setIconSize({18, 18});
   outputs->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
   row->addWidget(toolbar, 1);
   row->addWidget(outputs);
   layout->addLayout(row);
-  parameters = new QToolBar(panel);
+  parameterPanel = new QScrollArea(panel);
+  parameterPanel->setObjectName("annotationOptions");
+  parameterPanel->setFrameShape(QFrame::NoFrame);
+  parameterPanel->setWidgetResizable(false);
+  parameterPanel->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  parameterPanel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+  parameterPanel->setStyleSheet(
+      "QScrollArea{background:transparent;border:0;} "
+      "QScrollArea>QWidget>QWidget{background:transparent;}");
+  parameterContent = new QWidget(parameterPanel);
+  auto parameterLayout = new QHBoxLayout(parameterContent);
+  parameterLayout->setContentsMargins(0, 0, 0, 0);
+  parameterLayout->setSpacing(8);
+  colorBar = new QToolBar(parameterContent);
+  colorBar->setIconSize({18, 18});
+  parameterLayout->addWidget(colorBar);
+  parameters = new QToolBar(parameterContent);
   parameters->setObjectName("annotationParameters");
   parameters->setIconSize({18, 18});
-  layout->addWidget(parameters);
-  more = new QMenu(panel);
+  parameterLayout->addWidget(parameters);
+  textParameters = new QToolBar(parameterContent);
+  parameterLayout->addWidget(textParameters);
+  parameterPanel->setWidget(parameterContent);
+  layout->addWidget(parameterPanel);
+  more = Capture::createChromeMenu(panel);
   tools = new QActionGroup(this);
   tools->setExclusive(true);
   const QList<QPair<QString, QString>> names = {
       {"select", QStringLiteral("选择")},
       {"rectangle", QStringLiteral("矩形")},
       {"ellipse", QStringLiteral("椭圆")},
-      {"line", QStringLiteral("直线")},
-      {"polyline", QStringLiteral("折线")},
       {"arrow", QStringLiteral("箭头")},
+      {"line", QStringLiteral("直线")},
       {"pen", QStringLiteral("画笔")},
       {"marker", QStringLiteral("荧光笔")},
       {"text", QStringLiteral("文字")},
       {"mosaic", QStringLiteral("马赛克")},
-      {"blur", QStringLiteral("模糊")},
       {"eraser", QStringLiteral("橡皮擦")}};
   for (auto [id, label] : names) {
-    auto a = toolbar->addAction(Capture::actionIcon(id), label);
+    auto a = new QAction(Capture::actionIcon(id), label, panel);
+    toolbar->addAction(a);
     a->setData(id);
     a->setObjectName("captureAction_" + id);
     a->setCheckable(true);
@@ -97,14 +144,16 @@ AnnotationEditor::AnnotationEditor(QWidget *parent,
       tip += QStringLiteral(" · Shift 等宽高");
     if (id == "line" || id == "arrow")
       tip += QStringLiteral(" · Shift 约束角度 · Tab 切换直线/箭头");
-    if (id == "polyline")
-      tip += QStringLiteral(" · 连续单击，右键完成");
     if (id == "text")
       tip += QStringLiteral(" · 拖角缩放，圆柄旋转");
-    if (id == "pen" || id == "marker" || id == "eraser")
+    if (id == "pen" || id == "marker" || id == "eraser" || id == "mosaic")
       tip += QStringLiteral(" · 连续拖动绘制，Alt 拖动当前笔画");
     a->setToolTip(tip);
     tools->addAction(a);
+    auto button = qobject_cast<QToolButton *>(toolbar->widgetForAction(a));
+    button->setObjectName("captureTool_" + id);
+    button->setMinimumSize(32, 30);
+    button->setAccessibleName(label);
     connect(a, &QAction::triggered, this, [this, id] {
       choose(id);
       canvas->activateWindow();
@@ -115,6 +164,7 @@ AnnotationEditor::AnnotationEditor(QWidget *parent,
   addAction("undo", QStringLiteral("撤销"), "Ctrl+Z");
   addAction("redo", QStringLiteral("重做"), "Ctrl+Y");
   addAction("clear", QStringLiteral("清除全部标注"), "Ctrl+Shift+Z");
+  addAction("cancel", QStringLiteral("取消"), QStringLiteral("取消截图"));
   addAction("pin", QStringLiteral("贴图"),
             QStringLiteral("原位贴图 · 中键 / Ctrl+T"));
   addAction("save", QStringLiteral("保存"), QStringLiteral("另存为 · Ctrl+S"));
@@ -125,14 +175,14 @@ AnnotationEditor::AnnotationEditor(QWidget *parent,
   moreButton->setAccessibleName(QStringLiteral("更多操作"));
   moreButton->setMenu(more);
   moreButton->setPopupMode(QToolButton::InstantPopup);
+  moreButton->setProperty("popupTrigger", true);
   outputs->addWidget(moreButton);
-  addAction("cancel", QStringLiteral("取消"), QStringLiteral("取消截图"));
   addAction("copy", QStringLiteral("复制"),
             QStringLiteral("复制截图并退出 · Enter / Ctrl+C"));
   auto primary =
       qobject_cast<QToolButton *>(outputs->widgetForAction(action("copy")));
   primary->setObjectName("capturePrimary");
-  primary->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  primary->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
   // The hidden model retains named color values for selection and
   // accessibility; the visible controls are color swatches rather than a HEX
@@ -145,7 +195,7 @@ AnnotationEditor::AnnotationEditor(QWidget *parent,
   for (auto value : {"#0071e3", "#e13c39", "#ffb800", "#32a852", "#943bca",
                      "#ffffff", "#171717"}) {
     colors->addItem(value, QColor(value));
-    auto button = new ColorSwatch(QColor(value), parameters);
+    auto button = new ColorSwatch(QColor(value), colorBar);
     button->setFixedSize(24, 26);
     button->setCheckable(true);
     button->setAccessibleName(QStringLiteral("颜色 ") + value);
@@ -155,18 +205,13 @@ AnnotationEditor::AnnotationEditor(QWidget *parent,
     a->setData(QColor(value));
     colorGroup->addAction(a);
     button->setDefaultAction(a);
-    button->setStyleSheet(QString("QToolButton{background:%1;border:2px solid "
-                                  "transparent;border-radius:12px;} "
-                                  "QToolButton:checked{border-color:#0071e3;} "
-                                  "QToolButton:focus{border-color:#0071e3;}")
-                              .arg(value));
-    colorActions << parameters->addWidget(button);
+    colorActions << colorBar->addWidget(button);
     connect(a, &QAction::triggered, this, [this, value] {
       colors->setCurrentIndex(colors->findData(QColor(value)));
     });
   }
-  auto custom = parameters->addAction(Capture::actionIcon("color"),
-                                      QStringLiteral("自定义颜色"));
+  auto custom = colorBar->addAction(Capture::actionIcon("color"),
+                                    QStringLiteral("自定义颜色"));
   colorActions << custom;
   connect(custom, &QAction::triggered, this, [this] {
     auto picker = new QColorDialog(color, panel);
@@ -190,13 +235,32 @@ AnnotationEditor::AnnotationEditor(QWidget *parent,
   size->setAlignment(Qt::AlignCenter);
   size->setFixedWidth(64);
   size->setToolTip(QStringLiteral("线宽 / 字号 / 效果强度 · 滚轮 / [、]"));
-  parameters->addWidget(size);
-  font = new QFontComboBox(parameters);
+  sizeAction = parameters->addWidget(size);
+  mosaicMode = new ParameterComboBox<QComboBox>(parameters);
+  mosaicMode->setObjectName("annotationMosaicMode");
+  mosaicMode->addItem(QStringLiteral("涂抹"), "brush");
+  mosaicMode->addItem(QStringLiteral("区域"), "region");
+  mosaicMode->setAccessibleName(QStringLiteral("马赛克绘制方式"));
+  mosaicMode->setToolTip(QStringLiteral("涂抹：连续画笔；区域：矩形覆盖"));
+  mosaicModeAction = parameters->addWidget(mosaicMode);
+  mosaicBlock = new QSpinBox(parameters);
+  mosaicBlock->setObjectName("annotationMosaicBlock");
+  mosaicBlock->setRange(2, 200);
+  mosaicBlock->setPrefix(QStringLiteral("颗粒 "));
+  mosaicBlock->setSuffix(" px");
+  mosaicBlock->setButtonSymbols(QAbstractSpinBox::NoButtons);
+  mosaicBlock->setFixedWidth(102);
+  mosaicBlock->setAccessibleName(QStringLiteral("马赛克颗粒大小"));
+  mosaicBlock->setToolTip(QStringLiteral("马赛克颗粒大小，与笔刷范围独立"));
+  mosaicBlockAction = parameters->addWidget(mosaicBlock);
+  font = new ParameterComboBox<QFontComboBox>(textParameters);
   font->setObjectName("annotationFont");
   font->setMaximumWidth(155);
   font->setCurrentFont(QFont(family));
-  fontAction = parameters->addWidget(font);
-  angle = new QSpinBox(parameters);
+  font->setAccessibleName(QStringLiteral("文字字体"));
+  font->setToolTip(QStringLiteral("文字字体"));
+  fontAction = textParameters->addWidget(font);
+  angle = new QSpinBox(textParameters);
   angle->setObjectName("annotationRotation");
   angle->setRange(-180, 180);
   angle->setSuffix(QStringLiteral("°"));
@@ -204,11 +268,22 @@ AnnotationEditor::AnnotationEditor(QWidget *parent,
   angle->setAlignment(Qt::AlignCenter);
   angle->setFixedWidth(72);
   angle->setToolTip(QStringLiteral("文字旋转 · Shift 拖动圆柄吸附角度"));
-  angleAction = parameters->addWidget(angle);
+  angle->setAccessibleName(QStringLiteral("文字旋转角度"));
+  angleAction = textParameters->addWidget(angle);
   connect(colors, &QComboBox::currentIndexChanged, this,
           [this] { applyParameters("color"); });
   connect(size, &QSpinBox::valueChanged, this,
           [this] { applyParameters("size"); });
+  connect(mosaicBlock, &QSpinBox::valueChanged, this,
+          [this] { applyParameters("blockSize"); });
+  connect(mosaicMode, &QComboBox::currentIndexChanged, this, [this] {
+    if (syncing)
+      return;
+    complete();
+    sync();
+    emit toolChanged();
+    canvas->update();
+  });
   connect(font, &QFontComboBox::currentFontChanged, this,
           [this] { applyParameters("fontFamily"); });
   connect(angle, &QSpinBox::valueChanged, this,
@@ -234,9 +309,15 @@ AnnotationEditor::AnnotationEditor(QWidget *parent,
       emit changed();
     }
   });
-  for (auto bar : {toolbar, outputs, parameters})
+  for (auto bar : {toolbar, outputs, colorBar, parameters, textParameters}) {
+    bar->setMovable(false);
+    bar->setFloatable(false);
     for (auto button : bar->findChildren<QToolButton *>())
       button->setFocusPolicy(Qt::TabFocus);
+  }
+  for (auto bar : {toolbar, outputs})
+    for (auto button : bar->findChildren<QToolButton *>())
+      button->setMinimumSize(32, 30);
   connect(qApp, &QApplication::paletteChanged, this, [this] {
     panel->setStyleSheet(Capture::chromeStyle());
     panel->update();
@@ -283,7 +364,8 @@ void AnnotationEditor::setPrimaryAction(const QString &id) {
   outputs->addAction(target);
   auto button = qobject_cast<QToolButton *>(outputs->widgetForAction(target));
   button->setObjectName("capturePrimary");
-  button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  button->setMinimumSize(32, 30);
+  button->setToolButtonStyle(Qt::ToolButtonIconOnly);
 }
 Capture::Stroke *AnnotationEditor::current() {
   return hasCurrent() ? &doc.strokes[doc.editable] : nullptr;
@@ -293,17 +375,23 @@ bool AnnotationEditor::hasCurrent() const {
 }
 
 void AnnotationEditor::choose(QString name) {
+  if (name == "polyline")
+    name = "pen";
+  closePopovers();
+  // Blur has no separate editor entry; old in-memory documents still render.
+  if (name == "blur")
+    name = "mosaic";
   if (tool != "select" && tool != "text")
     widths[tool] = lineWidth;
   complete();
   tool = name;
-  const int initial = (name == "marker" || name == "mosaic" || name == "blur" ||
-                       name == "eraser")
-                          ? 12
-                          : 3;
+  const int initial = name == "mosaic" || name == "eraser" ? 32
+                      : name == "marker"                   ? 12
+                                                           : 3;
   if (name != "text")
     lineWidth = widths.value(name, initial);
   sync();
+  pointerVisible = false;
   canvas->setCursor(tool == "select" ? Qt::ArrowCursor : Qt::CrossCursor);
   emit toolChanged();
 }
@@ -313,14 +401,34 @@ void AnnotationEditor::sync() {
   if (auto stroke = current()) {
     tool = stroke->tool;
     color = stroke->color;
-    lineWidth = stroke->width;
+    lineWidth = stroke->tool == "mosaic" ? stroke->brushSize : stroke->width;
+    if (stroke->tool == "mosaic") {
+      blockSize = stroke->width;
+      mosaicMode->setCurrentIndex(stroke->mosaicBrush ? 0 : 1);
+    }
     fontSize = stroke->fontSize;
     family = stroke->fontFamily;
     angle->setValue(qRound(stroke->rotation));
   }
   for (auto a : tools->actions())
     a->setChecked(a->data() == tool);
+  syncToolButtons();
   size->setValue(tool == "text" ? fontSize : lineWidth);
+  size->setPrefix(tool == "mosaic" || tool == "eraser" ? QStringLiteral("笔刷 ")
+                  : tool == "text" ? QStringLiteral("字号 ")
+                                   : QStringLiteral("线宽 "));
+  size->setFixedWidth(102);
+  size->setAccessibleName(tool == "text" ? QStringLiteral("字号")
+                          : tool == "mosaic" || tool == "eraser"
+                              ? QStringLiteral("笔刷大小")
+                              : QStringLiteral("线宽"));
+  size->setToolTip(tool == "mosaic" || tool == "eraser"
+                       ? QStringLiteral("圆形笔刷直径 · 滚轮 / [、]")
+                       : QStringLiteral("线宽 / 字号 · 滚轮 / [、]"));
+  sizeAction->setVisible(tool != "mosaic" || mosaicMode->currentIndex() == 0);
+  mosaicBlock->setValue(blockSize);
+  mosaicModeAction->setVisible(tool == "mosaic");
+  mosaicBlockAction->setVisible(tool == "mosaic");
   font->setCurrentFont(QFont(family));
   if (colors->findData(color) < 0)
     colors->addItem(color.name(), color);
@@ -330,7 +438,7 @@ void AnnotationEditor::sync() {
   colors->setEnabled(colored);
   for (auto a : colorActions)
     a->setVisible(colored);
-  for (auto button : parameters->findChildren<QToolButton *>())
+  for (auto button : colorBar->findChildren<QToolButton *>())
     if (button->defaultAction() &&
         button->defaultAction()->data().canConvert<QColor>())
       button->defaultAction()->setChecked(
@@ -338,6 +446,9 @@ void AnnotationEditor::sync() {
   size->setEnabled(tool != "select");
   fontAction->setVisible(tool == "text");
   angleAction->setVisible(tool == "text");
+  parameterPanel->setVisible(tool != "select");
+  colorBar->setVisible(colored);
+  textParameters->setVisible(tool == "text");
   parameters->setVisible(tool != "select");
   action("undo")->setEnabled(!doc.strokes.isEmpty());
   action("redo")->setEnabled(!doc.redoStack.isEmpty());
@@ -364,13 +475,14 @@ void AnnotationEditor::loadPreferences() {
     return ok && value >= 1 && value <= 200 ? value : fallback;
   };
   fontSize = validSize("fontSize", fontSize);
+  blockSize = std::max(2, validSize("width/mosaic", 12));
   for (QString name : {"rectangle", "ellipse", "line", "polyline", "arrow",
-                       "pen", "marker", "mosaic", "blur", "eraser"}) {
-    const int initial = (name == "marker" || name == "mosaic" ||
-                         name == "blur" || name == "eraser")
-                            ? 12
-                            : 3;
-    widths[name] = validSize("width/" + name, initial);
+                       "pen", "marker", "mosaic", "eraser"}) {
+    const int initial = name == "mosaic" || name == "eraser" ? 32
+                        : name == "marker"                   ? 12
+                                                             : 3;
+    widths[name] = validSize(
+        name == "mosaic" ? "brushSize/mosaic" : "width/" + name, initial);
   }
 }
 void AnnotationEditor::savePreference(const QString &key,
@@ -391,9 +503,11 @@ void AnnotationEditor::applyParameters(const QString &parameter) {
     fontSize = size->value();
   else
     lineWidth = size->value();
+  blockSize = mosaicBlock->value();
   if (auto stroke = current()) {
     stroke->color = color;
-    stroke->width = lineWidth;
+    stroke->width = tool == "mosaic" ? blockSize : lineWidth;
+    stroke->brushSize = lineWidth;
     stroke->fontSize = fontSize;
     stroke->fontFamily = family;
     stroke->rotation = angle->value();
@@ -407,9 +521,13 @@ void AnnotationEditor::applyParameters(const QString &parameter) {
   else if (parameter == "fontFamily")
     savePreference("fontFamily", family);
   else if (parameter == "size" && tool != "select")
-    savePreference(tool == "text" ? "fontSize" : "width/" + tool,
+    savePreference(tool == "text"     ? "fontSize"
+                   : tool == "mosaic" ? "brushSize/mosaic"
+                                      : "width/" + tool,
                    size->value());
-  for (auto button : parameters->findChildren<QToolButton *>())
+  else if (parameter == "blockSize")
+    savePreference("width/mosaic", blockSize);
+  for (auto button : colorBar->findChildren<QToolButton *>())
     if (button->defaultAction() &&
         button->defaultAction()->data().canConvert<QColor>())
       button->defaultAction()->setChecked(
@@ -433,7 +551,13 @@ QString AnnotationEditor::contextHint() const {
     text = QStringLiteral("连续单击 · 右键完成折线");
   else if (tool == "text")
     text = QStringLiteral("单击输入文字 · 拖角缩放 · 圆柄旋转");
-  else if (tool == "pen" || tool == "marker" || tool == "eraser")
+  else if (tool == "mosaic")
+    text = mosaicMode->currentIndex() == 0
+               ? QStringLiteral("连续涂抹 · 滚轮调整笔刷 · 颗粒大小独立调整")
+               : QStringLiteral("拖动覆盖矩形区域 · 滚轮调整颗粒大小");
+  else if (tool == "eraser")
+    text = QStringLiteral("连续擦除标注 · 滚轮调整笔刷范围");
+  else if (tool == "pen" || tool == "marker")
     text = QStringLiteral("拖动绘制 · 滚轮调整粗细 · Alt 拖动当前笔画");
   else
     text = QStringLiteral("拖动框选效果区域 · 滚轮调整强度");
@@ -457,7 +581,9 @@ void AnnotationEditor::addHelp(const QString &context) {
     auto box = new QMessageBox(
         QMessageBox::Information, QStringLiteral("快捷键与操作说明"),
         context +
-            QStringLiteral("\n\n标注\nShift：等宽高 / 约束角度\n"
+            QStringLiteral("\n\n标注\n点击工具直接选择；箭头与直线独立\n"
+                           "下方参数栏：颜色、粗细、字体或马赛克方式\n"
+                           "Shift：等宽高 / 约束角度\n"
                            "直线、箭头工具下 Tab：互相切换\n"
                            "滚轮 / [、]：调整线宽、字号或效果强度\n"
                            "右键：完成当前标注；Esc：撤销当前标注\n"
@@ -481,7 +607,42 @@ bool AnnotationEditor::reserveEdit() {
   }
   return true;
 }
-void AnnotationEditor::adjustSize(int d) { size->setValue(size->value() + d); }
+void AnnotationEditor::adjustSize(int d) {
+  if (tool == "mosaic" && mosaicMode->currentIndex() == 1)
+    mosaicBlock->setValue(mosaicBlock->value() + d);
+  else
+    size->setValue(size->value() + d);
+}
+void AnnotationEditor::syncToolButtons() {
+  for (auto action : tools->actions()) {
+    auto button = qobject_cast<QToolButton *>(toolbar->widgetForAction(action));
+    button->setAccessibleName(action->text());
+  }
+}
+void AnnotationEditor::closePopovers() {
+  if (more)
+    more->hide();
+  if (auto popup = qApp->activePopupWidget();
+      popup && panel->isAncestorOf(popup))
+    popup->hide();
+}
+bool AnnotationEditor::closePopoverForKey(QKeyEvent *event) {
+  if (event->key() != Qt::Key_Escape)
+    return false;
+  for (auto widget = qApp->focusWidget(); widget && widget != panel;
+       widget = widget->parentWidget())
+    if (widget->property("captureParameterComposing").toBool())
+      return false;
+  if (auto popup = qApp->activePopupWidget(); popup && popup != more)
+    return false; // Let a nested font/mode menu close itself first.
+  if (more->isVisible()) {
+    more->hide();
+    outputs->findChild<QToolButton *>("captureMore")
+        ->setFocus(Qt::PopupFocusReason);
+    return true;
+  }
+  return false;
+}
 QTransform AnnotationEditor::displayTransform() const {
   if (viewportTransform)
     return viewportTransform();
@@ -499,6 +660,12 @@ QVector<QPointF> AnnotationEditor::handles() const {
   if (!hasCurrent())
     return {};
   const auto &stroke = doc.strokes[doc.editable];
+  if (stroke.freehand() || stroke.tool == "mosaic" || stroke.tool == "blur")
+    return {};
+  if (stroke.tool == "line" || stroke.tool == "arrow")
+    return {stroke.points.first(), stroke.points.last()};
+  if (stroke.tool == "polyline")
+    return stroke.points;
   const auto r = stroke.bounds();
   QVector<QPointF> points{r.topLeft(), r.topRight(), r.bottomRight(),
                           r.bottomLeft()};
@@ -517,12 +684,81 @@ bool AnnotationEditor::hitCurrent(QPointF point) const {
   if (!hasCurrent())
     return false;
   const auto &stroke = doc.strokes[doc.editable];
-  return stroke.bounds()
-      .adjusted(-3, -3, 3, 3)
-      .contains(stroke.localTransform().inverted().map(point));
+  point = stroke.localTransform().inverted().map(point);
+  if (stroke.tool == "text" ||
+      (stroke.tool == "mosaic" && !stroke.mosaicBrush) || stroke.tool == "blur")
+    return stroke.bounds().adjusted(-3, -3, 3, 3).contains(point);
+  QPainterPath path;
+  if (stroke.tool == "rectangle")
+    path.addRect(
+        QRectF(stroke.points.first(), stroke.points.last()).normalized());
+  else if (stroke.tool == "ellipse")
+    path.addEllipse(
+        QRectF(stroke.points.first(), stroke.points.last()).normalized());
+  else {
+    path.moveTo(stroke.points.first());
+    for (int i = 1; i < stroke.points.size(); ++i)
+      path.lineTo(stroke.points[i]);
+    if (stroke.tool == "arrow") {
+      const auto a = stroke.points.first(), b = stroke.points.last();
+      const auto angle = std::atan2(b.y() - a.y(), b.x() - a.x());
+      const auto length = std::max(12, stroke.width * 4);
+      for (auto offset : {-0.5, 0.5}) {
+        path.moveTo(b);
+        path.lineTo(b - QPointF(std::cos(angle + offset) * length,
+                                std::sin(angle + offset) * length));
+      }
+    }
+  }
+  QPainterPathStroker hit;
+  const int width = stroke.mosaicBrush ? stroke.brushSize : stroke.width;
+  hit.setWidth(width + 6);
+  hit.setCapStyle(Qt::RoundCap);
+  hit.setJoinStyle(Qt::RoundJoin);
+  if (std::all_of(stroke.points.begin(), stroke.points.end(),
+                  [&](QPointF p) { return p == stroke.points.first(); }))
+    return QLineF(point, stroke.points.first()).length() <= (width + 6) / 2.;
+  return hit.createStroke(path).contains(point);
+}
+bool AnnotationEditor::brushTool() const {
+  return tool == "eraser" ||
+         (tool == "mosaic" && mosaicMode->currentIndex() == 0);
+}
+int AnnotationEditor::handleAt(QPointF local) const {
+  const auto hs = handles();
+  for (int i = 0; i < hs.size(); ++i)
+    if (QLineF(displayTransform().map(hs[i]), local).length() < 9)
+      return i;
+  return -1;
+}
+void AnnotationEditor::trackPointer(QPointF local) {
+  pointer = local;
+  pointerVisible =
+      canvas->rect().contains(local.toPoint()) &&
+      editBounds.contains(imagePoint(local).toPoint()) &&
+      !(panel->isVisible() && panel->geometry().contains(local.toPoint()));
+  canvas->update();
 }
 void AnnotationEditor::paintHandles(QPainter &p) {
-  if (!hasCurrent() || textEdit)
+  // Black/white paired outlines are drawing guides, readable over arbitrary
+  // screenshot pixels; they are not themed component borders or export pixels.
+  if (brushTool() && pointerVisible && gesture != "move") {
+    const auto t = displayTransform();
+    const auto center = imagePoint(pointer);
+    QPainterPath circle;
+    circle.addEllipse(center, lineWidth / 2., lineWidth / 2.);
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(Qt::black, 3));
+    p.drawPath(t.map(circle));
+    p.setPen(QPen(Qt::white, 1));
+    p.drawPath(t.map(circle));
+    p.restore();
+  }
+  if (!hasCurrent() || textEdit ||
+      (!controlsVisible && current()->tool != "text") || gesture == "draw" ||
+      gesture == "polyline")
     return;
   const auto hs = handles();
   auto t = displayTransform();
@@ -545,6 +781,11 @@ void AnnotationEditor::paintHandles(QPainter &p) {
 }
 
 bool AnnotationEditor::press(QMouseEvent *e) {
+  if (more->isVisible()) {
+    closePopovers();
+    return true; // Closing chrome must never start an annotation underneath it.
+  }
+  trackPointer(e->position());
   if (e->button() == Qt::RightButton && hasCurrent()) {
     complete();
     return true;
@@ -576,17 +817,14 @@ bool AnnotationEditor::press(QMouseEvent *e) {
   finishText();
   grip = -1;
 
-  if (auto s = current();
-      s && (!(tool == "pen" || tool == "marker" || tool == "eraser") ||
-            e->modifiers().testFlag(Qt::AltModifier))) {
-    auto hs = handles();
-    for (int i = 0; i < hs.size(); ++i)
-      if (QLineF(displayTransform().map(hs[i]), e->position()).length() < 9)
-        grip = i;
+  if (auto s = current(); s && (!(s->freehand() || tool == "mosaic") ||
+                                e->modifiers().testFlag(Qt::AltModifier))) {
+    grip = handleAt(e->position());
     if (grip >= 0 || hitCurrent(pt)) {
       start = pt;
       before = *s;
       gesture = grip >= 0 ? "resize" : "move";
+      controlsVisible = true;
       return true;
     }
   }
@@ -596,6 +834,12 @@ bool AnnotationEditor::press(QMouseEvent *e) {
     return true;
   complete();
   Capture::Stroke s{tool, {pt, pt}, color, lineWidth, fontSize, {}};
+  s.clipBounds = editBounds;
+  if (tool == "mosaic") {
+    s.mosaicBrush = mosaicMode->currentIndex() == 0;
+    s.width = blockSize;
+    s.brushSize = lineWidth;
+  }
   s.fontFamily = family;
   if (tool == "text") {
     auto remaining = editBounds.bottomRight() - pt.toPoint();
@@ -616,23 +860,38 @@ bool AnnotationEditor::press(QMouseEvent *e) {
   return true;
 }
 bool AnnotationEditor::move(QMouseEvent *e) {
+  trackPointer(e->position());
   if (gesture.isEmpty()) {
-    auto cursor = tool == "select" ? Qt::ArrowCursor : Qt::CrossCursor;
+    auto cursor = brushTool() && pointerVisible ? Qt::BlankCursor
+                  : tool == "select"            ? Qt::ArrowCursor
+                                                : Qt::CrossCursor;
+    controlsVisible = false;
     if (auto s = current()) {
       if (hitCurrent(imagePoint(e->position())) &&
-          (!(tool == "pen" || tool == "marker" || tool == "eraser") ||
-           e->modifiers().testFlag(Qt::AltModifier)))
+          (!(s->freehand() || tool == "mosaic") ||
+           e->modifiers().testFlag(Qt::AltModifier))) {
         cursor = Qt::SizeAllCursor;
+        controlsVisible = true;
+      }
       if (s->tool == "text" &&
           QLineF(displayTransform().map(rotationHandle()), e->position())
                   .length() < 10)
         cursor = Qt::CrossCursor;
-      auto hs = handles();
-      for (int i = 0; i < hs.size(); ++i)
-        if (QLineF(displayTransform().map(hs[i]), e->position()).length() < 9)
-          cursor = i % 2 ? Qt::SizeBDiagCursor : Qt::SizeFDiagCursor;
+      const int at = handleAt(e->position());
+      if (at >= 0) {
+        cursor =
+            s->tool == "line" || s->tool == "arrow" || s->tool == "polyline"
+                ? Qt::CrossCursor
+            : at % 2 ? Qt::SizeBDiagCursor
+                     : Qt::SizeFDiagCursor;
+        controlsVisible = true;
+      }
     }
     canvas->setCursor(cursor);
+  } else {
+    canvas->setCursor(gesture == "move"               ? Qt::SizeAllCursor
+                      : brushTool() && pointerVisible ? Qt::BlankCursor
+                                                      : Qt::CrossCursor);
   }
   if (gesture.isEmpty() || !current())
     return false;
@@ -660,6 +919,20 @@ bool AnnotationEditor::move(QMouseEvent *e) {
     for (auto &p : s->points)
       p += pt - start;
 
+  } else if (gesture == "resize" && (s->tool == "line" || s->tool == "arrow" ||
+                                     s->tool == "polyline")) {
+    const auto index =
+        grip == 1 && s->tool != "polyline" ? s->points.size() - 1 : grip;
+    if (e->modifiers().testFlag(Qt::ShiftModifier) && s->tool != "polyline") {
+      const auto anchor =
+          before.points[index == 0 ? before.points.size() - 1 : 0];
+      const auto delta = pt - anchor;
+      const auto angle =
+          qRound(std::atan2(delta.y(), delta.x()) / (M_PI / 4)) * (M_PI / 4);
+      const auto length = std::hypot(delta.x(), delta.y());
+      pt = anchor + QPointF(std::cos(angle) * length, std::sin(angle) * length);
+    }
+    s->points[index] = pt;
   } else if (gesture == "resize" && s->tool == "text") {
     const auto r = before.bounds();
     const QVector<QPointF> corners{r.topLeft(), r.topRight(), r.bottomRight(),
@@ -712,7 +985,7 @@ bool AnnotationEditor::move(QMouseEvent *e) {
                                         : QPointF(anchor.x(), pt.y());
       }
     }
-    if (tool == "pen" || tool == "marker" || tool == "eraser") {
+    if (s->freehand()) {
       if (s->points.size() < 100000)
         s->points << pt;
     } else
@@ -727,6 +1000,7 @@ bool AnnotationEditor::release(QMouseEvent *e) {
     return false;
   if (gesture != "polyline")
     gesture.clear();
+  controlsVisible = false;
   sync();
   emit changed();
   return true;
@@ -828,6 +1102,7 @@ void AnnotationEditor::finishText() {
 void AnnotationEditor::complete() {
   finishText();
   gesture.clear();
+  controlsVisible = false;
   doc.editable = -1;
   sync();
   emit changed();
@@ -846,6 +1121,8 @@ void AnnotationEditor::discard() {
 }
 
 bool AnnotationEditor::key(QKeyEvent *e) {
+  if (closePopoverForKey(e))
+    return true;
   if (e->key() == Qt::Key_Space && !gesture.isEmpty())
     return true;
   if (e->key() == Qt::Key_Tab && (tool == "line" || tool == "arrow")) {
@@ -914,6 +1191,58 @@ bool AnnotationEditor::wheel(QWheelEvent *e) {
 
 bool AnnotationEditor::eventFilter(QObject *o, QEvent *e) {
   auto widget = qobject_cast<QWidget *>(o);
+  const bool parameterInput = widget && parameterPanel->isAncestorOf(widget);
+  QWidget *parameterControl = nullptr;
+  if (parameterInput)
+    for (auto input = widget; input && input != parameterPanel;
+         input = input->parentWidget())
+      if (qobject_cast<QComboBox *>(input) ||
+          qobject_cast<QAbstractSpinBox *>(input)) {
+        parameterControl = input;
+        break;
+      }
+  if (parameterInput && e->type() == QEvent::InputMethod) {
+    const bool composing =
+        !static_cast<QInputMethodEvent *>(e)->preeditString().isEmpty();
+    widget->setProperty("captureParameterComposing", composing);
+    // Editable combo boxes may own keyboard focus while their line edit
+    // receives preedit events. Keep composition on the logical input control.
+    if (parameterControl)
+      parameterControl->setProperty("captureParameterComposing", composing);
+  }
+  if (parameterInput && e->type() == QEvent::KeyPress) {
+    const auto key = static_cast<QKeyEvent *>(e)->key();
+    if (key == Qt::Key_Escape || key == Qt::Key_Return || key == Qt::Key_Enter)
+      for (auto input = widget; input && input != parameterPanel;
+           input = input->parentWidget())
+        if (input->property("captureParameterComposing").toBool()) {
+          if (key == Qt::Key_Escape)
+            QGuiApplication::inputMethod()->reset();
+          else
+            QGuiApplication::inputMethod()->commit();
+          input->setProperty("captureParameterComposing", false);
+          if (parameterControl) {
+            parameterControl->setProperty("captureParameterComposing", false);
+            for (auto child : parameterControl->findChildren<QWidget *>())
+              child->setProperty("captureParameterComposing", false);
+          }
+          return true;
+        }
+  }
+  if (e->type() == QEvent::KeyPress && o == more &&
+      closePopoverForKey(static_cast<QKeyEvent *>(e)))
+    return true;
+  if ((o == canvas || o == panel) &&
+      (e->type() == QEvent::Hide || e->type() == QEvent::Close))
+    closePopovers();
+  if ((o == canvas && e->type() == QEvent::Leave) ||
+      (o == panel && e->type() == QEvent::Enter)) {
+    pointerVisible = false;
+    controlsVisible = false;
+    if (brushTool())
+      canvas->setCursor(Qt::CrossCursor);
+    canvas->update();
+  }
   // QWidget normally consumes Tab for focus traversal before keyPressEvent.
   // Reserve it only while the canvas owns the line/arrow editing gesture.
   if (o == canvas && e->type() == QEvent::KeyPress) {
@@ -955,6 +1284,14 @@ bool AnnotationEditor::eventFilter(QObject *o, QEvent *e) {
           textEdit->setFocus();
         } else
           canvas->setFocus();
+        QPointer<QWidget> target =
+            textEdit ? static_cast<QWidget *>(textEdit) : canvas;
+        QTimer::singleShot(0, target, [target] {
+          if (!target || !target->isVisible())
+            return;
+          target->window()->activateWindow();
+          target->setFocus(Qt::OtherFocusReason);
+        });
         return true;
       }
     } else if (key->key() != Qt::Key_Tab && key->key() != Qt::Key_Backtab) {
@@ -1004,22 +1341,49 @@ bool AnnotationEditor::eventFilter(QObject *o, QEvent *e) {
 void AnnotationEditor::fitPanel(int maxWidth) {
   auto vertical = qobject_cast<QVBoxLayout *>(panel->layout());
   auto row = qobject_cast<QHBoxLayout *>(vertical->itemAt(0)->layout());
-  if (maxWidth < 360 && row->indexOf(outputs) >= 0) {
+  const int toolsWidth = toolbar->sizeHint().width();
+  const int outputsWidth = outputs->sizeHint().width();
+  const bool split = maxWidth < toolsWidth + outputsWidth + 25;
+  if (split && row->indexOf(outputs) >= 0) {
     row->removeWidget(outputs);
     vertical->insertWidget(1, outputs, 0, Qt::AlignRight);
-  } else if (maxWidth >= 360 && vertical->indexOf(outputs) >= 0) {
+  } else if (!split && vertical->indexOf(outputs) >= 0) {
     vertical->removeWidget(outputs);
     row->addWidget(outputs);
   }
-  if (auto primary =
-          qobject_cast<QToolButton *>(outputs->widgetForAction(action("copy"))))
-    primary->setToolButtonStyle(maxWidth < 360 ? Qt::ToolButtonIconOnly
-                                               : Qt::ToolButtonTextBesideIcon);
-  const int natural =
-      toolbar->sizeHint().width() + outputs->sizeHint().width() + 25;
-  const int parameterWidth =
-      parameters->isHidden() ? 0 : parameters->sizeHint().width() + 16;
-  panel->setFixedWidth(std::min(maxWidth, std::max(natural, parameterWidth)));
+  // Measure visible fields explicitly: a previously hidden QToolBar can keep
+  // a stale size hint, which would move controls into its overflow menu.
+  for (auto bar : {colorBar, parameters, textParameters}) {
+    int width = 8;
+    for (auto action : bar->actions()) {
+      if (!action->isVisible())
+        continue;
+      if (auto widget = bar->widgetForAction(action)) {
+        widget->ensurePolished();
+        width += widget->sizeHint()
+                     .expandedTo(widget->minimumSize())
+                     .boundedTo(widget->maximumSize())
+                     .width() +
+                 2;
+      }
+    }
+    bar->setFixedWidth(width);
+    bar->layout()->activate();
+  }
+  parameterContent->layout()->invalidate();
+  parameterContent->layout()->activate();
+  const auto optionSize = parameterContent->sizeHint();
+  parameterContent->resize(optionSize);
+  const int mainWidth = split ? std::max(toolsWidth, outputsWidth) + 12
+                              : toolsWidth + outputsWidth + 25;
+  const int natural = std::max(
+      mainWidth, parameterPanel->isHidden() ? 0 : optionSize.width() + 12);
+  panel->setFixedWidth(std::min(maxWidth, natural));
+  parameterPanel->setFixedHeight(
+      optionSize.height() +
+      (optionSize.width() > panel->width() - 12
+           ? panel->style()->pixelMetric(QStyle::PM_ScrollBarExtent)
+           : 0));
   panel->layout()->activate();
   panel->adjustSize();
 }

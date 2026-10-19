@@ -29,6 +29,10 @@ struct Stroke {
   // preserves the original sampling grid while retaining undo/redo commands.
   QImage effectPixels;
   QPoint effectOrigin;
+  bool mosaicBrush = false;
+  int brushSize = 32;
+  QRect clipBounds;
+  bool freehand() const;
   QRectF bounds() const;
   QTransform localTransform() const;
 };

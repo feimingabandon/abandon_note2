@@ -35,6 +35,8 @@
 #include <mutex>
 #include <thread>
 #include <string>
+#include <array>
+#include <cstdint>
 
 namespace BlurEngine {
 
@@ -116,6 +118,7 @@ public:
     bool IsZOrderSynchronized() const { return IsZOrderAdjacent(); }
     BlurErrorCode GetLastError() const { return m_lastError.load(); }
     const char* GetLastFailureJson() const;
+    const char* GetZOrderDiagnosticJson() const;
     void SetLastError(BlurErrorCode error) { m_lastError.store(error); }
     HWND GetParentWindow() const { return m_parentHwnd.load(); }
     HWND GetOverlayWindow() const { return m_messageHwnd.load(); }
@@ -146,7 +149,7 @@ private:
 
     // ---- DPI 动态切换 ----
     void HandleDpiChanged(WPARAM wParam, LPARAM lParam);
-    bool SyncGeometryFromParent();
+    bool SyncGeometryFromParent(std::uint64_t diagnosticSequence = 0);
     bool VerifyGeometrySynchronized() const;
     bool SyncAndShow();
     void RecordNativeFailure(const char* stage, long long nativeCode);
@@ -154,7 +157,30 @@ private:
     std::string m_failureJson = "{}";
     bool SyncZOrder();
     bool IsZOrderAdjacent() const;
-    void QueueZOrderSync();
+    void QueueZOrderSync(const char* source = "unspecified");
+    void TraceZOrder(const char* stage, std::uint64_t request = 0,
+        long long value = 0, DWORD error = 0) const noexcept;
+    struct ZOrderTraceEntry {
+        std::uint64_t sequence = 0, tick = 0, request = 0;
+        const char* stage = "none";
+        DWORD thread = 0, error = 0;
+        long long value = 0;
+        std::uintptr_t parent = 0, overlay = 0;
+        int parentTopmost = -1, overlayTopmost = -1;
+        bool pending = false;
+    };
+    std::atomic<bool> m_zTraceEnabled{ false };
+    std::atomic<bool> m_acceptDesktopReorder{ true };
+    std::atomic<bool> m_disableOverlayIme{ true };
+    std::atomic<int> m_disableOverlayImeReturned{ -1 };
+    std::atomic<std::uint64_t> m_zTraceGeneration{ 0 }, m_zTraceRequests{ 0 },
+        m_zTracePosts{ 0 }, m_zTraceDispatches{ 0 }, m_zTraceSyncStarts{ 0 },
+        m_zTraceSyncEnds{ 0 }, m_zTraceWinEventStarts{ 0 }, m_zTraceWinEventEnds{ 0 };
+    std::atomic<const char*> m_zTraceStaPhase{ "not-started" };
+    mutable std::atomic<const char*> m_zTracePredicate{ "not-read" };
+    mutable std::mutex m_zTraceMutex;
+    mutable std::array<ZOrderTraceEntry, 256> m_zTraceEntries{};
+    mutable std::uint64_t m_zTraceSequence = 0;
     bool InstallWinEventHooks();
     static void CALLBACK WinEventProc(
         HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG objectId, LONG childId,

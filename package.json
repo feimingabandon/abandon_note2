@@ -1,6 +1,6 @@
 {
   "name": "abandon_note2",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Abandon便签（Abandon Note）是一款适用于 Windows 10 / 11 的本地桌面便签应用。",
   "main": "./out/main/index.js",
   "author": "feimingzou",
@@ -16,13 +16,15 @@
   "scripts": {
     "format": "prettier --write src",
     "lint": "eslint --cache src",
-    "lint:tests": "eslint --cache tests scripts/test-manifest.cjs scripts/test-runner.cjs scripts/run-full-tests.cjs scripts/run-electron-node-tests.cjs scripts/run-electron-window-tests.cjs",
-    "test": "vitest run && npm run test:db && npm run test:wallpaper-storage && npm run test:attachment-storage",
-    "test:unit": "vitest run",
+    "lint:tests": "eslint --cache tests scripts/test-manifest.cjs scripts/test-selection.cjs scripts/test-runner.cjs scripts/test-result-adapters.cjs scripts/test-build-descriptors.cjs scripts/test-build-provenance.cjs scripts/test-build-jobs.cjs scripts/run-capture-test.cjs scripts/run-focused-tests.cjs scripts/run-test-entry.cjs scripts/run-ci-tests.cjs scripts/run-full-tests.cjs scripts/run-electron-node-tests.cjs scripts/run-electron-window-tests.cjs",
+    "test": "node scripts/run-focused-tests.cjs",
+    "test:unit": "node scripts/run-test-entry.cjs unit",
+    "test:ci": "node scripts/run-ci-tests.cjs",
+    "test:release:quality": "node scripts/run-test-entry.cjs release-quality",
     "test:full:win": "node scripts/run-full-tests.cjs",
-    "test:manifest": "vitest run tests/test-manifest.test.js",
+    "test:manifest": "node scripts/run-test-entry.cjs unit tests/test-manifest.test.js",
     "test:db": "node scripts/run-electron-node-tests.cjs",
-    "test:daily-report:win": "npm run build && electron tests/daily-report-electron.mjs",
+    "test:daily-report:win": "node scripts/run-focused-tests.cjs --file tests/daily-report-electron.mjs",
     "test:main-view-enhancements:win": "npm run build && electron tests/main-view-enhancements-electron.mjs",
     "test:wallpaper-storage": "node scripts/run-electron-wallpaper-tests.cjs",
     "test:attachment-storage": "node scripts/run-electron-attachment-tests.cjs",
@@ -49,11 +51,9 @@
     "build:unpack:win": "npm run build:native:win && npm run build && electron-builder --config electron-builder.win.yml --win --x64 --dir",
     "build:native:win": "powershell -NoProfile -ExecutionPolicy Bypass -File native_blur/build.ps1 && npm run build:capture:win",
     "build:capture:win": "powershell -NoProfile -ExecutionPolicy Bypass -File native_capture/build.ps1",
-    "test:capture:native": "powershell -NoProfile -ExecutionPolicy Bypass -File native_capture/build.ps1 -Test",
+    "test:capture:native": "node scripts/run-test-entry.cjs capture-native",
     "test:capture:electron": "node scripts/run-electron-window-tests.cjs capture",
-    "build:win": "npm run build:native:win && npm run build && electron-builder --config electron-builder.win.yml --win nsis --x64 --publish never",
-    "build:mac:x64": "npm run build && electron-builder --config electron-builder.mac.yml --mac dmg --x64 --publish never",
-    "build:mac:arm64": "npm run build && electron-builder --config electron-builder.mac.yml --mac dmg --arm64 --publish never"
+    "build:win": "npm run build:native:win && npm run build && electron-builder --config electron-builder.win.yml --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@aurouscia/china-areas": "^0.7.0",

@@ -56,8 +56,17 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
+      - name: Verify explicit release quality scope
+        run: npm run test:release:quality
+
+      - name: Upload release quality evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-quality-evidence
+          path: tmp/test-runs/
+          if-no-files-found: ignore
+          retention-days: 14
 
   windows:
     name: Windows x64
@@ -107,6 +116,25 @@ jobs:
       - name: Package Windows installer
         run: npx electron-builder --config electron-builder.win.yml --win nsis --x64 --publish never
 
+      - name: Build package acceptance input driver
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File native_capture/build.ps1 -InputDriver
+
+      - name: Verify actual packaged screenshot and cold restart
+        shell: pwsh
+        run: |
+          $env:ABANDON_TEST_PACKAGE_DIR = (Resolve-Path -LiteralPath dist/win-unpacked).Path
+          node scripts/run-focused-tests.cjs --file tests/capture-package-smoke.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Packaged application acceptance failed" }
+
+      - name: Upload packaged application evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: packaged-application-evidence
+          path: tmp/test-runs/
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v6
         with:
@@ -133,8 +161,8 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v7
         with:
+          name: abandon-note-windows-x64
           path: release-assets
-          merge-multiple: true
 
       - name: Generate SHA-256 checksums
         working-directory: release-assets

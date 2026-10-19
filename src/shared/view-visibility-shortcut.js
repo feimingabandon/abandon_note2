@@ -1,19 +1,17 @@
 export const VIEW_VISIBILITY_SHORTCUT_DEFAULT = 'F2'
 
-const MODIFIER_ORDER = Object.freeze(['Control', 'Command', 'Super', 'Alt', 'Shift'])
+const MODIFIER_ORDER = Object.freeze(['Control', 'Super', 'Alt', 'Shift'])
 const MODIFIER_ALIASES = new Map([
   ['ctrl', 'Control'],
   ['control', 'Control'],
-  ['cmd', 'Command'],
-  ['command', 'Command'],
-  ['meta', 'Command'],
+  ['meta', 'Super'],
   ['super', 'Super'],
   ['win', 'Super'],
   ['windows', 'Super'],
   ['alt', 'Alt'],
-  ['option', 'Alt'],
   ['shift', 'Shift']
 ])
+const MODIFIER_LABELS = Object.freeze({ Control: 'Ctrl', Super: 'Win', Alt: 'Alt', Shift: 'Shift' })
 const NAMED_KEYS = new Map([
   ['space', 'Space'],
   ['tab', 'Tab'],
@@ -35,7 +33,7 @@ const NAMED_KEYS = new Map([
   ['delete', 'Delete'],
   ['backspace', 'Backspace']
 ])
-const RESERVED_SHORTCUTS = new Set(['Alt+F4', 'Command+Q', 'Command+W', 'Super+L'])
+const RESERVED_SHORTCUTS = new Set(['Alt+F4', 'Super+L'])
 
 function normalizePrimaryKey(value) {
   const raw = String(value || '').trim()
@@ -88,20 +86,13 @@ export function normalizeViewVisibilityShortcut(value, fallback = '') {
   return result.valid ? result.accelerator : fallback
 }
 
-export function formatViewVisibilityShortcut(value, platform = 'win32') {
+export function formatViewVisibilityShortcut(value) {
   const result = validateViewVisibilityShortcut(value)
   if (!result.valid || !result.accelerator) return ''
-  const displayModifiers = {
-    Control: platform === 'darwin' ? '⌃' : 'Ctrl',
-    Command: platform === 'darwin' ? '⌘' : 'Command',
-    Super: platform === 'darwin' ? '⌘' : 'Win',
-    Alt: platform === 'darwin' ? 'Option' : 'Alt',
-    Shift: platform === 'darwin' ? '⇧' : 'Shift'
-  }
   const displayKeys = { Up: '↑', Down: '↓', Left: '←', Right: '→' }
   return result.accelerator
     .split('+')
-    .map((part) => displayModifiers[part] || displayKeys[part] || part)
+    .map((part) => MODIFIER_LABELS[part] || displayKeys[part] || part)
     .join(' + ')
 }
 
@@ -113,11 +104,11 @@ function primaryKeyFromKeyboardEvent(event) {
   return normalizePrimaryKey(event?.key)
 }
 
-export function shortcutCaptureFromKeyboardEvent(event, platform = 'win32') {
+export function shortcutCaptureFromKeyboardEvent(event) {
   const key = String(event?.key || '')
   const modifiers = []
   if (event?.ctrlKey) modifiers.push('Control')
-  if (event?.metaKey) modifiers.push(platform === 'darwin' ? 'Command' : 'Super')
+  if (event?.metaKey) modifiers.push('Super')
   if (event?.altKey) modifiers.push('Alt')
   if (event?.shiftKey) modifiers.push('Shift')
 
@@ -131,7 +122,7 @@ export function shortcutCaptureFromKeyboardEvent(event, platform = 'win32') {
     return {
       action: MODIFIER_ALIASES.has(key.toLowerCase()) ? 'incomplete' : 'invalid',
       accelerator: preview,
-      display: preview ? formatModifierPreview(preview, platform) : '',
+      display: preview ? formatModifierPreview(preview) : '',
       code: preview ? 'incomplete' : 'unsupported'
     }
   }
@@ -141,22 +132,15 @@ export function shortcutCaptureFromKeyboardEvent(event, platform = 'win32') {
     action: result.valid ? 'candidate' : 'invalid',
     accelerator: result.accelerator,
     display: result.accelerator
-      ? formatViewVisibilityShortcut(result.accelerator, platform)
+      ? formatViewVisibilityShortcut(result.accelerator)
       : [...modifiers, primaryKey].join(' + '),
     code: result.code
   }
 }
 
-function formatModifierPreview(value, platform) {
-  const modifierDisplay = {
-    Control: platform === 'darwin' ? '⌃' : 'Ctrl',
-    Command: platform === 'darwin' ? '⌘' : 'Command',
-    Super: platform === 'darwin' ? '⌘' : 'Win',
-    Alt: platform === 'darwin' ? 'Option' : 'Alt',
-    Shift: platform === 'darwin' ? '⇧' : 'Shift'
-  }
+function formatModifierPreview(value) {
   return value
     .split('+')
-    .map((part) => modifierDisplay[part] || part)
+    .map((part) => MODIFIER_LABELS[part] || part)
     .join(' + ')
 }

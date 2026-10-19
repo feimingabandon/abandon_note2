@@ -99,6 +99,10 @@ bool saveImage(const QImage &source, const QString &path, QString *error) {
   }
   return true;
 }
+bool Stroke::freehand() const {
+  return tool == "pen" || tool == "marker" || tool == "eraser" ||
+         (tool == "mosaic" && mosaicBrush);
+}
 QRectF Stroke::bounds() const {
   if (points.isEmpty())
     return {};
@@ -107,6 +111,10 @@ QRectF Stroke::bounds() const {
   QRectF r(points.first(), QSizeF(1, 1));
   for (auto p : points)
     r = r.united(QRectF(p, QSizeF(1, 1)));
+  if (tool == "mosaic" && mosaicBrush) {
+    const qreal radius = brushSize / 2.;
+    r.adjust(-radius, -radius, radius, radius);
+  }
   return r;
 }
 QTransform Stroke::localTransform() const {
@@ -119,35 +127,119 @@ QTransform Stroke::localTransform() const {
   }
   return result;
 }
+// Sample a fixed image-space grid so extending a brush does not shift blocks
+// that were already painted. Only the circular swept path receives the effect.
+static QImage mosaicBrushPixels(const QImage &base, const QImage &layer,
+                                const Stroke &s, QPoint &origin) {
+  auto r = s.bounds().toAlignedRect().intersected(base.rect());
+  if (!s.clipBounds.isEmpty())
+    r = r.intersected(s.clipBounds);
+  if (r.isEmpty() || s.points.isEmpty())
+    return {};
+  const int block = std::max(2, s.width);
+  const QPoint grid(r.x() / block * block, r.y() / block * block);
+  const QRect sampleRect =
+      QRect(grid, QPoint((r.right() / block + 1) * block - 1,
+                         (r.bottom() / block + 1) * block - 1))
+          .intersected(base.rect());
+  auto source = base.copy(sampleRect)
+                    .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+  if (!layer.isNull()) {
+    QPainter p(&source);
+    p.drawImage(-sampleRect.topLeft(), layer);
+  }
+  QImage effect(r.size(), QImage::Format_ARGB32_Premultiplied);
+  effect.fill(Qt::transparent);
+  for (int y = grid.y(); y <= r.bottom(); y += block)
+    for (int x = grid.x(); x <= r.right(); x += block) {
+      const QRect cell = QRect(x, y, block, block).intersected(base.rect());
+      qint64 red = 0, green = 0, blue = 0, alpha = 0;
+      for (int cy = cell.top(); cy <= cell.bottom(); ++cy) {
+        const auto row = reinterpret_cast<const QRgb *>(
+            source.constScanLine(cy - sampleRect.y()));
+        for (int cx = cell.left(); cx <= cell.right(); ++cx) {
+          const auto pixel = row[cx - sampleRect.x()];
+          red += qRed(pixel);
+          green += qGreen(pixel);
+          blue += qBlue(pixel);
+          alpha += qAlpha(pixel);
+        }
+      }
+      const auto count = qint64(cell.width()) * cell.height();
+      const QRgb average =
+          qRgba(red / count, green / count, blue / count, alpha / count);
+      const auto target = cell.intersected(r).translated(-r.topLeft());
+      for (int ty = target.top(); ty <= target.bottom(); ++ty) {
+        auto row = reinterpret_cast<QRgb *>(effect.scanLine(ty));
+        std::fill(row + target.left(), row + target.right() + 1, average);
+      }
+    }
+  QImage mask(r.size(), QImage::Format_ARGB32_Premultiplied);
+  mask.fill(Qt::transparent);
+  {
+    QPainter p(&mask);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.translate(-r.topLeft());
+    p.setPen(QPen(Qt::white, s.brushSize, Qt::SolidLine, Qt::RoundCap,
+                  Qt::RoundJoin));
+    QPainterPath path(s.points.first());
+    for (int i = 1; i < s.points.size(); ++i)
+      path.lineTo(s.points[i]);
+    if (std::all_of(s.points.begin(), s.points.end(),
+                    [&](QPointF pt) { return pt == s.points.first(); }))
+      p.drawPoint(s.points.first());
+    else
+      p.drawPath(path);
+  }
+  {
+    QPainter p(&effect);
+    p.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+    p.drawImage(0, 0, mask);
+  }
+  origin = r.topLeft();
+  return effect;
+}
 // Effects sample the image as it existed before the effect. Erasing clears only
 // this transparent annotation layer, never the captured pixels.
-static void compositeStroke(QImage &layer, const QImage &base,
-                            const Stroke &s) {
+static void compositeStroke(QImage &layer, const QImage &base, const Stroke &s,
+                            QImage *effect = nullptr,
+                            QPoint *origin = nullptr) {
   if (s.tool == "mosaic" || s.tool == "blur") {
+    QImage patch;
+    QPoint at;
     if (!s.effectPixels.isNull()) {
-      QPainter p(&layer);
-      p.setCompositionMode(QPainter::CompositionMode_Source);
-      p.drawImage(s.effectOrigin, s.effectPixels);
-      return;
+      patch = s.effectPixels;
+      at = s.effectOrigin;
+    } else if (s.tool == "mosaic" && s.mosaicBrush) {
+      patch = mosaicBrushPixels(base, layer, s, at);
+    } else {
+      auto r = s.bounds().toAlignedRect().intersected(base.rect());
+      if (!s.clipBounds.isEmpty())
+        r = r.intersected(s.clipBounds);
+      if (r.isEmpty())
+        return;
+      patch = base.copy(r);
+      {
+        QPainter p(&patch);
+        p.drawImage(-r.topLeft(), layer);
+      }
+      int block = std::max(2, s.width);
+      patch = patch.scaled(std::max(1, r.width() / block),
+                           std::max(1, r.height() / block),
+                           Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+      patch = patch.scaled(r.size(), Qt::IgnoreAspectRatio,
+                           s.tool == "blur" ? Qt::SmoothTransformation
+                                            : Qt::FastTransformation);
+      at = r.topLeft();
     }
-    const auto r = s.bounds().toAlignedRect().intersected(base.rect());
-    if (r.isEmpty())
-      return;
-    QImage patch = base.copy(r);
-    {
-      QPainter p(&patch);
-      p.drawImage(-r.topLeft(), layer);
-    }
-    int block = std::max(2, s.width);
-    patch = patch.scaled(std::max(1, r.width() / block),
-                         std::max(1, r.height() / block), Qt::IgnoreAspectRatio,
-                         Qt::SmoothTransformation);
-    patch = patch.scaled(r.size(), Qt::IgnoreAspectRatio,
-                         s.tool == "blur" ? Qt::SmoothTransformation
-                                          : Qt::FastTransformation);
+    if (effect)
+      *effect = patch;
+    if (origin)
+      *origin = at;
     QPainter p(&layer);
-    p.setCompositionMode(QPainter::CompositionMode_Source);
-    p.drawImage(r.topLeft(), patch);
+    p.setCompositionMode(s.mosaicBrush ? QPainter::CompositionMode_SourceOver
+                                       : QPainter::CompositionMode_Source);
+    p.drawImage(at, patch);
   } else
     ImageDocument::draw(layer, s);
 }
@@ -156,6 +248,13 @@ void ImageDocument::draw(QImage &image, const Stroke &s) {
     return;
   QRectF r(s.points.first(), s.points.last());
   r = r.normalized();
+  if (s.tool == "mosaic" && s.mosaicBrush) {
+    QPoint at;
+    const auto patch = mosaicBrushPixels(image, {}, s, at);
+    QPainter p(&image);
+    p.drawImage(at, patch);
+    return;
+  }
   if (s.tool == "mosaic" || s.tool == "blur") {
     auto bounds = r.toAlignedRect().intersected(image.rect());
     if (bounds.isEmpty())
@@ -171,6 +270,8 @@ void ImageDocument::draw(QImage &image, const Stroke &s) {
   }
   QPainter p(&image);
   p.setRenderHint(QPainter::Antialiasing);
+  if (!s.clipBounds.isEmpty())
+    p.setClipRect(s.clipBounds);
   p.setPen(QPen(s.color, s.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
   if (s.tool == "eraser")
     p.setCompositionMode(QPainter::CompositionMode_Clear);
@@ -289,17 +390,18 @@ ImageDocument ImageDocument::cropped(QRect area) const {
   // Replay redo in chronological order as well: restoring a cropped effect
   // must produce exactly the same pixels as restoring it before the crop.
   auto cacheEffect = [&](const Stroke &original, Stroke &cropped) {
-    compositeStroke(layer, base, original);
+    QImage pixels;
+    QPoint origin;
+    compositeStroke(layer, base, original, &pixels, &origin);
     if (original.tool == "mosaic" || original.tool == "blur") {
-      const QRect bounds =
-          original.effectPixels.isNull()
-              ? original.bounds().toAlignedRect()
-              : QRect(original.effectOrigin, original.effectPixels.size());
+      const QRect bounds(origin, pixels.size());
       const auto visible = bounds.intersected(area);
       if (result.memoryCost() + qint64(visible.width()) * visible.height() * 4 >
           MaxTotalBytes)
         return false;
-      cropped.effectPixels = visible.isEmpty() ? QImage() : layer.copy(visible);
+      cropped.effectPixels = visible.isEmpty()
+                                 ? QImage()
+                                 : pixels.copy(visible.translated(-origin));
       cropped.effectOrigin = visible.topLeft() - area.topLeft();
     }
     return true;
@@ -311,9 +413,12 @@ ImageDocument ImageDocument::cropped(QRect area) const {
     if (!cacheEffect(redoStack[i], result.redoStack[i]))
       return {};
   for (auto list : {&result.strokes, &result.redoStack})
-    for (auto &s : *list)
+    for (auto &s : *list) {
       for (auto &p : s.points)
         p -= area.topLeft();
+      if (!s.clipBounds.isEmpty())
+        s.clipBounds = s.clipBounds.translated(-area.topLeft());
+    }
   return result;
 }
 QTransform ImageDocument::contentTransform() const {

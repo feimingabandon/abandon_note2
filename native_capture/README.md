@@ -1,7 +1,8 @@
 # Abandon capture runtime
 
 Windows 10 22H2 / Windows 11 x64. C++20, Qt **6.8.3** (Widgets, Gui, Network,
-Test and image formats), MSVC 2022-compatible ABI, dynamic MSVC runtime.
+and image formats), MSVC 2022-compatible ABI, dynamic MSVC runtime. Qt Test is
+required only for explicitly selected tests.
 Visual Studio 2022 or newer C++ tools and CMake 3.24+ are required to build.
 
 Install Qt into the ignored project toolchain directory, pass `-QtRoot`, or set
@@ -10,7 +11,9 @@ Install Qt into the ignored project toolchain directory, pass `-QtRoot`, or set
 ```powershell
 python -m pip install aqtinstall==3.3.0
 python -m aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 --outputdir tmp/toolchains/qt --archives qtbase qtimageformats qttools
-powershell -NoProfile -File native_capture/build.ps1 -Test
+powershell -NoProfile -ExecutionPolicy Bypass -File native_capture/build.ps1
+# Build and run one named test in a fresh workspace result directory:
+powershell -NoProfile -ExecutionPolicy Bypass -File native_capture/build.ps1 -Test -TestName capture_core -TestsOnly -ResultDirectory tmp/capture-core-attempt
 ```
 
 The app loads only `capture_host.dll`. Qt runs in the owned `AbandonCapture.exe`
@@ -19,17 +22,21 @@ needed by the installed application. Qt is used under its applicable LGPL/GPL
 licenses, consistent with this GPL-3.0-only repository. Include Qt license texts
 with redistribution. See the screenshot design and test charter under `docs/`.
 
-The default capture shortcut is F1; view visibility defaults to F2. Both can be
+The default editing capture shortcut is F1; quick screenshot copy defaults to
+Ctrl+F1 (select a region and release to copy/exit without the annotation toolbar).
+Clipboard failure keeps the selection for Enter/Ctrl+C retry; Esc cancels.
+View visibility defaults to F2. All can be
 changed in application settings. Startup registration conflicts appear in a
 dialog. After releasing a key in another app, use Retry in that dialog or in
 settings to register it again without restarting; recovery is not automatic.
 The tray can disable/enable all app global shortcuts (capture and view visibility)
 without clearing their bindings for this run; restarting enables them again. Clipboard
 pinning and showing/hiding pins are tray actions only, without global shortcuts.
-Capture: Ctrl+A/F selects the screen; Enter/double click/Ctrl+C copies;
+Capture: Ctrl+A/F selects the screen; Enter/double click completes the current
+source action (copy for global capture, return to the note/background otherwise);
+Ctrl+C always copies;
 middle click/Ctrl+T pins; Ctrl+S saves and Ctrl+Shift+S quick-saves (the first use
-asks for a directory). Ctrl+Enter uses a note/background capture in its source
-form. Ctrl+N/B sends a global capture to a new note/background. Arrows move one
+asks for a directory). Ctrl+N/B sends a global capture to a new note/background. Arrows move one
 image pixel; Ctrl+arrows expand an edge and Shift+arrows shrink it. Hold Space
 during selection dragging to move; otherwise Space toggles the toolbar. Tab
 switches window/control detection, Alt shows the magnifier, C copies its color,
@@ -40,8 +47,17 @@ region until screen topology/DPI changes.
 release leaves the current object editable; right click completes it. Ctrl+Z
 undoes, Ctrl+Y redoes into the editable state, Ctrl+Shift+Z clears annotations.
 Old completed objects are not directly selectable. Tools include rectangle,
-ellipse, line/polyline, arrow, pen, marker, text, mosaic, blur and annotation-only
-eraser. Text supports multiline IME input; Ctrl+Enter finishes text input while
+ellipse, line, arrow, pen, marker, text, mosaic and annotation-only
+eraser. Mosaic defaults to a continuous circular brush, with an optional region
+mode in its parameters. Brush diameter and mosaic block size are independent.
+Mosaic and eraser display a circular range guide; freehand strokes have no box
+handles. Hover the current shape to reveal its adjustment handles; lines/arrows
+use their endpoints. Rectangle, ellipse, arrow, line, pen and marker are direct
+toolbar buttons with full click targets. Parameters appear automatically in a
+secondary row below the tools, without opening a separate popup or consuming
+the first canvas click. Enter/Escape from a parameter field returns focus to
+the canvas; nested menus close first. The toolbar and its Windows window region
+use matching small rounded corners. Text supports multiline IME input; Ctrl+Enter finishes text input while
 keeping the object editable. Color, width/font/effect size and text rotation
 are toolbar parameters. Wheel/1/2/[ / ] adjusts the applicable size.
 
@@ -59,18 +75,26 @@ rectangles through Windows UI Automation on a worker with provider timeouts;
 manual selection remains available if a provider does not respond. No new Qt
 module or third-party screenshot engine is needed.
 
-Focused validation (after the native and electron-vite builds):
+Focused validation uses explicit files or IDs:
 
 ```powershell
 # On this Codex host, prepend the bundled Node directory to PATH and use its node.exe.
-node scripts/run-electron-window-tests.cjs capture
+node scripts/run-focused-tests.cjs --file native_capture/tests/core_test.cpp --plan
+node scripts/run-focused-tests.cjs --file native_capture/tests/core_test.cpp
+node scripts/run-electron-window-tests.cjs --file tests/capture-lifecycle-electron.mjs --plan
 # Set ABANDON_CAPTURE_REAL_INPUT=1 for real native keyboard business acceptance.
 node tests/capture-package-smoke.cjs tmp/capture-package-20260929/win-unpacked
 ```
 
 Qt tests include an isolated Windows window station for clipboard tests, so they
 do not replace the interactive user's clipboard. `capture_input_driver.exe` and
-all test executables stay in build/bin and are never deployed. The package smoke
+all test executables stay in the chosen build directory and are never deployed.
+The input driver requires `-InputDriver`; ordinary product builds include no tests
+or driver. `-BuildOnly` compiles without executing CTest. Reconfiguring with tests
+OFF clears the CTest list. Focused runs preserve the full build dependency closure;
+`--build reuse-verified` refuses unknown input/toolchain/output provenance. Legacy
+Electron capture targets remain blocked until their domain result adapters are
+migrated; a read-only plan does not certify runtime prerequisites. The package smoke
 uses a temporary profile and localhost Inspector only for its own test process.
 The helper intentionally has no standalone launch mode: it requires the host's
 per-launch pipe/token/root, and the host creates it atomically inside a Job Object.

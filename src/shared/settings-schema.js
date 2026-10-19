@@ -337,6 +337,15 @@ const definitions = [
     remark: '全局截图快捷键'
   },
   {
+    id: 'shortcuts.screenshotCopy',
+    path: ['shortcuts', 'screenshotCopy'],
+    db: { type: 'shortcuts', key: 'screenshot_copy' },
+    defaultValue: 'Control+F1',
+    parse: normalizeViewVisibilityShortcut,
+    serialize: String,
+    remark: '框选后直接复制到剪贴板的全局快捷键'
+  },
+  {
     id: 'css.bgColor',
     path: ['css', 'bgColor'],
     db: { type: 'css', key: 'bg_color' },
@@ -508,6 +517,24 @@ const definitions = [
     remark: '便签列表隐藏卡片辅助信息与操作组件'
   },
   {
+    id: 'notes.quickCreateUntilCompleted',
+    path: ['notes', 'quickCreateUntilCompleted'],
+    db: { type: 'notes', key: 'quick_create_until_completed' },
+    defaultValue: false,
+    parse: parseBoolean,
+    serialize: (value) => (value ? '1' : '0'),
+    remark: '月周日期格快捷新建的便签默认持续到完成，仅影响之后新建的便签'
+  },
+  {
+    id: 'notes.autoMoveToToday',
+    path: ['notes', 'autoMoveToToday'],
+    db: { type: 'notes', key: 'auto_move_to_today' },
+    defaultValue: false,
+    parse: parseBoolean,
+    serialize: (value) => (value ? '1' : '0'),
+    remark: '每天将昨天未完成的仅当天便签移动到今天，开启后立即检查'
+  },
+  {
     id: 'notes.tagColorEnabled',
     path: ['notes', 'tagColorEnabled'],
     db: { type: 'notes', key: 'tag_color_enabled' },
@@ -644,6 +671,16 @@ const definitions = [
     parse: parseBoolean,
     serialize: String,
     remark: '新建便利贴默认置顶状态'
+  },
+  {
+    id: 'almanac.enabled',
+    path: ['almanac', 'enabled'],
+    // app_settings 的唯一键不包含 type，不能复用 weather 的 enabled。
+    db: { type: 'almanac', key: 'almanac_enabled' },
+    defaultValue: true,
+    parse: parseBoolean,
+    serialize: String,
+    remark: '各视图宜忌展示开关'
   },
   {
     id: 'weather.enabled',

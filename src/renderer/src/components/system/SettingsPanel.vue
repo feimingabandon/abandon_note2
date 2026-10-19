@@ -1,6 +1,11 @@
 <script setup>
 import { useModalRequest } from '../../composables/useQueuedModal.js'
 import { reportEvidence } from '../../utils/diagnosticEvidence.js'
+import { useSettingsWriteQueue } from '../../composables/useSettingsWriteQueue.js'
+import { useDockSettingsForm } from '../../composables/useDockSettingsForm.js'
+import { useStickySettingsForm } from '../../composables/useStickySettingsForm.js'
+import DockSettingsSection from './settings/DockSettingsSection.vue'
+import StickySettingsSection from './settings/StickySettingsSection.vue'
 import { useSettingsSearch } from '../../composables/useSettingsSearch.js'
 import { stopScrollInertia } from '../../utils/smoothScroll.js'
 import { ownedPopovers } from '../../utils/anchoredPopover.js'
@@ -51,8 +56,6 @@ import {
 } from '../../utils/modalFocus.js'
 import {
   DEFAULT_SETTINGS,
-  DOCK_EDGES,
-  DOCK_REVEAL_HANDLE_MODES,
   createDefaultSettings,
   ICON_COLORS,
   TITLEBAR_ICON_SCALE_LIMITS,
@@ -104,9 +107,7 @@ function tickTimeAgo(ts) {
 }
 
 function shortcutSummary(value, runtime) {
-  const key =
-    formatViewVisibilityShortcut(value, window.api?.runtimeCapabilities?.platform || 'win32') ||
-    '未设置'
+  const key = formatViewVisibilityShortcut(value) || '未设置'
   if (runtime?.enabled === false) return '已禁用 · ' + key
   if (runtime?.error && !runtime.registered) return '未启用 · ' + key
   return key
@@ -135,26 +136,6 @@ const currentViewLabel = computed(() =>
   props.viewMode === VIEW_MODES.LIST ? '列表视图' : calendarViewLabel.value
 )
 const viewDefaults = computed(() => createDefaultSettings(props.viewMode))
-const dockEdgeLabels = Object.freeze({ top: '上', left: '左', right: '右' })
-const dockEdgeOptions = DOCK_EDGES.map((value) => ({ value, label: dockEdgeLabels[value] }))
-const dockRevealModeOptions = Object.freeze([
-  {
-    value: DOCK_REVEAL_HANDLE_MODES.DIRECT,
-    label: '直接唤出',
-    title: '鼠标触碰隐藏边缘后直接展开窗口'
-  },
-  {
-    value: DOCK_REVEAL_HANDLE_MODES.ON_TOUCH,
-    label: '触边确认',
-    title: '触边时显示小黑条，鼠标离开后自动收回'
-  },
-  {
-    value: DOCK_REVEAL_HANDLE_MODES.PERSISTENT,
-    label: '常显确认',
-    title: '窗口隐藏后保持显示；长按拖动可调整沿屏幕边缘的位置'
-  }
-])
-
 // ---- 面板动画控制 ----
 const rendered = ref(props.visible)
 const panelActive = ref(false)
@@ -238,7 +219,6 @@ const panelSize = ref(viewDefaults.value.ui.settingsPanelSize)
 const panelStyle = computed(() =>
   isCalendarView.value ? { width: panelSize.value + '%' } : { height: panelSize.value + '%' }
 )
-const isResetting = ref(false)
 const logQueue = useModalRequest()
 const showLogViewer = logQueue.requested
 const historyQueue = useModalRequest()
@@ -254,6 +234,8 @@ let closeTimer = null
 let blurReleaseTimer = null
 let openRaf = null
 let componentUnmounted = false
+const closeSaving = ref(false)
+const retryingSettingSaves = ref(false)
 
 // ---- 拖拽调整面板高度 ----
 let isDragging = false
@@ -265,7 +247,7 @@ let dragLatestPoint = 0
 let dragRaf = null
 
 function onDragStart(e) {
-  if (isResetting.value || e.button !== 0 || isDragging) return
+  if (isResetting.value || closeSaving.value || e.button !== 0 || isDragging) return
   cancelScrollRestore()
 
   isDragging = true
@@ -326,9 +308,9 @@ function onDragEnd(e) {
   }
   if (handle?.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId)
   if (panelSize.value !== dragStartSize) {
-    window.api
-      .setSettingValue('ui.settingsPanelSize', panelSize.value)
-      .catch((error) => console.warn('[SettingsPanel] 保存设置面板尺寸失败:', error))
+    persistSetting({ id: 'ui.settingsPanelSize', value: panelSize.value }).catch((error) =>
+      console.warn('[SettingsPanel] 保存设置面板尺寸失败:', error)
+    )
   }
 }
 
@@ -347,9 +329,21 @@ const onDocClick = (e) => {
 onMounted(() => document.addEventListener('click', onDocClick, true))
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
 
-const close = () => {
-  if (isResetting.value || closeTimer) return
+const close = async () => {
+  if (isResetting.value || closeTimer || closeSaving.value) return
+  closeSaving.value = true
   onDragEnd()
+  try {
+    await settingsWrites.flush()
+  } catch (error) {
+    console.warn('[SettingsPanel] 关闭前保存设置失败:', error)
+    if (!componentUnmounted && failedSettings.value.length === 0)
+      showMessage('error', '设置尚未保存，请重试后关闭', 4000)
+    return
+  } finally {
+    closeSaving.value = false
+  }
+  if (componentUnmounted) return
   freezeScrollPosition()
   // 保持背景模糊到退场动画结束，避免半透明面板在最后一段动画中直接透出清晰内容。
   blurReleaseTimer = setTimeout(() => {
@@ -357,9 +351,6 @@ const close = () => {
     emit('blur-release')
   }, 350)
   panelActive.value = false
-  Promise.all([flushPendingSettingSaves(), flushPendingBlurConfig()]).catch((e) =>
-    console.warn('[SettingsPanel] 关闭前保存设置失败:', e)
-  )
   closeTimer = setTimeout(() => {
     closeTimer = null
     rendered.value = false
@@ -425,10 +416,12 @@ const fontSizeBase = ref(viewDefaults.value.css.fontSizeBase)
 const noteRemarkFontSize = ref(viewDefaults.value.css.noteRemarkFontSize)
 const compactFontSize = ref(DEFAULT_SETTINGS.window.compactFontSize)
 const textColor = ref(DEFAULT_SETTINGS.css.textColor)
-const stickyFontSize = ref(DEFAULT_SETTINGS.sticky.fontSize)
-const stickyBackgroundColor = ref(DEFAULT_SETTINGS.sticky.backgroundColor)
-const stickyCornerRadius = ref(DEFAULT_SETTINGS.sticky.cornerRadius)
-const stickyAlwaysOnTop = ref(DEFAULT_SETTINGS.sticky.alwaysOnTop)
+const stickyForm = useStickySettingsForm({
+  defaults: DEFAULT_SETTINGS.sticky,
+  save: (id, value) => settingsWrites.debouncedSave(id, value),
+  showMessage: (...args) => showMessage(...args)
+})
+
 const doubleClickQuickEdit = ref(DEFAULT_SETTINGS.interaction.doubleClickQuickEdit)
 const tagColorEnabled = ref(DEFAULT_SETTINGS.notes.tagColorEnabled)
 const minimalMode = ref(DEFAULT_SETTINGS.listAppearance.minimalMode)
@@ -483,14 +476,6 @@ const fontSizePresets = computed(() =>
   Array.from({ length: fontSizeMax.value - 13 }, (_, index) => index + 14)
 )
 const noteRemarkFontSizePresets = Array.from({ length: 17 }, (_, index) => index + 12)
-const stickyFontSizePresets = [12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
-const stickyColorPresets = [
-  { label: '便签黄', value: '#fff2a8' },
-  { label: '柔粉', value: '#ffd4e1' },
-  { label: '浅蓝', value: '#d4eaff' },
-  { label: '浅绿', value: '#ddf3d5' }
-]
-
 /** 十六进制颜色预设（文字颜色 / 背景颜色共用） */
 const hexPresets = [
   { label: '纯黑', value: '#000000' },
@@ -511,8 +496,6 @@ const bgColorHex = computed(() => {
 })
 const bgColorInput = ref(bgColorHex.value)
 const bgColorInputError = ref(false)
-const stickyColorInput = ref(stickyBackgroundColor.value)
-const stickyColorInputError = ref(false)
 
 /** 验证十六进制颜色格式 */
 function isValidHex(val) {
@@ -594,130 +577,17 @@ function setBgColorPreset(hex) {
   bgColor.value = `${r} ${g} ${b}`
 }
 
-function onStickyColorInput(e) {
-  stickyColorInput.value = e.target.value
-  if (stickyColorInputError.value) stickyColorInputError.value = false
-}
-
-function commitStickyColor() {
-  const value = stickyColorInput.value.trim()
-  if (value === '') {
-    stickyColorInput.value = stickyBackgroundColor.value
-    return
-  }
-  if (!isValidHex(value)) {
-    stickyColorInput.value = stickyBackgroundColor.value
-    stickyColorInputError.value = true
-    showMessage('warning', '请输入有效的便利贴十六进制颜色，如 #FFF2A8')
-    return
-  }
-  const normalized = normalizeHex(value)
-  stickyBackgroundColor.value = normalized
-  stickyColorInput.value = normalized
-  stickyColorInputError.value = false
-}
-
 // ---- 窗口设置 ----
 const autoStart = ref(false)
 const autoStartError = ref(null) // 持久错误（null = 无错误），恒显示不自动消失
-const dockRevealHandleMode = ref(viewDefaults.value.dock.revealHandleMode)
-const dockEnabledEdges = ref([...viewDefaults.value.dock.enabledEdges])
-const dockRuntime = ref({
-  supported: true,
-  reason: ''
+const dockForm = useDockSettingsForm({
+  getDefaults: () => viewDefaults.value.dock,
+  canWrite: () => settingsWrites.canWrite('dock'),
+  write: (config) => settingsWrites.saveDockConfig(config)
 })
-let _dockConfigRequestRevision = 0
-const inFlightDockConfigWrites = new Set()
-
-function normalizeDockEdgesForUi(edges) {
-  const selected = new Set(Array.isArray(edges) ? edges : viewDefaults.value.dock.enabledEdges)
-  return DOCK_EDGES.filter((side) => selected.has(side))
-}
-
-function assignDockConfig(dock = viewDefaults.value.dock) {
-  dockRevealHandleMode.value = Object.values(DOCK_REVEAL_HANDLE_MODES).includes(
-    dock?.revealHandleMode
-  )
-    ? dock.revealHandleMode
-    : DOCK_REVEAL_HANDLE_MODES.DIRECT
-  dockEnabledEdges.value = normalizeDockEdgesForUi(dock?.enabledEdges)
-}
-
-function assignDockRuntime(runtime) {
-  if (!runtime) return
-  dockRuntime.value = {
-    supported: runtime.supported !== false,
-    reason: runtime.reason || runtime.error || ''
-  }
-}
-
-async function saveDockConfig({ revealHandleMode, enabledEdges }) {
-  if (!_settingsSynced || isResetting.value) return
-
-  const normalizedEdges = normalizeDockEdgesForUi(enabledEdges)
-  dockRevealHandleMode.value = Object.values(DOCK_REVEAL_HANDLE_MODES).includes(revealHandleMode)
-    ? revealHandleMode
-    : DOCK_REVEAL_HANDLE_MODES.DIRECT
-  dockEnabledEdges.value = normalizedEdges
-  const requestRevision = ++_dockConfigRequestRevision
-  const request = window.api.setDockConfig({
-    revealHandleMode: dockRevealHandleMode.value,
-    enabledEdges: [...normalizedEdges]
-  })
-  inFlightDockConfigWrites.add(request)
-
-  try {
-    const snapshot = await request
-    if (requestRevision !== _dockConfigRequestRevision || isResetting.value) return
-    assignDockConfig(snapshot?.values?.dock)
-  } catch (error) {
-    if (requestRevision !== _dockConfigRequestRevision || isResetting.value) return
-    console.warn('[SettingsPanel] 保存贴边隐藏设置失败:', error)
-    try {
-      const snapshot = await window.api.getSettingsSnapshot()
-      if (requestRevision === _dockConfigRequestRevision && !isResetting.value) {
-        assignDockConfig(snapshot?.values?.dock)
-      }
-    } catch (reloadError) {
-      console.warn('[SettingsPanel] 回读贴边隐藏设置失败:', reloadError)
-    }
-    showMessage('error', '贴边隐藏设置保存失败，已恢复实际配置', 4000)
-  } finally {
-    inFlightDockConfigWrites.delete(request)
-  }
-}
-
-function setDockRevealHandleMode(value) {
-  if (isDockRevealModeDisabled(value)) return
-  void saveDockConfig({
-    revealHandleMode: value,
-    enabledEdges: dockEnabledEdges.value
-  })
-}
-
-function isDockRevealModeDisabled(mode) {
-  return !dockRuntime.value.supported || !Object.values(DOCK_REVEAL_HANDLE_MODES).includes(mode)
-}
-
-function toggleDockEdge(side) {
-  if (!DOCK_EDGES.includes(side)) return
-  const selected = new Set(dockEnabledEdges.value)
-  if (selected.has(side)) selected.delete(side)
-  else selected.add(side)
-  void saveDockConfig({
-    revealHandleMode: dockRevealHandleMode.value,
-    enabledEdges: [...selected]
-  })
-}
-
-/** 开机自启状态是否已从 OS 同步完成（防止首次读取触发重复设置） */
-let _autoStartSynced = false
-let _autoStartRequestRevision = 0
-const inFlightAutoStartWrites = new Set()
-let _settingsSynced = false
 
 // ---- 系统模糊设置 ----
-const blurCaps = ref({ supported: false, platform: '', strategy: 'none' })
+const blurCaps = ref({ supported: false, strategy: 'none' })
 const blurEnabled = ref(DEFAULT_SETTINGS.blur.enabled)
 const blurError = ref(null) // 持久错误（如 DLL 未加载），恒显示不自动消失
 const blurRadius = ref(DEFAULT_SETTINGS.blur.radius)
@@ -728,8 +598,6 @@ const blurDiagnostic = ref({
   lastCheckedAt: null,
   message: '等待调度器执行首次诊断'
 })
-let _blurSynced = false
-let _blurEnableFeedbackPending = false
 let stopBlurRuntimeListener = null
 let stopBlurDiagnosticListener = null
 let stopRemoteHealthListener = null
@@ -934,110 +802,80 @@ function onNativeBlurOptionsLeave(el, done) {
 const showClearNoteDataDialog = ref(false)
 const showResetSettingsDialog = ref(false)
 
-async function assignAutoStartWithoutWrite(value) {
-  _autoStartSynced = false
-  autoStart.value = Boolean(value)
-  await nextTick()
-  _autoStartSynced = true
-}
-
-watch(autoStart, async (v) => {
-  if (!_autoStartSynced || isResetting.value) return
-  const requestRevision = ++_autoStartRequestRevision
-  let request = null
-
-  try {
-    // 写入 OS，并获取 OS 回读确认的真实状态（不进入 app_settings）。
-    request = window.api.setAutoStart(v)
-    inFlightAutoStartWrites.add(request)
-    const verified = await request
-    if (requestRevision !== _autoStartRequestRevision) return
-
-    if (verified === v) {
-      // OS 确认成功 → 清除持久错误 + 成功 Toast
-      autoStartError.value = null
-      showMessage('success', v ? '开机自启已开启' : '开机自启已关闭')
-    } else {
-      // OS 状态与请求不符 → 回滚 UI + 持久错误
-      await assignAutoStartWithoutWrite(verified)
-      autoStartError.value = v
-        ? '开启失败，请检查系统安全软件是否拦截了开机启动权限'
-        : '关闭失败，请检查系统权限设置'
-    }
-  } catch (e) {
-    if (requestRevision !== _autoStartRequestRevision) return
-    console.warn('[SettingsPanel] 设置开机自启失败:', e)
-    try {
-      const actual = await window.api.verifyAutoStart()
-      if (requestRevision !== _autoStartRequestRevision) return
-      await assignAutoStartWithoutWrite(actual.value)
-    } catch (verifyError) {
-      // OS 回读也失败时保留当前控件值，并在下次打开设置时重新查询。
-      console.error('[SettingsPanel] 开机自启写入失败后的系统状态回读也失败:', verifyError)
-    }
-    autoStartError.value = '设置失败，请重试'
-  } finally {
-    if (request) inFlightAutoStartWrites.delete(request)
-  }
-})
-
-// ---- 防抖保存工具 ----
-const debounceTimers = {}
-const pendingSaves = {}
-const inFlightSettingSaves = new Set()
-
-function persistSetting(pending) {
-  reportEvidence('settings.save-requested', { id: pending.id, source: 'settings-panel' })
-  const request = window.api.setSettingValue(pending.id, pending.value)
-  inFlightSettingSaves.add(request)
-  request.then(
-    () => inFlightSettingSaves.delete(request),
-    () => inFlightSettingSaves.delete(request)
-  )
-  return request
-}
-
-function debouncedSave(id, value) {
-  if (!_settingsSynced || isResetting.value) return
-  reportEvidence('settings.save-queued', {
-    id,
-    delayMs: 300,
-    replacesPending: Boolean(pendingSaves[id])
-  })
-  if (debounceTimers[id]) clearTimeout(debounceTimers[id])
-  pendingSaves[id] = { id, value }
-  debounceTimers[id] = setTimeout(() => {
-    delete debounceTimers[id]
-    const pending = pendingSaves[id]
-    delete pendingSaves[id]
-    if (!pending || isResetting.value) return
-    persistSetting(pending).catch((e) =>
-      console.warn(`[SettingsPanel] 保存设置 ${pending.id} 失败:`, e)
-    )
-  }, 300)
-}
-
-function clearPendingSettingSaves() {
-  if (Object.keys(pendingSaves).length)
-    reportEvidence('settings.queue-cleared', {
-      ids: Object.keys(pendingSaves),
-      reason: 'flush-or-reset'
+const settingsWrites = useSettingsWriteQueue({
+  api: window.api,
+  blur: {
+    enabled: blurEnabled,
+    radius: blurRadius,
+    saturation: blurSaturation,
+    cornerRadius: blurCornerRadius,
+    error: blurError
+  },
+  autoStart: { enabled: autoStart, error: autoStartError },
+  dock: { assign: dockForm.assignConfig },
+  snapshot: {
+    assign: assignSettingsSnapshot,
+    fallback: () => ({
+      values: viewDefaults.value,
+      runtime: {
+        autoStart: { value: autoStart.value, error: '读取设置失败，当前显示共享默认值' },
+        blur: {
+          supported: false,
+          strategy: 'none',
+          error: '读取设置失败，当前显示共享默认值'
+        }
+      }
     })
-  Object.values(debounceTimers).forEach((timer) => clearTimeout(timer))
-  Object.keys(debounceTimers).forEach((key) => delete debounceTimers[key])
-  Object.keys(pendingSaves).forEach((key) => delete pendingSaves[key])
+  },
+  showMessage,
+  reportEvidence
+})
+const { isResetting, persistSetting, debouncedSave, loadSettingsSnapshot } = settingsWrites
+const { failedSettings } = settingsWrites
+const settingLabels = {
+  'appearance.titlebarStyle': '导航栏风格',
+  'appearance.uiScale': '界面缩放',
+  'appearance.titlebarIconScale': '导航图标大小',
+  'appearance.iconColor': '导航图标颜色',
+  'css.bgColor': '背景颜色',
+  'css.bgBlur': '组件模糊',
+  'css.popupOpacity': '组件透明度',
+  'css.windowOpacity': '窗口透明度',
+  'css.windowBorder': '窗口边框',
+  'css.fontSizeBase': '字体大小',
+  'css.noteRemarkFontSize': '备注字号',
+  'css.textColor': '文字颜色',
+  'window.compactFontSize': '灵动岛字号',
+  'sticky.fontSize': '便利贴默认字体大小',
+  'sticky.backgroundColor': '便利贴默认背景颜色',
+  'sticky.cornerRadius': '便利贴默认圆角',
+  'sticky.alwaysOnTop': '便利贴默认置顶',
+  'interaction.doubleClickQuickEdit': '双击快速编辑',
+  'interaction.hideMainViewDuringScreenshot': '截图时隐藏主视图',
+  'listAppearance.minimalMode': '极简模式',
+  'notes.tagColorEnabled': '标签颜色',
+  'remote.receiveNotices': '接收软件通知',
+  'remote.uploadDeviceInfo': '上传设备信息',
+  'ui.settingsPanelSize': '设置面板尺寸'
+}
+const settingLabel = (id) => settingLabels[id] || '设置修改'
+async function retrySettingSaves() {
+  if (retryingSettingSaves.value || isResetting.value) return
+  retryingSettingSaves.value = true
+  try {
+    await settingsWrites.retryFailedSettingSaves()
+  } catch (error) {
+    console.warn('[SettingsPanel] 重试保存设置失败:', error)
+  } finally {
+    if (!componentUnmounted) retryingSettingSaves.value = false
+  }
 }
 
-async function flushPendingSettingSaves() {
-  const saves = Object.values(pendingSaves)
-  clearPendingSettingSaves()
-  await Promise.all(saves.map(persistSetting))
-}
 // ---- 实时生效 watchers ----
 
 // 导航栏是离散选项：点击后立即持久化并广播，不使用滑块/文本输入的防抖。
 watch(titlebarStyle, (v) => {
-  if (!_settingsSynced || isResetting.value) return
+  if (!settingsWrites.canWrite()) return
   persistSetting({ id: 'appearance.titlebarStyle', value: v }).catch((e) =>
     console.warn('[SettingsPanel] 保存导航栏风格失败:', e)
   )
@@ -1045,7 +883,7 @@ watch(titlebarStyle, (v) => {
 
 watch(uiScale, (value) => {
   applyUiScale(value, el)
-  if (!_settingsSynced || isResetting.value) return
+  if (!settingsWrites.canWrite()) return
   persistSetting({ id: 'appearance.uiScale', value }).catch((error) =>
     console.warn('[SettingsPanel] 保存界面缩放失败:', error)
   )
@@ -1058,21 +896,21 @@ watch(titlebarIconScale, (value) => {
 
 watch(iconColor, (value) => {
   applyIconColor(value, el)
-  if (!_settingsSynced || isResetting.value) return
+  if (!settingsWrites.canWrite()) return
   persistSetting({ id: 'appearance.iconColor', value }).catch((error) =>
     console.warn('[SettingsPanel] 保存图标颜色失败:', error)
   )
 })
 
 watch(receiveRemoteNotices, (value) => {
-  if (!_settingsSynced || isResetting.value) return
+  if (!settingsWrites.canWrite()) return
   persistSetting({ id: 'remote.receiveNotices', value }).catch((error) =>
     console.warn('[SettingsPanel] 保存远程通知开关失败:', error)
   )
 })
 
 watch(uploadDeviceInfo, (value) => {
-  if (!_settingsSynced || isResetting.value) return
+  if (!settingsWrites.canWrite()) return
   persistSetting({ id: 'remote.uploadDeviceInfo', value }).catch((error) =>
     console.warn('[SettingsPanel] 保存设备信息上传开关失败:', error)
   )
@@ -1131,22 +969,6 @@ watch(textColor, (v) => {
   debouncedSave('css.textColor', v)
 })
 
-watch(stickyFontSize, (v) => {
-  debouncedSave('sticky.fontSize', v)
-})
-
-watch(stickyBackgroundColor, (v) => {
-  debouncedSave('sticky.backgroundColor', v)
-})
-
-watch(stickyCornerRadius, (v) => {
-  debouncedSave('sticky.cornerRadius', v)
-})
-
-watch(stickyAlwaysOnTop, (v) => {
-  debouncedSave('sticky.alwaysOnTop', v)
-})
-
 watch(doubleClickQuickEdit, (v) => {
   debouncedSave('interaction.doubleClickQuickEdit', v)
 })
@@ -1175,99 +997,7 @@ watch(bgColorHex, (v) => {
   bgColorInputError.value = false
 })
 
-watch(stickyBackgroundColor, (v) => {
-  stickyColorInput.value = v
-  stickyColorInputError.value = false
-})
-
-// ---- 系统模糊 watch（防抖发送到主进程） ----
-const inFlightBlurSyncs = new Set()
-
-function syncBlurConfig() {
-  if (!_blurSynced || isResetting.value) return Promise.resolve()
-  const shouldReportEnableResult = _blurEnableFeedbackPending
-  _blurEnableFeedbackPending = false
-  const request = window.api.setBlurConfig({
-    enabled: blurEnabled.value,
-    radius: blurRadius.value,
-    saturation: blurSaturation.value,
-    cornerRadius: blurCornerRadius.value
-  })
-  inFlightBlurSyncs.add(request)
-  request.then(
-    () => inFlightBlurSyncs.delete(request),
-    () => inFlightBlurSyncs.delete(request)
-  )
-  return request
-    .then((result) => {
-      if (result?.config && result.config.enabled !== blurEnabled.value) {
-        _blurSynced = false
-        blurEnabled.value = Boolean(result.config.enabled)
-        nextTick(() => {
-          _blurSynced = true
-        })
-      }
-      if (result?.runtime) blurError.value = result.error ?? result.runtime.error ?? null
-      if (shouldReportEnableResult && !result?.success) {
-        const nativeError = result?.nativeError
-        const codeSuffix = nativeError?.code ? `（错误码 ${nativeError.code}）` : ''
-        showMessage(
-          'error',
-          `毛玻璃启用失败：${result?.error || result?.runtime?.error || '原生模糊引擎不可用'}${codeSuffix}`,
-          5000
-        )
-      }
-      return result
-    })
-    .catch((e) => {
-      console.warn('[SettingsPanel] 同步模糊配置失败:', e)
-      if (shouldReportEnableResult && blurEnabled.value) {
-        showMessage('error', `毛玻璃启用失败：${e.message || '主进程通信失败'}`, 5000)
-      }
-    })
-}
-
-let _blurSyncTimer = null
-function debouncedSyncBlur() {
-  if (!_blurSynced || isResetting.value) return
-  if (_blurSyncTimer) clearTimeout(_blurSyncTimer)
-  _blurSyncTimer = setTimeout(() => {
-    _blurSyncTimer = null
-    if (isResetting.value) return
-    syncBlurConfig()
-  }, 150)
-}
-
-function flushPendingBlurConfig() {
-  if (!_blurSyncTimer) return Promise.resolve()
-  clearTimeout(_blurSyncTimer)
-  _blurSyncTimer = null
-  return syncBlurConfig()
-}
-
-function cancelPendingBlurConfig() {
-  if (!_blurSyncTimer) return
-  clearTimeout(_blurSyncTimer)
-  _blurSyncTimer = null
-}
-
-async function waitForInFlightWrites() {
-  const requests = [
-    ...inFlightSettingSaves,
-    ...inFlightBlurSyncs,
-    ...inFlightAutoStartWrites,
-    ...inFlightDockConfigWrites
-  ]
-  await Promise.allSettled(requests)
-}
-
-watch(blurEnabled, () => {
-  if (_blurSynced && !isResetting.value) _blurEnableFeedbackPending = true
-  debouncedSyncBlur()
-})
-watch(blurRadius, debouncedSyncBlur)
-watch(blurSaturation, debouncedSyncBlur)
-watch(blurCornerRadius, debouncedSyncBlur)
+// blur/auto-start watchers and all write generations belong to settingsWrites.
 // 圆角 CSS 变量即时同步（不等防抖，视觉必须立即跟上）
 watch(blurCornerRadius, (v) => {
   document.documentElement.style.setProperty('--window-radius', v + 'px')
@@ -1285,8 +1015,8 @@ function assignSettingsSnapshot(snapshot) {
   panelSize.value = Number(
     snapshot.values.ui?.settingsPanelSize ?? viewDefaults.value.ui.settingsPanelSize
   )
-  assignDockConfig(snapshot.values.dock)
-  assignDockRuntime(snapshot.runtime?.dock)
+  dockForm.assignConfig(snapshot.values.dock)
+  dockForm.assignRuntime(snapshot.runtime?.dock)
 
   titlebarStyle.value = appearance.titlebarStyle
   uiScale.value = appearance.uiScale
@@ -1308,10 +1038,7 @@ function assignSettingsSnapshot(snapshot) {
   compactFontSize.value =
     snapshot.values.window?.compactFontSize ?? DEFAULT_SETTINGS.window.compactFontSize
   textColor.value = css.textColor
-  stickyFontSize.value = sticky.fontSize
-  stickyBackgroundColor.value = sticky.backgroundColor
-  stickyCornerRadius.value = sticky.cornerRadius
-  stickyAlwaysOnTop.value = sticky.alwaysOnTop
+  stickyForm.assign(sticky)
   doubleClickQuickEdit.value =
     snapshot.values.interaction?.doubleClickQuickEdit ??
     DEFAULT_SETTINGS.interaction.doubleClickQuickEdit
@@ -1336,7 +1063,6 @@ function assignSettingsSnapshot(snapshot) {
   if (runtimeBlur) {
     blurCaps.value = {
       supported: runtimeBlur.supported,
-      platform: runtimeBlur.platform,
       strategy: runtimeBlur.strategy
     }
     blurError.value = runtimeBlur.error ?? null
@@ -1349,40 +1075,6 @@ function assignSettingsSnapshot(snapshot) {
   }
 
   applySettingsSnapshot(snapshot)
-}
-
-async function loadSettingsSnapshot() {
-  _autoStartRequestRevision += 1
-  _settingsSynced = false
-  _blurSynced = false
-  _autoStartSynced = false
-  clearPendingSettingSaves()
-  cancelPendingBlurConfig()
-
-  try {
-    const snapshot = await window.api.getSettingsSnapshot()
-    assignSettingsSnapshot(snapshot)
-  } catch (e) {
-    const message = '读取设置失败，当前显示共享默认值'
-    assignSettingsSnapshot({
-      values: viewDefaults.value,
-      runtime: {
-        autoStart: { value: autoStart.value, error: message },
-        blur: {
-          supported: false,
-          platform: '',
-          strategy: 'none',
-          error: message
-        }
-      }
-    })
-    console.warn('[SettingsPanel] 加载设置快照失败，使用共享默认值:', e)
-  }
-
-  await nextTick()
-  _settingsSynced = true
-  _blurSynced = true
-  _autoStartSynced = true
 }
 
 // 每次父组件打开设置时都会重新挂载本组件，因此这里必定重新查询完整快照。
@@ -1428,15 +1120,14 @@ onMounted(async () => {
     }
     const runtimeBlur = snapshot?.runtime?.blur
     const configuredEnabled = Boolean(snapshot?.values?.blur?.enabled)
-    if (snapshot?.values?.dock && inFlightDockConfigWrites.size === 0) {
-      assignDockConfig(snapshot.values.dock)
+    if (snapshot?.values?.dock && !settingsWrites.isInFlight('dock')) {
+      dockForm.assignConfig(snapshot.values.dock)
     }
-    assignDockRuntime(snapshot?.runtime?.dock)
+    dockForm.assignRuntime(snapshot?.runtime?.dock)
     if (!runtimeBlur) return
 
     blurCaps.value = {
       supported: runtimeBlur.supported,
-      platform: runtimeBlur.platform,
       strategy: runtimeBlur.strategy
     }
     blurError.value = runtimeBlur.error ?? null
@@ -1448,15 +1139,18 @@ onMounted(async () => {
     // 毛玻璃启用请求执行期间，主进程会先广播“壁纸已关闭”的过渡快照。
     // 这时不能用数据库中的旧 blur.enabled 把用户刚打开的开关拨回去；最终
     // 成功或失败状态由本次 IPC 返回值统一收敛。
-    if (inFlightBlurSyncs.size === 0 && effectiveEnabled !== blurEnabled.value) {
+    if (!settingsWrites.isInFlight('blur') && effectiveEnabled !== blurEnabled.value) {
       const wasEnabled = blurEnabled.value
-      _blurSynced = false
-      blurEnabled.value = effectiveEnabled
-      nextTick(() => {
-        _blurSynced = true
+      void settingsWrites.withoutWrite('blur', () => {
+        blurEnabled.value = effectiveEnabled
       })
 
-      if (wasEnabled && !effectiveEnabled && runtimeBlur.error && inFlightBlurSyncs.size === 0) {
+      if (
+        wasEnabled &&
+        !effectiveEnabled &&
+        runtimeBlur.error &&
+        !settingsWrites.isInFlight('blur')
+      ) {
         showMessage('error', `毛玻璃已停止：${runtimeBlur.error}`, 5000)
       }
     }
@@ -1486,8 +1180,7 @@ onBeforeUnmount(() => {
   stopHolidayDataListener = null
   onDragEnd()
   // 正常关闭时这里已完成 flush；强制卸载时也不能丢失最后一次修改。
-  flushPendingSettingSaves().catch((e) => console.warn('[SettingsPanel] 卸载前保存设置失败:', e))
-  flushPendingBlurConfig()
+  settingsWrites.dispose().catch((e) => console.warn('[SettingsPanel] 卸载前保存设置失败:', e))
   // 清理关闭动画定时器
   if (closeTimer) {
     clearTimeout(closeTimer)
@@ -1500,11 +1193,6 @@ onBeforeUnmount(() => {
   if (openRaf) {
     cancelAnimationFrame(openRaf)
     openRaf = null
-  }
-  // 清理模糊同步定时器
-  if (_blurSyncTimer) {
-    clearTimeout(_blurSyncTimer)
-    _blurSyncTimer = null
   }
   // 清理调度器健康检查定时器
   if (_schedulerTimer) {
@@ -1527,39 +1215,7 @@ const onConfirmClearNoteData = async () => {
 }
 
 /** 清空设置表，并使用主进程返回的共享默认快照同步运行时和控件。 */
-const onConfirmResetSettings = async () => {
-  if (isResetting.value) return
-
-  // 立即进入临界区：新的交互和 watcher 写入均被阻断；尚未触发的修改直接丢弃，
-  // 已经发往主进程的写入则先等待完成，确保随后清表一定是最后一次持久化操作。
-  isResetting.value = true
-  _settingsSynced = false
-  _blurSynced = false
-  _autoStartSynced = false
-  _autoStartRequestRevision += 1
-  onDragEnd()
-  clearPendingSettingSaves()
-  cancelPendingBlurConfig()
-
-  try {
-    await waitForInFlightWrites()
-
-    const snapshot = await window.api.resetSettings()
-    assignSettingsSnapshot(snapshot)
-    await nextTick()
-
-    showMessage('success', '已恢复默认设置')
-  } catch (e) {
-    console.warn('[SettingsPanel] 恢复默认设置失败:', e)
-    showMessage('error', '恢复默认设置失败，请重试', 4000)
-    await loadSettingsSnapshot()
-  } finally {
-    _settingsSynced = true
-    _blurSynced = true
-    _autoStartSynced = true
-    isResetting.value = false
-  }
-}
+const onConfirmResetSettings = () => settingsWrites.resetSettings(onDragEnd)
 const settingsSearch = useSettingsSearch(panelRef, {
   beforeNavigate: async (target) => {
     cancelScrollRestore()
@@ -1611,7 +1267,7 @@ async function retryScheduler() {
         role="dialog"
         aria-modal="true"
         aria-label="设置"
-        :aria-busy="isResetting"
+        :aria-busy="isResetting || closeSaving"
         @pointerdown.capture="cancelScrollRestore"
         @keydown="onPanelKeydown"
       >
@@ -1638,7 +1294,7 @@ async function retryScheduler() {
             ref="closeButtonRef"
             class="panel-close-btn"
             title="关闭"
-            :disabled="isResetting"
+            :disabled="isResetting || closeSaving"
             @click="close"
           >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -1650,6 +1306,21 @@ async function retryScheduler() {
               />
             </svg>
           </button>
+        </div>
+
+        <div v-if="failedSettings.length" class="settings-save-error scroll-y" role="alert">
+          <p>部分设置尚未保存，关闭前请重试。</p>
+          <p v-for="failure in failedSettings" :key="failure.id">
+            {{ settingLabel(failure.id) }}：未保存
+          </p>
+          <BaseButton
+            size="sm"
+            :disabled="isResetting || closeSaving || retryingSettingSaves"
+            data-settings-save-retry
+            @click="retrySettingSaves"
+          >
+            {{ retryingSettingSaves ? '正在重试…' : '重试保存' }}
+          </BaseButton>
         </div>
 
         <div class="settings-search">
@@ -1684,12 +1355,12 @@ async function retryScheduler() {
           ref="panelBodyRef"
           class="panel-body scroll-y"
           :class="{ 'is-resetting': isResetting }"
-          :inert="isResetting"
+          :inert="isResetting || closeSaving"
           @wheel.passive="onManualScroll"
           @pointerdown="onManualScroll"
           @keydown="onManualScroll"
         >
-          <fieldset class="settings-controls" :disabled="isResetting">
+          <fieldset class="settings-controls" :disabled="isResetting || closeSaving">
             <!-- ========== 基础样式 ========== -->
             <div
               class="settings-category"
@@ -1908,7 +1579,7 @@ async function retryScheduler() {
                       :presets="fontSizePresets"
                       :min="14"
                       :max="fontSizeMax"
-                      width="76px"
+                      width="max(76rem, 5.5em)"
                     />
                   </div>
                 </div>
@@ -1927,7 +1598,7 @@ async function retryScheduler() {
                       :presets="noteRemarkFontSizePresets"
                       :min="12"
                       :max="28"
-                      width="76px"
+                      width="max(76rem, 5.5em)"
                     />
                   </div>
                 </div>
@@ -1946,7 +1617,7 @@ async function retryScheduler() {
                       :presets="noteRemarkFontSizePresets"
                       :min="12"
                       :max="28"
-                      width="76px"
+                      width="max(76rem, 5.5em)"
                     />
                   </div>
                 </div>
@@ -2013,12 +1684,12 @@ async function retryScheduler() {
               <section class="settings-section">
                 <h4 class="section-title">窗口背景与圆角</h4>
 
-                <!-- 启用开关（所有支持平台通用） -->
+                <!-- 原生毛玻璃不可用时保留透明背景回退。 -->
                 <div v-if="blurCaps.supported" class="setting-item">
                   <div class="setting-left">
                     <span class="setting-label"
                       >启用毛玻璃<HelpButton
-                        text="平台限制：Windows 需要 Windows 10 1903（Build 18362）或更高版本，支持调节模糊半径和饱和度；macOS 使用系统原生 Vibrancy，只支持开启或关闭，模糊半径和饱和度由系统决定，不能单独设置。玻璃浓度、背景颜色和窗口圆角在两个平台上都可以调节。关闭后不再渲染原生模糊层。"
+                        text="原生毛玻璃需要 Windows 10 1903（Build 18362）或更高版本，支持调节模糊半径和饱和度。玻璃浓度、背景颜色和窗口圆角可独立调节。关闭后不再渲染原生模糊层。"
                     /></span>
                     <span v-if="blurError" class="setting-error">
                       <svg
@@ -2079,16 +1750,13 @@ async function retryScheduler() {
                   </div>
                 </div>
 
-                <!-- 开启时：显示系统模糊设置（仅 Windows） -->
+                <!-- 开启时显示原生模糊设置。 -->
                 <Transition
                   :css="false"
                   @enter="onNativeBlurOptionsEnter"
                   @leave="onNativeBlurOptionsLeave"
                 >
-                  <div
-                    v-if="blurCaps.supported && blurEnabled && blurCaps.platform === 'Windows'"
-                    class="native-blur-options"
-                  >
+                  <div v-if="blurCaps.supported && blurEnabled" class="native-blur-options">
                     <div class="native-blur-options-inner">
                       <!-- 模糊半径 -->
                       <div class="setting-item setting-item-slider">
@@ -2197,78 +1865,7 @@ async function retryScheduler() {
               aria-labelledby="settings-category-window"
             >
               <h3 id="settings-category-window" class="category-title">窗口与操作</h3>
-              <section class="settings-section">
-                <h4 class="section-title">贴边隐藏</h4>
-
-                <div class="setting-item dock-reveal-setting">
-                  <div class="setting-left">
-                    <span class="setting-label"
-                      >隐藏后的唤出方式<HelpButton
-                        text="直接唤出会在鼠标触边后立即展开窗口；触边确认会先显示小黑条，鼠标离开后自动收回；常显确认会在窗口隐藏完成后自动显示小黑条并保持，点击后展开窗口，长按拖动可调整其沿屏幕边缘的位置。外部程序全屏时常显条会暂时收回，退出全屏后自动恢复。"
-                    /></span>
-                    <span
-                      v-if="!dockRuntime.supported"
-                      class="setting-hint-caption dock-runtime-hint"
-                    >
-                      {{ dockRuntime.reason || '当前平台暂不支持贴边隐藏' }}
-                    </span>
-                  </div>
-                  <div class="setting-right">
-                    <div
-                      class="dock-reveal-mode-selector"
-                      role="radiogroup"
-                      aria-label="隐藏后的唤出方式"
-                    >
-                      <button
-                        v-for="option in dockRevealModeOptions"
-                        :key="option.value"
-                        type="button"
-                        role="radio"
-                        :title="option.title"
-                        :aria-checked="dockRevealHandleMode === option.value"
-                        :disabled="isDockRevealModeDisabled(option.value)"
-                        :class="{ 'is-selected': dockRevealHandleMode === option.value }"
-                        @click="setDockRevealHandleMode(option.value)"
-                      >
-                        {{ option.label }}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="setting-item" :class="{ 'has-hint': dockEnabledEdges.length === 0 }">
-                  <div class="setting-left">
-                    <span class="setting-label"
-                      >启用边缘<HelpButton
-                        text="可同时选择上、左、右边缘。把当前视图拖到已选择且真实可触达的屏幕外边缘后，鼠标离开窗口才会触发隐藏。"
-                    /></span>
-                    <span
-                      v-if="dockEnabledEdges.length === 0"
-                      class="setting-hint-caption dock-empty-hint"
-                    >
-                      未选择边缘时，当前{{ currentViewLabel }}不会贴边隐藏
-                    </span>
-                  </div>
-                  <div class="dock-edge-selector" role="group" aria-label="贴边隐藏方向，可多选">
-                    <button
-                      v-for="edge in dockEdgeOptions"
-                      :key="edge.value"
-                      type="button"
-                      :disabled="!dockRuntime.supported"
-                      :aria-pressed="dockEnabledEdges.includes(edge.value)"
-                      :class="{ 'is-selected': dockEnabledEdges.includes(edge.value) }"
-                      @click="toggleDockEdge(edge.value)"
-                    >
-                      <span class="dock-edge-check" aria-hidden="true">
-                        <svg v-if="dockEnabledEdges.includes(edge.value)" viewBox="0 0 16 16">
-                          <path d="m3 8 3 3 7-7" />
-                        </svg>
-                      </span>
-                      {{ edge.label }}
-                    </button>
-                  </div>
-                </div>
-              </section>
+              <DockSettingsSection :model="dockForm" :current-view-label="currentViewLabel" />
               <section class="settings-section">
                 <h4 class="section-title">显示与隐藏</h4>
                 <div class="setting-item shortcut-setting">
@@ -2365,122 +1962,12 @@ async function retryScheduler() {
                   </div>
                 </div>
               </section>
-              <section v-if="!isCalendarView" class="settings-section">
-                <h4 class="section-title">便利贴</h4>
-
-                <div class="setting-item">
-                  <div class="setting-left">
-                    <span class="setting-label"
-                      >默认字体大小<HelpButton
-                        text="只决定之后新建便利贴的初始字号，不会修改当前已经展示的便利贴。"
-                    /></span>
-                  </div>
-                  <div class="setting-right">
-                    <FontSizeInput
-                      v-model="stickyFontSize"
-                      data-diagnostic-action="settings.stickyFontSize"
-                      :presets="stickyFontSizePresets"
-                      :min="12"
-                      :max="32"
-                      width="76px"
-                    />
-                  </div>
-                </div>
-
-                <div class="setting-item">
-                  <div class="setting-left">
-                    <span class="setting-label"
-                      >默认背景颜色<HelpButton
-                        text="新建便利贴会使用该背景色，并自动选择具有足够对比度的文字颜色。"
-                    /></span>
-                  </div>
-                  <div class="setting-right settings-color-control">
-                    <SettingsControlPopover
-                      label="默认背景颜色"
-                      :summary="stickyBackgroundColor"
-                      :disabled="isResetting || !panelActive"
-                      :width="260"
-                    >
-                      <template #summary>
-                        <span
-                          class="settings-color-swatch"
-                          :style="{ backgroundColor: stickyBackgroundColor }"
-                        />
-                        <span class="settings-color-value">{{
-                          stickyBackgroundColor.toUpperCase()
-                        }}</span>
-                      </template>
-                      <div class="settings-color-editor">
-                        <button
-                          v-for="color in stickyColorPresets"
-                          :key="color.value"
-                          class="color-dot"
-                          :class="{ active: stickyBackgroundColor === color.value }"
-                          :style="{ backgroundColor: color.value }"
-                          :title="color.label"
-                          :aria-label="color.label"
-                          @click="stickyBackgroundColor = color.value"
-                        />
-                        <input
-                          v-model="stickyBackgroundColor"
-                          type="color"
-                          class="color-input"
-                          aria-label="自定义颜色"
-                        />
-                        <div class="color-hex-input-wrap">
-                          <input
-                            type="text"
-                            class="color-hex-input"
-                            aria-label="十六进制颜色"
-                            spellcheck="false"
-                            :class="{ 'has-error': stickyColorInputError }"
-                            :value="stickyColorInput"
-                            placeholder="#FFF2A8"
-                            maxlength="7"
-                            @input="onStickyColorInput"
-                            @blur="commitStickyColor"
-                            @keydown.enter="commitStickyColor"
-                          />
-                        </div>
-                      </div>
-                    </SettingsControlPopover>
-                  </div>
-                </div>
-
-                <div class="setting-item setting-item-slider">
-                  <span class="setting-label"
-                    >默认圆角<HelpButton
-                      text="设置新建便利贴的窗口圆角。0 为直角；圆角便利贴会使用透明窗口裁切。"
-                  /></span>
-                  <div class="setting-slider-control">
-                    <AppSlider
-                      v-model="stickyCornerRadius"
-                      data-diagnostic-action="settings.stickyCornerRadius"
-                      :min="0"
-                      :max="32"
-                      :step="1"
-                    />
-                    <span class="setting-value">{{ stickyCornerRadius }}px</span>
-                  </div>
-                </div>
-
-                <div class="setting-item">
-                  <div class="setting-left">
-                    <span class="setting-label"
-                      >默认置顶<HelpButton
-                        text="开启后，之后新建的便利贴默认保持在其他窗口上方；仍可在单张便利贴上临时取消。"
-                    /></span>
-                  </div>
-                  <div class="setting-right">
-                    <AppToggle
-                      v-model="stickyAlwaysOnTop"
-                      aria-label="便利贴默认置顶"
-                      size="sm"
-                      data-diagnostic-action="settings.stickyAlwaysOnTop"
-                    />
-                  </div>
-                </div>
-              </section>
+              <StickySettingsSection
+                v-if="!isCalendarView"
+                :model="stickyForm"
+                :is-resetting="isResetting"
+                :panel-active="panelActive"
+              />
               <section class="settings-section">
                 <h4 class="section-title">截图与贴图 <small>所有</small></h4>
                 <div
@@ -2489,7 +1976,12 @@ async function retryScheduler() {
                   class="setting-item shortcut-setting"
                 >
                   <div class="setting-left">
-                    <span class="setting-label">{{ definition.label }}</span>
+                    <span class="setting-label"
+                      >{{ definition.label
+                      }}<HelpButton
+                        v-if="action === 'screenshotCopy'"
+                        text="按快捷键后拖动框选，松开鼠标即复制图像到剪贴板并退出；不展开标注工具栏。Esc 取消，复制失败时可按 Enter 或 Ctrl+C 重试。"
+                    /></span>
                   </div>
                   <div class="setting-right">
                     <SettingsControlPopover
@@ -2538,7 +2030,7 @@ async function retryScheduler() {
               <h3 id="settings-category-weather" class="category-title">天气与日历</h3>
               <section class="settings-section">
                 <h4 class="section-title">
-                  <span>天气 <small>所有</small></span>
+                  <span>天气与宜忌 <small>所有</small></span>
                   <button
                     type="button"
                     class="weather-refresh-btn"
@@ -3014,11 +2506,16 @@ async function retryScheduler() {
 </template>
 
 <style scoped>
-.setting-label small,
-.section-title small {
-  color: var(--text-color-secondary);
+.settings-save-error {
+  flex: 0 0 auto;
+  max-height: 148px;
+  padding: 0 var(--settings-gutter) 8rem var(--settings-gutter-start);
+  color: var(--ui-danger);
   font-size: var(--fs-secondary);
-  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.settings-save-error p {
+  margin: 0 0 4rem;
 }
 .settings-search {
   padding: 0 var(--settings-gutter) 8rem var(--settings-gutter-start);
@@ -3285,33 +2782,8 @@ async function retryScheduler() {
   font-size: calc(var(--fs-body) * 1.1);
   font-weight: 700;
 }
-.settings-section {
-  margin-bottom: 12rem;
-}
-.settings-section:last-child {
-  margin-bottom: 0;
-}
-.section-title {
-  font-size: var(--fs-secondary);
-  font-weight: 600;
-  color: var(--text-color-secondary);
-  margin-bottom: 5rem;
-  padding-left: 2rem;
-}
 
 /* ---- 单条设置项（Flex 两列：左标签 + 右控件，space-between 平分多余空间）---- */
-.setting-item {
-  display: flex;
-  flex-wrap: wrap;
-  min-height: max(40px, 2.85em);
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px 10px;
-  padding: 6px 10px;
-  border-radius: 8rem;
-  background-color: var(--ui-surface-subtle);
-  margin-bottom: 2rem;
-}
 /* 原生模糊参数随启用状态平滑展开/收起；grid 可适应内容高度。 */
 .native-blur-options {
   overflow: hidden;
@@ -3343,104 +2815,14 @@ async function retryScheduler() {
 }
 
 /* 必要的多行说明自然撑高，普通项保持相同的垂直基线。 */
-.setting-item:has(.setting-hint-caption),
-.setting-item:has(.setting-error) {
-  min-height: max(56px, 3.5em);
-}
 
 /* 按钮项占满宽度（单列） */
-.setting-item.setting-item-full {
-  display: flex;
-}
 
 /* 一行两个按钮：等宽平分 */
-.setting-button-row {
-  gap: 10rem;
-}
-.setting-button-row .base-btn {
-  min-width: 0;
-  flex: 1;
-}
 
 /* ---- 左侧区域（标签 + 提示）---- */
-.setting-left {
-  display: flex;
-  flex-direction: column;
-  gap: 3rem;
-  min-width: 0;
-  flex: 1 1 auto;
-}
 
 /* ---- 右侧区域（控件容器）---- */
-.setting-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  max-width: 100%;
-  flex-wrap: wrap;
-  flex: 0 0 auto;
-  justify-content: flex-end;
-  margin-left: auto;
-}
-
-.shortcut-setting .setting-right {
-  width: 156px;
-  max-width: 52%;
-}
-.shortcut-setting :deep(.settings-control-popover) {
-  width: 100%;
-}
-.settings-color-control {
-  width: 126px;
-}
-.settings-color-control :deep(.settings-control-popover) {
-  width: 100%;
-}
-.settings-color-swatch {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
-  border-radius: 3px;
-  border: 1px solid var(--ui-border-control);
-}
-.settings-color-value {
-  font-family: var(--font-family-mono);
-  font-size: var(--fs-secondary);
-}
-.settings-color-editor {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-}
-.settings-color-editor .color-hex-input-wrap {
-  flex: 1;
-}
-.settings-color-editor .color-hex-input {
-  width: 100%;
-  min-width: 90px;
-  border-color: var(--ui-border-control);
-  background: var(--ui-surface-control);
-}
-.settings-color-editor .color-hex-input:focus {
-  border-color: var(--ui-border-hover);
-}
-.settings-color-editor .color-hex-input.has-error {
-  border-color: var(--ui-danger);
-}
-.settings-color-editor .color-dot {
-  width: 24px;
-  height: 24px;
-}
-.settings-color-editor .color-dot.active {
-  outline: 2px solid var(--ui-accent);
-  outline-offset: 2px;
-}
-.settings-color-editor .color-dot:focus-visible {
-  outline: 1px solid var(--ui-border-hover);
-  outline-offset: 2px;
-}
 .holiday-summary-row {
   flex-wrap: wrap;
   gap: 12rem;
@@ -3463,10 +2845,12 @@ async function retryScheduler() {
   flex: 1 1 100px;
 }
 .titlebar-style-selector {
-  display: grid;
-  width: 136px;
+  display: flex;
+  flex-wrap: wrap;
+  width: max-content;
+  min-width: min(136rem, 100%);
+  max-width: 100%;
   flex-shrink: 0;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 2rem;
   padding: 2rem;
   border: 0;
@@ -3474,8 +2858,11 @@ async function retryScheduler() {
   background-color: var(--ui-fill-passive);
 }
 .titlebar-style-selector button {
-  min-height: 24px;
-  padding: 2px 4px;
+  flex: 1 0 auto;
+  min-width: 0;
+  max-width: 100%;
+  min-height: max(24rem, 1.8em);
+  padding: 2rem 6rem;
   border: 0;
   border-radius: 6rem;
   color: var(--text-color-secondary);
@@ -3488,9 +2875,6 @@ async function retryScheduler() {
     background-color var(--motion-control) var(--ease-standard),
     box-shadow var(--motion-control) var(--ease-standard),
     transform var(--motion-fast) ease;
-}
-.titlebar-style-selector[aria-label='导航栏风格'] {
-  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
 }
 .titlebar-style-selector button:hover:not(.active) {
   color: var(--text-color);
@@ -3509,197 +2893,9 @@ async function retryScheduler() {
   outline-offset: 1rem;
 }
 
-.dock-reveal-setting .setting-right {
-  max-width: none;
-  width: max(174px, 12em);
-}
-.dock-reveal-mode-selector {
-  display: grid;
-  width: 100%;
-  min-width: 0;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 2rem;
-  padding: 2rem;
-  border-radius: 8rem;
-  background: var(--ui-surface-subtle);
-}
-.dock-reveal-mode-selector button {
-  min-height: 26px;
-  padding: 2px 4px;
-  border: 0;
-  border-radius: 6rem;
-  color: var(--text-color-secondary);
-  background: transparent;
-  font: inherit;
-  font-size: var(--fs-secondary);
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    color var(--motion-fast) ease,
-    background-color var(--motion-control) var(--ease-standard),
-    transform var(--motion-fast) ease;
-}
-.dock-reveal-mode-selector button:hover:not(:disabled, .is-selected) {
-  color: var(--text-color);
-  background: var(--ui-fill-hover);
-}
-.dock-reveal-mode-selector button.is-selected {
-  color: var(--text-color);
-  background: var(--ui-accent-subtle);
-}
-.dock-reveal-mode-selector button:active:not(:disabled) {
-  transform: scale(0.98);
-}
-.dock-reveal-mode-selector button:focus-visible {
-  outline: 1px solid var(--ui-border-hover);
-  outline-offset: 1px;
-}
-.dock-reveal-mode-selector button:disabled {
-  cursor: not-allowed;
-  opacity: 0.35;
-}
-
-@container (max-width: 340px) {
-  .dock-reveal-setting {
-    flex-wrap: wrap;
-  }
-  .dock-reveal-setting .setting-left {
-    flex-basis: 100%;
-  }
-  .dock-reveal-setting .setting-right {
-    width: 100%;
-  }
-}
-
-.dock-edge-selector {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6rem;
-}
-.dock-edge-selector button {
-  display: inline-flex;
-  min-height: 26px;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
-  border: 0;
-  border-radius: 15rem;
-  background: var(--ui-fill-passive);
-  color: var(--text-color-secondary);
-  font: inherit;
-  font-size: var(--fs-secondary);
-  cursor: pointer;
-  transition:
-    background-color var(--motion-fast) ease,
-    color var(--motion-fast) ease,
-    transform var(--motion-control) var(--ease-standard);
-}
-.dock-edge-selector button:hover:not(:disabled) {
-  background: var(--ui-fill-hover);
-}
-.dock-edge-selector button:focus-visible {
-  outline: 1px solid var(--ui-border-hover);
-  outline-offset: 1px;
-}
-.dock-edge-selector button:active:not(:disabled) {
-  transform: scale(0.98);
-}
-.dock-edge-selector button:disabled {
-  cursor: not-allowed;
-  opacity: 0.35;
-}
-.dock-edge-selector button.is-selected {
-  background: var(--ui-accent-subtle);
-  color: var(--text-color);
-}
-.dock-edge-check {
-  display: grid;
-  width: 16rem;
-  height: 16rem;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--ui-fill-pressed);
-}
-.dock-edge-selector button.is-selected .dock-edge-check {
-  background: var(--ui-accent);
-}
-.dock-edge-check svg {
-  width: 11rem;
-  height: 11rem;
-  fill: none;
-  stroke: #fff;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
-}
-.dock-empty-hint {
-  color: var(--ui-warning);
-  opacity: 1;
-}
-.dock-runtime-hint {
-  color: var(--ui-warning);
-  opacity: 1;
-}
-
 /* 滑块右侧共用定宽数值槽；窄窗仍优先保持左右布局。 */
-.setting-slider-control {
-  display: grid;
-  width: clamp(116px, 45%, 180px);
-  flex: 0 0 auto;
-  grid-template-columns: minmax(40px, 1fr) 4em;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--fs-secondary);
-}
-.setting-slider-control .slider-root {
-  min-width: 0;
-  width: 100%;
-}
-.setting-slider-control .setting-value {
-  min-width: 0;
-}
-.setting-item-slider > .setting-label {
-  flex: 1;
-  min-width: 0;
-}
 
 /* ---- 文字样式 ---- */
-.setting-label {
-  font-size: var(--fs-body);
-  color: var(--text-color);
-  display: block;
-  line-height: 1.45;
-}
-.setting-label small {
-  display: inline-block;
-  white-space: nowrap;
-}
-
-.setting-hint-caption {
-  display: block;
-  color: var(--text-color-secondary);
-  font-size: var(--fs-secondary);
-  font-weight: 400;
-  margin-top: 2rem;
-  line-height: 1.3;
-}
-
-.setting-value {
-  font-size: var(--fs-secondary);
-  font-weight: 500;
-  color: var(--text-color-secondary);
-  min-width: 40rem;
-  text-align: right;
-  flex-shrink: 0;
-}
-
-.setting-hint {
-  font-size: var(--fs-secondary);
-  font-weight: 500;
-  color: var(--text-color-secondary);
-  line-height: 1.5;
-}
 
 .remote-health-badge {
   padding: 0;
@@ -3732,14 +2928,6 @@ async function retryScheduler() {
 }
 
 /* 持久错误提示（恒显示，不自动消失）—— Apple 风格：图标 + 文字 */
-.setting-error {
-  display: inline-flex;
-  align-items: center;
-  gap: 4rem;
-  font-size: var(--fs-secondary);
-  color: #ff3b30;
-  line-height: 1.4;
-}
 
 /* 错误/警告图标（ⓘ 风格，复用于所有错误提示） */
 .warn-icon {
@@ -3747,75 +2935,10 @@ async function retryScheduler() {
 }
 
 /* ---- 预设色块 ---- */
-.color-dot {
-  width: 20rem;
-  height: 20rem;
-  border-radius: 50%;
-  border: 2rem solid transparent;
-  cursor: pointer;
-  transition: transform 150ms ease;
-  padding: 0;
-  flex-shrink: 0;
-}
-.color-dot:hover:not(:disabled) {
-  transform: scale(1.15);
-}
-.color-dot:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
 
 /* ---- hex 颜色输入框 ---- */
-.color-hex-input-wrap {
-  display: flex;
-  flex-direction: column;
-}
-.color-hex-input {
-  /* 等宽字体：7 个字符宽度恒定，宽度用 7ch 刚好包住 #RRGGBB，不再留空 */
-  width: calc(7ch + 22rem);
-  padding: 5rem 8rem;
-  border: 1px solid transparent;
-  border-radius: 6rem;
-  background: transparent;
-  color: var(--text-color);
-  font-size: var(--fs-secondary);
-  font-family: var(--font-family-mono);
-  font-weight: 500;
-  text-align: right;
-  outline: none;
-  transition: border-color 150ms ease;
-}
-.color-hex-input:focus {
-  border-color: var(--ui-border-hover);
-}
-.color-hex-input.has-error {
-  border-color: rgba(255, 59, 48, 0.4);
-}
-.color-hex-input:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
 
 /* ---- 颜色选择器 ---- */
-.color-input {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 31rem;
-  height: 31rem;
-  border: 1px solid var(--ui-border-hover);
-  border-radius: 6rem;
-  cursor: pointer;
-  padding: 0;
-  background: none;
-  flex-shrink: 0;
-}
-.color-input::-webkit-color-swatch-wrapper {
-  padding: 0;
-}
-.color-input::-webkit-color-swatch {
-  border: none;
-  border-radius: 5rem;
-}
 
 @container (max-width: 380px) {
   .holiday-summary-item {
@@ -3829,18 +2952,6 @@ async function retryScheduler() {
 @container (max-width: 300px) {
   .settings-search p {
     display: none;
-  }
-  .setting-item {
-    align-items: flex-start;
-  }
-  .setting-right {
-    max-width: 100%;
-  }
-  .setting-left {
-    flex-basis: 100%;
-  }
-  .shortcut-setting .setting-right {
-    max-width: 100%;
   }
 }
 @media (max-height: 600px) {
@@ -3905,12 +3016,6 @@ async function retryScheduler() {
 /* ---- 滑动条（已由 AppSlider 组件接管）---- */
 
 /* ---- 调度器诊断 ---- */
-.section-title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8rem;
-}
 .weather-refresh-btn {
   display: grid;
   width: 22rem;
@@ -3966,11 +3071,6 @@ async function retryScheduler() {
 .sched-refresh-btn:active {
   transform: scale(0.98);
   transition: transform 70ms ease;
-}
-.setting-hint-inline {
-  color: var(--text-color-secondary);
-  font-weight: 400;
-  font-size: var(--fs-secondary);
 }
 /* 苹果风格淡染胶囊：背景为语义色极淡染，文字同色系 */
 .sched-badge {
@@ -4040,3 +3140,5 @@ async function retryScheduler() {
   word-break: break-all;
 }
 </style>
+
+<style scoped src="./settings/settings-form.css"></style>

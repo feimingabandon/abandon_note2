@@ -1,10 +1,22 @@
-import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow, screen } from 'electron'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/week-view-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-note-week-e2e-',
+  timeoutMs: 150000,
+  metadata: { realWindows: true, legacyFixture: true }
+})
+const { assert, root: testUserData } = lifecycle
+let activeTestWindow = null
 
 const WAIT_STEP_MS = 25
 const require = createRequire(import.meta.url)
@@ -74,8 +86,6 @@ function addDays(dateKey, amount) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`
 }
 
-const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-week-e2e-'))
-
 try {
   app.setPath('userData', testUserData)
   process.env.ABANDON_INTEGRATION_TEST = '1'
@@ -98,14 +108,16 @@ try {
   app.once('ready', () => void runWeekViewTests())
 } catch (error) {
   report(`setup failed: ${error?.stack || error}`)
-  rmSync(testUserData, { recursive: true, force: true })
-  app.exit(1)
+  void lifecycle.finish({ error, window: activeTestWindow })
 }
 
 async function runWeekViewTests() {
+  let failure = null
   try {
     const weekWindow = await waitUntil(() => getWeekWindow(), '周视图未按 active_view 启动')
+    activeTestWindow = weekWindow
     await waitUntil(() => weekWindow.isVisible(), '周视图渲染就绪后没有显示')
+    await dismissStartupShortcutNotice(weekWindow)
 
     const display = screen.getDisplayMatching(weekWindow.getBounds())
     const expectedInherited = { x: 110, y: 120, width: 900, height: 600 }
@@ -534,13 +546,14 @@ async function runWeekViewTests() {
     assert.equal(inheritedMarker, 'true')
 
     report('all week view assertions passed')
-    app.exit(0)
   } catch (error) {
     report(`failed: ${error?.stack || error}`)
-    app.exit(1)
+    failure = error
+  } finally {
+    await lifecycle.finish({
+      completed: !failure,
+      error: failure,
+      window: activeTestWindow
+    })
   }
 }
-
-app.on('will-quit', () => {
-  rmSync(testUserData, { recursive: true, force: true })
-})

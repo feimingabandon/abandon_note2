@@ -1,12 +1,11 @@
-import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { readdir, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { clearDb, setDb } from '../src/main/db/db-connection.js'
 import { createNotesSchema } from '../src/main/db/db-schema.js'
+import { createAttachmentResetJournalSchema } from '../src/main/db/attachment-reset-journal.js'
 import {
   cleanupStagedImage,
   commitStagedImage,
@@ -17,6 +16,15 @@ import {
   stageImageDeletion
 } from '../src/main/db/db-images.js'
 import { cleanupPendingAttachmentDirs } from '../src/main/db/db.js'
+import { flushLogs } from '../src/main/logging/logger.js'
+import { createAssertionRecorder, prepareTestProfile } from './helpers/test-result-recorder.cjs'
+
+const recorder = createAssertionRecorder({
+  suite: 'tests/attachment-storage-electron.mjs',
+  mode: 'electron-ready-memory-sqlite-real-files',
+  metadata: { browserWindow: false, nativeImage: false }
+})
+const { assert } = recorder
 
 function insertNote(db, content) {
   const timestamp = Date.now()
@@ -50,15 +58,21 @@ function writeAttachment(relativePath, value = 'test') {
 }
 
 app.once('ready', async () => {
-  const tempRoot = await mkdtemp(join(tmpdir(), 'abandon-attachment-test-'))
+  let profile = null
+  let tempRoot = null
   let db = null
   let exitCode = 0
+  let completed = false
+  let failure = null
 
   try {
+    profile = prepareTestProfile({ prefix: 'abandon-attachment-test-' })
+    tempRoot = profile.directory
     app.setPath('userData', tempRoot)
     db = new Database(':memory:')
     db.pragma('foreign_keys = ON')
     createNotesSchema(db)
+    createAttachmentResetJournalSchema(db)
     setDb(db)
     const recoveryEvents = []
 
@@ -210,14 +224,60 @@ app.once('ready', async () => {
 
     const stagingEntries = await readdir(join(tempRoot, '.attachments-staging'))
     assert.equal(stagingEntries.length, 0)
+    completed = true
     console.log('attachment storage integration tests passed')
   } catch (error) {
     console.error(error)
+    failure = error
     exitCode = 1
   } finally {
-    clearDb()
-    db?.close()
-    await rm(tempRoot, { recursive: true, force: true })
+    const cleanupErrors = []
+    for (const release of [clearDb, () => db?.close()]) {
+      try {
+        release()
+      } catch (error) {
+        cleanupErrors.push(error.message)
+        console.error(error)
+        exitCode = 1
+      }
+    }
+    let evidence = { status: 'complete' }
+    if (tempRoot) {
+      try {
+        const flush = await flushLogs()
+        evidence = { status: flush.incomplete ? 'incomplete' : 'complete', flush }
+      } catch (error) {
+        evidence = { status: 'failed', reason: error.message }
+        console.error(error)
+        exitCode = 1
+      }
+    }
+    const preserveProfile = Boolean(tempRoot && (exitCode || evidence.status !== 'complete'))
+    if (profile?.ownership === 'script' && !preserveProfile) {
+      try {
+        await rm(tempRoot, { recursive: true, force: true })
+      } catch (error) {
+        cleanupErrors.push(error.message)
+        console.error(error)
+        exitCode = 1
+      }
+    }
+    try {
+      recorder.finish({
+        completed,
+        error: failure,
+        evidence,
+        profileOwnership: profile?.ownership,
+        cleanup: {
+          status: cleanupErrors.length ? 'failed' : preserveProfile ? 'preserved' : 'complete',
+          ...(cleanupErrors.length ? { error: cleanupErrors.join('\n') } : {}),
+          ...(preserveProfile || cleanupErrors.length ? { preservedProfile: tempRoot } : {})
+        }
+      })
+    } catch (error) {
+      console.error(error)
+      exitCode = 1
+    }
     app.exit(exitCode)
   }
 })

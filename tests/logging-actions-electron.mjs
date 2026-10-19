@@ -1,22 +1,31 @@
-import assert from 'node:assert/strict'
-import {
-  mkdtempSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  appendFileSync,
-  writeFileSync
-} from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, appendFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow, dialog, nativeImage } from 'electron'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
 
 const require = createRequire(import.meta.url)
-const testUserData =
-  process.env.ABANDON_TEST_USER_DATA ||
-  mkdtempSync(join(tmpdir(), 'abandon-note-logging-actions-e2e-'))
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/logging-actions-electron.mjs',
+  mode: 'electron-real-app-diagnostic-actions-cross-window-export',
+  prefix: 'abandon-note-logging-actions-',
+  timeoutMs: 120000,
+  metadata: {
+    actualApp: true,
+    realSqliteAndAttachments: true,
+    actualChromiumWheel: true,
+    controlledMainAndRendererDelay: true,
+    humanPerformanceRootCause: false,
+    systemSaveDialog: 'controlled-response',
+    applicationRestart: false
+  }
+})
+const { assert } = lifecycle
+const testUserData = lifecycle.root
+const testEvidenceRoot = process.env.ABANDON_TEST_EVIDENCE_DIR || testUserData
 const report = (message) => process.stderr.write(`[logging-actions-e2e] ${message}\n`)
 
 function wait(ms) {
@@ -68,7 +77,8 @@ function getMonthWindow() {
   )
 }
 
-let exitCode = 0
+let activeWindow = null
+let failureUi = null
 
 try {
   app.setPath('userData', testUserData)
@@ -91,12 +101,15 @@ try {
   app.once('ready', () => void runTest())
 } catch (error) {
   report(`setup failed: ${error?.stack || error}`)
-  app.exit(1)
+  void lifecycle.finish({ error })
 }
 
 async function runTest() {
+  let failure = null
+  let completed = false
   try {
     const window = await waitUntil(getMonthWindow, '月视图主窗口未启动')
+    activeWindow = window
     await waitUntil(() => window.isVisible(), '月视图主窗口未显示')
     await waitUntil(
       () => window.webContents.executeJavaScript(`Boolean(window.api?.getDiagnosticState)`),
@@ -334,6 +347,12 @@ async function runTest() {
     )
     try {
       await window.webContents.executeJavaScript(`document.querySelector('[title="设置"]').click()`)
+      report(
+        await window.webContents.executeJavaScript(`JSON.stringify({
+        phase: 'before-log-open',
+        dialogs: [...document.querySelectorAll('[role="dialog"]')].map(el => el.getAttribute('aria-label'))
+      })`)
+      )
       const interactions = await window.webContents.executeJavaScript(
         `window.api.queryLogs({ search: 'ui.interaction', limit: 20 })`
       )
@@ -357,7 +376,7 @@ async function runTest() {
         '日志窗口未打开'
       )
       for (const range of ['last-hour', 'all']) {
-        const filePath = join(testUserData, `export-${range}.jsonl`)
+        const filePath = join(testEvidenceRoot, `export-${range}.jsonl`)
         dialog.showSaveDialog = async () => ({ canceled: false, filePath })
         const label = range === 'last-hour' ? '导出近一小时日志' : '导出全部日志'
         await window.webContents.executeJavaScript(
@@ -647,7 +666,7 @@ async function runTest() {
       '关闭前被限频的错误没有提交'
     )
     async function exportAfterClose(name) {
-      const filePath = join(testUserData, name + '.jsonl')
+      const filePath = join(testEvidenceRoot, name + '.jsonl')
       const saveDialog = dialog.showSaveDialog
       try {
         dialog.showSaveDialog = async () => ({ canceled: false, filePath })
@@ -697,11 +716,69 @@ async function runTest() {
     report(
       'daily/deep transitions, search countdown/policy updates, sticky close drain, forced-close completeness, database readback, performance sampling and cross-window exports passed'
     )
+    report(
+      JSON.stringify({
+        phase: 'before-final-evidence',
+        visible: window.isVisible(),
+        focused: window.isFocused(),
+        minimized: window.isMinimized(),
+        bounds: window.getBounds(),
+        url: window.webContents.getURL(),
+        renderer: await window.webContents.executeJavaScript(
+          `({visibility: document.visibilityState, focused: document.hasFocus()})`
+        )
+      })
+    )
+    // Prepare fresh foreground frames before evidence capture; a visible/focused
+    // window alone does not establish that the compositor has presented a frame.
+    window.show()
+    window.focus()
+    window.webContents.invalidate()
+    await waitUntil(() => window.isFocused(), '最终截图主窗口未进入前台')
+    await window.webContents.executeJavaScript(
+      `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`
+    )
+    report(
+      JSON.stringify({
+        phase: 'final-evidence-ready',
+        focused: window.isFocused(),
+        renderer: await window.webContents.executeJavaScript(
+          `({visibility: document.visibilityState, focused: document.hasFocus()})`
+        )
+      })
+    )
+    completed = true
   } catch (error) {
-    exitCode = 1
+    failure = error
     report(error?.stack || String(error))
+    if (activeWindow && !activeWindow.isDestroyed()) {
+      failureUi = await activeWindow.webContents
+        .executeJavaScript(
+          `(async () => ({
+        dialogs: [...document.querySelectorAll('[role="dialog"]')].map(el => ({
+          label: el.getAttribute('aria-label'),
+          buttons: [...el.querySelectorAll('button')].map(button => button.textContent.trim())
+        })),
+        holidayNotice: await window.api.getHolidayDataNotice()
+      }))()`
+        )
+        .catch((error) => ({ collectionError: error.message }))
+      report(JSON.stringify(failureUi))
+    }
   } finally {
-    if (exitCode) app.exit(exitCode)
-    else app.quit()
+    await lifecycle.finish({
+      completed,
+      error: failure,
+      window: activeWindow,
+      summary: {
+        failureUi,
+        exports: [
+          'export-last-hour.jsonl',
+          'export-all.jsonl',
+          'after-normal-close.jsonl',
+          'after-forced-close.jsonl'
+        ]
+      }
+    })
   }
 }

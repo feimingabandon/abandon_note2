@@ -4,6 +4,7 @@ import AppModalShell from '../ui/AppModalShell.vue'
 import BaseButton from '../ui/BaseButton.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import DatePicker from '../ui/DatePicker.vue'
+import TagSelector from '../ui/TagSelector.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { dateOrdinal, localDateKey } from '../../../../shared/calendar/calendar-date-rules.js'
 
@@ -15,7 +16,7 @@ const emit = defineEmits(['update:visible'])
 const { showMessage } = useMessage()
 
 const STATUS_OPTIONS = [
-  { value: 'initialized', label: '待开始', color: 'var(--ui-status-pending)' },
+  { value: 'initialized', label: '未开始', color: 'var(--ui-status-pending)' },
   { value: 'in_progress', label: '进行中', color: 'var(--ui-status-progress)' },
   { value: 'completed', label: '已完成', color: 'var(--ui-status-completed)' }
 ]
@@ -29,6 +30,13 @@ const MAX_RANGE_DAYS = 366
 const startDateKey = ref(localDateKey())
 const endDateKey = ref(localDateKey())
 const statuses = ref(STATUS_OPTIONS.map((status) => status.value))
+const tagIds = ref([])
+const assignedTagIds = computed({
+  get: () => tagIds.value.filter((id) => id > 0),
+  set: (ids) => {
+    tagIds.value = [...(tagIds.value.includes(-1) ? [-1] : []), ...ids]
+  }
+})
 const exportFormat = ref('txt')
 const notes = ref([])
 const selectedIds = ref(new Set())
@@ -39,7 +47,9 @@ const exportedFileName = ref('')
 const exportSuccessMessage = ref('')
 const loadError = ref('')
 let loadSequence = 0
+let loadedFilterKey = null
 let stopNotesListener = null
+let stopTagsListener = null
 
 const selectedCount = computed(() => selectedIds.value.size)
 const allSelected = computed(
@@ -72,8 +82,19 @@ function noteTime(note) {
     : `生效 ${formatTime(note.effective_at)}`
 }
 
-async function loadPreview() {
+function noteTagLabel(note) {
+  return note.tags?.map((tag) => tag.name).join('、') || '未分类'
+}
+
+function toggleUntagged() {
+  tagIds.value = tagIds.value.includes(-1)
+    ? tagIds.value.filter((id) => id !== -1)
+    : [-1, ...tagIds.value]
+}
+
+async function loadPreview({ preserveSelection = false } = {}) {
   const sequence = ++loadSequence
+  if (!preserveSelection) loadedFilterKey = null
   if (rangeValidationMessage.value) {
     notes.value = []
     selectedIds.value = new Set()
@@ -83,16 +104,25 @@ async function loadPreview() {
   }
   loading.value = true
   loadError.value = ''
+  // IPC cannot clone Vue proxies. Keep a plain snapshot for this request and
+  // preserve manual selection only when refreshing the same filter result.
+  const filters = {
+    startDateKey: startDateKey.value,
+    endDateKey: endDateKey.value,
+    statuses: [...statuses.value],
+    tagIds: [...tagIds.value]
+  }
+  const filterKey = JSON.stringify(filters)
+  const keepSelection = preserveSelection && loadedFilterKey === filterKey
   try {
-    const result = await window.api.previewDailyReport({
-      startDateKey: startDateKey.value,
-      endDateKey: endDateKey.value,
-      // Electron IPC 不能克隆 Vue 的响应式代理；跨进程前转成普通数组。
-      statuses: [...statuses.value]
-    })
+    const result = await window.api.previewDailyReport(filters)
     if (sequence !== loadSequence) return
     notes.value = Array.isArray(result?.notes) ? result.notes : []
-    selectedIds.value = new Set(notes.value.map((note) => Number(note.id)))
+    const currentIds = notes.value.map((note) => Number(note.id))
+    selectedIds.value = new Set(
+      keepSelection ? currentIds.filter((id) => selectedIds.value.has(id)) : currentIds
+    )
+    loadedFilterKey = filterKey
   } catch (error) {
     if (sequence !== loadSequence) return
     notes.value = []
@@ -133,13 +163,20 @@ function close() {
 }
 
 async function exportReport() {
-  if (selectedIds.value.size === 0 || exporting.value || rangeValidationMessage.value) return
+  if (
+    selectedIds.value.size === 0 ||
+    loading.value ||
+    exporting.value ||
+    rangeValidationMessage.value
+  )
+    return
   exporting.value = true
   try {
     const result = await window.api.exportDailyReport({
       startDateKey: startDateKey.value,
       endDateKey: endDateKey.value,
       statuses: [...statuses.value],
+      tagIds: [...tagIds.value],
       noteIds: [...selectedIds.value],
       format: exportFormat.value
     })
@@ -159,7 +196,7 @@ async function exportReport() {
     exportSuccessVisible.value = true
   } catch (error) {
     showMessage('error', error?.message || '报表导出失败')
-    await loadPreview()
+    await loadPreview({ preserveSelection: true })
   } finally {
     exporting.value = false
   }
@@ -183,26 +220,32 @@ watch(
   (visible) => {
     if (!visible) {
       loadSequence += 1
+      loadedFilterKey = null
       return
     }
     startDateKey.value = localDateKey()
     endDateKey.value = localDateKey()
     statuses.value = STATUS_OPTIONS.map((status) => status.value)
+    tagIds.value = []
     exportFormat.value = 'txt'
   }
 )
 
-watch([startDateKey, endDateKey, statuses], () => {
+watch([startDateKey, endDateKey, statuses, tagIds], () => {
   if (props.visible) void loadPreview()
 })
 
 stopNotesListener = window.api.onNotesChanged?.(() => {
-  if (props.visible) void loadPreview()
+  if (props.visible) void loadPreview({ preserveSelection: true })
+})
+stopTagsListener = window.api.onTagsChanged?.(() => {
+  if (props.visible) void loadPreview({ preserveSelection: true })
 })
 
 onBeforeUnmount(() => {
   loadSequence += 1
   stopNotesListener?.()
+  stopTagsListener?.()
 })
 </script>
 
@@ -211,7 +254,7 @@ onBeforeUnmount(() => {
     :queue="queue"
     :visible="visible"
     title="便签报表"
-    subtitle="选择最长 366 天的日期范围、状态和导出格式"
+    subtitle="选择最长 366 天的日期范围、状态、标签和导出格式"
     width="min(700rem, calc(100vw - 32rem))"
     height="min(680rem, calc(100vh - 32rem))"
     :close-disabled="exporting"
@@ -219,7 +262,7 @@ onBeforeUnmount(() => {
     @update:visible="close"
   >
     <div class="daily-report">
-      <section class="daily-report__filters" aria-label="便签报表筛选条件">
+      <section class="daily-report__filters scroll-y" aria-label="便签报表筛选条件">
         <div class="daily-report__filter-row">
           <span class="daily-report__filter-label">日期范围</span>
           <div class="daily-report__date-range">
@@ -252,6 +295,32 @@ onBeforeUnmount(() => {
               <span class="daily-report__status-dot" />
               {{ status.label }}
             </button>
+          </div>
+        </div>
+        <div class="daily-report__filter-row">
+          <span class="daily-report__filter-label">标签</span>
+          <div class="daily-report__tags" role="group" aria-label="标签筛选，可多选">
+            <div class="daily-report__tag-presets">
+              <button
+                type="button"
+                class="daily-report__format daily-report__tag-all"
+                :class="{ 'is-selected': tagIds.length === 0 }"
+                :aria-pressed="tagIds.length === 0"
+                @click="tagIds = []"
+              >
+                全部
+              </button>
+              <button
+                type="button"
+                class="daily-report__format daily-report__tag-untagged"
+                :class="{ 'is-selected': tagIds.includes(-1) }"
+                :aria-pressed="tagIds.includes(-1)"
+                @click="toggleUntagged"
+              >
+                未分类
+              </button>
+            </div>
+            <TagSelector v-model="assignedTagIds" class="daily-report__tag-picker" />
           </div>
         </div>
         <div class="daily-report__filter-row">
@@ -302,7 +371,7 @@ onBeforeUnmount(() => {
             {{ rangeValidationMessage }}
           </div>
           <div v-else-if="notes.length === 0" class="daily-report__state">
-            所选日期范围内没有符合状态条件的便签
+            所选日期范围内没有符合筛选条件的便签
           </div>
           <template v-else>
             <label
@@ -337,6 +406,9 @@ onBeforeUnmount(() => {
                   <span v-else-if="note.duration_days > 1" class="daily-report-note__duration">
                     指定 {{ note.duration_days }} 天
                   </span>
+                </span>
+                <span class="daily-report-note__tag" :title="noteTagLabel(note)">
+                  标签：{{ noteTagLabel(note) }}
                 </span>
                 <span class="daily-report-note__content">{{ note.content }}</span>
               </span>
@@ -380,9 +452,12 @@ onBeforeUnmount(() => {
 }
 .daily-report__filters {
   display: grid;
-  flex: 0 0 auto;
+  min-height: 0;
+  max-height: 55%;
+  flex: 0 1 auto;
   gap: 12rem;
   padding: 16rem 19rem;
+  overflow-y: auto;
   border-bottom: 1px solid var(--ui-border-divider);
 }
 .daily-report__filter-row {
@@ -421,7 +496,22 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 7rem;
 }
-.daily-report__formats {
+.daily-report__tags {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7rem;
+}
+.daily-report__tag-picker {
+  flex: 1 1 180rem;
+  min-width: 0;
+}
+.daily-report__tags .daily-report__format {
+  min-width: 0;
+}
+.daily-report__formats,
+.daily-report__tag-presets {
   display: inline-flex;
   width: fit-content;
   padding: 3rem;
@@ -683,6 +773,13 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+.daily-report-note__tag {
+  overflow: hidden;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .daily-report__selected-summary {
   margin-right: auto;

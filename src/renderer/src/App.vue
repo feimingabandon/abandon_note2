@@ -1,4 +1,8 @@
 <script setup>
+import { useWorkspaceRuntime } from './composables/useWorkspaceRuntime.js'
+import { useWorkspaceWallpaper } from './composables/useWorkspaceWallpaper.js'
+import { useWorkspaceNotices } from './composables/useWorkspaceNotices.js'
+import { useUpdateCheck } from './composables/useUpdateCheck.js'
 import EditingDraftDialog from './components/system/EditingDraftDialog.vue'
 import CaptureDelivery from './components/capture/CaptureDelivery.vue'
 import { editingDataGeneration } from './composables/useDraftProtection.js'
@@ -18,7 +22,7 @@ import { defineAsyncComponent } from 'vue'
  *     └── main.content（主内容区域，可滚动）
  */
 
-import { computed, nextTick, ref, onMounted, onUnmounted, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import AlmanacLauncher from './components/almanac/AlmanacLauncher.vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
@@ -40,54 +44,74 @@ import NoteEditor from './components/note/NoteEditor.vue'
 import ActionBar from './components/list/ActionBar.vue'
 import TemplatePage from './components/template/TemplatePage.vue'
 import HelpPage from './components/help/HelpPage.vue'
-import { createMessageProvider } from './composables/useMessage.js' // 消息能力注册
 import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
-import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
-import { retainModalBlur } from './utils/modalBlur.js'
 import { useQueuedModal, useModalRequest } from './composables/useQueuedModal.js'
-import { useTodayKey } from './composables/useTodayKey.js'
-import { usePresentationMode } from './composables/usePresentationMode.js'
-import { createQuickNoteEditSettingProvider } from './composables/useQuickNoteEditSetting.js'
-import { createTagColorSettingProvider } from './composables/useTagColorSetting.js'
 import {
   captureFocusedElement,
   focusModal,
   restoreFocusedElement,
   trapModalTab
 } from './utils/modalFocus.js'
-import {
-  DEFAULT_SETTINGS,
-  FIRST_USE_NOTICE_VERSION,
-  VIEW_MODES
-} from '../../shared/settings-schema.js'
+import { DEFAULT_SETTINGS, VIEW_MODES } from '../../shared/settings-schema.js'
 
 // 注册全局应用内消息通知能力（子孙组件通过 useMessage() 获取）
-const { showMessage } = createMessageProvider()
-const quickNoteEditSetting = createQuickNoteEditSettingProvider()
-const tagColorSetting = createTagColorSettingProvider()
-const presentationMode = usePresentationMode()
+const workspaceRuntime = useWorkspaceRuntime({
+  defaults: DEFAULT_SETTINGS,
+  getViewMode: () => VIEW_MODES.LIST,
+  label: 'App',
+  hoverPhase: 'setup',
+  windowFallback: false,
+  waitForContent: false,
+  onSnapshot: (snapshot) => {
+    void wallpaper.sync(snapshot)
+  },
+  onInitialSnapshot: (snapshot) => notices.applyInitialSnapshot(snapshot),
+  onSettingsChanged: (snapshot) => notices.revealFirstUseNoticeFromSnapshot(snapshot),
+  onNotesChanged: (event) => {
+    if (event?.reason === 'note-data-cleared') selectedNote.value = null
+  },
+  onRemoteNoticesChanged: () => {
+    void notices.loadPendingRemoteNotices({ show: true })
+  },
+  beforeReady: async () => {
+    await notices.loadPendingRemoteNotices({ show: true })
+    await notices.loadHolidayDataNotice()
+  },
+  afterReady: () => updateCheck.scheduleStartup()
+})
+const { showMessage, presentationMode, locked, zOrderMode, titlebarStyle } = workspaceRuntime
+const wallpaper = useWorkspaceWallpaper({
+  defaults: DEFAULT_SETTINGS,
+  cacheLoads: true,
+  releaseDelayMs: 220,
+  label: 'App'
+})
+const { wallpaperUrl, wallpaperVisible, wallpaperBlurRadius, wallpaperRenderKey } = wallpaper
+const updateCheck = useUpdateCheck({ policy: 'list', label: 'App' })
+const { updateQueue, showUpdateDialog, updateChecking, updateResult, checkForUpdates } = updateCheck
+const notices = useWorkspaceNotices({ showMessage, openSettings, label: 'App' })
+const {
+  noticeQueue,
+  firstUseQueue,
+  holidayQueue,
+  showRemoteNoticeDialog,
+  showFirstUseNotice,
+  showHolidayDataNoticeDialog,
+  pendingRemoteNotices,
+  pendingHolidayDataNotice,
+  dismissHolidayDataNotice,
+  closeRemoteNoticeDialog,
+  onRemoteNoticeAcknowledged,
+  onFirstUseCompleted
+} = notices
 
 /** 设置面板显隐状态 */
 const showSettings = ref(false)
-const updateQueue = useModalRequest()
-const showUpdateDialog = updateQueue.requested
-const noticeQueue = useModalRequest()
-const showRemoteNoticeDialog = noticeQueue.requested
-const firstUseQueue = useModalRequest()
-const showFirstUseNotice = firstUseQueue.requested
-const holidayQueue = useModalRequest()
-const showHolidayDataNoticeDialog = holidayQueue.requested
 const reportQueue = useModalRequest()
 const showDailyReportDialog = reportQueue.requested
 const almanacQueue = useModalRequest()
 const showAlmanac = almanacQueue.requested
-const pendingHolidayDataNotice = ref(null)
 const showShortcutNotice = ref(false)
-const holidayNoticeTodayKey = useTodayKey()
-const pendingRemoteNotices = ref([])
-const updateChecking = ref(false)
-const updateResult = ref(null)
-const UPDATE_CHECKING_MIN_DURATION_MS = 500
 const templatePanelRef = ref(null)
 const helpPanelRef = ref(null)
 const templateWorkspace = useSlidingWorkspace({ getElement: () => templatePanelRef.value })
@@ -110,74 +134,9 @@ const {
   onTransitionEnd: onHelpTransitionEnd,
   onTransitionCancel: onHelpTransitionCancel
 } = helpWorkspace
-let releaseSettingsBackgroundBlur = null
-let releaseEditorBackgroundBlur = null
-
-async function loadPendingRemoteNotices({ show = false } = {}) {
-  try {
-    pendingRemoteNotices.value = await window.api.listPendingRemoteNotices()
-    if (show) showRemoteNoticeDialog.value = pendingRemoteNotices.value.length > 0
-  } catch (error) {
-    console.warn('[App] 读取未确认通知失败:', error)
-  }
-}
-
-function maybeShowHolidayDataNotice() {
-  if (pendingHolidayDataNotice.value?.required) {
-    showHolidayDataNoticeDialog.value = true
-  }
-}
-
-async function loadHolidayDataNotice() {
-  try {
-    const notice = await window.api.getHolidayDataNotice()
-    pendingHolidayDataNotice.value = notice?.required ? notice : null
-    maybeShowHolidayDataNotice()
-  } catch (error) {
-    console.warn('[App] 读取节假日数据提醒失败:', error)
-  }
-}
-
-watch(holidayNoticeTodayKey, (nextDateKey, previousDateKey) => {
-  if (nextDateKey.slice(0, 4) !== previousDateKey.slice(0, 4)) void loadHolidayDataNotice()
-})
-
-async function dismissHolidayDataNotice({ openSettingsAfter = false } = {}) {
-  const year = pendingHolidayDataNotice.value?.year
-  showHolidayDataNoticeDialog.value = false
-  pendingHolidayDataNotice.value = null
-  if (year) {
-    await window.api
-      .dismissHolidayDataNotice(year)
-      .catch((error) => console.warn('[App] 保存节假日提醒状态失败:', error))
-  }
-  if (openSettingsAfter) setTimeout(openSettings, 220)
-}
-
-function closeRemoteNoticeDialog() {
-  showRemoteNoticeDialog.value = false
-}
-
-function onRemoteNoticeAcknowledged(id) {
-  pendingRemoteNotices.value = pendingRemoteNotices.value.filter((notice) => notice.id !== id)
-  if (!pendingRemoteNotices.value.length) {
-    showRemoteNoticeDialog.value = false
-  }
-}
-
-function onFirstUseCompleted({ route } = {}) {
-  showFirstUseNotice.value = false
-  showMessage(
-    'success',
-    route === 'support'
-      ? '感谢你的支持。你的认可，会成为 Abandon 便签继续前进的动力。'
-      : '感谢你选择 Abandon 便签。你的使用，就是对我最大的肯定。',
-    4200
-  )
-}
 
 function openSettings() {
-  if (!releaseSettingsBackgroundBlur) releaseSettingsBackgroundBlur = retainModalBlur()
+  workspaceRuntime.retainBlur('settings')
   showSettings.value = true
 }
 
@@ -188,49 +147,11 @@ function openDailyReport() {
 }
 
 function releaseSettingsBlur() {
-  releaseSettingsBackgroundBlur?.()
-  releaseSettingsBackgroundBlur = null
-}
-
-async function checkForUpdates({ showResult = true } = {}) {
-  if (updateChecking.value) return
-  const startedAt = performance.now()
-  updateChecking.value = true
-  if (showResult) showUpdateDialog.value = true
-  try {
-    updateResult.value = await window.api.checkForUpdate()
-    if (!showResult && updateResult.value?.status === 'available') {
-      showUpdateDialog.value = true
-    }
-  } catch (error) {
-    console.error('[App] 检查更新失败:', error)
-    const appInfo = await window.api.getAppInfo().catch((infoError) => {
-      console.warn('[App] 更新检查失败后读取应用版本也失败:', infoError)
-      return null
-    })
-    updateResult.value = {
-      status: 'error',
-      currentVersion: appInfo?.version || '未知',
-      platform: window.api.runtimeCapabilities?.platform,
-      artifactName: null,
-      downloadAvailable: false,
-      releaseLinks: null,
-      error: `检查更新失败：${error.message}`
-    }
-    if (showResult) showUpdateDialog.value = true
-  } finally {
-    if (showResult) {
-      const remaining = UPDATE_CHECKING_MIN_DURATION_MS - (performance.now() - startedAt)
-      if (remaining > 0) {
-        await new Promise((resolve) => setTimeout(resolve, remaining))
-      }
-    }
-    updateChecking.value = false
-  }
+  workspaceRuntime.releaseBlur('settings')
 }
 
 function openUpdateDialog() {
-  checkForUpdates({ showResult: true })
+  void checkForUpdates({ showResult: true })
 }
 
 function openTemplates() {
@@ -273,15 +194,6 @@ const noteListRef = ref(null)
 /** ActionBar 引用：编辑保存后同步刷新仍处于会话中的搜索结果。 */
 const actionBarRef = ref(null)
 
-/** 窗口锁定状态 */
-const locked = ref(DEFAULT_SETTINGS.window.lockState)
-
-/** 全视图共享的主窗口层级 */
-const zOrderMode = ref(DEFAULT_SETTINGS.window.zOrderMode)
-
-/** 自定义导航栏视觉风格；窗口操作逻辑不随风格变化。 */
-const titlebarStyle = ref(DEFAULT_SETTINGS.appearance.titlebarStyle)
-
 const compactBlocked = computed(
   () =>
     showSettings.value ||
@@ -313,149 +225,6 @@ async function requestCompactPresentation(anchor) {
   }
 }
 
-/** 主页面壁纸只在原生毛玻璃未实际运行时进入渲染树。 */
-const wallpaperUrl = ref('')
-const wallpaperVisible = ref(false)
-const wallpaperBlurRadius = ref(DEFAULT_SETTINGS.wallpaper.blurRadius)
-const wallpaperRenderKey = ref(null)
-let wallpaperLoadSequence = 0
-let loadedWallpaperId = null
-let pendingWallpaperId = null
-let pendingWallpaperLoad = null
-let wallpaperReleaseTimer = null
-
-let stopSettingsListener = null
-let stopNotesChangedListener = null
-let stopAppMessageListener = null
-let stopRemoteNoticesListener = null
-let startupUpdateTimer = null
-
-function applyAppSettingsSnapshot(snapshot) {
-  applySettingsSnapshot(snapshot)
-  quickNoteEditSetting.applySnapshot(snapshot)
-  tagColorSetting.applySnapshot(snapshot)
-  titlebarStyle.value =
-    snapshot?.values?.appearance?.titlebarStyle ?? DEFAULT_SETTINGS.appearance.titlebarStyle
-  const windowSettings = snapshot?.values?.window
-  if (windowSettings) {
-    locked.value = windowSettings.lockState
-    zOrderMode.value = windowSettings.zOrderMode
-  }
-  syncWallpaperFromSnapshot(snapshot)
-}
-
-function revealFirstUseNoticeFromSnapshot(snapshot) {
-  const pending = (snapshot?.values?.onboarding?.noticeVersion ?? 0) < FIRST_USE_NOTICE_VERSION
-  if (!pending || showFirstUseNotice.value) return
-
-  // 恢复默认后的须知也排队，不清除正在处理或等待中的业务弹窗。
-  showFirstUseNotice.value = true
-}
-
-async function syncWallpaperFromSnapshot(snapshot) {
-  const wallpaper = snapshot?.values?.wallpaper || DEFAULT_SETTINGS.wallpaper
-  const glassActive = Boolean(snapshot?.runtime?.blur?.effectiveEnabled)
-  wallpaperBlurRadius.value = wallpaper.blurRadius
-  const shouldShow = Boolean(wallpaper.enabled && wallpaper.activeId && !glassActive)
-  const sequence = ++wallpaperLoadSequence
-  if (!shouldShow) {
-    wallpaperVisible.value = false
-    clearTimeout(wallpaperReleaseTimer)
-    wallpaperReleaseTimer = setTimeout(() => {
-      if (sequence !== wallpaperLoadSequence || wallpaperVisible.value) return
-      wallpaperUrl.value = ''
-      wallpaperRenderKey.value = null
-      loadedWallpaperId = null
-    }, 220)
-    return
-  }
-
-  clearTimeout(wallpaperReleaseTimer)
-  const requestedId = Number(wallpaper.activeId)
-  if (loadedWallpaperId === requestedId && wallpaperUrl.value) {
-    wallpaperVisible.value = true
-    return
-  }
-
-  try {
-    if (pendingWallpaperId !== requestedId || !pendingWallpaperLoad) {
-      pendingWallpaperId = requestedId
-      pendingWallpaperLoad = window.api.getWallpaperData(requestedId, false)
-    }
-    const currentLoad = pendingWallpaperLoad
-    const data = await currentLoad
-    if (currentLoad === pendingWallpaperLoad) {
-      pendingWallpaperId = null
-      pendingWallpaperLoad = null
-    }
-    if (sequence !== wallpaperLoadSequence) return
-    if (!data) {
-      wallpaperVisible.value = false
-      return
-    }
-    wallpaperUrl.value = data
-    wallpaperRenderKey.value = requestedId
-    loadedWallpaperId = requestedId
-    wallpaperVisible.value = true
-  } catch (error) {
-    if (pendingWallpaperId === requestedId) {
-      pendingWallpaperId = null
-      pendingWallpaperLoad = null
-    }
-    if (sequence === wallpaperLoadSequence) wallpaperVisible.value = false
-    console.warn('[App] 读取主页面壁纸失败:', error)
-  }
-}
-
-onMounted(async () => {
-  await presentationMode.start()
-  try {
-    // 主进程始终返回“数据库值覆盖共享默认值”后的完整快照。
-    const snapshot = await window.api.getSettingsSnapshot()
-    applyAppSettingsSnapshot(snapshot)
-    showFirstUseNotice.value =
-      (snapshot?.values?.onboarding?.noticeVersion ?? 0) < FIRST_USE_NOTICE_VERSION
-  } catch (err) {
-    // IPC 异常时同样从唯一 schema 回退，不依赖 tokens.css 中的旧值。
-    applyAppSettingsSnapshot({ values: DEFAULT_SETTINGS })
-    showFirstUseNotice.value = true
-    console.warn('[App] 读取设置快照失败，使用共享默认值:', err)
-  }
-
-  // 主进程是设置权威源；其他入口修改或重置设置时统一刷新实际 CSS 效果。
-  stopSettingsListener = window.api.onSettingsChanged?.((snapshot) => {
-    applyAppSettingsSnapshot(snapshot)
-    revealFirstUseNoticeFromSnapshot(snapshot)
-  })
-  stopNotesChangedListener = window.api.onNotesChanged?.((event) => {
-    if (event?.reason === 'note-data-cleared') selectedNote.value = null
-  })
-  // 主进程系统通知发送失败（如 macOS 未签名）时降级为应用内消息条。
-  stopAppMessageListener = window.api.onAppMessage?.((payload) => {
-    if (!payload?.text) return
-    showMessage(payload.type || 'warning', payload.text, payload.duration ?? 2500)
-  })
-  stopRemoteNoticesListener = window.api.onRemoteNoticesChanged?.(() => {
-    void loadPendingRemoteNotices({ show: true })
-  })
-  await loadPendingRemoteNotices({ show: true })
-  await loadHolidayDataNotice()
-
-  // 通知主进程渲染已完成，可以安全地显示窗口了
-  // 主进程收到后会调用 mainWindow.show()
-  window.api.rendererReady(VIEW_MODES.LIST)
-  // 启动检查只在确有新版本时打扰用户；网络失败可在设置页手动查看和重试。
-  startupUpdateTimer = setTimeout(() => {
-    startupUpdateTimer = null
-    checkForUpdates({ showResult: false })
-  }, 1200)
-})
-
-// ---- 贴边隐藏：鼠标悬停检测 ----
-const onMouseEnter = () => window.api.windowHover(true)
-const onMouseLeave = () => window.api.windowHover(false)
-document.addEventListener('mouseenter', onMouseEnter)
-document.addEventListener('mouseleave', onMouseLeave)
 // ---- 便签交互 ----
 async function onEditNote(note) {
   if (!note?.id) return
@@ -480,8 +249,7 @@ function onCloseEditor() {
 }
 
 function releaseEditorBlur() {
-  releaseEditorBackgroundBlur?.()
-  releaseEditorBackgroundBlur = null
+  workspaceRuntime.releaseBlur('editor')
 }
 
 function finishEditorClose() {
@@ -494,7 +262,7 @@ function finishEditorClose() {
 watch(editorDisplayed, async (visible) => {
   if (!visible) return
   noteEditorPreviousFocus = captureFocusedElement()
-  if (!releaseEditorBackgroundBlur) releaseEditorBackgroundBlur = retainModalBlur()
+  workspaceRuntime.retainBlur('editor')
   await nextTick()
   if (editorDisplayed.value) focusModal(noteEditorOverlayRef.value)
 })
@@ -528,20 +296,6 @@ async function onCreateNote() {
   noteListRef.value?.refresh()
   actionBarRef.value?.refreshSearch?.()
 }
-
-onUnmounted(() => {
-  presentationMode.stop()
-  stopSettingsListener?.()
-  stopNotesChangedListener?.()
-  stopAppMessageListener?.()
-  stopRemoteNoticesListener?.()
-  document.removeEventListener('mouseenter', onMouseEnter)
-  document.removeEventListener('mouseleave', onMouseLeave)
-  releaseSettingsBlur()
-  releaseEditorBlur()
-  if (startupUpdateTimer) clearTimeout(startupUpdateTimer)
-  clearTimeout(wallpaperReleaseTimer)
-})
 </script>
 
 <template>
@@ -782,7 +536,6 @@ onUnmounted(() => {
   flex-direction: column; /* 纵向排列：标题栏 → 内容区 */
   height: 100vh; /* 占满视口高度 */
   border-radius: var(--window-radius); /* 用户可调的圆角 */
-  -electron-corner-smoothing: system-ui; /* macOS 连续曲率圆角，Win/Linux 自动为 0% */
   overflow: hidden; /* 裁剪超出圆角的内容 */
   box-shadow: none; /* 主窗口主动取消阴影 */
 

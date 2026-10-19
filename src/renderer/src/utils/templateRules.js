@@ -197,6 +197,15 @@ export function createTemplateRuleSnapshot(rule) {
   return JSON.stringify(rule || null)
 }
 
+export function createTemplatePreviewRequest({ recurrenceRule, startAt, endAt, templateId } = {}) {
+  return {
+    recurrenceRule,
+    startAt: startAt ?? null,
+    endAt: endAt ?? null,
+    ...(templateId === null || templateId === undefined ? {} : { templateId })
+  }
+}
+
 export function resolveStoredTemplatePreviewAt({
   initialTemplate,
   initialRuleSnapshot,

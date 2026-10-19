@@ -14,20 +14,11 @@ function escapeToastXml(value) {
 
 /** 系统通知及应用内降级的统一边界。 */
 export class NotificationService {
-  constructor({
-    appProtocol,
-    capability,
-    getMainWindow,
-    icon,
-    platform = process.platform,
-    revealApplication
-  }) {
+  constructor({ appProtocol, capability, getMainWindow, icon }) {
     this.appProtocol = appProtocol
     this.capability = capability
     this.getMainWindow = getMainWindow
     this.icon = icon
-    this.platform = platform
-    this.revealApplication = revealApplication
     this.reminders = new Map()
   }
 
@@ -47,7 +38,7 @@ export class NotificationService {
     const summary = String(body || '') || '（空内容）'
     const parsedNoteId = Number(noteId)
 
-    if (this.platform === 'win32' && Number.isInteger(parsedNoteId) && parsedNoteId > 0) {
+    if (Number.isInteger(parsedNoteId) && parsedNoteId > 0) {
       const openUrl = `${this.appProtocol}://notification/open`
       const iconUri = escapeToastXml(pathToFileURL(this.icon).href)
       const toastXml = `<toast launch="${openUrl}" activationType="protocol">
@@ -68,14 +59,8 @@ export class NotificationService {
       return
     }
 
-    const hasNote = Number.isInteger(parsedNoteId) && parsedNoteId > 0
     const options = { title, body: summary, silent, icon: this.icon }
     const notification = new Notification(options)
-    if (hasNote) {
-      notification.on('click', () => {
-        this.revealApplication?.()
-      })
-    }
     notification.on('failed', (_event, error) => {
       this.notifyFailure('系统通知', title, summary, error)
     })
@@ -110,9 +95,8 @@ export class NotificationService {
       body,
       icon: this.icon,
       silent: false,
-      ...(this.platform === 'win32' ? { toastXml } : {})
+      toastXml
     })
-    if (this.platform !== 'win32') notification.on('click', () => this.revealApplication?.())
     notification.on('failed', (_event, error) => onFailed?.(error))
     this.reminders.set(round.id, notification)
     notification.show()

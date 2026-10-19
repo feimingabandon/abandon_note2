@@ -1,12 +1,11 @@
-const { spawnSync } = require('node:child_process')
-const electronPath = require('electron')
+async function main() {
+  return require('./run-focused-tests.cjs').main(['--file', 'tests/wallpaper-storage-electron.mjs'])
+}
 
-const env = { ...process.env }
-delete env.ELECTRON_RUN_AS_NODE
-const result = spawnSync(electronPath, ['tests/wallpaper-storage-electron.mjs'], {
-  cwd: process.cwd(),
-  env,
-  stdio: 'inherit'
-})
+module.exports = { main }
 
-process.exit(result.status ?? 1)
+if (require.main === module)
+  main().catch((error) => {
+    console.error(error)
+    process.exitCode = 1
+  })

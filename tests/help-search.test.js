@@ -46,7 +46,13 @@ describe('帮助全文搜索', () => {
     ])
       expect(create).toContain(entry)
     const duration = articleText(helpArticles.find((article) => article.id === 'note-duration'))
-    for (const rule of ['默认选择「仅当天」', '2～365 天', '完成日期固定结束日', '旧便签'])
+    for (const rule of [
+      '无沿用设置时默认「仅当天」',
+      '2～365 天',
+      '完成日期固定结束日',
+      '显示范围结束不会自动完成任务',
+      '旧便签'
+    ])
       expect(duration).toContain(rule)
     expect(articleText(helpArticles.find((article) => article.id === 'tools-report'))).toContain(
       '366'

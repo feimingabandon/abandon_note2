@@ -5,13 +5,13 @@ const fixture = () => ({
   app: {
     getVersion: () => '1.2.0',
     isPackaged: true,
-    getGPUInfo: async () => ({
+    getGPUInfo: vi.fn(async () => ({
       gpuDevice: [
         { active: true, deviceString: 'GPU test', driverVersion: '123', serialNumber: 'exclude-me' }
       ],
-      auxAttributes: { glRenderer: 'ANGLE test' }
-    }),
-    getGPUFeatureStatus: () => ({ gpu_compositing: 'enabled' }),
+      auxAttributes: { glRenderer: 'ANGLE test', sandboxed: false, inProcessGpu: true }
+    })),
+    getGPUFeatureStatus: vi.fn(() => ({ gpu_compositing: 'enabled' })),
     getAppMetrics: () => []
   },
   screen: {
@@ -67,17 +67,45 @@ describe('export system diagnostics', () => {
       { id: 7, scaleFactor: 1.25, scalePercent: 125, displayFrequency: 60, primary: true }
     ])
     expect(first.graphics.devices[0]).toEqual({
-      active: true,
       deviceString: 'GPU test',
       driverVersion: '123'
     })
+    expect(providers.app.getGPUInfo).toHaveBeenCalledExactlyOnceWith('basic')
+    expect(first.graphics).toMatchObject({
+      collectionLevel: 'basic',
+      adapterSelection: 'not-collected',
+      auxiliary: null,
+      auxiliaryStatus: 'not-collected',
+      featureStatus: { gpu_compositing: 'enabled' }
+    })
+    expect(providers.app.getGPUFeatureStatus).toHaveBeenCalledTimes(1)
     expect(first.application.mainBundleSha256).toMatch(/^[a-f0-9]{64}$/)
     expect(first.collectionErrors).toEqual([])
     providers.screen.getAllDisplays = () => [{ id: 7, scaleFactor: 1, displayFrequency: 144 }]
+    providers.app.getGPUInfo.mockResolvedValue({
+      gpuDevice: [{ vendorId: 0x10de, deviceId: 1, driverVersion: '124' }]
+    })
     const second = await collectSystemDiagnostics(providers, {
       readWindowsVersion: async () => null
     })
     expect(second.displays[0]).toMatchObject({ scalePercent: 100, displayFrequency: 144 })
+    expect(second.graphics.devices[0].driverVersion).toBe('124')
+    expect(providers.app.getGPUInfo.mock.calls).toEqual([['basic'], ['basic']])
+  })
+  it('does not report a default basic adapter or its flags as observed rendering state', async () => {
+    const providers = fixture()
+    providers.app.getGPUInfo.mockResolvedValue({
+      gpuDevice: [{ vendorId: 0, deviceId: 0, active: false, deviceString: '', driverVersion: '' }],
+      auxAttributes: { glRenderer: '', sandboxed: false, inProcessGpu: true }
+    })
+    const snapshot = await collectSystemDiagnostics(providers, {
+      readWindowsVersion: async () => null,
+      readSandboxPermissions: async () => null
+    })
+    expect(snapshot.graphics.devices).toEqual([])
+    expect(snapshot.graphics.auxiliary).toBeNull()
+    expect(snapshot.graphics.adapterSelection).toBe('not-collected')
+    expect(snapshot.graphics.featureStatus).toEqual({ gpu_compositing: 'enabled' })
   })
   it('keeps the snapshot exportable when GPU collection hangs and Windows details fail', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })

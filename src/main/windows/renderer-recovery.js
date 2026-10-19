@@ -1,16 +1,31 @@
 /** Bound automatic recovery; native dialogs remain usable when the renderer is gone. */
 export function installRendererRecovery(
   window,
-  { dialog, logger, canRecover = () => true, restart, openDiagnostics = () => {} }
+  {
+    dialog,
+    logger,
+    canRecover = () => true,
+    restart,
+    openDiagnostics = () => {},
+    onRendererReset = () => {}
+  }
 ) {
   let failures = []
   let recovering = false
   let timer = null
+  const resetInteractions = (reason) => {
+    try {
+      onRendererReset(reason)
+    } catch (error) {
+      logger.error('renderer.recovery-interactions', error, { reason })
+    }
+  }
   const reload = () => {
     if (window.isDestroyed() || !canRecover()) return
     window.webContents.reload()
   }
   window.webContents.on('render-process-gone', async (_event, details) => {
+    resetInteractions('render-process-gone')
     if (window.isDestroyed() || !canRecover() || recovering || details.reason === 'clean-exit')
       return
     logger.error('renderer.recovery', new Error('主界面进程退出'), details)
@@ -37,6 +52,9 @@ export function installRendererRecovery(
     } finally {
       recovering = false
     }
+  })
+  window.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
+    if (mainFrame && !inPlace) resetInteractions('renderer-navigation')
   })
   window.on('unresponsive', async () => {
     if (recovering || !canRecover()) return

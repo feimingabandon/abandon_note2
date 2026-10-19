@@ -59,8 +59,8 @@ describe('app update metadata', () => {
     expect(getTargetArtifact('0.9.2', 'win32', 'x64')).toBe(
       'Abandon-Note-0.9.2-windows-x64-setup.exe'
     )
-    expect(getTargetArtifact('0.9.2', 'darwin', 'x64')).toBeNull()
-    expect(getTargetArtifact('0.9.2', 'darwin', 'arm64')).toBeNull()
+    expect(getTargetArtifact('0.9.2', 'unsupported-platform', 'x64')).toBeNull()
+    expect(getTargetArtifact('0.9.2', 'unsupported-platform', 'arm64')).toBeNull()
     expect(getTargetArtifact('0.9.2', 'linux', 'x64')).toBeNull()
   })
 
@@ -299,7 +299,7 @@ describe('app update metadata', () => {
     let requestCount = 0
     const service = new AppUpdateService({
       currentVersion: '0.9.2',
-      platform: 'darwin',
+      platform: 'unsupported-platform',
       arch: 'arm64',
       fetchImpl: async () => {
         requestCount += 1

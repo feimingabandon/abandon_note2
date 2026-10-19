@@ -1,6 +1,7 @@
 <script setup>
 import BaseButton from '../ui/BaseButton.vue'
 import { useDraftProtection } from '../../composables/useDraftProtection.js'
+import { parseNoteDraftTime, useNoteStateDraft } from '../../composables/useNoteStateDraft.js'
 /**
  * NoteEditor.vue — 便签修改草稿。
  * 所有可编辑字段和附件只修改前端草稿，点击保存后统一持久化。
@@ -15,16 +16,13 @@ import HelpButton from '../ui/HelpButton.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import ColoredTextEditor from './ColoredTextEditor.vue'
 import NoteDurationField from './NoteDurationField.vue'
+import NoteStateFields from './NoteStateFields.vue'
+import NoteRemarkField from './NoteRemarkField.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 import { NOTE_DURATION_KINDS } from '../../../../shared/calendar/calendar-date-rules.js'
 import { normalizeNoteTextColorRanges } from '../../../../shared/note-text-color-rules.js'
-import {
-  assertCreatableNoteEffectiveTime,
-  canScheduleNoteNotification,
-  createSafeScheduleShortcutTimestamp,
-  MIN_SCHEDULE_LEAD_TIME_MINUTES
-} from '../../../../shared/note-scheduling-rules.js'
+import { MIN_SCHEDULE_LEAD_TIME_MINUTES } from '../../../../shared/note-scheduling-rules.js'
 
 const props = defineProps({
   note: { type: Object, required: true }
@@ -33,9 +31,11 @@ const props = defineProps({
 const emit = defineEmits(['saved', 'cancel'])
 const { showMessage } = useMessage()
 const content = ref('')
+const remark = ref('')
 const contentColorRanges = ref([])
-const status = ref('initialized')
+const statusChoice = ref('initialized')
 const effectiveAt = ref('')
+const finishedAt = ref('')
 const durationKind = ref(NOTE_DURATION_KINDS.SINGLE_DAY)
 const durationDays = ref(1)
 const reminderChannels = ref(0)
@@ -58,6 +58,7 @@ function pad(value) {
 }
 
 function formatDateTime(timestamp) {
+  if (timestamp === null || timestamp === undefined || timestamp === '') return ''
   const date = new Date(Number(timestamp))
   if (Number.isNaN(date.getTime())) return ''
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
@@ -70,9 +71,11 @@ function normalizedTags(tags) {
 function createSnapshot(note) {
   return {
     content: note.content || '',
+    remark: String(note.remark ?? ''),
     contentColorRanges: normalizeNoteTextColorRanges(note.content_color_ranges, note.content || ''),
     status: note.status,
     effectiveAt: formatDateTime(note.effective_at),
+    finishedAt: note.status === 'completed' ? formatDateTime(note.finished_at) : '',
     durationKind:
       note.duration_kind ||
       (Number(note.duration_days) > 1
@@ -93,9 +96,11 @@ function resetFromNote(note) {
   initialSnapshot.value = snapshot
   initialVersion.value = note.editVersion
   content.value = snapshot.content
+  remark.value = snapshot.remark
   contentColorRanges.value = snapshot.contentColorRanges.map((range) => ({ ...range }))
-  status.value = snapshot.status
+  statusChoice.value = snapshot.status
   effectiveAt.value = snapshot.effectiveAt
+  finishedAt.value = snapshot.finishedAt
   durationKind.value = snapshot.durationKind
   durationDays.value = snapshot.durationDays
   reminderChannels.value = snapshot.reminderChannels
@@ -116,25 +121,31 @@ onMounted(async () => {
   })
 })
 
-const statusLabel = computed(
-  () =>
-    ({
-      initialized: '待开始',
-      in_progress: '进行中',
-      completed: '已完成'
-    })[status.value] || status.value
+const effectiveTimestamp = computed(() =>
+  effectiveAt.value === initialSnapshot.value?.effectiveAt
+    ? props.note.effective_at
+    : parseNoteDraftTime(effectiveAt.value)
 )
-
-const canEditSchedule = computed(() => ['initialized', 'in_progress'].includes(status.value))
-const effectiveTimestamp = computed(() => new Date(effectiveAt.value).getTime())
-const isHistoricalSchedule = computed(
-  () => Number.isFinite(effectiveTimestamp.value) && effectiveTimestamp.value <= Date.now()
-)
+const {
+  status,
+  statusOptions,
+  stateHint,
+  canScheduleNotification,
+  chooseStatus,
+  submissionFields
+} = useNoteStateDraft({
+  effectiveTimestamp,
+  statusChoice,
+  finishedAt,
+  originalNote: () => props.note
+})
 const canEditNotify = computed(
   () =>
-    status.value === 'in_progress' ||
-    (status.value === 'initialized' &&
-      canScheduleNoteNotification(effectiveTimestamp.value, Date.now()))
+    canScheduleNotification.value ||
+    (status.value === 'in_progress' && initialSnapshot.value?.status === 'in_progress')
+)
+const canEditPendingReminder = computed(
+  () => status.value === 'in_progress' && initialSnapshot.value?.status === 'in_progress'
 )
 
 function dateAtDefaultScheduleTime(dayOffset) {
@@ -144,12 +155,13 @@ function dateAtDefaultScheduleTime(dayOffset) {
   return date
 }
 
-const initializedDateShortcuts = [
+const dateShortcuts = [
   {
     label: '今天',
-    getValue: () => new Date(createSafeScheduleShortcutTimestamp())
+    getValue: () => new Date()
   },
   { label: '昨天', getValue: () => dateAtDefaultScheduleTime(-1) },
+  { label: '一周前', getValue: () => dateAtDefaultScheduleTime(-7) },
   {
     label: '明天',
     getValue: () => {
@@ -159,26 +171,27 @@ const initializedDateShortcuts = [
     }
   }
 ]
-const inProgressDateShortcuts = [
-  { label: '今天', getValue: () => new Date() },
-  { label: '昨天', getValue: () => dateAtDefaultScheduleTime(-1) },
-  { label: '一周前', getValue: () => dateAtDefaultScheduleTime(-7) }
-]
-const dateShortcuts = computed(() =>
-  status.value === 'in_progress' ? inProgressDateShortcuts : initializedDateShortcuts
-)
 
 const scheduleHelp = computed(() => {
-  if (status.value === 'initialized')
-    return `可改为过去时间进行历史补录；未来预约需至少晚于当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟。`
-  if (status.value === 'in_progress') return '可修正为当前或过去时间，不能改为未来预约。'
-  return '已完成便签的生效时间不可修改。'
+  return `可修正生效时间；当前或过去可进行中、已完成，改为未来将转为未开始。新预约需至少晚于当前时间 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟。`
 })
 
 const notifyHelp = computed(() =>
   status.value === 'initialized'
-    ? `仅未来至少 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟的预约可以修改提醒方式。`
+    ? `未来预约可设置生效提醒；新预约至少提前 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟，已有预约不受剩余时间影响。`
     : '进行中便签可修改后续提醒方式；关闭全部方式会取消待触发提醒。已结束的提醒不会重新触发。'
+)
+const notifyDisabledReason = computed(() => {
+  if (status.value === 'completed') return '已完成便签不再提醒'
+  if (status.value === 'initialized') return `新预约至少提前 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟`
+  return '不补发生效提醒；保存为进行中后可另设稍后提醒，原提醒不会恢复。'
+})
+const missingCompletionTime = computed(
+  () =>
+    status.value === 'completed' &&
+    initialSnapshot.value?.status === 'completed' &&
+    !initialSnapshot.value?.finishedAt &&
+    !finishedAt.value
 )
 
 const hasChanges = computed(() => {
@@ -187,9 +200,11 @@ const hasChanges = computed(() => {
   return (
     attachmentDirty.value ||
     content.value !== initial.content ||
+    remark.value !== initial.remark ||
     JSON.stringify(contentColorRanges.value) !== JSON.stringify(initial.contentColorRanges) ||
-    status.value !== initial.status ||
+    statusChoice.value !== initial.status ||
     effectiveAt.value !== initial.effectiveAt ||
+    finishedAt.value !== initial.finishedAt ||
     durationKind.value !== initial.durationKind ||
     durationDays.value !== initial.durationDays ||
     reminderChannels.value !== initial.reminderChannels ||
@@ -232,25 +247,22 @@ async function handleSave() {
     return
   }
 
-  const requestedEffectiveAt = effectiveTimestamp.value
-  if (canEditSchedule.value) {
-    if (!Number.isFinite(requestedEffectiveAt)) {
-      showMessage('warning', '请选择有效的生效时间')
-      return
-    }
-    const effectiveAtChanged = effectiveAt.value !== initialSnapshot.value?.effectiveAt
-    if (effectiveAtChanged && status.value === 'initialized') {
-      try {
-        assertCreatableNoteEffectiveTime(requestedEffectiveAt, Date.now())
-      } catch (error) {
-        showMessage('warning', error.message || '请选择有效的生效时间')
-        return
-      }
-    }
-    if (effectiveAtChanged && status.value === 'in_progress' && requestedEffectiveAt > Date.now()) {
-      showMessage('warning', '进行中便签的生效时间只能修正为当前或过去时间')
-      return
-    }
+  let stateFields
+  try {
+    stateFields = submissionFields({
+      effectiveAt:
+        effectiveAt.value === initialSnapshot.value?.effectiveAt
+          ? undefined
+          : effectiveTimestamp.value,
+      finishedAt:
+        statusChoice.value === initialSnapshot.value?.status &&
+        finishedAt.value === initialSnapshot.value?.finishedAt
+          ? undefined
+          : parseNoteDraftTime(finishedAt.value)
+    })
+  } catch (error) {
+    showMessage('warning', error.message || '请核对状态与时间')
+    return
   }
 
   saving.value = true
@@ -264,13 +276,14 @@ async function handleSave() {
       expectedVersion: initialVersion.value,
       fields: {
         content: text,
+        remark: remark.value.replace(/\r\n?/g, '\n'),
         contentColorRanges: normalizeNoteTextColorRanges(contentColorRanges.value, text),
-        status: status.value,
-        effectiveAt: requestedEffectiveAt,
+        ...stateFields,
         durationKind: durationKind.value,
         durationDays: durationDays.value,
         reminderChannels: canEditNotify.value ? reminderChannels.value : 0,
-        ...(initialSnapshot.value.pendingReminder &&
+        ...(canEditPendingReminder.value &&
+        initialSnapshot.value.pendingReminder &&
         (pendingReminderCancelled.value ||
           pendingReminderTime.value !== initialSnapshot.value.pendingReminderTime)
           ? {
@@ -304,9 +317,11 @@ const protectedDraft = useDraftProtection({
   key: 'note:' + props.note.id,
   fields: {
     content,
+    remark,
     contentColorRanges,
-    status,
+    statusChoice,
     effectiveAt,
+    finishedAt,
     durationKind,
     durationDays,
     reminderChannels,
@@ -333,46 +348,44 @@ const protectedDraft = useDraftProtection({
         initial-focus
         style="animation-delay: 0ms"
         placeholder="输入便签内容…（Enter 换行）"
-        :rows="4"
+        :rows="2"
       />
 
-      <div class="ne-field-row ne-stagger" style="animation-delay: 40ms">
-        <label class="ne-field-label">状态</label>
-        <span class="ne-status-tag" :class="'ne-status--' + status">{{ statusLabel }}</span>
-      </div>
+      <NoteRemarkField v-model="remark" class="ne-stagger" style="animation-delay: 35ms" />
 
       <div class="ne-field-row ne-stagger" style="animation-delay: 70ms">
         <label class="ne-field-label">生效时间<HelpButton :text="scheduleHelp" /></label>
-        <DateTimePicker
-          v-model="effectiveAt"
-          :disabled="!canEditSchedule"
-          :clearable="false"
-          :shortcuts="dateShortcuts"
-        />
+        <DateTimePicker v-model="effectiveAt" placeholder="立即生效" :shortcuts="dateShortcuts" />
       </div>
-      <p
-        v-if="status === 'initialized' && isHistoricalSchedule"
-        class="ne-platform-note ne-schedule-note"
-      >
-        保存后将直接进入进行中，并关闭提醒。
-      </p>
-
-      <NoteDurationField
-        v-model:kind="durationKind"
-        v-model:days="durationDays"
-        :visible="!!effectiveAt"
+      <NoteStateFields
+        v-model:finished-at="finishedAt"
+        class="ne-stagger"
+        style="animation-delay: 85ms"
+        :status="status"
+        :options="statusOptions"
+        :hint="stateHint"
+        :finished-placeholder="missingCompletionTime ? '请补充完成时间' : '保存时完成'"
+        :completion-hint="
+          missingCompletionTime
+            ? '这条历史记录缺少完成时间，请明确填写后保存；不会自动补为现在。'
+            : ''
+        "
+        @update:status="chooseStatus"
       />
+
+      <NoteDurationField v-model:kind="durationKind" v-model:days="durationDays" visible />
 
       <div class="ne-notification-field ne-stagger" style="animation-delay: 100ms">
         <ReminderChannelPicker
           v-model="reminderChannels"
           :disabled="!canEditNotify"
           :help-text="notifyHelp"
-          :disabled-reason="
-            status === 'completed' ? '已完成便签不再提醒' : '设置未来生效时间后可选择提醒方式'
-          "
+          :disabled-reason="notifyDisabledReason"
         />
-        <div v-if="initialSnapshot?.pendingReminder" class="ne-pending-reminder">
+        <div
+          v-if="initialSnapshot?.pendingReminder && canEditPendingReminder"
+          class="ne-pending-reminder"
+        >
           <label class="ne-field-label">下次提醒时间</label>
           <DateTimePicker
             v-model="pendingReminderTime"
@@ -387,6 +400,9 @@ const protectedDraft = useDraftProtection({
             />取消这次稍后提醒（保存后生效）</label
           >
         </div>
+        <p v-else-if="initialSnapshot?.pendingReminder" class="ne-platform-note">
+          保存后将取消原来的稍后提醒。
+        </p>
       </div>
 
       <div class="ne-field-row ne-stagger" style="animation-delay: 130ms">
@@ -443,7 +459,7 @@ const protectedDraft = useDraftProtection({
     <ConfirmDialog
       v-model:visible="confirmVisible"
       title="放弃未保存的修改？"
-      message="正文、属性、状态和附件草稿都将恢复为打开编辑器时的内容。"
+      message="正文、备注、属性、状态和附件草稿都将恢复为打开编辑器时的内容。"
       confirm-text="放弃修改"
       cancel-text="继续编辑"
       variant="danger"
@@ -531,25 +547,6 @@ const protectedDraft = useDraftProtection({
 .ne-group-gap {
   margin-top: 20rem;
 }
-.ne-status-tag {
-  display: inline-flex;
-  align-items: center;
-  padding: 3rem 9rem;
-  border-radius: 6rem;
-  background: color-mix(in srgb, currentColor 10%, transparent);
-  font-size: var(--fs-secondary);
-  font-weight: 600;
-  white-space: nowrap;
-}
-.ne-status--initialized {
-  color: #007aff;
-}
-.ne-status--in_progress {
-  color: #ff9500;
-}
-.ne-status--completed {
-  color: #34c759;
-}
 .ne-footer {
   display: flex;
   flex-wrap: wrap;
@@ -579,6 +576,9 @@ const protectedDraft = useDraftProtection({
 .ne-field-row {
   flex-wrap: wrap;
   gap: 6rem;
+}
+.ne-field-row .ne-field-label {
+  max-width: 100%;
 }
 input,
 textarea {

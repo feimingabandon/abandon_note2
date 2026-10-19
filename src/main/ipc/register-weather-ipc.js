@@ -25,6 +25,11 @@ export function registerWeatherIpcHandlers({
       diagnosticLog: (level, scope, message, metadata) =>
         logger?.[level]?.(scope, message, metadata)
     })
+  const registered = []
+  const handle = (channel, handler) => {
+    ipcMain.handle(channel, handler)
+    registered.push(channel)
+  }
   const assertAuthorized = (event) => assertMainWindowSender(event, getMainWindow, '天气服务')
   const controller = createWeatherRefreshController({
     service,
@@ -39,33 +44,43 @@ export function registerWeatherIpcHandlers({
       }
     }
   })
-  ipcMain.handle('weather:resolve-location', (event, { location } = {}) => {
-    assertAuthorized(event)
-    return service.resolveLocation(location)
-  })
-  ipcMain.handle('weather:get-division-tree', (event) => {
-    assertAuthorized(event)
-    return service.getChinaDivisionTree()
-  })
-  ipcMain.handle('weather:get-forecast', (event) => {
-    assertAuthorized(event)
-    return controller.read()
-  })
-  ipcMain.handle('weather:refresh-forecast', (event) => {
-    assertAuthorized(event)
-    const settings = getWeatherSettings()
-    if (!settings?.enabled) throw new Error('请先开启天气显示')
-    if (!settings.location) throw new Error('请先选择天气地区')
-    return controller.refresh({ manual: true, trigger: 'manual' })
-  })
-  ipcMain.handle('weather:open-source', async (event) => {
-    assertAuthorized(event)
-    await shell.openExternal(WEATHER_SOURCE.url)
-    return true
-  })
-  return {
-    refreshAtStartup: () => controller.refresh({ trigger: 'startup' }),
-    refreshIfDue: () => controller.refresh({ trigger: 'automatic' }),
-    settingsChanged: controller.settingsChanged
+  const dispose = () => {
+    controller.dispose()
+    for (const channel of registered.splice(0)) ipcMain.removeHandler(channel)
+  }
+  try {
+    handle('weather:resolve-location', (event, { location } = {}) => {
+      assertAuthorized(event)
+      return service.resolveLocation(location)
+    })
+    handle('weather:get-division-tree', (event) => {
+      assertAuthorized(event)
+      return service.getChinaDivisionTree()
+    })
+    handle('weather:get-forecast', (event) => {
+      assertAuthorized(event)
+      return controller.read()
+    })
+    handle('weather:refresh-forecast', (event) => {
+      assertAuthorized(event)
+      const settings = getWeatherSettings()
+      if (!settings?.enabled) throw new Error('请先开启天气显示')
+      if (!settings.location) throw new Error('请先选择天气地区')
+      return controller.refresh({ manual: true, trigger: 'manual' })
+    })
+    handle('weather:open-source', async (event) => {
+      assertAuthorized(event)
+      await shell.openExternal(WEATHER_SOURCE.url)
+      return true
+    })
+    return {
+      refreshAtStartup: () => controller.refresh({ trigger: 'startup' }),
+      refreshIfDue: () => controller.refresh({ trigger: 'automatic' }),
+      settingsChanged: controller.settingsChanged,
+      dispose
+    }
+  } catch (error) {
+    dispose()
+    throw error
   }
 }

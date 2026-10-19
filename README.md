@@ -160,7 +160,7 @@ Abandon便签（Abandon Note）是一款永久免费开源、以本地存储为�
 ### 系统要求
 
 - Windows 10 / 11（x64）
-- 当前仅提供正式 Windows 安装包，暂不提供 macOS 安装包，也不支持 Windows 7
+- 仅支持 Windows 10/11 x64，不支持 Windows 7
 
 ### Windows
 
@@ -205,10 +205,16 @@ npm run dev
 
 ```bash
 npm run lint       # ESLint 检查
-npm test           # Vitest 单元测试 + Electron 集成测试
+npm run test:unit -- tests/test-selection.test.js       # 具体登记单元文件
+npm test -- --file tests/test-selection.test.js --plan  # 只读查看局部范围
+npm test -- --file tests/test-selection.test.js         # 执行该文件及必需前置
 npm run build      # 完整生产构建
 git diff --check   # 检查空白字符错误
 ```
+
+`npm test`、`test:unit`、`test:db` 及窗口/原生选择入口的空参数会拒绝执行，未知选择也不会回退全量。数据库使用 `npm run test:db -- --file tests/note-duration-db.mjs --plan`，具体窗口使用 `node scripts/run-electron-window-tests.cjs --file tests/daily-report-electron.mjs --plan`。`--plan` 不启动测试或构建；缺少结果适配、平台或构建来源证明时，执行结果会明确阻断，不将退出码 0 等同于业务通过。
+
+普通 CI 按明确的提交差异及已验收叶模块规则选择具体单元/平台专项；源码import和文本读取关系只提示候选，不自动扩大范围。主入口/公共schema/native等跨域或未映射改动要求明确补充校验范围，文档变更和无变更分别说明无需测试的原因。显式全量使用 `npm run test:full:win`，发布工作流使用独立 `test:release:quality`，均不能当作日常默认入口。构建复用、精确 Qt 选择及证据读取见 [测试入口说明](docs/testing/README.md)。
 
 界面、主题和组件样式改动请遵守 [UI 材质与边线开发标准](docs/UI_DESIGN_STANDARD.md)。
 
@@ -252,13 +258,46 @@ Abandon便签的天气、定位与日历能力离不开以下开源项目和开�
 
 ## 🤝 参与贡献
 
-欢迎提交 [Issue](https://github.com/feimingabandon/abandon_note2/issues) 反馈问题或建议；提交 PR 前请确保 `npm run lint`、`npm test`、`npm run build` 与 `git diff --check` 通过。
+欢迎提交 [Issue](https://github.com/feimingabandon/abandon_note2/issues) 反馈问题或建议；提交 PR 前运行直接相关的明确局部测试、必要构建、`npm run lint` 与 `git diff --check`，并说明实际验证范围和未覆盖部分。
 
 ## 📜 许可证
 
 本项目基于 [GNU GPL v3](LICENSE)（`GPL-3.0-only`）开源。
 
 ## 📋 更新日志
+
+### Abandon Note 1.4.0
+
+重构解耦全部代码，保证代码职责分明。
+
+#### 新增
+
+1. 新增完整截图/贴图完整功能，可使用快捷键 F1 或者自行设置进行截图。截取的图片除基础功能外，可直接作为截图便签素材使用。
+2. 新增万年历。
+3. 系统通知新增托盘闪烁、内部弹窗、再次提醒功能。
+4. 截图增加快速复制快捷键，默认是 Ctrl + F1。
+5. 周/月视图的今天日期格子暂定为红色边框。
+6. 周/月视图增加未完成移动到今天的功能，且只能将“仅今日”的便签移动到今天。
+7. 周/月视图增加“快捷新建默认持续到完成”开关。开启后，日期格子快捷创建的便签将会默认为持续到已完成，入口位于“便签延续与移动”弹窗。
+8. 新建便签可增加备注。
+9. 日报导出中增加标签条件查询，导出列表中增加标签列。
+
+#### 修改
+
+1. 完善层级设置，增加稳定性。
+2. 完善日志系统，增加深度收集按钮。
+3. 完善天气功能。
+4. 完善多弹窗执行顺序。
+5. 新建便签后保留已设置的选项信息。
+6. 改变基础布局规则，缩放宽高时，布局内组件大小不再同步缩放，改为在设置页面选择界面缩放。
+7. 截图与显示隐藏窗口的默认快捷键分别为 F1 和 F2。
+8. 重写新建与修改便签的底层逻辑，不再默认创建时的便签状态。以生效时间为基础，联动设置状态（初始化、进行中、已完成）、提醒方式。
+9. 便签列表的新建面板不再自动收起。
+10. 天气和宜忌的组件统一，同时增加开关来显示与隐藏。
+
+#### 1.5.0 预告
+
+下个版本将以 UI 与交互为准，力求大幅改善。因此下一个更新节奏可能会到下个月，至少是中旬，视情况而定。
 
 ### Abandon Note 1.3.0
 

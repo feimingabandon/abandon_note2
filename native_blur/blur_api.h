@@ -55,6 +55,8 @@ BLUR_API void Blur_ReSyncOrder(void);
 BLUR_API int Blur_IsInitialized(void);
 BLUR_API int Blur_IsHealthy(void);
 BLUR_API int Blur_IsZOrderSynchronized(void);
+// Bounded readonly trace; collecting events is opt-in via ABANDON_NATIVE_Z_ORDER_TRACE=1.
+BLUR_API const char* Blur_GetZOrderDiagnosticJson(void);
 BLUR_API int Blur_IsSupported(void);
 BLUR_API int Blur_GetLastErrorCode(void);
 BLUR_API const char* Blur_GetLastErrorMessage(void);
@@ -63,6 +65,10 @@ BLUR_API const char* Blur_GetLastFailureJson(void);
 // ---- Windows 窗口物理移动（无回调、绝不修改宽高）----
 BLUR_API int WindowMotion_MoveWindow(void* hwnd, int physicalX, int physicalY);
 BLUR_API const char* WindowMotion_GetSnapshotJson(void* hwnd);
+// Deep-only in-memory timings. Zero closes the lease but preserves undrained
+// evidence; positive leases expire automatically and are capped at 30 minutes.
+BLUR_API void WindowMotion_SetDiagnosticLease(int remainingMs);
+BLUR_API const char* WindowMotion_DrainDiagnosticsJson(void);
 // side: -1=left, 1=right, -2=top, 2=bottom
 BLUR_API int WindowMotion_IsEdgeExposed(void* hwnd, int side);
 // Windows 原生边缘监视器：只在贴边隐藏期间每 pollIntervalMs 读取一次光标位置；

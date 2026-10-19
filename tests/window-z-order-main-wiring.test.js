@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-const MAIN_PATH = new URL('../src/main/index.js', import.meta.url)
+const MAIN_PATH = new URL('../src/main/windows/z-order-runtime.js', import.meta.url)
 
 describe('main-window z-order transaction wiring', () => {
   it('keeps runtime application inside the rollback boundary', () => {
@@ -25,7 +25,7 @@ describe('main-window z-order transaction wiring', () => {
 
   it('preserves the pending layer across settings refreshes and verifies the bottom controller', () => {
     const source = readFileSync(MAIN_PATH, 'utf8')
-    expect(source).toContain('pendingWindowZOrderMode ?? resolvedSettings.window.zOrderMode')
+    expect(source).toContain('pendingWindowZOrderMode ?? getSettings().window.zOrderMode')
     const confirm = source.slice(
       source.indexOf('async function confirmWindowZOrder('),
       source.indexOf('async function persistWindowZOrderMode(')

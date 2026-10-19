@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import NumberStepper from '../ui/NumberStepper.vue'
+import StyledSelect from '../ui/StyledSelect.vue'
 import MonthDayPicker from '../ui/MonthDayPicker.vue'
 import { FREQUENCY_OPTIONS } from '../../utils/templateRules.js'
 
@@ -101,6 +102,20 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
         {{ item.label }}
       </button>
     </div>
+    <StyledSelect
+      class="tfs-compact-frequency"
+      :model-value="frequency"
+      :options="FREQUENCY_OPTIONS"
+      width="100%"
+      aria-label="生成频率"
+      @update:model-value="
+        (value) =>
+          selectFrequency(
+            value,
+            FREQUENCY_OPTIONS.findIndex((item) => item.value === value)
+          )
+      "
+    />
 
     <div class="tfs-panel-viewport" :style="{ height: `${panelHeight}px` }">
       <Transition :name="transitionName">
@@ -202,6 +217,20 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
   flex-direction: column;
   gap: 7rem;
 }
+.tfs-root {
+  container-type: inline-size;
+}
+.tfs-compact-frequency {
+  display: none;
+}
+@container (max-width: 7em) {
+  .tfs-root .tfs-segments {
+    display: none;
+  }
+  .tfs-root .tfs-compact-frequency {
+    display: inline-block;
+  }
+}
 .tfs-label,
 .tfs-inline-rule {
   color: var(--text-color-secondary);
@@ -250,7 +279,8 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
 .tfs-segments button {
   position: relative;
   z-index: var(--z-local-content);
-  padding: 7rem;
+  padding: 7rem 2rem;
+  overflow-wrap: anywhere;
 }
 .tfs-segments button:hover:not(.active) {
   color: var(--text-color);
@@ -296,6 +326,7 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
 }
 .tfs-inline-rule {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8rem;
   min-height: 34rem;
@@ -348,12 +379,24 @@ onBeforeUnmount(() => panelResizeObserver?.disconnect())
   line-height: 1.45;
   opacity: 0.72;
 }
-@media (max-width: 420px) {
-  .tfs-monthdays {
-    grid-template-columns: repeat(6, 1fr);
+@container (max-width: 420px) {
+  .tfs-root .tfs-monthdays {
+    grid-template-columns: repeat(
+      auto-fit,
+      minmax(min(100%, calc(var(--fs-secondary) * 1.5 + 12rem)), 1fr)
+    );
   }
-  .tfs-weekdays {
-    grid-template-columns: repeat(4, 1fr);
+  .tfs-root .tfs-weekdays {
+    grid-template-columns: repeat(
+      auto-fit,
+      minmax(min(100%, calc(var(--fs-secondary) * 2 + 12rem)), 1fr)
+    );
+  }
+  .tfs-root .tfs-quarter-months {
+    grid-template-columns: repeat(
+      auto-fit,
+      minmax(min(100%, calc(var(--fs-secondary) * 3.5 + 12rem)), 1fr)
+    );
   }
 }
 </style>

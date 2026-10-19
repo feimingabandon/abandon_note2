@@ -1,11 +1,13 @@
 <script setup>
 import BaseButton from '../ui/BaseButton.vue'
 import { useDraftProtection } from '../../composables/useDraftProtection.js'
+import { useNewNotePreferences } from '../../composables/useNewNotePreferences.js'
+import { useNoteStateDraft } from '../../composables/useNoteStateDraft.js'
 /**
  * NewNotePanel.vue — 新建便签表单面板
  *
  * 职责：
- *   1. 收集用户输入的表单字段（正文/标签/生效时间/图片/通知/置顶）
+ *   1. 收集用户输入的表单字段（正文/备注/标签/生效时间/图片/通知/置顶）
  *   2. 调用 window.api.createNote 创建便签
  *   3. 创建成功后重置表单并 emit('create') 通知父组件
  *
@@ -16,17 +18,16 @@ import DateTimePicker from '../ui/DateTimePicker.vue'
 import TagSelector from '../ui/TagSelector.vue'
 import ScreenshotPicker from '../note/ScreenshotPicker.vue'
 import NoteDurationField from '../note/NoteDurationField.vue'
+import NoteStateFields from '../note/NoteStateFields.vue'
+import NoteRemarkField from '../note/NoteRemarkField.vue'
 import ReminderChannelPicker from '../note/ReminderChannelPicker.vue'
 import AppToggle from '../ui/AppToggle.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import ColoredTextEditor from '../note/ColoredTextEditor.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
-import { NOTE_DURATION_KINDS } from '../../../../shared/calendar/calendar-date-rules.js'
 import { normalizeNoteTextColorRanges } from '../../../../shared/note-text-color-rules.js'
 import {
-  assertCreatableNoteEffectiveTime,
-  canScheduleNoteNotification,
   DEFAULT_NEW_NOTE_SCHEDULE_TIME,
   MIN_SCHEDULE_LEAD_TIME_MINUTES
 } from '../../../../shared/note-scheduling-rules.js'
@@ -135,43 +136,45 @@ watch(
 
 onBeforeUnmount(() => {
   cancelEntranceAnimations()
-  finishSuccessHold()
 })
 
 // ============================================================
 // 表单状态
 // ============================================================
 const content = ref('')
+const remark = ref('')
 const contentColorRanges = ref([])
 const effectiveAt = ref('') // "YYYY-MM-DD HH:mm:ss" 或空（空 = 立即生效）
-const durationKind = ref(NOTE_DURATION_KINDS.SINGLE_DAY)
-const durationDays = ref(1)
-const tagIds = ref([]) // 仅保存用户自定义标签 ID；内容类型由正文和附件推导
-const reminderChannels = ref(0) // 提醒方式多选
-const isPinned = ref(false) // 置顶开关
-const submitState = ref('idle') // idle | creating | success
+const { durationKind, durationDays, tagIds, reminderChannels, isPinned, statusChoice } =
+  useNewNotePreferences()
+const finishedAt = ref('') // 空值始终表示本次保存时完成，而不是上次完成的时间戳。
+const cleanEffectiveAt = ref('')
+const cleanFinishedAt = ref('')
+const submitState = ref('idle') // idle | creating
 /** ScreenshotPicker 组件引用 */
 const imagePickerRef = ref(null)
 const draftImageCount = ref(0)
 const attachmentsBusy = ref(false)
-let successTimer = null
-let successHoldResolve = null
 
 // ---- 联动逻辑 ----
 const effectiveTimestamp = computed(() =>
   effectiveAt.value ? new Date(effectiveAt.value).getTime() : null
 )
 const isHistoricalBackfill = computed(
-  () => Number.isFinite(effectiveTimestamp.value) && effectiveTimestamp.value <= Date.now()
+  () => Number.isFinite(effectiveTimestamp.value) && effectiveTimestamp.value <= currentTime.value
 )
-/** 只有满足最小提前量的未来预约才能开启提醒。 */
-const canEnableNotify = computed(() =>
-  canScheduleNoteNotification(effectiveTimestamp.value, Date.now())
-)
+const {
+  status,
+  statusOptions,
+  currentTime,
+  stateHint,
+  canScheduleNotification: canEnableNotify,
+  chooseStatus,
+  submissionFields
+} = useNoteStateDraft({ effectiveTimestamp, statusChoice, finishedAt })
 const canCreate = computed(() => Boolean(content.value.trim()) || draftImageCount.value > 0)
 const submitLabel = computed(() => {
   if (submitState.value === 'creating') return '创建中…'
-  if (submitState.value === 'success') return '✓ 已创建'
   if (attachmentsBusy.value) return '图片处理中…'
   return '创建便签'
 })
@@ -191,45 +194,21 @@ const dateShortcuts = [
   { label: '明天', getValue: () => dateAtDefaultScheduleTime(1) }
 ]
 
-// 立即生效、历史补录或提前量不足时，强制关闭提醒。
-watch(effectiveAt, () => {
-  if (!canEnableNotify.value && reminderChannels.value) reminderChannels.value = 0
-})
+// An unavailable reminder is disabled for this note, without erasing the user's
+// selection for the next scheduled note. The payload below still enforces this.
 
 // ============================================================
 // 创建便签
 // ============================================================
-const SUCCESS_HOLD = 550
-
 function resetForm() {
   content.value = ''
+  remark.value = ''
   contentColorRanges.value = []
-  effectiveAt.value = ''
-  durationKind.value = NOTE_DURATION_KINDS.SINGLE_DAY
-  durationDays.value = 1
-  tagIds.value = []
-  reminderChannels.value = 0
-  isPinned.value = false
+  // Explicit times belong to this continuous entry session. "Immediately" and
+  // "complete on save" remain empty intentions, resolved anew on each submit.
+  cleanEffectiveAt.value = effectiveAt.value
+  cleanFinishedAt.value = finishedAt.value
   imagePickerRef.value?.clearImages()
-}
-
-function holdSuccessState() {
-  return new Promise((resolve) => {
-    successHoldResolve = resolve
-    successTimer = setTimeout(() => {
-      successTimer = null
-      successHoldResolve = null
-      resolve()
-    }, SUCCESS_HOLD)
-  })
-}
-
-function finishSuccessHold() {
-  if (successTimer) clearTimeout(successTimer)
-  successTimer = null
-  const resolve = successHoldResolve
-  successHoldResolve = null
-  resolve?.()
 }
 
 async function handleCreate() {
@@ -246,17 +225,14 @@ async function handleCreate() {
     return
   }
 
-  let historicalBackfill = false
-  if (effectiveAt.value) {
-    const now = Date.now()
-    try {
-      assertCreatableNoteEffectiveTime(effectiveTimestamp.value, now)
-    } catch (error) {
-      showMessage('warning', error.message || '请选择有效的生效时间')
-      return
-    }
-    historicalBackfill = effectiveTimestamp.value <= now
+  let stateFields
+  try {
+    stateFields = submissionFields()
+  } catch (error) {
+    showMessage('warning', error.message || '请核对状态与时间')
+    return
   }
+  const historicalBackfill = isHistoricalBackfill.value
 
   if (submitState.value !== 'idle') return
   submitState.value = 'creating'
@@ -264,15 +240,14 @@ async function handleCreate() {
   try {
     const options = {
       content: text,
+      remark: remark.value.replace(/\r\n?/g, '\n'),
       contentColorRanges: normalizeNoteTextColorRanges(contentColorRanges.value, text),
       durationKind: durationKind.value,
       durationDays: durationDays.value,
       reminderChannels: canEnableNotify.value ? reminderChannels.value : 0,
       isPinned: isPinned.value ? 1 : 0
     }
-    if (effectiveAt.value) {
-      options.effectiveAt = effectiveTimestamp.value
-    }
+    Object.assign(options, stateFields)
     const imgs = imagePickerRef.value?.getImages() || []
     // 检查 API 是否存在
     if (typeof window.api.createNoteWithAssets !== 'function') {
@@ -287,19 +262,19 @@ async function handleCreate() {
     if (!created?.id) throw new Error('创建接口未返回便签')
 
     protectedDraft.clear()
-    submitState.value = 'success'
+    resetForm()
+    protectedDraft.resume()
+    submitState.value = 'idle'
+    emit('create')
     showMessage(
       'success',
       historicalBackfill ? '历史便签补录成功，已按生效日期归档' : '便签创建成功'
     )
-    // 先保留 SUCCESS_HOLD 展示「✓ 已创建」，再 emit（由父级刷新列表并收起面板），确保用户能看清成功反馈。
-    await holdSuccessState()
-    emit('create')
-    resetForm()
-    protectedDraft.resume()
-    submitState.value = 'idle'
     await nextTick()
-    if (props.active) requestAnimationFrame(focusTextareaAtTop)
+    if (props.active)
+      requestAnimationFrame(() => {
+        if (props.active && submitState.value === 'idle') focusTextareaAtTop()
+      })
   } catch (e) {
     console.error('[NewNotePanel] 创建便签失败:', e)
     showMessage('error', e.message || '创建失败，请重试')
@@ -312,8 +287,13 @@ const protectedDraft = useDraftProtection({
   key: props.draftKey,
   fields: {
     content,
+    remark,
     contentColorRanges,
     effectiveAt,
+    statusChoice,
+    finishedAt,
+    cleanEffectiveAt,
+    cleanFinishedAt,
     durationKind,
     durationDays,
     reminderChannels,
@@ -322,11 +302,9 @@ const protectedDraft = useDraftProtection({
   },
   dirty: () =>
     !!content.value ||
-    !!effectiveAt.value ||
-    durationKind.value !== NOTE_DURATION_KINDS.SINGLE_DAY ||
-    reminderChannels.value ||
-    isPinned.value ||
-    tagIds.value.length > 0 ||
+    !!remark.value ||
+    effectiveAt.value !== cleanEffectiveAt.value ||
+    finishedAt.value !== cleanFinishedAt.value ||
     (imagePickerRef.value?.getImages().length || 0) > 0,
   busy: () => submitState.value === 'creating' || attachmentsBusy.value,
   extra: () => ({ attachments: imagePickerRef.value?.getDraftChanges() }),
@@ -349,8 +327,10 @@ defineExpose({
         v-model="content"
         v-model:color-ranges="contentColorRanges"
         placeholder="请新建一次性便签内容…（Enter 换行）"
-        :rows="4"
+        :rows="2"
       />
+
+      <NoteRemarkField v-model="remark" />
 
       <!-- 生效时间（label 左，picker 右） -->
       <div class="nnp-field-row">
@@ -364,9 +344,13 @@ defineExpose({
           :default-time="`${DEFAULT_NEW_NOTE_SCHEDULE_TIME}:00`"
         />
       </div>
-      <p v-if="isHistoricalBackfill" class="nnp-platform-note">
-        历史补录将直接进入进行中，不触发提醒。
-      </p>
+      <NoteStateFields
+        v-model:finished-at="finishedAt"
+        :status="status"
+        :options="statusOptions"
+        :hint="stateHint"
+        @update:status="chooseStatus"
+      />
 
       <NoteDurationField v-model:kind="durationKind" v-model:days="durationDays" visible />
 
@@ -375,7 +359,13 @@ defineExpose({
           v-model="reminderChannels"
           :disabled="!canEnableNotify"
           :help-text="`仅未来至少 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟的预约可开启；稍后提醒不会改变生效时间。`"
-          disabled-reason="设置未来生效时间后可选择提醒方式"
+          :disabled-reason="
+            status === 'completed'
+              ? '已完成便签不再提醒'
+              : status === 'initialized'
+                ? `新预约至少提前 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟`
+                : '设置未来生效时间后可选择生效提醒'
+          "
         />
       </div>
 
@@ -420,8 +410,7 @@ defineExpose({
       class="nnp-submit"
       :class="{
         'is-empty': submitEmpty,
-        'is-creating': submitState === 'creating',
-        'is-success': submitState === 'success'
+        'is-creating': submitState === 'creating'
       }"
       :disabled="submitState !== 'idle' || attachmentsBusy || !canCreate"
       data-diagnostic-action="note.create"
@@ -486,6 +475,7 @@ defineExpose({
 }
 .nnp-field-row .nnp-field-label {
   flex-shrink: 0;
+  max-width: 100%;
 }
 .nnp-notification-field {
   margin-top: 12rem;
@@ -532,11 +522,6 @@ defineExpose({
 .nnp-submit.is-empty {
   opacity: 0.4;
   transform: scale(0.99);
-}
-.nnp-submit.is-success {
-  /* 创建成功使用可读的实心绿与白色前景，区别于正文状态标识。 */
-  background: #248a3d;
-  opacity: 1;
 }
 .nnp-submit-label {
   grid-area: 1 / 1;

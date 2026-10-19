@@ -33,6 +33,7 @@ const props = defineProps({
   statusTransitions: { type: Map, default: () => new Map() },
   selectedKey: { type: String, default: '' },
   todayKey: { type: String, required: true },
+  quickCreateUntilCompleted: { type: Boolean, default: false },
   weatherByDate: { type: Map, default: () => new Map() }
 })
 const emit = defineEmits([
@@ -553,7 +554,11 @@ async function submitQuickNote(day) {
     await focusQuickCreator(day.key)
     return
   }
-  const options = { content, durationDays: 1 }
+  const options = {
+    content,
+    durationDays: 1,
+    durationKind: props.quickCreateUntilCompleted ? 'until_completed' : 'single_day'
+  }
   if (day.key !== props.todayKey) {
     const time = defaultMonthNoteEffectiveTime(day.key, props.todayKey, new Date())
     options.effectiveAt = combineLocalDateAndTime(day.key, time)
@@ -799,6 +804,7 @@ useDraftProtection({
     ref="gridRef"
     class="month-grid"
     :class="{ 'is-week-view': viewMode === 'week' }"
+    :style="{ '--calendar-rows': Math.max(1, rowCount) }"
     role="grid"
     :aria-label="viewMode === 'week' ? '周历' : '月历'"
     :aria-rowcount="rowCount + 1"
@@ -808,7 +814,7 @@ useDraftProtection({
       <span v-for="weekday in weekdays" :key="weekday" role="columnheader">周{{ weekday }}</span>
     </div>
 
-    <div class="month-grid__weeks" :style="{ '--calendar-rows': rowCount }">
+    <div class="month-grid__weeks">
       <div
         v-for="weekIndex in rowCount"
         :key="weekIndex"
@@ -1131,15 +1137,21 @@ useDraftProtection({
 
 <style scoped>
 .month-grid {
+  --calendar-gap: 7rem;
+  --calendar-weekday-height: 27rem;
+  /* 每排保留顶部日期区 32rem 和底部新建区 28rem；月、周共用同一格子下限。 */
+  --calendar-row-min-height: 60rem;
   display: flex;
-  min-height: 0;
+  min-height: calc(
+    var(--calendar-weekday-height) + var(--calendar-rows) * var(--calendar-row-min-height) +
+      (var(--calendar-rows) - 1) * var(--calendar-gap)
+  );
   flex: 1;
   flex-direction: column;
-  --calendar-gap: 7rem;
 }
 .month-grid__weekdays {
   display: grid;
-  flex: 0 0 27rem;
+  flex: 0 0 var(--calendar-weekday-height);
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: var(--calendar-gap);
   color: var(--text-color-secondary);
@@ -1150,11 +1162,8 @@ useDraftProtection({
   display: grid;
   min-height: 0;
   flex: 1;
-  grid-template-rows: repeat(var(--calendar-rows), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--calendar-rows), minmax(var(--calendar-row-min-height), 1fr));
   row-gap: var(--calendar-gap);
-}
-.month-grid.is-week-view .month-grid__weeks {
-  grid-template-rows: minmax(0, 1fr);
 }
 .month-week {
   position: relative;
@@ -1193,7 +1202,7 @@ useDraftProtection({
     border-color 150ms ease,
     box-shadow 150ms ease;
 }
-.month-day-cell:not(.is-unavailable):not(.is-selected):hover {
+.month-day-cell:not(.is-unavailable):not(.is-selected):not(.is-today):hover {
   border-color: var(--ui-border-control);
 }
 .month-day-cell.is-outside {
@@ -1213,8 +1222,9 @@ useDraftProtection({
   align-items: center;
   column-gap: var(--day-header-gap);
 }
+.month-day-cell__header:not(:has(.month-day-cell__context)),
 .month-day-cell__header:has(.is-almanac) {
-  /* 收起时连同摘要间距一起释放；相同类型的轨道保证展开、收回均可平滑插值。 */
+  /* 摘要缺席或宜忌收起时连同间距一起释放；相同轨道类型保留展开、收回插值。 */
   grid-template-columns: var(--day-number) minmax(0, 1fr) minmax(0, 0fr) auto;
   column-gap: 0;
   transition: grid-template-columns var(--motion-control) var(--ease-standard);
@@ -1224,6 +1234,8 @@ useDraftProtection({
 .month-day-cell__header:has(.is-almanac[aria-expanded='true']) {
   grid-template-columns: var(--day-number) minmax(0, 0.65fr) minmax(0, 1fr) auto;
 }
+.month-day-cell__header:not(:has(.month-day-cell__context)) .month-day-cell__lunar,
+.month-day-cell__header:not(:has(.month-day-cell__context)) .month-day-cell__badges:not(:empty),
 .month-day-cell__header:has(.is-almanac) .month-day-cell__lunar,
 .month-day-cell__header:has(.is-almanac) .month-day-cell__badges:not(:empty) {
   margin-left: var(--day-header-gap);
@@ -1240,6 +1252,10 @@ useDraftProtection({
 .month-day-cell.is-selected {
   border-color: color-mix(in srgb, #0a84ff 58%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, #0a84ff 24%, transparent);
+}
+.month-day-cell.is-today {
+  /* 红色外边框表达今天；选中时保留蓝色内缘，键盘焦点使用原有轮廓。 */
+  border-color: var(--calendar-today-border);
 }
 .month-day-cell__number {
   display: inline-flex;

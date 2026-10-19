@@ -1,9 +1,21 @@
-import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import { app, BrowserWindow, screen } from 'electron'
 import koffi from 'koffi'
 import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/dock-trigger-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-dock-trigger-',
+  metadata: { realWindows: true, nativeEdgeMonitor: true, physicalCursorInput: true },
+  timeoutMs: 150000
+})
+const { assert } = lifecycle
+app.setPath('userData', lifecycle.root)
 
 const POLL_INTERVAL_MS = 50
 const EVENT_TIMEOUT_MS = 3000
@@ -243,11 +255,16 @@ async function runNativeEdgeMonitorTests() {
 
   async function stopForegroundHelper(helper) {
     const child = helper?.child
-    if (!child || child.exitCode !== null) return
+    if (!child || child.exitCode !== null || child.signalCode !== null) return
     const exited = new Promise((resolvePromise) => child.once('exit', resolvePromise))
     child.stdin.write('quit\n')
     await Promise.race([exited, wait(2000)])
-    if (child.exitCode === null) child.kill()
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill()
+      await Promise.race([exited, wait(3000)])
+    }
+    if (child.exitCode === null && child.signalCode === null)
+      throw new Error('Foreground helper did not stop')
   }
 
   function getBounds(side, workArea) {
@@ -329,6 +346,8 @@ async function runNativeEdgeMonitorTests() {
   let originalCursor = null
   let generation = 0
   let foregroundHelper = null
+  let completed = false
+  let failure = null
 
   try {
     originalCursor = screen.getCursorScreenPoint()
@@ -1258,13 +1277,26 @@ async function runNativeEdgeMonitorTests() {
     console.log(
       'native edge monitor integration test passed: left/right/top polling, touch and persistent handles, fullscreen suppression and restore, maximized-window passthrough, generation isolation, initial-inside rearm and 100 lifecycle cycles'
     )
+    completed = true
+  } catch (error) {
+    console.error(error)
+    failure = error
   } finally {
-    disarm(0)
-    await stopForegroundHelper(foregroundHelper)
-    if (testWindow && !testWindow.isDestroyed()) testWindow.destroy()
-    if (originalCursor) setCursorPos(originalCursor.x, originalCursor.y)
+    await lifecycle.finish({
+      completed,
+      error: failure,
+      window: testWindow,
+      summary: { generations: generation },
+      restore: async () => {
+        try {
+          disarm(0)
+          await stopForegroundHelper(foregroundHelper)
+        } finally {
+          if (originalCursor) setCursorPos(originalCursor.x, originalCursor.y)
+        }
+      }
+    })
   }
-  app.exit(0)
 }
 
 app
@@ -1272,5 +1304,5 @@ app
   .then(runNativeEdgeMonitorTests)
   .catch((error) => {
     console.error(error)
-    app.exit(1)
+    void lifecycle.finish({ error })
   })

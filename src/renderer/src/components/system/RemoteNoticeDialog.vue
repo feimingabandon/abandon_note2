@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import AppModalShell from '../ui/AppModalShell.vue'
 import BaseButton from '../ui/BaseButton.vue'
 import MarkdownContent from '../markdown/MarkdownContent.vue'
@@ -19,6 +19,10 @@ const props = defineProps({
 const emit = defineEmits(['close', 'acknowledged'])
 const currentIndex = ref(0)
 const acknowledging = ref(false)
+let disposed = false
+onBeforeUnmount(() => {
+  disposed = true
+})
 
 const current = computed(() => props.notices[currentIndex.value] || null)
 const hasMultiple = computed(() => props.notices.length > 1)
@@ -35,18 +39,22 @@ watch(
 )
 
 async function acknowledge() {
-  if (!current.value || acknowledging.value) return
+  if (disposed || !current.value || acknowledging.value) return
   if (alreadyAcknowledged.value) {
     emit('close')
     return
   }
+  // Paging or a fresh pending-notice snapshot may replace current while the
+  // acknowledgement is being saved. Its response still belongs to this ID.
+  const noticeId = current.value.id
   acknowledging.value = true
   try {
-    const changed = await window.api.acknowledgeRemoteNotice(current.value.id)
-    if (changed) emit('acknowledged', current.value.id)
-    else emit('close')
+    const changed = await window.api.acknowledgeRemoteNotice(noticeId)
+    if (disposed) return
+    if (changed) emit('acknowledged', noticeId)
+    else if (current.value?.id === noticeId) emit('close')
   } finally {
-    acknowledging.value = false
+    if (!disposed) acknowledging.value = false
   }
 }
 </script>

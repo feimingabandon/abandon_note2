@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -6,7 +6,7 @@ const root = resolve(import.meta.dirname, '..')
 const read = (path) => readFileSync(resolve(root, path), 'utf8')
 
 describe('渲染入口 CSP', () => {
-  it.each(['index.html', 'month.html', 'week.html', 'sticky.html'])(
+  it.each(['index.html', 'month.html', 'week.html', 'sticky.html', 'reminder.html'])(
     '%s 禁止插件、base 重写和表单外传',
     (entry) => {
       const html = read(`src/renderer/${entry}`)
@@ -17,24 +17,31 @@ describe('渲染入口 CSP', () => {
   )
 })
 
-describe('macOS 保留构建配置', () => {
-  it('启用 Hardened Runtime、签名继承和公证，并只声明实际使用的定位权限', () => {
-    const config = read('electron-builder.mac.yml')
-    expect(config).toContain('hardenedRuntime: true')
-    expect(config).toContain('entitlements: build/entitlements.mac.plist')
-    expect(config).toContain('entitlementsInherit: build/entitlements.mac.plist')
-    expect(config).toContain('NSLocationUsageDescription:')
-    expect(config).toContain('notarize: true')
-    expect(config).not.toContain('identity: null')
-    expect(config).not.toContain('NSCameraUsageDescription')
-    expect(config).not.toContain('NSMicrophoneUsageDescription')
+describe('Windows 专用构建边界', () => {
+  it('默认与显式打包入口都只生成 Windows x64 资产', () => {
+    const config = read('electron-builder.win.yml')
+    const pkg = JSON.parse(read('package.json'))
+    expect(read('electron-builder.yml')).toContain("extends: 'file:./electron-builder.win.yml'")
+    expect(config).toContain('target: nsis')
+    expect(config).toContain('- x64')
+    expect(config).not.toMatch(/\b(?:mac|linux|arm64|ia32):/)
+    expect(pkg.scripts['build:win']).toContain('--win nsis --x64 --publish never')
+    expect(Object.keys(pkg.scripts).some((name) => name.startsWith('build:mac'))).toBe(false)
   })
 
-  it('不再授权未签名可执行内存或 DYLD 环境变量', () => {
-    const entitlements = read('build/entitlements.mac.plist')
-    expect(entitlements).toContain('com.apple.security.cs.allow-jit')
-    expect(entitlements).not.toContain('allow-unsigned-executable-memory')
-    expect(entitlements).not.toContain('allow-dyld-environment-variables')
+  it('删除 Mac 专用配置和资源，图标生成器继续保留 PNG 与 ICO 输出', () => {
+    for (const file of [
+      'electron-builder.mac.yml',
+      'build/entitlements.mac.plist',
+      'build/icon.icns'
+    ])
+      expect(existsSync(resolve(root, file)), file).toBe(false)
+    const generator = read('scripts/generate-app-icons.py')
+    expect(generator).toContain('BUILD_DIR / "icon.png"')
+    expect(generator).toContain('RUNTIME_DIR / "icon.png"')
+    expect(generator).toContain('format="ICO"')
+    expect(generator).not.toContain('icon.icns')
+    expect(generator).not.toContain('format="ICNS"')
   })
 
   it('当前正式发布工作流只生成 Windows 资产', () => {
@@ -43,6 +50,7 @@ describe('macOS 保留构建配置', () => {
     expect(workflow).not.toContain('  macos:')
     expect(workflow).not.toContain('APPLE_API_KEY')
     expect(workflow).not.toContain('MAC_CSC_LINK')
+    expect(workflow).toContain('runs-on: ubuntu-latest')
   })
 })
 
@@ -59,7 +67,7 @@ describe('设备定位权限边界', () => {
     const main = read('src/main/index.js')
     expect(main).toContain("permission === 'geolocation'")
     expect(main).toContain("permission === 'geolocation-approximate'")
-    expect(main).toContain('webContents === mainWindow?.webContents')
+    expect(main).toContain('webContents === getMainWindow()?.webContents')
   })
 })
 

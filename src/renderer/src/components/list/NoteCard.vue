@@ -17,6 +17,7 @@ import StatusRing from './StatusRing.vue'
 import QuickNoteContentEditor from '../note/QuickNoteContentEditor.vue'
 import NoteTextColorPopover from '../note/NoteTextColorPopover.vue'
 import DateContextBadge from '../almanac/DateContextBadge.vue'
+import { useDateContextSettings } from '../../composables/useDateContextSettings.js'
 import { getNoteEffectiveDateKey } from '../../utils/noteWeather.js'
 import { useMessage } from '../../composables/useMessage.js'
 import { useQuickNoteEditSetting } from '../../composables/useQuickNoteEditSetting.js'
@@ -44,10 +45,11 @@ const emit = defineEmits(['status-action', 'edit', 'create-tag'])
 const { showMessage } = useMessage()
 const { enabled: doubleClickQuickEditEnabled } = useQuickNoteEditSetting()
 const { enabled: tagColorEnabled } = useTagColorSetting()
+const { weatherEnabled: weatherDisplayEnabled, almanacEnabled } = useDateContextSettings()
 const sharedNow = useSharedMinuteClock()
 
 const STATUS_META = {
-  initialized: { label: '待开始', color: 'var(--ui-status-pending)', action: '提前开始' },
+  initialized: { label: '未开始', color: 'var(--ui-status-pending)', action: '提前开始' },
   in_progress: { label: '进行中', color: 'var(--ui-status-progress)', action: '标记完成' },
   completed: { label: '已完成', color: 'var(--ui-status-completed)', action: '重新进行' }
 }
@@ -395,7 +397,7 @@ function formatDateTime(timestamp) {
   const date = new Date(timestamp)
   if (Number.isNaN(date.getTime())) return ''
 
-  const now = new Date()
+  const now = new Date(sharedNow.value)
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const target = new Date(date.getFullYear(), date.getMonth(), date.getDate())
   const dayDiff = Math.round((target.getTime() - today.getTime()) / 86400000)
@@ -744,7 +746,13 @@ async function toggleTags() {
               >
             </template>
           </span>
-          <template v-if="showDateContext && effectiveDateKey">
+          <template
+            v-if="
+              showDateContext &&
+              effectiveDateKey &&
+              ((weatherDisplayEnabled && weather) || almanacEnabled)
+            "
+          >
             <span class="nl-card-separator" aria-hidden="true">·</span>
             <DateContextBadge
               class="nl-card-date-context"

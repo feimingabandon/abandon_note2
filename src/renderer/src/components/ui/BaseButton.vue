@@ -55,7 +55,10 @@ const emit = defineEmits(['click'])
     background-color var(--motion-fast) ease,
     border-color var(--motion-fast) ease,
     transform var(--motion-control) var(--ease-standard);
-  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .base-btn:hover:not(:disabled) {

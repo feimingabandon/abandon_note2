@@ -8,7 +8,7 @@ describe('纯图片便签', () => {
     const listCreator = read('../src/renderer/src/components/list/NewNotePanel.vue')
     const calendarCreator = read('../src/renderer/src/components/month/MonthNoteCreator.vue')
     const editor = read('../src/renderer/src/components/note/NoteEditor.vue')
-    const ipc = read('../src/main/ipc/register-business-ipc.js')
+    const commands = read('../src/main/notes/note-commands.js')
 
     expect(listCreator).toContain('Boolean(content.value.trim()) || draftImageCount.value > 0')
     expect(listCreator).toContain(
@@ -16,8 +16,8 @@ describe('纯图片便签', () => {
     )
     expect(calendarCreator).toContain('Boolean(content.value.trim()) || draftImageCount.value > 0')
     expect(editor).toContain('Boolean(content.value.trim()) || draftImageCount.value > 0')
-    expect(ipc).toContain('allowEmptyContent: stagedImages.length > 0')
-    expect(ipc).toContain(
+    expect(commands).toContain('allowEmptyContent: stagedImages.length > 0')
+    expect(commands).toContain(
       'original.attachments.length - deletedImageIds.length + addedImages.length'
     )
   })

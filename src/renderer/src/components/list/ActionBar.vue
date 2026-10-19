@@ -113,7 +113,7 @@ function openSearch() {
 }
 
 function onGlobalKeydown(event) {
-  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f') return
+  if (!event.ctrlKey || event.key.toLowerCase() !== 'f') return
   if (document.querySelector('.app-scene[inert]')) return
   event.preventDefault()
   openSearch()
@@ -174,8 +174,6 @@ onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
 // ============================================================
 function onNoteCreated() {
   emit('create')
-  // 创建成功后自动收起新建面板（仅当面板仍处于展开态时）。
-  if (phase.value === 'open' && mode.value === 'new') closeExpanded()
 }
 
 function onSearchEdit(note) {

@@ -1,19 +1,33 @@
-import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
 
 app.commandLine.appendSwitch('disable-gpu')
 app.disableHardwareAcceleration()
 
 const require = createRequire(import.meta.url)
-const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-recurring-preview-e2e-'))
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/recurring-preview-electron.mjs',
+  mode: 'real-app-month-week-recurring-preview-and-read-only',
+  prefix: 'abandon-note-recurring-preview-e2e-',
+  metadata: {
+    realRendererAndPreload: true,
+    diskDatabase: true,
+    mainProcessRestart: false,
+    virtualPreviewOnly: true,
+    scheduledGeneration: false
+  }
+})
+const { assert } = lifecycle
+const testUserData = lifecycle.root
 const report = (message) => process.stderr.write(`[recurring-preview-e2e] ${message}\n`)
 const wait = (ms) => new Promise((resolveWait) => setTimeout(resolveWait, ms))
-let exitCode = 0
+let activeWindow
 
 async function waitUntil(predicate, message, timeoutMs = 8000) {
   const deadline = Date.now() + timeoutMs
@@ -156,13 +170,13 @@ try {
   else app.once('ready', () => void run())
 } catch (error) {
   report(`setup failed: ${error?.stack || error}`)
-  rmSync(testUserData, { recursive: true, force: true })
-  app.exit(1)
+  await lifecycle.finish({ error })
 }
 
 async function run() {
   try {
     const monthWindow = await waitUntil(() => viewWindow('month'), '月视图没有启动', 10000)
+    activeWindow = monthWindow
     await waitUntil(() => monthWindow.isVisible(), '月视图没有显示')
 
     const target = new Date(Date.now() + 10 * 60 * 1000)
@@ -216,6 +230,7 @@ async function run() {
 
     await monthWindow.webContents.executeJavaScript(`window.api.switchMainView('week')`)
     const weekWindow = await waitUntil(() => viewWindow('week'), '没有切换到周视图', 10000)
+    activeWindow = weekWindow
     await waitUntil(() => weekWindow.isVisible(), '周视图没有显示')
     await ensureDateVisible(weekWindow, targetDateKey, 'week')
     await waitUntil(
@@ -238,20 +253,20 @@ async function run() {
       '关闭开关后周视图仍显示循环便签预览'
     )
     report('month/week preview toggle, persistence, muted style and read-only interactions passed')
+    await lifecycle.finish({
+      completed: true,
+      window: activeWindow,
+      summary: {
+        views: ['month', 'week'],
+        defaultDisabled: true,
+        sharedPreferencePersisted: true,
+        readOnlyInteractions: ['double-click', 'context-menu'],
+        mutedPreviewStyle: true,
+        scheduledGeneration: false
+      }
+    })
   } catch (error) {
     console.error(error)
-    exitCode = 1
-  } finally {
-    process.exitCode = exitCode
-    app.releaseSingleInstanceLock()
-    app.once('quit', () => {
-      try {
-        rmSync(testUserData, { recursive: true, force: true })
-      } catch {
-        // Electron 退出前可能仍短暂持有 Crashpad 文件。
-      }
-      process.exit(exitCode)
-    })
-    app.quit()
+    await lifecycle.finish({ error, window: activeWindow })
   }
 }

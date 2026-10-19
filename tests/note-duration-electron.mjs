@@ -1,10 +1,22 @@
-import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/note-duration-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-note-duration-e2e-',
+  timeoutMs: 150000,
+  metadata: { realWindows: true, legacyFixture: true }
+})
+const { assert, root: testUserData } = lifecycle
+let activeTestWindow = null
 
 app.commandLine.appendSwitch('disable-gpu')
 app.disableHardwareAcceleration()
@@ -105,10 +117,6 @@ function getListWindow() {
   )
 }
 
-const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-duration-e2e-'))
-let exitCode = 0
-let listWindow = null
-
 try {
   app.setPath('userData', testUserData)
   process.env.ABANDON_INTEGRATION_TEST = '1'
@@ -130,15 +138,16 @@ try {
   app.once('ready', () => void runTests())
 } catch (error) {
   report(`setup failed: ${error?.stack || error}`)
-  rmSync(testUserData, { recursive: true, force: true })
-  app.exit(1)
+  void lifecycle.finish({ error, window: activeTestWindow })
 }
 
 async function runTests() {
+  let failure = null
   try {
     const window = await waitUntil(() => getListWindow(), '列表主窗口未启动', 10000)
-    listWindow = window
+    activeTestWindow = window
     await waitUntil(() => window.isVisible(), '列表主窗口未显示')
+    await dismissStartupShortcutNotice(window)
 
     await waitUntil(
       () =>
@@ -525,19 +534,12 @@ async function runTests() {
     )
   } catch (error) {
     console.error(error)
-    exitCode = 1
+    failure = error
   } finally {
-    process.exitCode = exitCode
-    if (listWindow && !listWindow.isDestroyed()) listWindow.destroy()
-    app.releaseSingleInstanceLock()
-    app.once('quit', () => {
-      try {
-        rmSync(testUserData, { recursive: true, force: true })
-      } catch {
-        // Crashpad 可能在进程完全退出前仍持有临时目录句柄。
-      }
-      process.exit(exitCode)
+    await lifecycle.finish({
+      completed: !failure,
+      error: failure,
+      window: activeTestWindow
     })
-    app.quit()
   }
 }

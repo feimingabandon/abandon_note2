@@ -1,10 +1,21 @@
-import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/titlebar-icon-scale-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-note-titlebar-icon-scale-e2e-',
+  timeoutMs: 150000,
+  metadata: { realWindows: true, legacyFixture: true }
+})
+const { assert, root: testUserData } = lifecycle
+let activeTestWindow = null
 
 const require = createRequire(import.meta.url)
 const WAIT_STEP_MS = 25
@@ -174,12 +185,11 @@ async function setIconColor(window, label) {
   })()`)
 }
 
-const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-titlebar-icon-scale-e2e-'))
-let exitCode = 0
-
 async function runTitlebarIconScaleTest() {
+  let failure = null
   try {
     const listWindow = await waitUntil(() => getListWindow(), '列表主窗口没有按隔离设置启动', 10000)
+    activeTestWindow = listWindow
     await waitUntil(() => listWindow.isVisible(), '列表主窗口渲染就绪后没有显示')
     await waitUntil(
       () =>
@@ -369,19 +379,13 @@ async function runTitlebarIconScaleTest() {
     process.stderr.write('titlebar icon appearance integration passed\n')
   } catch (error) {
     console.error(error)
-    exitCode = 1
+    failure = error
   } finally {
-    process.exitCode = exitCode
-    app.releaseSingleInstanceLock()
-    app.once('quit', () => {
-      try {
-        rmSync(testUserData, { recursive: true, force: true })
-      } catch {
-        // Crashpad 可能在进程退出前短暂占用隔离目录，不覆盖真实测试结果。
-      }
-      process.exit(exitCode)
+    await lifecycle.finish({
+      completed: !failure,
+      error: failure,
+      window: activeTestWindow
     })
-    app.quit()
   }
 }
 
@@ -406,6 +410,5 @@ try {
   app.once('ready', () => void runTitlebarIconScaleTest())
 } catch (error) {
   console.error(error)
-  rmSync(testUserData, { recursive: true, force: true })
-  app.exit(1)
+  void lifecycle.finish({ error, window: activeTestWindow })
 }

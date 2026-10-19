@@ -1,10 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'fs/promises'
 import { dirname } from 'path'
-import chinaAreas, {
-  getDivisionChildren,
-  getTopDivisions,
-  matchDivisionByCode
-} from '@aurouscia/china-areas/dist/index.js'
+import chinaAreas, { matchDivisionByCode } from '@aurouscia/china-areas/dist/index.js'
 import chinaAdminCenters from '../data/china-weather-admin-centers.js'
 import {
   WEATHER_SOURCE,
@@ -91,21 +87,6 @@ function divisionParts(code) {
     }
   }
   return { province, city: second, district: third }
-}
-
-function locationCandidateFromDivision(code) {
-  const { province, city, district } = divisionParts(code)
-  return {
-    id: Number(code),
-    name: district?.name || city?.name || province?.name,
-    admin1: province?.name || '',
-    admin2: district ? city?.name || '' : '',
-    country: '中国',
-    countryCode: 'CN',
-    latitude: null,
-    longitude: null,
-    timezone: 'Asia/Shanghai'
-  }
 }
 
 function locationCandidateFromParts(province, city, district) {
@@ -265,6 +246,7 @@ export class WeatherService {
     this.cacheLoadPromise = null
     this.cacheWriteQueue = Promise.resolve()
     this.cache = { version: CACHE_VERSION, forecasts: {} }
+    this.chinaDivisionTree = null
   }
 
   report(level, scope, message, metadata) {
@@ -335,8 +317,27 @@ export class WeatherService {
   }
 
   getChinaDivisionTree() {
-    return getTopDivisions().map((province) => {
-      const directChildren = getDivisionChildren(province.code)
+    if (this.chinaDivisionTree) return structuredClone(this.chinaDivisionTree)
+    // Index the bundled flat list once. Repeated ancestor scans for every district
+    // made even the first settings open block the main thread for hundreds of ms.
+    const byCode = new Map(chinaAreaRecords.map((record) => [record.code, record]))
+    const children = new Map()
+    const provinces = []
+    for (const record of chinaAreaRecords) {
+      if (record.code.endsWith('0000')) {
+        provinces.push(record)
+        continue
+      }
+      const cityCode = `${record.code.slice(0, 4)}00`
+      const parentCode =
+        record.code.endsWith('00') || !byCode.has(cityCode)
+          ? `${record.code.slice(0, 2)}0000`
+          : cityCode
+      if (!children.has(parentCode)) children.set(parentCode, [])
+      children.get(parentCode).push(record)
+    }
+    this.chinaDivisionTree = provinces.map((province) => {
+      const directChildren = children.get(province.code) || []
       const centerOnlyChildren = (SPECIAL_ADMIN_DIVISIONS[province.code] || []).map(
         ([code, name]) => ({ code, name })
       )
@@ -344,7 +345,7 @@ export class WeatherService {
         return {
           code: province.code,
           name: province.name,
-          candidate: locationCandidateFromDivision(province.code),
+          candidate: locationCandidateFromParts(province),
           children: [
             {
               code: `${province.code}:direct`,
@@ -362,22 +363,25 @@ export class WeatherService {
       const cityNodes = cities.map((city) => ({
         code: city.code,
         name: city.name,
-        candidate: locationCandidateFromDivision(city.code),
-        children: getDivisionChildren(city.code).map((district) => ({
+        candidate: locationCandidateFromParts(province, city),
+        children: (children.get(city.code) || []).map((district) => ({
           code: district.code,
           name: district.name,
-          candidate: locationCandidateFromDivision(district.code)
+          candidate: locationCandidateFromParts(province, city, district)
         }))
       }))
 
       if (directDistricts.length) {
-        cityNodes.push({
+        const directCity = {
           code: `${province.code}:direct`,
-          name: isMunicipality(province) ? province.name : '省直辖县级行政区划',
+          name: isMunicipality(province) ? province.name : '省直辖县级行政区划'
+        }
+        cityNodes.push({
+          ...directCity,
           children: directDistricts.map((district) => ({
             code: district.code,
             name: district.name,
-            candidate: locationCandidateFromDivision(district.code)
+            candidate: locationCandidateFromParts(province, directCity, district)
           }))
         })
       }
@@ -385,10 +389,12 @@ export class WeatherService {
       return {
         code: province.code,
         name: province.name,
-        candidate: locationCandidateFromDivision(province.code),
+        candidate: locationCandidateFromParts(province),
         children: cityNodes
       }
     })
+    // Each caller still owns its result; renderer/test mutations cannot poison the cache.
+    return structuredClone(this.chinaDivisionTree)
   }
 
   async resolveLocation(rawLocation) {

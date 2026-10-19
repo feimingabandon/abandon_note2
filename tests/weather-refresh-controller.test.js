@@ -61,6 +61,20 @@ function harness() {
   }
 }
 describe('weather refresh policy', () => {
+  it('invalidates a late network result on disposal and stops later reads/refreshes', async () => {
+    const h = harness()
+    const response = deferred()
+    h.network.mockReturnValueOnce(response.promise)
+    const pending = h.controller.refresh()
+    await Promise.resolve()
+    h.controller.dispose()
+    response.resolve({ fetchedAt: h.now(), cache: { stale: false } })
+    expect(await pending).toBeNull()
+    expect(h.publish).not.toHaveBeenCalled()
+    expect(await h.controller.read()).toBeNull()
+    expect(await h.controller.refresh({ manual: true })).toBeNull()
+    expect(h.network).toHaveBeenCalledOnce()
+  })
   it('refreshes at 30 minutes and pauses until a hidden window is restored', async () => {
     const h = harness()
     await h.controller.refresh()

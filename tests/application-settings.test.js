@@ -11,7 +11,7 @@ const db = vi.hoisted(() => ({
   })
 }))
 
-vi.mock('../src/main/db/db.js', () => ({
+vi.mock('../src/main/db/db-settings-repository.js', () => ({
   getAllSettings: db.getAllSettings,
   setSettingsBatch: db.setSettingsBatch
 }))
@@ -47,6 +47,61 @@ beforeEach(() => {
 })
 
 describe('application view settings', () => {
+  it('persists the shared quick-create default independently, excludes view inheritance and resets it', () => {
+    expect(readApplicationSettings().notes.quickCreateUntilCompleted).toBe(false)
+    writeApplicationSetting('notes.autoMoveToToday', true)
+    db.setSettingsBatch.mockClear()
+
+    writeApplicationSetting('notes.quickCreateUntilCompleted', true)
+
+    expect(db.setSettingsBatch).toHaveBeenCalledExactlyOnceWith('application', [
+      expect.objectContaining({ type: 'notes', key: 'quick_create_until_completed', value: '1' })
+    ])
+    expect(readApplicationSettings().notes).toMatchObject({
+      quickCreateUntilCompleted: true,
+      autoMoveToToday: true
+    })
+    expect(db.rowsByScope.has('main')).toBe(false)
+    expect(db.rowsByScope.has('month')).toBe(false)
+    expect(db.rowsByScope.has('week')).toBe(false)
+
+    db.rowsByScope.set('month', [
+      { type: 'notes', key: 'quick_create_until_completed', value: '0' },
+      { type: 'geometry', key: 'width', value: '1200' }
+    ])
+    ensureViewSettingsInitialized('week')
+    expect(db.rowsByScope.get('week')).toContainEqual(
+      expect.objectContaining({ type: 'geometry', key: 'width', value: '1200' })
+    )
+    expect(db.rowsByScope.get('week')).not.toContainEqual(
+      expect.objectContaining({ key: 'quick_create_until_completed' })
+    )
+    expect(readApplicationSettings().notes.quickCreateUntilCompleted).toBe(true)
+
+    resetApplicationSettingsToDefaults()
+
+    expect(readApplicationSettings().notes.quickCreateUntilCompleted).toBe(false)
+    expect(db.rowsByScope.get('application')).toContainEqual(
+      expect.objectContaining({ type: 'notes', key: 'quick_create_until_completed', value: '0' })
+    )
+  })
+
+  it('shares auto move across views, excludes it from inheritance and resets it to off', () => {
+    expect(readApplicationSettings().notes.autoMoveToToday).toBe(false)
+    writeApplicationSetting('notes.autoMoveToToday', true)
+    expect(readApplicationSettings().notes.autoMoveToToday).toBe(true)
+    expect(db.rowsByScope.get('application')).toContainEqual(
+      expect.objectContaining({ type: 'notes', key: 'auto_move_to_today', value: '1' })
+    )
+    db.rowsByScope.set('month', [{ type: 'notes', key: 'auto_move_to_today', value: '1' }])
+    ensureViewSettingsInitialized('week')
+    expect(db.rowsByScope.get('week') || []).not.toContainEqual(
+      expect.objectContaining({ key: 'auto_move_to_today' })
+    )
+    resetApplicationSettingsToDefaults()
+    expect(readApplicationSettings().notes.autoMoveToToday).toBe(false)
+  })
+
   it('stores UI scale only at application scope and includes it in reset', () => {
     writeApplicationSetting('appearance.uiScale', 1.25)
     expect(readApplicationSettings().appearance.uiScale).toBe(1.25)
@@ -202,6 +257,7 @@ describe('application view settings', () => {
     expect(readApplicationSettings().shortcuts).toEqual({
       enabled: true,
       screenshot: 'F2',
+      screenshotCopy: 'Control+F1',
       viewVisibility: 'Control+Alt+N'
     })
   })
@@ -215,14 +271,23 @@ describe('application view settings', () => {
     writeApplicationSetting('appearance.iconColor', 'white')
     writeApplicationSetting('shortcuts.viewVisibility', 'Control+Alt+N')
     writeApplicationSetting('shortcuts.screenshot', 'F2')
+    writeApplicationSetting('shortcuts.screenshotCopy', 'Ctrl+F9')
+    expect(readApplicationSettings().shortcuts.screenshotCopy).toBe('Control+F9')
     writeApplicationSetting('weather.enabled', true)
+    writeApplicationSetting('almanac.enabled', false)
 
     expect(resetApplicationSettingsToDefaults()).toBeGreaterThan(3)
     expect(readApplicationSettings()).toMatchObject({
       activeView: 'month',
       appearance: { titlebarIconScale: 100, iconColor: 'black' },
-      shortcuts: { enabled: true, viewVisibility: 'F2', screenshot: 'F1' },
-      weather: { enabled: false, location: null }
+      shortcuts: {
+        enabled: true,
+        viewVisibility: 'F2',
+        screenshot: 'F1',
+        screenshotCopy: 'Control+F1'
+      },
+      weather: { enabled: false, location: null },
+      almanac: { enabled: true }
     })
     expect(db.rowsByScope.get('application')).toEqual(
       expect.arrayContaining([
@@ -230,6 +295,29 @@ describe('application view settings', () => {
         expect.objectContaining({ key: 'week_settings_initialized', value: 'true' })
       ])
     )
+  })
+
+  it('shares the almanac switch across views without overwriting the weather switch', () => {
+    expect(readApplicationSettings().almanac.enabled).toBe(true)
+    writeApplicationSetting('weather.enabled', true)
+    writeApplicationSetting('almanac.enabled', false)
+    expect(readApplicationSettings()).toMatchObject({
+      weather: { enabled: true },
+      almanac: { enabled: false }
+    })
+    writeApplicationSetting('weather.enabled', false)
+    writeApplicationSetting('almanac.enabled', true)
+    expect(readApplicationSettings()).toMatchObject({
+      weather: { enabled: false },
+      almanac: { enabled: true }
+    })
+    expect(db.rowsByScope.get('application')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'weather', key: 'enabled', value: 'false' }),
+        expect.objectContaining({ type: 'almanac', key: 'almanac_enabled', value: 'true' })
+      ])
+    )
+    expect([...db.rowsByScope.keys()]).toEqual(['application'])
   })
 
   it('keeps double-click quick edit in the application scope', () => {

@@ -52,14 +52,16 @@ function updateKind(kind) {
             @update:model-value="updateKind"
           />
           <template v-if="kind === NOTE_DURATION_KINDS.FIXED_DAYS">
-            <NumberStepper
-              :model-value="days"
-              :min="2"
-              :max="365"
-              aria-label="指定持续天数"
-              @update:model-value="emit('update:days', $event)"
-            />
-            <span>天</span>
+            <div class="note-duration-field__days">
+              <NumberStepper
+                :model-value="days"
+                :min="2"
+                :max="365"
+                aria-label="指定持续天数"
+                @update:model-value="emit('update:days', $event)"
+              />
+              <span>天</span>
+            </div>
           </template>
         </div>
       </div>
@@ -69,20 +71,25 @@ function updateKind(kind) {
 
 <style scoped>
 .note-duration-field {
-  max-height: 48rem;
+  display: grid;
+  grid-template-rows: 1fr;
   margin-top: 12rem;
-  overflow: hidden;
 }
 
 .note-duration-field__inner {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6rem 12rem;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   align-items: center;
   justify-content: space-between;
 }
 
 .note-duration-field__label {
   flex-shrink: 0;
+  max-width: 100%;
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
   font-weight: 500;
@@ -90,21 +97,43 @@ function updateKind(kind) {
 
 .note-duration-field__control {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
   align-items: center;
   gap: 6rem;
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
 }
+.note-duration-field__days {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6rem;
+  min-width: 0;
+  max-width: 100%;
+}
 
 .note-duration-field__control :deep(.sel-trigger),
 .note-duration-field__control :deep(.number-stepper) {
+  min-height: max(32rem, 2em);
+}
+.note-duration-field__control :deep(.number-stepper) {
   height: max(32rem, 2em);
+  max-width: 100%;
+}
+.note-duration-field__control :deep(.sel-label) {
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
 }
 
 .note-duration-enter-active,
 .note-duration-leave-active {
   transition:
-    max-height 240ms var(--ease-standard),
+    grid-template-rows 240ms var(--ease-standard),
     margin-top 240ms var(--ease-standard),
     opacity 180ms ease,
     transform 220ms var(--ease-standard);
@@ -112,7 +141,7 @@ function updateKind(kind) {
 
 .note-duration-enter-from,
 .note-duration-leave-to {
-  max-height: 0;
+  grid-template-rows: 0fr;
   margin-top: 0;
   opacity: 0;
   transform: translateY(-6rem);

@@ -32,7 +32,7 @@ let resetTimer = null
 let resetRaf = null
 
 const statusOptions = [
-  { value: 'initialized', label: '待开始', color: 'var(--ui-status-pending)' },
+  { value: 'initialized', label: '未开始', color: 'var(--ui-status-pending)' },
   { value: 'in_progress', label: '进行中', color: 'var(--ui-status-progress)' },
   { value: 'completed', label: '已完成', color: 'var(--ui-status-completed)' }
 ]

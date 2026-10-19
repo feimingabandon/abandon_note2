@@ -37,7 +37,7 @@ export function compareVersions(left, right) {
   return 0
 }
 
-// 当前更新入口仅面向 Windows 10/11 x64；macOS 下载暂不在应用内提供。
+// 更新入口仅支持 Windows 10/11 x64。
 export function getTargetArtifact(version, platform, arch) {
   const normalizedVersion = normalizeVersion(version)
   if (!normalizedVersion) throw new Error('无法为无效版本确定安装包')

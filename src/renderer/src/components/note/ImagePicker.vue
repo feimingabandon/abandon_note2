@@ -55,6 +55,11 @@ const busy = computed(() => loadingImages.value || images.value.some((image) => 
 watch(busy, (value) => emit('busy-change', value), { immediate: true, flush: 'sync' })
 
 let imageLoadSeq = 0
+let imageMutationSeq = 0
+let disposed = false
+let previewSession = 0
+let previewRequestSequence = 0
+let previewRead = null
 
 /** 支持的图片扩展名 */
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']
@@ -105,12 +110,15 @@ const carouselViewportStyle = computed(() => {
 // 从 DB 加载已有图片
 // ============================================================
 async function loadImages() {
+  if (disposed) return
+  closePreview()
   const seq = ++imageLoadSeq
   if (!props.noteId || !['persist', 'draft'].includes(props.mode)) {
     loadingImages.value = false
     return
   }
   loadingImages.value = true
+  const previousIds = new Set(images.value.map((image) => image.id))
   try {
     const records = await window.api.listImages(props.noteId)
 
@@ -127,7 +135,6 @@ async function loadImages() {
           size: rec.file_size,
           filePath: rec.file_path,
           dataUrl: thumbnail || '',
-          fullDataUrl: null,
           _naturalWidth: Number(dimensions?.width) || null,
           _naturalHeight: Number(dimensions?.height) || null,
           _thumbnailAspect:
@@ -139,7 +146,16 @@ async function loadImages() {
       })
     )
     if (seq !== imageLoadSeq) return
-    images.value = items
+    // A save broadcast may refresh this same note before a multi-file upload
+    // finishes. Keep its reserved slots; note changes never inherit those slots.
+    const pending = images.value.filter(
+      (image) => image._loading && image._noteId === props.noteId && image._mode === props.mode
+    )
+    const loadedIds = new Set(items.map((image) => image.id))
+    const newlySaved = images.value.filter(
+      (image) => image.saved && !previousIds.has(image.id) && !loadedIds.has(image.id)
+    )
+    images.value = [...items, ...newlySaved, ...pending]
     carouselIndex.value = 0
     deletedImageIds.value = []
     await nextTick()
@@ -151,6 +167,37 @@ async function loadImages() {
   }
   if (seq !== imageLoadSeq) return
   emitCount()
+}
+
+async function savedImageItem(record, { name, size, key } = {}) {
+  const [thumbnail, dimensions] = await Promise.allSettled([
+    Promise.resolve().then(() => window.api.getImageThumbnail(record.file_path, 512)),
+    Promise.resolve().then(() => window.api.getImageDimensions(record.file_path))
+  ])
+  if (thumbnail.status === 'rejected')
+    console.warn('[ImagePicker] 图片已保存，缩略图暂时无法读取:', thumbnail.reason)
+  const geometry = dimensions.status === 'fulfilled' ? dimensions.value : null
+  return {
+    id: record.id,
+    ...(key ? { _key: key } : {}),
+    name:
+      name ||
+      String(record.file_path || '')
+        .split(/[\\/]/)
+        .pop(),
+    size: record.file_size || size,
+    filePath: record.file_path,
+    dataUrl: thumbnail.status === 'fulfilled' ? thumbnail.value || '' : '',
+    _naturalWidth: Number(geometry?.width) || null,
+    _naturalHeight: Number(geometry?.height) || null,
+    saved: true
+  }
+}
+
+function currentImageMutation(sequence, noteId, mode) {
+  return (
+    !disposed && sequence === imageMutationSeq && props.noteId === noteId && props.mode === mode
+  )
 }
 
 function collapsedHeightPixels() {
@@ -189,7 +236,11 @@ function observeCarouselSize() {
 // 文件处理（拖拽 / 选择共用）
 // ============================================================
 async function processFiles(files) {
-  if (!canAdd.value) return
+  if (disposed || !canAdd.value) return
+  const sequence = imageMutationSeq
+  const noteId = props.noteId
+  const mode = props.mode
+  const current = () => currentImageMutation(sequence, noteId, mode)
   const available = MAX_ATTACHMENTS_PER_NOTE - images.value.length
   if (available <= 0) return
 
@@ -222,12 +273,20 @@ async function processFiles(files) {
   for (const file of valid) {
     const tempId = '_loading_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
     placeholders.push(tempId)
-    images.value.push({ id: tempId, name: file.name, size: file.size, _loading: true })
+    images.value.push({
+      id: tempId,
+      name: file.name,
+      size: file.size,
+      _loading: true,
+      _noteId: noteId,
+      _mode: mode
+    })
   }
   emitCount()
 
   // 逐个处理
   for (let i = 0; i < valid.length; i++) {
+    if (!current()) break
     const file = valid[i]
     const tempId = placeholders[i]
     const ext = file.name.split('.').pop()?.toLowerCase()
@@ -236,6 +295,7 @@ async function processFiles(files) {
     try {
       dataUrl = await readFileAsDataURL(file)
     } catch (error) {
+      if (!current()) break
       // 读取失败，移除占位
       console.error(
         `[ImagePicker] 读取图片失败 (name=${file.name}, size=${file.size}, type=${file.type}):`,
@@ -246,28 +306,34 @@ async function processFiles(files) {
       continue
     }
 
+    if (!current()) break
     const idx = images.value.findIndex((img) => img.id === tempId)
     if (idx === -1) continue
 
-    if (props.mode === 'persist' && props.noteId) {
+    if (mode === 'persist' && noteId) {
       try {
         const base64 = dataUrl.split(',')[1]
-        const results = await window.api.saveImages(props.noteId, [{ base64, ext }])
+        const results = await window.api.saveImages(noteId, [{ base64, ext }])
+        if (!current()) break
         if (results && results.length > 0) {
-          const rec = results[0]
-          images.value[idx] = {
-            id: rec.id,
-            _key: tempId,
+          const item = await savedImageItem(results[0], {
+            key: tempId,
             name: file.name,
-            size: file.size,
-            dataUrl,
-            fullDataUrl: dataUrl,
-            saved: true
+            size: file.size
+          })
+          if (!current()) break
+          const currentIndex = images.value.findIndex((img) => img.id === tempId)
+          if (currentIndex !== -1) {
+            if (images.value.some((image) => image.id === item.id))
+              images.value.splice(currentIndex, 1)
+            else images.value[currentIndex] = item
           }
         }
       } catch (e) {
+        if (!current()) break
         console.error('[ImagePicker] 保存失败:', e)
-        images.value.splice(idx, 1)
+        const currentIndex = images.value.findIndex((img) => img.id === tempId)
+        if (currentIndex !== -1) images.value.splice(currentIndex, 1)
       }
     } else {
       images.value[idx] = {
@@ -283,8 +349,10 @@ async function processFiles(files) {
     }
   }
 
-  emitCount()
-  emitDraftChange()
+  if (current()) {
+    emitCount()
+    emitDraftChange()
+  }
 }
 
 function readFileAsDataURL(file) {
@@ -350,35 +418,63 @@ async function handleDelete(img, index) {
 }
 
 /** 打开大图预览 */
-async function loadPreviewSource(index) {
+async function loadPreviewSource(index, session = previewSession) {
+  const request = ++previewRequestSequence
   const img = images.value[index]
-  if (!img || img._loading) return
-  let source = img.fullDataUrl || img.dataUrl
-  if (img.saved && img.filePath && !img.fullDataUrl) {
-    source = await window.api.getImageBase64(img.filePath)
-    if (source) img.fullDataUrl = source
+  const current = () =>
+    !disposed &&
+    session === previewSession &&
+    request === previewRequestSequence &&
+    images.value[index] === img
+  if (!img || img._loading || !current()) return false
+  // Only the active preview owns an original; card models keep thumbnails/drafts.
+  previewSources.value = images.value.map((image) => image.dataUrl || '')
+  let source = img.dataUrl
+  try {
+    if (img.saved && img.filePath) {
+      // Coalesce rapid navigation behind one read, then serve only the latest target.
+      if (previewRead) await previewRead.catch(() => {})
+      if (!current()) return false
+      const read = window.api.getImageBase64(img.filePath)
+      previewRead = read
+      try {
+        source = await read
+      } finally {
+        if (previewRead === read) previewRead = null
+      }
+    }
+    if (!source || !current()) return false
+    previewSources.value[index] = source
+    return true
+  } catch (error) {
+    if (current()) {
+      console.error('[ImagePicker] 读取预览图片失败:', error)
+      showMessage('warning', '图片暂时无法读取，请重试')
+    }
+    return false
   }
-  if (!source) return
-  previewSources.value[index] = source
 }
 
 async function handlePreview(img) {
-  if (img._loading) return
+  if (disposed || img._loading) return
   const index = images.value.indexOf(img)
   if (index < 0) return
-  previewSources.value = images.value.map((image) => image.fullDataUrl || image.dataUrl || '')
+  const session = ++previewSession
   previewIndex.value = index
-  await loadPreviewSource(index)
-  if (!previewSources.value[index]) return
+  if (!(await loadPreviewSource(index, session))) return
+  if (disposed || session !== previewSession || images.value[index] !== img) return
   previewVisible.value = true
 }
 
 function onPreviewChange(index) {
+  if (disposed || !previewVisible.value) return
   previewIndex.value = index
   void loadPreviewSource(index)
 }
 
 function closePreview() {
+  previewSession++
+  previewRequestSequence++
   previewVisible.value = false
   previewSources.value = []
 }
@@ -467,6 +563,10 @@ function getImages() {
 }
 
 function clearImages() {
+  closePreview()
+  imageLoadSeq++
+  imageMutationSeq++
+  loadingImages.value = false
   images.value = []
   deletedImageIds.value = []
   emitCount()
@@ -475,7 +575,11 @@ function clearImages() {
 
 /** 程序化添加图片（供 ScreenshotPicker 等外部调用） */
 async function addImage(dataUrl, ext, name, size) {
-  if (!canAdd.value) return false
+  if (disposed || !canAdd.value) return false
+  const sequence = imageMutationSeq
+  const noteId = props.noteId
+  const mode = props.mode
+  const current = () => currentImageMutation(sequence, noteId, mode)
   const base64 = dataUrl.split(',')[1]
   const resolvedSize = Number(size) > 0 ? Number(size) : getBase64DecodedSize(base64)
   if (resolvedSize > MAX_IMAGE_BYTES) {
@@ -487,22 +591,19 @@ async function addImage(dataUrl, ext, name, size) {
     showMessage('warning', '单批新增图片总量不能超过 200MB')
     return
   }
-  if (props.mode === 'persist' && props.noteId) {
+  if (mode === 'persist' && noteId) {
     return window.api
-      .saveImages(props.noteId, [{ base64, ext }])
-      .then((results) => {
+      .saveImages(noteId, [{ base64, ext }])
+      .then(async (results) => {
         if (results && results.length > 0) {
-          const rec = results[0]
-          images.value.push({
-            id: rec.id,
-            name,
-            size: rec.file_size || resolvedSize,
-            dataUrl,
-            fullDataUrl: dataUrl,
-            filePath: rec.file_path,
-            saved: true
-          })
-          emitCount()
+          if (!current()) return true // The durable save still succeeded for its original note.
+          const item = await savedImageItem(results[0], { name, size: resolvedSize })
+          if (current()) {
+            const existingIndex = images.value.findIndex((image) => image.id === item.id)
+            if (existingIndex === -1) images.value.push(item)
+            else images.value[existingIndex] = item
+            emitCount()
+          }
           return true
         }
       })
@@ -548,10 +649,19 @@ defineExpose({ restoreDraft, getImages, getDraftChanges, clearImages, addImage, 
 // ============================================================
 // noteId 变化时重新加载
 // ============================================================
-watch(() => [props.noteId, props.refreshKey], loadImages)
+watch(
+  () => [props.noteId, props.refreshKey],
+  ([noteId], [previousNoteId]) => {
+    if (noteId !== previousNoteId) imageMutationSeq++
+    void loadImages()
+  }
+)
 onMounted(loadImages)
 onUnmounted(() => {
+  disposed = true
+  closePreview()
   imageLoadSeq++
+  imageMutationSeq++
   carouselResizeObserver?.disconnect()
 })
 

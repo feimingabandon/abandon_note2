@@ -256,13 +256,15 @@ void CaptureEngine::capture(QJsonObject m) {
     auto home = QGuiApplication::screenAt(QCursor::pos());
     auto overlay =
         new CaptureOverlay(home ? home : QGuiApplication::primaryScreen(),
-                           image, m["origin"].toString(), layout, settingsPath);
+                           image, m["origin"].toString(), layout, settingsPath,
+                           m["origin"].toString() == "global" &&
+                               m["mode"].toString() == "copy-on-select");
     overlays.push_back(overlay);
     overlay->annotations->allowAllocation = [this](qint64 extra) {
       qint64 bytes = extra;
       for (auto o : overlays)
         if (o)
-          bytes += o->document.memoryCost();
+          bytes += o->memoryCost();
       for (auto p : pins)
         if (p)
           bytes += p->memoryCost();

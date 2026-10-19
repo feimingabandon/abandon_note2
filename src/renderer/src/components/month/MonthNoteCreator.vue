@@ -1,6 +1,8 @@
 <script setup>
 import BaseButton from '../ui/BaseButton.vue'
 import { useDraftProtection } from '../../composables/useDraftProtection.js'
+import { useNewNotePreferences } from '../../composables/useNewNotePreferences.js'
+import { useNoteStateDraft } from '../../composables/useNoteStateDraft.js'
 import { computed, onBeforeUnmount, ref } from 'vue'
 import ColoredTextEditor from '../note/ColoredTextEditor.vue'
 import TimePicker from '../ui/TimePicker.vue'
@@ -9,19 +11,18 @@ import AppToggle from '../ui/AppToggle.vue'
 import TagSelector from '../ui/TagSelector.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import NoteDurationField from '../note/NoteDurationField.vue'
+import NoteStateFields from '../note/NoteStateFields.vue'
+import NoteRemarkField from '../note/NoteRemarkField.vue'
 import ScreenshotPicker from '../note/ScreenshotPicker.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import { useMessage } from '../../composables/useMessage.js'
-import { useTodayKey } from '../../composables/useTodayKey.js'
 import {
   combineLocalDateAndTime,
-  NOTE_DURATION_KINDS
+  localDateKey
 } from '../../../../shared/calendar/calendar-date-rules.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 import { normalizeNoteTextColorRanges } from '../../../../shared/note-text-color-rules.js'
 import {
-  assertCreatableNoteEffectiveTime,
-  canScheduleNoteNotification,
   defaultMonthNoteEffectiveTime,
   MIN_SCHEDULE_LEAD_TIME_MINUTES
 } from '../../../../shared/note-scheduling-rules.js'
@@ -32,18 +33,20 @@ const props = defineProps({
 })
 const emit = defineEmits(['created', 'close'])
 const { showMessage } = useMessage()
-const todayKey = useTodayKey()
 const now = new Date()
-const initialTime = defaultMonthNoteEffectiveTime(props.dateKey, todayKey.value, now)
+const initialTodayKey = localDateKey(now)
+const initialTime = defaultMonthNoteEffectiveTime(props.dateKey, initialTodayKey, now)
+// The entry date decides this intention once. Midnight must not convert a
+// future appointment to immediate, or turn an immediate draft into backfill.
+const immediateIntent = ref(props.dateKey === initialTodayKey)
 const content = ref('')
+const remark = ref('')
 const contentColorRanges = ref([])
 const time = ref(initialTime)
 const timeDirty = ref(false)
-const durationKind = ref(NOTE_DURATION_KINDS.SINGLE_DAY)
-const durationDays = ref(1)
-const reminderChannels = ref(0)
-const isPinned = ref(false)
-const tagIds = ref([])
+const { durationKind, durationDays, reminderChannels, isPinned, tagIds, statusChoice } =
+  useNewNotePreferences()
+const finishedAt = ref('')
 const imagePickerRef = ref(null)
 const draftImageCount = ref(0)
 const attachmentsBusy = ref(false)
@@ -53,30 +56,35 @@ const dateLabel = computed(() => {
   const [year, month, day] = props.dateKey.split('-').map(Number)
   return `${year}年${month}月${day}日`
 })
-const isImmediateDefault = computed(() => props.dateKey === todayKey.value && !timeDirty.value)
+const isImmediateDefault = computed(() => immediateIntent.value && !timeDirty.value)
 const selectedEffectiveAt = computed(() => combineLocalDateAndTime(props.dateKey, time.value))
-const isHistoricalBackfill = computed(
-  () => !isImmediateDefault.value && selectedEffectiveAt.value <= Date.now()
+const effectiveTimestamp = computed(() =>
+  isImmediateDefault.value ? null : selectedEffectiveAt.value
 )
-const canNotify = computed(
-  () =>
-    !isImmediateDefault.value && canScheduleNoteNotification(selectedEffectiveAt.value, Date.now())
+const {
+  status,
+  statusOptions,
+  currentTime,
+  stateHint,
+  canScheduleNotification: canNotify,
+  chooseStatus,
+  submissionFields
+} = useNoteStateDraft({ effectiveTimestamp, statusChoice, finishedAt })
+const isHistoricalBackfill = computed(
+  () => !isImmediateDefault.value && selectedEffectiveAt.value <= currentTime.value
 )
 const dirty = computed(
   () =>
     Boolean(content.value.trim()) ||
+    !!remark.value ||
     timeDirty.value ||
-    durationKind.value !== NOTE_DURATION_KINDS.SINGLE_DAY ||
-    reminderChannels.value ||
-    isPinned.value ||
-    tagIds.value.length > 0 ||
+    !!finishedAt.value ||
     (imagePickerRef.value?.getImages?.().length || 0) > 0
 )
 const canCreate = computed(() => Boolean(content.value.trim()) || draftImageCount.value > 0)
 
 function onTimeChange() {
   timeDirty.value = true
-  if (!canNotify.value) reminderChannels.value = 0
 }
 
 function requestClose() {
@@ -101,22 +109,22 @@ async function create() {
     return
   }
 
+  let stateFields
+  try {
+    stateFields = submissionFields()
+  } catch (error) {
+    showMessage('warning', error.message || '请核对状态与时间')
+    return
+  }
   const options = {
+    ...stateFields,
     content: content.value,
+    remark: remark.value.replace(/\r\n?/g, '\n'),
     contentColorRanges: normalizeNoteTextColorRanges(contentColorRanges.value, content.value),
     durationKind: durationKind.value,
     durationDays: durationDays.value,
     reminderChannels: canNotify.value ? reminderChannels.value : 0,
     isPinned: isPinned.value
-  }
-  if (!isImmediateDefault.value) {
-    try {
-      assertCreatableNoteEffectiveTime(selectedEffectiveAt.value, Date.now())
-    } catch (error) {
-      showMessage('warning', error.message || '请选择有效的生效时间')
-      return
-    }
-    options.effectiveAt = selectedEffectiveAt.value
   }
 
   saving.value = true
@@ -147,9 +155,13 @@ const protectedDraft = useDraftProtection({
   key: 'new:calendar:' + props.dateKey,
   fields: {
     content,
+    remark,
     contentColorRanges,
     time,
     timeDirty,
+    immediateIntent,
+    statusChoice,
+    finishedAt,
     durationKind,
     durationDays,
     reminderChannels,
@@ -159,7 +171,12 @@ const protectedDraft = useDraftProtection({
   dirty: () => dirty.value,
   busy: () => saving.value || attachmentsBusy.value,
   extra: () => ({ attachments: imagePickerRef.value?.getDraftChanges() }),
-  restoreExtra: (data) => imagePickerRef.value?.restoreDraft(data.attachments)
+  restoreExtra: (data) => {
+    // Older draft records did not persist the intention. Keep their recorded
+    // date/time instead of silently treating an old appointment as immediate.
+    if (typeof data.immediateIntent !== 'boolean') immediateIntent.value = false
+    return imagePickerRef.value?.restoreDraft(data.attachments)
+  }
 })
 </script>
 
@@ -172,7 +189,8 @@ const protectedDraft = useDraftProtection({
   >
     <header>
       <div>
-        <strong>新建便签</strong><span>{{ dateLabel }}</span>
+        <strong><span>新建</span><span>便签</span></strong
+        ><span>{{ dateLabel }}</span>
       </div>
       <button
         type="button"
@@ -190,8 +208,10 @@ const protectedDraft = useDraftProtection({
         v-model:color-ranges="contentColorRanges"
         initial-focus
         placeholder="输入便签内容…（Enter 换行）"
-        :rows="5"
+        :rows="2"
       />
+
+      <NoteRemarkField v-model="remark" />
 
       <div class="month-creator__row">
         <label>执行日期<HelpButton text="日期由进入新建功能时选中的日历格固定。" /></label>
@@ -210,9 +230,13 @@ const protectedDraft = useDraftProtection({
         />
       </div>
       <p v-if="isImmediateDefault" class="month-creator__hint">保持默认时间：创建后立即生效</p>
-      <p v-else-if="isHistoricalBackfill" class="month-creator__hint is-history">
-        历史补录将直接进入进行中，不触发提醒。
-      </p>
+      <NoteStateFields
+        v-model:finished-at="finishedAt"
+        :status="status"
+        :options="statusOptions"
+        :hint="stateHint"
+        @update:status="chooseStatus"
+      />
 
       <NoteDurationField v-model:kind="durationKind" v-model:days="durationDays" visible />
 
@@ -221,7 +245,13 @@ const protectedDraft = useDraftProtection({
           v-model="reminderChannels"
           :disabled="!canNotify"
           :help-text="`仅未来至少 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟的预约可开启提醒。`"
-          disabled-reason="设置未来生效时间后可选择提醒方式"
+          :disabled-reason="
+            status === 'completed'
+              ? '已完成便签不再提醒'
+              : status === 'initialized'
+                ? `新预约至少提前 ${MIN_SCHEDULE_LEAD_TIME_MINUTES} 分钟`
+                : '设置未来生效时间后可选择生效提醒'
+          "
         />
       </div>
       <div class="month-creator__row">
@@ -270,7 +300,7 @@ const protectedDraft = useDraftProtection({
     <ConfirmDialog
       v-model:visible="discardVisible"
       title="放弃新建便签？"
-      message="当前填写的正文、属性或附件尚未保存。"
+      message="当前填写的正文、备注、属性或附件尚未保存。"
       confirm-text="放弃"
       variant="danger"
       @confirm="discardDraft"
@@ -281,7 +311,7 @@ const protectedDraft = useDraftProtection({
 <style scoped>
 .month-creator {
   display: flex;
-  width: min(620rem, calc(100vw - 40rem));
+  width: min(620rem, calc(100vw - min(40rem, 8vw)));
   height: min(660rem, calc(100vh - 40rem));
   min-height: 0;
   flex-direction: column;
@@ -305,6 +335,19 @@ const protectedDraft = useDraftProtection({
   display: flex;
   align-items: baseline;
   gap: 9rem;
+  min-width: 0;
+  flex-wrap: wrap;
+  padding-block: 8rem;
+}
+.month-creator > header strong {
+  display: flex;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.month-creator > header strong span {
+  font: inherit;
+  color: inherit;
+  white-space: nowrap;
 }
 .month-creator > header span {
   color: var(--text-color-secondary);
@@ -323,6 +366,7 @@ const protectedDraft = useDraftProtection({
   cursor: pointer;
   font: inherit;
   font-size: 22rem;
+  flex-shrink: 0;
 }
 .month-creator > header button:hover {
   background: var(--ui-fill-hover);
@@ -331,7 +375,7 @@ const protectedDraft = useDraftProtection({
 .month-creator__body {
   min-height: 0;
   flex: 1;
-  padding: 16rem 18rem;
+  padding: 16rem min(18rem, 4vw);
 }
 .month-creator__row {
   display: flex;
@@ -343,11 +387,16 @@ const protectedDraft = useDraftProtection({
 }
 .month-creator__row label,
 .month-creator__field > label {
+  min-width: 0;
+  max-width: 100%;
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
   font-weight: 500;
 }
 .month-creator__row strong {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   font-size: var(--fs-secondary);
 }
 .month-creator__hint {

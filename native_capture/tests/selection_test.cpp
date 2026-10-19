@@ -114,6 +114,12 @@ private slots:
     o.showDesktop();
     QTest::qWait(60);
     o.hover = o.logical(QRect(point - bounds.topLeft(), QSize(1, 1))).topLeft();
+    const auto savedCursor = QCursor::pos();
+    const auto restoreCursor = qScopeGuard([savedCursor] { QCursor::setPos(savedCursor); });
+    // Keep native mouse-move events on the same owned fixture point as the
+    // detection request; a later real cursor event must not stale this query.
+    QCursor::setPos(o.mapToGlobal(o.hover));
+    QTest::qWait(30);
     o.detect();
     QCOMPARE(o.detected, fixtureRect.translated(-bounds.topLeft()));
     QVERIFY(o.selection.isEmpty());

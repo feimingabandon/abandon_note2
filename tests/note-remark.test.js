@@ -1,9 +1,130 @@
-import { readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { readFileSync, readdirSync } from 'node:fs'
+import { describe, expect, it, vi } from 'vitest'
+import { parseForESLint } from 'vue-eslint-parser'
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8')
 
+function nodes(source) {
+  const result = []
+  function visit(node) {
+    if (!node || typeof node.type !== 'string') return
+    result.push(node)
+    for (const [key, value] of Object.entries(node)) {
+      if (['parent', 'tokens', 'comments'].includes(key)) continue
+      if (Array.isArray(value)) value.forEach(visit)
+      else if (value && typeof value === 'object') visit(value)
+    }
+  }
+  visit(parseForESLint(source, { ecmaVersion: 'latest', sourceType: 'module' }).ast)
+  return result
+}
+
+const callName = (node) => node.callee?.name || node.callee?.property?.name
+const property = (node, name) =>
+  node?.properties?.find((entry) => (entry.key?.name || entry.key?.value) === name)?.value
+
+function rendererSettingIds() {
+  const ids = new Set()
+  const root = new URL('../src/renderer/src/', import.meta.url)
+  for (const file of readdirSync(root, { recursive: true })) {
+    if (!/\.(js|vue)$/.test(file)) continue
+    const source = readFileSync(new URL(file.replaceAll('\\', '/'), root), 'utf8')
+    if (!/setSettingValue|debouncedSave|persistSetting|useStickySettingsForm/.test(source)) continue
+    const astNodes = nodes(source)
+    const stickySave = astNodes
+      .filter(
+        (node) => node.type === 'CallExpression' && callName(node) === 'useStickySettingsForm'
+      )
+      .map((node) => property(node.arguments[0], 'save'))
+    for (const node of astNodes.filter((entry) => entry.type === 'CallExpression')) {
+      const name = callName(node)
+      if (!['setSettingValue', 'debouncedSave', 'persistSetting'].includes(name)) continue
+      const id = name === 'persistSetting' ? property(node.arguments[0], 'id') : node.arguments[0]
+      if (id?.type === 'Literal' && typeof id.value === 'string') {
+        ids.add(id.value)
+        continue
+      }
+      // The write queue passes each collected ID through unchanged; the sticky form is its
+      // only dynamic caller and has a separately checked literal-ID save contract below.
+      if (
+        file.endsWith('useSettingsWriteQueue.js') &&
+        name === 'setSettingValue' &&
+        id?.object?.name === 'entry' &&
+        id?.property?.name === 'id'
+      )
+        continue
+      expect(
+        stickySave.some((save) => save?.body === node),
+        `${file}: untracked setting write`
+      ).toBe(true)
+      expect(id.name).toBe(stickySave[0].params[0].name)
+      const stickySource = read('../src/renderer/src/composables/useStickySettingsForm.js')
+      for (const save of nodes(stickySource).filter(
+        (entry) => entry.type === 'CallExpression' && callName(entry) === 'save'
+      )) {
+        expect(save.arguments[0].type).toBe('Literal')
+        ids.add(save.arguments[0].value)
+      }
+    }
+  }
+  return ids
+}
+
+function settingIpcContract() {
+  const main = read('../src/main/index.js')
+  const astNodes = nodes(main)
+  const allowlist = astNodes.find(
+    (node) => node.type === 'VariableDeclarator' && node.id.name === 'RENDERER_WRITABLE_SETTING_IDS'
+  )
+  const ids = new Set(allowlist.init.arguments[0].elements.map((element) => element.value))
+  const handler = astNodes.find(
+    (node) =>
+      node.type === 'CallExpression' &&
+      node.callee.object?.name === 'mainWindowIpc' &&
+      callName(node) === 'handle' &&
+      node.arguments[0].value === 'set-setting-value'
+  ).arguments[1]
+  const persist = vi.fn()
+  const invoke = new Function(
+    'RENDERER_WRITABLE_SETTING_IDS',
+    'persistSettingValue',
+    `return (${main.slice(...handler.range)})`
+  )(ids, persist)
+  return { ids, persist, invoke }
+}
+
 describe('便签备注', () => {
+  it('passes the optional remark from both creation forms and the full editor', () => {
+    for (const path of [
+      '../src/renderer/src/components/list/NewNotePanel.vue',
+      '../src/renderer/src/components/month/MonthNoteCreator.vue',
+      '../src/renderer/src/components/note/NoteEditor.vue'
+    ]) {
+      const source = read(path)
+      const ast = nodes(source)
+      const options = path.endsWith('NoteEditor.vue')
+        ? property(
+            ast.find((node) => node.type === 'CallExpression' && callName(node) === 'saveNoteDraft')
+              .arguments[0],
+            'fields'
+          )
+        : ast.find((node) => node.type === 'VariableDeclarator' && node.id.name === 'options').init
+      expect(source).toMatch(/<NoteRemarkField\b[^>]*v-model="remark"/)
+      const remark = property(options, 'remark')
+      expect(
+        ast.some(
+          (node) =>
+            node.type === 'MemberExpression' &&
+            node.object?.name === 'remark' &&
+            node.property?.name === 'value' &&
+            node.range[0] >= remark?.range[0] &&
+            node.range[1] <= remark?.range[1]
+        ),
+        path + ': the submitted remark must use the current field value'
+      ).toBe(true)
+    }
+  })
+
   it('persists the remark in schema, note updates and list DTOs', () => {
     const schema = read('../src/main/db/db-schema.js')
     const notes = read('../src/main/db/db-notes.js')
@@ -68,5 +189,39 @@ describe('便签备注', () => {
     expect(applySnapshot).toContain(
       "root.style.setProperty('--note-remark-font-size', `${css.noteRemarkFontSize}rem`)"
     )
+  })
+
+  it('authorizes every setting the renderer sends through the generic write IPC', () => {
+    const { ids } = settingIpcContract()
+    const rendererIds = rendererSettingIds()
+    expect(rendererIds).toContain('css.noteRemarkFontSize')
+    expect(rendererIds).toContain('sticky.fontSize')
+    expect(rendererIds).toContain('almanac.enabled')
+    expect([...rendererIds].filter((id) => !ids.has(id))).toEqual([])
+  })
+
+  it('allows both almanac switch values through the guarded setting handler', async () => {
+    const { persist, invoke } = settingIpcContract()
+    await expect(invoke(null, 'almanac.enabled', false)).resolves.toBe(true)
+    await expect(invoke(null, 'almanac.enabled', true)).resolves.toBe(true)
+    expect(persist.mock.calls).toEqual([
+      ['almanac.enabled', false],
+      ['almanac.enabled', true]
+    ])
+    await expect(invoke(null, 'almanac.unknown', true)).rejects.toThrow(
+      'renderer 无权直接写入设置项'
+    )
+    expect(persist).toHaveBeenCalledTimes(2)
+  })
+
+  it('persists remark font size through the actual handler while retaining dedicated IPC guards', async () => {
+    const { ids, persist, invoke } = settingIpcContract()
+    for (const id of ['blur.enabled', 'dock.enabledEdges', 'shortcuts.viewVisibility']) {
+      expect(ids.has(id)).toBe(false)
+      await expect(invoke(null, id, true)).rejects.toThrow('renderer 无权直接写入设置项')
+    }
+    expect(persist).not.toHaveBeenCalled()
+    await expect(invoke(null, 'css.noteRemarkFontSize', 14)).resolves.toBe(true)
+    expect(persist).toHaveBeenCalledExactlyOnceWith('css.noteRemarkFontSize', 14)
   })
 })

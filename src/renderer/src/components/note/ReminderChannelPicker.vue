@@ -294,6 +294,7 @@ onBeforeUnmount(() => {
 }
 .reminder-channels__row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12rem;
@@ -301,6 +302,7 @@ onBeforeUnmount(() => {
 }
 .reminder-channels__label {
   flex-shrink: 0;
+  max-width: 100%;
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
   font-weight: 500;
@@ -311,8 +313,10 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 8rem;
   width: max-content;
-  min-width: 116rem;
+  min-width: min(116rem, 100%);
   max-width: 100%;
+  margin-left: auto;
+  min-height: max(32rem, 2em);
   padding: 5rem 10rem;
   color: var(--text-color);
   font: inherit;
@@ -324,9 +328,9 @@ onBeforeUnmount(() => {
   transition: border-color var(--motion-control) ease;
 }
 .reminder-channels__trigger > span {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .reminder-channels__trigger:hover:not(:disabled),
 .reminder-channels__trigger.is-open {

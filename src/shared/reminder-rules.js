@@ -10,11 +10,6 @@ export function normalizeReminderChannels(value, legacyEnabled = false) {
   return channels
 }
 
-export function availableReminderChannels(channels, platform) {
-  const value = normalizeReminderChannels(channels)
-  return platform === 'darwin' ? value & ~REMINDER_CHANNELS.system : value
-}
-
 export function assertSnoozeTime(value, now = Date.now()) {
   const dueAt = Number(value)
   if (!Number.isSafeInteger(dueAt) || dueAt <= now || dueAt > now + 366 * 86400000) {

@@ -40,6 +40,10 @@ export class RemoteClient {
     return requestJson(`${this.baseUrl}/session/start`, { method: 'POST', body: payload })
   }
 
+  reportDaily(payload) {
+    return requestJson(`${this.baseUrl}/activity/daily`, { method: 'POST', body: payload })
+  }
+
   endSession(sessionId, endedAt = new Date().toISOString()) {
     return requestJson(`${this.baseUrl}/session/end`, {
       method: 'POST',

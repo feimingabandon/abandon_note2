@@ -7,21 +7,28 @@ describe('主视图复用窗口切换', () => {
   it('persists source geometry before reusing the existing BrowserWindow', () => {
     const source = readFileSync(MAIN_PROCESS_PATH, 'utf8')
     const geometryBlock = source.slice(
-      source.indexOf('function debouncedSaveGeometry() {'),
-      source.indexOf('/** 恢复默认时忽略程序化缩放触发的 resize')
+      source.indexOf('const geometryPersistence = createWindowGeometryPersistence({'),
+      source.indexOf('function debouncedSaveGeometry() {')
     )
-    const switchBlock = source.slice(
-      source.indexOf('function switchMainView(targetMode) {'),
-      source.indexOf('function rebuildTrayMenu()')
+    const navigation = readFileSync(
+      new URL('../src/main/windows/main-view-navigation.js', import.meta.url),
+      'utf8'
     )
+    const start = navigation.indexOf('async function switchMainView(targetMode) {')
+    const end = navigation.indexOf('async function switchMainViewFromTray', start)
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(end).toBeGreaterThan(start)
+    const switchBlock = navigation.slice(start, end)
 
-    expect(geometryBlock).toContain('if (switchingMainView) return')
-    expect(switchBlock).toContain('geometryDirty && mainWindow && !mainWindow.isDestroyed()')
+    expect(geometryBlock).toContain(
+      '!mainViewNavigation.isSwitching() && !isCompactPresentationActive()'
+    )
+    expect(switchBlock).toContain('const pendingGeometry = geometryPersistence.readPendingBounds()')
     expect(switchBlock).toContain('prepareViewSettingsForSwitch({')
-    expect(switchBlock.indexOf('restoreDockWindowToVisiblePosition()')).toBeLessThan(
+    expect(switchBlock.indexOf('dockRuntime.restoreDockWindowToVisiblePosition()')).toBeLessThan(
       switchBlock.indexOf('prepareViewSettingsForSwitch({')
     )
-    expect(switchBlock).toContain('const reusedWindow = mainWindow')
+    expect(switchBlock).toContain('const reusedWindow = getMainWindow()')
     expect(switchBlock).toContain('hideMainWindowForViewNavigation(reusedWindow)')
     expect(switchBlock).toContain('await presentActiveViewInExistingWindow(reusedWindow')
     expect(switchBlock).not.toContain('createWindow(')
@@ -36,7 +43,7 @@ describe('主视图复用窗口切换', () => {
     expect(switchBlock.indexOf('activeViewMode = normalized')).toBeLessThan(
       switchBlock.indexOf('await presentActiveViewInExistingWindow(reusedWindow')
     )
-    expect(switchBlock.indexOf('if (nativeEdgeCleanupPending)')).toBeLessThan(
+    expect(switchBlock.indexOf('if (dockRuntime.cleanupStatus)')).toBeLessThan(
       switchBlock.indexOf('endTitlebarWindowDrag()')
     )
   })

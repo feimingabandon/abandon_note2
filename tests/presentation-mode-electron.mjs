@@ -1,15 +1,58 @@
-import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync } from 'node:fs'
+import { readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
-import { app, BrowserWindow, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, powerMonitor, screen } from 'electron'
 import koffi from 'koffi'
 import { compactBoundsFromAnchor } from '../src/shared/window-compact-geometry.js'
 import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
 
-const root = mkdtempSync(join(tmpdir(), 'abandon-presentation-mode-'))
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/presentation-mode-electron.mjs',
+  mode: 'electron-ready-real-app-presentation-mode',
+  prefix: 'abandon-presentation-mode-',
+  metadata: {
+    realWindows: true,
+    realDiskDatabase: true,
+    nativeDCompVerified: true,
+    chromiumGpuDisabled: true,
+    syntheticPointerEvents: true,
+    nativePointerDrag: false,
+    mainProcessRestart: false,
+    syntheticPowerEvents: true,
+    syntheticDisplayEvents: true,
+    realSystemResume: false,
+    realDisplayTopologyChange: false
+  },
+  timeoutMs: 60000
+})
+const { assert, root } = lifecycle
+// Drop only the selected actual renderer ACK; all other IPC and native work stay real.
+let dropRendererAck = false
+const droppedAcks = []
+let holdRendererAck = false
+const heldRendererAcks = []
+const originalOn = ipcMain.on.bind(ipcMain)
+ipcMain.on = (channel, listener) =>
+  originalOn(
+    channel,
+    channel === 'presentation-mode:renderer-ready'
+      ? (event, payload) => {
+          if (dropRendererAck) {
+            droppedAcks.push(payload?.operationId)
+            return
+          }
+          if (holdRendererAck) {
+            heldRendererAcks.push(() => listener(event, payload))
+            return
+          }
+          return listener(event, payload)
+        }
+      : listener
+  )
 app.setPath('userData', root)
 // CI/沙箱中的 Chromium GPU 子进程缺少运行库；DComp Overlay 仍由原生 DLL 独立验证。
 app.commandLine.appendSwitch('disable-gpu')
@@ -43,10 +86,13 @@ async function until(check, label, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const result = await check()
-    if (result) return result
+    if (result) {
+      assert.ok(true, label)
+      return result
+    }
     await wait(30)
   }
-  throw new Error(label)
+  assert.fail(label)
 }
 
 const native = koffi.load(process.env.ABANDON_INTEGRATION_NATIVE_DLL)
@@ -63,12 +109,10 @@ const mainChunk = readdirSync(resolve('out/main/chunks')).find((name) =>
 assert.ok(mainChunk, 'main process chunk missing')
 require(resolve('out/main/chunks', mainChunk))
 
-const timeout = setTimeout(() => {
-  console.error('presentation mode integration timed out')
-  app.exit(1)
-}, 60_000)
-
 async function run() {
+  let completed = false,
+    failure = null,
+    current
   try {
     assert.equal(nativeAbi(), NATIVE_ABI_VERSION, 'native blur ABI was not rebuilt')
     const hooks = globalThis.__ABANDON_WINDOW_TEST_HOOKS__
@@ -82,6 +126,7 @@ async function run() {
         ),
       'list window missing'
     )
+    current = window
     await until(() => window.isVisible(), 'list window never became visible')
     const js = (code) => window.webContents.executeJavaScript(code)
     await until(() => js("Boolean(document.querySelector('.app-titlebar'))"), 'titlebar missing')
@@ -116,6 +161,28 @@ async function run() {
     }
     const workArea = screen.getDisplayNearestPoint(anchor).workArea
 
+    dropRendererAck = true
+    try {
+      await assert.rejects(() => hooks.enterCompactPresentation(anchor), /渲染就绪超时/)
+    } finally {
+      dropRendererAck = false
+    }
+    assert.ok(droppedAcks.length > 0, 'failure injection did not intercept a real renderer ACK')
+    await until(
+      () => hooks.getPresentationModeState().operation === null && window.isVisible(),
+      'ACK timeout did not restore a visible idle window'
+    )
+    assert.equal(hooks.getPresentationModeState().mode, 'expanded')
+    assert.deepEqual(window.getBounds(), originalBounds)
+    assert.equal(window.getNativeWindowHandle().toString('hex'), originalHandle)
+    assert.equal(hooks.getDockRuntimeState().interactionSuspendCount, 0)
+    assert.equal(blurHealthy(), 1, 'blur became unhealthy after ACK recovery')
+    assert.equal(syncBlurGeometry(1_000), 1, 'blur geometry did not match ACK recovery')
+    await until(
+      () => js("Boolean(document.querySelector('.app-titlebar'))"),
+      'ACK recovery did not restore expanded UI'
+    )
+
     await js(
       `document.querySelector('.app-titlebar-interaction-surface').dispatchEvent(
         new MouseEvent('dblclick', {
@@ -135,6 +202,11 @@ async function run() {
     assert.equal(window.getNativeWindowHandle().toString('hex'), originalHandle)
     assert.deepEqual(hooks.getPresentationModeState().operation, null)
     assert.equal(hooks.getPresentationModeState().mode, 'compact')
+    assert.equal(
+      hooks.getDockRuntimeState().interactionSuspendCount,
+      1,
+      'compact owner must retain exactly one dock suspension'
+    )
     assert.deepEqual(
       window.getBounds(),
       compactBoundsFromAnchor({ anchor, size: { width: 180, height: 48 }, workArea })
@@ -206,6 +278,11 @@ async function run() {
       'compact resize did not reach the real window'
     )
     const compactSettings = await js('window.api.getSettingsSnapshot().then(s => s.values.window)')
+    assert.equal(
+      hooks.getDockRuntimeState().interactionSuspendCount,
+      1,
+      'compact resize leaked an additional dock suspension'
+    )
     assert.equal(compactSettings.compactWidth, 256)
     assert.equal(compactSettings.compactHeight, 64)
     const persistedDatabase = new Database(databasePath, { readonly: true })
@@ -247,6 +324,60 @@ async function run() {
       { key: 'compact_width', value: '272' }
     ])
 
+    // Exercise the application's registered power callbacks and topology hook;
+    // the operating system does not actually sleep or change displays here.
+    const beforeDisplayRecovery = { ...window.getBounds() }
+    powerMonitor.emit('resume')
+    powerMonitor.emit('unlock-screen')
+    hooks.handleDisplayTopologyChange({
+      eventName: 'display-metrics-changed',
+      displayId: screen.getDisplayMatching(beforeDisplayRecovery).id
+    })
+    await wait(400) // Includes a delayed Electron resize echo and the 300 ms size save.
+    assert.equal(hooks.getPresentationModeState().mode, 'compact')
+    assert.equal(hooks.getPresentationModeState().operation, null)
+    assert.deepEqual(
+      window.getBounds(),
+      beforeDisplayRecovery,
+      'power/display recovery expanded the compact HWND'
+    )
+    assert.equal(window.getNativeWindowHandle().toString('hex'), originalHandle)
+    assert.equal(hooks.getDockRuntimeState().interactionSuspendCount, 1)
+    assert.equal(blurHealthy(), 1, 'blur became unhealthy after compact display recovery')
+    assert.equal(
+      syncBlurGeometry(1_000),
+      1,
+      'native blur geometry did not follow compact display recovery'
+    )
+    const recoveryDatabase = new Database(databasePath, { readonly: true })
+    try {
+      assert.deepEqual(
+        recoveryDatabase
+          .prepare(
+            "SELECT key, value FROM app_settings WHERE window_name='application' AND type='presentation' ORDER BY key"
+          )
+          .all(),
+        idlePersisted,
+        'automatic recovery overwrote durable compact dimensions'
+      )
+      assert.deepEqual(
+        recoveryDatabase
+          .prepare(
+            "SELECT key, value FROM app_settings WHERE window_name='main' AND type='geometry' ORDER BY key"
+          )
+          .all(),
+        [
+          { key: 'height', value: String(originalBounds.height) },
+          { key: 'pos_x', value: String(originalBounds.x) },
+          { key: 'pos_y', value: String(originalBounds.y) },
+          { key: 'width', value: String(originalBounds.width) }
+        ],
+        'compact display recovery overwrote expanded geometry'
+      )
+    } finally {
+      recoveryDatabase.close()
+    }
+
     // 灵动岛拖动复用贴边窗口移动后端，但贴边补偿计时器不得把当前小窗口
     // 的位置和尺寸回写到 main/geometry。
     const compactBeforeDrag = window.getBounds()
@@ -283,6 +414,11 @@ async function run() {
       screenX: ${compactDragTarget.x}, screenY: ${compactDragTarget.y}
     }))`)
     await wait(1_200)
+    assert.equal(
+      hooks.getDockRuntimeState().interactionSuspendCount,
+      1,
+      'compact drag leaked an additional dock suspension'
+    )
     const geometryDatabase = new Database(databasePath, { readonly: true })
     const mainGeometry = geometryDatabase
       .prepare(
@@ -318,6 +454,11 @@ async function run() {
       'compact island double-click did not restore expanded mode'
     )
     assert.equal(hooks.getPresentationModeState().mode, 'expanded')
+    assert.equal(
+      hooks.getDockRuntimeState().interactionSuspendCount,
+      0,
+      'expanding did not release compact dock suspension'
+    )
     assert.deepEqual(window.getBounds(), originalBounds)
     assert.equal(window.getNativeWindowHandle().toString('hex'), originalHandle)
     assert.equal(await js("Boolean(document.querySelector('.app-titlebar'))"), true)
@@ -467,17 +608,154 @@ async function run() {
       const restored = window.getBounds()
       return restored.x === dragStartBounds.x && restored.y === dragStartBounds.y
     }, 'titlebar drag regression did not restore the shared test window')
+    assert.equal(
+      hooks.getDockRuntimeState().interactionSuspendCount,
+      0,
+      'titlebar drag left dock interaction suspended'
+    )
 
     const secondAnchor = { x: anchor.x + 40, y: anchor.y + 40 }
-    await hooks.enterCompactPresentation(secondAnchor)
+    const enteringAfterDisplayRecovery = hooks.enterCompactPresentation(secondAnchor)
+    powerMonitor.emit('resume')
+    hooks.handleDisplayTopologyChange({ eventName: 'display-metrics-changed' })
+    await enteringAfterDisplayRecovery
     assert.equal(window.getBounds().width, 272)
     assert.equal(window.getBounds().height, 68)
     assert.equal(window.getNativeWindowHandle().toString('hex'), originalHandle)
 
-    await hooks.openMainWindowFromTray()
+    const openingAfterDisplayRecovery = hooks.openMainWindowFromTray()
+    powerMonitor.emit('unlock-screen')
+    await openingAfterDisplayRecovery
     assert.equal(hooks.getPresentationModeState().mode, 'expanded')
     assert.deepEqual(window.getBounds(), originalBounds)
     assert.equal(window.getNativeWindowHandle().toString('hex'), originalHandle)
+
+    // SR-004: the production draft guard rejects its first inspection after the
+    // real compact -> expanded ACK. Refusal must restore this visible source.
+    const installDraftInspectionFailure = () =>
+      js(`(() => {
+        window.__sr004DraftPrepare = window.__prepareEditingDrafts
+        window.__sr004DraftReads = 0
+        window.__prepareEditingDrafts = () => {
+          window.__sr004DraftReads++
+          throw new Error('controlled SR-004 draft inspection failure')
+        }
+      })()`)
+    const restoreDraftInspection = () =>
+      js(`(() => {
+        window.__prepareEditingDrafts = window.__sr004DraftPrepare
+        delete window.__sr004DraftPrepare
+        delete window.__sr004DraftReads
+      })()`)
+    await hooks.enterCompactPresentation(secondAnchor)
+    await installDraftInspectionFailure()
+    try {
+      assert.equal(await hooks.switchMainViewFromTray('month'), false)
+      assert.equal(hooks.navigationState().mode, 'list')
+      assert.equal(hooks.navigationState().pendingReady, null)
+      assert.equal(hooks.navigationState().queuedTarget, null)
+      assert.equal(hooks.getPresentationModeState().mode, 'expanded')
+      assert.equal(hooks.getPresentationModeState().operation, null)
+      assert.equal(window.isVisible(), true, 'draft refusal left the visible compact source hidden')
+      assert.equal(await js('window.__sr004DraftReads'), 1)
+      assert.equal(window.getNativeWindowHandle().toString('hex'), originalHandle)
+    } finally {
+      await restoreDraftInspection()
+    }
+
+    // A source the user already hid must not be revealed by refusal compensation.
+    await hooks.enterCompactPresentation(secondAnchor)
+    await js('window.api.closeWindow()')
+    await until(() => !window.isVisible(), 'compact source did not hide to tray')
+    await installDraftInspectionFailure()
+    try {
+      assert.equal(await hooks.switchMainViewFromTray('month'), false)
+      assert.equal(hooks.navigationState().mode, 'list')
+      assert.equal(hooks.getPresentationModeState().mode, 'expanded')
+      assert.equal(window.isVisible(), false, 'refusal revealed an initially hidden source')
+    } finally {
+      await restoreDraftInspection()
+    }
+    await hooks.openMainWindowFromTray()
+    await until(
+      () => window.isVisible(),
+      'hidden-source control did not recover via explicit tray-open'
+    )
+
+    // Explicit hide intent must survive when the compact transaction already hid
+    // the HWND; Electron cannot be relied on to emit a second hide event here.
+    await hooks.enterCompactPresentation(secondAnchor)
+    holdRendererAck = true
+    const hiddenDuringExpansion = hooks.switchMainViewFromTray('month')
+    try {
+      await until(
+        () => !window.isVisible() && heldRendererAcks.length > 0,
+        'expansion did not reach the actual hidden ACK boundary'
+      )
+      const userHideReceived = new Promise((resolveHide) =>
+        ipcMain.once('window-close', () => setImmediate(resolveHide))
+      )
+      await js('window.api.closeWindow()')
+      await userHideReceived
+      holdRendererAck = false
+      for (const acknowledge of heldRendererAcks.splice(0)) acknowledge()
+      assert.equal(await hiddenDuringExpansion, false)
+      assert.equal(hooks.navigationState().mode, 'list')
+      assert.equal(hooks.navigationState().pendingReady, null)
+      assert.equal(hooks.getPresentationModeState().mode, 'expanded')
+      assert.equal(window.isVisible(), false, 'navigation overrode a newer user hide intent')
+      assert.equal(window.getNativeWindowHandle().toString('hex'), originalHandle)
+    } finally {
+      holdRendererAck = false
+      for (const acknowledge of heldRendererAcks.splice(0)) acknowledge()
+      await hiddenDuringExpansion.catch(() => {})
+    }
+    await hooks.openMainWindowFromTray()
+    await until(
+      () => window.isVisible(),
+      'explicit user-hide control did not recover via tray-open'
+    )
+
+    // The real draft guard also owns a late reveal. Its visibility permission
+    // must be revoked when inspection finishes after a newer explicit hide.
+    await hooks.enterCompactPresentation(secondAnchor)
+    await js(`(() => {
+      window.__sr004DraftPrepare = window.__prepareEditingDrafts
+      window.__sr004InspectionWaiting = false
+      window.__prepareEditingDrafts = () => new Promise(resolveInspection => {
+        window.__sr004InspectionWaiting = true
+        window.__sr004FinishInspection = resolveInspection
+      })
+    })()`)
+    const hiddenDuringInspection = hooks.switchMainViewFromTray('month')
+    try {
+      await until(
+        async () => !window.isVisible() && (await js('window.__sr004InspectionWaiting')),
+        'draft guard did not reach the concealed inspection boundary'
+      )
+      const userHideReceived = new Promise((resolveHide) =>
+        ipcMain.once('window-close', () => setImmediate(resolveHide))
+      )
+      await js('window.api.closeWindow()')
+      await userHideReceived
+      await js('window.__sr004FinishInspection({ dirty: false, blocked: true }); void 0')
+      assert.equal(await hiddenDuringInspection, false)
+      assert.equal(hooks.navigationState().mode, 'list')
+      assert.equal(window.isVisible(), false, 'late draft inspection overrode user hide intent')
+      assert.equal(hooks.getPresentationModeState().mode, 'expanded')
+      assert.equal(window.getNativeWindowHandle().toString('hex'), originalHandle)
+    } finally {
+      await js(`(() => {
+        window.__sr004FinishInspection?.({ dirty: false, blocked: false })
+        window.__prepareEditingDrafts = window.__sr004DraftPrepare
+        delete window.__sr004DraftPrepare
+        delete window.__sr004InspectionWaiting
+        delete window.__sr004FinishInspection
+      })()`)
+      await hiddenDuringInspection.catch(() => {})
+    }
+    await hooks.openMainWindowFromTray()
+    await until(() => window.isVisible(), 'late-inspection control did not recover via tray-open')
 
     await hooks.enterCompactPresentation(secondAnchor)
 
@@ -495,13 +773,29 @@ async function run() {
     assert.equal(await js("Boolean(document.querySelector('.compact-island'))"), false)
     assert.equal(blurHealthy(), 1, 'blur became unhealthy after view navigation')
     assert.equal(syncBlurGeometry(1_000), 1, 'blur geometry did not follow view navigation')
+    assert.equal(
+      hooks.getDockRuntimeState().interactionSuspendCount,
+      0,
+      'view navigation leaked presentation dock suspension'
+    )
 
     console.log('presentation mode Electron integration passed')
-    clearTimeout(timeout)
-    app.exit(0)
+    completed = true
   } catch (error) {
     console.error(error)
-    clearTimeout(timeout)
-    app.exit(1)
+    failure = error
+  } finally {
+    await lifecycle.finish({
+      completed,
+      error: failure,
+      window: current,
+      summary: {
+        scope:
+          'Same HWND compact/expand, controlled power/display recovery, resize persistence, ordinary geometry, drag, tray/view navigation and native blur geometry',
+        droppedAcks,
+        presentation: globalThis.__ABANDON_WINDOW_TEST_HOOKS__?.getPresentationModeState?.(),
+        dock: globalThis.__ABANDON_WINDOW_TEST_HOOKS__?.getDockRuntimeState?.()
+      }
+    })
   }
 }

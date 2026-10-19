@@ -22,6 +22,7 @@ import AppIcon from '../ui/AppIcon.vue'
 import { popoverStyle } from '../../utils/anchoredPopover.js'
 import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
 import { isComposingInput } from '../../utils/inputComposition.js'
+import { createWindowDragDiagnostics } from '../../utils/windowDragDiagnostics.js'
 
 const props = defineProps({
   title: {
@@ -86,6 +87,7 @@ let titlebarDragDiagnostic = null
 let titlebarDragSequence = 0
 let lastTitlebarPress = null
 let suppressTitlebarDomDoubleClickUntil = 0
+const titlebarMotionDiagnostics = createWindowDragDiagnostics({ api: window.api })
 const TITLEBAR_DOUBLE_CLICK_MS = 420
 const TITLEBAR_DOUBLE_CLICK_DISTANCE = 12
 const TITLEBAR_INTERACTIVE_SELECTOR =
@@ -220,9 +222,13 @@ const toggleLock = async () => {
 
 function requestTitlebarDragUpdate() {
   if (titlebarDragFrame) return
+  titlebarMotionDiagnostics.scheduleFrame()
   titlebarDragFrame = requestAnimationFrame(() => {
     titlebarDragFrame = null
-    window.api.updateTitlebarWindowDrag(titlebarDragLatestPoint)
+    window.api.updateTitlebarWindowDrag(
+      titlebarDragLatestPoint,
+      titlebarMotionDiagnostics.createUpdatePacket()
+    )
   })
 }
 
@@ -301,6 +307,7 @@ function titlebarPointerSnapshot(event = null, extra = {}) {
 function reportTitlebarDrag(level, message, event = null, extra = {}) {
   window.api.reportLog?.({
     level,
+    kind: level === 'info' ? 'trace' : 'event',
     scope: 'titlebar.drag.renderer',
     message,
     metadata: titlebarPointerSnapshot(event, extra),
@@ -365,22 +372,29 @@ function onTitlebarPointerDown(event) {
     isPrimary: event.isPrimary,
     moveCount: 0
   }
+  const dragId = titlebarDragDiagnostic.dragId
+  const motionClock = titlebarMotionDiagnostics.begin(dragId)
   setTitlebarPointerCapture(titlebarDragCaptureTarget, event.pointerId)
   addTitlebarPointerListeners()
   reportTitlebarDrag('info', '标题栏拖动指针已按下', event)
   const task = window.api
     .beginTitlebarWindowDrag(titlebarDragLatestPoint, {
-      dragId: titlebarDragDiagnostic.dragId
+      dragId,
+      ...(motionClock ? { motionClock } : {})
     })
     .catch(() => false)
   titlebarDragStartPromise = task
-  void task.then(async (started) => {
+  void task.then(async (result) => {
+    const started = titlebarMotionDiagnostics.acceptBegin(result, dragId)
     if (titlebarDragStartPromise === task) titlebarDragStartPromise = null
     reportTitlebarDrag('info', '标题栏拖动主进程响应', null, { started: Boolean(started) })
     if (generation !== titlebarDragGeneration || titlebarDragPointerId === null) {
       if (started) {
         if (titlebarPointerMoved && titlebarDragLatestPoint) {
-          window.api.updateTitlebarWindowDrag(titlebarDragLatestPoint)
+          window.api.updateTitlebarWindowDrag(
+            titlebarDragLatestPoint,
+            titlebarMotionDiagnostics.createUpdatePacket({ source: 'final', dragId })
+          )
         }
         await window.api
           .endTitlebarWindowDrag({
@@ -389,6 +403,7 @@ function onTitlebarPointerDown(event) {
           })
           .catch(() => false)
       }
+      titlebarMotionDiagnostics.end('renderer-finished-before-main-begin', dragId)
       return
     }
     titlebarDragging = Boolean(started)
@@ -398,6 +413,7 @@ function onTitlebarPointerDown(event) {
 
 function onTitlebarPointerMove(event) {
   if (titlebarDragPointerId === null || titlebarDragPointerId !== event.pointerId) return
+  titlebarMotionDiagnostics.recordPointer(event)
   titlebarDragLatestPoint = { x: event.screenX, y: event.screenY }
   titlebarPointerMoved = true
   if (titlebarDragDiagnostic) titlebarDragDiagnostic.moveCount += 1
@@ -442,11 +458,18 @@ async function finishTitlebarPointer(event = null, reason = 'unknown') {
   if (titlebarDragFrame) {
     cancelAnimationFrame(titlebarDragFrame)
     titlebarDragFrame = null
+    titlebarMotionDiagnostics.cancelFrame()
   }
   if (titlebarDragStartPromise) await titlebarDragStartPromise.catch(() => false)
   if (titlebarDragging) {
     if (titlebarPointerMoved && titlebarDragLatestPoint) {
-      window.api.updateTitlebarWindowDrag(titlebarDragLatestPoint)
+      window.api.updateTitlebarWindowDrag(
+        titlebarDragLatestPoint,
+        titlebarMotionDiagnostics.createUpdatePacket({
+          source: 'final',
+          dragId: diagnostic?.dragId
+        })
+      )
     }
     titlebarDragging = false
     await window.api
@@ -457,6 +480,7 @@ async function finishTitlebarPointer(event = null, reason = 'unknown') {
       })
       .catch(() => false)
   }
+  titlebarMotionDiagnostics.end(reason, diagnostic?.dragId)
   titlebarDragLatestPoint = null
   titlebarPointerMoved = false
   if (titlebarDragDiagnostic === diagnostic) titlebarDragDiagnostic = null
@@ -477,6 +501,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
   if (titlebarDragPointerId !== null) void finishTitlebarPointer(null, 'component-unmount')
   else removeTitlebarPointerListeners()
+  titlebarMotionDiagnostics.dispose()
   if (zOrderGuardTimer) clearTimeout(zOrderGuardTimer)
   if (lockGuardTimer) clearTimeout(lockGuardTimer)
 })

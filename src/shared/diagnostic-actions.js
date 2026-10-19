@@ -25,6 +25,7 @@ const ACTION_EVENT_BY_CHANNEL = Object.freeze({
   'notes:update': 'note.update',
   'notes:set-text-color': 'note.text-color.set',
   'notes:save-draft': 'note.save',
+  'notes:move-historical-to-today': 'note.historical.move',
   'notes:delete': 'note.delete',
   'notes:purge': 'note.purge',
   'notes:reorder-custom': 'note.order.normalize',

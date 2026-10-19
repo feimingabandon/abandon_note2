@@ -1,12 +1,24 @@
-import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
 import { localDateKey } from '../src/shared/calendar/calendar-date-rules.js'
 import { weatherLocationKey } from '../src/shared/weather-rules.js'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/main-view-enhancements-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-note-main-view-enhancements-',
+  timeoutMs: 150000,
+  metadata: { realWindows: true, legacyFixture: true }
+})
+const { assert, root: testUserData } = lifecycle
+let activeTestWindow = null
 
 const WAIT_STEP_MS = 25
 const require = createRequire(import.meta.url)
@@ -241,36 +253,33 @@ async function assertDayPanelWeatherLayout(window) {
     () =>
       window.webContents.executeJavaScript(`(() => {
         const weather = document.querySelector('.month-day-panel__weather')
-        const main = weather?.querySelector('.month-day-panel__weather-main')
-        const details = weather?.querySelector('.month-day-panel__weather-details')
-        const place = main?.querySelector('span')
-        if (!weather || !main || !details || !place) return null
-        const mainRect = main.getBoundingClientRect()
-        const detailsRect = details.getBoundingClientRect()
+        const summary = weather?.querySelector('.weather-brief')
+        const button = summary?.querySelector('.weather-brief__button')
+        const rows = summary?.querySelector('.weather-brief__rows')
+        if (!weather || !summary || !button || !rows) return null
+        const summaryRect = summary.getBoundingClientRect()
+        const weatherRect = weather.getBoundingClientRect()
         return {
-          mainRight: mainRect.right,
-          detailsLeft: detailsRect.left,
-          placeOverflow: getComputedStyle(place).overflow,
-          placeEllipsis: getComputedStyle(place).textOverflow
+          inside: summaryRect.left >= weatherRect.left && summaryRect.right <= weatherRect.right,
+          overflow: summary.scrollWidth > summary.clientWidth + 1,
+          rowCount: rows.children.length,
+          date: summary.dataset.date,
+          selectedDate: document.querySelector('.month-day-cell.is-selected')?.dataset.date,
+          popup: button.getAttribute('aria-haspopup')
         }
       })()`),
     '日期侧栏天气没有显示'
   )
   assert.ok(
-    layout.mainRight <= layout.detailsLeft,
-    `日期侧栏天气主信息与详情发生重叠：${JSON.stringify(layout)}`
+    layout.inside && !layout.overflow && layout.rowCount === 2,
+    `日期侧栏应复用不溢出的双行天气摘要：${JSON.stringify(layout)}`
   )
-  assert.deepEqual(
-    [layout.placeOverflow, layout.placeEllipsis],
-    ['hidden', 'ellipsis'],
-    '天气地区过长时必须单行省略'
-  )
+  assert.equal(layout.date, layout.selectedDate, '侧栏天气日期必须与所选日期同步')
+  assert.equal(layout.popup, 'dialog', '侧栏天气应提供统一详情浮层入口')
   await window.webContents.executeJavaScript(
     `document.querySelector('.month-toolbar__day-panel-toggle').click()`
   )
 }
-
-const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-main-view-enhancements-'))
 
 try {
   app.setPath('userData', testUserData)
@@ -293,13 +302,15 @@ try {
   app.once('ready', () => void runMainViewEnhancementsTest())
 } catch (error) {
   report(`setup failed: ${error?.stack || error}`)
-  rmSync(testUserData, { recursive: true, force: true })
-  app.exit(1)
+  void lifecycle.finish({ error, window: activeTestWindow })
 }
 
 async function runMainViewEnhancementsTest() {
+  let failure = null
   try {
     const listWindow = await waitForView('list')
+    activeTestWindow = listWindow
+    await dismissStartupShortcutNotice(listWindow)
     const noteIds = await listWindow.webContents.executeJavaScript(`(async () => {
       const today = await window.api.createNote({ content: '有天气的便签' })
       const tomorrow = await window.api.createNote({
@@ -434,17 +445,14 @@ async function runMainViewEnhancementsTest() {
     }
 
     report('note weather and list/month/week titlebar switching passed')
-    app.exit(0)
   } catch (error) {
     report(`failed: ${error?.stack || error}`)
-    app.exit(1)
+    failure = error
+  } finally {
+    await lifecycle.finish({
+      completed: !failure,
+      error: failure,
+      window: activeTestWindow
+    })
   }
 }
-
-app.on('will-quit', () => {
-  try {
-    rmSync(testUserData, { recursive: true, force: true })
-  } catch {
-    // Electron 退出时可能仍短暂占用临时数据库，不覆盖测试结果。
-  }
-})

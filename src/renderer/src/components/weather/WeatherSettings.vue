@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import AppToggle from '../ui/AppToggle.vue'
 import BaseButton from '../ui/BaseButton.vue'
 import HelpButton from '../ui/HelpButton.vue'
@@ -7,10 +7,12 @@ import ChinaAreaCascader from './ChinaAreaCascader.vue'
 import {
   normalizeWeatherLocation,
   weatherLocationFromReverseGeocode,
+  weatherLocationKey,
   weatherLocationLabel
 } from '../../../../shared/weather-rules.js'
 
 const enabled = ref(false)
+const almanacEnabled = ref(true)
 const location = ref(null)
 const divisionTree = ref([])
 const busy = ref('')
@@ -20,6 +22,80 @@ const REVERSE_GEOCODING_URL = 'https://api.bigdatacloud.net/data/reverse-geocode
 const DEVICE_LOCATION_TIMEOUT_MS = 20_000
 const REVERSE_GEOCODING_TIMEOUT_MS = 10_000
 let locationSavePromise = null
+let locationRequestSequence = 0
+let activeLocationRequest = null
+let settingsRevision = 0
+let disposed = false
+let stopSettingsChanged
+
+function applySettingsSnapshot(snapshot) {
+  if (disposed) return
+  settingsRevision += 1
+  const request = activeLocationRequest
+  const nextLocationKey = weatherLocationKey(snapshot?.values?.weather?.location)
+  const nextEnabled = Boolean(snapshot?.values?.weather?.enabled)
+  // Own writes also broadcast. Accept their pending values, but another weather
+  // choice or reset invalidates every earlier lookup before it can write again.
+  if (
+    request &&
+    ((nextLocationKey !== request.locationKey && nextLocationKey !== request.pendingLocationKey) ||
+      (nextEnabled !== request.enabled && nextEnabled !== request.pendingEnabled))
+  )
+    invalidateLocationRequest()
+  enabled.value = Boolean(snapshot?.values?.weather?.enabled)
+  almanacEnabled.value = snapshot?.values?.almanac?.enabled !== false
+  location.value = snapshot?.values?.weather?.location || null
+}
+
+function isCurrentLocationRequest(request) {
+  return !disposed && activeLocationRequest === request
+}
+
+function invalidateLocationRequest() {
+  locationRequestSequence += 1
+  const previous = activeLocationRequest
+  activeLocationRequest = null
+  locationSavePromise = null
+  previous?.controller.abort()
+  if (previous?.phase && busy.value === previous.phase) busy.value = ''
+}
+
+function beginLocationRequest(phase = '') {
+  invalidateLocationRequest()
+  const request = {
+    controller: new AbortController(),
+    locationKey: weatherLocationKey(location.value),
+    enabled: enabled.value,
+    pendingLocationKey: null,
+    pendingEnabled: null,
+    phase
+  }
+  activeLocationRequest = request
+  if (phase) busy.value = phase
+  return request
+}
+
+function finishLocationRequest(request) {
+  if (!isCurrentLocationRequest(request)) return
+  invalidateLocationRequest()
+}
+
+function trackLocationRequest(request, promise) {
+  locationSavePromise = promise
+  const finish = () => {
+    if (locationSavePromise === promise) locationSavePromise = null
+    finishLocationRequest(request)
+  }
+  promise.then(finish, finish)
+  return promise
+}
+
+function locationRequestSignal(request) {
+  return AbortSignal.any([
+    request.controller.signal,
+    AbortSignal.timeout(REVERSE_GEOCODING_TIMEOUT_MS)
+  ])
+}
 
 function reportWeatherLocation(level, message, metadata) {
   try {
@@ -68,50 +144,83 @@ function weatherLocationCandidatePayload(candidate) {
 }
 
 async function load() {
+  const revision = settingsRevision
+  const requestSequence = locationRequestSequence
   const [snapshot, areas] = await Promise.all([
     window.api.getSettingsSnapshot(),
     window.api.getWeatherDivisionTree()
   ])
+  if (disposed) return
   divisionTree.value = areas || []
-  enabled.value = Boolean(snapshot?.values?.weather?.enabled)
-  location.value = snapshot?.values?.weather?.location || null
+  // 只有完整设置快照可取代启动读取，局部开关操作不提供地区等其余字段。
+  if (settingsRevision !== revision || requestSequence !== locationRequestSequence) return
+  applySettingsSnapshot(snapshot)
+  const enrichmentRevision = settingsRevision
   if (
     location.value &&
     !location.value.id &&
     !location.value.admin2 &&
     location.value.countryCode === 'CN'
   ) {
+    const request = beginLocationRequest()
     try {
-      const enriched = await reverseGeocodeDeviceLocation(location.value)
+      const enriched = await reverseGeocodeDeviceLocation(location.value, request)
+      if (!isCurrentLocationRequest(request) || settingsRevision !== enrichmentRevision) return
       if (enriched?.admin2) {
-        location.value = enriched
+        request.pendingLocationKey = weatherLocationKey(enriched)
         await window.api.setSettingValue('weather.location', enriched)
+        if (isCurrentLocationRequest(request)) location.value = enriched
       }
     } catch {
       // 旧版仅保存到城市级时继续展示已有数据；反向地理编码失败不阻断设置页。
+    } finally {
+      finishLocationRequest(request)
     }
   }
 }
 
 async function persistEnabled(value) {
+  if (disposed) return
+  invalidateLocationRequest()
   if (value && !location.value) {
     enabled.value = false
     error.value = '请先选择省、市、区县'
     return
   }
+  const revision = settingsRevision
   busy.value = 'save'
   error.value = ''
   try {
     await window.api.setSettingValue('weather.enabled', value)
   } catch (saveError) {
-    enabled.value = !value
-    error.value = errorMessage(saveError, '保存天气开关失败')
+    if (!disposed && settingsRevision === revision) {
+      enabled.value = !value
+      error.value = errorMessage(saveError, '保存天气开关失败')
+    }
   } finally {
-    busy.value = ''
+    if (!disposed) busy.value = ''
   }
 }
 
-async function saveLocationCandidate(candidate) {
+async function persistAlmanacEnabled(value) {
+  if (disposed) return
+  const revision = settingsRevision
+  busy.value = 'almanac'
+  error.value = ''
+  try {
+    await window.api.setSettingValue('almanac.enabled', value)
+  } catch (saveError) {
+    if (!disposed && settingsRevision === revision) {
+      almanacEnabled.value = !value
+      error.value = errorMessage(saveError, '保存宜忌开关失败')
+    }
+  } finally {
+    if (!disposed) busy.value = ''
+  }
+}
+
+async function saveLocationCandidate(candidate, request) {
+  if (!isCurrentLocationRequest(request)) return false
   const candidatePayload = weatherLocationCandidatePayload(candidate)
   if (!candidatePayload) {
     error.value = '无法保存该位置'
@@ -129,48 +238,54 @@ async function saveLocationCandidate(candidate) {
     return false
   }
   busy.value = 'save'
+  request.phase = 'save'
   error.value = ''
   try {
     if (!hasCoordinates) {
       resolvedCandidate = await window.api.resolveWeatherLocation(candidatePayload)
+      if (!isCurrentLocationRequest(request)) return false
     }
     const normalized = normalizeWeatherLocation(resolvedCandidate)
     if (!normalized) throw new Error('无法获得该地区的天气坐标')
+    if (!isCurrentLocationRequest(request)) return false
+    request.pendingLocationKey = weatherLocationKey(normalized)
     await window.api.setSettingValue('weather.location', normalized)
+    if (!isCurrentLocationRequest(request)) return false
     location.value = normalized
+    request.locationKey = weatherLocationKey(normalized)
+    request.pendingLocationKey = null
     if (!enabled.value) {
-      enabled.value = true
+      request.pendingEnabled = true
       await window.api.setSettingValue('weather.enabled', true)
+      if (!isCurrentLocationRequest(request)) return false
+      enabled.value = true
+      request.enabled = true
+      request.pendingEnabled = null
     }
     return true
   } catch (saveError) {
+    if (!isCurrentLocationRequest(request)) return false
     error.value = errorMessage(saveError, '保存地区失败')
     reportWeatherLocation('error', '天气地区保存失败', {
       reason: errorMessage(saveError, '保存地区失败')
     })
     return false
-  } finally {
-    busy.value = ''
   }
 }
 
 function choose(candidate) {
+  if (disposed) return Promise.resolve(false)
   // Teleport 浮层在 leave 动画结束前仍保留 DOM。即使旧节点收到第二次点击，
   // 同一时刻也只允许一条解析与设置写入链路，避免地区和天气开关重复提交。
   if (locationSavePromise) return locationSavePromise
-  const request = saveLocationCandidate(candidate)
-  locationSavePromise = request
-  const clearRequest = () => {
-    if (locationSavePromise === request) locationSavePromise = null
-  }
-  request.then(clearRequest, clearRequest)
-  return request
+  const request = beginLocationRequest('save')
+  return trackLocationRequest(request, saveLocationCandidate(candidate, request))
 }
 
 function useDeviceLocation() {
-  if (busy.value) return
+  if (disposed || busy.value) return
+  const request = beginLocationRequest('locate')
   const startedAt = Date.now()
-  busy.value = 'locate'
   error.value = ''
   reportWeatherLocation('info', '用户请求设备位置', {
     timeoutMs: DEVICE_LOCATION_TIMEOUT_MS,
@@ -179,32 +294,37 @@ function useDeviceLocation() {
   })
   if (!navigator.geolocation) {
     reportWeatherLocation('warn', '当前运行环境不支持 Geolocation API')
-    void handleDeviceLocationFailure({ code: 0 }, startedAt)
+    void trackLocationRequest(request, handleDeviceLocationFailure({ code: 0 }, startedAt, request))
     return
   }
   navigator.geolocation.getCurrentPosition(
     ({ coords }) => {
+      if (!isCurrentLocationRequest(request)) return
       reportWeatherLocation('info', '系统已返回设备位置', {
         elapsedMs: Date.now() - startedAt,
         latitude: Number(coords?.latitude),
         longitude: Number(coords?.longitude),
         accuracyMeters: Number.isFinite(Number(coords?.accuracy)) ? Number(coords.accuracy) : null
       })
-      void chooseDeviceLocation(coords)
+      void trackLocationRequest(request, chooseDeviceLocation(coords, request))
     },
     (locationError) => {
-      void handleDeviceLocationFailure(locationError, startedAt)
+      if (!isCurrentLocationRequest(request)) return
+      void trackLocationRequest(
+        request,
+        handleDeviceLocationFailure(locationError, startedAt, request)
+      )
     },
     { enableHighAccuracy: false, timeout: DEVICE_LOCATION_TIMEOUT_MS, maximumAge: 3_600_000 }
   )
 }
 
-async function reverseGeocodeNetworkLocation() {
+async function reverseGeocodeNetworkLocation(request) {
   const url = new URL(REVERSE_GEOCODING_URL)
   url.searchParams.set('localityLanguage', 'zh')
   const response = await fetch(url, {
     headers: { Accept: 'application/json' },
-    signal: AbortSignal.timeout(REVERSE_GEOCODING_TIMEOUT_MS)
+    signal: locationRequestSignal(request)
   })
   const data = await response.json().catch(() => null)
   if (!response.ok || !data) throw new Error(data?.message || `地名服务返回 ${response.status}`)
@@ -224,7 +344,8 @@ async function reverseGeocodeNetworkLocation() {
   return location
 }
 
-async function handleDeviceLocationFailure(locationError, startedAt) {
+async function handleDeviceLocationFailure(locationError, startedAt, request) {
+  if (!isCurrentLocationRequest(request)) return false
   const code = Number(locationError?.code) || 0
   const failureMessage = deviceLocationErrorMessage(code)
   reportWeatherLocation('warn', '设备位置请求失败', {
@@ -234,7 +355,6 @@ async function handleDeviceLocationFailure(locationError, startedAt) {
     timeoutMs: DEVICE_LOCATION_TIMEOUT_MS
   })
   if (code === 1) {
-    busy.value = ''
     error.value = failureMessage
     return
   }
@@ -242,7 +362,9 @@ async function handleDeviceLocationFailure(locationError, startedAt) {
   error.value = `${failureMessage}，正在尝试网络大致地区…`
   reportWeatherLocation('info', '开始使用网络大致地区作为定位降级')
   try {
-    const saved = await choose(await reverseGeocodeNetworkLocation())
+    const candidate = await reverseGeocodeNetworkLocation(request)
+    if (!isCurrentLocationRequest(request)) return false
+    const saved = await saveLocationCandidate(candidate, request)
     if (!saved) return
     error.value = `${failureMessage}，已使用网络大致地区；可手动选择地区修正`
     reportWeatherLocation('info', '网络大致地区已保存', {
@@ -252,7 +374,7 @@ async function handleDeviceLocationFailure(locationError, startedAt) {
       countryCode: location.value?.countryCode || ''
     })
   } catch (networkError) {
-    busy.value = ''
+    if (!isCurrentLocationRequest(request)) return false
     error.value = `${failureMessage}；网络大致地区也不可用，可以改用地区选择`
     reportWeatherLocation('warn', '网络大致地区定位失败', {
       reason: String(networkError?.message || '网络定位失败')
@@ -260,14 +382,14 @@ async function handleDeviceLocationFailure(locationError, startedAt) {
   }
 }
 
-async function reverseGeocodeDeviceLocation(coords) {
+async function reverseGeocodeDeviceLocation(coords, request) {
   const url = new URL(REVERSE_GEOCODING_URL)
   url.searchParams.set('latitude', String(coords.latitude))
   url.searchParams.set('longitude', String(coords.longitude))
   url.searchParams.set('localityLanguage', 'zh')
   const response = await fetch(url, {
     headers: { Accept: 'application/json' },
-    signal: AbortSignal.timeout(REVERSE_GEOCODING_TIMEOUT_MS)
+    signal: locationRequestSignal(request)
   })
   const data = await response.json().catch(() => null)
   if (!response.ok || !data) throw new Error(data?.message || `地名服务返回 ${response.status}`)
@@ -280,11 +402,13 @@ async function reverseGeocodeDeviceLocation(coords) {
   return location
 }
 
-async function chooseDeviceLocation(coords) {
-  busy.value = 'locate'
+async function chooseDeviceLocation(coords, request) {
+  if (!isCurrentLocationRequest(request)) return false
   error.value = ''
   try {
-    const saved = await choose(await reverseGeocodeDeviceLocation(coords))
+    const candidate = await reverseGeocodeDeviceLocation(coords, request)
+    if (!isCurrentLocationRequest(request)) return false
+    const saved = await saveLocationCandidate(candidate, request)
     if (saved) {
       reportWeatherLocation('info', '设备位置已解析并保存', {
         name: location.value?.name || '',
@@ -294,19 +418,23 @@ async function chooseDeviceLocation(coords) {
       })
     }
   } catch (reverseError) {
+    if (!isCurrentLocationRequest(request)) return false
     reportWeatherLocation('warn', '设备位置地名解析失败，尝试只保存坐标', {
       reason: String(reverseError?.message || '无法解析城市')
     })
-    const saved = await choose({
-      name: '设备位置',
-      admin1: '',
-      admin2: '',
-      country: '',
-      countryCode: '',
-      latitude: coords.latitude,
-      longitude: coords.longitude,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'auto'
-    })
+    const saved = await saveLocationCandidate(
+      {
+        name: '设备位置',
+        admin1: '',
+        admin2: '',
+        country: '',
+        countryCode: '',
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'auto'
+      },
+      request
+    )
     if (saved) {
       error.value = `${reverseError?.message || '无法解析城市'}，已保存坐标；可手动选择地区修正`
       reportWeatherLocation('info', '设备位置坐标已保存，未取得城市名称', {
@@ -317,9 +445,19 @@ async function chooseDeviceLocation(coords) {
   }
 }
 
-onMounted(() =>
-  load().catch((loadError) => (error.value = errorMessage(loadError, '读取天气设置失败')))
-)
+onMounted(() => {
+  stopSettingsChanged = window.api.onSettingsChanged?.(applySettingsSnapshot)
+  const revision = settingsRevision
+  void load().catch((loadError) => {
+    if (!disposed && settingsRevision === revision)
+      error.value = errorMessage(loadError, '读取天气设置失败')
+  })
+})
+onBeforeUnmount(() => {
+  disposed = true
+  invalidateLocationRequest()
+  stopSettingsChanged?.()
+})
 </script>
 
 <template>
@@ -327,7 +465,8 @@ onMounted(() =>
     <div class="setting-item">
       <div class="setting-left">
         <span class="setting-label"
-          >显示天气<HelpButton text="窗口显示时每 30 分钟更新，恢复窗口后检查时效，也可手动更新。"
+          >显示天气<HelpButton
+            text="各视图同步显示天气，关闭后留空。窗口显示时每 30 分钟更新，也可手动刷新。"
         /></span>
       </div>
       <div class="setting-right">
@@ -337,6 +476,24 @@ onMounted(() =>
           aria-label="显示天气"
           :disabled="Boolean(busy)"
           @update:model-value="persistEnabled"
+        />
+      </div>
+    </div>
+
+    <div class="setting-item" data-search-text="显示宜忌 黄历 开启 关闭">
+      <div class="setting-left">
+        <span class="setting-label"
+          >显示宜忌<HelpButton
+            text="与天气独立控制，各视图同步。关闭后留空，农历和节假日仍正常显示。"
+        /></span>
+      </div>
+      <div class="setting-right">
+        <AppToggle
+          v-model="almanacEnabled"
+          size="sm"
+          aria-label="显示宜忌"
+          :disabled="Boolean(busy)"
+          @update:model-value="persistAlmanacEnabled"
         />
       </div>
     </div>
@@ -439,6 +596,6 @@ onMounted(() =>
   line-height: 1.5;
 }
 .weather-settings__message.is-error {
-  color: #ff453a;
+  color: var(--ui-danger);
 }
 </style>

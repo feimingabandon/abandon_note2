@@ -1,5 +1,6 @@
 #include "CaptureOverlay.h"
 #include "CaptureAppearance.h"
+#include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QGuiApplication>
@@ -7,10 +8,10 @@
 #include <algorithm>
 CaptureOverlay::CaptureOverlay(QScreen *screen, QImage image, QString source,
                                Capture::DesktopLayout layout,
-                               QString settingsPath)
+                               QString settingsPath, bool quickCopy)
     : QWidget(nullptr,
               Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool),
-      origin(source), desktop(std::move(layout)) {
+      copyOnSelect(quickCopy), origin(source), desktop(std::move(layout)) {
   setAttribute(Qt::WA_DeleteOnClose);
   setWindowTitle(QStringLiteral("Abandon 截图"));
   setMouseTracking(true);
@@ -79,10 +80,15 @@ CaptureOverlay::CaptureOverlay(QScreen *screen, QImage image, QString source,
               finish(a);
           });
   hint = new QLabel(
-      QStringLiteral("拖动框选 · Tab 切换窗口/控件 · Ctrl+A 全屏 · Esc 取消"),
+      copyOnSelect
+          ? QStringLiteral("框选后松开即复制 · Tab 切换窗口/控件 · Esc 取消")
+          : QStringLiteral(
+                "拖动框选 · Tab 切换窗口/控件 · Ctrl+A 全屏 · Esc 取消"),
       this);
-  hint->setStyleSheet(
-      "background:#1d1d1f;color:white;padding:6px 9px;border-radius:5px;");
+  hint->setObjectName("captureHint");
+  hint->setStyleSheet(Capture::chromeStyle());
+  connect(qApp, &QApplication::paletteChanged, hint,
+          [this] { hint->setStyleSheet(Capture::chromeStyle()); });
   hint->setAttribute(Qt::WA_TransparentForMouseEvents);
   hint->adjustSize();
   hint->move(12, 12);
@@ -232,7 +238,11 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
       at.setY(hover.y() - size.height() - 22);
     at.setX(std::max(viewport.x(), at.x()));
     at.setY(std::max(viewport.y(), at.y()));
-    p.fillRect(QRect(at, size), QColor("#292522"));
+    auto magnifierEdge = palette().windowText().color();
+    magnifierEdge.setAlphaF(.12);
+    p.setPen(QPen(magnifierEdge, 1));
+    p.setBrush(palette().window());
+    p.drawRoundedRect(QRect(at, size), 7, 7);
     QImage sample(15, 15, QImage::Format_RGB32);
     sample.fill(Qt::black);
     {
@@ -242,7 +252,7 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
     p.drawImage(QRect(at + QPoint(7, 7), QSize(135, 135)), sample);
     p.setPen(QColor("#0071e3"));
     p.drawRect(QRect(at + QPoint(70, 70), QSize(9, 9)));
-    p.setPen(Qt::white);
+    p.setPen(palette().windowText().color());
     auto label = hex ? color.name().toUpper()
                      : QString("%1, %2, %3")
                            .arg(color.red())
@@ -256,11 +266,24 @@ void CaptureOverlay::refresh() {
   rendered = document.render(annotations->typing() ? document.editable : -1);
   update();
 }
+qint64 CaptureOverlay::memoryCost() const {
+  // The initial preview shares base pixels. After drawing, the old composite
+  // remains alive while render() allocates the next layer and composite.
+  return document.memoryCost() +
+         (rendered.cacheKey() == document.base.cacheKey()
+              ? 0
+              : rendered.sizeInBytes());
+}
 void CaptureOverlay::placeToolbar() {
   if (!hint)
     return;
   annotations->editBounds =
       selection.isEmpty() ? document.base.rect() : selection;
+  if (copyOnSelect) {
+    annotations->panel->hide();
+    annotations->closePopovers();
+    return;
+  }
   if (selection.isEmpty()) {
     annotations->panel->hide();
     return;
@@ -331,6 +354,7 @@ void CaptureOverlay::finish(QString action) {
   if (selection.isEmpty())
     return;
   drag.clear();
+  annotations->closePopovers();
   annotations->complete();
   if (output)
     output(action, document.render().copy(selection));
@@ -471,7 +495,12 @@ void CaptureOverlay::mouseReleaseEvent(QMouseEvent *e) {
                            std::min(anchor.y(), document.base.height() - 1)),
                     QSize(1, 1))
             : detected;
+  const bool selectedNow = drag == "new";
   drag.clear();
+  if (copyOnSelect && selectedNow && !selection.isEmpty()) {
+    finish("copy");
+    return;
+  }
   toolbarMonitor = monitorAt(pixel(e->position()));
   placeToolbar();
   update();
@@ -487,8 +516,10 @@ void CaptureOverlay::mouseDoubleClickEvent(QMouseEvent *e) {
 }
 void CaptureOverlay::showError(const QString &message) {
   const auto viewport = monitorViewport(toolbarMonitor);
-  hint->setText(message);
-  hint->setMaximumWidth(viewport.width());
+  hint->setText(copyOnSelect ? message + QStringLiteral(
+                                             "\nEnter / Ctrl+C 重试 · Esc 取消")
+                             : message);
+  hint->setMaximumWidth(std::max(1, viewport.width() - 24));
   hint->setWordWrap(true);
   hint->adjustSize();
   hint->move(viewport.topLeft());
@@ -546,6 +577,8 @@ void CaptureOverlay::detect() {
   update();
 }
 void CaptureOverlay::keyPressEvent(QKeyEvent *e) {
+  if (annotations->closePopoverForKey(e))
+    return;
   if (annotations->key(e))
     return;
   bool ctrl = e->modifiers().testFlag(Qt::ControlModifier),
@@ -572,6 +605,9 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *e) {
       finish("copy");
       return;
     }
+    if (copyOnSelect && (key == Qt::Key_S || key == Qt::Key_T ||
+                         key == Qt::Key_N || key == Qt::Key_B))
+      return;
     if (key == Qt::Key_S) {
       finish(shift ? "quickSave" : "save");
       return;
@@ -591,6 +627,8 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *e) {
   }
   if ((ctrl && key == Qt::Key_A) || key == Qt::Key_F) {
     selectAll();
+    if (copyOnSelect)
+      finish("copy");
     return;
   }
   if (key == Qt::Key_Space && !e->isAutoRepeat()) {

@@ -9,10 +9,17 @@ const HELP_PAGE_PATH = new URL(
   '../src/renderer/src/components/help/help-content.js',
   import.meta.url
 )
+const readDock = () =>
+  [
+    '../src/renderer/src/components/system/settings/DockSettingsSection.vue',
+    '../src/renderer/src/composables/useDockSettingsForm.js'
+  ]
+    .map((file) => readFileSync(new URL(file, import.meta.url), 'utf8'))
+    .join('\n')
 
 describe('dock settings UI', () => {
   it('offers all three reveal modes and all three edges in the shared settings panel', () => {
-    const source = readFileSync(SETTINGS_PANEL_PATH, 'utf8')
+    const source = readDock()
 
     expect(source).toContain('<h4 class="section-title">贴边隐藏</h4>')
     expect(source).toContain('>隐藏后的唤出方式<HelpButton')
@@ -24,8 +31,14 @@ describe('dock settings UI', () => {
     expect(source).toContain('v-for="edge in dockEdgeOptions"')
     expect(source).toContain(':aria-pressed="dockEnabledEdges.includes(edge.value)"')
     expect(source).toContain('未选择边缘时，当前{{ currentViewLabel }}不会贴边隐藏')
-    expect(source).toContain('window.api.setDockConfig({')
-    expect(source).toContain('return !dockRuntime.value.supported ||')
+    const queue = readFileSync(
+      new URL('../src/renderer/src/composables/useSettingsWriteQueue.js', import.meta.url),
+      'utf8'
+    )
+    const panel = readFileSync(SETTINGS_PANEL_PATH, 'utf8')
+    expect(panel).toContain('write: (config) => settingsWrites.saveDockConfig(config)')
+    expect(queue).toContain('api.setDockConfig(config)')
+    expect(source).toContain('return !runtime.value.supported ||')
     expect(source).toContain(':disabled="isDockRevealModeDisabled(option.value)"')
     expect(source).toContain(':disabled="!dockRuntime.supported"')
   })
@@ -41,14 +54,13 @@ describe('dock settings UI', () => {
   })
 
   it('reflows the three-mode selector against the settings panel width', () => {
-    const source = readFileSync(SETTINGS_PANEL_PATH, 'utf8')
+    const source = readDock()
     const dockSection = source.slice(source.indexOf('<h4 class="section-title">贴边隐藏</h4>'))
 
     expect(dockSection).toMatch(
       /<div class="setting-item dock-reveal-setting">[\s\S]*?>隐藏后的唤出方式<HelpButton/
     )
-    expect(source).toContain('container-type: inline-size')
-    expect(source).toContain('grid-template-columns: repeat(3, minmax(0, 1fr))')
+    expect(readFileSync(SETTINGS_PANEL_PATH, 'utf8')).toContain('container-type: inline-size')
     expect(source).toContain('@container (max-width: 340px)')
     expect(source).toMatch(
       /@container \(max-width: 340px\)[\s\S]*?\.dock-reveal-setting \.setting-right\s*{[\s\S]*?width:\s*100%/

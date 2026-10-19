@@ -10,6 +10,11 @@ export function getDb() {
   return database
 }
 
+/** Read the shared handle without creating a second lifecycle-owned mirror. */
+export function getDbIfInitialized() {
+  return database
+}
+
 export function clearDb() {
   database = null
 }

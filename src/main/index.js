@@ -1,3 +1,26 @@
+import { createBusinessMutationAdmission } from './application/business-mutation-admission.js'
+import {
+  runCommittedDataCleanup,
+  broadcastBusinessDataCleared,
+  createBusinessClearCleanupError
+} from './application/business-data-clear.js'
+import { createFeatureRuntime } from './application/feature-runtime.js'
+import { createMainTrayController } from './tray/main-tray-controller.js'
+import { createNotificationActivation } from './services/notification-activation.js'
+import { createSettingsWriteCoordinator } from './settings/settings-write-coordinator.js'
+import { createBackgroundSettingsCoordinator } from './settings/background-settings-coordinator.js'
+import { createMainViewNavigation } from './windows/main-view-navigation.js'
+import { createPresentationRuntime } from './windows/presentation-runtime.js'
+import { createWindowDragController } from './windows/window-drag-controller.js'
+import { createWindowDragCoordinates } from './windows/window-drag-coordinates.js'
+import { createDockRuntime } from './window-motion/dock-runtime.js'
+import { createCaptureWindowIntegration } from './capture/capture-window-integration.js'
+import { createBlurRuntime } from './windows/blur-runtime.js'
+import { createZOrderRuntime } from './windows/z-order-runtime.js'
+import { createWindowGeometryPersistence } from './windows/window-geometry-persistence.js'
+import { createApplicationBootstrap, settleStartupRecoveries } from './application/bootstrap.js'
+import { createShutdownCoordinator } from './application/shutdown-coordinator.js'
+import { createMainWindowHost } from './windows/main-window-host.js'
 import { installRendererRecovery } from './windows/renderer-recovery.js'
 import { beginPerformanceOperation } from './logging/operation-performance.js'
 import { createEditingDraftGuard } from './windows/editing-draft-guard.js'
@@ -20,47 +43,27 @@ import { join, resolve } from 'path'
 import { randomUUID } from 'crypto'
 import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
 import icon from '../../resources/icon.png?asset' // 应用图标（Vite asset 导入）
-import { createShortcutTrayImages } from './tray/shortcut-status.js'
 import {
   initDatabase,
   closeDatabase,
   getDb,
-  getAllSettings,
-  setSettingsBatch,
-  clearSettings,
   cleanupPendingAttachmentDirs,
   clearNoteData
 } from './db/db.js'
+import { getAllSettings, setSettingsBatch } from './db/db-settings-repository.js'
+import { createSettingsRuntime } from './settings/settings-runtime.js'
 import {
-  detectCapabilities,
-  initialize as blurInit,
   setConfig as blurSetConfig,
-  updateGeometry as blurUpdateGeometry,
-  syncGeometryAndWait as blurSyncGeometryAndWait,
-  destroy as blurDestroy,
-  reSyncZOrder as blurReSyncZOrder,
   getRuntimeHealth as getBlurRuntimeHealth,
-  getNativeRuntimeCompatibility,
-  getWindowZOrderStatus,
-  reassertWindowZOrder,
-  setWindowAlwaysOnBottom
+  getNativeRuntimeCompatibility
 } from './bridge/blur_bridge.js'
-import { createWindowMotionBackend } from './window-motion/index.js'
-import { createDeferredWindowRestore } from './windows/deferred-window-restore.js'
-import { DockTransitionState } from './window-motion/dock-transition-state.js'
-import {
-  resolveFullscreenRebuildHandlePosition,
-  stopEdgeMonitorForFullscreenRebuild
-} from './window-motion/dock-display-rebuild.js'
-import {
-  dockRuntimeConfigEqual,
-  isCurrentDockMonitorEvent,
-  normalizeDockRuntimeConfig,
-  selectNearestDockSide,
-  validateDockConfigPayload
-} from './window-motion/dock-config.js'
 
-import { createNote, getNoteById, activateNotes, updateNote } from './db/db-notes.js'
+import { createDeferredWindowRestore } from './windows/deferred-window-restore.js'
+
+import { validateDockConfigPayload } from './window-motion/dock-config.js'
+
+import { createNote, getNoteById, activateNotes } from './db/db-notes.js'
+import { saveStickyNoteContent } from './notes/sticky-note-commands.js'
 import {
   countDesktopStickyRecords,
   deleteAllDesktopStickyRecords,
@@ -68,7 +71,6 @@ import {
   hasDesktopStickyRecord,
   insertDesktopStickyRecord,
   listDesktopStickyRecords,
-  updateDesktopStickyContentsByNoteId,
   updateDesktopStickyRecord
 } from './db/db-desktop-stickies.js'
 import {
@@ -92,38 +94,24 @@ import {
   removePendingRemoteSessionEnd
 } from './db/db-remote-sessions.js'
 import { RemoteCoordinator } from './services/remote/remote-coordinator.js'
+import { getRemoteDailyState, saveRemoteDailyState } from './db/db-remote-daily.js'
 import {
   cleanupPendingWallpaperFiles,
-  deleteWallpaperVersion,
   getWallpaperDataUrl,
-  getWallpaperThumbnail,
-  listWallpaperRecords,
-  markWallpaperUsed,
-  saveWallpaperVersion
+  getWallpaperThumbnail
 } from './db/db-wallpapers.js'
-import { Scheduler } from './services/scheduler.js'
 import { runRecurringTemplates } from './services/recurrence.js'
-import { TemplateSchedulerGuard } from './services/template-scheduler-guard.js'
-import { inspectDockHealth } from './window-motion/dock-health.js'
+import { runAutomaticNoteMove } from './services/automatic-note-move.js'
+
 import { AppUpdateService } from './services/app-update.js'
-import { NotificationService } from './services/NotificationService.js'
-import { ReminderService } from './services/ReminderService.js'
-import { ReminderWindow } from './services/ReminderWindow.js'
-import { TrayReminderController } from './services/TrayReminderController.js'
 import { CaptureCoordinator } from './capture/CaptureCoordinator.js'
 import { CaptureShortcutService } from './capture/CaptureShortcutService.js'
 import { ViewVisibilityShortcutService } from './services/view-visibility-shortcut.js'
 import { unavailableShortcuts } from '../shared/shortcut-status.js'
-import { ElectronStickyService } from './sticky/ElectronStickyService.js'
-import { buildStickyTrayTemplate } from './sticky/StickyTrayMenu.js'
-import {
-  constrainMainWindowBounds,
-  getPersistableWindowBounds,
-  getWindowBoundsUpdate
-} from './window-bounds.js'
+
 import { ipcMain } from './logging/ipc-main.js'
-import { checkpoint, currentOperation, diagnosticBroadcast } from './logging/operation-context.js'
-import { readSettingEvidence, reportSettingEvidence } from './logging/persistence-evidence.js'
+import { checkpoint, diagnosticBroadcast } from './logging/operation-context.js'
+
 import {
   exportLogs,
   flushLogs,
@@ -139,48 +127,34 @@ import { refreshCrashDumpIndex } from './logging/process-capture.js'
 import { collectSystemDiagnostics } from './logging/system-diagnostics.js'
 import { startPerformanceDiagnostics } from './logging/performance-diagnostics.js'
 import { registerDiagnosticController } from './logging/diagnostic-controller.js'
-import { diagnosticState } from './logging/diagnostic-state.js'
-import { DockNativeStatusObserver } from './logging/dock-native-status-observer.js'
+
 import { enforceNativeRuntimeCompatibility } from './native-runtime-gate.js'
 import {
   DEFAULT_SETTINGS,
-  DOCK_REVEAL_HANDLE_MODES,
-  createDefaultSettings,
-  normalizeViewMode,
-  normalizeWindowZOrderMode,
   resolveSettingsRows,
   serializeSetting,
   VIEW_MODES,
   WINDOW_Z_ORDER_MODES
 } from '../shared/settings-schema.js'
 import { getSystemNotificationCapability } from '../shared/notification-policy.js'
-import { parseReminderProtocol } from '../shared/reminder-protocol.js'
 import { registerBusinessIpcHandlers } from './ipc/register-business-ipc.js'
+import { registerAppIpc } from './ipc/register-app-ipc.js'
+import { registerLoggingIpc } from './ipc/register-logging-ipc.js'
+import { registerRemoteNoticeIpc } from './ipc/register-remote-notice-ipc.js'
+import { registerWallpaperIpc } from './ipc/register-wallpaper-ipc.js'
 import { registerCalendarIpcHandlers } from './ipc/register-calendar-ipc.js'
 import { registerDailyReportIpcHandlers } from './ipc/register-daily-report-ipc.js'
-import { registerWeatherIpcHandlers } from './ipc/register-weather-ipc.js'
 import { createMainWindowIpc } from './ipc/ipc-authorization.js'
 import {
-  APPLICATION_SETTING_IDS,
   ensureApplicationWindowSettingsInitialized,
   ensureViewSettingsInitialized,
   getViewSettingsScope,
-  prepareViewSettingsForSwitch,
   readApplicationSettings,
-  resetApplicationSettingsToDefaults,
-  writeActiveView,
-  writeApplicationSetting,
-  writeApplicationSettings
+  resetCurrentViewSettings,
+  writeApplicationSetting
 } from './settings/application-settings.js'
-import { getWindowProfile } from './windows/window-profiles.js'
-import {
-  PRESENTATION_MODES,
-  PresentationModeController
-} from './windows/presentation-mode-controller.js'
-import {
-  COMPACT_WINDOW_LIMITS,
-  compactBoundsFromAnchor
-} from '../shared/window-compact-geometry.js'
+
+import { COMPACT_WINDOW_LIMITS } from '../shared/window-compact-geometry.js'
 
 // 草稿只在本次应用进程中有效。主窗口即使切换页面或因崩溃重载，仍使用同一会话标识；
 // 应用重启后会生成新标识，渲染层因此不会恢复上一次启动留下的草稿。
@@ -198,7 +172,7 @@ const WINDOWS_TOAST_ACTIVATOR_CLSID = app.isPackaged
   ? '{1CBE300C-E243-4C77-8BA9-1068B748F17E}'
   : '{7A5326BE-B6B3-4F17-B4C3-C14FDFF451EA}'
 const APP_PROTOCOL = 'abandon-note'
-const SYSTEM_NOTIFICATION_CAPABILITY = getSystemNotificationCapability(process.platform)
+const SYSTEM_NOTIFICATION_CAPABILITY = getSystemNotificationCapability()
 const integrationAppRoot =
   process.env.ABANDON_INTEGRATION_TEST === '1' ? process.env.ABANDON_INTEGRATION_APP_ROOT : null
 const APP_ROOT = integrationAppRoot ? resolve(integrationAppRoot) : app.getAppPath()
@@ -215,6 +189,7 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'css.windowOpacity',
   'css.windowBorder',
   'css.fontSizeBase',
+  'css.noteRemarkFontSize',
   'css.textColor',
   'sticky.fontSize',
   'sticky.backgroundColor',
@@ -224,10 +199,13 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'ui.settingsPanelSize',
   'ui.dayPanelSize',
   'calendar.recurringPreviewEnabled',
+  'notes.quickCreateUntilCompleted',
+  'notes.autoMoveToToday',
   'notes.tagColorEnabled',
   'listAppearance.minimalMode',
   'interaction.doubleClickQuickEdit',
   'interaction.hideMainViewDuringScreenshot',
+  'almanac.enabled',
   'weather.enabled',
   'weather.location',
   'remote.receiveNotices',
@@ -238,7 +216,6 @@ const RENDERER_WRITABLE_SETTING_IDS = new Set([
   'window.compactFontSize',
   'listFilter'
 ])
-const APPLICATION_SETTING_ID_SET = new Set(APPLICATION_SETTING_IDS)
 const REMOTE_BASE_URL =
   process.env.ABANDON_REMOTE_BASE_URL || 'https://note.zhenshiyin.top/api/v1/client'
 
@@ -264,216 +241,51 @@ if (!gotSingleInstanceLock) {
 
 let appUpdateService = null
 let remoteCoordinator = null
-let notificationService = null
-let reminderService = null
-let trayReminderController = null
 let screenshotService = null
-let weatherRuntime = null
-
-/** 当前只允许存在一个主视图；值持久化在 application 设置作用域。 */
-let activeViewMode = VIEW_MODES.LIST
-let switchingMainView = false
-let pendingMainViewRendererReady = null
-
-function getActiveWindowName() {
-  return getViewSettingsScope(activeViewMode)
-}
-
-function getActiveWindowProfile() {
-  return getWindowProfile(activeViewMode)
-}
-
-function getDockRuntimeConfig() {
-  const profile = getActiveWindowProfile()
-  // dockEdges 是开发期间的向后兼容；最终 profile 以 supportedDockEdges
-  // 表达能力上限，用户设置不能越过该上限。
-  const supportedEdges = profile.supportedDockEdges || profile.dockEdges || []
-  const configuredDock = resolvedSettings?.dock ||
-    createDefaultSettings(activeViewMode).dock || {
-      revealHandleMode: DOCK_REVEAL_HANDLE_MODES.DIRECT,
-      enabledEdges: supportedEdges
-    }
-  return normalizeDockRuntimeConfig(configuredDock, supportedEdges)
-}
-
-function getDockRuntimeCapability() {
-  if (process.platform !== 'win32') {
-    return {
-      supported: false,
-      reason: '当前平台没有原生边缘监视器'
-    }
-  }
-  if (!windowMotionBackend) {
-    return {
-      supported: true,
-      reason: null
-    }
-  }
-
-  try {
-    const status = windowMotionBackend.getEdgeMonitorStatus()
-    if (status?.supported === false) {
-      return {
-        supported: false,
-        reason: status.error || 'Windows 原生边缘监视器不可用'
-      }
-    }
-    return {
-      supported: true,
-      reason: null
-    }
-  } catch (error) {
-    return {
-      supported: false,
-      reason: error?.message || '读取 Windows 原生边缘监视器能力失败'
-    }
-  }
-}
 
 /** 主窗口实例引用 */
-let mainWindow = null
-let mainWindowPresentationTiming = null
+const mainWindowHost = createMainWindowHost({ BrowserWindow })
+const getMainWindow = mainWindowHost.getWindow
 
 function getActiveVisualWindow() {
-  return mainWindow
+  return getMainWindow()
 }
 
 function getApplicationWindows() {
-  return mainWindow && !mainWindow.isDestroyed() ? [mainWindow] : []
+  return getMainWindow() && !getMainWindow().isDestroyed() ? [getMainWindow()] : []
 }
 
-/** 系统托盘实例 */
-let tray = null
-let trayShortcutImages = null
-let stickyService = null
 let viewVisibilityShortcutService = null
 let captureShortcutService = null
 let startupShortcutFailures = []
 let startupShortcutNoticeDismissed = false
-let captureShutdownStarted = false
-let captureShutdownFinished = false
 const viewVisibilityShortcutCaptureSenders = new WeakSet()
-let screenshotCaptureActive = false
-let screenshotMainViewWasHidden = false
-let screenshotMainViewWasVisible = false
-let screenshotMainViewWasFocused = false
+const captureWindowIntegration = createCaptureWindowIntegration({
+  getWindow: getMainWindow,
+  shouldHide: () => settingsRuntime.values.interaction.hideMainViewDuringScreenshot,
+  isQuitting: () => shutdownCoordinator.isQuitting(),
+  suspendDock: (source) => beginDockInteractionSuspension(source),
+  resumeDock: (source) => endDockInteractionSuspension(source),
+  hideWindow: (window) => hideMainWindowForViewNavigation(window),
+  reassertZOrder: (source) => reassertBottomWindowZOrder(source),
+  openBusiness: () => openMainWindowFromTray()
+})
 
-/** 是否正在执行退出流程（托盘菜单「退出」触发） */
-let isQuitting = false
-let remoteShutdownStarted = false
-let remoteShutdownFinished = false
-let pendingNotificationReveal = false
-const pendingReminderActions = []
-let pendingNotificationRevealContext = null
-let shutdownStartedAt = null
-let shutdownTrigger = null
-let shutdownCompletedLogged = false
 let diagnosticController = null
-let diagnosticShutdownStarted = false
-let diagnosticShutdownFinished = false
-
-function notificationWindowSnapshot() {
-  return {
-    windowExists: Boolean(mainWindow && !mainWindow.isDestroyed()),
-    loading: Boolean(
-      mainWindow &&
-      !mainWindow.isDestroyed() &&
-      !mainWindow.webContents.isDestroyed() &&
-      mainWindow.webContents.isLoadingMainFrame()
-    ),
-    visible: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
-    pending: pendingNotificationReveal
-  }
-}
-
-function revealApplicationFromNotification(context = {}) {
-  pendingNotificationReveal = true
-  pendingNotificationRevealContext = {
-    source: context.source || 'notification-click',
-    hadLegacyNoteId: Boolean(context.hadLegacyNoteId),
-    requestedAt: Date.now()
-  }
-  logger.info('notification.reveal-request', '收到系统通知唤醒请求', {
-    ...pendingNotificationRevealContext,
-    ...notificationWindowSnapshot()
-  })
-  if (!mainWindow || mainWindow.isDestroyed()) return true
-  revealPendingNotificationApplication()
-  return true
-}
-
-function revealPendingNotificationApplication() {
-  if (
-    !pendingNotificationReveal ||
-    !mainWindow ||
-    mainWindow.isDestroyed() ||
-    mainWindow.webContents.isDestroyed() ||
-    mainWindow.webContents.isLoadingMainFrame()
-  ) {
-    return false
-  }
-  const revealContext = pendingNotificationRevealContext || {
-    source: 'unknown',
-    hadLegacyNoteId: false,
-    requestedAt: null
-  }
-  pendingNotificationReveal = false
-  pendingNotificationRevealContext = null
-  logger.info('notification.reveal', '开始显示通知对应的应用主视图', {
-    ...revealContext,
-    queuedMs: revealContext.requestedAt ? Date.now() - revealContext.requestedAt : null,
-    ...notificationWindowSnapshot()
-  })
-  void exitCompactPresentation({ source: 'notification', showWhenDone: true })
-    .then(() => {
-      openMainWindow()
-      logger.info('notification.reveal', '通知唤醒与主视图显示完成', {
-        ...revealContext,
-        result: 'shown',
-        ...notificationWindowSnapshot()
-      })
-    })
-    .catch((error) => {
-      logger.error('presentation-mode.notification-expand', error, revealContext)
-      openMainWindow()
-    })
-  return true
-}
-
-/** 处理 Windows 富通知通过自定义协议回传的操作。 */
-function handleNotificationProtocol(rawUrl, source = 'protocol') {
-  try {
-    const url = new URL(rawUrl)
-    if (url.protocol !== `${APP_PROTOCOL}:` || url.hostname !== 'notification') return false
-    const reminderAction = parseReminderProtocol(rawUrl, APP_PROTOCOL)
-    if (reminderAction) {
-      if (reminderService) reminderService.nativeAction(reminderAction)
-      else if (pendingReminderActions.length < 32) pendingReminderActions.push(reminderAction)
-      return true
-    }
-
-    if (url.pathname === '/open') {
-      // 旧版本通知可能仍携带 id；这里只保留唤醒语义，不再定位或打开便签。
-      const hadLegacyNoteId = url.searchParams.has('id')
-      logger.info('notification.protocol', '已接收系统通知协议', {
-        source,
-        action: 'open',
-        hadLegacyNoteId,
-        ...notificationWindowSnapshot()
-      })
-      revealApplicationFromNotification({ source, hadLegacyNoteId })
-      return true
-    }
-  } catch (error) {
-    logger.error('notification.protocol', error, { source })
-  }
-  return false
-}
-
-function handleProtocolArgs(argv, source = 'startup') {
-  const protocolUrl = argv.find((arg) => arg.startsWith(`${APP_PROTOCOL}://`))
-  return protocolUrl ? handleNotificationProtocol(protocolUrl, source) : false
-}
+const businessAdmission = createBusinessMutationAdmission()
+const notificationActivation = createNotificationActivation({
+  protocol: APP_PROTOCOL,
+  getWindow: getMainWindow,
+  exitCompactPresentation: (...args) => exitCompactPresentation(...args),
+  openMainWindow: () => openMainWindow(),
+  logger
+})
+const {
+  handleProtocol: handleNotificationProtocol,
+  handleArgs: handleProtocolArgs,
+  reveal: revealApplicationFromNotification,
+  settlePendingReveal: revealPendingNotificationApplication
+} = notificationActivation
 
 if (gotSingleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
@@ -484,390 +296,429 @@ if (gotSingleInstanceLock) {
   })
 }
 
-/** 主窗口层级状态（全视图共享） */
-let zOrderMode = DEFAULT_SETTINGS.window.zOrderMode
-
 /** 窗口锁定状态（全视图共享，禁止移动和缩放） */
 let isLocked = DEFAULT_SETTINGS.window.lockState
 
-let titlebarDragSession = null
-let titlebarDockSuspended = false
 const MAIN_WINDOW_MIN_SIZE = 240
-const MAIN_VIEW_RENDERER_READY_TIMEOUT_MS = 15000
-const PRESENTATION_RENDERER_READY_TIMEOUT_MS = 3000
-let compactExpandedBounds = null
-let stableCompactBounds = null
-let compactDragSession = null
-let compactDockSuspended = false
-const presentationRendererWaiters = new Map()
-const acknowledgedPresentationOperations = new Set()
-
-const presentationModeController = new PresentationModeController({
-  onStateChanged: () => broadcastPresentationModeState(),
-  onError: (error, context) => logger.error('presentation-mode.controller', error, context)
-})
-
-function isCompactPresentationSupported() {
-  return process.platform === 'win32'
-}
-
-function isCompactPresentationActive() {
-  return presentationModeController.isCompact() || presentationModeController.isBusy()
-}
-
-function presentationModeSnapshot() {
-  const window = mainWindow
-  return {
-    supported: isCompactPresentationSupported(),
-    mode: presentationModeController.committedMode,
-    desiredMode: presentationModeController.desiredMode,
-    operation: presentationModeController.operation
-      ? { ...presentationModeController.operation }
-      : null,
-    bounds: window && !window.isDestroyed() ? window.getBounds() : null
-  }
-}
-
-function broadcastPresentationModeState() {
-  // 当前事务收口后，迟到的 Renderer ACK 不得留在下一次事务之外。
-  if (!presentationModeController.operation) acknowledgedPresentationOperations.clear()
-  if (
-    !mainWindow ||
-    mainWindow.isDestroyed() ||
-    mainWindow.webContents.isDestroyed() ||
-    mainWindow.webContents.isLoadingMainFrame()
-  ) {
-    return
-  }
-  mainWindow.webContents.send('presentation-mode:state-changed', presentationModeSnapshot())
-}
-
-function acknowledgePresentationRenderer(operationId) {
-  const normalized = Number(operationId)
-  if (!Number.isInteger(normalized) || presentationModeController.operation?.id !== normalized) {
-    return false
-  }
-  const waiter = presentationRendererWaiters.get(normalized)
-  if (waiter) waiter.resolve()
-  else acknowledgedPresentationOperations.add(normalized)
-  return true
-}
-
-function waitForPresentationRenderer(operationId) {
-  if (acknowledgedPresentationOperations.delete(operationId)) return Promise.resolve()
-  return new Promise((resolveReady, rejectReady) => {
-    const cleanup = () => {
-      clearTimeout(timer)
-      presentationRendererWaiters.delete(operationId)
-      acknowledgedPresentationOperations.delete(operationId)
-    }
-    const timer = setTimeout(() => {
-      cleanup()
-      rejectReady(new Error(`等待窗口展示模式 ${operationId} 渲染就绪超时`))
-    }, PRESENTATION_RENDERER_READY_TIMEOUT_MS)
-    presentationRendererWaiters.set(operationId, {
-      resolve: () => {
-        cleanup()
-        resolveReady()
-      }
-    })
-  })
-}
-
-function dipBoundsToPhysical(window, bounds) {
-  // A rectangle touching a mixed-DPI display boundary must use one display's
-  // scale for all four edges. Converting two independent points can select two
-  // displays and distort the native transition width or height.
-  return screen.dipToScreenRect(window, bounds)
-}
-
-function resolvedDragPoint(point) {
-  const x = Number(point?.x)
-  const y = Number(point?.y)
-  return Number.isFinite(x) && Number.isFinite(y)
-    ? { x: Math.round(x), y: Math.round(y) }
-    : screen.getCursorScreenPoint()
-}
-
-function captureTitlebarZOrderStatus() {
-  if (!mainWindow || mainWindow.isDestroyed()) return null
-  try {
-    return getWindowZOrderStatus(mainWindow)
-  } catch (error) {
-    return { error: error?.message || String(error) }
-  }
-}
-
-function normalizeTitlebarDragDiagnostics(diagnostics) {
-  if (!diagnostics || typeof diagnostics !== 'object') return {}
-  return {
-    dragId:
-      typeof diagnostics.dragId === 'string' ? diagnostics.dragId.slice(0, 128) || null : null,
-    reason: typeof diagnostics.reason === 'string' ? diagnostics.reason.slice(0, 128) : null,
-    renderer:
-      diagnostics.renderer && typeof diagnostics.renderer === 'object' ? diagnostics.renderer : null
-  }
-}
-
-function beginTitlebarWindowDrag(pointerOrigin, diagnostics = {}) {
-  const dragDiagnostics = normalizeTitlebarDragDiagnostics(diagnostics)
-  const rejectionReason = isLocked
-    ? 'locked'
-    : isCompactPresentationActive()
-      ? 'compact-presentation-active'
-      : !mainWindow || mainWindow.isDestroyed()
-        ? 'main-window-unavailable'
-        : titlebarDragSession
-          ? 'drag-session-already-active'
-          : null
-  if (rejectionReason) {
-    logger.info('titlebar.drag-lifecycle', '标题栏拖动开始请求被拒绝', {
-      dragId: dragDiagnostics.dragId,
-      rejectionReason,
-      isLocked,
-      zOrderMode,
-      presentationMode: presentationModeController.committedMode,
-      nativeZOrder: captureTitlebarZOrderStatus()
-    })
-    return false
-  }
-  let motionBounds
-  try {
-    motionBounds = windowMotionBackend?.capture()
-  } catch (error) {
-    logger.error('titlebar.drag-start', error, {
-      dragId: dragDiagnostics.dragId,
-      pointerOrigin,
-      electronBounds: mainWindow.getBounds(),
-      isLocked,
-      zOrderMode,
-      nativeZOrder: captureTitlebarZOrderStatus()
-    })
-    return false
-  }
-  if (!motionBounds) return false
-  const electronBounds = mainWindow.getBounds()
-  const electronContentBounds = mainWindow.getContentBounds()
-  beginDockInteractionSuspension('titlebar-drag')
-  titlebarDockSuspended = true
-  titlebarDragSession = {
-    dragId: dragDiagnostics.dragId,
-    startedAt: Date.now(),
-    cursor: resolvedDragPoint(pointerOrigin),
-    bounds: electronBounds,
-    lastPosition: { x: electronBounds.x, y: electronBounds.y },
-    motionPlan: {
-      initial: motionBounds,
-      expectedSize: { width: motionBounds.width, height: motionBounds.height },
-      expectedElectronContentSize: {
-        width: electronContentBounds.width,
-        height: electronContentBounds.height
-      }
-    },
-    moved: false,
-    updateCount: 0,
-    failureLogged: false
-  }
-  logger.info('titlebar.drag-lifecycle', '标题栏拖动事务已开始', {
-    dragId: titlebarDragSession.dragId,
-    pointerOrigin: titlebarDragSession.cursor,
-    electronStartBounds: electronBounds,
-    motionStartBounds: motionBounds,
-    isLocked,
-    zOrderMode,
-    nativeZOrder: captureTitlebarZOrderStatus()
-  })
-  return true
-}
-
-function updateTitlebarWindowDrag(pointerPosition) {
-  if (!titlebarDragSession || !mainWindow || mainWindow.isDestroyed()) return false
-  const session = titlebarDragSession
-  const cursor = resolvedDragPoint(pointerPosition)
-  const position = {
-    x: Math.round(session.bounds.x + cursor.x - session.cursor.x),
-    y: Math.round(session.bounds.y + cursor.y - session.cursor.y)
-  }
-  if (position.x === session.lastPosition.x && position.y === session.lastPosition.y) return false
-
-  const motionPosition =
-    session.motionPlan.initial.coordinateSpace === 'physical'
-      ? dipBoundsToPhysical(mainWindow, { ...session.bounds, ...position })
-      : position
-  try {
-    // 与贴边动画共用只移动、不提交宽高的原生链路，并抑制程序化移动期间产生的
-    // 异步 resize/move 事件，避免高 DPI 换算后的中间尺寸被写入设置。
-    setDockPosition(motionPosition, session.motionPlan)
-    session.lastPosition = position
-    session.moved = true
-    session.updateCount += 1
-    return true
-  } catch (error) {
-    if (!session.failureLogged) {
-      session.failureLogged = true
-      let actualMotionBounds = null
-      try {
-        actualMotionBounds = windowMotionBackend?.capture() || null
-      } catch {
-        // 原始移动错误优先，诊断快照读取失败不再制造第二条日志。
-      }
-      logger.error('titlebar.drag-move', error, {
-        dragId: session.dragId,
-        updateCount: session.updateCount,
-        pointerOrigin: session.cursor,
-        pointerPosition: cursor,
-        electronStartBounds: session.bounds,
-        electronTargetPosition: position,
-        electronActualBounds: mainWindow.getBounds(),
-        motionStartBounds: session.motionPlan.initial,
-        motionActualBounds: actualMotionBounds,
-        isLocked,
-        zOrderMode,
-        nativeZOrder: captureTitlebarZOrderStatus()
-      })
-    }
-    return false
-  }
-}
-
-function endTitlebarWindowDrag(diagnostics = {}) {
-  const dragDiagnostics = normalizeTitlebarDragDiagnostics(diagnostics)
-  const session = titlebarDragSession
-  if (!session && !titlebarDockSuspended) return false
-  const nativeZOrderBeforeReassert = captureTitlebarZOrderStatus()
-  const electronEndBounds = mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : null
-  titlebarDragSession = null
-  if (titlebarDockSuspended) {
-    titlebarDockSuspended = false
-    endDockInteractionSuspension('titlebar-drag')
-  }
-  if (session?.moved) debouncedSaveGeometry()
-  const bottomReasserted =
-    zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM
-      ? reassertBottomWindowZOrder('titlebar-drag-end')
-      : null
-  logger.info('titlebar.drag-lifecycle', '标题栏拖动事务已结束', {
-    dragId: session?.dragId || dragDiagnostics.dragId,
-    rendererReason: dragDiagnostics.reason,
-    durationMs: session?.startedAt ? Date.now() - session.startedAt : null,
-    moved: Boolean(session?.moved),
-    updateCount: session?.updateCount || 0,
-    pointerOrigin: session?.cursor || null,
-    electronStartBounds: session?.bounds || null,
-    electronEndBounds,
-    isLocked,
-    zOrderMode,
-    bottomReasserted,
-    nativeZOrderBeforeReassert,
-    nativeZOrderAfterReassert: captureTitlebarZOrderStatus(),
-    renderer: dragDiagnostics.renderer
-  })
-  return true
-}
 
 const WINDOW_CONTROL_GUARD_MS = 500
-const WINDOW_Z_ORDER_NOT_ENABLED_CODE = -6
-const BOTTOM_Z_ORDER_RETRY_DELAYS_MS = Object.freeze([160, 480, 1200])
+
 let lastLockToggleAt = 0
 let lockToggleInFlight = false
-let lastZOrderChangeAt = 0
-let zOrderChangeInFlight = false
-let pendingWindowZOrderMode = null
-let bottomZOrderRetryTimer = null
-let bottomZOrderRetryAttempt = 0
-let bottomZOrderRetryExhaustedNotified = false
 
-/** 系统模糊能力信息（启动时检测） */
-const blurCaps = detectCapabilities()
+const blurRuntime = createBlurRuntime({
+  getMainWindow,
+  getActiveVisualWindow,
+  getApplicationWindows,
+  getSettings: () => settingsRuntime.values,
+  isWindowMoving: () => dockRuntime.isMoving(),
+  getActiveWindowName: () => mainViewNavigation.getActiveWindowName(),
+  refreshResolvedSettings,
+  broadcastSettingsChanged,
+  logger
+})
+const {
+  syncBlurConfigFromResolved,
+  initializeBlurRuntime,
+  updateBlurDiagnostic,
+  runBlurRuntimeDiagnostic,
+  runBlurRuntimeOperation,
+  applyResolvedBlurRuntime,
+  restoreBlurForVisibleWindow,
+  synchronizePresentationBlur
+} = blurRuntime
+const zOrderRuntime = createZOrderRuntime({
+  getMainWindow,
+  getActiveVisualWindow,
+  getApplicationWindows,
+  getSettings: () => settingsRuntime.values,
+  readBlurState: () => ({ initialized: blurRuntime.initialized, config: blurRuntime.config }),
+  readDockState: () => ({ isSliding: dockRuntime.sliding, isDockHidden: dockRuntime.hidden }),
+  isWindowLocked: () => isLocked,
+  runBlurRuntimeOperation,
+  refreshResolvedSettings,
+  getResolvedSettingsSnapshot,
+  broadcastSettingsChanged,
+  sendAppMessage,
+  logger
+})
+const {
+  captureTitlebarZOrderStatus,
+  cancelBottomWindowZOrderRetry,
+  scheduleBottomWindowZOrderRetry,
+  applyWindowZOrder,
+  reassertBottomWindowZOrder,
+  setWindowZOrderMode
+} = zOrderRuntime
 
-/** 系统模糊是否已初始化 */
-let blurInitialized = false
-let blurInitializationError = null
-let blurInitializationNativeError = null
-let blurRuntimeFailed = false
-const blurSyncWindows = new WeakSet()
-let blurRuntimeFailureHandling = false
-let blurConfigRequestRevision = 0
-let wallpaperActivationRevision = 0
-let blurSettingsRequestsInFlight = 0
-let queuedViewSwitch = null
-let blurDiagnostic = {
-  status: blurCaps.supported ? 'pending' : 'unsupported',
-  lastCheckedAt: null,
-  message: blurCaps.supported
-    ? '等待调度器执行首次诊断'
-    : blurCaps.reason || '当前平台不支持系统毛玻璃'
-}
+/** SettingsRuntime uniquely owns resolved values, revision and the session shortcut gate. */
+const settingsRuntime = createSettingsRuntime({
+  initialViewMode: VIEW_MODES.LIST,
+  getViewMode: () => mainViewNavigation.mode,
+  readApplication: readApplicationSettings,
+  readViewRows: (viewMode) => getAllSettings(getViewSettingsScope(viewMode)),
+  onResolved: () => {
+    syncBlurConfigFromResolved()
+    screenshotService?.syncTheme()
+    remoteCoordinator?.settingsChanged()
+  },
+  readRuntime: readSettingsRuntimeSnapshot
+})
 
-/** 当前模糊配置（由完整设置快照派生） */
-const blurConfig = {
-  ...DEFAULT_SETTINGS.blur
-}
-
-/** DB 值覆盖共享默认值后的完整运行时设置快照。 */
-let resolvedSettings = createDefaultSettings(activeViewMode)
-// Temporary global pause belongs to the process, not a view or saved settings.
-let globalShortcutsEnabled = true
-let settingsRevision = 0
-
-/** 防抖定时器，用于延迟保存窗口位置/尺寸 */
-let geometryTimer = null
-let compactResizePersistenceTimer = null
-let pendingCompactResizeBounds = null
-let dockGeometryReconcileTimer = null
-let dockDisplayChangeTimer = null
-const pendingDockDisplayChanges = []
-const dockDisplayListeners = []
-const dockPowerListeners = []
-
-/** 窗口几何是否在最近一次成功持久化（或恢复默认）后发生过变化 */
-let geometryDirty = false
-
-/** 高频 resize/move 和自定义拖动结束统一经过此入口持久化主视图几何。 */
+/** Ordinary geometry has one state/timer owner; Dock and compact provide narrow snapshots. */
+const geometryPersistence = createWindowGeometryPersistence({
+  getWindow: getMainWindow,
+  canSchedule: () => !mainViewNavigation.isSwitching() && !isCompactPresentationActive(),
+  isDockSuppressed: () => dockRuntime.isDockGeometryPersistenceSuppressed(),
+  readDockBounds: () => dockRuntime.readStableSessionBounds(),
+  persistValues: (entries) => persistSettingValues(entries),
+  persistStoredBounds: (entries) =>
+    setSettingsBatch(
+      getActiveWindowName(),
+      entries.map(({ id, value }) => serializeSetting(id, value))
+    ),
+  onError: (error) => console.warn('[settings] 保存窗口位置失败:', error)
+})
 function debouncedSaveGeometry() {
-  if (switchingMainView) return
-  if (isCompactPresentationActive()) return
-  if (Date.now() < suppressGeometryPersistenceUntil) return
-  if (isDockGeometryPersistenceSuppressed()) return
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  lastVisibleMainWindowBounds = { ...mainWindow.getBounds() }
-  geometryDirty = true
-  if (geometryTimer) clearTimeout(geometryTimer)
-  geometryTimer = setTimeout(() => {
-    geometryTimer = null
-    if (Date.now() < suppressGeometryPersistenceUntil) return
-    if (isDockGeometryPersistenceSuppressed()) return
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      const b =
-        dockMotionSession?.stableBounds || lastVisibleMainWindowBounds || mainWindow.getBounds()
-      try {
-        persistSettingValues([
-          { id: 'geometry.posX', value: b.x },
-          { id: 'geometry.posY', value: b.y },
-          { id: 'geometry.width', value: b.width },
-          { id: 'geometry.height', value: b.height }
-        ])
-        geometryDirty = false
-      } catch (error) {
-        console.warn('[settings] 保存窗口位置失败:', error)
+  geometryPersistence.schedule()
+}
+
+const dockRuntime = createDockRuntime({
+  getMainWindow,
+  screen,
+  powerMonitor,
+  getViewMode: () => mainViewNavigation.mode,
+  getActiveWindowProfile: () => mainViewNavigation.getActiveWindowProfile(),
+  getSettings: () => settingsRuntime.values,
+  isWindowLocked: () => isLocked,
+  isQuitting: () => shutdownCoordinator.isQuitting(),
+  isCompactPresentationActive: () => presentationRuntime.isCompactPresentationActive(),
+  reconcilePresentationDisplayGeometry: (change) =>
+    presentationRuntime.reconcileDisplayGeometry(change),
+  geometryPersistence,
+  persistSettingValues: (...args) => settingsWriteCoordinator.persistSettingValues(...args),
+  readBlurState: () => ({
+    config: blurRuntime.config,
+    initialized: blurRuntime.initialized,
+    failed: blurRuntime.failed,
+    diagnostic: blurRuntime.diagnostic
+  }),
+  getZOrderMode: () => zOrderRuntime.mode,
+  runBlurRuntimeOperation,
+  applyWindowZOrder,
+  reassertBottomWindowZOrder,
+  logger
+})
+const {
+  getDockRuntimeConfig,
+  getDockRuntimeCapability,
+  reconcileDockRuntimeConfig,
+  beginDockInteractionSuspension,
+  endDockInteractionSuspension,
+  cancelPendingDockHide,
+  isDockTransitionActive,
+  setDockPosition,
+  getDockDiagnosticSnapshot,
+  runDockHealthCheck,
+  resetDockState,
+  restoreDockWindowToVisiblePosition,
+  handleDockDisplayTopologyChange,
+  attachDockDisplayListeners,
+  attachDockPowerListeners,
+  syncVisibleDockSide,
+  doHide,
+  doShow
+} = dockRuntime
+
+const { dipBoundsToPhysical, resolvedDragPoint } = createWindowDragCoordinates(screen)
+const windowDragController = createWindowDragController({
+  getMainWindow,
+  isWindowLocked: () => isLocked,
+  isCompactPresentationActive: () => presentationRuntime.isCompactPresentationActive(),
+  getPresentationMode: () => presentationModeSnapshot().mode,
+  getZOrderMode: () => zOrderRuntime.mode,
+  captureTitlebarZOrderStatus,
+  captureMotionBounds: dockRuntime.captureMotionBounds,
+  movePosition: dockRuntime.setDockPosition,
+  suspendDock: dockRuntime.beginDockInteractionSuspension,
+  resumeDock: dockRuntime.endDockInteractionSuspension,
+  scheduleGeometry: debouncedSaveGeometry,
+  reassertBottomWindowZOrder,
+  dipBoundsToPhysical,
+  resolvedDragPoint,
+  logger
+})
+const {
+  begin: beginTitlebarWindowDrag,
+  update: updateTitlebarWindowDrag,
+  end: endTitlebarWindowDrag
+} = windowDragController
+
+const presentationRuntime = createPresentationRuntime({
+  getMainWindow,
+  screen,
+  getSettings: () => settingsRuntime.values,
+  isWindowLocked: () => isLocked,
+  getUserHideGeneration: () => mainViewNavigation.getUserHideGeneration(),
+  geometryPersistence,
+  reconcileExpandedDisplayGeometry: (change) => dockRuntime.handleDockDisplayTopologyChange(change),
+  resolveActiveViewWindowBounds: (options) =>
+    mainViewNavigation.resolveActiveViewWindowBounds(options),
+  restoreDockWindowToVisiblePosition,
+  resetDockState,
+  endTitlebarWindowDrag,
+  beginDockInteractionSuspension,
+  endDockInteractionSuspension,
+  captureMotionBounds: dockRuntime.captureMotionBounds,
+  setDockPosition,
+  dipBoundsToPhysical,
+  resolvedDragPoint,
+  readBlurState: () => ({ initialized: blurRuntime.initialized, config: blurRuntime.config }),
+  synchronizePresentationBlur,
+  getZOrderMode: () => zOrderRuntime.mode,
+  applyWindowZOrder,
+  reassertBottomWindowZOrder,
+  applyResolvedWindowRuntime,
+  persistSettingValues: (...args) => settingsWriteCoordinator.persistSettingValues(...args),
+  logger
+})
+const {
+  isCompactPresentationActive,
+  presentationModeSnapshot,
+  acknowledgePresentationRenderer,
+  enterCompactPresentation,
+  exitCompactPresentation,
+  beginCompactWindowDrag,
+  updateCompactWindowDrag,
+  endCompactWindowDrag,
+  finishCompactWindowResize
+} = presentationRuntime
+
+const mainViewNavigation = createMainViewNavigation({
+  getMainWindow,
+  screen,
+  loadWindow: mainWindowHost.load,
+  getSettings: () => settingsRuntime.values,
+  resetSettingsForView: (mode) => settingsRuntime.resetForView(mode),
+  refreshResolvedSettings,
+  geometryPersistence,
+  dockRuntime,
+  isCompactPresentationActive,
+  exitCompactPresentation,
+  endTitlebarWindowDrag,
+  openMainWindow,
+  confirmEditingDrafts: (...args) => confirmEditingDrafts(...args),
+  isShutdownCheckingDrafts: () => shutdownCoordinator.isCheckingDrafts(),
+  isQuitting: () => shutdownCoordinator.isQuitting(),
+  isBackgroundInFlight: () => backgroundSettingsCoordinator.isInFlight(),
+  readBlurState: () => ({
+    caps: blurRuntime.caps,
+    config: blurRuntime.config,
+    initialized: blurRuntime.initialized
+  }),
+  initializeBlurRuntime,
+  runBlurRuntimeOperation,
+  applyResolvedWindowRuntime,
+  restoreBlurForVisibleWindow,
+  reassertBottomWindowZOrder,
+  getDockDiagnosticSnapshot,
+  revealPendingNotificationApplication,
+  rebuildTrayMenu: () => mainTrayController.rebuild(),
+  logger,
+  rendererRoot: RENDERER_ROOT,
+  isDev: is.dev
+})
+const {
+  getActiveWindowName,
+  getActiveWindowProfile,
+  resolveActiveViewWindowBounds,
+  getActiveRendererLocation,
+  hideMainWindowForViewNavigation,
+  switchMainView,
+  switchMainViewFromTray
+} = mainViewNavigation
+
+const settingsWriteCoordinator = createSettingsWriteCoordinator({
+  getActiveWindowName,
+  refreshResolvedSettings,
+  applyResolvedWindowRuntime,
+  applyResolvedBlurRuntime,
+  getDockRuntimeConfig,
+  reconcileDockRuntimeConfig,
+  getResolvedSettingsSnapshot,
+  broadcastSettingsChanged
+})
+const { persistSettingValues, persistSettingValue } = settingsWriteCoordinator
+const backgroundSettingsCoordinator = createBackgroundSettingsCoordinator({
+  getMainWindow,
+  getSettings: () => settingsRuntime.values,
+  getViewMode: () => mainViewNavigation.mode,
+  getViewSettings,
+  getActiveWindowName,
+  refreshResolvedSettings,
+  getResolvedSettingsSnapshot,
+  broadcastSettingsChanged,
+  persistSettingValues,
+  readBlurState: () => ({
+    config: blurRuntime.config,
+    caps: blurRuntime.caps,
+    initialized: blurRuntime.initialized,
+    failed: blurRuntime.failed,
+    error: blurRuntime.error,
+    nativeError: blurRuntime.nativeError,
+    diagnostic: blurRuntime.diagnostic
+  }),
+  setRequestedConfig: blurRuntime.setRequestedConfig,
+  clearFailure: blurRuntime.clearFailure,
+  disableConfig: blurRuntime.disableConfig,
+  restoreFailure: blurRuntime.restoreFailure,
+  initializeBlurRuntime,
+  updateBlurDiagnostic,
+  runBlurRuntimeDiagnostic,
+  notifySettled: () => mainViewNavigation.onBackgroundSettled()
+})
+
+/** FeatureRuntime owns service graphs and the complete partial-start disposal ledger. */
+const featureRuntime = createFeatureRuntime({
+  lifecycle: {
+    powerMonitor,
+    logger,
+    integrationTest: process.env.ABANDON_INTEGRATION_TEST === '1'
+  },
+  reminders: {
+    configuration: {
+      protocol: APP_PROTOCOL,
+      capability: SYSTEM_NOTIFICATION_CAPABILITY,
+      icon,
+      nativeImage: Electron.nativeImage,
+      preloadPath: join(PRELOAD_ROOT, 'reminder.js'),
+      rendererPath: RENDERER_ROOT,
+      rendererUrl: is.dev ? process.env.ELECTRON_RENDERER_URL : null
+    },
+    ipcMain,
+    windowPorts: {
+      getMainWindow,
+      getSettingsSnapshot: getResolvedSettingsSnapshot,
+      onNoteChanged: (id) => {
+        for (const window of getApplicationWindows())
+          window.webContents.send('notes:changed', { reason: 'reminder', id })
+      },
+      onRemindersChanged: () => mainTrayController.rebuild()
+    },
+    activationPort: {
+      reveal: revealApplicationFromNotification,
+      attachAction: notificationActivation.attachReminderAction,
+      detachAction: notificationActivation.detachReminderAction
+    }
+  },
+  stickies: {
+    configuration: {
+      preloadPath: join(PRELOAD_ROOT, 'sticky.js'),
+      rendererFile: join(RENDERER_ROOT, 'sticky.html'),
+      rendererUrl:
+        is.dev && process.env.ELECTRON_RENDERER_URL
+          ? `${process.env.ELECTRON_RENDERER_URL}/sticky.html`
+          : null,
+      isDevelopment: is.dev
+    },
+    commands: {
+      getNoteById,
+      saveContent: saveStickyNoteContent,
+      repository: {
+        list: listDesktopStickyRecords,
+        count: countDesktopStickyRecords,
+        exists: hasDesktopStickyRecord,
+        insert: insertDesktopStickyRecord,
+        update: updateDesktopStickyRecord,
+        delete: deleteDesktopStickyRecord,
+        deleteAll: deleteAllDesktopStickyRecords
+      }
+    },
+    windowPorts: {
+      getMainWindow,
+      getListAppearance: () => getViewSettings(VIEW_MODES.LIST).sticky,
+      onRegistryChanged: () => mainTrayController.rebuild(),
+      onNoteChanged: (note) => {
+        for (const window of getApplicationWindows())
+          window.webContents.send('notes:changed', { reason: 'update', id: note.id })
+      },
+      onError: (text) => {
+        if (!getMainWindow() || getMainWindow().isDestroyed()) return
+        getMainWindow().webContents.send('app:message', { type: 'error', text })
       }
     }
-  }, 500)
-}
-
-/** 恢复默认时忽略程序化缩放触发的 resize，避免把默认边界重新写回设置表。 */
-let suppressGeometryPersistenceUntil = 0
-
-/** 贴边程序化移动结束后继续短暂抑制异步 move/resize 事件写库。 */
-let suppressDockGeometryPersistenceUntil = 0
-
-/** 最近一次处于屏幕内且可持久化的主窗口边界。 */
-let lastVisibleMainWindowBounds = null
-
-/** 统一调度器实例 */
-const scheduler = new Scheduler()
-scheduler.systemNotificationsEnabled = SYSTEM_NOTIFICATION_CAPABILITY.supported
-scheduler.systemNotificationsDisabledReason = SYSTEM_NOTIFICATION_CAPABILITY.reason
+  },
+  schedule: {
+    admission: businessAdmission,
+    commands: { activateNotes, runRecurringTemplates, runAutomaticNoteMove },
+    getAutomaticNoteMoveEnabled: () => settingsRuntime.values.notes.autoMoveToToday,
+    onNotesMoved: (result) => {
+      for (const window of getApplicationWindows()) {
+        try {
+          window.webContents.send('notes:changed', {
+            reason: 'automatic-historical-move',
+            count: result.count
+          })
+        } catch (error) {
+          logger.warn('notes.automatic-move-broadcast', error.message)
+        }
+      }
+    },
+    runtimeChecks: {
+      blurDiagnostic: runBlurRuntimeDiagnostic,
+      shouldCheckDockHealth: () =>
+        dockRuntime.hidden ||
+        dockRuntime.sliding ||
+        dockRuntime.hasSession() ||
+        Boolean(dockRuntime.cleanupStatus),
+      dockHealthCheck: runDockHealthCheck
+    }
+  },
+  weather: {
+    configuration: { ipcMain, shell, userDataPath, appVersion: app.getVersion() },
+    windowPorts: {
+      getMainWindow,
+      getWeatherSettings: () => structuredClone(settingsRuntime.values.weather),
+      canPresentWeather: () =>
+        Boolean(
+          getMainWindow() &&
+          !getMainWindow().isDestroyed() &&
+          getMainWindow().isVisible() &&
+          !getMainWindow().isMinimized() &&
+          !isCompactPresentationActive()
+        )
+    },
+    performancePort: { beginPerformanceOperation }
+  }
+})
+const mainTrayController = createMainTrayController({
+  Tray,
+  Menu,
+  icon,
+  getShortcutsEnabled: () => settingsRuntime.shortcutsEnabled,
+  getViewMode: () => mainViewNavigation.mode,
+  getStickyCommands: featureRuntime.getStickyCommands,
+  getCaptureCommands: () =>
+    screenshotService
+      ? Object.freeze({
+          capture: (options) => screenshotService.capture(options),
+          action: (...args) => screenshotService.action(...args),
+          report: (error) => screenshotService?.report(error)
+        })
+      : null,
+  showReminders: featureRuntime.showReminders,
+  getReminderCount: featureRuntime.getReminderCount,
+  toggleShortcuts: toggleGlobalShortcuts,
+  acknowledgeReminders: featureRuntime.acknowledgeReminders,
+  attachReminderTray: featureRuntime.attachReminderTray,
+  setReminderBaseIcon: featureRuntime.setReminderBaseIcon,
+  openMainWindow: openMainWindowFromTray,
+  switchView: switchMainViewFromTray,
+  toggleWindow,
+  requestQuit: (trigger) => shutdownCoordinator.requestQuit(trigger),
+  logger
+})
+const { rebuild: rebuildTrayMenu, menuTemplate: buildTrayMenuTemplate } = mainTrayController
 
 function openSafeExternal(rawUrl) {
   try {
@@ -882,41 +733,9 @@ function openSafeExternal(rawUrl) {
   }
 }
 
-function syncBlurConfigFromResolved() {
-  const next = resolvedSettings.blur
-  blurConfig.enabled = next.enabled
-  blurConfig.radius = next.radius
-  blurConfig.saturation = next.saturation
-  blurConfig.cornerRadius = next.cornerRadius
-  blurConfig.tint = resolvedSettings.css.bgColor
-  blurConfig.tintOpacity = resolvedSettings.css.windowOpacity
-}
-
 /** 从 DB 重新生成完整设置；读取本身不向 DB 回写默认值。 */
 function refreshResolvedSettings({ incrementRevision = false } = {}) {
-  const applicationSettings = readApplicationSettings()
-  const nextSettings = resolveSettingsRows(getAllSettings(getActiveWindowName()), activeViewMode)
-  nextSettings.appearance.uiScale = applicationSettings.appearance.uiScale
-  nextSettings.appearance.titlebarIconScale = applicationSettings.appearance.titlebarIconScale
-  nextSettings.appearance.iconColor = applicationSettings.appearance.iconColor
-  nextSettings.shortcuts = {
-    ...applicationSettings.shortcuts,
-    enabled: globalShortcutsEnabled
-  }
-  nextSettings.calendar = { ...applicationSettings.calendar }
-  nextSettings.interaction = { ...applicationSettings.interaction }
-  nextSettings.notes = { ...applicationSettings.notes }
-  nextSettings.window = { ...applicationSettings.window }
-  nextSettings.remote = { ...applicationSettings.remote }
-  nextSettings.weather = structuredClone(applicationSettings.weather)
-  nextSettings.onboarding = { ...applicationSettings.onboarding }
-  const changed = JSON.stringify(nextSettings) !== JSON.stringify(resolvedSettings)
-  resolvedSettings = nextSettings
-  syncBlurConfigFromResolved()
-  screenshotService?.syncTheme()
-  const revisionChanged = incrementRevision || changed
-  if (revisionChanged) settingsRevision += 1
-  return revisionChanged
+  return settingsRuntime.refresh({ incrementRevision })
 }
 
 function readAutoStartRuntime() {
@@ -929,51 +748,52 @@ function readAutoStartRuntime() {
 }
 
 function getResolvedSettingsSnapshot() {
+  return settingsRuntime.snapshot()
+}
+
+/** Read-only platform providers; this operation never starts or mutates a service. */
+function readSettingsRuntimeSnapshot() {
   const autoStart = readAutoStartRuntime()
   const dockRuntime = getDockRuntimeConfig()
   const dockCapability = getDockRuntimeCapability()
   const blurRuntimeError =
-    blurRuntimeFailed || (blurConfig.enabled && blurCaps.supported && !blurInitialized)
-      ? blurInitializationError || '系统模糊引擎未加载（DLL 缺失或版本不兼容）'
+    blurRuntime.failed ||
+    (blurRuntime.config.enabled && blurRuntime.caps.supported && !blurRuntime.initialized)
+      ? blurRuntime.error || '系统模糊引擎未加载（DLL 缺失或版本不兼容）'
       : null
 
   return {
-    revision: settingsRevision,
-    values: {
-      ...structuredClone(resolvedSettings),
-      system: { autoStart: autoStart.value }
-    },
-    runtime: {
-      autoStart,
-      shortcuts: {
-        ...captureShortcutService?.snapshot(),
-        viewVisibility: viewVisibilityShortcutService?.snapshot() || {
-          configured: resolvedSettings.shortcuts?.viewVisibility || '',
-          enabled: resolvedSettings.shortcuts?.enabled !== false,
-          registered: false,
-          capturing: false,
-          error: null
-        }
-      },
-      dock: {
-        supported: dockCapability.supported,
-        reason: dockCapability.reason,
-        viewMode: activeViewMode,
-        supportedEdges: dockRuntime.supportedEdges,
-        enabledEdges: dockRuntime.enabledEdges,
-        activeEdges: dockRuntime.activeEdges,
-        revealHandleMode: dockRuntime.revealHandleMode
-      },
-      blur: {
-        supported: blurCaps.supported,
-        platform: blurCaps.platform,
-        strategy: blurCaps.strategy,
-        initialized: blurInitialized,
-        effectiveEnabled: Boolean(blurCaps.supported && blurInitialized && blurConfig.enabled),
-        error: blurRuntimeError,
-        nativeError: blurRuntimeError ? blurInitializationNativeError : null,
-        diagnostic: { ...blurDiagnostic }
+    autoStart,
+    shortcuts: {
+      ...captureShortcutService?.snapshot(),
+      viewVisibility: viewVisibilityShortcutService?.snapshot() || {
+        configured: settingsRuntime.values.shortcuts?.viewVisibility || '',
+        enabled: settingsRuntime.values.shortcuts?.enabled !== false,
+        registered: false,
+        capturing: false,
+        error: null
       }
+    },
+    dock: {
+      supported: dockCapability.supported,
+      reason: dockCapability.reason,
+      viewMode: mainViewNavigation.mode,
+      supportedEdges: dockRuntime.supportedEdges,
+      enabledEdges: dockRuntime.enabledEdges,
+      activeEdges: dockRuntime.activeEdges,
+      revealHandleMode: dockRuntime.revealHandleMode
+    },
+    blur: {
+      supported: blurRuntime.caps.supported,
+      platform: blurRuntime.caps.platform,
+      strategy: blurRuntime.caps.strategy,
+      initialized: blurRuntime.initialized,
+      effectiveEnabled: Boolean(
+        blurRuntime.caps.supported && blurRuntime.initialized && blurRuntime.config.enabled
+      ),
+      error: blurRuntimeError,
+      nativeError: blurRuntimeError ? blurRuntime.nativeError : null,
+      diagnostic: { ...blurRuntime.diagnostic }
     }
   }
 }
@@ -982,109 +802,8 @@ function getViewSettings(viewMode) {
   return resolveSettingsRows(getAllSettings(getViewSettingsScope(viewMode)), viewMode)
 }
 
-function getWallpaperUsage(id) {
-  return Object.values(VIEW_MODES).filter((viewMode) => {
-    const wallpaper = getViewSettings(viewMode).wallpaper
-    return wallpaper.activeId === Number(id)
-  })
-}
-
-function greatestCommonDivisor(first, second) {
-  let a = Math.abs(Math.round(first))
-  let b = Math.abs(Math.round(second))
-  while (b) [a, b] = [b, a % b]
-  return a || 1
-}
-
-function listWallpaperLibraryRecords() {
-  const bounds = mainWindow?.isDestroyed() ? null : mainWindow?.getBounds()
-  const currentAspect =
-    bounds?.width > 0 && bounds?.height > 0 ? bounds.width / bounds.height : null
-  return listWallpaperRecords().map((record) => {
-    const targetAspect = record.target_width / record.target_height
-    const divisor = greatestCommonDivisor(record.target_width, record.target_height)
-    return {
-      ...record,
-      aspectRatioLabel: `${record.target_width / divisor}:${record.target_height / divisor}`,
-      usedBy: getWallpaperUsage(record.id),
-      compatibleWithCurrentView:
-        currentAspect === null ? null : Math.abs(Math.log(targetAspect / currentAspect)) <= 0.08
-    }
-  })
-}
-
-/** 初始化或重试初始化系统模糊，并保留可传给 renderer 的结构化错误。 */
-function initializeBlurRuntime() {
-  if (blurInitialized) return { success: true, strategy: blurCaps.strategy }
-  const visualWindow = getActiveVisualWindow()
-  if (!blurCaps.supported || !visualWindow || visualWindow.isDestroyed()) {
-    const error = blurCaps.reason || '主窗口尚未就绪'
-    blurInitializationError = error
-    blurInitializationNativeError = null
-    return { success: false, error, nativeError: null }
-  }
-
-  try {
-    const result = blurInit(visualWindow)
-    if (!result.success) {
-      blurRuntimeFailed = true
-      blurInitializationError = result.error
-      blurInitializationNativeError = result.nativeError ?? null
-      updateBlurDiagnostic(
-        { status: 'error', lastCheckedAt: Date.now(), message: result.error },
-        { notify: false }
-      )
-      return result
-    }
-
-    blurInitialized = true
-    blurRuntimeFailed = false
-    blurInitializationError = null
-    blurInitializationNativeError = null
-    if (process.platform === 'win32') blurSetConfig(blurConfig)
-    if (process.platform === 'darwin' && !blurConfig.enabled) visualWindow.setVibrancy(null)
-    updateBlurDiagnostic(
-      {
-        status: blurConfig.enabled ? 'pending' : 'disabled',
-        lastCheckedAt: null,
-        message: blurConfig.enabled ? '等待调度器执行诊断' : '系统毛玻璃未启用'
-      },
-      { notify: false }
-    )
-    attachBlurWindowSyncListeners()
-    return result
-  } catch (error) {
-    logger.error('blur.initialize', error, { stage: 'initialize-or-first-config' })
-    // blurInit 成功而首次配置失败时也必须完整回滚，否则 JS、bridge 和
-    // native 三层会处于互相矛盾的初始化状态，后续重试还会被短路。
-    try {
-      blurDestroy()
-    } catch (destroyError) {
-      console.error('[blur] 初始化回滚时销毁原生资源失败:', destroyError)
-    }
-    blurInitialized = false
-    blurRuntimeFailed = true
-    blurInitializationError = error.message
-    blurInitializationNativeError = {
-      code: null,
-      key: 'electron_initialization_exception',
-      message: error.message
-    }
-    updateBlurDiagnostic(
-      { status: 'error', lastCheckedAt: Date.now(), message: error.message },
-      { notify: false }
-    )
-    return {
-      success: false,
-      error: error.message,
-      nativeError: blurInitializationNativeError
-    }
-  }
-}
-
 function broadcastSettingsChanged(snapshot = getResolvedSettingsSnapshot()) {
-  weatherRuntime?.settingsChanged()
-  reminderService?.popup?.send()
+  featureRuntime.settingsChanged()
   const payload = diagnosticBroadcast(snapshot)
   for (const window of getApplicationWindows()) {
     if (
@@ -1109,596 +828,12 @@ function broadcastSettingsChanged(snapshot = getResolvedSettingsSnapshot()) {
 }
 
 function sendAppMessage(type, text, duration = 2200) {
-  if (!mainWindow || mainWindow.isDestroyed() || !text) return
-  mainWindow.webContents.send('app:message', { type, text, duration })
-}
-
-function broadcastBlurDiagnosticChanged() {
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  const contents = mainWindow.webContents
-  if (contents.isDestroyed() || contents.isCrashed() || contents.isLoadingMainFrame()) return
-  try {
-    contents.send('blur:diagnostic-changed', { ...blurDiagnostic })
-  } catch (error) {
-    // 页面导航或 renderer 异常退出可能发生在状态检查与 send 之间。
-    logger.debug('blur.diagnostic-broadcast-skipped', '渲染帧不可用，已跳过毛玻璃诊断广播', {
-      error: error?.message
-    })
-  }
-}
-
-function updateBlurDiagnostic(next, { notify = true } = {}) {
-  blurDiagnostic = { ...blurDiagnostic, ...next }
-  if (notify) broadcastBlurDiagnosticChanged()
-}
-
-/**
- * 原生层在初始化后失效时统一执行真实降级：销毁可能残留的 Overlay、关闭并
- * 持久化开关，再把错误状态广播给 renderer。这样设置值不会继续声称已启用。
- */
-function handleBlurRuntimeFailure(error, { broadcast = true } = {}) {
-  if (blurRuntimeFailureHandling) return
-  blurRuntimeFailureHandling = true
-
-  try {
-    const nativeError = error?.nativeError ?? null
-    const detail = nativeError?.message || error?.message || '原生模糊运行期失效'
-    logger.error('blur.runtime-failure', error, { detail, nativeError })
-    blurInitializationError = `系统毛玻璃运行中断：${detail}`
-    blurInitializationNativeError = nativeError
-    blurRuntimeFailed = true
-    updateBlurDiagnostic(
-      {
-        status: 'error',
-        lastCheckedAt: Date.now(),
-        message: blurInitializationError
-      },
-      { notify: broadcast }
-    )
-
-    try {
-      blurDestroy()
-    } catch (destroyError) {
-      console.error('[blur] 运行期失效后销毁原生资源失败:', destroyError)
-    }
-    blurInitialized = false
-
-    if (blurConfig.enabled) {
-      setSettingsBatch(getActiveWindowName(), [serializeSetting('blur.enabled', false)])
-      refreshResolvedSettings({ incrementRevision: true })
-    } else {
-      blurConfig.enabled = false
-    }
-
-    console.error('[blur] 已检测到运行期失效并切换到透明背景回退:', detail, nativeError || '')
-    if (broadcast) broadcastSettingsChanged()
-  } finally {
-    blurRuntimeFailureHandling = false
-  }
-}
-
-/** 由统一调度器执行的毛玻璃诊断任务；不再创建独立计时器。 */
-function runBlurRuntimeDiagnostic(context = {}) {
-  const checkedAt = context.now || Date.now()
-
-  if (!blurCaps.supported) {
-    updateBlurDiagnostic({
-      status: 'unsupported',
-      lastCheckedAt: checkedAt,
-      message: blurCaps.reason || '当前平台不支持系统毛玻璃'
-    })
-    return
-  }
-
-  if (blurRuntimeFailed) {
-    updateBlurDiagnostic({
-      status: 'error',
-      lastCheckedAt: checkedAt,
-      message: blurInitializationError || '系统毛玻璃初始化或运行失败'
-    })
-    return
-  }
-
-  if (!blurConfig.enabled) {
-    updateBlurDiagnostic({
-      status: 'disabled',
-      lastCheckedAt: checkedAt,
-      message: '系统毛玻璃未启用'
-    })
-    return
-  }
-
-  if (!blurInitialized) {
-    updateBlurDiagnostic({
-      status: 'pending',
-      lastCheckedAt: checkedAt,
-      message: '系统毛玻璃尚未完成初始化'
-    })
-    return
-  }
-
-  if (process.platform === 'win32') {
-    try {
-      const health = getBlurRuntimeHealth()
-      if (!health.healthy) {
-        const error = new Error(health.nativeError?.message || '原生模糊运行期失效')
-        error.nativeError = health.nativeError
-        handleBlurRuntimeFailure(error, { broadcast: false })
-        updateBlurDiagnostic({
-          status: 'error',
-          lastCheckedAt: checkedAt,
-          message: blurInitializationError
-        })
-        broadcastSettingsChanged()
-        return
-      }
-      // Overlay 与 Electron 是两个顶层 HWND。Win10 在焦点切换后可能把第三方
-      // 窗口插到两者之间；这不是 Effect Graph 失效，重新排层即可恢复。
-      if (mainWindow?.isVisible() && !health.zOrderSynchronized) {
-        logger.warn('blur.z-order', '检测到毛玻璃层与主窗口不再相邻，正在自动修复')
-        blurReSyncZOrder()
-        updateBlurDiagnostic({
-          status: 'pending',
-          lastCheckedAt: checkedAt,
-          message: '检测到窗口层级偏差，已请求自动修复'
-        })
-        return
-      }
-    } catch (error) {
-      handleBlurRuntimeFailure(error, { broadcast: false })
-      updateBlurDiagnostic({
-        status: 'error',
-        lastCheckedAt: checkedAt,
-        message: blurInitializationError
-      })
-      broadcastSettingsChanged()
-      return
-    }
-  }
-
-  updateBlurDiagnostic({
-    status: 'healthy',
-    lastCheckedAt: checkedAt,
-    message: '系统毛玻璃运行正常'
-  })
-}
-
-function runBlurRuntimeOperation(operation, label) {
-  if (process.platform !== 'win32' || !blurInitialized) return false
-  try {
-    operation()
-    return true
-  } catch (error) {
-    const wrapped = new Error(`${label}失败：${error?.message || '原生接口调用异常'}`)
-    wrapped.nativeError = error?.nativeError ?? null
-    handleBlurRuntimeFailure(wrapped)
-    return false
-  }
-}
-
-/**
- * 监听只绑定一次，但初始化成功时都调用本函数。这样启动失败后由用户重试成功，
- * 也会补齐移动、缩放和置顶层同步，不再依赖创建窗口瞬间的初始化结果。
- */
-function attachBlurWindowSyncListeners(window = null) {
-  if (process.platform !== 'win32' || !blurInitialized) return
-  const windows = window ? [window] : getApplicationWindows()
-  for (const candidate of windows) {
-    if (!candidate || candidate.isDestroyed() || blurSyncWindows.has(candidate)) continue
-    blurSyncWindows.add(candidate)
-    candidate.on('resize', () => {
-      if (candidate !== getActiveVisualWindow()) return
-      if (candidate === mainWindow && windowMotionBackend?.isMoving()) return
-      runBlurRuntimeOperation(blurUpdateGeometry, '同步毛玻璃窗口尺寸')
-    })
-    candidate.on('move', () => {
-      if (candidate !== getActiveVisualWindow()) return
-      if (candidate === mainWindow && windowMotionBackend?.isMoving()) return
-      runBlurRuntimeOperation(blurUpdateGeometry, '同步毛玻璃窗口位置')
-    })
-    // WinEvent Hook 是主路径；Electron focus 是 Win10 漏报/过早上报重排事件时的
-    // 低频兜底。两条路径最终都进入 C++ 去重队列。
-    candidate.on('focus', () => {
-      if (candidate !== getActiveVisualWindow()) return
-      runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口焦点层级')
-    })
-    candidate.on('always-on-top-changed', () => {
-      if (candidate !== getActiveVisualWindow()) return
-      runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口层级')
-    })
-  }
-}
-
-function applyResolvedBlurRuntime() {
-  if (blurInitialized && process.platform === 'win32') {
-    runBlurRuntimeOperation(() => blurSetConfig(blurConfig), '更新毛玻璃配置')
-  }
-  if (process.platform === 'darwin' && mainWindow && !mainWindow.isDestroyed()) {
-    try {
-      mainWindow.setVibrancy(blurConfig.enabled ? 'under-window' : null)
-    } catch (error) {
-      handleBlurRuntimeFailure(error, { broadcast: false })
-    }
-  }
-}
-
-function restoreBlurForVisibleWindow(window, source) {
-  if (
-    !window ||
-    window.isDestroyed() ||
-    !window.isVisible() ||
-    window !== getActiveVisualWindow() ||
-    !blurConfig.enabled
-  ) {
-    return
-  }
-  if (!blurInitialized) {
-    const result = initializeBlurRuntime()
-    if (!result.success) {
-      broadcastSettingsChanged()
-      return
-    }
-  } else if (!runBlurRuntimeOperation(() => blurSetConfig(blurConfig), '恢复毛玻璃配置')) {
-    return
-  }
-  runBlurRuntimeOperation(blurReSyncZOrder, `${source} 重同步毛玻璃窗口层级`)
-}
-
-function persistStableExpandedBounds(bounds) {
-  const normalized = Object.fromEntries(
-    Object.entries(bounds).map(([key, value]) => [key, Math.round(Number(value))])
-  )
-  setSettingsBatch(getActiveWindowName(), [
-    serializeSetting('geometry.posX', normalized.x),
-    serializeSetting('geometry.posY', normalized.y),
-    serializeSetting('geometry.width', normalized.width),
-    serializeSetting('geometry.height', normalized.height)
-  ])
-  compactExpandedBounds = normalized
-  lastVisibleMainWindowBounds = { ...normalized }
-  geometryDirty = false
-}
-
-function hideWindowForPresentationCommit(window, source) {
-  if (!window || window.isDestroyed()) return
-  if (blurInitialized) {
-    try {
-      blurSetConfig({ ...blurConfig, enabled: false })
-    } catch (error) {
-      logger.error('presentation-mode.blur-hide', error, { source })
-    }
-  }
-  window.hide()
-}
-
-/**
- * 真实窗口尺寸提交后的原生毛玻璃屏障。首次失败会重建同一个父 HWND
- * 的 Overlay；第二次失败才进入既有的明确 CSS 背景回退。
- */
-function synchronizePresentationBlur(window, source) {
-  if (!blurConfig.enabled || process.platform !== 'win32' || !window || window.isDestroyed()) {
-    return true
-  }
-
-  const synchronize = () => {
-    if (!blurInitialized) {
-      const initialized = initializeBlurRuntime()
-      if (!initialized.success) {
-        const error = new Error(initialized.error || '原生毛玻璃重新初始化失败')
-        error.nativeError = initialized.nativeError || null
-        throw error
-      }
-    }
-    blurSetConfig(blurConfig)
-    blurSyncGeometryAndWait(800)
-    blurReSyncZOrder()
-  }
-
-  try {
-    synchronize()
-    return true
-  } catch (firstError) {
-    logger.warn('presentation-mode.blur-rebuild', '最终几何同步失败，正在重建 Overlay', {
-      source,
-      error: firstError?.message
-    })
-    try {
-      blurDestroy()
-    } catch (destroyError) {
-      logger.error('presentation-mode.blur-rebuild-destroy', destroyError, { source })
-    }
-    blurInitialized = false
-    try {
-      synchronize()
-      return true
-    } catch (secondError) {
-      handleBlurRuntimeFailure(secondError)
-      return false
-    }
-  }
-}
-
-function showCommittedPresentation(window, source, showWhenDone) {
-  if (!showWhenDone || !window || window.isDestroyed()) return
-  window.show()
-  synchronizePresentationBlur(window, source)
-  if (zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM) reassertBottomWindowZOrder(source)
-  else applyWindowZOrder()
-  window.focus()
-}
-
-function resolveExpandedBoundsForRecovery() {
-  const storedBounds =
-    compactExpandedBounds ||
-    (lastVisibleMainWindowBounds && !presentationModeController.isCompact()
-      ? lastVisibleMainWindowBounds
-      : resolveActiveViewWindowBounds().bounds)
-  const display = screen.getDisplayMatching(storedBounds)
-  return constrainMainWindowBounds(storedBounds, display.workArea)
-}
-
-async function performPresentationModeCommit({ window, operation }) {
-  if (!window || window.isDestroyed()) throw new Error('主窗口不可用')
-  const showWhenDone = operation.context?.showWhenDone !== false
-
-  if (operation.to === PRESENTATION_MODES.COMPACT) {
-    if (!isCompactPresentationSupported()) throw new Error('灵动岛目前仅支持 Windows 10/11')
-    restoreDockWindowToVisiblePosition()
-    resetDockState({ source: 'presentation-compact' })
-    endTitlebarWindowDrag()
-    const expandedBounds = mainWindow.getBounds()
-    persistStableExpandedBounds(expandedBounds)
-    if (!compactDockSuspended) {
-      beginDockInteractionSuspension('presentation-compact')
-      compactDockSuspended = true
-    }
-    const anchor = resolvedDragPoint(operation.context?.anchor)
-    const display = screen.getDisplayNearestPoint(anchor)
-    stableCompactBounds = compactBoundsFromAnchor({
-      anchor,
-      size: {
-        width: resolvedSettings.window.compactWidth,
-        height: resolvedSettings.window.compactHeight
-      },
-      workArea: display.workArea
-    })
-    presentationModeController.operation.targetBounds = { ...stableCompactBounds }
-    broadcastPresentationModeState()
-    hideWindowForPresentationCommit(window, 'compact')
-    await waitForPresentationRenderer(operation.id)
-    window.setMinimumSize(COMPACT_WINDOW_LIMITS.minWidth, COMPACT_WINDOW_LIMITS.minHeight)
-    window.setBounds(stableCompactBounds, false)
-    stableCompactBounds = { ...window.getBounds() }
-    showCommittedPresentation(window, 'presentation-compact', showWhenDone)
-    return { bounds: { ...stableCompactBounds } }
-  }
-
-  const expandedBounds = resolveExpandedBoundsForRecovery()
-  presentationModeController.operation.targetBounds = { ...expandedBounds }
-  broadcastPresentationModeState()
-  hideWindowForPresentationCommit(window, 'expanded')
-  await waitForPresentationRenderer(operation.id)
-  window.setBounds(expandedBounds, false)
-  window.setMinimumSize(MAIN_WINDOW_MIN_SIZE, MAIN_WINDOW_MIN_SIZE)
-  lastVisibleMainWindowBounds = { ...window.getBounds() }
-  stableCompactBounds = null
-  if (compactDockSuspended) {
-    compactDockSuspended = false
-    endDockInteractionSuspension('presentation-expanded')
-  }
-  showCommittedPresentation(window, 'presentation-expanded', showWhenDone)
-  return { bounds: { ...lastVisibleMainWindowBounds } }
-}
-
-async function recoverExpandedPresentation({ window, operation, error }) {
-  if (!window || window.isDestroyed()) return
-  logger.warn('presentation-mode.recover', '展示模式切换失败，强制恢复主视图', {
-    operationId: operation.id,
-    from: operation.from,
-    to: operation.to,
-    error: error?.message
-  })
-  presentationRendererWaiters.get(operation.id)?.resolve()
-  try {
-    if (!window.webContents.isDestroyed()) {
-      window.webContents.send('presentation-mode:force-expanded', { operationId: operation.id })
-    }
-  } catch (rendererError) {
-    logger.warn('presentation-mode.recover-renderer', '渲染进程恢复通知发送失败', {
-      operationId: operation.id,
-      error: rendererError?.message
-    })
-  }
-  hideWindowForPresentationCommit(window, 'recovery')
-  const expandedBounds = resolveExpandedBoundsForRecovery()
-  window.setBounds(expandedBounds, false)
-  window.setMinimumSize(MAIN_WINDOW_MIN_SIZE, MAIN_WINDOW_MIN_SIZE)
-  lastVisibleMainWindowBounds = { ...window.getBounds() }
-  stableCompactBounds = null
-  if (compactDockSuspended) {
-    compactDockSuspended = false
-    endDockInteractionSuspension('presentation-recovery')
-  }
-  window.show()
-  synchronizePresentationBlur(window, 'presentation-recovery')
-  applyResolvedWindowRuntime()
-  window.focus()
-}
-
-function requestPresentationMode(mode, context = {}) {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return Promise.resolve({ changed: false, mode: PRESENTATION_MODES.EXPANDED })
-  }
-  return presentationModeController.request(mainWindow, mode, context, {
-    perform: performPresentationModeCommit,
-    recover: recoverExpandedPresentation
-  })
-}
-
-function enterCompactPresentation(anchor) {
-  if (isLocked) {
-    return Promise.reject(new Error('窗口已锁定：切换为灵动岛会改变窗口位置和尺寸，请先解锁'))
-  }
-  return requestPresentationMode(PRESENTATION_MODES.COMPACT, {
-    source: 'titlebar-double-click',
-    anchor: resolvedDragPoint(anchor),
-    showWhenDone: true
-  })
-}
-
-function exitCompactPresentation({ source = 'compact-double-click', showWhenDone = true } = {}) {
-  if (compactDragSession) endCompactWindowDrag()
-  return requestPresentationMode(PRESENTATION_MODES.EXPANDED, {
-    source,
-    showWhenDone
-  })
-}
-
-function beginCompactWindowDrag(pointerOrigin) {
-  if (
-    isLocked ||
-    !presentationModeController.isCompact() ||
-    presentationModeController.isBusy() ||
-    compactDragSession ||
-    !mainWindow ||
-    mainWindow.isDestroyed()
-  ) {
-    return false
-  }
-  let motionBounds
-  try {
-    motionBounds = windowMotionBackend?.capture()
-  } catch (error) {
-    logger.error('presentation-mode.drag-start', error)
-    return false
-  }
-  if (!motionBounds) return false
-  const bounds = mainWindow.getBounds()
-  const contentBounds = mainWindow.getContentBounds()
-  compactDragSession = {
-    cursor: resolvedDragPoint(pointerOrigin),
-    bounds,
-    lastPosition: { x: bounds.x, y: bounds.y },
-    moved: false,
-    motionPlan: {
-      initial: motionBounds,
-      expectedSize: { width: motionBounds.width, height: motionBounds.height },
-      expectedElectronContentSize: {
-        width: contentBounds.width,
-        height: contentBounds.height
-      }
-    }
-  }
-  return true
-}
-
-function updateCompactWindowDrag(pointerPosition) {
-  if (!compactDragSession || !mainWindow || mainWindow.isDestroyed()) return false
-  const session = compactDragSession
-  const cursor = resolvedDragPoint(pointerPosition)
-  const position = {
-    x: Math.round(session.bounds.x + cursor.x - session.cursor.x),
-    y: Math.round(session.bounds.y + cursor.y - session.cursor.y)
-  }
-  if (position.x === session.lastPosition.x && position.y === session.lastPosition.y) return false
-  const display = screen.getDisplayNearestPoint(cursor)
-  const constrained = compactBoundsFromAnchor({
-    anchor: {
-      x: position.x + session.bounds.width / 2,
-      y: position.y + session.bounds.height / 2
-    },
-    size: session.bounds,
-    workArea: display.workArea
-  })
-  const motionPosition =
-    session.motionPlan.initial.coordinateSpace === 'physical'
-      ? dipBoundsToPhysical(mainWindow, { ...session.bounds, ...constrained })
-      : constrained
-  try {
-    setDockPosition(motionPosition, session.motionPlan)
-    session.lastPosition = { x: constrained.x, y: constrained.y }
-    stableCompactBounds = { ...constrained }
-    session.moved = true
-    return true
-  } catch (error) {
-    logger.error('presentation-mode.drag-move', error, { position: constrained })
-    return false
-  }
-}
-
-function endCompactWindowDrag() {
-  const session = compactDragSession
-  if (!session) return false
-  compactDragSession = null
-  if (session.moved && mainWindow && !mainWindow.isDestroyed()) {
-    stableCompactBounds = { ...mainWindow.getBounds() }
-    synchronizePresentationBlur(mainWindow, 'presentation-drag-end')
-  }
-  if (zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM) {
-    reassertBottomWindowZOrder('presentation-drag-end')
-  }
-  return session.moved
-}
-
-function persistCompactWindowSize(bounds, source) {
-  const width = Math.round(Number(bounds?.width))
-  const height = Math.round(Number(bounds?.height))
-  if (!Number.isFinite(width) || !Number.isFinite(height)) return false
-  persistSettingValues([
-    { id: 'window.compactWidth', value: width },
-    { id: 'window.compactHeight', value: height }
-  ])
-  pendingCompactResizeBounds = null
-  if (compactResizePersistenceTimer) {
-    clearTimeout(compactResizePersistenceTimer)
-    compactResizePersistenceTimer = null
-  }
-  logger.info('presentation-mode.resize-persist', '灵动岛尺寸已保存', {
-    source,
-    width: resolvedSettings.window.compactWidth,
-    height: resolvedSettings.window.compactHeight
-  })
-  return true
-}
-
-function flushCompactWindowSizePersistence(source = 'resize-idle') {
-  const bounds = pendingCompactResizeBounds
-  if (!bounds) return false
-  try {
-    return persistCompactWindowSize(bounds, source)
-  } catch (error) {
-    logger.error('presentation-mode.resize-persist', error, { source, bounds })
-    return false
-  }
-}
-
-function scheduleCompactWindowSizePersistence(bounds) {
-  pendingCompactResizeBounds = { ...bounds }
-  if (compactResizePersistenceTimer) clearTimeout(compactResizePersistenceTimer)
-  compactResizePersistenceTimer = setTimeout(() => {
-    compactResizePersistenceTimer = null
-    flushCompactWindowSizePersistence('resize-idle')
-  }, 300)
-}
-
-function finishCompactWindowResize() {
-  if (
-    !presentationModeController.isCompact() ||
-    presentationModeController.isBusy() ||
-    !mainWindow ||
-    mainWindow.isDestroyed()
-  ) {
-    return false
-  }
-  stableCompactBounds = { ...mainWindow.getBounds() }
-  pendingCompactResizeBounds = { ...stableCompactBounds }
-  flushCompactWindowSizePersistence('pointer-finish')
-  synchronizePresentationBlur(mainWindow, 'presentation-resize-end')
-  return true
+  if (!getMainWindow() || getMainWindow().isDestroyed() || !text) return
+  getMainWindow().webContents.send('app:message', { type, text, duration })
 }
 
 const scheduleVisibleBlurRestore = createDeferredWindowRestore({
-  canRestore: (window) => !window.isDestroyed() && window.isVisible() && window === mainWindow,
+  canRestore: (window) => !window.isDestroyed() && window.isVisible() && window === getMainWindow(),
   restore: (window, source) => {
     const startedAt = performance.now()
     restoreBlurForVisibleWindow(window, source)
@@ -1706,634 +841,33 @@ const scheduleVisibleBlurRestore = createDeferredWindowRestore({
       source,
       deferred: true,
       elapsedMs: performance.now() - startedAt,
-      enabled: blurConfig.enabled,
-      initialized: blurInitialized,
-      failed: blurRuntimeFailed
+      enabled: blurRuntime.config.enabled,
+      initialized: blurRuntime.initialized,
+      failed: blurRuntime.failed
     })
   }
 })
 
 function applyResolvedWindowRuntime() {
-  isLocked = resolvedSettings.window.lockState
+  isLocked = settingsRuntime.values.window.lockState
   // 锁定或视图刷新可能在异步层级核验期间读取旧设置；保留正在提交的目标层级。
-  zOrderMode = pendingWindowZOrderMode ?? resolvedSettings.window.zOrderMode
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  mainWindow.setMovable(!isLocked)
+  zOrderRuntime.syncResolved()
+  if (!getMainWindow() || getMainWindow().isDestroyed()) return
+  getMainWindow().setMovable(!isLocked)
   // Windows 使用 thickFrame:false + renderer 自定义缩放手柄。调用
   // setResizable(true) 会重新引入系统 WS_THICKFRAME，破坏高 DPI 几何不变量。
-  if (process.platform !== 'win32') mainWindow.setResizable(!isLocked)
   const result = applyWindowZOrder()
   if (!result.success) {
     logger.error('window.z-order', new Error(result.error), {
-      mode: zOrderMode,
+      mode: zOrderRuntime.mode,
       code: result.code,
       source: 'resolved-settings'
     })
-    if (zOrderMode === WINDOW_Z_ORDER_MODES.BOTTOM) {
+    if (zOrderRuntime.mode === WINDOW_Z_ORDER_MODES.BOTTOM) {
       scheduleBottomWindowZOrderRetry('resolved-settings', result)
     } else {
       sendAppMessage('error', result.error)
     }
-  }
-}
-
-/**
- * dock 设置变化时先让正在屏外或动画中的窗口恢复可见，再以新配置
- * 重建可见态贴边方向。不在活动会话上就地改监视器模式，避免新旧语义混用。
- */
-function reconcileDockRuntimeConfig(previousConfig, source = 'settings') {
-  const nextConfig = getDockRuntimeConfig()
-  if (dockRuntimeConfigEqual(previousConfig, nextConfig)) return nextConfig
-
-  cancelPendingDockHide(`dock-config:${source}`)
-
-  logger.info('dock.config', '贴边隐藏配置已更新', {
-    source,
-    previous: previousConfig,
-    next: nextConfig,
-    isDockHidden,
-    isSliding,
-    hasSession: Boolean(dockMotionSession)
-  })
-
-  if (isDockTransitionActive()) {
-    emergencyRestoreDock(
-      'dock-config-changed',
-      new Error('贴边隐藏会话期间配置发生变化，已恢复窗口可见')
-    )
-  }
-
-  if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) {
-    dockSide = null
-    return nextConfig
-  }
-
-  syncVisibleDockSide({ source: `dock-config:${source}`, snap: true })
-  return nextConfig
-}
-
-/**
- * 通过共享 schema 持久化逻辑设置 ID；renderer 不再接触 type/key/raw value。
- * 返回广播出去的同一份完整快照。
- */
-function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
-  const changesDockConfig = entries.some(({ id }) => id.startsWith('dock.'))
-  const previousDockConfig = changesDockConfig ? getDockRuntimeConfig() : null
-  const normalizedEntries = entries.map(({ id, value }) => ({ id, ...serializeSetting(id, value) }))
-  const evidenceScope = getActiveWindowName()
-  const evidenceTicket = diagnosticState.observation(currentOperation()?.actionId)
-  if (currentOperation()) currentOperation().verification = evidenceTicket.reason
-  const beforeEvidence = readSettingEvidence(
-    normalizedEntries,
-    getAllSettings,
-    APPLICATION_SETTING_ID_SET,
-    evidenceScope,
-    evidenceTicket
-  )
-  const applicationEntries = normalizedEntries.filter(({ id }) =>
-    APPLICATION_SETTING_ID_SET.has(id)
-  )
-  const viewEntries = normalizedEntries.filter(({ id }) => !APPLICATION_SETTING_ID_SET.has(id))
-  if (viewEntries.length) setSettingsBatch(getActiveWindowName(), viewEntries)
-  if (applicationEntries.length) {
-    writeApplicationSettings(applicationEntries.map(({ id, value }) => ({ id, value })))
-  }
-  reportSettingEvidence(
-    beforeEvidence,
-    readSettingEvidence(
-      normalizedEntries,
-      getAllSettings,
-      APPLICATION_SETTING_ID_SET,
-      evidenceScope,
-      evidenceTicket
-    )
-  )
-  refreshResolvedSettings({ incrementRevision: true })
-
-  if (normalizedEntries.some(({ id }) => id.startsWith('window.'))) {
-    applyResolvedWindowRuntime()
-  }
-  const changesBlurRuntime = normalizedEntries.some(
-    ({ id }) => id.startsWith('blur.') || id === 'css.bgColor' || id === 'css.windowOpacity'
-  )
-  if (applyBlurRuntime && changesBlurRuntime) {
-    applyResolvedBlurRuntime()
-  }
-  if (changesDockConfig) reconcileDockRuntimeConfig(previousDockConfig, 'persist')
-
-  const snapshot = getResolvedSettingsSnapshot()
-  broadcastSettingsChanged(snapshot)
-  return snapshot
-}
-
-function persistSettingValue(id, value) {
-  return persistSettingValues([{ id, value }])
-}
-
-/** 壁纸与原生毛玻璃共享同一个主窗口背景槽，任何时刻最多启用一个。 */
-function persistWallpaperState({ enabled, activeId = resolvedSettings.wallpaper.activeId }) {
-  return persistSettingValues([
-    { id: 'wallpaper.enabled', value: Boolean(enabled) },
-    { id: 'wallpaper.activeId', value: activeId }
-  ])
-}
-
-function deactivateWallpaperForGlass({ broadcast = true } = {}) {
-  if (!resolvedSettings.wallpaper.enabled) return null
-  setSettingsBatch(getActiveWindowName(), [serializeSetting('wallpaper.enabled', false)])
-  refreshResolvedSettings({ incrementRevision: true })
-  const snapshot = getResolvedSettingsSnapshot()
-  if (broadcast) broadcastSettingsChanged(snapshot)
-  return {
-    activeId: resolvedSettings.wallpaper.activeId,
-    wasEnabled: true
-  }
-}
-
-function restoreSuspendedWallpaper(suspended) {
-  if (!suspended?.wasEnabled || !suspended.activeId) return getResolvedSettingsSnapshot()
-  return persistWallpaperState({ enabled: true, activeId: suspended.activeId })
-}
-
-// ============================================================
-// 贴边隐藏模块
-// ============================================================
-const SNAP_THRESHOLD = 20 // 贴边吸附阈值（px）
-const EDGE_TRIGGER_THICKNESS_DIP = 2
-const EDGE_MONITOR_POLL_INTERVAL_MS = 50
-const MAX_EDGE_MONITOR_POLL_AGE_MS = 1000
-const SLIDE_DURATION = 200 // 滑动动画总时长（ms）
-const SLIDE_INTERVAL = 16 // 滑动动画帧间隔（ms）≈60fps
-const HIDE_DELAY = 200 // 鼠标离开后延迟隐藏（ms）
-const HIDE_OVERSHOOT = 4 // 两侧统一多移出 4 DIP，吸收高 DPI 整数换算误差
-const DOCK_GEOMETRY_SUPPRESSION_MS = 1000
-const MAX_DOCK_SLIDE_AGE_MS = 5000
-const NATIVE_EDGE_CLEANUP_INITIAL_RETRY_MS = 1000
-const NATIVE_EDGE_CLEANUP_MAX_RETRY_MS = 30_000
-const DOCK_NATIVE_STATUS_OBSERVER_INTERVAL_MS = 250
-
-/** 默认窗口尺寸比例（相对屏幕工作区），改一个地方即可全局生效 */
-let dockSide = null // null | 'left' | 'right' | 'top' | 'bottom' 当前吸附方向
-let isDockHidden = false // 窗口是否处于贴边隐藏状态
-let cachedWorkArea = null // 缓存显示器工作区，避免隐藏后 getDisplayMatching 返回过期对象
-let slideAnimTimer = null // 滑动动画定时器
-let hideTimer = null // 隐藏延迟定时器
-let pendingDockHideRequestedAt = null // 鼠标离开到实际开始隐藏的耗时起点
-let isSliding = false // 滑动动画进行中标志
-let dockSlideStartedAt = null // 当前动画开始时间；健康任务用于识别卡死动画
-let pendingSlideCallback = null // 动画中断时待执行的完成回调
-let dockMotionSession = null // 一轮隐藏/显示共享的可见边界与工作区快照
-let dockSessionSequence = 0 // 每轮隐藏的代次；原生事件必须与当前会话完全一致
-let edgeMonitorMessageId = null
-const dockTransitionState = new DockTransitionState()
-let windowMotionBackend = null
-let nativeEdgeCleanupPending = null
-let nativeEdgeCleanupTimer = null
-let dockInteractionSuspendCount = 0
-const dockNativeStatusObserver = new DockNativeStatusObserver({
-  getStatus: () => windowMotionBackend?.getEdgeMonitorStatus() || {},
-  getContext: getDockNativeObserverContext,
-  logger,
-  intervalMs: 2000
-})
-diagnosticState.subscribe((policy) => {
-  dockNativeStatusObserver.setInterval(
-    policy.mode === 'deep' ? DOCK_NATIVE_STATUS_OBSERVER_INTERVAL_MS : 2000
-  )
-})
-
-function scheduleNativeEdgeCleanup() {
-  if (!nativeEdgeCleanupPending || nativeEdgeCleanupTimer || isQuitting) return
-  const exponent = Math.min(nativeEdgeCleanupPending.attempts, 5)
-  const delay = Math.min(
-    NATIVE_EDGE_CLEANUP_INITIAL_RETRY_MS * 2 ** exponent,
-    NATIVE_EDGE_CLEANUP_MAX_RETRY_MS
-  )
-  nativeEdgeCleanupTimer = setTimeout(() => {
-    nativeEdgeCleanupTimer = null
-    attemptNativeEdgeCleanup('retry-timer')
-  }, delay)
-}
-
-function beginNativeEdgeCleanup(generation, backend, source) {
-  if (!generation || !backend) return
-  if (!nativeEdgeCleanupPending || nativeEdgeCleanupPending.generation !== generation) {
-    nativeEdgeCleanupPending = {
-      generation,
-      backend,
-      source,
-      attempts: 0,
-      startedAt: Date.now()
-    }
-  } else {
-    nativeEdgeCleanupPending.backend = backend
-    nativeEdgeCleanupPending.source = source
-  }
-  scheduleNativeEdgeCleanup()
-}
-
-function finishNativeEdgeCleanup(source) {
-  const pending = nativeEdgeCleanupPending
-  if (!pending) return
-  if (nativeEdgeCleanupTimer) {
-    clearTimeout(nativeEdgeCleanupTimer)
-    nativeEdgeCleanupTimer = null
-  }
-  nativeEdgeCleanupPending = null
-  logger.info('dock.native-edge-cleanup', '原生边缘监视器延迟清理完成', {
-    source,
-    generation: pending.generation,
-    attempts: pending.attempts,
-    elapsedMs: Date.now() - pending.startedAt
-  })
-  setImmediate(() => {
-    if (!isQuitting && mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
-      syncVisibleDockSide({ source: 'native-edge-cleanup-complete', snap: true })
-    }
-  })
-}
-
-function attemptNativeEdgeCleanup(source = 'unknown') {
-  const pending = nativeEdgeCleanupPending
-  if (!pending) return true
-  pending.attempts += 1
-  try {
-    if (pending.backend.disarmEdgeMonitor(pending.generation)) {
-      finishNativeEdgeCleanup(source)
-      return true
-    }
-    logger.warn('dock.native-edge-cleanup', '原生边缘监视器仍未停止，将继续重试', {
-      source,
-      generation: pending.generation,
-      attempts: pending.attempts
-    })
-  } catch (error) {
-    logger.error('dock.native-edge-cleanup', error, {
-      source,
-      generation: pending.generation,
-      attempts: pending.attempts
-    })
-  }
-  scheduleNativeEdgeCleanup()
-  return false
-}
-
-function beginDockInteractionSuspension(source) {
-  dockInteractionSuspendCount += 1
-  cancelPendingDockHide(`suspend:${source}`)
-  if (isSliding || isDockHidden || dockMotionSession) {
-    emergencyRestoreDock(`suspend:${source}`, new Error(`${source} 会话期间暂停贴边隐藏`))
-  }
-}
-
-function endDockInteractionSuspension(source) {
-  dockInteractionSuspendCount = Math.max(0, dockInteractionSuspendCount - 1)
-  if (dockInteractionSuspendCount !== 0) return
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
-    syncVisibleDockSide({ source: `resume:${source}`, snap: true })
-  }
-}
-
-function cancelPendingDockHide(source = 'unknown') {
-  if (!hideTimer) return false
-  const elapsedMs = pendingDockHideRequestedAt ? Date.now() - pendingDockHideRequestedAt : null
-  clearTimeout(hideTimer)
-  hideTimer = null
-  pendingDockHideRequestedAt = null
-  logger.info('dock.hide-timer', '已取消待执行的贴边隐藏', { source, elapsedMs })
-  return true
-}
-
-function detachNativeEdgeMonitorMessageHook(window = mainWindow) {
-  if (!edgeMonitorMessageId) return
-  if (!window || window.isDestroyed()) {
-    edgeMonitorMessageId = null
-    return
-  }
-  try {
-    window.unhookWindowMessage(edgeMonitorMessageId)
-  } catch (error) {
-    logger.warn('dock.native-edge-unhook', '解除原生边缘消息监听失败', {
-      messageId: edgeMonitorMessageId,
-      error: error?.message || String(error)
-    })
-  }
-  edgeMonitorMessageId = null
-}
-
-function handleNativeEdgeMonitorMessage(window) {
-  if (window !== mainWindow || window.isDestroyed() || !windowMotionBackend) return
-  let event
-  try {
-    event = windowMotionBackend.consumeEdgeMonitorEvent()
-  } catch (error) {
-    emergencyRestoreDock('native-edge-consume-failed', error)
-    return
-  }
-  if (!event) return
-
-  const currentGeneration = dockMotionSession?.generation || 0
-  const accepted = isCurrentDockMonitorEvent(event, dockMotionSession)
-  if (event.kind !== 'handle-moved') {
-    dockNativeStatusObserver.capture('native-event-received', { force: true })
-    logger.info('dock.native-edge-event', '收到 Windows 原生边缘监视事件', {
-      event,
-      accepted,
-      currentGeneration,
-      isDockHidden,
-      isSliding,
-      edgeMonitor: getDockDiagnosticSnapshot().edgeMonitor
-    })
-  }
-  if (!accepted) {
-    try {
-      if (!windowMotionBackend.disarmEdgeMonitor(event.generation)) {
-        beginNativeEdgeCleanup(event.generation, windowMotionBackend, 'native-edge-stale-stop')
-      }
-    } catch (error) {
-      logger.error('dock.native-edge-stale-stop', error, { event })
-      beginNativeEdgeCleanup(event.generation, windowMotionBackend, 'native-edge-stale-stop')
-    }
-    return
-  }
-  if (event.kind === 'handle-moved') {
-    const positionPermille = Number(event.positionPermille)
-    if (
-      dockMotionSession?.revealHandleMode !== DOCK_REVEAL_HANDLE_MODES.PERSISTENT ||
-      !Number.isInteger(positionPermille) ||
-      positionPermille < 0 ||
-      positionPermille > 1000
-    ) {
-      logger.warn('dock.handle-position', '忽略无效的小黑条拖动位置事件', { event })
-      return
-    }
-    dockMotionSession.handlePositionPermille = positionPermille
-    logger.info('dock.handle-position', '常显小黑条已在当前隐藏会话内移动', {
-      side: event.side,
-      positionPermille,
-      persisted: false
-    })
-    return
-  }
-  if (event.kind === 'trigger') {
-    if (isDockHidden) {
-      try {
-        doShow('native-edge')
-      } catch (error) {
-        emergencyRestoreDock('native-edge-show-failed', error)
-      }
-    }
-    return
-  }
-  emergencyRestoreDock('native-edge-fault', new Error(`原生边缘监视器故障：${event.error}`))
-}
-
-function applyDockPersistentHandlePosition(session, source) {
-  if (
-    session?.revealHandleMode !== DOCK_REVEAL_HANDLE_MODES.PERSISTENT ||
-    !Number.isInteger(session.handlePositionPermille)
-  ) {
-    return
-  }
-  const result = windowMotionBackend.setPersistentHandlePosition(
-    session.handlePositionPermille,
-    session.generation
-  )
-  if (result.success) return
-  throw new Error(`${result.error || '设置常显小黑条位置失败'}（${source}）`)
-}
-
-function attachNativeEdgeMonitorMessageHook(window) {
-  edgeMonitorMessageId = windowMotionBackend?.getEdgeMonitorMessageId() || null
-  if (!edgeMonitorMessageId) return
-  window.hookWindowMessage(edgeMonitorMessageId, () => {
-    setImmediate(() => handleNativeEdgeMonitorMessage(window))
-  })
-}
-
-function suppressDockGeometryPersistence() {
-  suppressDockGeometryPersistenceUntil = Math.max(
-    suppressDockGeometryPersistenceUntil,
-    Date.now() + DOCK_GEOMETRY_SUPPRESSION_MS
-  )
-  scheduleDockGeometryReconciliation()
-}
-
-function isDockGeometryPersistenceSuppressed() {
-  return (
-    isCompactPresentationActive() ||
-    isSliding ||
-    isDockHidden ||
-    Boolean(dockMotionSession) ||
-    Date.now() < suppressDockGeometryPersistenceUntil
-  )
-}
-
-function isDockTransitionActive() {
-  return (
-    isSliding || isDockHidden || Boolean(dockMotionSession) || Boolean(nativeEdgeCleanupPending)
-  )
-}
-
-function boundsEqual(first, second) {
-  return (
-    first &&
-    second &&
-    first.x === second.x &&
-    first.y === second.y &&
-    first.width === second.width &&
-    first.height === second.height
-  )
-}
-
-/**
- * 动画事件全部安静下来后重新读取一次真实边界。这样既不会把动画中间帧写库，
- * 也不会丢失用户在保护期内立即进行的真实移动或缩放。
- */
-function scheduleDockGeometryReconciliation() {
-  if (dockGeometryReconcileTimer) clearTimeout(dockGeometryReconcileTimer)
-  const delay = Math.max(0, suppressDockGeometryPersistenceUntil - Date.now()) + 50
-  dockGeometryReconcileTimer = setTimeout(() => {
-    dockGeometryReconcileTimer = null
-    // 灵动岛拖动复用原生窗口移动后端，也会触发这条贴边补偿链路。
-    // 此时真实窗口边界属于灵动岛，绝不能写入主视图 geometry。
-    if (isCompactPresentationActive()) return
-    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) return
-    if (isSliding || isDockHidden || dockMotionSession) return
-    if (
-      Date.now() < suppressDockGeometryPersistenceUntil ||
-      Date.now() < suppressGeometryPersistenceUntil
-    ) {
-      scheduleDockGeometryReconciliation()
-      return
-    }
-
-    const bounds = mainWindow.getBounds()
-    if (boundsEqual(bounds, lastVisibleMainWindowBounds)) return
-    lastVisibleMainWindowBounds = { ...bounds }
-    geometryDirty = true
-    try {
-      persistSettingValues([
-        { id: 'geometry.posX', value: bounds.x },
-        { id: 'geometry.posY', value: bounds.y },
-        { id: 'geometry.width', value: bounds.width },
-        { id: 'geometry.height', value: bounds.height }
-      ])
-      geometryDirty = false
-    } catch (error) {
-      console.warn('[settings] 补偿保存窗口位置失败:', error)
-    }
-  }, delay)
-  dockGeometryReconcileTimer.unref?.()
-}
-
-function createStableDockBounds(bounds, side, workArea) {
-  const width = Math.round(bounds.width)
-  const height = Math.round(bounds.height)
-  const visibleX =
-    side === 'left' ? workArea.x : side === 'right' ? workArea.x + workArea.width - width : bounds.x
-  const visibleY =
-    side === 'top'
-      ? workArea.y
-      : side === 'bottom'
-        ? workArea.y + workArea.height - height
-        : bounds.y
-  const x = Math.round(visibleX)
-  const y = Math.round(visibleY)
-
-  return { x, y, width, height }
-}
-
-/**
- * 根据当前视图的独立设置解析真实窗口边界。
- * 视图切换与首次创建必须共用同一套规则，避免复用窗口后出现尺寸或显示器选择差异。
- */
-function resolveActiveViewWindowBounds({ preferredDisplay = null } = {}) {
-  const display = preferredDisplay || screen.getPrimaryDisplay()
-  const screenW = display.workAreaSize.width
-  const screenH = display.workAreaSize.height
-  const defaultW = Math.round(screenW * resolvedSettings.geometry.widthRatio)
-  const defaultH = Math.round(screenH * resolvedSettings.geometry.heightRatio)
-  const margin = Math.round((screenH - defaultH) / 2)
-  const defaultX = getActiveWindowProfile().defaultCentered
-    ? display.workArea.x + Math.round((screenW - defaultW) / 2)
-    : display.workArea.x + margin
-  const defaultY = display.workArea.y + Math.round((screenH - defaultH) / 2)
-  const geometry = resolvedSettings.geometry
-  const hasSavedGeometry =
-    [geometry.posX, geometry.posY, geometry.width, geometry.height].every(Number.isFinite) &&
-    geometry.width > 0 &&
-    geometry.height > 0
-  const saved = hasSavedGeometry
-    ? {
-        x: geometry.posX,
-        y: geometry.posY,
-        width: geometry.width,
-        height: geometry.height
-      }
-    : null
-  const requestedBounds = saved || {
-    x: defaultX,
-    y: defaultY,
-    width: defaultW,
-    height: defaultH
-  }
-  const targetDisplay = saved ? screen.getDisplayMatching(saved) : display
-  const bounds = constrainMainWindowBounds(requestedBounds, targetDisplay.workArea)
-
-  return {
-    bounds,
-    requestedBounds,
-    targetDisplay,
-    saved: Boolean(saved)
-  }
-}
-
-function getActiveRendererLocation() {
-  const rendererFile = getActiveWindowProfile().rendererFile
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    return {
-      rendererFile,
-      type: 'url',
-      value:
-        rendererFile === 'index.html'
-          ? process.env['ELECTRON_RENDERER_URL']
-          : `${process.env['ELECTRON_RENDERER_URL']}/${rendererFile}`
-    }
-  }
-  return {
-    rendererFile,
-    type: 'file',
-    value: join(RENDERER_ROOT, rendererFile)
-  }
-}
-
-function beginMainViewRendererReadyWait(window, viewMode) {
-  if (pendingMainViewRendererReady) {
-    pendingMainViewRendererReady.reject(new Error('新的主视图加载覆盖了尚未完成的等待'))
-  }
-
-  let resolvePromise
-  let rejectPromise
-  const promise = new Promise((resolveReady, rejectReady) => {
-    resolvePromise = resolveReady
-    rejectPromise = rejectReady
-  })
-  const pending = {
-    window,
-    viewMode,
-    timer: null,
-    resolve: () => {
-      if (pendingMainViewRendererReady !== pending) return
-      clearTimeout(pending.timer)
-      pendingMainViewRendererReady = null
-      resolvePromise()
-    },
-    reject: (error) => {
-      if (pendingMainViewRendererReady !== pending) return
-      clearTimeout(pending.timer)
-      pendingMainViewRendererReady = null
-      rejectPromise(error)
-    }
-  }
-  pending.timer = setTimeout(() => {
-    pending.reject(new Error(`等待${viewMode}视图渲染完成超时`))
-  }, MAIN_VIEW_RENDERER_READY_TIMEOUT_MS)
-  pending.timer.unref?.()
-  pendingMainViewRendererReady = pending
-  return promise
-}
-
-function acknowledgeMainViewRendererReady(sender, viewMode) {
-  const pending = pendingMainViewRendererReady
-  if (!pending || pending.window.isDestroyed()) return
-  if (
-    sender !== pending.window.webContents ||
-    pending.viewMode !== activeViewMode ||
-    viewMode !== pending.viewMode
-  )
-    return
-  pending.resolve()
-}
-
-function cancelMainViewRendererReadyWait(error) {
-  pendingMainViewRendererReady?.reject(error)
-}
-
-async function loadActiveViewIntoWindow(window) {
-  if (!window || window.isDestroyed()) throw new Error('主窗口不可用')
-  const location = getActiveRendererLocation()
-  const readyPromise = beginMainViewRendererReadyWait(window, activeViewMode)
-  if (mainWindowPresentationTiming) mainWindowPresentationTiming.loadRequestedAt = Date.now()
-
-  try {
-    const loadPromise =
-      location.type === 'url' ? window.loadURL(location.value) : window.loadFile(location.value)
-    await Promise.all([loadPromise, readyPromise])
-  } catch (error) {
-    cancelMainViewRendererReadyWait(error)
-    await readyPromise.catch(() => {})
-    throw error
   }
 }
 
@@ -2355,7 +889,7 @@ function createWindow({ preferredDisplay = null } = {}) {
   const bounds = normalBounds
 
   // 创建主窗口实例（透明背景 + CSS 圆角）
-  mainWindow = new BrowserWindow({
+  mainWindowHost.create({
     ...bounds,
     minWidth: MAIN_WINDOW_MIN_SIZE,
     minHeight: MAIN_WINDOW_MIN_SIZE,
@@ -2364,13 +898,11 @@ function createWindow({ preferredDisplay = null } = {}) {
     transparent: true,
     // Windows 的默认 thickFrame 会给无边框窗口保留不可见 resize inset。
     // 项目已有自定义缩放手柄，不需要让该 inset 参与高 DPI 边界换算。
-    ...(process.platform === 'win32' ? { thickFrame: false } : {}),
+    thickFrame: false,
     backgroundColor: '#00000000',
     autoHideMenuBar: true,
     skipTaskbar: true,
     paintWhenInitiallyHidden: true,
-    ...(process.platform === 'darwin' ? { vibrancy: 'under-window' } : {}),
-    ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(PRELOAD_ROOT, 'index.js'),
       additionalArguments: [`--editing-draft-session=${editingDraftSessionId}`],
@@ -2381,11 +913,9 @@ function createWindow({ preferredDisplay = null } = {}) {
       backgroundThrottling: false
     }
   })
-  const createdWindow = mainWindow
-  presentationModeController.initialize(mainWindow)
-  compactExpandedBounds = { ...normalBounds }
-  stableCompactBounds = null
-  mainWindowPresentationTiming = {
+  const createdWindow = getMainWindow()
+  presentationRuntime.initialize(getMainWindow(), normalBounds)
+  mainViewNavigation.setPresentationTiming({
     creationStartedAt,
     createdAt: Date.now(),
     loadRequestedAt: null,
@@ -2393,21 +923,28 @@ function createWindow({ preferredDisplay = null } = {}) {
     rendererReadyAt: null,
     displayId: targetDisplay.id,
     displayScaleFactor: targetDisplay.scaleFactor
-  }
+  })
   installRendererRecovery(createdWindow, {
     dialog,
     logger,
     openDiagnostics: () => shell.openPath(getLogDirectory()),
-    canRecover: () => !isQuitting && !switchingMainView,
+    canRecover: () => !shutdownCoordinator.isQuitting() && !mainViewNavigation.isSwitching(),
+    onRendererReset: (reason) => {
+      try {
+        endTitlebarWindowDrag({ reason })
+      } finally {
+        endCompactWindowDrag()
+      }
+    },
     restart: () => {
       app.relaunch()
       app.quit()
     }
   })
-  const mainSession = mainWindow.webContents.session
+  const mainSession = getMainWindow().webContents.session
   const allowMainWindowGeolocation = (webContents, permission) =>
     (permission === 'geolocation' || permission === 'geolocation-approximate') &&
-    webContents === mainWindow?.webContents
+    webContents === getMainWindow()?.webContents
   // 只放行当前本地主窗口的设备定位；其他 Web API 权限一律拒绝。
   mainSession.setPermissionCheckHandler((webContents, permission) =>
     allowMainWindowGeolocation(webContents, permission)
@@ -2426,21 +963,20 @@ function createWindow({ preferredDisplay = null } = {}) {
     }
     callback(allowed)
   })
-  setWindowLogContext(mainWindow, { role: getActiveWindowProfile().logRole })
-  lastVisibleMainWindowBounds = { ...normalBounds }
-  windowMotionBackend = createWindowMotionBackend(mainWindow, screen)
-  attachNativeEdgeMonitorMessageHook(mainWindow)
+  setWindowLogContext(getMainWindow(), { role: getActiveWindowProfile().logRole })
+  geometryPersistence.setStableBounds({ ...normalBounds })
+  dockRuntime.attachWindow(getMainWindow())
 
   // 固定缩放因子为 1.0，防止系统 DPI 缩放影响布局
-  mainWindow.webContents.setZoomFactor(1.0)
+  getMainWindow().webContents.setZoomFactor(1.0)
   logger.info('startup.window-presentation', '主窗口已创建并等待渲染就绪', {
-    viewMode: activeViewMode,
-    creationMs: mainWindowPresentationTiming.createdAt - creationStartedAt,
+    viewMode: mainViewNavigation.mode,
+    creationMs: mainViewNavigation.presentationTiming.createdAt - creationStartedAt,
     savedGeometry: saved,
     requestedBounds,
     constrainedExpandedBounds: normalBounds,
-    initialBounds: mainWindow.getBounds(),
-    initialContentBounds: mainWindow.getContentBounds(),
+    initialBounds: getMainWindow().getBounds(),
+    initialContentBounds: getMainWindow().getContentBounds(),
     initialDisplay: {
       id: targetDisplay.id,
       scaleFactor: targetDisplay.scaleFactor,
@@ -2448,120 +984,116 @@ function createWindow({ preferredDisplay = null } = {}) {
       bounds: targetDisplay.bounds,
       workArea: targetDisplay.workArea
     },
-    rendererZoomFactor: mainWindow.webContents.getZoomFactor(),
+    rendererZoomFactor: getMainWindow().webContents.getZoomFactor(),
     blur: {
-      configuredEnabled: blurConfig.enabled,
-      supported: blurCaps.supported
+      configuredEnabled: blurRuntime.config.enabled,
+      supported: blurRuntime.caps.supported
     }
   })
-  mainWindow.webContents.on('did-start-loading', () => {
-    if (mainWindow === createdWindow) {
-      if (mainWindowPresentationTiming) mainWindowPresentationTiming.loadStartedAt = Date.now()
+  getMainWindow().webContents.on('did-start-loading', () => {
+    if (getMainWindow() === createdWindow) {
+      if (mainViewNavigation.presentationTiming)
+        mainViewNavigation.recordTiming('loadStartedAt', Date.now())
     }
   })
 
   // 从完整设置快照恢复锁定状态
-  isLocked = resolvedSettings.window.lockState
+  isLocked = settingsRuntime.values.window.lockState
   if (isLocked) {
-    mainWindow.setMovable(false)
+    getMainWindow().setMovable(false)
     // Windows 的用户缩放已经由 thickFrame:false 和 renderer 自定义手柄控制；
     // 保留程序化 resize，供恢复默认尺寸等受控窗口操作使用。
-    if (process.platform !== 'win32') mainWindow.setResizable(false)
   }
   // ---- 初始化系统模糊 ----
-  if (blurCaps.supported) {
+  if (blurRuntime.caps.supported) {
     const result = initializeBlurRuntime()
     if (result.success) {
       console.log('[blur] 系统模糊已初始化, 策略:', result.strategy)
       // 历史版本可能同时留下两项启用状态；启动时以已实际生效的原生玻璃为准。
-      if (blurConfig.enabled && resolvedSettings.wallpaper.enabled) {
+      if (blurRuntime.config.enabled && settingsRuntime.values.wallpaper.enabled) {
         setSettingsBatch(getActiveWindowName(), [serializeSetting('wallpaper.enabled', false)])
         refreshResolvedSettings({ incrementRevision: true })
       }
     } else {
       console.warn('[blur] 初始化失败:', result.error, result.nativeError || '')
       // 启动失败不能继续保存“已开启”，否则下次打开设置会造成状态误导。
-      if (blurConfig.enabled) {
+      if (blurRuntime.config.enabled) {
         setSettingsBatch(getActiveWindowName(), [serializeSetting('blur.enabled', false)])
         refreshResolvedSettings({ incrementRevision: true })
       }
     }
   } else {
-    console.log('[blur] 当前平台不支持系统模糊:', blurCaps.reason)
+    console.log('[blur] 当前平台不支持系统模糊:', blurRuntime.caps.reason)
   }
 
   // 拦截新窗口打开请求，改为使用系统默认浏览器打开链接
-  mainWindow.webContents.setWindowOpenHandler((details) => {
+  getMainWindow().webContents.setWindowOpenHandler((details) => {
     openSafeExternal(details.url)
     return { action: 'deny' } // 拒绝在应用内打开新窗口
   })
-  mainWindow.webContents.on('will-navigate', (event, url) => {
+  getMainWindow().webContents.on('will-navigate', (event, url) => {
     event.preventDefault()
     openSafeExternal(url)
   })
 
   // 监听窗口大小变化和移动事件，触发防抖保存
-  mainWindow.on('resize', () => {
-    if (windowMotionBackend?.isMoving()) return
-    if (presentationModeController.isCompact() && !presentationModeController.isBusy()) {
-      stableCompactBounds = { ...mainWindow.getBounds() }
-      scheduleCompactWindowSizePersistence(stableCompactBounds)
-      return
-    }
+  getMainWindow().on('resize', () => {
+    if (dockRuntime.isMoving()) return
+    if (presentationRuntime.handleResize(getMainWindow().getBounds())) return
     debouncedSaveGeometry()
     syncVisibleDockSide({ source: 'window-resize' })
   })
-  mainWindow.on('move', () => {
-    if (windowMotionBackend?.isMoving()) return
-    if (titlebarDragSession) return
+  getMainWindow().on('move', () => {
+    if (dockRuntime.isMoving()) return
+    if (windowDragController.isActive()) return
     debouncedSaveGeometry()
   })
 
   // 【贴边隐藏 - 边缘检测】窗口移动时检测是否靠近屏幕左/右边缘
-  mainWindow.on('move', () => {
-    if (windowMotionBackend?.isMoving()) return
-    if (titlebarDragSession) return
+  getMainWindow().on('move', () => {
+    if (dockRuntime.isMoving()) return
+    if (windowDragController.isActive()) return
     syncVisibleDockSide({ source: 'window-move', snap: true })
   })
 
   // Windows 原生拖动可能在首次进入阈值后继续把窗口带出屏幕；move 阶段已经
   // 记录了 dockSide，但不能持续抢夺系统拖动。等用户松手后再做一次强制收口，
   // 即使方向未变化，也把窗口吸回精确边缘。
-  mainWindow.on('moved', () => {
-    if (windowMotionBackend?.isMoving()) return
-    if (titlebarDragSession) return
+  getMainWindow().on('moved', () => {
+    if (dockRuntime.isMoving()) return
+    if (windowDragController.isActive()) return
     syncVisibleDockSide({ source: 'window-moved', snap: true, forceSnap: true })
   })
 
   // 拦截窗口关闭事件：最小化到托盘而非退出
-  mainWindow.on('close', (e) => {
-    if (!isQuitting && !switchingMainView) {
+  getMainWindow().on('close', (e) => {
+    if (!shutdownCoordinator.isQuitting() && !mainViewNavigation.isSwitching()) {
       e.preventDefault()
       hideToTray()
     }
   })
 
   // 窗口显示时恢复模糊（从托盘恢复）
-  mainWindow.on('show', () => {
-    scheduleVisibleBlurRestore(mainWindow, 'main-window-show')
+  getMainWindow().on('show', () => {
+    scheduleVisibleBlurRestore(getMainWindow(), 'main-window-show')
   })
 
   // 启动恢复、托盘/通知唤醒和视图切换都可能直接把窗口放回已保存的
   // 边缘位置，却不会产生可靠的用户 move 事件。显示后主动重建可见态贴边方向。
-  mainWindow.on('show', () => {
-    if (mainWindow !== getActiveVisualWindow()) return
+  getMainWindow().on('show', () => {
+    if (getMainWindow() !== getActiveVisualWindow()) return
     syncVisibleDockSide({ source: 'window-show', snap: true })
     reassertBottomWindowZOrder('window-show')
   })
 
-  mainWindow.on('minimize', () => {
+  getMainWindow().on('minimize', () => {
     if (!isDockTransitionActive()) return
     logger.info('dock.window-minimized', '贴边会话进入系统最小化状态，暂停几何健康判断', {
       snapshot: getDockDiagnosticSnapshot()
     })
   })
 
-  mainWindow.on('restore', () => {
+  getMainWindow().on('restore', () => {
     if (!isDockTransitionActive()) return
     logger.info('dock.window-restored', '贴边会话已退出系统最小化状态，重新校验真实边界', {
       snapshot: getDockDiagnosticSnapshot()
@@ -2570,30 +1102,23 @@ function createWindow({ preferredDisplay = null } = {}) {
   })
 
   // 窗口销毁时清除引用和贴边资源
-  mainWindow.on('closed', () => {
+  mainWindowHost.installClosedCleanup(getMainWindow(), () => {
     // 只清理由 createWindow 创建并仍被主进程持有的唯一主窗口。
-    if (mainWindow !== createdWindow) return
-    cancelMainViewRendererReadyWait(new Error('主窗口已关闭'))
-    for (const waiter of presentationRendererWaiters.values()) waiter.resolve()
-    presentationRendererWaiters.clear()
-    acknowledgedPresentationOperations.clear()
+    if (getMainWindow() !== createdWindow) return
+    mainViewNavigation.releaseWindow(createdWindow)
+    presentationRuntime.releaseWindow(createdWindow)
     cancelBottomWindowZOrderRetry()
-    resetDockState()
-    detachNativeEdgeMonitorMessageHook(createdWindow)
-    mainWindow = null
-    windowMotionBackend = null
-    lastVisibleMainWindowBounds = null
-    mainWindowPresentationTiming = null
+    windowDragController.releaseWindow(createdWindow)
+    dockRuntime.releaseWindow(createdWindow)
+    geometryPersistence.setStableBounds(null)
   })
 
   // 根据环境加载页面：开发模式用 HMR URL，生产模式加载本地 HTML 文件。
   // 首次启动无需阻塞 createWindow；renderer-ready 仍负责最终显示窗口。
   const rendererLocation = getActiveRendererLocation()
-  if (mainWindowPresentationTiming) mainWindowPresentationTiming.loadRequestedAt = Date.now()
-  const initialLoad =
-    rendererLocation.type === 'url'
-      ? mainWindow.loadURL(rendererLocation.value)
-      : mainWindow.loadFile(rendererLocation.value)
+  if (mainViewNavigation.presentationTiming)
+    mainViewNavigation.recordTiming('loadRequestedAt', Date.now())
+  const initialLoad = mainWindowHost.load(createdWindow, rendererLocation)
   void initialLoad.catch((error) =>
     logger.error('startup.renderer-load', error, { rendererFile: rendererLocation.rendererFile })
   )
@@ -2607,12 +1132,13 @@ function createWindow({ preferredDisplay = null } = {}) {
 function hideToTray() {
   const visualWindow = getActiveVisualWindow()
   if (!visualWindow || visualWindow.isDestroyed()) return
+  mainViewNavigation.noteWindowHiddenByUser(visualWindow)
 
   // Blur_ApplyConfig 要求完整材质配置，不能只传 { enabled: false }。
   // 先隐藏 Overlay 再隐藏 Electron，避免异常中断后留下孤立模糊窗口。
-  if (blurInitialized) {
+  if (blurRuntime.initialized) {
     runBlurRuntimeOperation(
-      () => blurSetConfig({ ...blurConfig, enabled: false }),
+      () => blurSetConfig({ ...blurRuntime.config, enabled: false }),
       '隐藏窗口前关闭毛玻璃层'
     )
   }
@@ -2620,1299 +1146,6 @@ function hideToTray() {
   for (const window of getApplicationWindows()) window.hide()
   restoreDockWindowToVisiblePosition()
   resetDockState()
-}
-
-// ============================================================
-// 贴边隐藏 —— 核心函数
-// ============================================================
-
-/** 缓存当前窗口所在显示器的工作区 */
-function updateWorkArea() {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    const display = screen.getDisplayMatching(mainWindow.getBounds())
-    if (display) cachedWorkArea = display.workArea
-  }
-}
-
-/**
- * 贴边动画只移动窗口，绝不重新提交宽高。Windows 非 100% DPI 下反复
- * setBounds({ width, height }) 会触发 DIP/物理像素换算并造成尺寸漂移。
- */
-function setDockPosition(position, motionPlan) {
-  if (!mainWindow || mainWindow.isDestroyed() || !windowMotionBackend) return null
-  const requestedX = Math.round(position.x)
-  const requestedY = Math.round(position.y)
-  suppressDockGeometryPersistence()
-  const after = windowMotionBackend.moveTo(requestedX, requestedY, motionPlan.expectedSize)
-  const contentAfter = mainWindow.getContentBounds()
-  if (
-    motionPlan.expectedElectronContentSize &&
-    (contentAfter.width !== motionPlan.expectedElectronContentSize.width ||
-      contentAfter.height !== motionPlan.expectedElectronContentSize.height)
-  ) {
-    throw new Error(
-      `Electron 内容区破坏尺寸不变量：` +
-        `${motionPlan.expectedElectronContentSize.width}x${motionPlan.expectedElectronContentSize.height} -> ` +
-        `${contentAfter.width}x${contentAfter.height}`
-    )
-  }
-  return after
-}
-
-/** 生成纯数据快照，供状态观察器、健康任务、托盘和导出诊断复用。 */
-function getDockDiagnosticSnapshot({ edgeMonitorOverride } = {}) {
-  const mainWindowExists = Boolean(mainWindow && !mainWindow.isDestroyed())
-  const mainWindowMinimized = mainWindowExists ? mainWindow.isMinimized() : false
-  let mainElectronBounds = null
-  let mainContentBounds = null
-  let mainWindowVisible = false
-  let mainWindowFocused = false
-  let mainWindowOpacity = null
-  let rendererZoomFactor = null
-  let mainMotionBounds = null
-  let mainAtHiddenTarget = null
-  let edgeMonitor = {
-    supported: false,
-    state: 'unavailable',
-    workerAlive: false,
-    generation: 0,
-    side: null,
-    lastPollAgeMs: 0
-  }
-
-  if (edgeMonitorOverride !== undefined) {
-    edgeMonitor = edgeMonitorOverride || edgeMonitor
-  } else {
-    try {
-      if (windowMotionBackend) edgeMonitor = windowMotionBackend.getEdgeMonitorStatus()
-    } catch (error) {
-      logger.error('dock.health-snapshot', error, { stage: 'capture-edge-monitor' })
-    }
-  }
-
-  if (mainWindowExists) {
-    try {
-      mainElectronBounds = mainWindow.getBounds()
-      mainContentBounds = mainWindow.getContentBounds()
-      mainWindowVisible = mainWindow.isVisible()
-      mainWindowFocused = mainWindow.isFocused()
-      mainWindowOpacity = mainWindow.getOpacity()
-      rendererZoomFactor = mainWindow.webContents.getZoomFactor()
-    } catch (error) {
-      logger.error('dock.health-snapshot', error, { stage: 'capture-electron-window' })
-    }
-  }
-
-  if (!mainWindowMinimized && mainWindowExists && windowMotionBackend) {
-    try {
-      mainMotionBounds = windowMotionBackend.capture()
-    } catch (error) {
-      logger.error('dock.health-snapshot', error, { stage: 'capture-main-window' })
-    }
-  }
-
-  if (isDockHidden && !isSliding && dockMotionSession?.motionPlan && mainMotionBounds) {
-    try {
-      mainAtHiddenTarget =
-        Math.abs(mainMotionBounds.x - dockMotionSession.motionPlan.hiddenX) <= 1 &&
-        Math.abs(mainMotionBounds.y - dockMotionSession.motionPlan.hiddenY) <= 1
-    } catch (error) {
-      logger.error('dock.health-snapshot', error, { stage: 'compare-hidden-target' })
-    }
-  }
-
-  let matchedDisplay = null
-  try {
-    const allDisplays = screen.getAllDisplays()
-    matchedDisplay =
-      allDisplays.find(
-        (display) =>
-          dockMotionSession?.displayId != null &&
-          String(display.id) === String(dockMotionSession.displayId)
-      ) || (mainElectronBounds ? screen.getDisplayMatching(mainElectronBounds) : null)
-  } catch (error) {
-    logger.error('dock.health-snapshot', error, { stage: 'capture-display' })
-  }
-
-  const display = matchedDisplay
-    ? {
-        id: matchedDisplay.id,
-        label: matchedDisplay.label || null,
-        scaleFactor: matchedDisplay.scaleFactor,
-        scalePercent: Number.isFinite(matchedDisplay.scaleFactor)
-          ? matchedDisplay.scaleFactor * 100
-          : null,
-        bounds: matchedDisplay.bounds,
-        workArea: matchedDisplay.workArea,
-        rotation: matchedDisplay.rotation,
-        displayFrequency: matchedDisplay.displayFrequency
-      }
-    : null
-  const session = dockMotionSession
-    ? {
-        generation: dockMotionSession.generation,
-        side: dockMotionSession.side,
-        revealHandleMode: dockMotionSession.revealHandleMode,
-        handlePositionPermille: dockMotionSession.handlePositionPermille,
-        displayId: dockMotionSession.displayId,
-        stableBounds: dockMotionSession.stableBounds,
-        workArea: dockMotionSession.workArea,
-        motionPlan: dockMotionSession.motionPlan
-          ? {
-              coordinateSpace: dockMotionSession.motionPlan.coordinateSpace,
-              initial: dockMotionSession.motionPlan.initial,
-              expectedSize: dockMotionSession.motionPlan.expectedSize,
-              expectedElectronContentSize: dockMotionSession.motionPlan.expectedElectronContentSize,
-              visibleTarget: {
-                x: dockMotionSession.motionPlan.visibleX,
-                y: dockMotionSession.motionPlan.visibleY
-              },
-              hiddenTarget: {
-                x: dockMotionSession.motionPlan.hiddenX,
-                y: dockMotionSession.motionPlan.hiddenY
-              },
-              workArea: dockMotionSession.motionPlan.workArea,
-              overshoot: dockMotionSession.motionPlan.overshoot
-            }
-          : null
-      }
-    : null
-
-  const dockConfig = getDockRuntimeConfig()
-  return {
-    mainWindowExists,
-    mainWindowMinimized,
-    mainElectronBounds,
-    mainContentBounds,
-    mainWindowVisible,
-    mainWindowFocused,
-    mainWindowOpacity,
-    rendererZoomFactor,
-    coordinateSpaces: {
-      electronBounds: 'DIP',
-      motionBounds:
-        mainMotionBounds?.coordinateSpace || session?.motionPlan?.coordinateSpace || null,
-      nativeHandleBounds: edgeMonitor?.supported ? 'physical-pixel' : null
-    },
-    display,
-    viewMode: activeViewMode,
-    supportedDockEdges: dockConfig.supportedEdges,
-    enabledDockEdges: dockConfig.enabledEdges,
-    activeDockEdges: dockConfig.activeEdges,
-    revealHandleMode: dockConfig.revealHandleMode,
-    isDockHidden,
-    dockSide,
-    hasDockMotionSession: Boolean(dockMotionSession),
-    sessionSide: dockMotionSession?.side || null,
-    sessionGeneration: dockMotionSession?.generation || 0,
-    sessionRevealHandleMode: dockMotionSession?.revealHandleMode ?? null,
-    session,
-    mainMotionBounds,
-    mainAtHiddenTarget,
-    isSliding,
-    slideAgeMs: isSliding && dockSlideStartedAt ? Date.now() - dockSlideStartedAt : 0,
-    maxSlideAgeMs: MAX_DOCK_SLIDE_AGE_MS,
-    maxMonitorPollAgeMs: MAX_EDGE_MONITOR_POLL_AGE_MS,
-    blur: {
-      configuredEnabled: blurConfig.enabled,
-      initialized: blurInitialized,
-      runtimeFailed: blurRuntimeFailed,
-      diagnostic: { ...blurDiagnostic }
-    },
-    edgeMonitor
-  }
-}
-
-function getDockNativeObserverContext(status) {
-  const dock = getDockDiagnosticSnapshot({
-    edgeMonitorOverride: status
-  })
-  delete dock.edgeMonitor
-  return { dock }
-}
-
-function runDockHealthCheck() {
-  if (nativeEdgeCleanupPending) {
-    attemptNativeEdgeCleanup('dock-health')
-    return
-  }
-  const snapshot = getDockDiagnosticSnapshot()
-  const issues = inspectDockHealth(snapshot)
-  if (issues.length === 0) return
-
-  const error = new Error(`贴边隐藏状态异常：${issues.join('；')}`)
-  logger.error('dock.health', error, { issues, snapshot })
-  // dock.health 已包含完整快照；恢复入口不再重复写一条相同 error。
-  emergencyRestoreDock('dock-health', error, { skipRecoveryLog: true })
-}
-
-/** 重置贴边状态（隐藏/关闭/最大化时统一调用） */
-function resetDockState({ source = 'reset-dock-state', skipNativeDisarm = false } = {}) {
-  const generation = dockMotionSession?.generation || nativeEdgeCleanupPending?.generation || 0
-  const cleanupBackend = nativeEdgeCleanupPending?.backend || windowMotionBackend
-  dockNativeStatusObserver.capture(`${source}:before-disarm`, { force: true })
-  if (cleanupBackend && !skipNativeDisarm) {
-    try {
-      if (!cleanupBackend.disarmEdgeMonitor(generation)) {
-        logger.warn('dock.native-edge-stop', '停止原生边缘监视器超时', { generation })
-        beginNativeEdgeCleanup(generation, cleanupBackend, source)
-      } else if (nativeEdgeCleanupPending) {
-        finishNativeEdgeCleanup(source)
-      }
-    } catch (error) {
-      logger.error('dock.native-edge-stop', error, { generation })
-      beginNativeEdgeCleanup(generation, cleanupBackend, source)
-    }
-  }
-  dockNativeStatusObserver.stop(`${source}:after-disarm`)
-  // 非隐藏可见态没有原生会话。此处只清理由启动超时显式登记的资源，绝不把
-  // generation=0 的普通 reset 误登记成 cleanup-pending。
-  if (slideAnimTimer) {
-    clearInterval(slideAnimTimer)
-    slideAnimTimer = null
-  }
-  if (hideTimer) {
-    cancelPendingDockHide('reset-dock-state')
-  }
-  pendingSlideCallback = null
-  isSliding = false
-  dockSlideStartedAt = null
-  dockSide = null
-  isDockHidden = false
-  dockMotionSession = null
-  // 显示动画会临时提升层级；动画被托盘隐藏等操作中断时也必须恢复用户设置。
-  const { restoreAlwaysOnTop } = dockTransitionState.reset()
-  if (restoreAlwaysOnTop) applyWindowZOrder()
-}
-
-/**
- * 托盘隐藏会清除贴边会话；清除前先把隐藏中的窗口放回冻结的可见位置。
- * 主窗口已经 hide，因此该保底移动不会向用户闪现。
- */
-function restoreDockWindowToVisiblePosition() {
-  if (!mainWindow || mainWindow.isDestroyed() || !dockMotionSession) return
-  const { stableBounds, motionPlan } = dockMotionSession
-
-  try {
-    if (windowMotionBackend && motionPlan) {
-      windowMotionBackend.moveTo(motionPlan.visibleX, motionPlan.visibleY, motionPlan.expectedSize)
-    } else {
-      mainWindow.setPosition(stableBounds.x, stableBounds.y)
-    }
-  } catch (error) {
-    console.warn('[dock] 原生恢复可见位置失败，改用 Electron 位置保底:', error)
-    try {
-      mainWindow.setPosition(stableBounds.x, stableBounds.y)
-    } catch (fallbackError) {
-      console.error('[dock] 恢复可见位置失败:', fallbackError)
-    }
-  }
-
-  const current = mainWindow.getBounds()
-  lastVisibleMainWindowBounds = {
-    ...stableBounds,
-    x: current.x,
-    y: current.y
-  }
-}
-
-function runPendingSlideCallback() {
-  const callback = pendingSlideCallback
-  pendingSlideCallback = null
-  if (!callback) return true
-
-  try {
-    callback()
-    return true
-  } catch (error) {
-    emergencyRestoreDock('slide-callback-failed', error)
-    return false
-  }
-}
-
-/**
- * 贴边子系统故障时统一恢复可见。窗口可见性优先于动画和毛玻璃；本函数可被
- * DLL 故障、每分钟健康检查、动画失败和系统事件重复调用。
- */
-function emergencyRestoreDock(
-  source,
-  cause = null,
-  { skipNativeDisarm = false, skipRecoveryLog = false, recoveryLogLevel = 'error' } = {}
-) {
-  const session = dockMotionSession
-  const recoveryCause = cause || new Error('贴边隐藏进入故障开放恢复')
-  const recoveryMetadata = { source, session, isDockHidden, isSliding }
-  if (!skipRecoveryLog) {
-    if (recoveryLogLevel === 'info') {
-      logger.info('dock.emergency-restore', recoveryCause.message, recoveryMetadata)
-    } else if (recoveryLogLevel === 'warn') {
-      logger.warn('dock.emergency-restore', recoveryCause.message, recoveryMetadata)
-    } else {
-      logger.error('dock.emergency-restore', recoveryCause, recoveryMetadata)
-    }
-  }
-
-  if (mainWindow && !mainWindow.isDestroyed() && session) {
-    try {
-      restoreDockWindowToVisiblePosition()
-    } catch (error) {
-      logger.error('dock.emergency-position', error, { source })
-    }
-    try {
-      if (!mainWindow.isVisible()) mainWindow.showInactive()
-    } catch (error) {
-      logger.error('dock.emergency-show', error, { source })
-    }
-  }
-
-  resetDockState({ source, skipNativeDisarm })
-  try {
-    applyWindowZOrder()
-    if (blurInitialized) {
-      runBlurRuntimeOperation(blurUpdateGeometry, '贴边故障恢复毛玻璃位置')
-      runBlurRuntimeOperation(blurReSyncZOrder, '贴边故障恢复毛玻璃层级')
-    }
-  } catch (error) {
-    logger.error('dock.emergency-runtime-sync', error, { source })
-  }
-}
-
-/**
- * 隐藏期间显示器被拔除、分辨率或 DPI 改变时，旧的工作区快照已经失效。
- * 全屏中的参数变化优先在屏外重建；显示器移除或普通桌面变化仍恢复到可见区，
- * 避免窗口与触发条滞留屏外。
- */
-function rebuildFullscreenDockSessionAfterDisplayChange(change) {
-  const previousSession = dockMotionSession
-  if (
-    !mainWindow ||
-    mainWindow.isDestroyed() ||
-    !windowMotionBackend ||
-    !isDockHidden ||
-    isSliding ||
-    !previousSession
-  ) {
-    return false
-  }
-
-  let monitorStatus
-  try {
-    monitorStatus = windowMotionBackend.getEdgeMonitorStatus()
-  } catch (error) {
-    logger.warn('dock.display-rebuild', '读取全屏状态失败，改用安全可见恢复', {
-      change,
-      error: error?.message
-    })
-    return false
-  }
-  if (monitorStatus?.fullscreenActive !== true) return false
-
-  // 原生线程在发布 handle-moved 前已经提交最终位置。这里必须在 disarm 清空
-  // 事件队列之前采纳同代次快照，避免显示参数重建抢先时丢失本次会话的拖动。
-  const handlePositionPermille = resolveFullscreenRebuildHandlePosition(
-    previousSession,
-    monitorStatus
-  )
-
-  const center = {
-    x: previousSession.stableBounds.x + Math.round(previousSession.stableBounds.width / 2),
-    y: previousSession.stableBounds.y + Math.round(previousSession.stableBounds.height / 2)
-  }
-  const display = screen.getDisplayNearestPoint(center) || screen.getPrimaryDisplay()
-  if (
-    change?.displayId != null &&
-    previousSession.displayId != null &&
-    String(change.displayId) !== String(previousSession.displayId)
-  ) {
-    return false
-  }
-
-  dockNativeStatusObserver.capture('fullscreen-display-rebuild:before-disarm', { force: true })
-  if (
-    !stopEdgeMonitorForFullscreenRebuild({
-      backend: windowMotionBackend,
-      generation: previousSession.generation,
-      beginNativeEdgeCleanup,
-      emergencyRestoreDock
-    })
-  ) {
-    return true
-  }
-  dockNativeStatusObserver.stop('fullscreen-display-rebuild:after-disarm')
-
-  try {
-    cachedWorkArea = { ...display.workArea }
-    const stableBounds = constrainMainWindowBounds(previousSession.stableBounds, display.workArea)
-    const motionPlan = windowMotionBackend.createDockPlan(previousSession.side, HIDE_OVERSHOOT)
-    const electronContentBounds = mainWindow.getContentBounds()
-    motionPlan.expectedElectronContentSize = {
-      width: electronContentBounds.width,
-      height: electronContentBounds.height
-    }
-    setDockPosition({ x: motionPlan.hiddenX, y: motionPlan.hiddenY }, motionPlan)
-    const terminal = windowMotionBackend.capture()
-    const rebuiltPlan = {
-      ...motionPlan,
-      initial: terminal,
-      expectedSize: { width: terminal.width, height: terminal.height }
-    }
-    const generation = ++dockSessionSequence
-    dockMotionSession = {
-      ...previousSession,
-      generation,
-      handlePositionPermille,
-      stableBounds,
-      motionPlan: rebuiltPlan,
-      workArea: { ...display.workArea },
-      displayId: display.id
-    }
-    lastVisibleMainWindowBounds = { ...stableBounds }
-
-    const armResult = windowMotionBackend.armEdgeMonitor(previousSession.side, generation, {
-      thicknessDip: EDGE_TRIGGER_THICKNESS_DIP,
-      pollIntervalMs: EDGE_MONITOR_POLL_INTERVAL_MS,
-      revealHandleMode: previousSession.revealHandleMode
-    })
-    if (!armResult.success) {
-      if (armResult.cleanupRequired) {
-        beginNativeEdgeCleanup(generation, windowMotionBackend, 'fullscreen-display-rebuild-arm')
-      }
-      throw new Error(armResult.error || '重新启动边缘监视器失败')
-    }
-    dockNativeStatusObserver.start(generation, 'fullscreen-display-rebuild:arm-succeeded')
-    applyDockPersistentHandlePosition(dockMotionSession, 'fullscreen-display-rebuild')
-    if (previousSession.revealHandleMode === DOCK_REVEAL_HANDLE_MODES.PERSISTENT) {
-      const revealResult = windowMotionBackend.showPersistentHandle(generation)
-      if (!revealResult.success) throw new Error(revealResult.error || '恢复常显小黑条意图失败')
-    }
-    logger.info('dock.display-rebuild', '全屏显示参数变化后已在屏外重建贴边会话', {
-      change,
-      previousGeneration: previousSession.generation,
-      generation,
-      side: previousSession.side,
-      displayId: display.id,
-      handlePositionPermille,
-      snapshot: getDockDiagnosticSnapshot()
-    })
-    return true
-  } catch (error) {
-    emergencyRestoreDock('fullscreen-display-rebuild-failed', error)
-    return true
-  }
-}
-
-function handleDockDisplayTopologyChange(change = null) {
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  if (
-    isDockHidden &&
-    dockMotionSession &&
-    change?.displayId != null &&
-    dockMotionSession.displayId != null &&
-    String(change.displayId) !== String(dockMotionSession.displayId)
-  ) {
-    return
-  }
-  if (
-    change?.eventName === 'display-metrics-changed' &&
-    rebuildFullscreenDockSessionAfterDisplayChange(change)
-  ) {
-    return
-  }
-  const sourceBounds =
-    dockMotionSession?.stableBounds || lastVisibleMainWindowBounds || mainWindow.getBounds()
-  const center = {
-    x: sourceBounds.x + Math.round(sourceBounds.width / 2),
-    y: sourceBounds.y + Math.round(sourceBounds.height / 2)
-  }
-  const display = screen.getDisplayNearestPoint(center) || screen.getPrimaryDisplay()
-  const safeBounds = constrainMainWindowBounds(sourceBounds, display.workArea)
-  const currentBounds = mainWindow.getBounds()
-  const update = getWindowBoundsUpdate(currentBounds, safeBounds)
-
-  suppressDockGeometryPersistence()
-  resetDockState()
-  cachedWorkArea = { ...display.workArea }
-  if (update.mode === 'position') {
-    mainWindow.setPosition(update.x, update.y)
-  } else if (update.mode === 'bounds') {
-    mainWindow.setBounds(update.bounds)
-  }
-  if (!boundsEqual(safeBounds, lastVisibleMainWindowBounds)) {
-    lastVisibleMainWindowBounds = { ...safeBounds }
-    geometryDirty = true
-    try {
-      persistSettingValues([
-        { id: 'geometry.posX', value: safeBounds.x },
-        { id: 'geometry.posY', value: safeBounds.y },
-        { id: 'geometry.width', value: safeBounds.width },
-        { id: 'geometry.height', value: safeBounds.height }
-      ])
-      geometryDirty = false
-    } catch (error) {
-      console.warn('[settings] 保存显示器变化后的窗口位置失败:', error)
-    }
-  }
-  // resetDockState() 会清空 dockSide。窗口约束回可见工作区后，必须根据
-  // 新显示器几何重建方向，否则解锁、DPI/分辨率变化后只能靠再次拖动恢复。
-  syncVisibleDockSide({ source: 'display-topology-change', snap: true })
-  reassertBottomWindowZOrder('display-topology-change')
-}
-
-function attachDockDisplayListeners() {
-  if (dockDisplayListeners.length > 0) return
-  for (const eventName of ['display-added', 'display-removed', 'display-metrics-changed']) {
-    const listener = (_event, display, changedMetrics = []) => {
-      pendingDockDisplayChanges.push({
-        eventName,
-        displayId: display?.id ?? null,
-        changedMetrics: Array.isArray(changedMetrics) ? [...changedMetrics] : []
-      })
-      if (dockDisplayChangeTimer) clearTimeout(dockDisplayChangeTimer)
-      dockDisplayChangeTimer = setTimeout(() => {
-        dockDisplayChangeTimer = null
-        const changes = pendingDockDisplayChanges.splice(0)
-        const sessionDisplayId = dockMotionSession?.displayId
-        const relevantChanges = changes.filter(
-          (change) =>
-            sessionDisplayId == null ||
-            change.displayId == null ||
-            String(change.displayId) === String(sessionDisplayId)
-        )
-        const candidates = relevantChanges.length ? relevantChanges : changes
-        const change =
-          [...candidates].reverse().find((item) => item.eventName === 'display-removed') ||
-          [...candidates].reverse().find((item) => item.eventName === 'display-metrics-changed') ||
-          candidates.at(-1) ||
-          null
-        logger.info('window.display-topology', '开始处理显示器参数变化', {
-          changes,
-          selectedChange: change,
-          before: getDockDiagnosticSnapshot()
-        })
-        handleDockDisplayTopologyChange(change)
-        setImmediate(() => {
-          if (!mainWindow || mainWindow.isDestroyed()) return
-          logger.info('window.display-topology', '显示器参数变化处理完成', {
-            selectedChange: change,
-            after: getDockDiagnosticSnapshot()
-          })
-        })
-      }, 250)
-      dockDisplayChangeTimer.unref?.()
-    }
-    screen.on(eventName, listener)
-    dockDisplayListeners.push([eventName, listener])
-  }
-}
-
-function detachDockDisplayListeners() {
-  if (dockDisplayChangeTimer) {
-    clearTimeout(dockDisplayChangeTimer)
-    dockDisplayChangeTimer = null
-  }
-  pendingDockDisplayChanges.length = 0
-  for (const [eventName, listener] of dockDisplayListeners) {
-    screen.removeListener(eventName, listener)
-  }
-  dockDisplayListeners.length = 0
-}
-
-function handleDockPowerBoundary(source) {
-  if (!isDockHidden && !isSliding && !dockMotionSession) return
-  emergencyRestoreDock(source, new Error(`系统电源/桌面状态发生变化：${source}`), {
-    recoveryLogLevel: 'info'
-  })
-}
-
-function attachDockPowerListeners() {
-  if (dockPowerListeners.length > 0) return
-  for (const [eventName, listener] of [
-    ['suspend', () => handleDockPowerBoundary('system-suspend')],
-    ['lock-screen', () => handleDockPowerBoundary('screen-lock')],
-    ['resume', () => handleDockDisplayTopologyChange()],
-    ['unlock-screen', () => handleDockDisplayTopologyChange()]
-  ]) {
-    powerMonitor.on(eventName, listener)
-    dockPowerListeners.push([eventName, listener])
-  }
-}
-
-function detachDockPowerListeners() {
-  for (const [eventName, listener] of dockPowerListeners) {
-    powerMonitor.removeListener(eventName, listener)
-  }
-  dockPowerListeners.length = 0
-}
-
-/**
- * 按“当前视图能力 ∩ 用户开启方向”检测贴边方向。边角同时命中多条边时，
- * 使用几何距离选择最近边，完全等距则使用固定优先级保证可重现。
- * @returns {null|'left'|'right'|'top'} 边缘方向，null 表示未靠近
- */
-function detectDockSide() {
-  if (!mainWindow || mainWindow.isDestroyed()) return null
-  if (mainWindow.isMaximized() || mainWindow.isMinimized()) return null
-
-  updateWorkArea()
-  if (!cachedWorkArea) return null
-
-  const b = mainWindow.getBounds()
-  const wa = cachedWorkArea
-
-  return selectNearestDockSide({
-    bounds: b,
-    workArea: wa,
-    activeEdges: getDockRuntimeConfig().activeEdges,
-    threshold: SNAP_THRESHOLD,
-    isExposed: (side) => Boolean(windowMotionBackend?.isDockEdgeExposed(side))
-  })
-}
-
-/**
- * 根据当前可见窗口几何同步贴边方向。这里只重建可见态，不直接触发隐藏；
- * 真正收起仍由鼠标离开事件决定，避免系统恢复后窗口立即消失。
- */
-function syncVisibleDockSide({ source = 'unknown', snap = false, forceSnap = false } = {}) {
-  if (isCompactPresentationActive()) return null
-  if (
-    !mainWindow ||
-    mainWindow.isDestroyed() ||
-    !mainWindow.isVisible() ||
-    isDockTransitionActive()
-  ) {
-    return dockSide
-  }
-
-  const previousSide = dockSide
-  let nextSide = null
-  try {
-    nextSide = detectDockSide()
-  } catch (error) {
-    dockSide = null
-    logger.error('dock.side-sync', error, { source, previousSide })
-    return null
-  }
-
-  dockSide = nextSide
-  if (nextSide && snap && (forceSnap || nextSide !== previousSide)) snapToEdge(nextSide)
-
-  if (dockSide !== previousSide) {
-    logger.info('dock.side-sync', '可见窗口贴边方向已同步', {
-      source,
-      previousSide,
-      dockSide
-    })
-  }
-  return dockSide
-}
-
-/** 将窗口吸附到指定边缘 */
-function snapToEdge(side) {
-  updateWorkArea()
-  if (!cachedWorkArea || !windowMotionBackend) return
-  try {
-    const motionPlan = windowMotionBackend.createDockPlan(side, HIDE_OVERSHOOT)
-    const alreadySnapped =
-      Math.abs(motionPlan.initial.x - motionPlan.visibleX) <= 1 &&
-      Math.abs(motionPlan.initial.y - motionPlan.visibleY) <= 1
-    if (alreadySnapped) return
-    const electronContentBounds = mainWindow.getContentBounds()
-    motionPlan.expectedElectronContentSize = {
-      width: electronContentBounds.width,
-      height: electronContentBounds.height
-    }
-    setDockPosition({ x: motionPlan.visibleX, y: motionPlan.visibleY }, motionPlan)
-  } catch (error) {
-    console.error('[dock] 吸附窗口失败:', error)
-    resetDockState()
-  }
-}
-
-/**
- * 滑动动画 —— easeInOutQuad 缓动曲线，慢起 → 快 → 慢停
- * @param {{x:number,y:number}} target - 目标坐标
- * @param {object} motionPlan - 本轮冻结的坐标空间、目标位置与尺寸不变量
- * @param {Function} [onFinish] - 动画完成回调
- */
-function slideTo(target, motionPlan, onFinish) {
-  // 中断前一个动画时，先执行其回调以恢复状态（如置顶级别）
-  if (slideAnimTimer) {
-    clearInterval(slideAnimTimer)
-    slideAnimTimer = null
-  }
-  if (pendingSlideCallback) {
-    if (!runPendingSlideCallback()) return
-  }
-
-  isSliding = true
-  dockSlideStartedAt = Date.now()
-  pendingSlideCallback = onFinish || null
-
-  // 记录动画起始位置和总帧数
-  let from
-  try {
-    from = windowMotionBackend.capture()
-  } catch (error) {
-    emergencyRestoreDock('slide-capture-failed', error)
-    return
-  }
-  const totalFrames = Math.ceil(SLIDE_DURATION / SLIDE_INTERVAL)
-  let frame = 0
-
-  slideAnimTimer = setInterval(() => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      clearInterval(slideAnimTimer)
-      slideAnimTimer = null
-      resetDockState()
-      return
-    }
-
-    frame++
-    const progress = Math.min(frame / totalFrames, 1)
-    // easeInOutQuad：前半段加速，后半段减速
-    const ease = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2
-
-    try {
-      setDockPosition(
-        {
-          x: from.x + (target.x - from.x) * ease,
-          y: from.y + (target.y - from.y) * ease
-        },
-        motionPlan
-      )
-    } catch (error) {
-      emergencyRestoreDock('slide-move-failed', error)
-      return
-    }
-
-    if (progress >= 1) {
-      clearInterval(slideAnimTimer)
-      slideAnimTimer = null
-      isSliding = false
-      dockSlideStartedAt = null
-      runPendingSlideCallback()
-    }
-  }, SLIDE_INTERVAL)
-}
-
-/**
- * 贴边隐藏 —— 原生边缘监视器先成功启动，窗口才允许滑出屏幕。
- * 前置条件：dockSide 非空且 isDockHidden === false
- */
-function doHide() {
-  if (isCompactPresentationActive()) return
-  if (!mainWindow || mainWindow.isDestroyed() || isDockHidden || !dockSide) return
-  if (isSliding || nativeEdgeCleanupPending || dockInteractionSuspendCount > 0) return
-  const hideRequestedAt = pendingDockHideRequestedAt
-  pendingDockHideRequestedAt = null
-  const hideStartedAt = Date.now()
-
-  const dockConfig = getDockRuntimeConfig()
-  if (!dockConfig.activeEdges.includes(dockSide)) {
-    // 延迟隐藏定时器可能晚于设置更新执行；执行时必须以最新配置为准。
-    syncVisibleDockSide({ source: 'hide-revalidate', snap: false })
-    return
-  }
-
-  updateWorkArea()
-  if (!cachedWorkArea) return
-
-  let motionPlan
-  try {
-    motionPlan = windowMotionBackend.createDockPlan(dockSide, HIDE_OVERSHOOT)
-    const electronContentBefore = mainWindow.getContentBounds()
-    motionPlan.expectedElectronContentSize = {
-      width: electronContentBefore.width,
-      height: electronContentBefore.height
-    }
-    suppressDockGeometryPersistence()
-    setDockPosition({ x: motionPlan.visibleX, y: motionPlan.visibleY }, motionPlan)
-    const snapped = windowMotionBackend.capture()
-    motionPlan = {
-      ...motionPlan,
-      initial: snapped,
-      expectedSize: { width: snapped.width, height: snapped.height },
-      visibleX: motionPlan.visibleX,
-      visibleY: motionPlan.visibleY
-    }
-  } catch (error) {
-    console.error('[dock] 创建隐藏动画计划失败:', error)
-    resetDockState()
-    return
-  }
-  const stableBounds = createStableDockBounds(mainWindow.getBounds(), dockSide, cachedWorkArea)
-  const generation = ++dockSessionSequence
-  dockMotionSession = {
-    generation,
-    side: dockSide,
-    revealHandleMode: dockConfig.revealHandleMode,
-    // 拖动只影响当前隐藏会话；每次重新贴边都从对应窗口边缘的中点开始。
-    handlePositionPermille: null,
-    stableBounds,
-    motionPlan,
-    workArea: { ...cachedWorkArea },
-    displayId: screen.getDisplayMatching(stableBounds)?.id ?? null
-  }
-  lastVisibleMainWindowBounds = { ...stableBounds }
-  let armResult
-  try {
-    armResult = windowMotionBackend.armEdgeMonitor(dockSide, generation, {
-      thicknessDip: EDGE_TRIGGER_THICKNESS_DIP,
-      pollIntervalMs: EDGE_MONITOR_POLL_INTERVAL_MS,
-      revealHandleMode: dockMotionSession.revealHandleMode
-    })
-  } catch (error) {
-    logger.error('dock.native-edge-arm', error, { generation, side: dockSide })
-    dockMotionSession = null
-    return
-  }
-  if (!armResult.success) {
-    logger.error('dock.native-edge-arm', new Error(armResult.error), {
-      code: armResult.code,
-      generation,
-      side: dockSide
-    })
-    if (armResult.cleanupRequired) {
-      beginNativeEdgeCleanup(generation, windowMotionBackend, 'native-edge-start-timeout')
-    }
-    dockMotionSession = null
-    return
-  }
-  isDockHidden = true
-  dockNativeStatusObserver.start(generation, 'arm-succeeded')
-  logger.info('dock.lifecycle', '开始贴边隐藏', {
-    generation,
-    side: dockSide,
-    revealHandleMode: dockMotionSession.revealHandleMode,
-    stableBounds,
-    requestDelayMs: hideRequestedAt ? hideStartedAt - hideRequestedAt : null,
-    preparationMs: Date.now() - hideStartedAt,
-    snapshot: getDockDiagnosticSnapshot()
-  })
-
-  const target = { x: motionPlan.hiddenX, y: motionPlan.hiddenY }
-  const hideAnimationStartedAt = Date.now()
-
-  slideTo(target, motionPlan, () => {
-    try {
-      const terminal = windowMotionBackend.capture()
-      const crossedBoundary =
-        dockSide === 'left'
-          ? terminal.x + terminal.width <= motionPlan.workArea.left
-          : dockSide === 'right'
-            ? terminal.x >= motionPlan.workArea.right
-            : dockSide === 'top'
-              ? terminal.y + terminal.height <= motionPlan.workArea.top
-              : terminal.y >= motionPlan.workArea.bottom
-      if (!crossedBoundary) {
-        throw new Error('隐藏终点未越过工作区边界')
-      }
-    } catch (error) {
-      emergencyRestoreDock('hidden-terminal-invalid', error)
-      return
-    }
-    logger.info('dock.lifecycle', '贴边隐藏动画完成', {
-      generation,
-      side: dockSide,
-      animationMs: Date.now() - hideAnimationStartedAt,
-      totalElapsedMs: Date.now() - (hideRequestedAt || hideStartedAt),
-      persistentHandlePending:
-        dockMotionSession?.revealHandleMode === DOCK_REVEAL_HANDLE_MODES.PERSISTENT,
-      snapshot: getDockDiagnosticSnapshot()
-    })
-    if (dockTransitionState.consumeQueuedShow()) {
-      doShow('queued-during-hide')
-      return
-    }
-    if (
-      isDockHidden &&
-      dockMotionSession?.generation === generation &&
-      dockMotionSession.revealHandleMode === DOCK_REVEAL_HANDLE_MODES.PERSISTENT
-    ) {
-      let revealResult
-      try {
-        revealResult = windowMotionBackend.showPersistentHandle(generation)
-      } catch (error) {
-        emergencyRestoreDock('persistent-handle-show-failed', error)
-        return
-      }
-      if (!revealResult.success) {
-        emergencyRestoreDock(
-          'persistent-handle-show-failed',
-          new Error(revealResult.error || '常显小黑条激活失败')
-        )
-        return
-      }
-      logger.info('dock.lifecycle', '常显小黑条已在隐藏终点激活', {
-        generation,
-        side: dockSide,
-        snapshot: getDockDiagnosticSnapshot()
-      })
-      dockNativeStatusObserver.capture('persistent-handle-activated', { force: true })
-    }
-  })
-}
-
-/**
- * 贴边显示 —— 先停止原生边缘监视器，再把窗口滑回边缘。
- * 前置条件：isDockHidden === true
- */
-function doShow(source = 'unknown') {
-  const showStartedAt = Date.now()
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    logger.warn('dock.show', '显示请求被拒绝：主窗口不存在', { source })
-    return
-  }
-  const showAction = dockTransitionState.requestShow({ hidden: isDockHidden, sliding: isSliding })
-  logger.info('dock.show', '收到贴边显示请求', {
-    source,
-    action: showAction,
-    isDockHidden,
-    isSliding,
-    hasDockMotionSession: Boolean(dockMotionSession),
-    generation: dockMotionSession?.generation || 0,
-    snapshot: getDockDiagnosticSnapshot()
-  })
-  if (showAction !== 'start') return
-
-  const session = dockMotionSession
-  if (!session) {
-    emergencyRestoreDock(
-      'show-without-session',
-      new Error('显示请求已进入执行状态，但缺少贴边运动会话')
-    )
-    return
-  }
-
-  suppressDockGeometryPersistence()
-  isDockHidden = false
-
-  let monitorStopped = false
-  const monitorStopStartedAt = Date.now()
-  dockNativeStatusObserver.capture('show-before-disarm', { force: true })
-  try {
-    monitorStopped = windowMotionBackend.disarmEdgeMonitor(session.generation)
-  } catch (error) {
-    beginNativeEdgeCleanup(session.generation, windowMotionBackend, 'native-edge-stop-failed')
-    emergencyRestoreDock('native-edge-stop-failed', error, { skipNativeDisarm: true })
-    return
-  }
-  if (!monitorStopped) {
-    beginNativeEdgeCleanup(session.generation, windowMotionBackend, 'native-edge-stop-timeout')
-    emergencyRestoreDock('native-edge-stop-timeout', new Error('停止原生边缘监视器超时'), {
-      skipNativeDisarm: true
-    })
-    return
-  }
-  const monitorStopMs = Date.now() - monitorStopStartedAt
-  dockNativeStatusObserver.stop('show-after-disarm')
-
-  const { stableBounds, motionPlan } = session
-  const target = { x: motionPlan.visibleX, y: motionPlan.visibleY }
-
-  // 始终置底模式不允许贴边动画临时越过其他应用；其他模式继续保持动画可见性。
-  const temporarilyRaiseWindow = zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM
-  if (temporarilyRaiseWindow) {
-    dockTransitionState.beginTemporaryAlwaysOnTop()
-    mainWindow.setAlwaysOnTop(true, 'pop-up-menu')
-  }
-  const showAnimationStartedAt = Date.now()
-  slideTo(target, motionPlan, () => {
-    let terminal = null
-    let terminalMatchesTarget = null
-    try {
-      suppressDockGeometryPersistence()
-      const visibleElectronBounds = mainWindow.getBounds()
-      lastVisibleMainWindowBounds = {
-        ...stableBounds,
-        x: visibleElectronBounds.x,
-        y: visibleElectronBounds.y
-      }
-      dockMotionSession = null
-      try {
-        terminal = windowMotionBackend.capture()
-        const expectedVisible = { x: motionPlan.visibleX, y: motionPlan.visibleY }
-        terminalMatchesTarget = terminal.x === expectedVisible.x && terminal.y === expectedVisible.y
-        if (!terminalMatchesTarget) {
-          console.error('[dock] 显示终点未回到冻结位置:', {
-            expectedVisible,
-            terminal,
-            motionPlan
-          })
-        }
-      } catch (error) {
-        console.error('[dock] 读取显示终点失败:', error)
-      }
-    } finally {
-      // 动画完成或终点校验失败后都必须恢复用户设置的置顶状态。
-      if (temporarilyRaiseWindow) dockTransitionState.finishTemporaryAlwaysOnTop()
-      applyWindowZOrder()
-      logger.info('dock.lifecycle', '贴边显示动画完成', {
-        source,
-        side: session.side,
-        generation: session.generation,
-        monitorStopMs,
-        animationMs: Date.now() - showAnimationStartedAt,
-        totalElapsedMs: Date.now() - showStartedAt,
-        expectedVisible: target,
-        terminal,
-        terminalMatchesTarget,
-        electronBounds: mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : null,
-        contentBounds:
-          mainWindow && !mainWindow.isDestroyed() ? mainWindow.getContentBounds() : null,
-        display: getDockDiagnosticSnapshot().display,
-        blur: {
-          configuredEnabled: blurConfig.enabled,
-          initialized: blurInitialized,
-          runtimeFailed: blurRuntimeFailed,
-          diagnostic: { ...blurDiagnostic }
-        }
-      })
-    }
-  })
-}
-
-// ============================================================
-// 主窗口层级控制
-// ============================================================
-
-function cancelBottomWindowZOrderRetry() {
-  if (bottomZOrderRetryTimer) clearTimeout(bottomZOrderRetryTimer)
-  bottomZOrderRetryTimer = null
-  bottomZOrderRetryAttempt = 0
-  bottomZOrderRetryExhaustedNotified = false
-}
-
-function scheduleBottomWindowZOrderRetry(source, failure = null) {
-  const visualWindow = getActiveVisualWindow()
-  if (zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM || !visualWindow || visualWindow.isDestroyed()) {
-    cancelBottomWindowZOrderRetry()
-    return false
-  }
-  if (bottomZOrderRetryTimer) return true
-
-  if (bottomZOrderRetryAttempt >= BOTTOM_Z_ORDER_RETRY_DELAYS_MS.length) {
-    if (!bottomZOrderRetryExhaustedNotified) {
-      bottomZOrderRetryExhaustedNotified = true
-      const message = failure?.error || failure?.message || 'Windows 桌面层暂时不可用'
-      logger.error('window.z-order-retry-exhausted', new Error(message), {
-        source,
-        attempts: bottomZOrderRetryAttempt,
-        code: failure?.code ?? null
-      })
-      sendAppMessage('error', '始终置底暂时无法恢复，请稍后重新切换窗口层级')
-    }
-    return false
-  }
-
-  const targetWindow = visualWindow
-  const delay = BOTTOM_Z_ORDER_RETRY_DELAYS_MS[bottomZOrderRetryAttempt]
-  bottomZOrderRetryAttempt += 1
-  logger.warn('window.z-order-retry', '始终置底将在 Windows 桌面层就绪后重试', {
-    source,
-    attempt: bottomZOrderRetryAttempt,
-    delay,
-    code: failure?.code ?? null
-  })
-  bottomZOrderRetryTimer = setTimeout(() => {
-    bottomZOrderRetryTimer = null
-    if (
-      zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM ||
-      getActiveVisualWindow() !== targetWindow ||
-      targetWindow.isDestroyed()
-    ) {
-      cancelBottomWindowZOrderRetry()
-      return
-    }
-    reassertBottomWindowZOrder(`retry:${source}`)
-  }, delay)
-  bottomZOrderRetryTimer.unref?.()
-  return true
-}
-
-/**
- * 将 top / normal / bottom 三态应用到当前主窗口。
- * bottom 由 Windows 原生层持续约束；top / normal 继续使用 Electron 原生能力。
- */
-function applyWindowZOrder(mode = zOrderMode) {
-  const visualWindow = getActiveVisualWindow()
-  if (!visualWindow || visualWindow.isDestroyed()) {
-    return { success: false, code: null, error: '应用窗口尚未创建' }
-  }
-  const normalized = normalizeWindowZOrderMode(mode)
-  if (normalized !== WINDOW_Z_ORDER_MODES.BOTTOM) cancelBottomWindowZOrderRetry()
-
-  try {
-    // 置底拦截器必须只绑定当前可视 HWND；两个稳定窗口不能同时占据桌面层。
-    for (const window of getApplicationWindows()) {
-      if (window === visualWindow) continue
-      window.setAlwaysOnTop(false)
-    }
-    if (normalized === WINDOW_Z_ORDER_MODES.BOTTOM) {
-      visualWindow.setAlwaysOnTop(false)
-      const result = setWindowAlwaysOnBottom(visualWindow, true)
-      if (!result.success) return result
-      cancelBottomWindowZOrderRetry()
-    } else {
-      const result = setWindowAlwaysOnBottom(visualWindow, false)
-      if (!result.success) return result
-      visualWindow.setAlwaysOnTop(normalized === WINDOW_Z_ORDER_MODES.TOP, 'pop-up-menu')
-    }
-
-    // Electron 的置顶事件不保证 HWND 已进入对应层级。原生置底解除或系统重排后，
-    // 若实际状态没有跟上，先清除置顶再重试一次；禁止把未生效的请求保存为成功。
-    const expectedTopmost = normalized === WINDOW_Z_ORDER_MODES.TOP
-    if (
-      normalized !== WINDOW_Z_ORDER_MODES.BOTTOM &&
-      visualWindow.isAlwaysOnTop() !== expectedTopmost
-    ) {
-      visualWindow.setAlwaysOnTop(false, 'pop-up-menu')
-      if (expectedTopmost) visualWindow.setAlwaysOnTop(true, 'pop-up-menu')
-    }
-    if (visualWindow.isAlwaysOnTop() !== expectedTopmost) {
-      return { success: false, code: null, error: '系统未能应用窗口层级，请重新选择后重试' }
-    }
-  } catch (error) {
-    return {
-      success: false,
-      code: error?.nativeCode ?? null,
-      error: error?.message || String(error)
-    }
-  }
-
-  runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口层级')
-  return { success: true, code: 1, mode: normalized }
-}
-
-function reassertBottomWindowZOrder(source) {
-  const visualWindow = getActiveVisualWindow()
-  if (zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM || !visualWindow || visualWindow.isDestroyed()) {
-    return true
-  }
-  try {
-    let result = reassertWindowZOrder(visualWindow)
-    // 启动或视图切换若正好撞上 Explorer 重建，首次安装可能尚未完成。
-    // 桌面宿主恢复后重新执行 SetBottom，而不只是反复 Reassert 一个空控制器。
-    if (
-      !result.success &&
-      (result.code === WINDOW_Z_ORDER_NOT_ENABLED_CODE || result.code == null)
-    ) {
-      result = setWindowAlwaysOnBottom(visualWindow, true)
-    }
-    if (!result.success) {
-      logger.error('window.z-order-reassert', new Error(result.error), {
-        source,
-        code: result.code
-      })
-      scheduleBottomWindowZOrderRetry(source, result)
-      return false
-    }
-  } catch (error) {
-    logger.error('window.z-order-reassert-exception', error, { source })
-    scheduleBottomWindowZOrderRetry(source, error)
-    return false
-  }
-  cancelBottomWindowZOrderRetry()
-  runBlurRuntimeOperation(blurReSyncZOrder, '重同步置底窗口毛玻璃层级')
-  return true
-}
-
-async function confirmWindowZOrder(mode, window) {
-  // 毛玻璃在独立 STA 线程处理排层消息。先等待实际 HWND 和 Overlay 一致，
-  // 必要时受限地重发同步；队列接收成功不能代替可见层级已经生效。
-  let lastCheck = null
-  for (const delay of [0, 40, 120, 240]) {
-    if (delay) await new Promise((resolveWait) => setTimeout(resolveWait, delay))
-    if (window.isDestroyed() || window !== getActiveVisualWindow()) {
-      throw new Error('窗口已切换，请在当前窗口重新选择层级')
-    }
-    const topmostMatches = window.isAlwaysOnTop() === (mode === WINDOW_Z_ORDER_MODES.TOP)
-    const nativeZOrder = process.platform === 'win32' ? getWindowZOrderStatus(window) : null
-    const bottomMatches =
-      mode === WINDOW_Z_ORDER_MODES.BOTTOM
-        ? Boolean(nativeZOrder?.enabled && nativeZOrder.requestedMatches && nativeZOrder.anchored)
-        : !nativeZOrder?.enabled
-    const blurHealth =
-      process.platform === 'win32' && blurInitialized && blurConfig.enabled
-        ? getBlurRuntimeHealth()
-        : null
-    lastCheck = { mode, topmostMatches, bottomMatches, nativeZOrder, blurHealth }
-    if (
-      topmostMatches &&
-      bottomMatches &&
-      (!blurHealth || (blurHealth.healthy && blurHealth.zOrderSynchronized))
-    ) {
-      return
-    }
-    if (delay === 240) break
-    const result = applyWindowZOrder(mode)
-    if (!result.success) throw new Error(result.error)
-  }
-  logger.warn('window.z-order-confirm', '窗口层级核验未收敛', {
-    ...lastCheck,
-    isSliding,
-    isDockHidden
-  })
-  throw new Error('窗口层级未能同步，请重新选择后重试')
-}
-
-async function persistWindowZOrderMode(mode) {
-  const normalized = normalizeWindowZOrderMode(mode)
-  const previousMode = zOrderMode
-
-  let persistenceUpdated = false
-  try {
-    // 原生排层期间可能同步触发 show 等回调；这些回调必须看到目标模式，
-    // 不能在退出置底时重新装回旧的置底拦截器。失败时在下方恢复原模式。
-    pendingWindowZOrderMode = normalized
-    zOrderMode = normalized
-    const runtimeResult = applyWindowZOrder(normalized)
-    if (!runtimeResult.success) {
-      const error = new Error(runtimeResult.error || '切换窗口层级失败')
-      error.code = 'WINDOW_Z_ORDER_APPLY_FAILED'
-      error.nativeCode = runtimeResult.code
-      throw error
-    }
-    await confirmWindowZOrder(normalized, getActiveVisualWindow())
-    // 保存模式相同也必须重应用真实窗口状态，允许用户修复系统重排后的层级漂移。
-    if (normalized === previousMode) {
-      return { mode: previousMode, changed: false, throttled: false }
-    }
-    writeApplicationSetting('window.zOrderMode', normalized)
-    persistenceUpdated = true
-    refreshResolvedSettings({ incrementRevision: true })
-    zOrderMode = resolvedSettings.window.zOrderMode
-    const snapshot = getResolvedSettingsSnapshot()
-    broadcastSettingsChanged(snapshot)
-    return { mode: zOrderMode, changed: true, throttled: false }
-  } catch (error) {
-    pendingWindowZOrderMode = previousMode
-    zOrderMode = previousMode
-    const rollbackResult = applyWindowZOrder(previousMode)
-    if (!rollbackResult.success) {
-      logger.error('window.z-order-rollback', new Error(rollbackResult.error), {
-        requestedMode: normalized,
-        previousMode,
-        code: rollbackResult.code
-      })
-    }
-    if (persistenceUpdated) {
-      try {
-        writeApplicationSetting('window.zOrderMode', previousMode)
-        refreshResolvedSettings({ incrementRevision: true })
-        zOrderMode = resolvedSettings.window.zOrderMode
-        broadcastSettingsChanged(getResolvedSettingsSnapshot())
-      } catch (persistenceRollbackError) {
-        logger.error('window.z-order-persistence-rollback', persistenceRollbackError, {
-          requestedMode: normalized,
-          previousMode
-        })
-      }
-    }
-    throw error
-  } finally {
-    pendingWindowZOrderMode = null
-  }
 }
 
 // ============================================================
@@ -3931,47 +1164,47 @@ function toggleWindow(source = 'tray-click') {
   if (!visualWindow || visualWindow.isDestroyed()) return
   logger.info('window.visibility-toggle', '用户切换主窗口显示状态', {
     source,
-    focused: mainWindow.isFocused(),
+    focused: getMainWindow().isFocused(),
     snapshot: getDockDiagnosticSnapshot()
   })
 
   // Visible includes covered and minimized windows. A show request must reveal
   // these in one action, without changing the user's persistent z-order mode.
   if (
-    mainWindow.isMinimized() ||
-    (!isDockHidden &&
-      zOrderMode === WINDOW_Z_ORDER_MODES.NORMAL &&
-      mainWindow.isVisible() &&
-      !mainWindow.isFocused())
+    getMainWindow().isMinimized() ||
+    (!dockRuntime.hidden &&
+      zOrderRuntime.mode === WINDOW_Z_ORDER_MODES.NORMAL &&
+      getMainWindow().isVisible() &&
+      !getMainWindow().isFocused())
   ) {
     openMainWindow()
     return
   }
 
   // 原生线程延迟清理期间不允许重新贴边，但托盘的基本显示/隐藏必须仍然可用。
-  if (nativeEdgeCleanupPending) {
-    if (mainWindow.isVisible()) hideToTray()
+  if (dockRuntime.cleanupStatus) {
+    if (getMainWindow().isVisible()) hideToTray()
     else openMainWindow()
     return
   }
 
-  if (isDockHidden) {
+  if (dockRuntime.hidden) {
     doShow(source)
     focusMainWindow(source)
     return
   }
   // 托盘点击可能晚于移动、显示或设置事件；选择“滑入”前以实时几何和
   // 当前 activeEdges 深度复验，避免陈旧 dockSide 吞掉本次托盘操作。
-  if (mainWindow.isVisible() && !isSliding && !dockMotionSession) {
+  if (getMainWindow().isVisible() && !dockRuntime.sliding && !dockRuntime.hasSession()) {
     syncVisibleDockSide({ source: 'tray-toggle', snap: true })
   }
   // 锁定时禁用贴边滑入：托盘点击退回普通“隐藏到托盘”行为，不再滑向屏幕边缘。
-  if (dockSide && !isLocked) {
+  if (dockRuntime.side && !isLocked) {
     cancelPendingDockHide('tray-hide')
     doHide()
     return
   }
-  if (mainWindow.isVisible()) {
+  if (getMainWindow().isVisible()) {
     hideToTray()
   } else {
     openMainWindow()
@@ -3979,18 +1212,20 @@ function toggleWindow(source = 'tray-click') {
 }
 
 function handleViewVisibilityShortcut() {
-  const reason = isQuitting
+  const reason = shutdownCoordinator.isQuitting()
     ? 'quitting'
-    : switchingMainView
+    : mainViewNavigation.isSwitching()
       ? 'switching-view'
-      : screenshotCaptureActive
+      : captureWindowIntegration.isActive()
         ? 'screenshot'
         : null
   const metadata = {
     action: reason ? 'ignored' : 'toggle',
     reason,
-    visible: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
-    dockHidden: isDockHidden
+    visible: Boolean(
+      getMainWindow() && !getMainWindow().isDestroyed() && getMainWindow().isVisible()
+    ),
+    dockHidden: dockRuntime.hidden
   }
   if (reason) {
     logger.info('shortcut.view-visibility-trigger', '显示/隐藏快捷键触发被忽略', metadata)
@@ -4001,20 +1236,20 @@ function handleViewVisibilityShortcut() {
 }
 
 function focusMainWindow(source) {
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  if (zOrderMode !== WINDOW_Z_ORDER_MODES.BOTTOM) mainWindow.moveTop()
-  mainWindow.focus()
+  if (!getMainWindow() || getMainWindow().isDestroyed()) return
+  if (zOrderRuntime.mode !== WINDOW_Z_ORDER_MODES.BOTTOM) getMainWindow().moveTop()
+  getMainWindow().focus()
   reassertBottomWindowZOrder(source)
 }
 
 function openMainWindow() {
   const visualWindow = getActiveVisualWindow()
   if (!visualWindow || visualWindow.isDestroyed()) return
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  if (isDockHidden) {
+  if (getMainWindow().isMinimized()) getMainWindow().restore()
+  if (dockRuntime.hidden) {
     doShow('open-main-window')
   } else {
-    mainWindow.show()
+    getMainWindow().show()
     syncVisibleDockSide({ source: 'open-main-window', snap: true })
   }
   focusMainWindow('open-main-window')
@@ -4025,228 +1260,18 @@ async function openMainWindowFromTray() {
   openMainWindow()
 }
 
-/**
- * 视图导航期间只隐藏现有 BrowserWindow，并暂时隐藏原生毛玻璃 Overlay。
- * BrowserWindow、HWND、Overlay 与窗口事件监听器都会继续复用。
- */
-function hideMainWindowForViewNavigation(window) {
-  if (!window || window.isDestroyed()) return
-  if (blurInitialized) {
-    runBlurRuntimeOperation(
-      () => blurSetConfig({ ...blurConfig, enabled: false }),
-      '视图切换前暂时隐藏毛玻璃层'
-    )
-  }
-  window.hide()
-}
-
-function prepareMainWindowPresentationForView(window, targetDisplay) {
-  const startedAt = Date.now()
-  mainWindowPresentationTiming = {
-    creationStartedAt: startedAt,
-    createdAt: startedAt,
-    loadRequestedAt: null,
-    loadStartedAt: null,
-    rendererReadyAt: null,
-    displayId: targetDisplay.id,
-    displayScaleFactor: targetDisplay.scaleFactor
-  }
-  setWindowLogContext(window, { role: getActiveWindowProfile().logRole })
-}
-
-function prepareBlurRuntimeForActiveViewNavigation() {
-  if (!blurCaps.supported) return
-
-  if (blurConfig.enabled && !blurInitialized) {
-    const result = initializeBlurRuntime()
-    if (!result.success) {
-      setSettingsBatch(getActiveWindowName(), [serializeSetting('blur.enabled', false)])
-      refreshResolvedSettings({ incrementRevision: true })
-      return
-    }
-  }
-
-  if (blurInitialized && blurConfig.enabled && resolvedSettings.wallpaper.enabled) {
-    setSettingsBatch(getActiveWindowName(), [serializeSetting('wallpaper.enabled', false)])
-    refreshResolvedSettings({ incrementRevision: true })
-  }
-
-  if (blurInitialized) {
-    runBlurRuntimeOperation(
-      () => blurSetConfig({ ...blurConfig, enabled: false }),
-      '视图导航期间保持毛玻璃层隐藏'
-    )
-  }
-}
-
-async function presentActiveViewInExistingWindow(window, { preferredDisplay = null } = {}) {
-  if (!window || window.isDestroyed()) throw new Error('主窗口不可用')
-  prepareBlurRuntimeForActiveViewNavigation()
-  const { bounds, targetDisplay } = resolveActiveViewWindowBounds({ preferredDisplay })
-  prepareMainWindowPresentationForView(window, targetDisplay)
-  window.setBounds(bounds, false)
-  lastVisibleMainWindowBounds = { ...window.getBounds() }
-  cachedWorkArea = { ...targetDisplay.workArea }
-  applyResolvedWindowRuntime()
-  await loadActiveViewIntoWindow(window)
-  return bounds
-}
-
-/** 在同一个 BrowserWindow 中加载另一套视图内容与独立设置。 */
 const confirmEditingDrafts = createEditingDraftGuard({
   logger,
   reveal: async (window) => {
-    if (window !== mainWindow || window.isDestroyed()) throw new Error('主窗口已变化')
+    if (window !== getMainWindow() || window.isDestroyed()) throw new Error('主窗口已变化')
     if (window.isMinimized()) window.restore()
     openMainWindow()
   }
 })
-let checkingViewDrafts = false
-let quitDraftsApproved = false
-let checkingQuitDrafts = false
-
-async function switchMainView(targetMode) {
-  if (checkingViewDrafts || checkingQuitDrafts) return false
-  const requestedMode = normalizeViewMode(targetMode)
-  if (isCompactPresentationActive()) {
-    await exitCompactPresentation({ source: 'view-switch', showWhenDone: false })
-  }
-  if (requestedMode === activeViewMode) {
-    openMainWindow()
-    return false
-  }
-  checkingViewDrafts = true
-  let allowed
-  try {
-    allowed = await confirmEditingDrafts(mainWindow, '切换视图')
-  } finally {
-    checkingViewDrafts = false
-  }
-  if (!allowed) return false
-  const normalized = normalizeViewMode(targetMode)
-  if (switchingMainView) return false
-  if (nativeEdgeCleanupPending) {
-    logger.warn('view.switch', '原生边缘监视器仍在清理，暂缓切换主视图', {
-      targetMode: normalized,
-      generation: nativeEdgeCleanupPending.generation
-    })
-    return false
-  }
-  // 启用毛玻璃时有一段壁纸退场等待。让这次设置事务先在原视图完整收敛，
-  // 再执行最后一次托盘切换请求，避免异步尾部写入另一个视图作用域。
-  if (blurSettingsRequestsInFlight > 0) {
-    queuedViewSwitch = normalized === activeViewMode ? null : normalized
-    return true
-  }
-  if (normalized === activeViewMode) return false
-
-  const previousMode = activeViewMode
-  switchingMainView = true
-  let sourceDisplay = null
-  let sourceBounds = null
-  try {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      sourceBounds = getPersistableWindowBounds({
-        dockStableBounds: dockMotionSession?.stableBounds,
-        lastVisibleBounds: lastVisibleMainWindowBounds,
-        currentBounds: mainWindow.getBounds()
-      })
-      sourceDisplay = screen.getDisplayMatching(sourceBounds || mainWindow.getBounds())
-      restoreDockWindowToVisiblePosition()
-      resetDockState({ source: 'view-switch' })
-      if (nativeEdgeCleanupPending) {
-        logger.warn('view.switch', '停止原生边缘监视器超时，本次视图切换已安全取消', {
-          targetMode: normalized,
-          generation: nativeEdgeCleanupPending.generation
-        })
-        return false
-      }
-      endTitlebarWindowDrag()
-    }
-
-    if (geometryTimer) {
-      clearTimeout(geometryTimer)
-      geometryTimer = null
-    }
-    const pendingGeometry =
-      geometryDirty && mainWindow && !mainWindow.isDestroyed()
-        ? getPersistableWindowBounds({
-            dockStableBounds: dockMotionSession?.stableBounds,
-            lastVisibleBounds: lastVisibleMainWindowBounds,
-            currentBounds: mainWindow.getBounds()
-          })
-        : null
-    const switchPreparation = prepareViewSettingsForSwitch({
-      sourceViewMode: previousMode,
-      targetViewMode: normalized,
-      pendingGeometry
-    })
-    if (switchPreparation.geometryPersisted) geometryDirty = false
-
-    const reusedWindow = mainWindow
-    if (!reusedWindow || reusedWindow.isDestroyed()) throw new Error('主窗口不可用')
-    hideMainWindowForViewNavigation(reusedWindow)
-    activeViewMode = normalized
-    resolvedSettings = createDefaultSettings(activeViewMode)
-    refreshResolvedSettings({ incrementRevision: true })
-    await presentActiveViewInExistingWindow(reusedWindow, { preferredDisplay: sourceDisplay })
-    writeActiveView(activeViewMode)
-    rebuildTrayMenu()
-    logger.info('view.switch', '已在现有窗口中切换主视图', {
-      activeViewMode,
-      reusedBrowserWindow: true,
-      browserWindowId: reusedWindow.id
-    })
-    return true
-  } catch (error) {
-    logger.error('view.switch', error, { previousMode, targetMode: normalized })
-    try {
-      cancelMainViewRendererReadyWait(error)
-      if (!mainWindow || mainWindow.isDestroyed()) throw new Error('原主窗口已经不可恢复')
-      hideMainWindowForViewNavigation(mainWindow)
-      activeViewMode = previousMode
-      resolvedSettings = createDefaultSettings(activeViewMode)
-      refreshResolvedSettings({ incrementRevision: true })
-      const restoreDisplay = sourceBounds ? screen.getDisplayMatching(sourceBounds) : sourceDisplay
-      if (sourceBounds) {
-        prepareMainWindowPresentationForView(mainWindow, restoreDisplay)
-        mainWindow.setBounds(
-          constrainMainWindowBounds(sourceBounds, restoreDisplay.workArea),
-          false
-        )
-        lastVisibleMainWindowBounds = { ...mainWindow.getBounds() }
-        cachedWorkArea = { ...restoreDisplay.workArea }
-        applyResolvedWindowRuntime()
-        await loadActiveViewIntoWindow(mainWindow)
-      } else {
-        await presentActiveViewInExistingWindow(mainWindow, { preferredDisplay: sourceDisplay })
-      }
-      try {
-        writeActiveView(previousMode)
-      } catch (persistRestoreError) {
-        logger.error('view.switch-restore-persistence', persistRestoreError, { previousMode })
-      }
-      rebuildTrayMenu()
-    } catch (restoreError) {
-      logger.fatal('view.switch-restore', restoreError, { previousMode })
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
-    }
-    return false
-  } finally {
-    switchingMainView = false
-  }
-}
-
-async function switchMainViewFromTray(targetMode) {
-  return switchMainView(targetMode)
-}
 
 function toggleGlobalShortcuts() {
   try {
-    const enabled = !globalShortcutsEnabled
-    globalShortcutsEnabled = enabled
-    resolvedSettings.shortcuts.enabled = enabled
-    settingsRevision += 1
+    const enabled = settingsRuntime.setShortcutsEnabled(!settingsRuntime.shortcutsEnabled)
     if (captureShortcutService) captureShortcutService.setEnabled(enabled)
     else viewVisibilityShortcutService?.setEnabled(enabled)
     broadcastSettingsChanged(getResolvedSettingsSnapshot())
@@ -4257,75 +1282,6 @@ function toggleGlobalShortcuts() {
   }
 }
 
-function buildTrayMenuTemplate() {
-  return [
-    { label: '查看便签提醒', click: () => reminderService?.showAll() },
-    {
-      id: 'toggle-global-shortcuts',
-      label: '禁用全部快捷键（本次运行）',
-      type: 'checkbox',
-      checked: !globalShortcutsEnabled,
-      click: toggleGlobalShortcuts
-    },
-    { type: 'separator' },
-    ...(screenshotService
-      ? [
-          {
-            label: '截图',
-            click: () =>
-              void screenshotService.capture().catch((error) => screenshotService?.report(error))
-          },
-          { label: '剪贴板贴图', click: () => void screenshotService.action('pinClipboard') },
-          {
-            label: '恢复最近关闭的贴图',
-            click: () => void screenshotService.action('restorePin')
-          },
-          {
-            label: '截图快速保存目录…',
-            click: () => void screenshotService.action('configureCaptureSave')
-          },
-          {
-            label: '显示/隐藏全部贴图',
-            click: () => void screenshotService.action('togglePins')
-          },
-          { type: 'separator' }
-        ]
-      : []),
-    ...buildStickyTrayTemplate({
-      stickyService,
-      openMainWindow: () => {
-        void openMainWindowFromTray().catch((error) =>
-          logger.error('presentation-mode.tray-open', error)
-        )
-      },
-      activeViewMode,
-      switchMainView: (targetMode) => {
-        void switchMainViewFromTray(targetMode).catch((error) =>
-          logger.error('view.switch-tray', error, { targetMode })
-        )
-      },
-      quitApplication: () => {
-        shutdownTrigger = 'tray-menu'
-        isQuitting = true
-        app.quit()
-      }
-    })
-  ]
-}
-
-function rebuildTrayMenu() {
-  if (!tray || tray.isDestroyed() || !stickyService) return
-  if (trayShortcutImages) {
-    const baseIcon = globalShortcutsEnabled
-      ? trayShortcutImages.enabled
-      : trayShortcutImages.disabled
-    if (trayReminderController) trayReminderController.setBaseIcon(baseIcon)
-    else tray.setImage(baseIcon)
-    tray.setToolTip(globalShortcutsEnabled ? '便签' : '便签 · 快捷键已禁用（重启恢复）')
-  }
-  tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate()))
-}
-
 if (process.env.ABANDON_INTEGRATION_TEST === '1') {
   globalThis.__ABANDON_WINDOW_TEST_HOOKS__ = Object.freeze({
     switchMainView,
@@ -4334,19 +1290,41 @@ if (process.env.ABANDON_INTEGRATION_TEST === '1') {
     enterCompactPresentation,
     exitCompactPresentation,
     getPresentationModeState: presentationModeSnapshot,
+    dockCommands: Object.freeze({
+      syncVisible: dockRuntime.syncVisibleDockSide,
+      hide: dockRuntime.doHide,
+      show: dockRuntime.doShow,
+      suspend: dockRuntime.beginDockInteractionSuspension,
+      resume: dockRuntime.endDockInteractionSuspension,
+      snapshot: dockRuntime.getDockDiagnosticSnapshot,
+      resources: dockRuntime.resourceSnapshot
+    }),
     getDockRuntimeState: () => ({
       ...getDockDiagnosticSnapshot(),
-      interactionSuspendCount: dockInteractionSuspendCount,
-      screenshotCaptureActive,
+      interactionSuspendCount: dockRuntime.suspendCount,
+      screenshotCaptureActive: captureWindowIntegration.isActive(),
       locked: isLocked
     }),
     handleDisplayTopologyChange: handleDockDisplayTopologyChange,
-    getBlurRuntimeHealth: () => (blurInitialized ? getBlurRuntimeHealth() : null),
+    getBlurRuntimeHealth: () => (blurRuntime.initialized ? getBlurRuntimeHealth() : null),
+    getWindowZOrderStatus: captureTitlebarZOrderStatus,
     triggerViewVisibilityShortcut: () => viewVisibilityShortcutService?.handleTrigger(),
-    triggerTrayClick: () => tray?.emit('click'),
+    triggerTrayClick: mainTrayController.triggerClick,
     getTrayMenuTemplate: buildTrayMenuTemplate,
-    getReminderService: () => reminderService,
-    triggerScreenshotShortcut: () => captureShortcutService?.services.screenshot.handleTrigger(),
+    getReminderService: featureRuntime.observeRemindersForIntegration,
+    featureState: featureRuntime.snapshot,
+    businessMutationState: businessAdmission.snapshot,
+    backgroundSettingsState: backgroundSettingsCoordinator.snapshot,
+    navigationState: mainViewNavigation.snapshot,
+    notificationActivationState: notificationActivation.snapshot,
+    handleNotificationProtocol,
+    trayState: mainTrayController.snapshot,
+    trayMenu: mainTrayController.menuTemplate,
+    shutdownState: () => shutdownCoordinator.snapshot(),
+    triggerScreenshotShortcut: (action = 'screenshot') =>
+      ['screenshot', 'screenshotCopy'].includes(action)
+        ? captureShortcutService?.services[action].handleTrigger()
+        : undefined,
     startNativeCapture: () => screenshotService?.capture(),
     captureCoordinator: () => screenshotService,
     nativeCaptureState: () => ({
@@ -4360,1606 +1338,854 @@ if (process.env.ABANDON_INTEGRATION_TEST === '1') {
 // ============================================================
 // 应用就绪后的初始化逻辑
 // ============================================================
-const startupPromise = app.whenReady().then(async () => {
-  if (!gotSingleInstanceLock) return
+const applicationBootstrap = createApplicationBootstrap({
+  whenReady: () => app.whenReady(),
+  start: async ({ runStage, checkpoint: checkStartup }) => {
+    if (!gotSingleInstanceLock) return
 
-  if (
-    !enforceNativeRuntimeCompatibility({
-      getCompatibility: getNativeRuntimeCompatibility,
-      logger,
-      dialog,
-      flushLogs,
-      exit: (code) => app.exit(code)
-    })
-  ) {
-    return
-  }
-
-  // 初始化数据库连接
-  const { isNewDatabase } = initDatabase()
-  logger.info('startup', '数据库初始化完成', { isNewDatabase })
-  if (isNewDatabase) {
-    createNote({
-      content:
-        '欢迎使用 Abandon Note！\n\n你可以点击上方输入框快速新建便签，也可以点击这条示例便签体验编辑、提醒、标签和桌面便利贴功能。'
-    })
-  }
-  appUpdateService = new AppUpdateService({
-    currentVersion: app.getVersion(),
-    platform: process.platform,
-    arch: process.arch,
-    checkEnabled: process.env.ABANDON_INTEGRATION_TEST !== '1'
-  })
-  try {
-    await Promise.all([
-      cleanupPendingAttachmentDirs({
-        onRecovery: (metadata) =>
-          logger.info('storage.attachment-recovery', '附件存储恢复补偿已执行', metadata)
-      }),
-      cleanupPendingWallpaperFiles({
-        onRecovery: (metadata) =>
-          logger.info('storage.wallpaper-recovery', '壁纸存储恢复补偿已执行', metadata)
+    if (
+      !enforceNativeRuntimeCompatibility({
+        getCompatibility: getNativeRuntimeCompatibility,
+        logger,
+        dialog,
+        flushLogs,
+        exit: (code) => app.exit(code)
       })
-    ])
-  } catch (error) {
-    console.warn('[storage] 恢复未完成的存储操作失败:', error)
-  }
-  activeViewMode = readApplicationSettings().activeView
-  ensureViewSettingsInitialized(activeViewMode)
-  ensureApplicationWindowSettingsInitialized(activeViewMode)
-  resolvedSettings = createDefaultSettings(activeViewMode)
-  refreshResolvedSettings({ incrementRevision: true })
-  viewVisibilityShortcutService = new ViewVisibilityShortcutService({
-    globalShortcut,
-    onTrigger: handleViewVisibilityShortcut,
-    logger
-  })
-  viewVisibilityShortcutService.initialize(resolvedSettings.shortcuts.viewVisibility, {
-    enabled: resolvedSettings.shortcuts.enabled
-  })
-  handleProtocolArgs(process.argv)
-
-  // 监听新窗口创建事件，自动注册快捷键优化器
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
-    attachWindowLogging(window)
-  })
-
-  // ---- IPC 通道注册 ----
-  const mainWindowIpc = createMainWindowIpc(ipcMain, () => mainWindow)
-
-  const performanceDiagnostics = startPerformanceDiagnostics({
-    app,
-    powerMonitor,
-    writeLog,
-    readNativeState: captureTitlebarZOrderStatus,
-    readWindowState: () => {
-      const window = getActiveVisualWindow()
-      if (!window || window.isDestroyed()) return null
-      const display = screen.getDisplayMatching(window.getBounds())
-      return {
-        id: window.id,
-        webContentsId: window.webContents.id,
-        rendererPid: window.webContents.getOSProcessId(),
-        viewMode: activeViewMode,
-        visible: window.isVisible(),
-        minimized: window.isMinimized(),
-        focused: window.isFocused(),
-        zOrderMode,
-        blurEnabled: blurConfig.enabled,
-        wallpaperEnabled: Boolean(
-          resolvedSettings.wallpaper.enabled &&
-          resolvedSettings.wallpaper.activeId &&
-          !blurConfig.enabled
-        ),
-        wallpaperBlurRadius: resolvedSettings.wallpaper.blurRadius,
-        displayId: display.id,
-        displayFrequency: display.displayFrequency,
-        scaleFactor: display.scaleFactor
-      }
+    ) {
+      return
     }
-  })
 
-  diagnosticController = registerDiagnosticController({
-    ipcMain,
-    controls: mainWindowIpc,
-    BrowserWindow,
-    observeRenderer: performanceDiagnostics.observeRenderer,
-    flushPerformance: (requestId) => performanceDiagnostics.flush(requestId)
-  })
-
-  mainWindowIpc.handle('logs:query', async (_event, query) => {
-    return queryLogs(query)
-  })
-
-  mainWindowIpc.handle('logs:open-folder', async () => {
-    await flushLogs()
-    const errorMessage = await shell.openPath(getLogDirectory())
-    if (errorMessage) throw new Error(errorMessage)
-    return true
-  })
-
-  let diagnosticExporting = false
-  mainWindowIpc.handle('logs:export', async (_event, options = {}) => {
-    if (diagnosticExporting) throw new Error('已有诊断日志正在导出')
-    diagnosticExporting = true
-    let fileSnapshot
-    try {
-      const range = options?.range ?? 'all'
-      if (!['all', 'last-hour'].includes(range)) throw new Error('不支持的日志导出范围')
-      // 点击导出时固定时间范围，跨应用会话筛选，不受日志查看器筛选条件影响。
-      const requestedAt = Date.now()
-      const frozen = await diagnosticController.freeze('export', requestedAt)
-      fileSnapshot = await freezeLogSnapshot()
-      const selection =
-        range === 'last-hour'
-          ? { from: requestedAt - 3_600_000, to: requestedAt, requestId: frozen.requestId }
-          : { requestId: frozen.requestId, to: requestedAt }
-      selection.snapshotId = fileSnapshot.id
-      const result = await dialog.showSaveDialog(mainWindow, {
-        title: '导出诊断日志',
-        defaultPath: `abandon-note-diagnostics-${range}-${new Date(requestedAt).toISOString().slice(0, 10)}.jsonl`,
-        filters: [{ name: 'JSON Lines', extensions: ['jsonl'] }]
+    // 初始化数据库连接
+    const { isNewDatabase } = await runStage('database', () =>
+      initDatabase({ userDataPath: app.getPath('userData') })
+    )
+    logger.info('startup', '数据库初始化完成', { isNewDatabase })
+    if (isNewDatabase) {
+      createNote({
+        content:
+          '欢迎使用 Abandon Note！\n\n你可以点击上方输入框快速新建便签，也可以点击这条示例便签体验编辑、提醒、标签和桌面便利贴功能。'
       })
-      if (result.canceled || !result.filePath) return { canceled: true }
-      let systemDiagnostics
-      try {
-        systemDiagnostics = await collectSystemDiagnostics({
+    }
+    appUpdateService = new AppUpdateService({
+      currentVersion: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+      checkEnabled: process.env.ABANDON_INTEGRATION_TEST !== '1'
+    })
+    try {
+      await runStage('storage-recovery', () =>
+        settleStartupRecoveries([
+          () =>
+            cleanupPendingAttachmentDirs({
+              onRecovery: (metadata) =>
+                logger.info('storage.attachment-recovery', '附件存储恢复补偿已执行', metadata)
+            }),
+          () =>
+            cleanupPendingWallpaperFiles({
+              onRecovery: (metadata) =>
+                logger.info('storage.wallpaper-recovery', '壁纸存储恢复补偿已执行', metadata)
+            })
+        ])
+      )
+    } catch (error) {
+      console.warn('[storage] 恢复未完成的存储操作失败:', error)
+    }
+    checkStartup()
+    mainViewNavigation.initializeActiveView(readApplicationSettings().activeView)
+    ensureViewSettingsInitialized(mainViewNavigation.mode)
+    ensureApplicationWindowSettingsInitialized(mainViewNavigation.mode)
+    settingsRuntime.resetForView(mainViewNavigation.mode)
+    refreshResolvedSettings({ incrementRevision: true })
+    viewVisibilityShortcutService = new ViewVisibilityShortcutService({
+      globalShortcut,
+      onTrigger: handleViewVisibilityShortcut,
+      logger
+    })
+    viewVisibilityShortcutService.initialize(settingsRuntime.values.shortcuts.viewVisibility, {
+      enabled: settingsRuntime.values.shortcuts.enabled
+    })
+    handleProtocolArgs(process.argv)
+
+    // 监听新窗口创建事件，自动注册快捷键优化器
+    app.on('browser-window-created', (_, window) => {
+      optimizer.watchWindowShortcuts(window)
+      attachWindowLogging(window)
+    })
+
+    // ---- IPC 通道注册 ----
+    const mainWindowIpc = createMainWindowIpc(ipcMain, () => getMainWindow())
+
+    const performanceDiagnostics = startPerformanceDiagnostics({
+      app,
+      powerMonitor,
+      writeLog,
+      readNativeState: captureTitlebarZOrderStatus,
+      readWindowState: () => {
+        const window = getActiveVisualWindow()
+        if (!window || window.isDestroyed()) return null
+        const display = screen.getDisplayMatching(window.getBounds())
+        return {
+          id: window.id,
+          webContentsId: window.webContents.id,
+          rendererPid: window.webContents.getOSProcessId(),
+          viewMode: mainViewNavigation.mode,
+          visible: window.isVisible(),
+          minimized: window.isMinimized(),
+          focused: window.isFocused(),
+          zOrderMode: zOrderRuntime.mode,
+          blurEnabled: blurRuntime.config.enabled,
+          wallpaperEnabled: Boolean(
+            settingsRuntime.values.wallpaper.enabled &&
+            settingsRuntime.values.wallpaper.activeId &&
+            !blurRuntime.config.enabled
+          ),
+          wallpaperBlurRadius: settingsRuntime.values.wallpaper.blurRadius,
+          displayId: display.id,
+          displayFrequency: display.displayFrequency,
+          scaleFactor: display.scaleFactor
+        }
+      }
+    })
+
+    diagnosticController = registerDiagnosticController({
+      ipcMain,
+      controls: mainWindowIpc,
+      BrowserWindow,
+      observeRenderer: performanceDiagnostics.observeRenderer,
+      flushPerformance: (requestId) => performanceDiagnostics.flush(requestId)
+    })
+
+    const disposeLoggingIpc = registerLoggingIpc({
+      mainWindowIpc,
+      removeHandler: (channel) => ipcMain.removeHandler(channel),
+      getWindow: getMainWindow,
+      dialog,
+      shell,
+      diagnosticController,
+      logStore: {
+        queryLogs,
+        flushLogs,
+        freezeLogSnapshot,
+        releaseLogSnapshot,
+        getLogDirectory,
+        exportLogs
+      },
+      collectSystemDiagnostics: () =>
+        collectSystemDiagnostics({
           app,
           screen,
           windows: getApplicationWindows(),
           runtime: {
-            activeViewMode,
-            blur: { ...blurConfig, initialized: blurInitialized },
+            activeViewMode: mainViewNavigation.mode,
+            blur: { ...blurRuntime.config, initialized: blurRuntime.initialized },
             native: getNativeRuntimeCompatibility(),
             dock: getDockDiagnosticSnapshot(),
             performance: performanceDiagnostics.snapshot()
           }
-        })
-      } catch (error) {
-        systemDiagnostics = {
-          capturedAt: new Date().toISOString(),
-          collectionErrors: [{ field: 'system', message: error?.message || String(error) }]
-        }
-      }
-      await exportLogs(
-        result.filePath,
-        {
-          logDirectory: getLogDirectory(),
-          crashDumpsPath: app.getPath('crashDumps'),
-          recentCrashDumps: await refreshCrashDumpIndex(),
-          exportScope: range === 'last-hour' ? 'last-hour' : 'all-retained-logs',
-          ...(Number.isFinite(selection.from)
-            ? {
-                from: new Date(selection.from).toISOString(),
-                to: new Date(selection.to).toISOString()
-              }
-            : {})
-        },
-        systemDiagnostics,
-        selection,
-        { capture: frozen, controller: diagnosticController.state() }
-      )
-      logger.info('logs.export', '诊断日志已导出', {
-        targetPath: result.filePath,
-        exportScope: range === 'last-hour' ? 'last-hour' : 'all-retained-logs'
-      })
-      return { canceled: false, filePath: result.filePath }
-    } finally {
-      await releaseLogSnapshot(fileSnapshot?.id)
-      diagnosticExporting = false
-    }
-  })
-
-  // ---- 应用更新（检查版本后，通过浏览器直链或对应标签页下载） ----
-  // renderer 只能选择固定目标；实际 URL 来自主进程刚完成的更新检查。
-  mainWindowIpc.handle('update:check', async () => {
-    return appUpdateService.check()
-  })
-
-  mainWindowIpc.handle('app:get-info', () => {
-    return { version: app.getVersion(), platform: process.platform, arch: process.arch }
-  })
-
-  mainWindowIpc.handle('update:open-link', async (_event, request = {}) => {
-    const { target } = request
-    if (!['download', 'gitcode', 'github'].includes(target)) {
-      throw new Error('未知的更新入口')
-    }
-    const url = appUpdateService.getExternalUrl(request)
-    await shell.openExternal(url)
-    return true
-  })
-
-  // 【渲染就绪】渲染进程初始化完成后发送此消息，主进程收到后显示窗口
-  ipcMain.on('renderer-ready', (event, { viewMode } = {}) => {
-    if (event.sender !== mainWindow?.webContents) return
-    if (!Object.values(VIEW_MODES).includes(viewMode) || viewMode !== activeViewMode) {
-      logger.warn('renderer.ready-stale', '忽略与当前主视图不一致的渲染就绪消息', {
-        activeViewMode,
-        reportedViewMode: viewMode
-      })
-      return
-    }
-    const rendererReadyAt = Date.now()
-    const timing = mainWindowPresentationTiming
-    if (timing) timing.rendererReadyAt = rendererReadyAt
-    logger.info('startup.window-presentation', '渲染进程就绪，准备显示主窗口', {
-      viewMode: activeViewMode,
-      createdToRendererReadyMs: timing?.createdAt ? rendererReadyAt - timing.createdAt : null,
-      loadRequestedToRendererReadyMs: timing?.loadRequestedAt
-        ? rendererReadyAt - timing.loadRequestedAt
-        : null,
-      loadStartedToRendererReadyMs: timing?.loadStartedAt
-        ? rendererReadyAt - timing.loadStartedAt
-        : null,
-      beforeShow: getDockDiagnosticSnapshot()
+        }),
+      getCrashDumpsPath: () => app.getPath('crashDumps'),
+      refreshCrashDumpIndex,
+      logger
     })
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      const presentedWindow = mainWindow
-      const showCalledAt = Date.now()
-      mainWindow.show()
-      // 视图导航会暂时隐藏 Overlay；窗口重新显示后立即恢复目标视图配置，
-      // show 事件中的延迟恢复继续作为 Win10 可见性提交后的幂等兜底。
-      restoreBlurForVisibleWindow(mainWindow, 'renderer-ready')
-      mainWindow.focus()
-      reassertBottomWindowZOrder('renderer-ready')
-      revealPendingNotificationApplication()
-      setImmediate(() => {
-        if (mainWindow !== presentedWindow || presentedWindow.isDestroyed()) return
-        logger.info('startup.window-presentation', '主窗口首次显示调用已完成', {
-          viewMode: activeViewMode,
-          rendererReadyToShowCallMs: showCalledAt - rendererReadyAt,
-          showCallToSnapshotMs: Date.now() - showCalledAt,
-          visible: presentedWindow.isVisible(),
-          focused: presentedWindow.isFocused(),
-          snapshot: getDockDiagnosticSnapshot()
+    app.once('will-quit', disposeLoggingIpc)
+
+    // ---- 应用更新（检查版本后，通过浏览器直链或对应标签页下载） ----
+    // renderer 只能选择固定目标；实际 URL 来自主进程刚完成的更新检查。
+    const disposeAppIpc = registerAppIpc({
+      mainWindowIpc,
+      removeHandler: (channel) => ipcMain.removeHandler(channel),
+      app,
+      shell,
+      appUpdateService
+    })
+    app.once('will-quit', disposeAppIpc)
+
+    // 【渲染就绪】渲染进程初始化完成后发送此消息，主进程收到后显示窗口
+    ipcMain.on('renderer-ready', (event, { viewMode } = {}) => {
+      mainViewNavigation.handleRendererReady(event.sender, viewMode)
+    })
+
+    ipcMain.on('presentation-mode:renderer-ready', (event, { operationId } = {}) => {
+      if (event.sender !== getMainWindow()?.webContents) return
+      acknowledgePresentationRenderer(operationId)
+    })
+
+    // 【窗口控制 - 关闭】渲染进程请求关闭窗口 → 最小化到托盘
+    ipcMain.on('window-close', (event) => {
+      if (event.sender !== getMainWindow()?.webContents) return
+      hideToTray()
+    })
+
+    // 先回复当前页面，再在下一轮事件循环中使用同一个 BrowserWindow 加载目标页面。
+    mainWindowIpc.handle('view:switch', (event, { mode } = {}) =>
+      mainViewNavigation.requestFromRenderer(event.sender, mode)
+    )
+
+    // 【窗口锁定 - 切换锁定状态】
+    mainWindowIpc.handle('toggle-lock', () => {
+      const now = Date.now()
+      const before = {
+        isLocked,
+        zOrderMode: zOrderRuntime.mode,
+        nativeZOrder: captureTitlebarZOrderStatus()
+      }
+      if (lockToggleInFlight || now - lastLockToggleAt < WINDOW_CONTROL_GUARD_MS) {
+        logger.info('window.control-change', '窗口锁定切换请求被节流', {
+          control: 'lock',
+          before,
+          lockToggleInFlight,
+          elapsedSinceLastChangeMs: now - lastLockToggleAt
         })
-      })
-    }
-    acknowledgeMainViewRendererReady(event.sender, viewMode)
-  })
-
-  ipcMain.on('presentation-mode:renderer-ready', (event, { operationId } = {}) => {
-    if (event.sender !== mainWindow?.webContents) return
-    acknowledgePresentationRenderer(operationId)
-  })
-
-  // 【窗口控制 - 关闭】渲染进程请求关闭窗口 → 最小化到托盘
-  ipcMain.on('window-close', (event) => {
-    if (event.sender !== mainWindow?.webContents) return
-    hideToTray()
-  })
-
-  // 先回复当前页面，再在下一轮事件循环中使用同一个 BrowserWindow 加载目标页面。
-  mainWindowIpc.handle('view:switch', (_event, { mode } = {}) => {
-    if (!Object.values(VIEW_MODES).includes(mode)) throw new Error('无效的主视图')
-    if (mode === activeViewMode) return false
-    if (switchingMainView || nativeEdgeCleanupPending) {
-      return false
-    }
-    setImmediate(async () => {
+        return { value: isLocked, changed: false, throttled: true }
+      }
+      lockToggleInFlight = true
       try {
-        await switchMainView(mode)
+        const snapshot = persistSettingValue('window.lockState', !isLocked)
+        const value = snapshot.values.window.lockState
+        logger.info('window.control-change', '窗口锁定状态已切换', {
+          control: 'lock',
+          before,
+          after: {
+            isLocked: value,
+            zOrderMode: zOrderRuntime.mode,
+            movable:
+              getMainWindow() && !getMainWindow().isDestroyed()
+                ? getMainWindow().isMovable()
+                : null,
+            nativeZOrder: captureTitlebarZOrderStatus()
+          }
+        })
+        sendAppMessage('success', value ? '主窗口已锁定' : '主窗口已解除锁定')
+        return { value, changed: true, throttled: false }
       } catch (error) {
-        logger.error('view.switch', error)
-        if (!_event.sender.isDestroyed())
-          _event.sender.send('app:message', {
-            type: 'error',
-            text: '切换视图失败，请重试'
-          })
+        sendAppMessage('error', `切换窗口锁定失败：${error.message}`)
+        throw error
       } finally {
-        // The IPC reply only acknowledged the request. Cancellation must also
-        // release the renderer's busy state when the original window survives.
-        if (!_event.sender.isDestroyed()) _event.sender.send('view:switch-finished')
+        lastLockToggleAt = Date.now()
+        lockToggleInFlight = false
       }
     })
-    return true
-  })
 
-  // 【窗口锁定 - 切换锁定状态】
-  mainWindowIpc.handle('toggle-lock', () => {
-    const now = Date.now()
-    const before = {
-      isLocked,
-      zOrderMode,
-      nativeZOrder: captureTitlebarZOrderStatus()
-    }
-    if (lockToggleInFlight || now - lastLockToggleAt < WINDOW_CONTROL_GUARD_MS) {
-      logger.info('window.control-change', '窗口锁定切换请求被节流', {
-        control: 'lock',
-        before,
-        lockToggleInFlight,
-        elapsedSinceLastChangeMs: now - lastLockToggleAt
-      })
-      return { value: isLocked, changed: false, throttled: true }
-    }
-    lockToggleInFlight = true
-    try {
-      const snapshot = persistSettingValue('window.lockState', !isLocked)
-      const value = snapshot.values.window.lockState
-      logger.info('window.control-change', '窗口锁定状态已切换', {
-        control: 'lock',
-        before,
-        after: {
-          isLocked: value,
-          zOrderMode,
-          movable: mainWindow && !mainWindow.isDestroyed() ? mainWindow.isMovable() : null,
-          nativeZOrder: captureTitlebarZOrderStatus()
+    // 【主窗口层级 - top / normal / bottom】
+    mainWindowIpc.handle('set-window-z-order-mode', (_event, requestedMode) =>
+      setWindowZOrderMode(requestedMode)
+    )
+
+    // 【缩放手柄 - 获取边界】返回当前窗口的位置和尺寸
+    mainWindowIpc.handle('window-get-bounds', (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      return win ? win.getBounds() : null
+    })
+
+    mainWindowIpc.handle('presentation-mode:get-state', () => presentationModeSnapshot())
+    mainWindowIpc.handle('presentation-mode:enter-compact', (_event, { anchor } = {}) =>
+      enterCompactPresentation(anchor)
+    )
+    mainWindowIpc.handle('presentation-mode:exit-compact', () =>
+      exitCompactPresentation({ source: 'renderer', showWhenDone: true })
+    )
+    mainWindowIpc.handle('presentation-mode:begin-drag', (_event, point) =>
+      beginCompactWindowDrag(point)
+    )
+    ipcMain.on('presentation-mode:update-drag', (event, point) => {
+      if (event.sender !== getMainWindow()?.webContents) return
+      updateCompactWindowDrag(point)
+    })
+    mainWindowIpc.handle('presentation-mode:end-drag', () => endCompactWindowDrag())
+    mainWindowIpc.handle('presentation-mode:show-context-menu', () => {
+      if (!presentationRuntime.isCompact()) return false
+      Menu.buildFromTemplate([
+        {
+          label: '展开主视图',
+          click: () =>
+            void exitCompactPresentation({ source: 'context-menu', showWhenDone: true }).catch(
+              (error) => logger.error('presentation-mode.context-expand', error)
+            )
+        },
+        { label: '隐藏到托盘', click: hideToTray },
+        { type: 'separator' },
+        {
+          label: '退出软件',
+          click: () => {
+            shutdownCoordinator.requestQuit('compact-context-menu')
+          }
         }
-      })
-      sendAppMessage('success', value ? '主窗口已锁定' : '主窗口已解除锁定')
-      return { value, changed: true, throttled: false }
-    } catch (error) {
-      sendAppMessage('error', `切换窗口锁定失败：${error.message}`)
-      throw error
-    } finally {
-      lastLockToggleAt = Date.now()
-      lockToggleInFlight = false
-    }
-  })
+      ]).popup({ window: getMainWindow() })
+      return true
+    })
 
-  // 【主窗口层级 - top / normal / bottom】
-  mainWindowIpc.handle('set-window-z-order-mode', async (_event, requestedMode) => {
-    const requested = normalizeWindowZOrderMode(requestedMode, null)
-    if (!requested) throw new Error('无效的窗口层级')
+    mainWindowIpc.handle('titlebar-window:begin-drag', (_event, payload = {}) =>
+      beginTitlebarWindowDrag(payload.point, payload.diagnostics)
+    )
+    ipcMain.on('titlebar-window:update-drag', (event, point, diagnostics) => {
+      if (event.sender !== getMainWindow()?.webContents) return
+      updateTitlebarWindowDrag(point, diagnostics)
+    })
+    mainWindowIpc.handle('titlebar-window:end-drag', (_event, diagnostics) =>
+      endTitlebarWindowDrag(diagnostics)
+    )
+    mainWindowIpc.handle('window-resize:end', () => finishCompactWindowResize())
+    // 【缩放手柄 - 设置边界】根据渲染进程传入的 bounds 调整窗口大小/位置
+    ipcMain.on('window-set-bounds', (event, bounds) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const values = bounds && [bounds.x, bounds.y, bounds.width, bounds.height].map(Number)
+      const compact = presentationRuntime.isCompact()
+      const minWidth = compact ? COMPACT_WINDOW_LIMITS.minWidth : MAIN_WINDOW_MIN_SIZE
+      const minHeight = compact ? COMPACT_WINDOW_LIMITS.minHeight : MAIN_WINDOW_MIN_SIZE
+      const maxWidth = compact ? COMPACT_WINDOW_LIMITS.maxWidth : 16_384
+      const maxHeight = compact ? COMPACT_WINDOW_LIMITS.maxHeight : 16_384
+      if (
+        win &&
+        win === getMainWindow() &&
+        !isLocked &&
+        !presentationRuntime.isBusy() &&
+        !isDockTransitionActive() &&
+        values?.every(Number.isFinite) &&
+        values[2] >= minWidth &&
+        values[3] >= minHeight &&
+        values[2] <= maxWidth &&
+        values[3] <= maxHeight
+      ) {
+        // Math.round 确保像素值为整数，避免亚像素渲染问题
+        win.setBounds({
+          x: Math.round(values[0]),
+          y: Math.round(values[1]),
+          width: Math.round(values[2]),
+          height: Math.round(values[3])
+        })
+        if (compact) presentationRuntime.handleResize(win.getBounds())
+      }
+    })
 
-    const now = Date.now()
-    const before = {
-      isLocked,
-      zOrderMode,
-      alwaysOnTop: mainWindow && !mainWindow.isDestroyed() ? mainWindow.isAlwaysOnTop() : null,
-      nativeZOrder: captureTitlebarZOrderStatus()
-    }
-    if (zOrderChangeInFlight || now - lastZOrderChangeAt < WINDOW_CONTROL_GUARD_MS) {
-      logger.info('window.control-change', '窗口层级切换请求被节流', {
-        control: 'z-order',
-        requested,
-        before,
-        zOrderChangeInFlight,
-        elapsedSinceLastChangeMs: now - lastZOrderChangeAt
-      })
-      return { mode: zOrderMode, changed: false, throttled: true }
-    }
-    zOrderChangeInFlight = true
-    try {
-      const result = await persistWindowZOrderMode(requested)
-      logger.info('window.control-change', '窗口层级状态已核验', {
-        control: 'z-order',
-        requested,
-        result,
-        before,
-        after: {
-          isLocked,
-          zOrderMode,
-          alwaysOnTop: mainWindow && !mainWindow.isDestroyed() ? mainWindow.isAlwaysOnTop() : null,
-          nativeZOrder: captureTitlebarZOrderStatus()
+    // ---- 设置 IPC ----
+    mainWindowIpc.handle('shortcuts:startup-notice', async () => {
+      // The renderer can mount before capture initialization has registered F1.
+      await startupPromise
+      if (startupShortcutNoticeDismissed) return []
+      return unavailableShortcuts(getResolvedSettingsSnapshot().runtime.shortcuts).filter((item) =>
+        startupShortcutFailures.includes(item.action)
+      )
+    })
+    mainWindowIpc.handle('shortcuts:dismiss-startup-notice', () => {
+      startupShortcutNoticeDismissed = true
+    })
+    mainWindowIpc.handle('shortcuts:retry', async () => {
+      await startupPromise
+      if (!shutdownCoordinator.isQuitting()) {
+        viewVisibilityShortcutService?.retryRegistration()
+        for (const service of Object.values(captureShortcutService?.services || {}))
+          service.retryRegistration()
+        settingsRuntime.advanceRevision()
+      }
+      const snapshot = getResolvedSettingsSnapshot()
+      broadcastSettingsChanged(snapshot)
+      return snapshot
+    })
+    // renderer 只提交 schema ID，数据库 type/key、校验、序列化均由共享 schema 决定。
+    mainWindowIpc.handle('set-setting-value', async (_event, id, value) => {
+      if (!RENDERER_WRITABLE_SETTING_IDS.has(id))
+        throw new Error(`renderer 无权直接写入设置项: ${id}`)
+      persistSettingValue(id, value)
+      return true
+    })
+
+    mainWindowIpc.handle(
+      'shortcut:view-visibility-capture-start',
+      (event, key = 'viewVisibility') => {
+        const ownerId = event.sender.id
+        if (!viewVisibilityShortcutCaptureSenders.has(event.sender)) {
+          viewVisibilityShortcutCaptureSenders.add(event.sender)
+          event.sender.once('destroyed', () => {
+            captureShortcutService?.endCapture(ownerId)
+            viewVisibilityShortcutService?.endCapture(ownerId)
+          })
         }
+        captureShortcutService?.beginCapture(ownerId)
+        const viewRuntime = viewVisibilityShortcutService.beginCapture(ownerId)
+        return key === 'viewVisibility' ? viewRuntime : captureShortcutService?.snapshot()[key]
+      }
+    )
+
+    mainWindowIpc.handle(
+      'shortcut:view-visibility-capture-end',
+      (event, key = 'viewVisibility') => {
+        captureShortcutService?.endCapture(event.sender.id)
+        const viewRuntime = viewVisibilityShortcutService.endCapture(event.sender.id)
+        return key === 'viewVisibility' ? viewRuntime : captureShortcutService?.snapshot()[key]
+      }
+    )
+
+    mainWindowIpc.handle('shortcut:view-visibility-set', (event, accelerator) => {
+      if (captureShortcutService?.conflicts('viewVisibility', accelerator))
+        return { status: 'conflict', runtime: viewVisibilityShortcutService.snapshot() }
+      const result = viewVisibilityShortcutService.update(accelerator, {
+        ownerId: event.sender.id,
+        persist: (next) => writeApplicationSetting('shortcuts.viewVisibility', next)
       })
-      if (result.changed) {
-        const message =
-          result.mode === WINDOW_Z_ORDER_MODES.TOP
-            ? '主窗口已切换为始终置顶'
-            : result.mode === WINDOW_Z_ORDER_MODES.BOTTOM
-              ? '主窗口已切换为始终置底'
-              : '主窗口已切换为正常层级'
-        sendAppMessage('success', message)
+      if (['saved', 'cleared', 'unchanged'].includes(result.status))
+        captureShortcutService?.endCapture(event.sender.id)
+      if (!['saved', 'cleared'].includes(result.status)) return result
+
+      refreshResolvedSettings({ incrementRevision: true })
+      const snapshot = getResolvedSettingsSnapshot()
+      broadcastSettingsChanged(snapshot)
+      return { ...result, runtime: snapshot.runtime.shortcuts.viewVisibility }
+    })
+
+    mainWindowIpc.handle('shortcut:capture-set', (event, key, accelerator) => {
+      const result = captureShortcutService.update(key, accelerator, {
+        ownerId: event.sender.id,
+        persist: (next) => writeApplicationSetting(`shortcuts.${key}`, next)
+      })
+      if (['saved', 'cleared'].includes(result.status)) {
+        refreshResolvedSettings({ incrementRevision: true })
+        broadcastSettingsChanged(getResolvedSettingsSnapshot())
       }
       return result
-    } catch (error) {
-      logger.error('window.z-order-change', error, { requestedMode: requested })
-      sendAppMessage('error', `切换窗口层级失败：${error.message}`)
-      throw error
-    } finally {
-      lastZOrderChangeAt = Date.now()
-      zOrderChangeInFlight = false
-    }
-  })
-
-  // 【缩放手柄 - 获取边界】返回当前窗口的位置和尺寸
-  mainWindowIpc.handle('window-get-bounds', (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    return win ? win.getBounds() : null
-  })
-
-  mainWindowIpc.handle('presentation-mode:get-state', () => presentationModeSnapshot())
-  mainWindowIpc.handle('presentation-mode:enter-compact', (_event, { anchor } = {}) =>
-    enterCompactPresentation(anchor)
-  )
-  mainWindowIpc.handle('presentation-mode:exit-compact', () =>
-    exitCompactPresentation({ source: 'renderer', showWhenDone: true })
-  )
-  mainWindowIpc.handle('presentation-mode:begin-drag', (_event, point) =>
-    beginCompactWindowDrag(point)
-  )
-  ipcMain.on('presentation-mode:update-drag', (event, point) => {
-    if (event.sender !== mainWindow?.webContents) return
-    updateCompactWindowDrag(point)
-  })
-  mainWindowIpc.handle('presentation-mode:end-drag', () => endCompactWindowDrag())
-  mainWindowIpc.handle('presentation-mode:show-context-menu', () => {
-    if (!presentationModeController.isCompact()) return false
-    Menu.buildFromTemplate([
-      {
-        label: '展开主视图',
-        click: () =>
-          void exitCompactPresentation({ source: 'context-menu', showWhenDone: true }).catch(
-            (error) => logger.error('presentation-mode.context-expand', error)
-          )
-      },
-      { label: '隐藏到托盘', click: hideToTray },
-      { type: 'separator' },
-      {
-        label: '退出软件',
-        click: () => {
-          shutdownTrigger = 'compact-context-menu'
-          isQuitting = true
-          app.quit()
-        }
-      }
-    ]).popup({ window: mainWindow })
-    return true
-  })
-
-  mainWindowIpc.handle('titlebar-window:begin-drag', (_event, payload = {}) =>
-    beginTitlebarWindowDrag(payload.point, payload.diagnostics)
-  )
-  ipcMain.on('titlebar-window:update-drag', (event, point) => {
-    if (event.sender !== mainWindow?.webContents) return
-    updateTitlebarWindowDrag(point)
-  })
-  mainWindowIpc.handle('titlebar-window:end-drag', (_event, diagnostics) =>
-    endTitlebarWindowDrag(diagnostics)
-  )
-  mainWindowIpc.handle('window-resize:end', () => finishCompactWindowResize())
-  // 【缩放手柄 - 设置边界】根据渲染进程传入的 bounds 调整窗口大小/位置
-  ipcMain.on('window-set-bounds', (event, bounds) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    const values = bounds && [bounds.x, bounds.y, bounds.width, bounds.height].map(Number)
-    const compact = presentationModeController.isCompact()
-    const minWidth = compact ? COMPACT_WINDOW_LIMITS.minWidth : MAIN_WINDOW_MIN_SIZE
-    const minHeight = compact ? COMPACT_WINDOW_LIMITS.minHeight : MAIN_WINDOW_MIN_SIZE
-    const maxWidth = compact ? COMPACT_WINDOW_LIMITS.maxWidth : 16_384
-    const maxHeight = compact ? COMPACT_WINDOW_LIMITS.maxHeight : 16_384
-    if (
-      win &&
-      win === mainWindow &&
-      !isLocked &&
-      !presentationModeController.isBusy() &&
-      !isDockTransitionActive() &&
-      values?.every(Number.isFinite) &&
-      values[2] >= minWidth &&
-      values[3] >= minHeight &&
-      values[2] <= maxWidth &&
-      values[3] <= maxHeight
-    ) {
-      // Math.round 确保像素值为整数，避免亚像素渲染问题
-      win.setBounds({
-        x: Math.round(values[0]),
-        y: Math.round(values[1]),
-        width: Math.round(values[2]),
-        height: Math.round(values[3])
-      })
-      if (compact) {
-        stableCompactBounds = { ...win.getBounds() }
-        scheduleCompactWindowSizePersistence(stableCompactBounds)
-      }
-    }
-  })
-
-  // ---- 设置 IPC ----
-  mainWindowIpc.handle('shortcuts:startup-notice', async () => {
-    // The renderer can mount before capture initialization has registered F1.
-    await startupPromise
-    if (startupShortcutNoticeDismissed) return []
-    return unavailableShortcuts(getResolvedSettingsSnapshot().runtime.shortcuts).filter((item) =>
-      startupShortcutFailures.includes(item.action)
-    )
-  })
-  mainWindowIpc.handle('shortcuts:dismiss-startup-notice', () => {
-    startupShortcutNoticeDismissed = true
-  })
-  mainWindowIpc.handle('shortcuts:retry', async () => {
-    await startupPromise
-    if (!isQuitting) {
-      viewVisibilityShortcutService?.retryRegistration()
-      for (const service of Object.values(captureShortcutService?.services || {}))
-        service.retryRegistration()
-      settingsRevision++
-    }
-    const snapshot = getResolvedSettingsSnapshot()
-    broadcastSettingsChanged(snapshot)
-    return snapshot
-  })
-  // renderer 只提交 schema ID，数据库 type/key、校验、序列化均由共享 schema 决定。
-  mainWindowIpc.handle('set-setting-value', async (_event, id, value) => {
-    if (!RENDERER_WRITABLE_SETTING_IDS.has(id))
-      throw new Error(`renderer 无权直接写入设置项: ${id}`)
-    persistSettingValue(id, value)
-    return true
-  })
-
-  mainWindowIpc.handle(
-    'shortcut:view-visibility-capture-start',
-    (event, key = 'viewVisibility') => {
-      const ownerId = event.sender.id
-      if (!viewVisibilityShortcutCaptureSenders.has(event.sender)) {
-        viewVisibilityShortcutCaptureSenders.add(event.sender)
-        event.sender.once('destroyed', () => {
-          captureShortcutService?.endCapture(ownerId)
-          viewVisibilityShortcutService?.endCapture(ownerId)
-        })
-      }
-      captureShortcutService?.beginCapture(ownerId)
-      const viewRuntime = viewVisibilityShortcutService.beginCapture(ownerId)
-      return key === 'viewVisibility' ? viewRuntime : captureShortcutService?.snapshot()[key]
-    }
-  )
-
-  mainWindowIpc.handle('shortcut:view-visibility-capture-end', (event, key = 'viewVisibility') => {
-    captureShortcutService?.endCapture(event.sender.id)
-    const viewRuntime = viewVisibilityShortcutService.endCapture(event.sender.id)
-    return key === 'viewVisibility' ? viewRuntime : captureShortcutService?.snapshot()[key]
-  })
-
-  mainWindowIpc.handle('shortcut:view-visibility-set', (event, accelerator) => {
-    if (captureShortcutService?.conflicts('viewVisibility', accelerator))
-      return { status: 'conflict', runtime: viewVisibilityShortcutService.snapshot() }
-    const result = viewVisibilityShortcutService.update(accelerator, {
-      ownerId: event.sender.id,
-      persist: (next) => writeApplicationSetting('shortcuts.viewVisibility', next)
     })
-    if (['saved', 'cleared', 'unchanged'].includes(result.status))
-      captureShortcutService?.endCapture(event.sender.id)
-    if (!['saved', 'cleared'].includes(result.status)) return result
 
-    refreshResolvedSettings({ incrementRevision: true })
-    const snapshot = getResolvedSettingsSnapshot()
-    broadcastSettingsChanged(snapshot)
-    return { ...result, runtime: snapshot.runtime.shortcuts.viewVisibility }
-  })
-
-  mainWindowIpc.handle('shortcut:capture-set', (event, key, accelerator) => {
-    const result = captureShortcutService.update(key, accelerator, {
-      ownerId: event.sender.id,
-      persist: (next) => writeApplicationSetting(`shortcuts.${key}`, next)
+    /**
+     * 小黑条模式与边缘多选属于同一份运行配置；通过一次数据库批量写入
+     * 和一次 runtime reconcile 提交，避免短暂运行在半新半旧状态。
+     */
+    mainWindowIpc.handle('set-dock-config', (_event, config) => {
+      const normalized = validateDockConfigPayload(config)
+      return persistSettingValues([
+        { id: 'dock.revealHandleMode', value: normalized.revealHandleMode },
+        { id: 'dock.enabledEdges', value: normalized.enabledEdges }
+      ])
     })
-    if (['saved', 'cleared'].includes(result.status)) {
+
+    /** 获取 DB 值覆盖共享默认值后的完整设置快照。 */
+    mainWindowIpc.handle('get-settings-snapshot', () => {
+      // 每次查询都重新读取 SQLite，避免设置页拿到陈旧的主进程内存副本。
+      const previousDockConfig = getDockRuntimeConfig()
+      const changed = refreshResolvedSettings()
+      if (changed) {
+        applyResolvedWindowRuntime()
+        applyResolvedBlurRuntime()
+        reconcileDockRuntimeConfig(previousDockConfig, 'snapshot-refresh')
+      }
+      const snapshot = getResolvedSettingsSnapshot()
+      if (changed) broadcastSettingsChanged(snapshot)
+      return snapshot
+    })
+
+    // ---- 远程软件通知（全部阅读状态仅保存在本地） ----
+    const disposeRemoteNoticeIpc = registerRemoteNoticeIpc({
+      mainWindowIpc,
+      removeHandler: (channel) => ipcMain.removeHandler(channel),
+      listPendingRemoteNotices,
+      listRemoteNotices,
+      acknowledgeRemoteNotice,
+      getRemoteNoticeLink,
+      getRemoteCoordinator: () => remoteCoordinator,
+      shell
+    })
+    app.once('will-quit', disposeRemoteNoticeIpc)
+
+    /**
+     * 恢复当前视图的持久化设置和全部用户可配置的应用级设置。
+     * 其他视图的独立设置、应用运行元数据、业务数据和开机自启 OS 状态不受影响。
+     * 当前窗口立即恢复默认宽高并保留当前位置，同时清除下次启动时的几何记录。
+     */
+    mainWindowIpc.handle('reset-settings', () => {
+      if (isDockTransitionActive()) {
+        throw new Error('请先显示贴边窗口，再恢复默认设置')
+      }
+      const previousDockConfig = getDockRuntimeConfig()
+      const resetViewScope = getActiveWindowName()
+      const { resetApplicationSettingCount, clearedViewSettingCount } = resetCurrentViewSettings(
+        mainViewNavigation.mode
+      )
+      cancelPendingDockHide('reset-settings')
+      geometryPersistence.cancel()
+      // Only a committed reset may clear dirty geometry and pending persistence.
+      geometryPersistence.markSaved()
       refreshResolvedSettings({ incrementRevision: true })
-      broadcastSettingsChanged(getResolvedSettingsSnapshot())
-    }
-    return result
-  })
-
-  /**
-   * 小黑条模式与边缘多选属于同一份运行配置；通过一次数据库批量写入
-   * 和一次 runtime reconcile 提交，避免短暂运行在半新半旧状态。
-   */
-  mainWindowIpc.handle('set-dock-config', (_event, config) => {
-    const normalized = validateDockConfigPayload(config)
-    return persistSettingValues([
-      { id: 'dock.revealHandleMode', value: normalized.revealHandleMode },
-      { id: 'dock.enabledEdges', value: normalized.enabledEdges }
-    ])
-  })
-
-  /** 获取 DB 值覆盖共享默认值后的完整设置快照。 */
-  mainWindowIpc.handle('get-settings-snapshot', () => {
-    // 每次查询都重新读取 SQLite，避免设置页拿到陈旧的主进程内存副本。
-    const previousDockConfig = getDockRuntimeConfig()
-    const changed = refreshResolvedSettings()
-    if (changed) {
+      viewVisibilityShortcutService?.initialize(settingsRuntime.values.shortcuts.viewVisibility, {
+        enabled: settingsRuntime.values.shortcuts.enabled
+      })
+      captureShortcutService?.initialize(settingsRuntime.values.shortcuts)
+      rebuildTrayMenu()
       applyResolvedWindowRuntime()
       applyResolvedBlurRuntime()
-      reconcileDockRuntimeConfig(previousDockConfig, 'snapshot-refresh')
-    }
-    const snapshot = getResolvedSettingsSnapshot()
-    if (changed) broadcastSettingsChanged(snapshot)
-    return snapshot
-  })
+      reconcileDockRuntimeConfig(previousDockConfig, 'reset-settings')
 
-  // ---- 远程软件通知（全部阅读状态仅保存在本地） ----
-  mainWindowIpc.handle('remote-notices:list-pending', () => listPendingRemoteNotices())
-  mainWindowIpc.handle('remote-notices:list', (_event, query) => listRemoteNotices(query))
-  mainWindowIpc.handle('remote-notices:acknowledge', (_event, { id }) =>
-    acknowledgeRemoteNotice(id)
-  )
-  mainWindowIpc.handle('remote-notices:open-link', (_event, { id }) => {
-    const link = getRemoteNoticeLink(id)
-    if (!link) return false
-    try {
-      const url = new URL(link)
-      if (url.protocol !== 'https:') return false
-      shell
-        .openExternal(url.toString())
-        .catch((error) => console.warn('[remote] 打开通知链接失败:', error))
-      return true
-    } catch {
-      return false
-    }
-  })
-  // 设置页面只读取启动阶段缓存，不允许因为打开设置而产生新的服务器请求。
-  mainWindowIpc.handle('remote:get-health', () =>
-    remoteCoordinator
-      ? remoteCoordinator.getHealthSnapshot()
-      : {
-          available: false,
-          noticeService: false,
-          reportService: false,
-          checkedAt: null,
-          checking: false,
-          skipped: false,
-          error: '远程服务尚未初始化'
-        }
-  )
-
-  /**
-   * 恢复当前视图的持久化设置和全部用户可配置的应用级设置。
-   * 其他视图的独立设置、应用运行元数据、业务数据和开机自启 OS 状态不受影响。
-   * 当前窗口立即恢复默认宽高并保留当前位置，同时清除下次启动时的几何记录。
-   */
-  mainWindowIpc.handle('reset-settings', () => {
-    if (isDockTransitionActive()) {
-      throw new Error('请先显示贴边窗口，再恢复默认设置')
-    }
-    cancelPendingDockHide('reset-settings')
-    if (geometryTimer) {
-      clearTimeout(geometryTimer)
-      geometryTimer = null
-    }
-    // 清表后若窗口没有再次移动/缩放，退出时不能把旧边界重新写回。
-    geometryDirty = false
-    const previousDockConfig = getDockRuntimeConfig()
-    const resetViewScope = getActiveWindowName()
-    const resetApplicationSettingCount = resetApplicationSettingsToDefaults()
-    const clearedViewSettingCount = clearSettings(resetViewScope)
-    refreshResolvedSettings({ incrementRevision: true })
-    viewVisibilityShortcutService?.initialize(resolvedSettings.shortcuts.viewVisibility, {
-      enabled: resolvedSettings.shortcuts.enabled
-    })
-    captureShortcutService?.initialize(resolvedSettings.shortcuts)
-    rebuildTrayMenu()
-    applyResolvedWindowRuntime()
-    applyResolvedBlurRuntime()
-    reconcileDockRuntimeConfig(previousDockConfig, 'reset-settings')
-
-    // 宽高立即恢复为当前显示器工作区的默认比例；位置仍保持当前值。
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      const display = screen.getDisplayMatching(mainWindow.getBounds())
-      const defaultWidth = Math.round(
-        display.workAreaSize.width * resolvedSettings.geometry.widthRatio
-      )
-      const defaultHeight = Math.round(
-        display.workAreaSize.height * resolvedSettings.geometry.heightRatio
-      )
-      suppressGeometryPersistenceUntil = Date.now() + 750
-      mainWindow.setSize(defaultWidth, defaultHeight)
-    }
-
-    const snapshot = getResolvedSettingsSnapshot()
-    broadcastSettingsChanged(snapshot)
-    logger.info('settings.reset', '当前视图与全局共享设置已恢复默认值', {
-      viewMode: activeViewMode,
-      viewScope: resetViewScope,
-      clearedViewSettingCount,
-      resetApplicationSettingCount
-    })
-    return snapshot
-  })
-
-  // ---- 贴边隐藏 IPC ----
-
-  // 【贴边隐藏 - 鼠标悬停】渲染进程报告鼠标进入/离开主窗口
-  ipcMain.on('window-hover', (event, isHovering) => {
-    if (event.sender !== mainWindow?.webContents) return
-    if (isCompactPresentationActive()) return
-    if (isHovering) {
-      // 鼠标进入窗口 —— 取消待执行的隐藏定时器
-      cancelPendingDockHide('window-hover-enter')
-    } else {
-      // 鼠标离开窗口 —— 若已吸附边缘且未锁定，延迟后执行隐藏（锁定时窗口固定，不自动滑走）
-      // 这也是最后一道自愈入口：即使某个系统显示/恢复事件没有重建 dockSide，
-      // 真实的鼠标离开也会先根据当前几何补齐状态。
-      if (!dockSide && !isDockHidden && !isSliding && dockInteractionSuspendCount === 0) {
-        syncVisibleDockSide({ source: 'window-hover-leave', snap: true })
-      }
-      if (
-        dockSide &&
-        !isDockHidden &&
-        !isSliding &&
-        !isLocked &&
-        dockInteractionSuspendCount === 0 &&
-        !nativeEdgeCleanupPending
-      ) {
-        if (hideTimer) clearTimeout(hideTimer)
-        pendingDockHideRequestedAt = Date.now()
-        hideTimer = setTimeout(() => {
-          const hideRequestedAt = pendingDockHideRequestedAt
-          hideTimer = null
-          // 计时期间窗口、显示器或设置都可能变化；执行前重新计算能力交集与
-          // 最近边，绝不依赖 200ms 前捕获的 dockSide。
-          syncVisibleDockSide({ source: 'hover-hide-timer', snap: true })
-          if (
-            !dockSide ||
-            isDockHidden ||
-            isSliding ||
-            isLocked ||
-            dockInteractionSuspendCount > 0 ||
-            nativeEdgeCleanupPending
-          ) {
-            pendingDockHideRequestedAt = null
-            logger.debug('dock.hide-request', '贴边隐藏请求在延迟结束后被状态变化取消', {
-              elapsedMs: hideRequestedAt ? Date.now() - hideRequestedAt : null,
-              dockSide,
-              isDockHidden,
-              isSliding,
-              isLocked,
-              dockInteractionSuspendCount,
-              nativeEdgeCleanupPending: Boolean(nativeEdgeCleanupPending)
-            })
-            return
-          }
-          // 透明窗口圆角区域会误触发 mouseleave，此处用光标位置二次确认
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            const b = mainWindow.getBounds()
-            const cursor = screen.getCursorScreenPoint()
-            if (
-              cursor.x >= b.x &&
-              cursor.x <= b.x + b.width &&
-              cursor.y >= b.y &&
-              cursor.y <= b.y + b.height
-            ) {
-              pendingDockHideRequestedAt = null
-              logger.debug('dock.hide-request', '忽略透明圆角造成的鼠标离开事件', {
-                elapsedMs: hideRequestedAt ? Date.now() - hideRequestedAt : null,
-                dockSide
-              })
-              return // 光标仍在窗口矩形内 → 误触发，不隐藏
-            }
-          }
-          doHide()
-        }, HIDE_DELAY)
-      }
-    }
-  })
-
-  // ---- 系统模糊 IPC ----
-
-  /** 设置模糊配置（立即生效 + 持久化到数据库） */
-  mainWindowIpc.handle('set-blur-config', async (_event, config) => {
-    blurSettingsRequestsInFlight += 1
-    try {
-      const requestRevision = ++blurConfigRequestRevision
-      const activationRevision = wallpaperActivationRevision
-      // 本次请求必须持有独立快照。关闭壁纸会从 DB 刷新完整设置，而 DB 中的
-      // blur.enabled 此时还是旧值，不能让它覆盖用户刚刚提交的启用请求。
-      const requestedConfig = {
-        enabled: config.enabled !== undefined ? Boolean(config.enabled) : blurConfig.enabled,
-        radius: config.radius !== undefined ? config.radius : blurConfig.radius,
-        saturation: config.saturation !== undefined ? config.saturation : blurConfig.saturation,
-        cornerRadius:
-          config.cornerRadius !== undefined ? config.cornerRadius : blurConfig.cornerRadius
-      }
-      Object.assign(blurConfig, requestedConfig)
-
-      // 启用时若启动阶段初始化失败，则现场重试一次，以便把详细错误反馈给用户。
-      const enableRequested = blurConfig.enabled
-      // 先让壁纸退场，再创建/启用原生层；失败时恢复刚才挂起的壁纸。
-      const suspendedWallpaper = enableRequested ? deactivateWallpaperForGlass() : null
-      if (suspendedWallpaper) {
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 190))
-        if (requestRevision !== blurConfigRequestRevision) {
-          const supersededByWallpaper = activationRevision !== wallpaperActivationRevision
-          const snapshot =
-            !supersededByWallpaper && !blurConfig.enabled && suspendedWallpaper
-              ? restoreSuspendedWallpaper(suspendedWallpaper)
-              : getResolvedSettingsSnapshot()
-          return {
-            success: snapshot.runtime.blur.effectiveEnabled,
-            config: { ...blurConfig },
-            runtime: snapshot.runtime.blur,
-            error: snapshot.runtime.blur.error,
-            nativeError: snapshot.runtime.blur.nativeError
-          }
-        }
-        // deactivateWallpaperForGlass() 内部的完整设置刷新会恢复数据库旧值；
-        // 退场完成且请求仍为最新时，重新提交本次请求自己的快照。
-        Object.assign(blurConfig, requestedConfig)
-      }
-      if (!enableRequested) {
-        blurRuntimeFailed = false
-        blurInitializationError = null
-        blurInitializationNativeError = null
-        updateBlurDiagnostic(
-          { status: 'disabled', lastCheckedAt: Date.now(), message: '系统毛玻璃未启用' },
-          { notify: false }
+      // 宽高立即恢复为当前显示器工作区的默认比例；位置仍保持当前值。
+      if (getMainWindow() && !getMainWindow().isDestroyed()) {
+        const display = screen.getDisplayMatching(getMainWindow().getBounds())
+        const defaultWidth = Math.round(
+          display.workAreaSize.width * settingsRuntime.values.geometry.widthRatio
         )
-      }
-      const initializationResult =
-        enableRequested && blurCaps.supported && !blurInitialized ? initializeBlurRuntime() : null
-
-      // 初始化失败时不能让持久化值继续显示为“已启用”，否则设置值会与实际效果不一致。
-      if (enableRequested && initializationResult && !initializationResult.success) {
-        blurConfig.enabled = false
+        const defaultHeight = Math.round(
+          display.workAreaSize.height * settingsRuntime.values.geometry.heightRatio
+        )
+        geometryPersistence.suppressUntil(Date.now() + 750)
+        getMainWindow().setSize(defaultWidth, defaultHeight)
       }
 
-      let snapshot = persistSettingValues(
-        [
-          { id: 'blur.enabled', value: blurConfig.enabled },
-          { id: 'blur.radius', value: blurConfig.radius },
-          { id: 'blur.saturation', value: blurConfig.saturation },
-          { id: 'blur.cornerRadius', value: blurConfig.cornerRadius }
-        ],
-        // 新初始化路径已经在 initializeBlurRuntime 中提交过完整配置。
-        { applyBlurRuntime: !initializationResult?.success }
-      )
-      let runtime = snapshot.runtime.blur
-
-      // 重新启用时原生引擎通常已经初始化，因此不会再次经过
-      // initializeBlurRuntime() 更新诊断状态。配置实际生效后立即执行完整健康
-      // 检查，让界面拿到经过原生效果链验证的最终状态，而不是等待下一分钟调度。
-      if (enableRequested && runtime.effectiveEnabled) {
-        runBlurRuntimeDiagnostic({ reason: 'settings-change', now: Date.now() })
-        snapshot = getResolvedSettingsSnapshot()
-        runtime = snapshot.runtime.blur
-      }
-
-      if (enableRequested && !runtime.effectiveEnabled && suspendedWallpaper) {
-        snapshot = restoreSuspendedWallpaper(suspendedWallpaper)
-        runtime = snapshot.runtime.blur
-      }
-      return {
-        success: !enableRequested || runtime.effectiveEnabled,
-        config: { ...blurConfig },
-        runtime,
-        error: initializationResult?.error ?? runtime.error,
-        nativeError: initializationResult?.nativeError ?? runtime.nativeError
-      }
-    } finally {
-      blurSettingsRequestsInFlight = Math.max(0, blurSettingsRequestsInFlight - 1)
-      if (blurSettingsRequestsInFlight === 0 && queuedViewSwitch) {
-        const targetMode = queuedViewSwitch
-        queuedViewSwitch = null
-        setImmediate(() => switchMainView(targetMode))
-      }
-    }
-  })
-
-  // ---- 主页面壁纸 IPC ----
-  mainWindowIpc.handle('wallpapers:list', () => listWallpaperLibraryRecords())
-  mainWindowIpc.handle('wallpapers:get-thumbnail', (_event, { id, maxSize }) =>
-    getWallpaperThumbnail(id, maxSize)
-  )
-  mainWindowIpc.handle('wallpapers:get-data', (_event, { id, original = false }) =>
-    getWallpaperDataUrl(id, { original })
-  )
-  mainWindowIpc.handle('wallpapers:save', (_event, payload) => saveWallpaperVersion(payload || {}))
-  mainWindowIpc.handle('wallpapers:activate', (_event, { id }) => {
-    const record = markWallpaperUsed(id)
-    const previousFailureState = {
-      failed: blurRuntimeFailed,
-      error: blurInitializationError,
-      nativeError: blurInitializationNativeError,
-      diagnostic: { ...blurDiagnostic }
-    }
-    const previousBlurRequestRevision = blurConfigRequestRevision
-    const previousWallpaperActivationRevision = wallpaperActivationRevision
-
-    // 三个互斥设置在同一个 SQLite 事务中提交，不能先关玻璃再单独开壁纸。
-    // 同时使任何尚在等待壁纸退场的旧毛玻璃请求失效。
-    wallpaperActivationRevision += 1
-    blurConfigRequestRevision += 1
-    blurRuntimeFailed = false
-    blurInitializationError = null
-    blurInitializationNativeError = null
-    updateBlurDiagnostic(
-      { status: 'disabled', lastCheckedAt: Date.now(), message: '系统毛玻璃未启用' },
-      { notify: false }
-    )
-    try {
-      const snapshot = persistSettingValues([
-        { id: 'blur.enabled', value: false },
-        { id: 'wallpaper.enabled', value: true },
-        { id: 'wallpaper.activeId', value: record.id }
-      ])
-      return { record, snapshot }
-    } catch (error) {
-      blurRuntimeFailed = previousFailureState.failed
-      blurInitializationError = previousFailureState.error
-      blurInitializationNativeError = previousFailureState.nativeError
-      blurDiagnostic = previousFailureState.diagnostic
-      blurConfigRequestRevision = previousBlurRequestRevision
-      wallpaperActivationRevision = previousWallpaperActivationRevision
-      throw error
-    }
-  })
-  mainWindowIpc.handle('wallpapers:disable', () => persistWallpaperState({ enabled: false }))
-  mainWindowIpc.handle('wallpapers:delete', async (_event, { id }) => {
-    const parsedId = Number(id)
-    const usedBy = getWallpaperUsage(parsedId)
-    const deleted = await deleteWallpaperVersion(parsedId, {
-      clearSelectionForWindows: usedBy.map(getViewSettingsScope)
-    })
-    if (deleted && usedBy.includes(activeViewMode)) {
-      refreshResolvedSettings({ incrementRevision: true })
-      broadcastSettingsChanged()
-    }
-    return deleted
-  })
-
-  createWindow()
-  remoteCoordinator = new RemoteCoordinator({
-    app,
-    baseUrl: REMOTE_BASE_URL,
-    getSettings: () => resolvedSettings,
-    getInstallationId: getOrCreateInstallationId,
-    getNoticeSyncState: getRemoteNoticeSyncState,
-    applyNoticeEvents: applyRemoteNoticeEvents,
-    isServiceRetired: isRemoteServiceRetired,
-    markServiceRetired: markRemoteServiceRetired,
-    queueSessionEnd: queueRemoteSessionEnd,
-    listPendingSessionEnds: listPendingRemoteSessionEnds,
-    markSessionEndAttempt: markRemoteSessionEndAttempt,
-    removePendingSessionEnd: removePendingRemoteSessionEnd,
-    clearPendingSessionEnds: clearPendingRemoteSessionEnds,
-    onNoticesChanged: (payload) => {
-      if (!mainWindow || mainWindow.isDestroyed()) return
-      mainWindow.webContents.send('remote-notices:changed', payload)
-    },
-    onHealthChanged: (health) => {
-      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
-      mainWindow.webContents.send('remote-health:changed', health)
-    }
-  })
-  void remoteCoordinator.start()
-  attachDockDisplayListeners()
-  attachDockPowerListeners()
-  stickyService = new ElectronStickyService({
-    getMainWindow: () => mainWindow,
-    getNoteById,
-    // 便利贴属于列表能力；日历视图处于活动状态时也不能把它的默认占位值当成
-    // 用户在列表设置页保存的便利贴外观。
-    getDefaultAppearance: () => getViewSettings(VIEW_MODES.LIST).sticky,
-    preloadPath: join(PRELOAD_ROOT, 'sticky.js'),
-    rendererFile: join(RENDERER_ROOT, 'sticky.html'),
-    rendererUrl:
-      is.dev && process.env.ELECTRON_RENDERER_URL
-        ? `${process.env.ELECTRON_RENDERER_URL}/sticky.html`
-        : null,
-    stickyRepository: {
-      list: listDesktopStickyRecords,
-      count: countDesktopStickyRecords,
-      exists: hasDesktopStickyRecord,
-      insert: insertDesktopStickyRecord,
-      update: updateDesktopStickyRecord,
-      delete: deleteDesktopStickyRecord,
-      deleteAll: deleteAllDesktopStickyRecords
-    },
-    logger,
-    saveContent: ({ noteId, content, expectedContent, updatedAt }) =>
-      getDb().transaction(() => {
-        const currentNote = getNoteById(noteId)
-        if (!currentNote) throw new Error('来源便签不存在或已被删除')
-        if (currentNote.content !== expectedContent) {
-          if (updateDesktopStickyContentsByNoteId(noteId, currentNote.content, updatedAt) < 1) {
-            throw new Error('便利贴记录不存在')
-          }
-          return { conflict: true, content: currentNote.content }
-        }
-        const updatedNote = updateNote(noteId, { content })
-        if (!updatedNote) throw new Error('来源便签不存在或已被删除')
-        if (updateDesktopStickyContentsByNoteId(noteId, content, updatedAt) < 1) {
-          throw new Error('便利贴记录不存在')
-        }
-        return { conflict: false, note: updatedNote }
-      })(),
-    isDevelopment: is.dev,
-    onRegistryChanged: rebuildTrayMenu,
-    onNoteChanged: (note) => {
-      for (const window of getApplicationWindows()) {
-        window.webContents.send('notes:changed', { reason: 'update', id: note.id })
-      }
-    },
-    onError: (text) => {
-      if (!mainWindow || mainWindow.isDestroyed()) return
-      mainWindow.webContents.send('app:message', { type: 'error', text })
-    }
-  })
-  stickyService.initialize()
-  void stickyService.restoreMissing({ source: 'startup' })
-
-  // 初始化完整快照中的窗口运行状态（必须在 createWindow 之后）
-  applyResolvedWindowRuntime()
-  // ---- 调度器任务注册 ----
-  // 职责划分（两层任务，按此顺序执行）：
-  //   1. 激活任务：查询 initialized 便签，生效时间到达的 → 转为 in_progress（含通知）
-  //   2. 模板生成：查询循环模板，判断是否应当生成新便签实例（含通知）
-
-  notificationService = new NotificationService({
-    appProtocol: APP_PROTOCOL,
-    capability: SYSTEM_NOTIFICATION_CAPABILITY,
-    getMainWindow: () => mainWindow,
-    icon,
-    platform: process.platform,
-    revealApplication: revealApplicationFromNotification
-  })
-  const reminderIcon = Electron.nativeImage.createFromPath(icon).resize({ width: 16, height: 16 })
-  const reminderBitmap = reminderIcon.toBitmap()
-  // Amber is a semantic attention marker drawn over the application icon.
-  for (let y = 8; y < 16; y++)
-    for (let x = 8; x < 16; x++) {
-      if ((x - 11.5) ** 2 + (y - 11.5) ** 2 > 16) continue
-      reminderBitmap.set([10, 159, 255, 255], (y * 16 + x) * 4)
-    }
-  trayReminderController = new TrayReminderController({
-    normalIcon: icon,
-    alertIcon: Electron.nativeImage.createFromBitmap(reminderBitmap, { width: 16, height: 16 })
-  })
-  const reminderPopup = new ReminderWindow({
-    ipcMain,
-    preloadPath: join(PRELOAD_ROOT, 'reminder.js'),
-    rendererPath: RENDERER_ROOT,
-    rendererUrl: is.dev ? process.env.ELECTRON_RENDERER_URL : null,
-    getSettings: () => getResolvedSettingsSnapshot(),
-    onAction: (payload) => reminderService.action(payload),
-    reportError: (scene, error) => logger.error(scene, error)
-  })
-  reminderService = new ReminderService({
-    notifications: notificationService,
-    popup: reminderPopup,
-    tray: trayReminderController,
-    onChanged: (id) => {
-      for (const window of getApplicationWindows()) {
-        window.webContents.send('notes:changed', { reason: 'reminder', id })
-      }
-    },
-    reportError: (scene, error) => logger.error(scene, error)
-  })
-  for (const action of pendingReminderActions.splice(0)) reminderService.nativeAction(action)
-
-  // 3.3 生效便签激活任务（含通知）
-  scheduler.register({
-    name: 'activationTask',
-    maxFailures: Infinity,
-    retryBackoff: true,
-    shouldRun: () => true,
-    execute: (context) => {
-      const result = activateNotes()
-      const remindersQueued = result.notified.length
-      if (result.count > 0) {
-        logger.info('scheduler.activation', '到期便签激活完成', {
-          reason: context.reason,
-          activatedCount: result.count,
-          remindersQueued
-        })
-      }
-      if (result.count > 0 && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('notes:changed', { reason: 'activation' })
-      }
-      return { performanceCounts: { activated: result.count, remindersQueued } }
-    }
-  })
-
-  // 3.5 循环模板生成任务（含通知）
-  const templateSchedulerGuard = new TemplateSchedulerGuard({
-    failureThreshold: 3,
-    retryDelayMs: 5 * 60 * 1000,
-    onAlert: (error) => {
-      notificationService.trySend(error?.message || '无法读取或调度循环模板', {
-        title: '模板调度服务异常'
+      const snapshot = getResolvedSettingsSnapshot()
+      broadcastSettingsChanged(snapshot)
+      logger.info('settings.reset', '当前视图与全局共享设置已恢复默认值', {
+        viewMode: mainViewNavigation.mode,
+        viewScope: resetViewScope,
+        clearedViewSettingCount,
+        resetApplicationSettingCount
       })
-    }
-  })
-  scheduler.register({
-    name: 'noteGenerationTask',
-    maxFailures: Infinity,
-    shouldRun: (context) => templateSchedulerGuard.shouldRun(context.now),
-    execute: (context) => {
-      const result = templateSchedulerGuard.run(() => runRecurringTemplates(context), context.now)
-      const remindersQueued = result.generated.length
-      for (const template of result.autoPaused) {
-        const preview = (template.content || '').trim().slice(0, 20) || '空内容模板'
-        notificationService.trySend(`模板“${preview}”连续生成失败 3 次：${template.error}`, {
-          title: '循环模板已自动暂停'
-        })
+      return snapshot
+    })
+
+    // ---- 贴边隐藏 IPC ----
+
+    // 【贴边隐藏 - 鼠标悬停】渲染进程报告鼠标进入/离开主窗口
+    ipcMain.on('window-hover', (event, isHovering) => {
+      if (event.sender !== getMainWindow()?.webContents) return
+      dockRuntime.handleHover(isHovering)
+    })
+
+    // ---- 系统模糊 IPC ----
+
+    /** 设置模糊配置（立即生效 + 持久化到数据库） */
+    mainWindowIpc.handle('set-blur-config', (_event, payload) =>
+      backgroundSettingsCoordinator.setBlur(payload)
+    )
+
+    // ---- 主页面壁纸 IPC ----
+    const disposeWallpaperIpc = registerWallpaperIpc({
+      mainWindowIpc,
+      removeHandler: (channel) => ipcMain.removeHandler(channel),
+      backgroundSettingsCoordinator,
+      getWallpaperThumbnail,
+      getWallpaperDataUrl
+    })
+    app.once('will-quit', disposeWallpaperIpc)
+
+    createWindow()
+    remoteCoordinator = new RemoteCoordinator({
+      app,
+      baseUrl: REMOTE_BASE_URL,
+      getDailyState: getRemoteDailyState,
+      saveDailyState: saveRemoteDailyState,
+      getSettings: () => settingsRuntime.values,
+      getInstallationId: getOrCreateInstallationId,
+      getNoticeSyncState: getRemoteNoticeSyncState,
+      applyNoticeEvents: applyRemoteNoticeEvents,
+      isServiceRetired: isRemoteServiceRetired,
+      markServiceRetired: markRemoteServiceRetired,
+      queueSessionEnd: queueRemoteSessionEnd,
+      listPendingSessionEnds: listPendingRemoteSessionEnds,
+      markSessionEndAttempt: markRemoteSessionEndAttempt,
+      removePendingSessionEnd: removePendingRemoteSessionEnd,
+      clearPendingSessionEnds: clearPendingRemoteSessionEnds,
+      onNoticesChanged: (payload) => {
+        if (!getMainWindow() || getMainWindow().isDestroyed()) return
+        getMainWindow().webContents.send('remote-notices:changed', payload)
+      },
+      onHealthChanged: (health) => {
+        if (
+          !getMainWindow() ||
+          getMainWindow().isDestroyed() ||
+          getMainWindow().webContents.isDestroyed()
+        )
+          return
+        getMainWindow().webContents.send('remote-health:changed', health)
       }
-      const templatesChanged =
-        result.count > 0 ||
-        result.skipped > 0 ||
-        result.errors.length > 0 ||
-        result.autoPaused.length > 0
-      if (templatesChanged) {
-        logger.info('scheduler.template-generation', '循环模板调度发生业务变化', {
-          reason: context.reason,
-          generatedCount: result.count,
-          remindersQueued,
-          skippedCount: result.skipped,
-          errorCount: result.errors.length,
-          errorTemplateIds: result.errors.map((item) => item.templateId),
-          autoPausedTemplateIds: result.autoPaused.map((template) => template.id)
-        })
-      }
-      if (templatesChanged && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('templates:changed', {
-          reason: result.autoPaused.length > 0 ? 'auto-pause' : 'scheduler',
-          ids: result.autoPaused.map((template) => template.id)
-        })
-      }
-      if (result.count > 0 && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('notes:changed', { reason: 'recurrence' })
-      }
-      return {
-        performanceCounts: {
-          generated: result.count,
-          skipped: result.skipped,
-          errors: result.errors.length,
-          autoPaused: result.autoPaused.length,
-          remindersQueued
-        }
-      }
-    }
-  })
+    })
+    void remoteCoordinator.start()
+    attachDockDisplayListeners()
+    attachDockPowerListeners()
+    featureRuntime.initializeSticky()
+    // The complete window settings runtime is initialized after the sole host exists.
+    applyResolvedWindowRuntime()
+    featureRuntime.initializeReminders()
+    featureRuntime.startScheduledTasks()
+    console.log('[scheduler] 调度器已启动')
 
-  scheduler.register({
-    name: 'reminderTask',
-    maxFailures: Infinity,
-    retryBackoff: true,
-    shouldRun: () => true,
-    execute: (context) => reminderService.tick(context.now)
-  })
+    // ---- 任务栏 & 托盘事件 ----
 
-  // 3.6 原生毛玻璃运行诊断：随统一调度器启动即检查，之后每分钟检查一次。
-  scheduler.register({
-    name: 'blurRuntimeDiagnosticTask',
-    maxFailures: Infinity,
-    shouldRun: () => true,
-    execute: (context) => runBlurRuntimeDiagnostic(context)
-  })
+    // show：贴边隐藏时滑出（安全网，正常路径下 show 不会在贴边隐藏时触发）
+    getMainWindow().on('show', () => {
+      if (dockRuntime.hidden) doShow('main-window-show-event')
+    })
+    getMainWindow().on('session-end', () => {
+      shutdownCoordinator.setTrigger('windows-session-end')
+      logger.warn('lifecycle.session-end', 'Windows 会话正在结束，应用将执行退出清理')
+    })
 
-  // 3.7 每分钟只检查隐藏态结构；鼠标由 DLL 每 100ms 检测，异常在这里故障开放恢复。
-  scheduler.register({
-    name: 'dockHealthTask',
-    maxFailures: Infinity,
-    shouldRun: () =>
-      isDockHidden || isSliding || Boolean(dockMotionSession) || Boolean(nativeEdgeCleanupPending),
-    execute: () => runDockHealthCheck()
-  })
-
-  // 启动调度器
-  // 调度器终极告警通知若在 macOS 未签名等场景发送失败，同样降级为应用内消息条。
-  scheduler.onAlertNotifyFailed = (title, body, error) => {
-    notificationService.notifyFailure('调度器告警通知', title, body, error)
-  }
-  scheduler.start()
-  const resumeScheduledTasks = () => scheduler.tick({ reason: 'resume' })
-  powerMonitor.on('resume', resumeScheduledTasks)
-  app.once('will-quit', () => powerMonitor.removeListener('resume', resumeScheduledTasks))
-  console.log('[scheduler] 调度器已启动')
-
-  // ---- 任务栏 & 托盘事件 ----
-
-  // show：贴边隐藏时滑出（安全网，正常路径下 show 不会在贴边隐藏时触发）
-  mainWindow.on('show', () => {
-    if (isDockHidden) doShow('main-window-show-event')
-  })
-  mainWindow.on('session-end', () => {
-    shutdownTrigger = 'windows-session-end'
-    logger.warn('lifecycle.session-end', 'Windows 会话正在结束，应用将执行退出清理')
-  })
-
-  // 【清空便签数据】仅清理便签、模板、标签和附件，保留 app_settings。
-  mainWindowIpc.handle('clear-note-data', async () => {
-    const counts = getDb()
-      .prepare(
-        `SELECT
+    // 【清空便签数据】仅清理便签、模板、标签和附件，保留 app_settings。
+    mainWindowIpc.handle('clear-note-data', () =>
+      businessAdmission.clear(async () => {
+        const counts = getDb()
+          .prepare(
+            `SELECT
          (SELECT COUNT(*) FROM notes) AS notes,
          (SELECT COUNT(*) FROM note_templates) AS templates,
          (SELECT COUNT(*) FROM tags) AS tags,
          (SELECT COUNT(*) FROM note_attachments) AS attachments,
          (SELECT COUNT(*) FROM desktop_stickies) AS desktopStickies`
-      )
-      .get()
-    await clearNoteData()
-    reminderService?.refresh()
-    stickyService?.discardAllRuntime()
-    let draftClearError
-    try {
-      const cleared = await mainWindow.webContents.executeJavaScript(
-        'window.__clearEditingDrafts?.()'
-      )
-      if (cleared !== true) throw new Error('草稿清理接口不可用')
-    } catch (error) {
-      draftClearError = error
-      logger.error('data.clear-drafts', error)
-    }
-    for (const window of getApplicationWindows()) {
-      window.webContents.send('notes:changed', { reason: 'note-data-cleared' })
-    }
-    logger.info('data.clear', '便签业务数据已清空', {
-      viewMode: activeViewMode,
-      ...counts
-    })
-    if (draftClearError) throw new Error('便签业务数据已清空，但编辑草稿清理失败，请重试清空操作。')
-    return true
-  })
-
-  // ---- 开机自启 ----
-
-  /**
-   * 校验开机自启状态
-   * 每次打开设置页面时直接读取 OS；不再维护数据库副本。
-   * @returns {{ value: boolean, error: string|null }}
-   */
-  mainWindowIpc.handle('verify-auto-start', () => {
-    return readAutoStartRuntime()
-  })
-
-  /**
-   * 设置开机自启
-   * 只更新 OS 注册表/LoginItem，并返回回读后的真实状态。
-   */
-  mainWindowIpc.handle('set-auto-start', (_event, enabled) => {
-    app.setLoginItemSettings({ openAtLogin: Boolean(enabled) })
-    const actual = readAutoStartRuntime().value
-    settingsRevision += 1
-    broadcastSettingsChanged()
-    return actual
-  })
-
-  registerBusinessIpcHandlers({
-    ipcMain,
-    getMainWindow: () => mainWindow,
-    getAuthorizedWindows: () => getApplicationWindows(),
-    getBroadcastWindows: () => getApplicationWindows(),
-    getViewMode: () => activeViewMode,
-    platform: process.platform,
-    diagnosticLogger: logger,
-    onRemindersChanged: () => reminderService?.refresh(),
-    onNotePurged: (noteId) => stickyService?.discardByNoteId(noteId)
-  })
-  registerCalendarIpcHandlers({
-    ipcMain,
-    dialog,
-    shell,
-    getMainWindow: () => mainWindow
-  })
-  registerDailyReportIpcHandlers({
-    ipcMain,
-    dialog,
-    shell,
-    getMainWindow: () => mainWindow
-  })
-  const weatherPowerPauses = new Set()
-  weatherRuntime = registerWeatherIpcHandlers({
-    ipcMain,
-    shell,
-    userDataPath,
-    appVersion: app.getVersion(),
-    getMainWindow: () => mainWindow,
-    getWeatherSettings: () => structuredClone(resolvedSettings.weather),
-    canAutoRefresh: () =>
-      process.env.ABANDON_INTEGRATION_TEST !== '1' &&
-      weatherPowerPauses.size === 0 &&
-      Boolean(
-        mainWindow &&
-        !mainWindow.isDestroyed() &&
-        mainWindow.isVisible() &&
-        !mainWindow.isMinimized() &&
-        !isCompactPresentationActive()
-      ),
-    logger
-  })
-  // A single due check covers startup, visible operation and recovery. Tests use fixed caches.
-  const refreshWeatherIfDue = () => {
-    const finish = beginPerformanceOperation('background', 'weather.refreshIfDue')
-    // 此统计包含异步完成；scheduler 的同步分发耗时不代表网络等待时间。
-    void weatherRuntime.refreshIfDue().then(
-      () => finish(),
-      (error) => {
-        finish({ errors: 1 })
-        logger.warn('weather.auto-refresh', error?.message || '天气更新失败')
-      }
+          )
+          .get()
+        await clearNoteData()
+        const cleanupFailures = await runCommittedDataCleanup(
+          [
+            {
+              id: 'reminders',
+              label: '提醒清理',
+              run: () => featureRuntime.refreshReminders()
+            },
+            {
+              id: 'stickies',
+              label: '桌面便签清理',
+              run: () => featureRuntime.getStickyCommands()?.discardAllRuntime()
+            },
+            {
+              id: 'drafts',
+              label: '编辑草稿清理',
+              run: async () => {
+                const window = getMainWindow()
+                if (!window || window.isDestroyed()) return
+                const cleared = await window.webContents.executeJavaScript(
+                  'window.__clearEditingDrafts?.()'
+                )
+                if (cleared !== true) throw new Error('草稿清理接口不可用')
+              }
+            },
+            {
+              id: 'broadcast',
+              label: '界面刷新',
+              run: () => broadcastBusinessDataCleared(getApplicationWindows())
+            }
+          ],
+          ({ id, error }) => logger.error(`data.clear-${id}`, error)
+        )
+        logger.info('data.clear', '便签业务数据已清空', {
+          viewMode: mainViewNavigation.mode,
+          ...counts
+        })
+        if (cleanupFailures.length) throw createBusinessClearCleanupError(cleanupFailures)
+        return true
+      })
     )
-  }
-  if (process.env.ABANDON_INTEGRATION_TEST !== '1') {
-    scheduler.register({
-      name: 'weatherRefreshTask',
-      maxFailures: Infinity,
-      shouldRun: () => true,
-      execute: refreshWeatherIfDue
-    })
-    mainWindow.on('show', refreshWeatherIfDue)
-    mainWindow.on('restore', refreshWeatherIfDue)
-    for (const event of ['suspend', 'lock-screen'])
-      powerMonitor.on(event, () => {
-        weatherPowerPauses.add(event)
-      })
-    for (const [event, pause] of [
-      ['resume', 'suspend'],
-      ['unlock-screen', 'lock-screen']
-    ])
-      powerMonitor.on(event, () => {
-        weatherPowerPauses.delete(pause)
-        refreshWeatherIfDue()
-      })
-    refreshWeatherIfDue()
-  }
 
-  screenshotService = new CaptureCoordinator({
-    ipcMain,
-    logger,
-    getTheme: () => resolvedSettings.css,
-    onError: (message) => {
-      if (!isQuitting) void dialog.showMessageBox({ type: 'warning', title: '截图与贴图', message })
-    },
-    onBusinessOpen: () => openMainWindowFromTray(),
-    getMainWindow: () => mainWindow,
-    onCaptureStart: () => {
-      screenshotMainViewWasVisible = Boolean(
-        mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()
-      )
-      screenshotMainViewWasFocused = Boolean(
-        mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()
-      )
-      screenshotCaptureActive = true
-      beginDockInteractionSuspension('screenshot')
-      screenshotMainViewWasHidden = Boolean(
-        resolvedSettings.interaction.hideMainViewDuringScreenshot &&
-        mainWindow &&
-        !mainWindow.isDestroyed() &&
-        mainWindow.isVisible()
-      )
-      if (screenshotMainViewWasHidden) hideMainWindowForViewNavigation(mainWindow)
-    },
-    onCaptureEnd: (_origin, business = {}) => {
-      screenshotCaptureActive = false
-      endDockInteractionSuspension('screenshot')
-      if (screenshotMainViewWasHidden && !isQuitting && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.showInactive()
-        if (screenshotMainViewWasFocused) mainWindow.focus()
-        reassertBottomWindowZOrder('screenshot-finished')
+    // ---- 开机自启 ----
+
+    /**
+     * 校验开机自启状态
+     * 每次打开设置页面时直接读取 OS；不再维护数据库副本。
+     * @returns {{ value: boolean, error: string|null }}
+     */
+    mainWindowIpc.handle('verify-auto-start', () => {
+      return readAutoStartRuntime()
+    })
+
+    /**
+     * 设置开机自启
+     * 只更新 OS 注册表/LoginItem，并返回回读后的真实状态。
+     */
+    mainWindowIpc.handle('set-auto-start', (_event, enabled) => {
+      app.setLoginItemSettings({ openAtLogin: Boolean(enabled) })
+      const actual = readAutoStartRuntime().value
+      settingsRuntime.advanceRevision()
+      broadcastSettingsChanged()
+      return actual
+    })
+
+    registerBusinessIpcHandlers({
+      ipcMain,
+      getMainWindow: () => getMainWindow(),
+      getAuthorizedWindows: () => getApplicationWindows(),
+      getBroadcastWindows: () => getApplicationWindows(),
+      getViewMode: () => mainViewNavigation.mode,
+      diagnosticLogger: logger,
+      runMutation: businessAdmission.run,
+      onRemindersChanged: featureRuntime.refreshReminders,
+      onNotePurged: (noteId) => featureRuntime.getStickyCommands()?.discardByNoteId(noteId)
+    })
+    registerCalendarIpcHandlers({
+      ipcMain,
+      dialog,
+      shell,
+      getMainWindow: () => getMainWindow()
+    })
+    registerDailyReportIpcHandlers({
+      ipcMain,
+      dialog,
+      shell,
+      getMainWindow: () => getMainWindow()
+    })
+    featureRuntime.initializeWeather()
+
+    screenshotService = new CaptureCoordinator({
+      ipcMain,
+      logger,
+      getTheme: () => settingsRuntime.values.css,
+      onError: (message) => {
+        if (!shutdownCoordinator.isQuitting())
+          void dialog.showMessageBox({ type: 'warning', title: '截图与贴图', message })
+      },
+      onBusinessOpen: captureWindowIntegration.openBusiness,
+      getMainWindow: () => getMainWindow(),
+      onCaptureStart: captureWindowIntegration.begin,
+      onCaptureEnd: captureWindowIntegration.finish
+    })
+    await runStage('capture', () => screenshotService.initialize())
+    captureShortcutService = new CaptureShortcutService({
+      globalShortcut,
+      viewService: viewVisibilityShortcutService,
+      logger,
+      onTrigger: (action) => {
+        if (shutdownCoordinator.isQuitting()) return
+        void screenshotService
+          .capture({ mode: action === 'screenshotCopy' ? 'copy-on-select' : 'edit' })
+          .catch((error) => screenshotService?.report(error))
       }
-      screenshotMainViewWasHidden = false
-      if (
-        business.businessOpened &&
-        !business.businessAccepted &&
-        !screenshotMainViewWasVisible &&
-        !isQuitting &&
-        mainWindow &&
-        !mainWindow.isDestroyed()
-      )
-        hideMainWindowForViewNavigation(mainWindow)
-    }
-  })
-  await screenshotService.initialize()
-  captureShortcutService = new CaptureShortcutService({
-    globalShortcut,
-    viewService: viewVisibilityShortcutService,
-    logger,
-    onTrigger: () => {
-      if (isQuitting) return
-      void screenshotService.capture().catch((error) => screenshotService?.report(error))
-    }
-  })
-  captureShortcutService.initialize(resolvedSettings.shortcuts)
-  startupShortcutFailures = unavailableShortcuts(
-    getResolvedSettingsSnapshot().runtime.shortcuts
-  ).map((item) => item.action)
-  const cancelNativeCapture = () => screenshotService?.cancel()
-  powerMonitor.on('lock-screen', cancelNativeCapture)
-  powerMonitor.on('suspend', cancelNativeCapture)
-  app.once('will-quit', () => {
-    powerMonitor.removeListener('lock-screen', cancelNativeCapture)
-    powerMonitor.removeListener('suspend', cancelNativeCapture)
-  })
+    })
+    captureShortcutService.initialize(settingsRuntime.values.shortcuts)
+    startupShortcutFailures = unavailableShortcuts(
+      getResolvedSettingsSnapshot().runtime.shortcuts
+    ).map((item) => item.action)
+    const cancelNativeCapture = () => screenshotService?.cancel()
+    powerMonitor.on('lock-screen', cancelNativeCapture)
+    powerMonitor.on('suspend', cancelNativeCapture)
+    app.once('will-quit', () => {
+      powerMonitor.removeListener('lock-screen', cancelNativeCapture)
+      powerMonitor.removeListener('suspend', cancelNativeCapture)
+    })
 
-  // ---- 调度器健康检查 IPC ----
+    // ---- 调度器健康检查 IPC ----
 
-  // 【调度器 - 健康检查】
-  mainWindowIpc.handle('scheduler:retry', () => {
-    scheduler.retryFailed()
-    return scheduler.getHealth()
-  })
+    // 【调度器 - 健康检查】
+    mainWindowIpc.handle('scheduler:retry', featureRuntime.retryScheduledTasks)
 
-  mainWindowIpc.handle('scheduler:health', () => {
-    return scheduler.getHealth()
-  })
+    mainWindowIpc.handle('scheduler:health', featureRuntime.schedulerHealth)
 
-  // ---- 系统托盘 ----
-  trayShortcutImages = createShortcutTrayImages(icon)
-  tray = new Tray(trayShortcutImages.enabled)
-  trayReminderController.attach(tray)
-
-  // 左键点击：切换（显示/隐藏 ↔ 滑出/滑入）
-  tray.on('click', () => {
-    trayReminderController?.acknowledge()
-    toggleWindow()
-  })
-
-  rebuildTrayMenu()
-  logger.info('startup', '系统托盘已创建，启动初始化完成')
-
-  // macOS 特有：点击 Dock 图标时显示窗口
-  app.on('activate', () => {
-    openMainWindow()
-  })
-})
-startupPromise.catch((error) => {
-  logger.error('startup.failed', error)
-  dialog.showErrorBox(
-    'Abandon 便签启动失败',
-    '无法完成初始化，原有数据未被自动清除。请检查磁盘空间与目录权限后重启。\n\n' +
-      (error?.message || String(error))
-  )
-  app.quit()
+    // ---- 系统托盘 ----
+    mainTrayController.create()
+    logger.info('startup', '系统托盘已创建，启动初始化完成')
+  },
+  onFailure: (error) => {
+    logger.error('startup.failed', error)
+    dialog.showErrorBox(
+      'Abandon 便签启动失败',
+      '无法完成初始化，原有数据未被自动清除。请检查磁盘空间与目录权限后重启。\n\n' +
+        (error?.message || String(error))
+    )
+    app.quit()
+  }
 })
 
-// 应用退出前关闭数据库连接和贴边资源，确保数据安全
-app.on('before-quit', (event) => {
-  if (!quitDraftsApproved && mainWindow && !mainWindow.isDestroyed()) {
-    event.preventDefault()
-    if (checkingQuitDrafts || checkingViewDrafts) return
-    checkingQuitDrafts = true
-    void confirmEditingDrafts(mainWindow, '退出').then((allowed) => {
-      checkingQuitDrafts = false
-      if (allowed) {
-        quitDraftsApproved = true
-        app.quit()
-      } else isQuitting = false
-    })
-    return
-  }
-  if (!shutdownStartedAt) {
-    shutdownStartedAt = Date.now()
-    shutdownTrigger = shutdownTrigger || (isQuitting ? 'user-request' : 'system-or-programmatic')
-    logger.info('lifecycle.shutdown-start', '应用开始退出清理', {
-      trigger: shutdownTrigger,
-      remoteSessionActive: Boolean(remoteCoordinator?.hasActiveSession())
-    })
-  }
-  // 系统退出、Cmd+Q 与代码触发的 app.quit() 都必须绕过“关闭到托盘”。
-  isQuitting = true
-  if (screenshotService && !captureShutdownFinished) {
-    event.preventDefault()
-    if (!captureShutdownStarted) {
-      captureShutdownStarted = true
-      captureShortcutService?.dispose()
-      void screenshotService
-        .dispose()
-        .catch((error) => logger.error('capture.shutdown', error))
-        .finally(() => {
-          captureShutdownFinished = true
-          app.quit()
-        })
-    }
-    return
-  }
-  if (!remoteShutdownFinished && (remoteShutdownStarted || remoteCoordinator?.hasActiveSession())) {
-    event.preventDefault()
-    if (!remoteShutdownStarted) {
-      remoteShutdownStarted = true
-      const stageStartedAt = Date.now()
-      logger.info('lifecycle.shutdown-wait', '退出前等待远程会话结束', {
-        stage: 'remote-session'
-      })
-      const timeout = new Promise((resolve) => setTimeout(() => resolve('timeout'), 1600))
-      const stop = Promise.resolve()
-        .then(() => remoteCoordinator.stop())
-        .then(() => 'completed')
-      void Promise.race([stop, timeout])
-        .then((result) => {
-          logger.info('lifecycle.shutdown-wait', '远程会话退出等待结束', {
-            stage: 'remote-session',
-            result,
-            elapsedMs: Date.now() - stageStartedAt
-          })
-        })
-        .catch((error) => {
-          logger.error('lifecycle.shutdown-wait', error, {
-            stage: 'remote-session',
-            result: 'failed',
-            elapsedMs: Date.now() - stageStartedAt
-          })
-        })
-        .finally(() => {
-          remoteShutdownFinished = true
-          app.quit()
-        })
-    }
-    return
-  }
-  if (diagnosticController && !diagnosticShutdownFinished) {
-    event.preventDefault()
-    if (!diagnosticShutdownStarted) {
-      diagnosticShutdownStarted = true
-      void diagnosticController
-        .freeze('shutdown')
-        .then((capture) =>
+// The coordinator owns quit admission, re-entry and the serial disposal ledger.
+const shutdownCoordinator = createShutdownCoordinator({
+  app,
+  logger,
+  getWindow: getMainWindow,
+  confirmDrafts: confirmEditingDrafts,
+  isViewDraftCheckActive: () => mainViewNavigation.isCheckingDrafts(),
+  onBegin: () => {
+    businessAdmission.preventNewMutations()
+    notificationActivation.dispose()
+    featureRuntime.stopScheduledTasks()
+    mainViewNavigation.dispose()
+    presentationRuntime.prepareShutdown()
+    backgroundSettingsCoordinator.preventNewRequests()
+    applicationBootstrap.cancel()
+    remoteCoordinator?.preventStartup()
+  },
+  hasRemoteSession: () => Boolean(remoteCoordinator?.hasActiveSession()),
+  stages: [
+    {
+      name: 'capture',
+      enabled: () => Boolean(screenshotService),
+      errorScope: 'capture.shutdown',
+      run: () => {
+        captureShortcutService?.dispose()
+        return screenshotService.dispose()
+      }
+    },
+    {
+      name: 'remote-session',
+      enabled: () => Boolean(remoteCoordinator),
+      run: () => remoteCoordinator.stop({ timeoutMs: 1600 })
+    },
+    { name: 'business-mutations', enabled: () => true, run: businessAdmission.drain },
+    {
+      name: 'diagnostic',
+      enabled: () => Boolean(diagnosticController),
+      errorScope: 'logging.shutdown-capture',
+      run: () =>
+        diagnosticController.freeze('shutdown').then((capture) => {
           logger.info('logging.shutdown-capture', '退出前提交页面诊断', {
             complete: capture.complete,
             windows: capture.windows,
             retiredIncompleteOmitted: capture.retiredIncompleteOmitted
           })
-        )
-        .catch((error) => logger.error('logging.shutdown-capture', error))
-        .finally(() => {
-          diagnosticShutdownFinished = true
-          app.quit()
+          return { complete: capture.complete }
         })
+    },
+    {
+      name: 'background-settings',
+      enabled: () => backgroundSettingsCoordinator.snapshot().pendingRequests > 0,
+      run: backgroundSettingsCoordinator.settled
+    },
+    {
+      name: 'presentation-settlement',
+      enabled: () => presentationRuntime.isBusy(),
+      run: () =>
+        presentationRuntime.settled().catch((error) => {
+          if (error.code === 'PRESENTATION_CANCELLED') return { cancelled: true }
+          throw error
+        })
+    },
+    {
+      name: 'startup-settlement',
+      enabled: () => applicationBootstrap.snapshot().phase !== 'ready',
+      run: () => applicationBootstrap.settled()
     }
-    return
-  }
-  if (geometryTimer) {
-    clearTimeout(geometryTimer)
-    geometryTimer = null
-  }
-  if (compactResizePersistenceTimer) {
-    clearTimeout(compactResizePersistenceTimer)
-    compactResizePersistenceTimer = null
-  }
-  flushCompactWindowSizePersistence('before-quit')
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    endTitlebarWindowDrag()
-  }
-  cancelBottomWindowZOrderRetry()
-  if (dockGeometryReconcileTimer) {
-    clearTimeout(dockGeometryReconcileTimer)
-    dockGeometryReconcileTimer = null
-  }
-  if (nativeEdgeCleanupTimer) {
-    clearTimeout(nativeEdgeCleanupTimer)
-    nativeEdgeCleanupTimer = null
-  }
-  detachDockDisplayListeners()
-  detachDockPowerListeners()
-  if (geometryDirty && getDb() && mainWindow && !mainWindow.isDestroyed()) {
-    try {
-      const bounds = getPersistableWindowBounds({
-        dockStableBounds: dockMotionSession?.stableBounds,
-        lastVisibleBounds: lastVisibleMainWindowBounds,
-        currentBounds: mainWindow.getBounds()
-      })
-      setSettingsBatch(getActiveWindowName(), [
-        serializeSetting('geometry.posX', bounds.x),
-        serializeSetting('geometry.posY', bounds.y),
-        serializeSetting('geometry.width', bounds.width),
-        serializeSetting('geometry.height', bounds.height)
-      ])
-      geometryDirty = false
-    } catch (error) {
-      console.warn('[settings] 退出前保存窗口位置失败:', error)
-    }
-  }
-  scheduler.stop()
-  reminderService?.dispose()
-  reminderService = null
-  trayReminderController = null
-  viewVisibilityShortcutService?.dispose()
-  viewVisibilityShortcutService = null
-  notificationService = null
-  captureShortcutService?.dispose()
-  captureShortcutService = null
-  screenshotService = null
-  stickyService?.dispose()
-  stickyService = null
-  closeDatabase()
-  // 销毁模糊引擎（释放 DLL 资源）
-  blurDestroy()
-  if (slideAnimTimer) clearInterval(slideAnimTimer)
-  if (hideTimer) clearTimeout(hideTimer)
-  if (tray) {
-    tray.destroy()
-    tray = null
-  }
-  if (!shutdownCompletedLogged) {
-    shutdownCompletedLogged = true
-    logger.info('lifecycle.shutdown-complete', '应用退出清理完成', {
-      trigger: shutdownTrigger,
-      elapsedMs: shutdownStartedAt ? Date.now() - shutdownStartedAt : null
-    })
-  }
-  flushLogs()
+  ],
+  cleanup: [
+    {
+      name: 'geometry',
+      run: () => {
+        geometryPersistence.cancel()
+        presentationRuntime.prepareShutdown()
+        if (getMainWindow() && !getMainWindow().isDestroyed()) endTitlebarWindowDrag()
+        cancelBottomWindowZOrderRetry()
+        dockRuntime.prepareShutdown()
+        if (getDb()) geometryPersistence.flush()
+      }
+    },
+    { name: 'scheduler', run: featureRuntime.stopScheduledTasks },
+    { name: 'weather', run: featureRuntime.disposeWeather },
+    { name: 'reminder', run: featureRuntime.disposeReminders },
+    {
+      name: 'shortcuts',
+      run: () => {
+        viewVisibilityShortcutService?.dispose()
+        viewVisibilityShortcutService = null
+      }
+    },
+    {
+      name: 'capture-release',
+      run: () => {
+        captureShortcutService?.dispose()
+        captureShortcutService = null
+        screenshotService = null
+      }
+    },
+    { name: 'sticky', run: featureRuntime.disposeStickyAfterDrain },
+    { name: 'feature-ledger', run: featureRuntime.disposeCreated },
+    { name: 'database', run: closeDatabase },
+    { name: 'native-blur', run: blurRuntime.destroy },
+    {
+      name: 'dock-timers',
+      run: dockRuntime.dispose
+    },
+    { name: 'tray', run: mainTrayController.dispose }
+  ],
+  flushLogs
 })
+const startupPromise = applicationBootstrap.start()
 
 // 所有窗口关闭时不退出应用，保持在托盘中运行
 app.on('window-all-closed', () => {})

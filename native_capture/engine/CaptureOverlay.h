@@ -10,7 +10,8 @@ class CaptureOverlay : public QWidget {
   Q_OBJECT
 public:
   CaptureOverlay(QScreen *screen, QImage image, QString origin,
-                 Capture::DesktopLayout layout = {}, QString settingsPath = {});
+                 Capture::DesktopLayout layout = {}, QString settingsPath = {},
+                 bool copyOnSelect = false);
   std::function<bool(CaptureOverlay *)> claim;
   std::function<void()> clearClaim, cancel;
   std::function<void(QString, QImage)> output;
@@ -21,7 +22,9 @@ public:
   QRect selectionPhysicalGeometry() const;
   QScreen *selectionScreen() const;
   QString desktopSignature() const;
+  qint64 memoryCost() const;
   bool placementValid = true;
+  const bool copyOnSelect;
   QRect selection, recalledSelection;
   Capture::ImageDocument document;
   AnnotationEditor *annotations;

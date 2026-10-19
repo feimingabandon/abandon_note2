@@ -1,6 +1,4 @@
-import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
 import {
@@ -25,13 +23,29 @@ import {
   cleanupStagedImage
 } from '../src/main/db/db-images.js'
 import { registerBusinessIpcHandlers } from '../src/main/ipc/register-business-ipc.js'
+import { enqueueReminder, getPendingReminder } from '../src/main/db/db-reminders.js'
+import { createAssertionRecorder, prepareTestProfile } from './helpers/test-result-recorder.cjs'
 
-const testRoot = mkdtempSync(join(tmpdir(), 'abandon-note-draft-conflict-'))
+const recorder = createAssertionRecorder({
+  suite: 'tests/note-draft-conflict-electron.mjs',
+  mode: 'electron-ready-file-sqlite-real-attachments-mocked-ipc',
+  metadata: {
+    sqlite: 'real-file',
+    files: 'real-attachments',
+    ipc: 'in-process-authorized-sender-fixture',
+    renderer: false
+  }
+})
+const { assert } = recorder
+const profile = prepareTestProfile({ prefix: 'abandon-note-draft-conflict-' })
+const testRoot = profile.directory
 app.setPath('userData', testRoot)
 const image = { base64: Buffer.from('isolated attachment bytes').toString('base64'), ext: 'png' }
 
 app.whenReady().then(async () => {
   let exitCode = 0
+  let completed = false
+  let failure = null
   try {
     initDatabase()
     const handlers = new Map()
@@ -231,6 +245,88 @@ app.whenReady().then(async () => {
     assert.equal(retried.attachments.length, 1)
     assert.notEqual(retried.attachments[0].id, attachment.id)
     assert.equal(existsSync(resolveImagePath(committed.relativePath)), false)
+
+    const scheduled = await handlers.get('notes:create-with-assets')(
+      { sender: window.webContents },
+      {
+        options: {
+          content: '标签提醒资源事务原值',
+          effectiveAt: Date.now() + 3_600_000,
+          reminderChannels: 2
+        },
+        images: [image],
+        tagIds: []
+      }
+    )
+    const reminder = enqueueReminder(scheduled.id, Date.now() + 1_800_000)
+    const transactionalDraft = getNoteById(scheduled.id)
+    const oldAttachment = transactionalDraft.attachments[0]
+    const newDueAt = reminder.due_at + 60_000
+    const transactionPatch = {
+      fields: {
+        content: '标签提醒资源事务新值',
+        status: transactionalDraft.status,
+        effectiveAt: transactionalDraft.effective_at,
+        durationKind: transactionalDraft.duration_kind,
+        durationDays: transactionalDraft.duration_days,
+        notifyEnabled: true,
+        reminderChannels: 2,
+        isPinned: false,
+        pendingReminder: { id: reminder.id, expectedDueAt: reminder.due_at, dueAt: newDueAt }
+      },
+      tagIds: [Number(tagId)],
+      addedImages: [image],
+      deletedImageIds: [oldAttachment.id]
+    }
+    const noteCountBeforeFailure = getDb()
+      .prepare('SELECT COUNT(*) AS count FROM notes')
+      .get().count
+    const broadcastBeforeSqlFailure = broadcasts.length
+    getDb().exec(`CREATE TRIGGER reject_attachment_insert BEFORE INSERT ON note_attachments
+      BEGIN SELECT RAISE(ABORT, 'injected attachment record SQL failure'); END`)
+    await assert.rejects(
+      handlers.get('notes:create-with-assets')(
+        { sender: window.webContents },
+        { options: { content: '创建必须整体回滚' }, images: [image], tagIds: [] }
+      ),
+      /injected attachment record SQL failure/
+    )
+    assert.equal(
+      getDb().prepare('SELECT COUNT(*) AS count FROM notes').get().count,
+      noteCountBeforeFailure
+    )
+    await assert.rejects(
+      save(transactionalDraft, transactionPatch),
+      /injected attachment record SQL failure/
+    )
+    const rolledBack = getNoteById(transactionalDraft.id)
+    assert.equal(rolledBack.content, transactionalDraft.content)
+    assert.deepEqual(rolledBack.tags, transactionalDraft.tags)
+    assert.deepEqual(rolledBack.attachments, transactionalDraft.attachments)
+    assert.equal(
+      getPendingReminder(transactionalDraft.id).due_at,
+      reminder.due_at,
+      '资源失败必须回滚提醒轮次修改'
+    )
+    assert.equal(
+      readFileSync(resolveImagePath(oldAttachment.file_path), 'utf8'),
+      'isolated attachment bytes'
+    )
+    assert.equal(broadcasts.length, broadcastBeforeSqlFailure, '未提交的创建/草稿事务不得广播')
+    assert.deepEqual(existsSync(stagingRoot) ? readdirSync(stagingRoot) : [], [])
+    getDb().exec('DROP TRIGGER reject_attachment_insert')
+    const recovered = await save(rolledBack, transactionPatch)
+    assert.equal(recovered.content, '标签提醒资源事务新值')
+    assert.deepEqual(
+      recovered.tags.map((tag) => tag.id),
+      [Number(tagId)]
+    )
+    assert.equal(getPendingReminder(recovered.id).due_at, newDueAt)
+    assert.equal(existsSync(resolveImagePath(oldAttachment.file_path)), false)
+    assert.equal(
+      readFileSync(resolveImagePath(recovered.attachments[0].file_path), 'utf8'),
+      'isolated attachment bytes'
+    )
     failBroadcast = true
     const broadcastCount = healthyBroadcasts.length
     const createdWithFailure = await handlers.get('notes:create-with-assets')(
@@ -268,13 +364,55 @@ app.whenReady().then(async () => {
     console.log(
       'note draft conflicts: fresh save, missing version, same-ms content, concurrent status change, tags, attachments, staging race and retry passed'
     )
+    completed = true
   } catch (error) {
     console.error(error)
+    failure = error
     exitCode = 1
   } finally {
-    closeDatabase()
-    await flushLogs()
-    rmSync(testRoot, { recursive: true, force: true })
+    const cleanupErrors = []
+    try {
+      closeDatabase()
+    } catch (error) {
+      cleanupErrors.push(error.message)
+      console.error(error)
+      exitCode = 1
+    }
+    let evidence = { status: 'complete' }
+    try {
+      const flush = await flushLogs()
+      evidence = { status: flush.incomplete ? 'incomplete' : 'complete', flush }
+    } catch (error) {
+      evidence = { status: 'failed', reason: error.message }
+      console.error(error)
+      exitCode = 1
+    }
+    const preserveProfile = Boolean(exitCode || evidence.status !== 'complete')
+    if (profile.ownership === 'script' && !preserveProfile) {
+      try {
+        rmSync(testRoot, { recursive: true, force: true })
+      } catch (error) {
+        cleanupErrors.push(error.message)
+        console.error(error)
+        exitCode = 1
+      }
+    }
+    try {
+      recorder.finish({
+        completed,
+        error: failure,
+        evidence,
+        profileOwnership: profile.ownership,
+        cleanup: {
+          status: cleanupErrors.length ? 'failed' : preserveProfile ? 'preserved' : 'complete',
+          ...(cleanupErrors.length ? { error: cleanupErrors.join('\n') } : {}),
+          ...(preserveProfile || cleanupErrors.length ? { preservedProfile: testRoot } : {})
+        }
+      })
+    } catch (error) {
+      console.error(error)
+      exitCode = 1
+    }
     app.exit(exitCode)
   }
 })

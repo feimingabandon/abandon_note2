@@ -1,7 +1,18 @@
-import assert from 'node:assert/strict'
 import { app, BrowserWindow } from 'electron'
 import { resolve } from 'node:path'
 import koffi from 'koffi'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/window-frame-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-window-frame-',
+  metadata: { realWindows: true, nativeMotion: true, productMainProcess: false }
+})
+const { assert } = lifecycle
+app.setPath('userData', lifecycle.root)
 
 const GWL_STYLE = -16
 const WS_THICKFRAME = 0x00040000
@@ -13,7 +24,8 @@ function readNativeHandle(window) {
 
 app.once('ready', async () => {
   let window = null
-  let exitCode = 0
+  let completed = false
+  let failure = null
 
   try {
     const user32 = koffi.load('user32.dll')
@@ -136,11 +148,11 @@ app.once('ready', async () => {
       }
     }
     console.log('frameless window style and four-sided motion integration test passed')
+    completed = true
   } catch (error) {
     console.error(error)
-    exitCode = 1
+    failure = error
   } finally {
-    window?.destroy()
-    app.exit(exitCode)
+    await lifecycle.finish({ completed, error: failure, window })
   }
 })

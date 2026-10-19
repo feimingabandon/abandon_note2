@@ -8,6 +8,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      base_sha:
+        description: 'Full base commit SHA for the explicit test scope'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -18,43 +23,75 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - windows-latest
-          - macos-14
-    runs-on: ${{ matrix.os }}
+    name: Verify (Windows x64)
+    runs-on: windows-latest
+    env:
+      CI_TEST_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
+      CI_TEST_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CI_TEST_BASE_MODE: ${{ github.event_name == 'pull_request' && 'merge-base' || 'exact' }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 22.22.3
+          architecture: x64
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
+      - name: Plan explicit scope and native prerequisites
+        id: scope
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force tmp | Out-Null
+          node scripts/run-ci-tests.cjs --plan | Set-Content -LiteralPath tmp/ci-plan.json -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw "CI scope planning failed; inspect tmp/ci-plan.json" }
+          $plan = Get-Content -LiteralPath tmp/ci-plan.json -Raw | ConvertFrom-Json
+          $prerequisites = @($plan.selected | ForEach-Object { $_.runtimePrerequisites })
+          $capture = ($prerequisites -contains 'capture-qt-deployment') -or ($prerequisites -contains 'windows-qt-6.8.3-msvc2022-x64')
+          $native = $capture -or ($prerequisites -contains 'blur-engine-abi-22') -or ($prerequisites -contains 'windows-msvc-toolchain')
+          "capture=$($capture.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "native=$($native.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Set up Qt for selected capture tests
+        if: steps.scope.outputs.capture == 'true'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          modules: qtimageformats
+          cache: true
+
+      - name: Compile selected Windows blur prerequisite
+        if: steps.scope.outputs.native == 'true'
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File native_blur/build.ps1
+
+      - name: Compile selected capture prerequisite
+        if: steps.scope.outputs.capture == 'true'
+        run: npm run build:capture:win
+
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
+      - name: Test committed change scope
+        run: npm run test:ci
 
-      - name: Compile Windows blur engine
-        if: matrix.os == 'windows-latest'
-        run: npm run build:native:win
-
-      - name: Verify frameless window style
-        if: matrix.os == 'windows-latest'
-        run: npm run test:window-frame:win
-
-      - name: Build application
-        run: npm run build
+      - name: Upload focused test evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: focused-test-evidence-windows-x64
+          path: |
+            tmp/test-runs/
+            tmp/ci-plan.json
+          if-no-files-found: ignore
+          retention-days: 14

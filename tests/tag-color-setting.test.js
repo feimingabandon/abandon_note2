@@ -7,9 +7,11 @@ describe('shared tag color setting', () => {
   it('is provided by list, month and week roots and applied to every note surface', () => {
     for (const root of ['src/renderer/src/App.vue', 'src/renderer/src/MonthApp.vue']) {
       const source = read(root)
-      expect(source).toContain('createTagColorSettingProvider()')
-      expect(source).toContain('tagColorSetting.applySnapshot(snapshot)')
+      expect(source).toContain('useWorkspaceRuntime({')
     }
+    const runtime = read('src/renderer/src/composables/useWorkspaceRuntime.js')
+    expect(runtime).toContain('createTagColorSettingProvider()')
+    expect(runtime).toContain('tagColorSetting.applySnapshot(snapshot)')
 
     for (const component of [
       'src/renderer/src/components/list/NoteCard.vue',
@@ -35,7 +37,10 @@ describe('shared tag color setting', () => {
     const allowlistStart = main.indexOf('const RENDERER_WRITABLE_SETTING_IDS')
     const allowlist = main.slice(allowlistStart, main.indexOf('])', allowlistStart) + 2)
     const handlerStart = main.indexOf("mainWindowIpc.handle('set-setting-value'")
-    const handler = main.slice(handlerStart, main.indexOf('\n  })', handlerStart) + 4)
+    const handlerEnd = main.indexOf('mainWindowIpc.handle(', handlerStart + 1)
+    expect(handlerStart).toBeGreaterThanOrEqual(0)
+    expect(handlerEnd).toBeGreaterThan(handlerStart)
+    const handler = main.slice(handlerStart, handlerEnd)
 
     expect(allowlist).toContain("'notes.tagColorEnabled'")
     expect(handler).toContain('RENDERER_WRITABLE_SETTING_IDS.has(id)')

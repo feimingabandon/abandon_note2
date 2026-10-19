@@ -1,7 +1,5 @@
-import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, nativeImage } from 'electron'
@@ -18,6 +16,15 @@ import {
   setWallpaperStorageFaultInjectorForTests
 } from '../src/main/db/db-wallpapers.js'
 import { drainOperationPerformance } from '../src/main/logging/operation-performance.js'
+import { flushLogs } from '../src/main/logging/logger.js'
+import { createAssertionRecorder, prepareTestProfile } from './helpers/test-result-recorder.cjs'
+
+const recorder = createAssertionRecorder({
+  suite: 'tests/wallpaper-storage-electron.mjs',
+  mode: 'electron-ready-memory-sqlite-real-files',
+  metadata: { browserWindow: false, nativeImage: true }
+})
+const { assert } = recorder
 
 async function expectStorageFault(point, operation) {
   setWallpaperStorageFaultInjectorForTests((currentPoint) => {
@@ -31,11 +38,16 @@ async function expectStorageFault(point, operation) {
 }
 
 app.once('ready', async () => {
-  const tempRoot = await mkdtemp(join(tmpdir(), 'abandon-wallpaper-test-'))
+  let profile = null
+  let tempRoot = null
   let db = null
   let exitCode = 0
+  let completed = false
+  let failure = null
 
   try {
+    profile = prepareTestProfile({ prefix: 'abandon-wallpaper-test-' })
+    tempRoot = profile.directory
     app.setPath('userData', tempRoot)
     db = new Database(':memory:')
     db.pragma('foreign_keys = ON')
@@ -191,15 +203,64 @@ app.once('ready', async () => {
     assert.equal(existsSync(concurrentOriginalPath), false)
 
     await cleanupPendingWallpaperFiles()
+    completed = true
     console.log('wallpaper storage integration tests passed')
   } catch (error) {
     console.error(error)
+    failure = error
     exitCode = 1
   } finally {
-    setWallpaperStorageFaultInjectorForTests(null)
-    clearDb()
-    db?.close()
-    await rm(tempRoot, { recursive: true, force: true })
+    const cleanupErrors = []
+    for (const release of [
+      () => setWallpaperStorageFaultInjectorForTests(null),
+      clearDb,
+      () => db?.close()
+    ]) {
+      try {
+        release()
+      } catch (error) {
+        cleanupErrors.push(error.message)
+        console.error(error)
+        exitCode = 1
+      }
+    }
+    let evidence = { status: 'complete' }
+    if (tempRoot) {
+      try {
+        const flush = await flushLogs()
+        evidence = { status: flush.incomplete ? 'incomplete' : 'complete', flush }
+      } catch (error) {
+        evidence = { status: 'failed', reason: error.message }
+        console.error(error)
+        exitCode = 1
+      }
+    }
+    const preserveProfile = Boolean(tempRoot && (exitCode || evidence.status !== 'complete'))
+    if (profile?.ownership === 'script' && !preserveProfile) {
+      try {
+        await rm(tempRoot, { recursive: true, force: true })
+      } catch (error) {
+        cleanupErrors.push(error.message)
+        console.error(error)
+        exitCode = 1
+      }
+    }
+    try {
+      recorder.finish({
+        completed,
+        error: failure,
+        evidence,
+        profileOwnership: profile?.ownership,
+        cleanup: {
+          status: cleanupErrors.length ? 'failed' : preserveProfile ? 'preserved' : 'complete',
+          ...(cleanupErrors.length ? { error: cleanupErrors.join('\n') } : {}),
+          ...(preserveProfile || cleanupErrors.length ? { preservedProfile: tempRoot } : {})
+        }
+      })
+    } catch (error) {
+      console.error(error)
+      exitCode = 1
+    }
     app.exit(exitCode)
   }
 })

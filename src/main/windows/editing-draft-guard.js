@@ -1,7 +1,7 @@
 /** Negotiate with the application's own dialog; never lock the native parent window. */
 export function createEditingDraftGuard({ logger, reveal = () => {} }) {
   let pending = null
-  return (window, action) => {
+  return (window, action, { canReveal = () => true } = {}) => {
     if (pending) return pending
     pending = (async () => {
       if (!window || window.isDestroyed() || window.webContents.isCrashed()) return true
@@ -45,10 +45,10 @@ export function createEditingDraftGuard({ logger, reveal = () => {} }) {
       async function negotiate() {
         try {
           const state = await readState()
-          if (cancelled) return false
+          if (cancelled || !canReveal()) return false
           if (!state.dirty && !state.blocked) return true
           await reveal(window)
-          if (cancelled) return false
+          if (cancelled || !canReveal()) return false
           if (state.blocked) {
             notify('正在保存或草稿暂存失败，请先完成保存，再' + action + '。')
             return false

@@ -28,7 +28,7 @@ const editingDraftSessionId =
 const api = {
   runtimeCapabilities: {
     platform: process.platform,
-    systemNotifications: getSystemNotificationCapability(process.platform),
+    systemNotifications: getSystemNotificationCapability(),
     editingDraftSessionId
   },
 
@@ -100,7 +100,8 @@ const api = {
 
   beginTitlebarWindowDrag: (point, diagnostics) =>
     ipcRenderer.invoke('titlebar-window:begin-drag', { point, diagnostics }),
-  updateTitlebarWindowDrag: (point) => ipcRenderer.send('titlebar-window:update-drag', point),
+  updateTitlebarWindowDrag: (point, diagnostics) =>
+    ipcRenderer.send('titlebar-window:update-drag', point, diagnostics),
   endTitlebarWindowDrag: (diagnostics) =>
     ipcRenderer.invoke('titlebar-window:end-drag', diagnostics),
   // ---- 设置桥接（双向通信，均返回 Promise） ----
@@ -252,6 +253,12 @@ const api = {
   completeNote: (id) => ipcRenderer.invoke('notes:complete', { id }),
   /** 将已完成便签重新恢复为进行中 */
   reopenNote: (id) => ipcRenderer.invoke('notes:reopen', { id }),
+  /** 分页预览历史未完成便签，包含不可移动项及原因。 */
+  previewHistoricalNotesToToday: (selection) =>
+    ipcRenderer.invoke('notes:preview-historical-move', selection),
+  /** 只将范围内选中的仅当天便签移动到提交时的今天。 */
+  moveHistoricalNotesToToday: (selection) =>
+    ipcRenderer.invoke('notes:move-historical-to-today', selection),
   /** 查询指定日期范围和多选状态下的便签报表预览。 */
   previewDailyReport: (options) => ipcRenderer.invoke('daily-report:preview', options),
   /** 由系统保存对话框将选中的便签导出为 TXT 或 XLSX。 */
@@ -358,8 +365,7 @@ const api = {
   /** 彻底删除已删除模板 */
   purgeTemplate: (id) => ipcRenderer.invoke('templates:purge', { id }),
   /** 使用主进程调度算法预览下一次生成时间 */
-  previewTemplateNextRun: (recurrenceRule, afterTimestamp = Date.now()) =>
-    ipcRenderer.invoke('templates:preview-next-run', { recurrenceRule, afterTimestamp }),
+  previewTemplateNextRun: (fields) => ipcRenderer.invoke('templates:preview-next-run', fields),
   /** 监听调度器触发的模板状态变化；返回取消监听函数。 */
   onTemplatesChanged: (callback) => {
     const handler = (_event, payload) => callback(payload)

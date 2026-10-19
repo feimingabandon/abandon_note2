@@ -55,7 +55,9 @@ export async function collectSystemDiagnostics(
   }
   const [windowsVersion, gpu, bundleHash, nativeHash, sandboxPermissions] = await Promise.all([
     attempt('windowsVersion', overrides.readWindowsVersion || readWindowsVersion),
-    attempt('gpu', () => app.getGPUInfo('complete')),
+    // complete 会在绘制 GPU 主线程同步收集 Dawn，且 Promise 可能先于该任务结束。
+    // 导出只枚举基础设备/驱动，避免诊断本身阻塞供帧；运行适配器及 GL 状态未采集。
+    attempt('gpu', () => app.getGPUInfo('basic')),
     attempt('mainBundleSha256', async () =>
       createHash('sha256')
         .update(await readFile(fileURLToPath(import.meta.url)))
@@ -99,29 +101,17 @@ export async function collectSystemDiagnostics(
       freeMemoryBytes: os.freemem()
     },
     graphics: {
+      collectionLevel: 'basic',
+      adapterSelection: 'not-collected',
       devices:
-        gpu?.gpuDevice?.map((device) =>
-          pick(device, [
-            'vendorId',
-            'deviceId',
-            'active',
-            'vendorString',
-            'deviceString',
-            'driverVendor',
-            'driverVersion',
-            'driverDate'
-          ])
-        ) || null,
-      auxiliary: pick(gpu?.auxAttributes, [
-        'glVendor',
-        'glRenderer',
-        'glVersion',
-        'inProcessGpu',
-        'sandboxed',
-        'optimus',
-        'amdSwitchable',
-        'passthroughCmdDecoder'
-      ]),
+        gpu?.gpuDevice
+          ?.filter((device) => device.vendorId || device.deviceId || device.deviceString)
+          .map((device) =>
+            pick(device, ['vendorId', 'deviceId', 'deviceString', 'driverVersion'])
+          ) || null,
+      // basic 的 active/auxAttributes 含默认值，不能当成实际渲染或沙箱状态。
+      auxiliary: null,
+      auxiliaryStatus: 'not-collected',
       featureStatus: await attempt('gpuFeatureStatus', () => app.getGPUFeatureStatus())
     },
     displays: await attempt('displays', () => {

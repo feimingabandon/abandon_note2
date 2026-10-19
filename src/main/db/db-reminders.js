@@ -43,6 +43,16 @@ export function enqueueReminder(noteId, dueAt, timestamp = Date.now(), parentId 
   return getReminder(id)
 }
 
+/** Cancel live rounds inside their owning note transaction before rescheduling. */
+export function cancelLiveNoteReminders(noteId, timestamp = Date.now()) {
+  return getDb()
+    .prepare(
+      `UPDATE note_reminders SET state = 'cancelled', updated_at = ?
+       WHERE note_id = ? AND state IN ('scheduled', 'active')`
+    )
+    .run(timestamp, noteId).changes
+}
+
 const REMINDER_SELECT = `SELECT r.*, n.content, n.reminder_channels, n.status AS note_status,
   n.is_deleted, n.from_template FROM note_reminders r JOIN notes n ON n.id = r.note_id`
 

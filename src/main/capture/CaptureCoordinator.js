@@ -122,7 +122,7 @@ export class CaptureCoordinator {
       sender.removeListener('destroyed', callback)
     }
   }
-  async capture({ sender = null, token = '', origin = 'global' } = {}) {
+  async capture({ sender = null, token = '', origin = 'global', mode = 'edit' } = {}) {
     if (this.stopping) return { status: 'stopping' }
     if (this.pending) return { status: 'busy' }
     if (this.active) {
@@ -152,6 +152,7 @@ export class CaptureCoordinator {
         sender,
         token,
         origin,
+        mode: origin === 'global' && mode === 'copy-on-select' ? mode : 'edit',
         delivery: null,
         started: Date.now(),
         unwatchSource
@@ -162,7 +163,7 @@ export class CaptureCoordinator {
       // Let the desktop compositor apply an optional main-window hide before freezing.
       await new Promise((resolve) => setTimeout(resolve, 80))
       if (this.active?.id !== id || this.stopping) return { status: 'cancelled' }
-      this.host.send({ type: 'capture', sessionId: id, origin })
+      this.host.send({ type: 'capture', sessionId: id, origin, mode: this.active.mode })
       this.readyTimeout = setTimeout(() => {
         this.cancel()
         this.report(new Error('截图画面准备超时'))

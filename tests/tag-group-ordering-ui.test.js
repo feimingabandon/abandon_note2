@@ -28,7 +28,12 @@ describe('标签分组排序与右键入口', () => {
     expect(list).toContain('collapseAllTagGroups()')
     expect(list).toContain('if (event.draggedContext?.element?.untagged) return false')
     expect(list).toContain('event.relatedContext?.element?.untagged && event.willInsertAfter')
-    expect(list).toContain('.filter((group) => !group.untagged)')
+    expect(
+      readFileSync(
+        new URL('../src/renderer/src/composables/useTagGroupListModel.js', import.meta.url),
+        'utf8'
+      )
+    ).toContain('.filter((group) => !group.untagged)')
     expect(readFileSync(HELP_PAGE_PATH, 'utf8')).toContain('再进入整行拖动模式')
   })
 

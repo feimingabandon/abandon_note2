@@ -1,10 +1,11 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import AlmanacSummary from '../almanac/AlmanacSummary.vue'
+import DateContextSummary from '../almanac/DateContextSummary.vue'
 import NoteCard from '../list/NoteCard.vue'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
+import { useDateContextSettings } from '../../composables/useDateContextSettings.js'
 import { dateOrdinal } from '../../../../shared/calendar/calendar-date-rules.js'
-import { weatherLocationLabel } from '../../../../shared/weather-rules.js'
 
 const props = defineProps({
   dateKey: { type: String, required: true },
@@ -18,12 +19,9 @@ const props = defineProps({
   statusTransitions: { type: Object, default: () => new Map() }
 })
 const emit = defineEmits(['close', 'create', 'edit', 'resize-start', 'status-action'])
+const { weatherEnabled, almanacEnabled, forecast } = useDateContextSettings()
 const listRef = ref(null)
 const dayDirection = ref('forward')
-const displayedWeather = ref(props.weather)
-const displayedWeatherKey = ref(props.weather ? props.dateKey : '')
-const weatherVisible = ref(Boolean(props.weather))
-let weatherRemovalTimer = null
 let contentMotionSequence = 0
 
 const {
@@ -52,29 +50,6 @@ const title = computed(() => {
   ]
   return `${month}月${day}日 · 周${weekday}`
 })
-const weatherPlace = computed(() => weatherLocationLabel(props.weatherLocation))
-const weatherUpdatedLabel = computed(() => {
-  if (!props.weatherFetchedAt) return ''
-  return new Date(props.weatherFetchedAt).toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-})
-const weatherPrecipitationLabel = computed(() => {
-  const weather = displayedWeather.value
-  if (
-    weather?.precipitationProbability !== null &&
-    weather?.precipitationProbability !== undefined
-  ) {
-    return `降水概率 ${weather.precipitationProbability}%`
-  }
-  return weather?.precipitation !== null && weather?.precipitation !== undefined
-    ? `预计降水 ${weather.precipitation} mm`
-    : '暂无降水数据'
-})
-
 watch(
   [() => props.dateKey, noteSignature],
   async ([nextDate], [previousDate]) => {
@@ -100,35 +75,8 @@ watch(
   { flush: 'pre' }
 )
 
-watch(
-  [() => props.dateKey, () => props.weather],
-  ([dateKey, weather], [previousDate]) => {
-    if (weatherRemovalTimer) {
-      clearTimeout(weatherRemovalTimer)
-      weatherRemovalTimer = null
-    }
-    if (previousDate && dateKey !== previousDate) {
-      dayDirection.value = dateOrdinal(dateKey) > dateOrdinal(previousDate) ? 'forward' : 'backward'
-    }
-    if (weather) {
-      displayedWeather.value = weather
-      displayedWeatherKey.value = dateKey
-      weatherVisible.value = true
-      return
-    }
-    weatherVisible.value = false
-    weatherRemovalTimer = setTimeout(() => {
-      displayedWeather.value = null
-      displayedWeatherKey.value = ''
-      weatherRemovalTimer = null
-    }, 280)
-  },
-  { flush: 'pre' }
-)
-
 onBeforeUnmount(() => {
   contentMotionSequence += 1
-  if (weatherRemovalTimer) clearTimeout(weatherRemovalTimer)
   disposePresenceMotion()
 })
 </script>
@@ -174,58 +122,14 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </header>
-    <div
-      class="month-day-panel__weather-slot"
-      :class="{ 'is-visible': weatherVisible }"
-      :aria-hidden="!weatherVisible"
-    >
+    <div v-if="weatherEnabled" class="month-day-panel__weather-slot is-visible">
       <div class="month-day-panel__weather-clip">
-        <Transition name="month-day-weather">
-          <section
-            v-if="displayedWeather"
-            :key="displayedWeatherKey"
-            class="month-day-panel__weather"
-            aria-label="当日天气"
-          >
-            <span class="month-day-panel__weather-icon" aria-hidden="true">{{
-              displayedWeather.icon
-            }}</span>
-            <div class="month-day-panel__weather-main">
-              <strong>全天 {{ displayedWeather.label }}</strong>
-              <span>
-                {{ weatherPlace }}·{{ displayedWeather.temperatureMin }}°～{{
-                  displayedWeather.temperatureMax
-                }}°
-              </span>
-            </div>
-            <div class="month-day-panel__weather-details">
-              <template v-if="weatherCurrent">
-                <span
-                  >当前 {{ weatherCurrent.icon }} {{ weatherCurrent.label }}
-                  {{ weatherCurrent.temperature }}°</span
-                >
-                <span :title="weatherCurrent.validTimeLabel">{{
-                  weatherCurrent.validTimeLabel
-                }}</span>
-                <span>{{ weatherCurrent.updateLabel }}</span>
-              </template>
-              <span>{{ weatherPrecipitationLabel }}</span>
-              <span>最大风速 {{ displayedWeather.windSpeedMax ?? '—' }} km/h</span>
-              <span :title="weatherError">
-                {{
-                  weatherError
-                    ? `更新失败 · 获取于 ${weatherUpdatedLabel}`
-                    : weatherStale
-                      ? `数据较旧 · 获取于 ${weatherUpdatedLabel}`
-                      : `获取于 ${weatherUpdatedLabel}`
-                }}
-              </span>
-            </div>
-          </section>
-        </Transition>
+        <section class="month-day-panel__weather" aria-label="当日天气">
+          <DateContextSummary kind="weather" :date-key="dateKey" :forecast="forecast" />
+        </section>
       </div>
     </div>
-    <AlmanacSummary :date-key="dateKey" />
+    <AlmanacSummary v-if="almanacEnabled" :date-key="dateKey" />
     <div ref="listRef" class="month-day-panel__list scroll-y">
       <NoteCard
         v-for="note in notes"
@@ -407,65 +311,14 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 .month-day-panel__weather {
-  display: grid;
+  display: flex;
   flex: 0 0 auto;
-  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
-  gap: 8rem;
   padding: 9rem 13rem;
   border-bottom: 1px solid var(--ui-border-divider);
 }
-.month-day-weather-enter-active,
-.month-day-weather-leave-active {
-  transition:
-    opacity 170ms ease,
-    transform 220ms var(--ease-standard);
-}
-.month-day-weather-leave-active {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-}
-.is-day-forward .month-day-weather-enter-from,
-.is-day-backward .month-day-weather-leave-to {
-  opacity: 0;
-  transform: translateX(7rem);
-}
-.is-day-forward .month-day-weather-leave-to,
-.is-day-backward .month-day-weather-enter-from {
-  opacity: 0;
-  transform: translateX(-7rem);
-}
-.month-day-panel__weather-icon {
-  font-size: 24rem;
-  line-height: 1;
-}
-.month-day-panel__weather-main,
-.month-day-panel__weather-details {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2rem;
-}
-.month-day-panel__weather-main strong {
-  color: var(--text-color);
-  font-size: var(--fs-body);
-}
-.month-day-panel__weather-main span,
-.month-day-panel__weather-details span {
-  display: block;
-  width: 100%;
-  max-width: 100%;
-  overflow: hidden;
-  color: var(--text-color-secondary);
-  font-size: calc(var(--fs-secondary) * 0.82);
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.month-day-panel__weather-details {
-  align-items: flex-end;
-  text-align: right;
+.month-day-panel__weather .date-context-summary {
+  flex: 1;
 }
 .month-day-panel__empty {
   display: grid;

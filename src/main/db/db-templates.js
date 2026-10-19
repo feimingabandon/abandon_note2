@@ -39,6 +39,69 @@ function calculateTemplateNextRun(rule, afterTimestamp, scheduleAnchorAt, startA
   return calculateNextRunInRange(rule, afterTimestamp, scheduleAnchorAt, { startAt, endAt })
 }
 
+function resolveTemplateSchedule(fields, old, timestamp) {
+  let oldRule = null
+  if (old) {
+    try {
+      oldRule = normalizeRecurrenceRule(old.recurrence_rule)
+    } catch (error) {
+      if (fields.recurrenceRule === undefined) throw error
+    }
+  }
+  const rule =
+    fields.recurrenceRule === undefined ? oldRule : normalizeRecurrenceRule(fields.recurrenceRule)
+  if (!rule) throw new Error('循环规则不能为空')
+  const hasStartAt = fields.startAt !== undefined || fields.start_at !== undefined
+  const hasEndAt = fields.endAt !== undefined || fields.end_at !== undefined
+  const submittedStartAt = fields.startAt !== undefined ? fields.startAt : fields.start_at
+  const submittedEndAt = fields.endAt !== undefined ? fields.endAt : fields.end_at
+  const range = normalizeTemplateTimeRange(
+    {
+      startAt: hasStartAt ? submittedStartAt : old?.start_at,
+      endAt: hasEndAt ? submittedEndAt : old?.end_at
+    },
+    hasStartAt || !old ? timestamp : (old.start_at ?? old.schedule_anchor_at)
+  )
+  const scheduleChanged =
+    !old ||
+    (fields.recurrenceRule !== undefined &&
+      (!oldRule || JSON.stringify(rule) !== JSON.stringify(oldRule))) ||
+    (hasStartAt && Number(range.startAt) !== Number(old.start_at ?? old.schedule_anchor_at)) ||
+    (hasEndAt && range.endAt !== (old.end_at ?? null))
+  const scheduleAnchorAt = scheduleChanged ? range.startAt : old.schedule_anchor_at
+  const nextRunAt = scheduleChanged
+    ? calculateTemplateNextRun(rule, timestamp, scheduleAnchorAt, range.startAt, range.endAt)
+    : old.next_run_at
+  if (scheduleChanged && nextRunAt === null) {
+    throw new Error('所选开始与结束时间之间没有可生成节点')
+  }
+  return { rule, range, scheduleChanged, scheduleAnchorAt, nextRunAt }
+}
+
+/** Preview uses the same range and daily anchor as the eventual create/update. */
+export function previewTemplateNextRun(fields = {}, timestamp = now()) {
+  const templateId = fields.templateId
+  const old =
+    templateId === null || templateId === undefined
+      ? null
+      : getTemplateRow(getDb(), normalizeTemplateId(templateId))
+  if (templateId !== null && templateId !== undefined && (!old || old.is_deleted)) {
+    throw new Error('模板不存在或已删除')
+  }
+  const schedule = resolveTemplateSchedule(fields, old, timestamp)
+  // A paused template previews its candidate after resume; saving keeps it paused.
+  if (old?.is_paused && schedule.nextRunAt === null) {
+    return calculateTemplateNextRun(
+      schedule.rule,
+      timestamp,
+      schedule.scheduleAnchorAt,
+      schedule.range.startAt,
+      schedule.range.endAt
+    )
+  }
+  return schedule.nextRunAt
+}
+
 function normalizeTagIds(tagIds = []) {
   return requireSingleAssignedTagId(tagIds)
 }
@@ -101,7 +164,7 @@ export function createTemplate(
   {
     recurrenceRule,
     content = '',
-    notifyEnabled = true,
+    notifyEnabled = false,
     reminderChannels,
     isPinned = false,
     tagIds = [],
@@ -113,18 +176,13 @@ export function createTemplate(
   const db = getDb()
   const channels = normalizeReminderChannels(reminderChannels, notifyEnabled)
   const normalizedContent = normalizeContent(content)
-  const normalizedRule = normalizeRecurrenceRule(recurrenceRule)
   const normalizedTags = normalizeTagIds(tagIds)
-  const range = normalizeTemplateTimeRange({ startAt, endAt }, timestamp)
-  const scheduleAnchorAt = range.startAt
-  const nextRunAt = calculateTemplateNextRun(
-    normalizedRule,
-    timestamp,
+  const {
+    rule: normalizedRule,
+    range,
     scheduleAnchorAt,
-    range.startAt,
-    range.endAt
-  )
-  if (nextRunAt === null) throw new Error('所选开始与结束时间之间没有可生成节点')
+    nextRunAt
+  } = resolveTemplateSchedule({ recurrenceRule, startAt, endAt }, null, timestamp)
 
   return db.transaction(() => {
     ensureTagsExist(db, normalizedTags)
@@ -169,37 +227,13 @@ export function updateTemplate(id, fields = {}, timestamp = now()) {
         : normalizeReminderChannels(fields.reminderChannels, fields.notifyEnabled)
 
     const content = fields.content === undefined ? old.content : normalizeContent(fields.content)
-    let oldRule = null
-    try {
-      oldRule = normalizeRecurrenceRule(old.recurrence_rule)
-    } catch (error) {
-      if (fields.recurrenceRule === undefined) throw error
-    }
-    const rule =
-      fields.recurrenceRule === undefined ? oldRule : normalizeRecurrenceRule(fields.recurrenceRule)
-    const hasStartAt = fields.startAt !== undefined || fields.start_at !== undefined
-    const hasEndAt = fields.endAt !== undefined || fields.end_at !== undefined
-    const submittedStartAt = fields.startAt !== undefined ? fields.startAt : fields.start_at
-    const submittedEndAt = fields.endAt !== undefined ? fields.endAt : fields.end_at
-    const range = normalizeTemplateTimeRange(
-      {
-        startAt: hasStartAt ? submittedStartAt : old.start_at,
-        endAt: hasEndAt ? submittedEndAt : old.end_at
-      },
-      hasStartAt ? timestamp : (old.start_at ?? old.schedule_anchor_at)
-    )
-    const scheduleChanged =
-      (fields.recurrenceRule !== undefined &&
-        (!oldRule || JSON.stringify(rule) !== JSON.stringify(oldRule))) ||
-      (hasStartAt && Number(range.startAt) !== Number(old.start_at ?? old.schedule_anchor_at)) ||
-      (hasEndAt && range.endAt !== (old.end_at ?? null))
-    const scheduleAnchorAt = scheduleChanged ? range.startAt : old.schedule_anchor_at
-    const candidateNextRunAt = scheduleChanged
-      ? calculateTemplateNextRun(rule, timestamp, scheduleAnchorAt, range.startAt, range.endAt)
-      : old.next_run_at
-    if (scheduleChanged && candidateNextRunAt === null) {
-      throw new Error('所选开始与结束时间之间没有可生成节点')
-    }
+    const {
+      rule,
+      range,
+      scheduleChanged,
+      scheduleAnchorAt,
+      nextRunAt: candidateNextRunAt
+    } = resolveTemplateSchedule(fields, old, timestamp)
     const automaticallyEnded =
       Number(old.is_paused) === 1 &&
       old.pause_reason === null &&

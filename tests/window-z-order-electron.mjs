@@ -1,8 +1,19 @@
-import assert from 'node:assert/strict'
 import { app, BrowserWindow } from 'electron'
 import { resolve } from 'node:path'
 import koffi from 'koffi'
 import { spawn } from 'node:child_process'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/window-z-order-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-window-z-order-',
+  metadata: { realWindows: true, nativeZOrder: true, externalEventProcess: true }
+})
+const { assert } = lifecycle
+app.setPath('userData', lifecycle.root)
 
 const GW_HWNDNEXT = 2
 const SWP_NOSIZE = 0x0001
@@ -49,11 +60,32 @@ async function waitUntil(predicate, timeoutMs = 2500) {
   return false
 }
 
+async function stopEmitter(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  await new Promise((done, reject) => {
+    const finish = (error) => {
+      clearTimeout(timer)
+      child.off('exit', onExit)
+      child.off('error', onError)
+      if (error) reject(error)
+      else done()
+    }
+    const onExit = () => finish()
+    const onError = (error) => finish(error)
+    const timer = setTimeout(() => finish(new Error('Event emitter did not stop')), 5000)
+    child.once('exit', onExit)
+    child.once('error', onError)
+    if (child.connected) child.disconnect()
+    child.kill()
+  })
+}
+
 app.once('ready', async () => {
   const windows = []
   let blurInitialized = false
   let destroyBlur = null
-  let exitCode = 0
+  let completed = false
+  let failure = null
   let emitter = null
 
   try {
@@ -217,22 +249,22 @@ app.once('ready', async () => {
     assert.equal(getStatus().enabled, false)
 
     console.log('always-bottom focus guard and blur adjacency integration test passed')
+    completed = true
   } catch (error) {
     console.error(error)
-    exitCode = 1
+    failure = error
   } finally {
-    if (emitter) {
-      if (emitter.connected) emitter.disconnect()
-      emitter.kill()
-    }
-    if (blurInitialized) {
-      try {
-        destroyBlur?.()
-      } catch {
-        exitCode = 1
+    await lifecycle.finish({
+      completed,
+      error: failure,
+      window: windows[0],
+      restore: async () => {
+        try {
+          await stopEmitter(emitter)
+        } finally {
+          if (blurInitialized) destroyBlur?.()
+        }
       }
-    }
-    for (const window of windows) window.destroy()
-    app.exit(exitCode)
+    })
   }
 })

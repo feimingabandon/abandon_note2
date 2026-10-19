@@ -1,6 +1,6 @@
 /** 循环模板生成编排：只补偿当天节点，实例按快照独立创建。 */
 import { getDueTemplates, recordTemplateFailure } from '../db/db-templates.js'
-import { createRecurringNoteSnapshot, deleteNote } from '../db/db-notes.js'
+import { createRecurringNoteSnapshot } from '../db/db-notes.js'
 import { getDb } from '../db/db-connection.js'
 import { enqueueReminder } from '../db/db-reminders.js'
 import { calculateNextRunInRange, normalizeRecurrenceRule } from './recurrence-rules.js'
@@ -97,14 +97,6 @@ export function runRecurringTemplates({ now = Date.now() } = {}) {
         if (scheduledAt === null) {
           advanceWithoutGenerating(db, template, rule, timestamp)
           return { type: 'skipped' }
-        }
-
-        if (template.last_generated_note_id) {
-          const previous = db
-            .prepare('SELECT id, status, is_deleted FROM notes WHERE id = ?')
-            .get(template.last_generated_note_id)
-          if (previous && !previous.is_deleted && previous.status !== 'completed')
-            deleteNote(previous.id)
         }
 
         const tagIds = db

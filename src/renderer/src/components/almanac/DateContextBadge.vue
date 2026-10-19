@@ -3,12 +3,12 @@ import { computed, ref, watch } from 'vue'
 import OverflowFade from '../ui/OverflowFade.vue'
 import DateContextPopover from './DateContextPopover.vue'
 import { useAlmanac } from '../../composables/useAlmanac.js'
+import { useDateContextSettings } from '../../composables/useDateContextSettings.js'
 import { almanacSummary } from '../../../../shared/calendar/almanac-display.js'
 
 const props = defineProps({
   dateKey: { type: String, required: true },
   weather: { type: Object, default: null },
-  currentWeather: { type: Object, default: null },
   displayMode: { type: String, default: 'auto' },
   summaryTitle: { type: String, default: '' },
   compact: { type: Boolean, default: false },
@@ -16,15 +16,20 @@ const props = defineProps({
 })
 const trigger = ref(null)
 const visible = ref(false)
-const resolvedCurrentWeather = computed(() => {
-  const current = props.currentWeather || props.weather?.currentWeather
-  return current?.date === props.dateKey ? current : null
-})
+const { weatherEnabled, almanacEnabled } = useDateContextSettings()
+const displayWeather = computed(() => (weatherEnabled.value ? props.weather : null))
 const isAlmanac = computed(
-  () => props.displayMode === 'almanac' || (props.displayMode === 'auto' && !props.weather)
+  () => props.displayMode === 'almanac' || (props.displayMode === 'auto' && !displayWeather.value)
 )
-const { result, loading, error, reload } = useAlmanac(() =>
-  isAlmanac.value || visible.value ? props.dateKey : ''
+const enabled = computed(() =>
+  props.displayMode === 'weather'
+    ? weatherEnabled.value
+    : props.displayMode === 'almanac'
+      ? almanacEnabled.value
+      : Boolean(displayWeather.value) || almanacEnabled.value
+)
+const { result, loading, error } = useAlmanac(() =>
+  enabled.value && almanacEnabled.value && isAlmanac.value ? props.dateKey : ''
 )
 const almanacTerms = computed(() => {
   const almanac = result.value?.almanac
@@ -44,7 +49,7 @@ const summary = computed(() => {
 })
 const title = computed(() => {
   if (props.summaryTitle) return props.summaryTitle
-  const weather = props.weather
+  const weather = displayWeather.value
   const description =
     !isAlmanac.value && weather
       ? `全天预报 ${weather.label} ${weather.temperatureMin}°～${weather.temperatureMax}° · ${weather.updateLabel || ''}`
@@ -66,10 +71,14 @@ watch(
   () => props.dateKey,
   () => close()
 )
+watch(enabled, (value) => {
+  if (!value) close()
+})
 </script>
 
 <template>
   <button
+    v-if="enabled"
     ref="trigger"
     type="button"
     class="date-context-badge"
@@ -85,10 +94,10 @@ watch(
     @keydown.stop
   >
     <slot :almanac="result?.almanac" :loading="loading" :error="error">
-      <OverflowFade v-if="weather">
-        <span aria-hidden="true">{{ weather.icon }}</span>
-        <span v-if="!compact"> {{ weather.label }} </span>
-        {{ weather.temperatureMin }}°～{{ weather.temperatureMax }}°
+      <OverflowFade v-if="displayWeather">
+        <span aria-hidden="true">{{ displayWeather.icon }}</span>
+        <span v-if="!compact"> {{ displayWeather.label }} </span>
+        {{ displayWeather.temperatureMin }}°～{{ displayWeather.temperatureMax }}°
       </OverflowFade>
       <OverflowFade v-else class="date-context-badge__almanac">
         <template v-if="almanacTerms">
@@ -102,18 +111,7 @@ watch(
     </slot>
     <Teleport to="body">
       <Transition name="date-context">
-        <DateContextPopover
-          v-if="visible"
-          :date-key="dateKey"
-          :anchor="trigger"
-          :weather="weather"
-          :current-weather="resolvedCurrentWeather"
-          :result="result"
-          :loading="loading"
-          :error="error"
-          @close="close"
-          @retry="reload"
-        />
+        <DateContextPopover v-if="visible" :date-key="dateKey" :anchor="trigger" @close="close" />
       </Transition>
     </Teleport>
   </button>

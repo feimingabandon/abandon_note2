@@ -1,9 +1,117 @@
 import { readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { compileScript, parse } from '@vue/compiler-sfc'
+import { isComposingInput } from '../src/renderer/src/utils/inputComposition.js'
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 
+function rendererHandler(path, name, dependencies) {
+  const { descriptor } = parse(read(path), { filename: path })
+  const parsed = compileScript(descriptor, { id: 'windows-shortcut-ui-contract' })
+  const node = parsed.scriptSetupAst.find(
+    (entry) => entry.type === 'FunctionDeclaration' && entry.id.name === name
+  )
+  if (!node) throw new Error(`Renderer handler ${name} not found`)
+  return new Function(
+    ...Object.keys(dependencies),
+    `return (${descriptor.scriptSetup.content.slice(node.start, node.end)})`
+  )(...Object.values(dependencies))
+}
+
+function keyboardEvent(key, modifiers = {}) {
+  return {
+    key,
+    ctrlKey: false,
+    metaKey: false,
+    ...modifiers,
+    preventDefault: vi.fn(),
+    stopPropagation: vi.fn()
+  }
+}
+
 describe('view visibility shortcut UI wiring', () => {
+  it('uses Ctrl for local search actions and keeps the Windows key distinct', () => {
+    const focus = vi.fn(),
+      select = vi.fn(),
+      openSearch = vi.fn(),
+      clearQuery = vi.fn()
+    const help = rendererHandler('src/renderer/src/components/help/HelpPage.vue', 'onKeydown', {
+      cancelNavigation: vi.fn(),
+      searchInput: { value: { focus, select } },
+      hasQuery: { value: false },
+      navCollapsed: { value: true },
+      clearSearch: vi.fn()
+    })
+    const action = rendererHandler(
+      'src/renderer/src/components/list/ActionBar.vue',
+      'onGlobalKeydown',
+      {
+        document: { querySelector: vi.fn(() => null) },
+        openSearch
+      }
+    )
+    const search = rendererHandler(
+      'src/renderer/src/components/list/SearchBox.vue',
+      'onInputKeydown',
+      {
+        isComposingInput,
+        submitSearch: vi.fn(),
+        clearQuery,
+        advancedOpen: { value: false },
+        query: { value: '' },
+        emit: vi.fn()
+      }
+    )
+    for (const [handler, key, actionSpy] of [
+      [help, 'F', focus],
+      [action, 'f', openSearch],
+      [search, 'Backspace', clearQuery]
+    ]) {
+      const windowsKey = keyboardEvent(key, { metaKey: true })
+      handler(windowsKey)
+      expect(actionSpy).not.toHaveBeenCalled()
+      expect(windowsKey.preventDefault).not.toHaveBeenCalled()
+      const control = keyboardEvent(key, { ctrlKey: true })
+      handler(control)
+      expect(actionSpy).toHaveBeenCalledTimes(1)
+      expect(control.preventDefault).toHaveBeenCalledTimes(1)
+    }
+    expect(select).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps search shortcuts behind the inactive scene and composition guards', () => {
+    const openSearch = vi.fn(),
+      clearQuery = vi.fn()
+    const action = rendererHandler(
+      'src/renderer/src/components/list/ActionBar.vue',
+      'onGlobalKeydown',
+      {
+        document: { querySelector: vi.fn(() => ({})) },
+        openSearch
+      }
+    )
+    const blocked = keyboardEvent('f', { ctrlKey: true })
+    action(blocked)
+    expect(openSearch).not.toHaveBeenCalled()
+    expect(blocked.preventDefault).not.toHaveBeenCalled()
+    const search = rendererHandler(
+      'src/renderer/src/components/list/SearchBox.vue',
+      'onInputKeydown',
+      {
+        isComposingInput,
+        submitSearch: vi.fn(),
+        clearQuery,
+        advancedOpen: { value: false },
+        query: { value: '' },
+        emit: vi.fn()
+      }
+    )
+    const composing = keyboardEvent('Backspace', { ctrlKey: true, isComposing: true })
+    search(composing)
+    expect(clearQuery).not.toHaveBeenCalled()
+    expect(composing.preventDefault).not.toHaveBeenCalled()
+  })
+
   it('uses a read-only one-step recorder with explicit user states', () => {
     const panel = read('src/renderer/src/components/system/SettingsPanel.vue')
     const recorder = read('src/renderer/src/components/ui/ShortcutRecorder.vue')
@@ -73,21 +181,21 @@ describe('view visibility shortcut UI wiring', () => {
     ]) {
       calls.length = 0
       const invoke = new Function(
-        'isQuitting',
-        'switchingMainView',
-        'screenshotCaptureActive',
-        'mainWindow',
-        'isDockHidden',
+        'shutdownCoordinator',
+        'mainViewNavigation',
+        'captureWindowIntegration',
+        'getMainWindow',
+        'dockRuntime',
         'logger',
         'toggleWindow',
         `${shortcutHandler}; handleViewVisibilityShortcut()`
       )
       invoke(
-        isQuitting,
-        switchingMainView,
-        screenshotCaptureActive,
-        null,
-        false,
+        { isQuitting: () => isQuitting },
+        { isSwitching: () => switchingMainView },
+        { isActive: () => screenshotCaptureActive },
+        () => null,
+        { hidden: false },
         { info: () => {} },
         () => calls.push('toggle')
       )

@@ -27,6 +27,8 @@ import locateCurrentBlack from '@/resources/icons/locate-current.svg'
 import locateCurrentWhite from '@/resources/icons/locate-current-white.svg'
 import datePanelBlack from '@/resources/icons/date-panel.svg'
 import datePanelWhite from '@/resources/icons/date-panel-white.svg'
+import moveToTodayBlack from '@/resources/icons/move-to-today.svg'
+import moveToTodayWhite from '@/resources/icons/move-to-today-white.svg'
 
 const ICON_SOURCES = Object.freeze({
   almanac: { black: almanacBlack, white: almanacWhite },
@@ -42,7 +44,8 @@ const ICON_SOURCES = Object.freeze({
   clover: { black: cloverBlack, white: cloverWhite },
   'switch-view': { black: switchViewBlack, white: switchViewWhite },
   'locate-current': { black: locateCurrentBlack, white: locateCurrentWhite },
-  'date-panel': { black: datePanelBlack, white: datePanelWhite }
+  'date-panel': { black: datePanelBlack, white: datePanelWhite },
+  'move-to-today': { black: moveToTodayBlack, white: moveToTodayWhite }
 })
 
 defineProps({
@@ -64,7 +67,8 @@ defineProps({
         'clover',
         'switch-view',
         'locate-current',
-        'date-panel'
+        'date-panel',
+        'move-to-today'
       ].includes(value)
   },
   alt: { type: String, default: '' }

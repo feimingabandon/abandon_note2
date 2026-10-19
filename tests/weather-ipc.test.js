@@ -44,7 +44,10 @@ function createHarness(weatherService, initialSettings) {
   }
   let settings = initialSettings
   const lifecycle = registerWeatherIpcHandlers({
-    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler),
+      removeHandler: (channel) => handlers.delete(channel)
+    },
     shell: { openExternal: vi.fn() },
     userDataPath: 'unused-in-test',
     getMainWindow: () => mainWindow,
@@ -63,6 +66,56 @@ function createHarness(weatherService, initialSettings) {
 }
 
 describe('天气 IPC 请求协调', () => {
+  it('移除全部已注册 IPC，并丢弃退出后晚到的刷新结果', async () => {
+    const request = deferred(),
+      storeDecisions = []
+    const weatherService = {
+      getForecast: vi.fn(async (_location, options) => {
+        if (options.cacheOnly) return null
+        const value = await request.promise
+        storeDecisions.push(options.shouldStore())
+        return value
+      })
+    }
+    const harness = createHarness(weatherService, { enabled: true, location: beijing })
+    expect(harness.handlers.size).toBe(5)
+    const refreshing = harness.lifecycle.refreshAtStartup()
+    await Promise.resolve()
+    harness.lifecycle.dispose()
+    harness.lifecycle.dispose()
+    expect(harness.handlers.size).toBe(0)
+    request.resolve({ location: beijing, days: [] })
+    await expect(refreshing).resolves.toBeNull()
+    expect(storeDecisions).toEqual([false])
+    expect(harness.webContents.send).not.toHaveBeenCalled()
+  })
+
+  it('注册部分失败时回收此前成功注册的 handler', () => {
+    const handlers = new Map(),
+      removed = []
+    expect(() =>
+      registerWeatherIpcHandlers({
+        ipcMain: {
+          handle(channel, handler) {
+            if (channel === 'weather:get-forecast') throw new Error('duplicate handler')
+            handlers.set(channel, handler)
+          },
+          removeHandler(channel) {
+            removed.push(channel)
+            handlers.delete(channel)
+          }
+        },
+        shell: {},
+        userDataPath: 'unused-in-test',
+        getMainWindow: () => null,
+        getWeatherSettings: () => ({}),
+        weatherService: {}
+      })
+    ).toThrow('duplicate handler')
+    expect(handlers.size).toBe(0)
+    expect(removed).toEqual(['weather:resolve-location', 'weather:get-division-tree'])
+  })
+
   it('当前地区没有缓存时会主动拉取天气', async () => {
     const forecast = { location: beijing, days: [] }
     const weatherService = {

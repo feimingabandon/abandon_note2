@@ -3,9 +3,11 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import AppIcon from '../ui/AppIcon.vue'
 import DateContextSummary from '../almanac/DateContextSummary.vue'
 import NumberStepper from '../ui/NumberStepper.vue'
+import HistoricalNoteMoveControl from './HistoricalNoteMoveControl.vue'
 import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 import { popoverStyle, measurePopoverContent } from '../../utils/anchoredPopover.js'
 import { usePopoverLifecycle } from '../../composables/usePopoverLifecycle.js'
+import { useDateContextSettings } from '../../composables/useDateContextSettings.js'
 import { isComposingInput } from '../../utils/inputComposition.js'
 import {
   MAX_CALENDAR_YEAR,
@@ -39,9 +41,12 @@ const emit = defineEmits([
   'jump-date',
   'refresh',
   'update:recurring-preview-enabled',
-  'toggle-day-panel'
+  'toggle-day-panel',
+  'historical-notes-moved',
+  'historical-move-open-change'
 ])
 const isWeekView = computed(() => props.viewMode === 'week')
+const { weatherEnabled, almanacEnabled } = useDateContextSettings()
 const pickerOpen = ref(false)
 const pickerGuardVisible = ref(false)
 const pickerTriggerRef = ref(null)
@@ -217,6 +222,11 @@ function closePicker() {
   pickerPeriodOpen.value = false
 }
 
+function onHistoricalMoveOpenChange(open) {
+  if (open) closePicker()
+  emit('historical-move-open-change', open)
+}
+
 function closePickerAndRestoreFocus() {
   closePicker()
   void nextTick(() => pickerTriggerRef.value?.focus())
@@ -322,7 +332,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
           @animationend="finishRefreshSpin"
         />
       </button>
-      <DateContextSummary kind="weather" :forecast="forecast" />
+      <DateContextSummary v-if="weatherEnabled" kind="weather" :forecast="forecast" />
     </div>
 
     <div class="month-toolbar__navigation" :aria-label="isWeekView ? '周导航' : '月份导航'">
@@ -540,7 +550,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
     </div>
 
     <div class="month-toolbar__trailing">
-      <DateContextSummary kind="almanac" :forecast="forecast" />
+      <DateContextSummary v-if="almanacEnabled" kind="almanac" :forecast="forecast" />
       <button
         type="button"
         class="month-toolbar__recurring-preview month-toolbar__recurring-preview-toggle"
@@ -554,6 +564,11 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
       >
         <AppIcon name="recurrence" class="month-toolbar__action-icon" />
       </button>
+      <HistoricalNoteMoveControl
+        :disabled="busy"
+        @open-change="onHistoricalMoveOpenChange"
+        @moved="emit('historical-notes-moved', $event)"
+      />
       <button
         type="button"
         class="month-toolbar__day-panel-toggle"
@@ -613,6 +628,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
 .month-toolbar__trailing {
   min-width: 0;
   justify-self: stretch;
+  justify-content: flex-end;
 }
 .month-toolbar__trailing .date-context-summary {
   flex: 1 1 0;

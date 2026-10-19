@@ -1,7 +1,26 @@
-import assert from 'node:assert/strict'
 import { app, BrowserWindow } from 'electron'
-import { resolve } from 'node:path'
+import { createHash } from 'node:crypto'
+import { writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import koffi from 'koffi'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/blur-z-order-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-blur-z-order-',
+  metadata: {
+    realWindows: true,
+    nativeBlur: true,
+    productMainProcess: false,
+    evidenceKind: 'native-window-state-json',
+    pixelEvidence: false
+  }
+})
+const { assert } = lifecycle
+app.setPath('userData', lifecycle.root)
 
 const HANDLE = koffi.pointer('HANDLE', koffi.opaque())
 koffi.alias('HWND', HANDLE)
@@ -37,10 +56,11 @@ async function waitUntil(predicate, timeoutMs = 2000) {
 }
 
 app.once('ready', async () => {
-  const windows = []
   let blurInitialized = false
   let destroyBlur = null
-  let exitCode = 0
+  let completed = false
+  let failure = null
+  let nativeWindowEvidence = null
 
   try {
     const user32 = koffi.load('user32.dll')
@@ -100,7 +120,6 @@ app.once('ready', async () => {
       width: 240,
       height: 320
     })
-    windows.push(mainWindow, interloperWindow)
     await Promise.all([
       mainWindow.loadURL(
         'data:text/html,<body style="margin:0;background:rgba(255,255,255,.2)"></body>'
@@ -226,19 +245,72 @@ app.once('ready', async () => {
       'synchronized native moves must preserve or promptly restore overlay z-order'
     )
 
+    // This fixture asserts the Win32 overlay and physical geometry. Chromium's
+    // compositor may have no capturable frame after the synchronous native moves;
+    // record the actual tested native state before Blur_Destroy instead of asking
+    // capturePage to provide unrelated pixel evidence during native teardown.
+    const finalParentBounds = {}
+    const finalOverlayBounds = {}
+    if (
+      getWindowRect(nativeHandle(mainWindow), finalParentBounds) !== 1 ||
+      getWindowRect(overlayWindow, finalOverlayBounds) !== 1
+    )
+      throw new Error('Native evidence could not read the final window bounds')
+    const snapshot = {
+      version: 1,
+      suite: 'tests/blur-z-order-electron.mjs',
+      capturedAt: new Date().toISOString(),
+      motionFrames: 120,
+      parent: {
+        hwnd: nativeHandle(mainWindow).toString(),
+        visible: isWindowVisible(nativeHandle(mainWindow)) === 1,
+        electronVisible: mainWindow.isVisible(),
+        minimized: mainWindow.isMinimized(),
+        url: mainWindow.webContents.getURL(),
+        physicalBounds: finalParentBounds
+      },
+      overlay: {
+        className: OVERLAY_CLASS_NAME,
+        processId: process.pid,
+        visible: isWindowVisible(overlayWindow) === 1,
+        physicalBounds: finalOverlayBounds
+      },
+      zOrderSynchronized: blurIsZOrderSynchronized() === 1,
+      limitations: ['Native visibility/geometry/z-order evidence; no Chromium bitmap or pixel QA']
+    }
+    if (
+      !snapshot.parent.visible ||
+      !snapshot.overlay.visible ||
+      !snapshot.zOrderSynchronized ||
+      ['left', 'top', 'right', 'bottom'].some(
+        (side) => finalParentBounds[side] !== finalOverlayBounds[side]
+      )
+    )
+      throw new Error('Native evidence no longer matches the verified visible synchronized windows')
+    const artifact = 'native-window-snapshot.json'
+    const content = JSON.stringify(snapshot, null, 2) + '\n'
+    writeFileSync(join(process.env.ABANDON_TEST_EVIDENCE_DIR || lifecycle.root, artifact), content, {
+      flag: 'wx'
+    })
+    nativeWindowEvidence = {
+      artifact,
+      sha256: createHash('sha256').update(content).digest('hex'),
+      snapshot
+    }
+
     console.log('blur visibility, synchronized geometry and z-order integration test passed')
+    completed = true
   } catch (error) {
     console.error(error)
-    exitCode = 1
+    failure = error
   } finally {
-    if (blurInitialized) {
-      try {
-        destroyBlur?.()
-      } catch {
-        exitCode = 1
+    await lifecycle.finish({
+      completed,
+      error: failure,
+      summary: { nativeWindowEvidence },
+      restore: () => {
+        if (blurInitialized) destroyBlur?.()
       }
-    }
-    for (const window of windows) window.destroy()
-    app.exit(exitCode)
+    })
   }
 })

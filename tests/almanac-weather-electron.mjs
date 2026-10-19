@@ -1,20 +1,39 @@
-import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { registerWeatherIpcHandlers } from '../src/main/ipc/register-weather-ipc.js'
 import { WeatherService } from '../src/main/services/weather-service.js'
 import { verifyDatePickerKeyboard } from './helpers/date-picker-keyboard.mjs'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
 
 const require = createRequire(import.meta.url)
-const userData =
-  process.env.ABANDON_ALMANAC_TEST_PROFILE || mkdtempSync(join(tmpdir(), 'abandon-almanac-'))
 const reopening = Boolean(process.env.ABANDON_ALMANAC_TEST_PROFILE)
-const output = resolve('tmp/almanac-weather-e2e')
-mkdirSync(output, { recursive: true })
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/almanac-weather-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-almanac-',
+  metadata: {
+    legacyFixture: true,
+    reopening,
+    runtimeAppBootstrap: true,
+    realWindows: true,
+    diskDatabase: true,
+    weatherBoundary: 'real WeatherService/IPC with injected provider, clock and random source',
+    assertionCounterScope:
+      'suite lifecycle.assert calls only; date-picker helper has independent assertions'
+  },
+  timeoutMs: 240000
+})
+const { assert } = lifecycle
+const userData = lifecycle.root
+const output = join(process.env.ABANDON_TEST_EVIDENCE_DIR || userData, 'almanac-weather')
+let activeWindow = null
+let weatherFixtureRuntime = null
 const report = (message) => process.stderr.write(`[almanac-weather] ${message}\n`)
 async function until(fn, message) {
   const end = Date.now() + 15000
@@ -24,37 +43,46 @@ async function until(fn, message) {
   }
   throw Error(message)
 }
-if (!reopening) {
-  const db = new Database(join(userData, 'app.db'))
-  db.exec(
-    "CREATE TABLE app_settings(window_name TEXT NOT NULL,type TEXT NOT NULL,key TEXT NOT NULL,value TEXT,remark TEXT DEFAULT '',created_at INTEGER,updated_at INTEGER,PRIMARY KEY(window_name,key))"
+try {
+  if (reopening && resolve(process.env.ABANDON_ALMANAC_TEST_PROFILE) !== resolve(userData)) {
+    throw new Error('重开测试必须使用当前 runner 拥有的隔离 profile')
+  }
+  mkdirSync(output, { recursive: true })
+  if (!reopening) {
+    const db = new Database(join(userData, 'app.db'))
+    db.exec(
+      "CREATE TABLE app_settings(window_name TEXT NOT NULL,type TEXT NOT NULL,key TEXT NOT NULL,value TEXT,remark TEXT DEFAULT '',created_at INTEGER,updated_at INTEGER,PRIMARY KEY(window_name,key))"
+    )
+    const insert = db.prepare("INSERT INTO app_settings VALUES(?,?,?,?,'',?,?)")
+    for (const [scope, type, key, value] of [
+      ['application', 'application', 'active_view', 'list'],
+      ['application', 'remote', 'receive_notices', 'false'],
+      ['application', 'remote', 'upload_device_info', 'false'],
+      ['application', 'onboarding', 'first_use_notice_version', '1'],
+      ['main', 'system', 'blur_enabled', 'false'],
+      ['main', 'notes', 'minimal_mode', '1']
+    ])
+      insert.run(scope, type, key, value, Date.now(), Date.now())
+    db.close()
+  }
+  app.setPath('userData', userData)
+  process.env.ABANDON_INTEGRATION_TEST = '1'
+  process.env.ABANDON_INTEGRATION_APP_ROOT = process.cwd()
+  process.env.ABANDON_INTEGRATION_NATIVE_DLL = resolve('native_blur/build/bin/blur_engine.dll')
+  require(resolve('out/main/index.js'))
+  const chunk = readdirSync(resolve('out/main/chunks')).find((name) =>
+    /^index-[\w-]+\.js$/.test(name)
   )
-  const insert = db.prepare("INSERT INTO app_settings VALUES(?,?,?,?,'',?,?)")
-  for (const [scope, type, key, value] of [
-    ['application', 'application', 'active_view', 'list'],
-    ['application', 'remote', 'receive_notices', 'false'],
-    ['application', 'remote', 'upload_device_info', 'false'],
-    ['application', 'onboarding', 'first_use_notice_version', '1'],
-    ['application', 'calendar', 'almanac_enabled', '0'],
-    ['main', 'system', 'blur_enabled', 'false'],
-    ['main', 'notes', 'minimal_mode', '1']
-  ])
-    insert.run(scope, type, key, value, Date.now(), Date.now())
-  db.close()
+  require(resolve('out/main/chunks', chunk))
+  app.once('ready', () => void run())
+} catch (error) {
+  report(error.stack || String(error))
+  void lifecycle.finish({ error })
 }
-app.setPath('userData', userData)
-process.env.ABANDON_INTEGRATION_TEST = '1'
-process.env.ABANDON_INTEGRATION_APP_ROOT = process.cwd()
-process.env.ABANDON_INTEGRATION_NATIVE_DLL = resolve('native_blur/build/bin/blur_engine.dll')
-require(resolve('out/main/index.js'))
-const chunk = readdirSync(resolve('out/main/chunks')).find((name) =>
-  /^index-[\w-]+\.js$/.test(name)
-)
-require(resolve('out/main/chunks', chunk))
-app.once('ready', () => void run())
 
 async function run() {
-  let exitCode = 0
+  let completed = false
+  let failure = null
   try {
     let win
     await until(() => {
@@ -63,6 +91,8 @@ async function run() {
       )
       return win?.isVisible()
     }, '主窗口未显示')
+    activeWindow = win
+    await dismissStartupShortcutNotice(win)
     const js = async (code) => {
       try {
         return await win.webContents.executeJavaScript(code, true)
@@ -97,23 +127,20 @@ async function run() {
     )
     if (reopening) {
       assert.equal(
-        await js(
-          '(async()=> (await window.api.getSettingsSnapshot()).values.calendar.almanacEnabled)()'
-        ),
-        undefined
+        await js('(async()=> (await window.api.getSettingsSnapshot()).values.almanac.enabled)()'),
+        true
       )
       await until(
         () => js('document.querySelectorAll(".almanac-window__group").length===2'),
         '重启未恢复宜忌'
       )
-      report('always-on almanac survives restart, including a legacy disabled setting')
+      report('default-enabled almanac survives restart')
+      completed = true
       return
     }
     assert.equal(
-      await js(
-        '(async()=> (await window.api.getSettingsSnapshot()).values.calendar.almanacEnabled)()'
-      ),
-      undefined
+      await js('(async()=> (await window.api.getSettingsSnapshot()).values.almanac.enabled)()'),
+      true
     )
     assert.equal(
       await js('Boolean(document.querySelector(".almanac-settings, .almanac-window .switch"))'),
@@ -180,7 +207,7 @@ async function run() {
         '背景模糊未解除'
       )
       const toolbar = await js(
-        `(()=>{const left=document.querySelector('.nl-toolbar-left').getBoundingClientRect();const center=document.querySelector('.nl-toolbar-controls').getBoundingClientRect();const brief=document.querySelector('.almanac-brief').getBoundingClientRect();return {fits:center.right<=left.left+1,inside:brief.left>=0&&brief.right<=innerWidth}})()`
+        `(()=>{const left=(document.querySelector('.nl-toolbar-left') || document.querySelector('.nl-toolbar-controls')).getBoundingClientRect();const center=document.querySelector('.nl-toolbar-controls').getBoundingClientRect();const brief=document.querySelector('.almanac-brief').getBoundingClientRect();return {fits:center.right<=left.left+1,inside:brief.left>=0&&brief.right<=innerWidth}})()`
       )
       assert.ok(toolbar.fits && toolbar.inside, JSON.stringify(toolbar))
       writeFileSync(
@@ -229,7 +256,7 @@ async function run() {
       '日期选择器未切换并关闭'
     )
     assert.ok(
-      await js(`window.__almanacAnimations.some(name=>name.startsWith('almanac-day-reveal'))`),
+      await js(`window.__almanacAnimations.some(name=>name.startsWith('date-context-day-reveal'))`),
       '切换日期必须播放内容入场动画'
     )
     await js(
@@ -253,10 +280,10 @@ async function run() {
     await until(() => js('Boolean(document.querySelector(".settings-panel.active"))'), '设置未打开')
     assert.equal(
       await js(
-        'Boolean(document.querySelector(".almanac-settings")) || document.querySelector(".settings-panel").textContent.includes("显示传统黄历宜忌")'
+        'document.querySelector(\'.weather-settings [role="switch"][aria-label="显示宜忌"]\')?.getAttribute("aria-checked")'
       ),
-      false,
-      '设置中不应残留黄历开关'
+      'true',
+      '设置应提供默认开启的独立宜忌开关'
     )
     await js('document.querySelector(".panel-close-btn").click()')
     await until(() => js('!document.querySelector(".settings-panel.active")'), '设置未关闭')
@@ -353,12 +380,14 @@ async function run() {
     report(
       `list, month, week, rapid selection, narrow layout and theme checks passed; profile=${userData}`
     )
+    completed = true
   } catch (error) {
-    exitCode = 1
+    failure = error
     report(error.stack || String(error))
     const currentWindow = BrowserWindow.getAllWindows().find((w) =>
       /\/(index|month|week)\.html(?:$|[?#])/.test(w.webContents.getURL())
     )
+    activeWindow = currentWindow || activeWindow
     if (currentWindow)
       report(
         await currentWindow.webContents
@@ -368,7 +397,20 @@ async function run() {
           .catch(() => '')
       )
   } finally {
-    app.exit(exitCode)
+    await lifecycle.finish({
+      completed,
+      error: failure,
+      window: activeWindow,
+      summary: {
+        reopening,
+        output,
+        weatherFixtureActivated: Boolean(weatherFixtureRuntime)
+      },
+      restore() {
+        weatherFixtureRuntime?.dispose()
+        app.releaseSingleInstanceLock()
+      }
+    })
   }
 }
 
@@ -448,19 +490,26 @@ async function verifyDateContextPopover(win, js, selector, hasWeather, screensho
   )
   assert.equal(await js(`document.querySelector('.date-context-popover').dataset.date`), date)
   assert.equal(
-    await js(
-      `Boolean(document.querySelector('.almanac-window,.quick-note-editor,.app-modal-mask'))`
-    ),
+    await js(`Boolean(document.querySelector('.quick-note-editor,.app-modal-mask'))`),
     false,
     '不得打开全局弹窗或快速编辑器'
   )
-  const weather = await js(`document.querySelector('.date-context-popover__weather').textContent`)
-  assert.ok(
-    hasWeather
-      ? weather.includes('雷阵雨') && weather.includes('获取于')
-      : weather.includes('暂无可用天气预报'),
-    weather
+  const weatherEnabled = await js(
+    `(async()=> (await window.api.getSettingsSnapshot()).values.weather.enabled)()`
   )
+  const weather = await js(
+    `document.querySelector('.date-context-popover__weather')?.textContent || ''`
+  )
+  if (weatherEnabled) {
+    assert.ok(
+      hasWeather
+        ? weather.includes('雷阵雨') && weather.includes('获取于')
+        : weather.includes('暂无可用天气预报'),
+      weather
+    )
+  } else {
+    assert.equal(weather, '', '天气关闭后详情不应显示天气或未获取占位')
+  }
   if (hasWeather) {
     const text = weather.replace(/\s+/g, ' ')
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
@@ -504,16 +553,25 @@ async function verifyDateContextPopover(win, js, selector, hasWeather, screensho
 }
 
 async function verifyToolbarDateContext(win, js, hasWeather, screenshot) {
+  const weatherEnabled = await js(
+    `(async()=> (await window.api.getSettingsSnapshot()).values.weather.enabled)()`
+  )
   const layout = await js(`(()=>{
-    const w=document.querySelector('.weather-brief').getBoundingClientRect(),a=document.querySelector('.almanac-brief').getBoundingClientRect();
+    const weather=document.querySelector('.weather-brief'),a=document.querySelector('.almanac-brief').getBoundingClientRect();
+    if(!weather)return {onlyAlmanac:true,inside:a.left>=0&&a.right<=innerWidth,width:a.width};
+    const w=weather.getBoundingClientRect();
     return {equalWidth:Math.abs(w.width-a.width)<1,equalHeight:Math.abs(w.height-a.height)<1,
       aligned:Math.abs(w.top-a.top)<1,ordered:w.right<a.left,inside:w.left>=0&&a.right<=innerWidth,
       weatherText:document.querySelector('.weather-brief').textContent};
   })()`)
-  assert.ok(
-    layout.equalWidth && layout.equalHeight && layout.aligned && layout.ordered && layout.inside,
-    JSON.stringify(layout)
-  )
+  if (weatherEnabled) {
+    assert.ok(
+      layout.equalWidth && layout.equalHeight && layout.aligned && layout.ordered && layout.inside,
+      JSON.stringify(layout)
+    )
+  } else {
+    assert.ok(layout.onlyAlmanac && layout.inside && layout.width > 0, JSON.stringify(layout))
+  }
   if (hasWeather) {
     assert.match(layout.weatherText, /体感 24°/)
     assert.match(layout.weatherText, /当前 🌙 晴/)
@@ -524,7 +582,7 @@ async function verifyToolbarDateContext(win, js, hasWeather, screenshot) {
     join(output, `toolbar-pair-${screenshot}.png`),
     (await win.webContents.capturePage()).toPNG()
   )
-  for (const kind of ['weather', 'almanac']) {
+  for (const kind of weatherEnabled ? ['weather', 'almanac'] : ['almanac']) {
     await verifyDateContextPopover(
       win,
       js,
@@ -677,7 +735,7 @@ async function verifyListDateContext(win, js) {
     win.setSize(width, 760)
     await new Promise((resolve) => setTimeout(resolve, 250))
     const layout = await js(
-      `(()=>{const a=document.querySelector('.almanac-brief').getBoundingClientRect(),b=document.querySelector('.nl-toolbar-left').getBoundingClientRect();return {width:a.width,gap:(a.left-b.right)/parseFloat(getComputedStyle(document.documentElement).fontSize),hasDots:document.querySelector('.almanac-brief__rows').textContent.includes('…'),rows:[...document.querySelectorAll('.almanac-brief .overflow-fade')].map(el=>({overflow:el.firstElementChild.scrollWidth>el.clientWidth+1,marked:el.classList.contains('is-overflowing'),mask:getComputedStyle(el).maskImage}))}})()`
+      `(()=>{const a=document.querySelector('.almanac-brief').getBoundingClientRect(),b=(document.querySelector('.nl-toolbar-left') || document.querySelector('.nl-toolbar-controls')).getBoundingClientRect();return {width:a.width,gap:(a.left-b.right)/parseFloat(getComputedStyle(document.documentElement).fontSize),hasDots:document.querySelector('.almanac-brief__rows').textContent.includes('…'),rows:[...document.querySelectorAll('.almanac-brief .overflow-fade')].map(el=>({overflow:el.firstElementChild.scrollWidth>el.clientWidth+1,marked:el.classList.contains('is-overflowing'),mask:getComputedStyle(el).maskImage}))}})()`
     )
     assert.ok(
       layout.gap >= 10 &&
@@ -842,6 +900,7 @@ async function runWeatherIntegration(win, js) {
     now: () => now,
     random: () => 0
   })
+  weatherFixtureRuntime = runtime
   await js(
     `(async()=>{await window.api.setSettingValue('weather.location',${JSON.stringify(location)});await window.api.setSettingValue('weather.enabled',true)})()`
   )

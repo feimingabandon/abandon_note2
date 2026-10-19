@@ -25,7 +25,6 @@ const saveShortcut = (value) =>
 
 const emit = defineEmits(['update:modelValue', 'update:runtime', 'feedback'])
 
-const platform = window.api?.runtimeCapabilities?.platform || 'win32'
 const fieldRef = ref(null)
 const isCapturing = ref(false)
 const isBusy = ref(false)
@@ -35,7 +34,7 @@ let captureRequested = false
 let componentUnmounted = false
 const recorderOwner = Symbol('shortcut-recorder')
 
-const formattedValue = computed(() => formatViewVisibilityShortcut(props.modelValue, platform))
+const formattedValue = computed(() => formatViewVisibilityShortcut(props.modelValue))
 const fieldValue = computed(() => {
   if (isCapturing.value) return capturePreview.value || '请按下快捷键…'
   return formattedValue.value || '未设置'
@@ -175,7 +174,7 @@ async function recordCandidate(accelerator, display) {
       emit('update:modelValue', result.accelerator)
       isCapturing.value = false
       capturePreview.value = ''
-      const savedDisplay = formatViewVisibilityShortcut(result.accelerator, platform)
+      const savedDisplay = formatViewVisibilityShortcut(result.accelerator)
       setStatus(
         'success',
         `保存成功：${savedDisplay}${result.runtime?.enabled === false ? '；全局快捷键仍处于禁用状态' : ''}`
@@ -202,7 +201,7 @@ function onKeydown(event) {
   event.preventDefault()
   event.stopPropagation()
   if (isBusy.value || event.repeat) return
-  const captured = shortcutCaptureFromKeyboardEvent(event, platform)
+  const captured = shortcutCaptureFromKeyboardEvent(event)
   capturePreview.value = captured.display
 
   if (captured.action === 'cancel') {

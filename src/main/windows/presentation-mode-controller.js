@@ -44,7 +44,7 @@ export class PresentationModeController {
     return {
       committedMode: this.committedMode,
       desiredMode: this.desiredMode,
-      operation: this.operation ? { ...this.operation } : null
+      operation: this.operation ? structuredClone(this.operation) : null
     }
   }
 
@@ -58,6 +58,13 @@ export class PresentationModeController {
 
   activePromise() {
     return this.requestPromise
+  }
+
+  setOperationTargetBounds(operationId, bounds) {
+    if (this.operation?.id !== operationId) return false
+    this.operation.targetBounds = { ...bounds }
+    this.onStateChanged(this.snapshot())
+    return true
   }
 
   request(window, mode, context, { perform, recover }) {

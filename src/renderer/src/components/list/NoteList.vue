@@ -8,7 +8,9 @@ import { useModalRequest } from '../../composables/useQueuedModal.js'
  */
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useSharedMinuteClock } from '../../composables/useSharedMinuteClock.js'
+import { useTodayKey } from '../../composables/useTodayKey.js'
 import { useWeatherRecovery } from '../../composables/useWeatherRecovery.js'
+import { useDateContextSettings } from '../../composables/useDateContextSettings.js'
 import DateContextSummary from '../almanac/DateContextSummary.vue'
 import draggable from 'vuedraggable'
 import TagSelector from '../ui/TagSelector.vue'
@@ -22,7 +24,10 @@ import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.j
 import { useMessage } from '../../composables/useMessage.js'
 import { weatherLocationKey } from '../../../../shared/weather-rules.js'
 import { buildDisplayableWeatherByDate, getWeatherForNote } from '../../utils/noteWeather.js'
-import { recentLocalDayRange } from '../../../../shared/calendar/calendar-date-rules.js'
+import { useNoteListQuerySession } from '../../composables/useNoteListQuerySession.js'
+import { useTimelineListModel } from '../../composables/useTimelineListModel.js'
+import { useCustomListModel } from '../../composables/useCustomListModel.js'
+import { useTagGroupListModel } from '../../composables/useTagGroupListModel.js'
 import {
   createRefreshCauses,
   traceViewRefresh,
@@ -31,7 +36,7 @@ import {
 
 const refreshCauses = createRefreshCauses('list')
 function traceListLoad(mode, options, work, notes) {
-  const expectedSequence = loadSeq + 1
+  const expectedSequence = querySession.sequence + 1
   return traceViewRefresh(
     'list',
     {
@@ -42,13 +47,15 @@ function traceListLoad(mode, options, work, notes) {
     },
     work,
     () => summarizeViewNotes(notes()),
-    () => loadSeq === expectedSequence
+    () => querySession.sequence === expectedSequence
   )
 }
 
 const emit = defineEmits(['edit'])
 const { showMessage } = useMessage()
+const todayKey = useTodayKey()
 useWeatherRecovery()
+const { weatherEnabled: weatherDisplayEnabled, almanacEnabled } = useDateContextSettings()
 
 /** 排序模式：timeline | custom | tag-group */
 const sortMode = ref(DEFAULT_SETTINGS.listFilter.listMode)
@@ -89,9 +96,9 @@ async function selectSortMode(nextMode) {
 
     // 只清空即将进入的目标列表；源列表保留为失败回滚快照。
     if (nextMode === 'timeline') {
-      noteList.value = []
+      timelineModel.replaceItems([])
     } else if (nextMode === 'custom') {
-      customList.value = []
+      customModel.replaceItems([])
       syncCustomZones()
     } else {
       tagGroups.value = []
@@ -103,8 +110,8 @@ async function selectSortMode(nextMode) {
     await nextTick()
     const result = await switchMode(nextMode, { showLoading: false, preserveAnchor: false }, false)
     if (result?.status !== 'success') {
-      noteList.value = previousTimeline
-      customList.value = previousCustom
+      timelineModel.replaceItems(previousTimeline)
+      customModel.replaceItems(previousCustom)
       tagGroups.value = previousTagGroups
       syncCustomZones()
       sortMode.value = previousMode
@@ -144,8 +151,10 @@ function staggerDelay(index) {
 }
 /** 便签列表 */
 /** 加载状态 */
-const loading = ref(false)
-const loadError = ref(null)
+const querySession = useNoteListQuerySession({
+  getFilters: () => ({ statuses: statusFilter.value, tagIds: tagFilterIds.value })
+})
+const { loading, loadError, allNoteTotal, lastRefreshedAt } = querySession
 const weatherEnabled = ref(false)
 const weatherForecast = ref(null)
 const weatherNow = useSharedMinuteClock()
@@ -155,8 +164,6 @@ const weatherByDate = computed(() =>
   buildDisplayableWeatherByDate(weatherForecast.value, Math.max(weatherNow.value, Date.now()))
 )
 /** 全部未删除便签总数，不受当前标签/状态筛选影响。 */
-const allNoteTotal = ref(0)
-const lastRefreshedAt = ref(null)
 const lastRefreshLabel = computed(() => formatRefreshTime(lastRefreshedAt.value))
 const timelineScrollRef = ref(null)
 const customScrollRef = ref(null)
@@ -241,7 +248,7 @@ function onPanelClick(value) {
 
 /** 状态筛选项 */
 const statusOptions = [
-  { value: 'initialized', label: '待开始' },
+  { value: 'initialized', label: '未开始' },
   { value: 'in_progress', label: '进行中' },
   { value: 'completed', label: '完成' }
 ]
@@ -261,32 +268,41 @@ function toggleStatus(value) {
 // ============================================================
 
 /** 请求令牌：并发加载时只接受最新一次结果，避免旧请求覆盖新数据 */
-let loadSeq = 0
-let earlierRequestSeq = 0
-let customMoreRequestSeq = 0
 
-/** 数据库用 > cutoff 区分最近三天，因此边界取前天零点的前一毫秒。 */
-function threeDayCutoff() {
-  return recentLocalDayRange(Date.now(), 3).timeFrom - 1
-}
-
-// ---- 时间线模式：单一统一列表 ----
-const noteList = ref([]) // 唯一列表（置顶 + 三天 + 更早已加载）
-const timelinePinnedIds = ref(new Set()) // 与列表快照一起提交，状态动画结束前不提前换组
-const earlierIds = ref(new Set()) // 方法三写入的便签 ID（折叠时用于定点清除）
-const earlierOffset = ref(0)
-const earlierHasMore = ref(false)
-const earlierLoading = ref(false)
-const earlierHasData = ref(false) // 更早是否有数据（loadAll 时通过 count 查询获知）
-const earlierTotal = ref(0)
-const earlierLimit = ref(10) // 每次查询条数（首 10，滚动后 20）
-let timelineReloadSequence = null
+const timelineModel = useTimelineListModel({
+  session: querySession,
+  api: window.api,
+  presentation: {
+    captureAnchor: captureScrollAnchor,
+    captureLayout: () => captureVisibleCardLayout(),
+    restoreAnchor: restoreScrollAnchor,
+    animatePage: async (before) => {
+      await nextTick()
+      animateRetainedCards(before)
+    }
+  }
+})
+const {
+  noteList,
+  earlierOffset,
+  earlierHasMore,
+  earlierLoading,
+  earlierHasData,
+  totalRendered,
+  timelineIsEmpty,
+  recentTimelineGroups,
+  earlierTimelineGroups,
+  collapsedGroups,
+  loadEarlier,
+  clearCollapsedEarlier,
+  toggleGroupCollapse
+} = timelineModel
 
 /** 时间线模式：并行加载置顶 + 三天 + 更早计数，合并到单一列表 */
 function captureScrollAnchor(nextNotes = null) {
   const container = currentScrollContainer()
   if (!container) return null
-  const context = { container, sequence: loadSeq, scrollTop: container.scrollTop }
+  const context = { container, sequence: querySession.sequence, scrollTop: container.scrollTop }
   const containerTop = container.getBoundingClientRect().top
   const cards = [...container.querySelectorAll('[data-note-id]')]
   if (nextNotes) {
@@ -316,7 +332,8 @@ async function restoreScrollAnchor(anchor) {
   if (!anchor) return
   await nextTick()
   const container = currentScrollContainer()
-  if (!container || container !== anchor.container || anchor.sequence !== loadSeq) return
+  if (!container || container !== anchor.container || anchor.sequence !== querySession.sequence)
+    return
   if (!anchor.id) {
     container.scrollTop = anchor.scrollTop || 0
     return
@@ -333,172 +350,10 @@ function loadAll(options = {}) {
   return traceListLoad(
     'timeline',
     options,
-    () => loadAllData(options),
+    () => timelineModel.load(options),
     () => noteList.value
   )
 }
-async function loadAllData({ showLoading = true, preserveAnchor = false } = {}) {
-  const seq = ++loadSeq
-  timelineReloadSequence = seq
-  tagGroupGeneration++
-  loadError.value = null
-  earlierRequestSeq++
-  customMoreRequestSeq++
-  earlierLoading.value = false
-  customNormalLoading.value = false
-  const loadedEarlierCount = earlierIds.value.size
-  if (showLoading) loading.value = true
-  try {
-    const statuses =
-      statusFilter.value.length > 0
-        ? [...statusFilter.value]
-        : ['initialized', 'in_progress', 'completed']
-    const tagIds = tagFilterIds.value.length > 0 ? [...tagFilterIds.value] : null
-    const cutoff = threeDayCutoff()
-
-    const [pinned, recent, earlierCount, activeTotal] = await Promise.all([
-      window.api.queryPinnedNotes({ statuses, tagIds }),
-      window.api.queryRecentNotes({ statuses, tagIds, cutoffTime: cutoff }),
-      window.api.queryEarlierNotes({ statuses, tagIds, cutoffTime: cutoff, limit: 0, offset: 0 }),
-      window.api.countActiveNotes()
-    ])
-    if (seq !== loadSeq) return { status: 'cancelled' }
-
-    // 刷新快照先在局部变量中收齐；等待 IPC 时保留所有旧卡片和列表高度。
-    // 每次数据库查询最多 100 条，已滚动加载的历史范围不能在刷新后被截断。
-    let earlierNotes = []
-    let totalEarlier = Number(earlierCount.total) || 0
-    let targetEarlierCount = preserveAnchor ? Math.max(10, loadedEarlierCount) : 10
-    while (
-      !collapsedGroups.value.earlier &&
-      earlierNotes.length < Math.min(targetEarlierCount, totalEarlier)
-    ) {
-      const expansionSeq = earlierRequestSeq
-      const result = await window.api.queryEarlierNotes({
-        statuses,
-        tagIds,
-        cutoffTime: cutoff,
-        limit: Math.min(100, targetEarlierCount - earlierNotes.length),
-        offset: earlierNotes.length
-      })
-      if (seq !== loadSeq) return { status: 'cancelled' }
-      // 查询期间主动收起/重开时，丢弃旧展开周期的结果，按首批重新加载。
-      if (expansionSeq !== earlierRequestSeq) {
-        earlierNotes = []
-        targetEarlierCount = 10
-        continue
-      }
-      const page = result.notes || []
-      totalEarlier = Number(result.total) || 0
-      earlierNotes.push(...page)
-      if (page.length === 0) break
-    }
-    if (collapsedGroups.value.earlier) earlierNotes = []
-    const nextNotes = [...(pinned || []), ...(recent || []), ...earlierNotes]
-    const anchor = preserveAnchor ? captureScrollAnchor(nextNotes) : null
-    const layoutBefore = preserveAnchor ? captureVisibleCardLayout() : null
-    noteList.value = nextNotes
-    timelinePinnedIds.value = new Set((pinned || []).map((note) => note.id))
-    earlierIds.value = new Set(earlierNotes.map((note) => note.id))
-    earlierOffset.value = earlierNotes.length
-    earlierTotal.value = totalEarlier
-    earlierHasData.value = totalEarlier > 0
-    earlierHasMore.value = !collapsedGroups.value.earlier && earlierNotes.length < totalEarlier
-    earlierLimit.value = earlierNotes.length > 0 ? 20 : 10
-    allNoteTotal.value = Number(activeTotal) || 0
-    await restoreScrollAnchor(anchor)
-    lastRefreshedAt.value = Date.now()
-    return { status: 'success', layoutBefore }
-  } catch (e) {
-    console.error('[NoteList] 加载列表失败:', e)
-    if (seq === loadSeq && showLoading) loadError.value = '列表加载失败'
-    return { status: 'error', error: e }
-  } finally {
-    if (timelineReloadSequence === seq) timelineReloadSequence = null
-    if (seq === loadSeq) loading.value = false
-  }
-}
-
-/** 时间线模式：懒加载更早数据，追加到统一列表并记录 ID */
-async function loadEarlier() {
-  if (
-    timelineReloadSequence === loadSeq ||
-    collapsedGroups.value.earlier ||
-    earlierLoading.value ||
-    !earlierHasMore.value
-  )
-    return
-  const requestSeq = ++earlierRequestSeq
-  const parentLoadSeq = loadSeq
-  earlierLoading.value = true
-  try {
-    const statuses =
-      statusFilter.value.length > 0
-        ? [...statusFilter.value]
-        : ['initialized', 'in_progress', 'completed']
-    const tagIds = tagFilterIds.value.length > 0 ? [...tagFilterIds.value] : null
-    const cutoff = threeDayCutoff()
-
-    const result = await window.api.queryEarlierNotes({
-      statuses,
-      tagIds,
-      cutoffTime: cutoff,
-      limit: earlierLimit.value,
-      offset: earlierOffset.value
-    })
-    if (requestSeq !== earlierRequestSeq || parentLoadSeq !== loadSeq) return
-    const newNotes = result.notes || []
-    // First expansion is owned by the disclosure, pagination by card presence.
-    const before = newNotes.length && earlierOffset.value > 0 ? captureVisibleCardLayout() : null
-    noteList.value = [...noteList.value, ...newNotes]
-    for (const n of newNotes) {
-      earlierIds.value.add(n.id)
-    }
-    earlierOffset.value += newNotes.length
-    earlierHasMore.value = earlierOffset.value < (result.total || 0)
-    // 首次加载后提升每批条数到 20
-    if (earlierLimit.value === 10) {
-      earlierLimit.value = 20
-    }
-    if (before) {
-      await nextTick()
-      animateRetainedCards(before)
-    }
-  } catch (e) {
-    console.error('[NoteList] 加载更早便签失败:', e)
-  } finally {
-    if (requestSeq === earlierRequestSeq) earlierLoading.value = false
-  }
-}
-
-/** 展开更早时触发首次加载（重置 limit 到初始值） */
-function onEarlierExpand() {
-  if (earlierOffset.value === 0 && !earlierLoading.value) {
-    earlierLimit.value = 10
-    earlierHasMore.value = true
-    loadEarlier()
-  }
-}
-
-/** 收起更早：从统一列表中移除方法三写入的便签 */
-function collapseEarlier() {
-  // 折叠时作废尚未返回的分页请求，避免响应把隐藏的日期组重新插回列表。
-  earlierRequestSeq++
-  earlierLoading.value = false
-  collapsedGroups.value['earlier'] = true
-  // Keep the rendered content until the closing animation completes; reversing
-  // midway reuses the same DOM and resumes from its currently displayed height.
-}
-
-function clearCollapsedEarlier() {
-  if (!collapsedGroups.value.earlier) return
-  noteList.value = noteList.value.filter((n) => !earlierIds.value.has(n.id))
-  earlierIds.value = new Set()
-  earlierOffset.value = 0
-  earlierHasMore.value = false
-  earlierLimit.value = 10
-}
-
 /** 主容器滚动触底检测（更早展开 + 有更多数据时自动加载） */
 let scrollPending = false
 function onTimelineScroll(e) {
@@ -513,110 +368,38 @@ function onTimelineScroll(e) {
   })
 }
 
-/** 当前页面实际渲染总数 */
-const totalRendered = computed(() => noteList.value.length)
-
 // ---- 自定义模式：单列表 + 日常分页 ----
-const customList = ref([]) // 唯一列表（置顶 + 日常已加载）
-const customNormalOffset = ref(0)
-const customNormalHasMore = ref(false)
-const customNormalTotal = ref(0)
-const customNormalLimit = ref(10) // 首 10，滚动后 20
-const customNormalLoading = ref(false)
+const customModel = useCustomListModel({
+  session: querySession,
+  api: window.api,
+  presentation: {
+    captureAnchor: captureScrollAnchor,
+    restoreAnchor: restoreScrollAnchor,
+    captureLayout: () => captureVisibleCardLayout(),
+    animatePage: async (before) => {
+      await nextTick()
+      animateRetainedCards(before)
+    }
+  }
+})
+const {
+  customList,
+  customNormalHasMore,
+  customNormalTotal,
+  customNormalLoading,
+  customTotalRendered,
+  loadMore: loadCustomMore
+} = customModel
 
 /** 自定义模式：并行加载置顶 + 日常首 10 条 */
 function loadCustom(options = {}) {
   return traceListLoad(
     'custom',
     options,
-    () => loadCustomData(options),
+    () => customModel.load(options),
     () => customList.value
   )
 }
-async function loadCustomData({ showLoading = true, preserveAnchor = false } = {}) {
-  const seq = ++loadSeq
-  tagGroupGeneration++
-  loadError.value = null
-  earlierRequestSeq++
-  customMoreRequestSeq++
-  earlierLoading.value = false
-  customNormalLoading.value = false
-  const anchor = preserveAnchor ? captureScrollAnchor() : null
-  if (showLoading) loading.value = true
-  try {
-    const statuses =
-      statusFilter.value.length > 0
-        ? [...statusFilter.value]
-        : ['initialized', 'in_progress', 'completed']
-    const tagIds = tagFilterIds.value.length > 0 ? [...tagFilterIds.value] : null
-
-    const normalLimit = preserveAnchor
-      ? Math.max(customNormalOffset.value, customNormalLimit.value)
-      : customNormalLimit.value
-    const [pinned, normalCount, activeTotal] = await Promise.all([
-      window.api.queryCustomPinned({ statuses, tagIds }),
-      window.api.queryCustomNormal({ statuses, tagIds, limit: normalLimit, offset: 0 }),
-      window.api.countActiveNotes()
-    ])
-    if (seq !== loadSeq) return { status: 'cancelled' }
-
-    customList.value = [...(pinned || []), ...(normalCount.notes || [])]
-    customNormalOffset.value = (normalCount.notes || []).length
-    customNormalTotal.value = normalCount.total || 0
-    customNormalHasMore.value = customNormalOffset.value < customNormalTotal.value
-    allNoteTotal.value = Number(activeTotal) || 0
-    await restoreScrollAnchor(anchor)
-    lastRefreshedAt.value = Date.now()
-    return { status: 'success' }
-  } catch (e) {
-    console.error('[NoteList] 加载自定义列表失败:', e)
-    if (seq === loadSeq && showLoading) loadError.value = '列表加载失败'
-    return { status: 'error', error: e }
-  } finally {
-    if (seq === loadSeq) loading.value = false
-  }
-}
-
-/** 自定义模式：滚动加载更多日常 */
-async function loadCustomMore() {
-  if (customNormalLoading.value || !customNormalHasMore.value) return
-  const requestSeq = ++customMoreRequestSeq
-  const parentLoadSeq = loadSeq
-  customNormalLoading.value = true
-  try {
-    const statuses =
-      statusFilter.value.length > 0
-        ? [...statusFilter.value]
-        : ['initialized', 'in_progress', 'completed']
-    const tagIds = tagFilterIds.value.length > 0 ? [...tagFilterIds.value] : null
-
-    const result = await window.api.queryCustomNormal({
-      statuses,
-      tagIds,
-      limit: customNormalLimit.value,
-      offset: customNormalOffset.value
-    })
-    if (requestSeq !== customMoreRequestSeq || parentLoadSeq !== loadSeq) return
-    const newNotes = result.notes || []
-    const before = newNotes.length ? captureVisibleCardLayout() : null
-    customList.value = [...customList.value, ...newNotes]
-    customNormalOffset.value += newNotes.length
-    customNormalTotal.value = result.total || 0
-    customNormalHasMore.value = customNormalOffset.value < customNormalTotal.value
-    if (customNormalLimit.value === 10) {
-      customNormalLimit.value = 20
-    }
-    if (before) {
-      await nextTick()
-      animateRetainedCards(before)
-    }
-  } catch (e) {
-    console.error('[NoteList] 加载更多日常便签失败:', e)
-  } finally {
-    if (requestSeq === customMoreRequestSeq) customNormalLoading.value = false
-  }
-}
-
 /** 自定义模式滚动触底检测 */
 function onCustomScroll(e) {
   const el = e.target
@@ -625,14 +408,30 @@ function onCustomScroll(e) {
   }
 }
 
-/** 自定义模式当前渲染总数 */
-const customTotalRendered = computed(() => customList.value.length)
-
 // ---- 标签分组模式：分组概览 + 展开后手动分页 ----
-const TAG_GROUP_INITIAL_LIMIT = 10
-const TAG_GROUP_MORE_LIMIT = 20
-const tagGroups = ref([])
-const expandedTagGroupKeys = new Set()
+const tagGroupModel = useTagGroupListModel({
+  session: querySession,
+  api: window.api,
+  presentation: {
+    captureAnchor: captureScrollAnchor,
+    restoreAnchor: restoreScrollAnchor,
+    captureLayout: () => captureVisibleCardLayout(),
+    animatePage: async (before, isCurrent) => {
+      await nextTick()
+      if (isCurrent()) animateRetainedCards(before)
+    }
+  }
+})
+const tagGroups = computed({
+  get: () => tagGroupModel.tagGroups.value,
+  set: (groups) => tagGroupModel.replaceGroups(groups)
+})
+const {
+  tagGroupMatchingTotal,
+  tagGroupCanSort,
+  loadPage: loadTagGroupPage,
+  collapseAll: collapseAllTagGroups
+} = tagGroupModel
 const tagGroupDragging = ref(false)
 const tagGroupSortMode = ref(false)
 const tagGroupSortPreparing = ref(false)
@@ -641,184 +440,21 @@ const tagGroupContextMenuRef = ref(null)
 const tagGroupContextMenuStyle = ref({})
 const tagManagerQueue = useModalRequest()
 const tagManagerVisible = tagManagerQueue.requested
-let tagGroupGeneration = 0
 let tagGroupSortEntrySequence = 0
 let tagGroupSortEntryTimer = null
 let resolveTagGroupSortEntry = null
-
-const tagGroupMatchingTotal = computed(() =>
-  tagGroups.value.reduce((total, group) => total + group.total, 0)
-)
-const tagGroupCanSort = computed(
-  () => tagGroups.value.filter((group) => !group.untagged).length > 1
-)
-
-function activeStatuses() {
-  return statusFilter.value.length > 0
-    ? [...statusFilter.value]
-    : ['initialized', 'in_progress', 'completed']
-}
-
-async function loadTagGroupPage(group, { reset = false, limit = null } = {}) {
-  if (!group || group.loading) return { status: 'cancelled' }
-  const generation = tagGroupGeneration
-  const offset = reset ? 0 : group.notes.length
-  const pageLimit = limit || (reset ? TAG_GROUP_INITIAL_LIMIT : TAG_GROUP_MORE_LIMIT)
-  group.requestedCount = offset + pageLimit
-  group.loading = true
-  group.error = null
-  try {
-    const result = await window.api.queryTagGroupNotes({
-      tagId: group.untagged ? null : group.id,
-      statuses: activeStatuses(),
-      limit: pageLimit,
-      offset
-    })
-    if (generation !== tagGroupGeneration || !tagGroups.value.includes(group)) {
-      return { status: 'cancelled' }
-    }
-    const before = !reset && group.expanded ? captureVisibleCardLayout() : null
-    const notes = result.notes || []
-    group.notes = reset ? notes : [...group.notes, ...notes]
-    group.total = Number(result.total) || 0
-    group.hasMore = group.notes.length < group.total
-    delete group.requestedCount
-    if (before) {
-      await nextTick()
-      if (generation === tagGroupGeneration && group.expanded) animateRetainedCards(before)
-    }
-    return { status: 'success' }
-  } catch (error) {
-    delete group.requestedCount
-    console.error('[NoteList] 加载标签组便签失败:', group.name, error)
-    if (generation === tagGroupGeneration) group.error = '加载失败'
-    return { status: 'error', error }
-  } finally {
-    // 刷新期间仍保留旧分组，已取消的旧请求也必须释放它自己的加载状态。
-    group.loading = false
-  }
-}
 
 function loadTagGroups(options = {}) {
   return traceListLoad(
     'tag-group',
     options,
-    () => loadTagGroupsData(options),
+    () => tagGroupModel.load(options),
     () => tagGroups.value.flatMap((group) => group.notes || [])
   )
 }
-async function loadTagGroupsData({ showLoading = true, preserveAnchor = false } = {}) {
-  const seq = ++loadSeq
-  const generation = ++tagGroupGeneration
-  loadError.value = null
-  earlierRequestSeq++
-  customMoreRequestSeq++
-  earlierLoading.value = false
-  customNormalLoading.value = false
-  const isCurrent = () => seq === loadSeq && generation === tagGroupGeneration
-  if (showLoading) loading.value = true
-  try {
-    const tagIds = tagFilterIds.value.length > 0 ? [...tagFilterIds.value] : null
-    const statuses = activeStatuses()
-    const [groups, activeTotal] = await Promise.all([
-      window.api.queryTagGroups({ statuses, tagIds }),
-      window.api.countActiveNotes()
-    ])
-    if (!isCurrent()) return { status: 'cancelled' }
-
-    // 后台查询只构造局部快照，不清空已显示的卡片，也不提前改变列表高度。
-    const nextGroups = (groups || []).map((group) => ({
-      ...group,
-      notes: [],
-      opening: false,
-      openingRequest: 0,
-      loading: false,
-      error: null
-    }))
-    const exhausted = new Set()
-    const targetCount = (group) => {
-      if (!expandedTagGroupKeys.has(group.key) || exhausted.has(group.key)) return 0
-      const current = tagGroups.value.find((item) => item.key === group.key)
-      return Math.min(
-        Number(group.total) || 0,
-        Math.max(TAG_GROUP_INITIAL_LIMIT, current?.notes.length || 0, current?.requestedCount || 0)
-      )
-    }
-    while (true) {
-      const pendingGroups = nextGroups.filter((group) => group.notes.length < targetCount(group))
-      if (pendingGroups.length === 0) break
-      await Promise.all(
-        pendingGroups.map(async (group) => {
-          const result = await window.api.queryTagGroupNotes({
-            tagId: group.untagged ? null : group.id,
-            statuses,
-            limit: Math.min(100, targetCount(group) - group.notes.length),
-            offset: group.notes.length
-          })
-          if (!isCurrent()) return
-          const page = result.notes || []
-          group.notes.push(...page)
-          group.total = Number(result.total) || 0
-          if (page.length === 0) exhausted.add(group.key)
-        })
-      )
-      if (!isCurrent()) return { status: 'cancelled' }
-      // 等待期间用户可能展开/收起或加载更多，按最新意图补齐，不能覆盖用户操作。
-    }
-    if (!isCurrent()) return { status: 'cancelled' }
-    for (const group of nextGroups) {
-      group.expanded = expandedTagGroupKeys.has(group.key)
-      group.hasMore = group.notes.length < Number(group.total)
-    }
-    const nextNotes = nextGroups.filter((group) => group.expanded).flatMap((group) => group.notes)
-    const anchor = preserveAnchor ? captureScrollAnchor(nextNotes) : null
-    const layoutBefore = preserveAnchor ? captureVisibleCardLayout() : null
-    tagGroups.value = nextGroups
-    allNoteTotal.value = Number(activeTotal) || 0
-    await restoreScrollAnchor(anchor)
-    if (!isCurrent()) return { status: 'cancelled' }
-    lastRefreshedAt.value = Date.now()
-    return { status: 'success', layoutBefore }
-  } catch (error) {
-    console.error('[NoteList] 加载标签分组失败:', error)
-    if (seq === loadSeq && showLoading) loadError.value = '标签分组加载失败'
-    return { status: 'error', error }
-  } finally {
-    if (seq === loadSeq) loading.value = false
-  }
-}
-
 async function toggleTagGroup(group) {
   if (tagGroupSortMode.value || tagGroupSortPreparing.value || tagGroupDragging.value) return
-
-  if (group.expanded) {
-    group.expanded = false
-    expandedTagGroupKeys.delete(group.key)
-    return
-  }
-
-  group.expanded = true
-  expandedTagGroupKeys.add(group.key)
-  if (group.opening) return
-  if (group.notes.length === 0 && group.total > 0) {
-    // 先记录展开意图，后台快照即使先返回也能接续这次展开。
-    const openingRequest = ++group.openingRequest
-    group.opening = true
-    try {
-      await loadTagGroupPage(group, { reset: true })
-    } finally {
-      if (group.openingRequest === openingRequest) group.opening = false
-    }
-  }
-}
-
-function collapseAllTagGroups() {
-  expandedTagGroupKeys.clear()
-  tagGroups.value.forEach((group) => {
-    if (group.opening) group.openingRequest++
-    group.opening = false
-    group.expanded = false
-  })
+  return tagGroupModel.toggleGroup(group)
 }
 
 function exitTagGroupSortMode() {
@@ -866,22 +502,13 @@ function canMoveTagGroup(event) {
   return !(event.relatedContext?.element?.untagged && event.willInsertAfter)
 }
 
-function normalizeUntaggedLast() {
-  const untagged = tagGroups.value.find((group) => group.untagged)
-  if (!untagged) return
-  tagGroups.value = [...tagGroups.value.filter((group) => !group.untagged), untagged]
-}
-
 function onTagGroupDragStart() {
   tagGroupDragging.value = true
 }
 
 async function onTagGroupDragEnd() {
   tagGroupDragging.value = false
-  normalizeUntaggedLast()
-  const orderedTagIds = tagGroups.value
-    .filter((group) => !group.untagged)
-    .map((group) => Number(group.id))
+  const orderedTagIds = tagGroupModel.orderedTagIds()
   try {
     await window.api.updateTagOrder(orderedTagIds)
   } catch (error) {
@@ -945,117 +572,6 @@ function retryTagGroup(group) {
 // 时间线分组（从单一 noteList 派生）
 // ============================================================
 
-function timeGroup(ts) {
-  const now = new Date()
-  const target = new Date(ts)
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-  const tomorrowStart = todayStart + 86400000
-  const yesterdayStart = todayStart - 86400000
-  const dayBeforeStart = yesterdayStart - 86400000
-  if (target.getTime() >= tomorrowStart) return 'upcoming'
-  if (target.getTime() >= todayStart) return 'today'
-  if (target.getTime() >= yesterdayStart) return 'yesterday'
-  if (target.getTime() >= dayBeforeStart) return 'dayBefore'
-  return 'earlier'
-}
-
-function timelineDateKey(ts) {
-  const date = new Date(ts)
-  if (Number.isNaN(date.getTime())) return 'unknown'
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-}
-
-function timelineDateLabel(ts) {
-  const date = new Date(ts)
-  if (Number.isNaN(date.getTime())) return '日期未知'
-  const now = new Date()
-  return date.getFullYear() === now.getFullYear()
-    ? `${date.getMonth() + 1}月${date.getDate()}日`
-    : `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
-}
-
-const timelineGroups = computed(() => {
-  const pinned = []
-  const dayMap = { upcoming: [], today: [], yesterday: [], dayBefore: [] }
-  const earlier = []
-
-  for (const note of noteList.value) {
-    // 置顶归属随完整快照一起更新，避免先换组、数据返回后再移动一次。
-    if (timelinePinnedIds.value.has(note.id)) {
-      pinned.push(note)
-    } else {
-      const g = timeGroup(note.effective_at)
-      if (g === 'earlier') {
-        earlier.push(note)
-      } else if (dayMap[g]) {
-        dayMap[g].push(note)
-      }
-    }
-  }
-
-  const earlierDateGroups = []
-  const earlierDateMap = new Map()
-  for (const note of earlier) {
-    const key = timelineDateKey(note.effective_at)
-    let group = earlierDateMap.get(key)
-    if (!group) {
-      group = {
-        group: `date-${key}`,
-        label: timelineDateLabel(note.effective_at),
-        items: []
-      }
-      earlierDateMap.set(key, group)
-      earlierDateGroups.push(group)
-    }
-    group.items.push(note)
-  }
-
-  const all = [
-    { group: 'pinned', label: '置顶', items: pinned },
-    { group: 'upcoming', label: '未来', items: dayMap.upcoming },
-    { group: 'today', label: '今天', items: dayMap.today },
-    { group: 'yesterday', label: '昨天', items: dayMap.yesterday },
-    { group: 'dayBefore', label: '前天', items: dayMap.dayBefore },
-    { group: 'earlier', label: '更早', items: [], count: earlierTotal.value },
-    ...earlierDateGroups
-  ]
-
-  const filtered = all.filter((g) => {
-    if (g.group === 'earlier') return earlierHasData.value
-    return g.items.length > 0
-  })
-
-  let acc = 0
-  for (const grp of filtered) {
-    grp.offset = acc
-    acc += grp.items.length
-  }
-  return filtered
-})
-
-/** “更早”可能尚未展开，因此同时检查它的总数。 */
-const timelineIsEmpty = computed(() => totalRendered.value === 0 && !earlierHasData.value)
-const recentTimelineGroups = computed(() =>
-  timelineGroups.value.filter((g) => !g.group.startsWith('date-'))
-)
-const earlierTimelineGroups = computed(() =>
-  timelineGroups.value.filter((g) => g.group.startsWith('date-'))
-)
-
-/** 更早折叠状态 */
-const collapsedGroups = ref({ earlier: false })
-
-/** 更早展开/折叠 */
-function toggleGroupCollapse(groupKey) {
-  if (groupKey !== 'earlier') return
-  if (!collapsedGroups.value['earlier']) {
-    collapseEarlier()
-  } else {
-    collapsedGroups.value['earlier'] = false
-    onEarlierExpand()
-  }
-}
-
 // ============================================================
 // 自定义模式（置顶 + 日常，拖拽排序 + 滚动分页）
 // ============================================================
@@ -1083,34 +599,13 @@ watch(
 // ---- 拖拽排序回调 ----
 
 async function onCustomPinnedDragEnd() {
-  assignExistingSortSlots(customPinnedNotes.value)
-  customList.value = [...customPinnedNotes.value, ...customNormalNotes.value]
-  await persistSortOrder(customPinnedNotes.value)
+  await customModel.reorderZone(true, customPinnedNotes.value)
+  syncCustomZones()
 }
 
 async function onCustomNormalDragEnd() {
-  assignExistingSortSlots(customNormalNotes.value)
-  customList.value = [...customPinnedNotes.value, ...customNormalNotes.value]
-  await persistSortOrder(customNormalNotes.value)
-}
-
-function assignExistingSortSlots(list) {
-  const slots = list.map((note) => Number(note.sort_order)).sort((a, b) => a - b)
-  list.forEach((note, index) => {
-    note.sort_order = slots[index]
-  })
-}
-
-async function persistSortOrder(list) {
-  try {
-    await window.api.updateCustomSortOrders(
-      list.map((note) => ({ id: note.id, sortOrder: note.sort_order }))
-    )
-  } catch (e) {
-    console.error('[NoteList] sort_order 持久化失败，重新加载数据库顺序:', e)
-    await loadCustom({ showLoading: false, preserveAnchor: true })
-    syncCustomZones()
-  }
+  await customModel.reorderZone(false, customNormalNotes.value)
+  syncCustomZones()
 }
 
 const statusTransitions = reactive(new Map())
@@ -1164,7 +659,7 @@ function finishStatusTransition(noteId, delay, callback) {
   })
 }
 
-/** 待开始便签先确认提前执行；其他状态保持原有单击流程。 */
+/** 未开始便签先确认提前执行；其他状态保持原有单击流程。 */
 function onCardStatusAction(note) {
   if (note.status === 'initialized') {
     earlyStartNote.value = note
@@ -1184,7 +679,7 @@ function cancelEarlyStart() {
   earlyStartNote.value = null
 }
 
-/** 状态圆环的主操作：待开始提前开始，进行中标记完成，已完成重新进行。 */
+/** 状态圆环的主操作：未开始提前开始，进行中标记完成，已完成重新进行。 */
 async function executeCardStatusAction(note) {
   if (statusTransitions.has(note.id)) return
   const from = note.status
@@ -1259,43 +754,15 @@ function patchVisibleNote(updated, force = false) {
   const allowed = statusFilter.value.length === 0 || statusFilter.value.includes(updated.status)
   if (!allowed && !force) return false
   if (sortMode.value === 'timeline') {
-    noteList.value = noteList.value.map((note) =>
-      note.id === updated.id ? mergeListItem(note, updated) : note
-    )
+    timelineModel.patchNote(updated)
     return true
   }
   if (sortMode.value === 'custom') {
-    customList.value = customList.value.map((note) =>
-      note.id === updated.id ? mergeListItem(note, updated) : note
-    )
+    customModel.patchNote(updated)
     syncCustomZones()
     return true
   }
-
-  const currentGroup = tagGroups.value.find((group) =>
-    group.notes.some((note) => note.id === updated.id)
-  )
-  const updatedGroupKey = updated.tags?.[0]?.id ? `tag:${updated.tags[0].id}` : 'untagged'
-  if (!currentGroup || currentGroup.key !== updatedGroupKey) return false
-  // 保留当前页位置直到状态动画完成，再由数据库重新查询完整分组顺序。
-  currentGroup.notes = currentGroup.notes.map((note) =>
-    note.id === updated.id ? mergeListItem(note, updated) : note
-  )
-  return true
-}
-
-/** 局部状态响应缺少摘要字段时保留卡片已有的标签与附件信息。 */
-function mergeListItem(current, updated) {
-  return {
-    ...current,
-    ...updated,
-    tags: Array.isArray(updated.tags) ? updated.tags : current.tags,
-    attachment_count: Number.isFinite(Number(updated.attachment_count))
-      ? Number(updated.attachment_count)
-      : current.attachment_count,
-    has_text: typeof updated.has_text === 'boolean' ? updated.has_text : current.has_text,
-    has_image: typeof updated.has_image === 'boolean' ? updated.has_image : current.has_image
-  }
+  return tagGroupModel.patchNote(updated)
 }
 
 async function refreshOne(noteOrId) {
@@ -1307,7 +774,7 @@ async function refreshOne(noteOrId) {
       : await window.api.getNote(id)
   if (updated) {
     if (!patchVisibleNote(updated)) await refreshInBackground()
-    else lastRefreshedAt.value = Date.now()
+    else querySession.markRefreshed()
   }
 }
 
@@ -1504,6 +971,12 @@ const stopNotesChanged = window.api.onNotesChanged?.((payload) => {
   // 本地状态回调和主进程广播共用队列，等待所有状态动画结束后只刷新一次。
   scheduleNotesRefresh()
 })
+watch(todayKey, () => {
+  if (restoring || sortMode.value !== 'timeline') return
+  // 使用同一个后台队列更新最近三天边界、历史分页和日期分组。
+  refreshCauses.add({ reason: 'day-change' })
+  scheduleNotesRefresh()
+})
 
 const stopSettingsChanged = window.api.onSettingsChanged?.(async (snapshot) => {
   minimalMode.value =
@@ -1538,7 +1011,7 @@ onUnmounted(() => {
   for (const animation of panelMotions.values()) animation.cancel()
   panelMotions.clear()
   presenceMotionSeq++
-  loadSeq++
+  querySession.dispose()
   exitTagGroupSortMode()
   disposePresenceMotion()
   clearTimeout(notesChangedTimer)
@@ -1552,9 +1025,6 @@ onUnmounted(() => {
   stopTagsChanged?.()
   weatherLoadSequence += 1
   closeTagGroupContextMenu()
-  earlierRequestSeq++
-  customMoreRequestSeq++
-  tagGroupGeneration++
 })
 
 // 统一响应式入口：排序模式 / 标签 / 状态任一变化 → 重载 + 持久化
@@ -1616,7 +1086,13 @@ defineExpose({
 <template>
   <div class="note-list">
     <!-- 操作组仅占当前可见宽度，其余空间由天气与宜忌平分。 -->
-    <div class="nl-toolbar">
+    <div
+      class="nl-toolbar"
+      :class="{
+        'has-one-summary': weatherDisplayEnabled !== almanacEnabled,
+        'has-no-summaries': !weatherDisplayEnabled && !almanacEnabled
+      }"
+    >
       <div class="nl-toolbar-controls">
         <FilterTabs
           :model-value="panelState"
@@ -1627,10 +1103,10 @@ defineExpose({
           @close-panel="panelState = 'taiji'"
         />
       </div>
-      <div class="nl-toolbar-left">
+      <div v-if="weatherDisplayEnabled" class="nl-toolbar-left">
         <DateContextSummary kind="weather" :forecast="weatherForecast" />
       </div>
-      <div class="nl-toolbar-right">
+      <div v-if="almanacEnabled" class="nl-toolbar-right">
         <DateContextSummary kind="almanac" :forecast="weatherForecast" />
       </div>
     </div>
@@ -2103,6 +1579,12 @@ defineExpose({
 }
 .nl-toolbar-controls {
   display: flex;
+}
+.nl-toolbar.has-one-summary {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.nl-toolbar.has-no-summaries {
+  grid-template-columns: auto;
 }
 .nl-toolbar-left,
 .nl-toolbar-right {
@@ -2611,6 +2093,10 @@ defineExpose({
 @media (max-width: 420px) {
   .nl-toolbar {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .nl-toolbar.has-one-summary,
+  .nl-toolbar.has-no-summaries {
+    grid-template-columns: minmax(0, 1fr);
   }
   .nl-toolbar-controls {
     grid-column: 1 / -1;

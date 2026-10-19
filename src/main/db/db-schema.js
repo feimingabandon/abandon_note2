@@ -3,10 +3,12 @@
  * V16 曾为已撤销的独立极简视图增加布局表，便签结构仍兼容 V15。
  * 保留 V16 兼容号；新库不创建废弃表，已有库保留该表及数据但不再使用。
  * V17 增加多方式提醒和独立提醒任务，版本号仅由迁移事务提交。
+ * V18 增加附件清空提交日志，避免文件标记失败时恢复已提交的旧附件。
  */
 import { createReminderSchema } from './db-reminders.js'
+import { createAttachmentResetJournalSchema } from './attachment-reset-journal.js'
 
-export const DATABASE_SCHEMA_VERSION = 17
+export const DATABASE_SCHEMA_VERSION = 18
 
 function migrateToVersion17(db) {
   for (const table of ['notes', 'note_templates']) {
@@ -310,6 +312,7 @@ function ensureCalendarNoteIndexes(db) {
 }
 
 function migrateDatabaseSchema(db, existingVersion) {
+  const missingAttachmentResetJournal = !hasTable(db, 'attachment_reset_commits')
   const missingReminders =
     !hasColumn(db, 'notes', 'reminder_channels') ||
     !hasColumn(db, 'note_templates', 'reminder_channels') ||
@@ -347,6 +350,7 @@ function migrateDatabaseSchema(db, existingVersion) {
   )
   if (
     existingVersion >= DATABASE_SCHEMA_VERSION &&
+    !missingAttachmentResetJournal &&
     !missingReminders &&
     !missingDurationDays &&
     !missingTagIds &&
@@ -386,6 +390,8 @@ function migrateDatabaseSchema(db, existingVersion) {
     if (existingVersion < 14 || missingContentColorRanges) migrateToVersion14(db)
     if (existingVersion < 15 || missingTemplateTimeRange) migrateToVersion15(db)
     if (existingVersion < 17 || missingReminders) migrateToVersion17(db)
+    if (existingVersion < 18 || missingAttachmentResetJournal)
+      createAttachmentResetJournalSchema(db)
     if (existingVersion < DATABASE_SCHEMA_VERSION) {
       db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
     }
@@ -476,6 +482,10 @@ export function createRemoteServiceSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_remote_session_end_outbox_created
       ON remote_session_end_outbox(created_at);
+    CREATE TABLE IF NOT EXISTS remote_daily_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `)
 }
 
@@ -517,8 +527,8 @@ export function createNotesSchema(db) {
       content                 TEXT    NOT NULL DEFAULT '',
       recurrence_rule         TEXT    NOT NULL,
       is_pinned               INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0, 1)),
-      notify_enabled          INTEGER NOT NULL DEFAULT 1 CHECK(notify_enabled IN (0, 1)),
-      reminder_channels       INTEGER NOT NULL DEFAULT 1 CHECK(reminder_channels BETWEEN 0 AND 7),
+      notify_enabled          INTEGER NOT NULL DEFAULT 0 CHECK(notify_enabled IN (0, 1)),
+      reminder_channels       INTEGER NOT NULL DEFAULT 0 CHECK(reminder_channels BETWEEN 0 AND 7),
       is_paused               INTEGER NOT NULL DEFAULT 0 CHECK(is_paused IN (0, 1)),
       is_deleted              INTEGER NOT NULL DEFAULT 0 CHECK(is_deleted IN (0, 1)),
       deleted_at              INTEGER,

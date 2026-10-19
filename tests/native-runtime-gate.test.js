@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { parse } from '@babel/parser'
 import { describe, expect, it, vi } from 'vitest'
 import { enforceNativeRuntimeCompatibility } from '../src/main/native-runtime-gate.js'
 import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
@@ -114,11 +115,35 @@ describe('Windows native runtime startup gate', () => {
 
   it('runs the native gate before opening the database', () => {
     const source = readFileSync(resolve('src/main/index.js'), 'utf8')
-    const readyBlock = source.slice(source.indexOf('app.whenReady().then'))
-    expect(readyBlock.indexOf('enforceNativeRuntimeCompatibility({')).toBeGreaterThanOrEqual(0)
-    expect(readyBlock.indexOf('enforceNativeRuntimeCompatibility({')).toBeLessThan(
-      readyBlock.indexOf('initDatabase()')
+    const ast = parse(source, { sourceType: 'module' })
+    const declaration = ast.program.body
+      .filter((node) => node.type === 'VariableDeclaration')
+      .flatMap((node) => node.declarations)
+      .find((node) => node.id.name === 'applicationBootstrap')
+    const start = declaration.init.arguments[0].properties.find((node) => node.key.name === 'start')
+    const statements = start.value.body.body
+    const gateIndex = statements.findIndex(
+      (node) =>
+        node.type === 'IfStatement' &&
+        node.test.type === 'UnaryExpression' &&
+        node.test.operator === '!' &&
+        node.test.argument.callee?.name === 'enforceNativeRuntimeCompatibility'
     )
+    const databaseIndex = statements.findIndex(
+      (node) =>
+        node.type === 'VariableDeclaration' &&
+        node.declarations.some(
+          (item) =>
+            item.init?.type === 'AwaitExpression' &&
+            item.init.argument.callee?.name === 'runStage' &&
+            item.init.argument.arguments[0]?.value === 'database'
+        )
+    )
+    expect(gateIndex).toBeGreaterThanOrEqual(0)
+    expect(databaseIndex).toBeGreaterThan(gateIndex)
+    expect(
+      statements[gateIndex].consequent.body.some((node) => node.type === 'ReturnStatement')
+    ).toBe(true)
   })
 
   it('keeps the JavaScript and C++ native ABI constants synchronized', () => {

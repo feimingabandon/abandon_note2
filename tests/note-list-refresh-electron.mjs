@@ -1,7 +1,7 @@
-import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
+import { readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
+import { createAssertionRecorder, prepareTestProfile } from './helpers/test-result-recorder.cjs'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow, ipcMain } from 'electron'
@@ -26,17 +26,41 @@ ipcMain.handle = (channel, listener) =>
   })
 
 const require = createRequire(import.meta.url)
-const profile = mkdtempSync(join(tmpdir(), 'abandon-note-list-refresh-'))
+const recorder = createAssertionRecorder({
+  suite: 'tests/note-list-refresh-electron.mjs',
+  mode: 'electron-ready-real-app-list-refresh',
+  metadata: {
+    realWindows: true,
+    realDiskDatabase: true,
+    delayedAndFailedIPC: true,
+    mainProcessRestart: false
+  }
+})
+const { assert } = recorder
+const profile = prepareTestProfile({ prefix: 'abandon-note-list-refresh-' })
+const userData = profile.directory
+let current,
+  completed = false,
+  failure = null,
+  shuttingDown = false,
+  reachedWillQuit = false,
+  cleanupTimeout = null
+let evidence = { status: 'incomplete' }
+const cleanupErrors = [],
+  verifiedScenarios = []
 const wait = (ms) => new Promise((done) => setTimeout(done, ms))
 const report = (message) => process.stderr.write(`[list-refresh] ${message}\n`)
 
 async function until(predicate, message) {
   const deadline = Date.now() + 15000
   while (Date.now() < deadline) {
-    if (await predicate()) return
+    if (await predicate()) {
+      assert.ok(true, message)
+      return
+    }
     await wait(30)
   }
-  throw new Error(message)
+  assert.fail(message)
 }
 
 function listWindow() {
@@ -46,7 +70,7 @@ function listWindow() {
 }
 
 function seedSettings() {
-  const db = new Database(join(profile, 'app.db'))
+  const db = new Database(join(userData, 'app.db'))
   db.exec(`CREATE TABLE app_settings (
     window_name TEXT NOT NULL, type TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
     remark TEXT DEFAULT '', created_at INTEGER, updated_at INTEGER,
@@ -63,11 +87,103 @@ function seedSettings() {
   db.close()
 }
 
+async function requestShutdown(error = null) {
+  if (shuttingDown) return
+  shuttingDown = true
+  failure = error
+  process.exitCode = error ? 1 : 0
+  clearTimeout(testTimeout)
+  try {
+    const root = process.env.ABANDON_TEST_EVIDENCE_DIR || userData
+    const summary = {
+      completed,
+      error: error?.stack || null,
+      scope:
+        'Timeline refresh, retained DOM/scroll, history paging, failures, collapse and mode cancellation',
+      ipcTrace,
+      verifiedScenarios,
+      counts: recorder.report({ cleanup: { status: 'preserved' } }).assertions
+    }
+    if (current && !current.isDestroyed()) {
+      summary.finalUrl = current.webContents.getURL()
+      let captureTimeout
+      const image = await Promise.race([
+        current.webContents.capturePage(),
+        new Promise((_, reject) => {
+          captureTimeout = setTimeout(() => reject(new Error('Final screenshot timed out')), 3000)
+        })
+      ]).finally(() => clearTimeout(captureTimeout))
+      const png = image.toPNG()
+      writeFileSync(join(root, 'note-list-refresh-final.png'), png, { flag: 'wx' })
+      summary.screenshotSha256 = createHash('sha256').update(png).digest('hex')
+    }
+    writeFileSync(join(root, 'note-list-refresh-evidence.json'), JSON.stringify(summary, null, 2), {
+      flag: 'wx'
+    })
+    evidence = {
+      status: 'complete',
+      artifacts: [
+        'note-list-refresh-evidence.json',
+        ...(summary.screenshotSha256 ? ['note-list-refresh-final.png'] : [])
+      ],
+      scope: 'GUI assertions and final screenshot; product logger closes through real quit'
+    }
+  } catch (captureError) {
+    evidence = { status: 'failed', error: captureError.stack || captureError.message }
+    process.exitCode = 1
+  }
+  // Clear only these test windows; main's normal before-quit still disposes services/DB/native.
+  cleanupTimeout = setTimeout(() => app.exit(1), 12000)
+  for (const window of BrowserWindow.getAllWindows()) {
+    try {
+      if (!window.isDestroyed()) window.destroy()
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError.message)
+      process.exitCode = 1
+    }
+  }
+  app.quit()
+}
+
+app.once('will-quit', () => {
+  reachedWillQuit = true
+})
+app.once('quit', (_event, code) => {
+  clearTimeout(cleanupTimeout)
+  const windowsClosed = BrowserWindow.getAllWindows().every((window) => window.isDestroyed())
+  const cleanupComplete = reachedWillQuit && windowsClosed && cleanupErrors.length === 0
+  try {
+    recorder.finish({
+      completed,
+      error: failure,
+      evidence,
+      profileOwnership: profile.ownership,
+      cleanup: {
+        status:
+          cleanupComplete && profile.ownership === 'runner'
+            ? 'complete'
+            : cleanupComplete
+              ? 'preserved'
+              : 'failed',
+        reachedWillQuit,
+        windowsClosed,
+        errors: cleanupErrors,
+        exitCode: code,
+        preservedProfile: profile.ownership === 'script' || failure ? userData : undefined,
+        scope: 'Main before-quit, windows and process; runner removes owned profile after exit'
+      }
+    })
+  } catch (reportError) {
+    console.error(reportError)
+    process.exitCode = 1
+  }
+})
+
 async function run() {
   let win
   try {
     await until(() => listWindow(), '列表窗口未启动')
-    win = listWindow()
+    win = current = listWindow()
     win.setSize(600, 780)
     const js = (code) => win.webContents.executeJavaScript(code)
     const expectUI = (code, message) => until(() => js(code), message)
@@ -307,10 +423,59 @@ async function run() {
       "Boolean(document.querySelector('.nl-custom')) && !document.querySelector('.nl-timeline')",
       '过期查询不能覆盖新模式'
     )
-    report(
-      'PASS stable card/scroll lifecycle, one refresh/animation, slow queries, concurrent completion, >100 retention, failure/collapse/mode cancellation'
+    await js(
+      "window.api.setSettingValue('listFilter', {listMode:'timeline', tagIds:[], statusFilter:[]})"
     )
-    app.exit(0)
+    const todayCard = `.nl-card[data-note-id="${data.today}"]`
+    await expectUI(
+      `document.querySelector('${todayCard}')?.closest('.nl-group')?.querySelector('.nl-group-label')?.textContent.trim() === '今天'`,
+      '跨午夜验证前应恢复今天分组'
+    )
+    await wait(800)
+    ipcTrace.length = 0
+    // Change only the renderer wall clock, then use the real visibility wake-up
+    // path. No note mutation, explicit reload, or direct component refresh.
+    try {
+      await js(`(() => {
+        window.__realDateForMidnightTest = window.Date
+        const RealDate = window.Date
+        const now = new RealDate()
+        const nextDay = new RealDate(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 1).getTime()
+        window.Date = class extends RealDate {
+          constructor(...args) { super(...(args.length ? args : [nextDay])) }
+          static now() { return nextDay }
+        }
+        document.dispatchEvent(new Event('visibilitychange'))
+      })()`)
+      await expectUI(
+        `document.querySelector('${todayCard}')?.closest('.nl-group')?.querySelector('.nl-group-label')?.textContent.trim() === '昨天'`,
+        '跨午夜应自动将今天便签移入昨天分组'
+      )
+      await expectUI(
+        `Array.from(document.querySelectorAll('${todayCard} .nl-card-time')).length === 2 && Array.from(document.querySelectorAll('${todayCard} .nl-card-time')).every(node => node.textContent.includes('昨天'))`,
+        '跨午夜应同时更新普通卡片的生效及完成时间'
+      )
+      assert.ok(
+        ipcTrace.some((item) => item.channel === 'notes:query-recent'),
+        '日期变化应通过真实 IPC 自动刷新查询边界'
+      )
+      const ids = await js(
+        "Array.from(document.querySelectorAll('.nl-timeline .nl-card'), node => node.dataset.noteId)"
+      )
+      assert.equal(new Set(ids).size, ids.length, '跨午夜刷新不能重复便签')
+      verifiedScenarios.push('automatic-midnight-timeline-and-card-label-refresh')
+    } finally {
+      await js(`(() => {
+        window.Date = window.__realDateForMidnightTest || window.Date
+        delete window.__realDateForMidnightTest
+        document.dispatchEvent(new Event('visibilitychange'))
+      })()`)
+    }
+    report(
+      'PASS stable card/scroll lifecycle, one refresh/animation, slow queries, concurrent completion, >100 retention, failure/collapse/mode cancellation, automatic midnight refresh'
+    )
+    completed = true
+    await requestShutdown()
   } catch (error) {
     if (win && !win.isDestroyed()) {
       report(
@@ -320,12 +485,16 @@ async function run() {
       )
     }
     report(error?.stack || String(error))
-    app.exit(1)
+    await requestShutdown(error)
   }
 }
 
+const testTimeout = setTimeout(() => {
+  void requestShutdown(new Error('List refresh timed out'))
+}, 150000)
+
 try {
-  app.setPath('userData', profile)
+  app.setPath('userData', userData)
   process.env.ABANDON_INTEGRATION_TEST = '1'
   process.env.ABANDON_INTEGRATION_APP_ROOT = process.cwd()
   process.env.ABANDON_INTEGRATION_NATIVE_DLL = resolve('native_blur/build/bin/blur_engine.dll')
@@ -339,5 +508,5 @@ try {
   app.once('ready', () => void run())
 } catch (error) {
   report(error?.stack || String(error))
-  app.exit(1)
+  void requestShutdown(error)
 }

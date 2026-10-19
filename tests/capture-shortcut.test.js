@@ -26,11 +26,14 @@ function setup() {
   return { bindings, external, view, service, trigger }
 }
 describe('capture global shortcut ownership', () => {
-  it('registers only F1 capture and preserves view visibility', () => {
+  it('registers F1 editing and Control+F1 copy while preserving view visibility', () => {
     const { service, bindings, trigger } = setup()
-    expect(bindings.size).toBe(2)
+    expect(bindings.size).toBe(3)
     bindings.get('F1')()
     expect(trigger).toHaveBeenCalledWith('screenshot')
+    bindings.get('Control+F1')()
+    expect(trigger).toHaveBeenLastCalledWith('screenshotCopy')
+    expect(service.conflicts('screenshot', 'Ctrl+F1')).toBe(true)
     expect(service.conflicts('screenshot', 'Ctrl+F8')).toBe(true)
     expect(service.conflicts('viewVisibility', 'F1')).toBe(true)
     expect(service.conflicts('viewVisibility', 'Ctrl+Alt+P')).toBe(false)
@@ -45,7 +48,7 @@ describe('capture global shortcut ownership', () => {
     service.endCapture(1)
     expect(bindings.size).toBe(0)
     service.endCapture(2)
-    expect(bindings.size).toBe(2)
+    expect(bindings.size).toBe(3)
   })
   it('rolls back conflicts and failed persistence then allows a successful update and clear', () => {
     const { service, external, bindings } = setup()
@@ -67,9 +70,9 @@ describe('capture global shortcut ownership', () => {
     expect(service.update('screenshot', 'Control+F10', { persist, ownerId: 1 }).status).toBe(
       'saved'
     )
-    expect(bindings.size).toBe(2)
+    expect(bindings.size).toBe(3)
     expect(service.update('screenshot', '', { persist, ownerId: 1 }).status).toBe('cleared')
-    expect(bindings.size).toBe(1)
+    expect(bindings.size).toBe(2)
     service.dispose()
     expect(bindings.size).toBe(1)
   })
@@ -91,7 +94,7 @@ describe('capture global shortcut ownership', () => {
     service.initialize({ enabled: false, screenshot: 'F2' })
     expect(bindings.size).toBe(0)
     service.setEnabled(true)
-    expect([...bindings.keys()].sort()).toEqual(['Control+F8', 'F2'])
+    expect([...bindings.keys()].sort()).toEqual(['Control+F1', 'Control+F8', 'F2'])
   })
   it('preserves the master gate across recording owners and reports enable conflicts', () => {
     const { service, bindings, external } = setup()
@@ -105,7 +108,7 @@ describe('capture global shortcut ownership', () => {
     )
     expect(bindings.size).toBe(0)
     service.endCapture(2)
-    expect(bindings.size).toBe(2)
+    expect(bindings.size).toBe(3)
     service.setEnabled(false)
     external.add('F2')
     service.setEnabled(true)
@@ -127,7 +130,7 @@ describe('capture global shortcut ownership', () => {
     service.setEnabled(true)
     service.beginCapture(1)
     service.endCapture(1)
-    expect([...bindings.keys()]).toEqual(['Control+F8'])
+    expect([...bindings.keys()]).toEqual(['Control+F8', 'Control+F1'])
     expect(service.snapshot().screenshot.error.code).toBe('conflict')
   })
 })

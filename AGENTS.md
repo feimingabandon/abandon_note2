@@ -1,5 +1,7 @@
 # Repository agent instructions
 
+本产品只支持 Windows 10/11 x64。不得新增非 Windows 运行、构建或平台设置；Apple 风格界面属于视觉设计，应保留并遵守下述 UI 标准。
+
 涉及 `src/renderer` 的界面、CSS、主题、边线、背景、控件或浮层改动前，必须完整阅读并遵守 `docs/UI_DESIGN_STANDARD.md`。
 
 不得在组件内新增与该标准冲突的中性灰色或局部边线体系；确需例外时，应在代码注释中说明其语义或绘图用途。

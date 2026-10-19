@@ -1,2 +1,2 @@
-# 当前正式发布目标是 Windows。保留该默认入口，避免直接运行 electron-builder 时误用 macOS 配置。
+# 唯一桌面打包目标为 Windows x64，默认入口沿用 Windows 配置。
 extends: 'file:./electron-builder.win.yml'

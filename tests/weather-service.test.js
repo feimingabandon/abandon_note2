@@ -3,6 +3,9 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WeatherService } from '../src/main/services/weather-service.js'
+import * as chinaAreasApi from '@aurouscia/china-areas/dist/index.js'
+
+vi.mock('@aurouscia/china-areas/dist/index.js', { spy: true })
 
 const temporaryDirectories = []
 
@@ -449,6 +452,44 @@ describe('WeatherService', () => {
     expect(beijing.children[0].name).toBe('北京市')
     expect(beijing.children[0].children.length).toBeGreaterThan(0)
     expect(hongKong.children[0].children[0]).toMatchObject({ name: '中西区' })
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('builds the first cascade without repeated ancestor scans and isolates cached results', async () => {
+    const ancestry = vi.mocked(chinaAreasApi.matchDivisionByCode).mockClear()
+    const childScans = vi.mocked(chinaAreasApi.getDivisionChildren).mockClear()
+    const provinceScans = vi.mocked(chinaAreasApi.getTopDivisions).mockClear()
+    const fetchImpl = vi.fn()
+    const { service } = await createService(fetchImpl)
+    const first = service.getChinaDivisionTree()
+    const cached = service.chinaDivisionTree
+    const second = service.getChinaDivisionTree()
+    expect(second).toEqual(first)
+    expect(second).not.toBe(first)
+    expect(service.chinaDivisionTree).toBe(cached)
+    expect(first).toHaveLength(34)
+    expect(ancestry).not.toHaveBeenCalled()
+    expect(childScans).not.toHaveBeenCalled()
+    expect(provinceScans).not.toHaveBeenCalled()
+
+    const beijing = first.find((item) => item.name === '北京市')
+    expect(beijing.children[0].children[0].candidate).toMatchObject({
+      admin1: '北京市',
+      admin2: '北京市'
+    })
+    const hainan = first.find((item) => item.name === '海南省')
+    expect(
+      hainan.children.find((item) => item.code === '460000:direct').children[0].candidate
+    ).toMatchObject({ admin1: '海南省', admin2: '省直辖县级行政区划' })
+    const macao = first.find((item) => item.name === '澳门特别行政区')
+    expect(macao.children[0].children).toHaveLength(8)
+    expect(macao.children[0].children[0].candidate).toMatchObject({
+      admin1: '澳门特别行政区',
+      admin2: '澳门特别行政区'
+    })
+    first[0].name = 'changed'
+    first[0].children[0].children[0].candidate.name = 'changed'
+    expect(service.getChinaDivisionTree()).toEqual(second)
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 

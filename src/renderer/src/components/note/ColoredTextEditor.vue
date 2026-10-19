@@ -12,7 +12,7 @@ const props = defineProps({
   modelValue: { type: String, default: '' },
   colorRanges: { type: Array, default: () => [] },
   placeholder: { type: String, default: '' },
-  rows: { type: Number, default: 4 },
+  rows: { type: Number, default: 2 },
   minHeight: { type: Number, default: 60 },
   maxHeight: { type: Number, default: 300 },
   initialFocus: { type: Boolean, default: false }
@@ -226,7 +226,7 @@ defineExpose({ focus })
   display: block;
   box-sizing: border-box;
   width: 100%;
-  min-height: 90rem;
+  min-height: 72rem;
   padding: 10rem 12rem;
   border: 1px solid var(--ui-border-control);
   border-radius: 8rem;

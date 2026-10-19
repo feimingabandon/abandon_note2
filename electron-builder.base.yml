@@ -25,14 +25,12 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   # better-sqlite3：运行时仅加载 prebuilds/{platform}-{arch}.node（见 lib/binding.js）。
-  # 这里只排除所有发布目标均不支持的架构；当前目标的唯一二进制由 beforePack 再精确选择。
+  # Windows x64 的唯一二进制由 beforePack 按允许列表选择，包括未知平台目录。
   - '!node_modules/better-sqlite3/{deps,src,build,bin}/**'
-  - '!node_modules/better-sqlite3/prebuilds/{linux,win32-arm64,win32-ia32}*.node'
-  # koffi：运行时按 build/koffi/{平台}_{架构}/ 目录加载，策略同上。
+  # koffi：运行时只加载 build/koffi/win32_x64/koffi.node，策略同上。
   - '!node_modules/koffi/{src,doc,vendor}/**'
   - '!node_modules/koffi/lib/native/**'
   - '!node_modules/koffi/build/koffi/win32_x64/*.{exp,lib}'
-  - '!node_modules/koffi/build/koffi/{linux,musl,freebsd,openbsd,win32_arm64,win32_ia32}*/**'
   # 以下内容只用于前端构建、原生模块编译或 npm 包分发，运行时不读取。
   - '!node_modules/{vuedraggable,sortablejs}/**'
   - '!node_modules/**/node-addon-api/**'

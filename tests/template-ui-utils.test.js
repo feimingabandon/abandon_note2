@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   createTemplateFormSnapshot,
+  createTemplatePreviewRequest,
   filterAndSortTemplates,
   formatRuleSummary,
   formatTemplateDateTime,
@@ -97,7 +98,7 @@ describe('template UI state and filtering', () => {
       is_pinned: 1,
       notify_enabled: 0,
       next_run_at: 300,
-      tags: [{ name: '生活' }]
+      tags: [{ id: 8, name: '生活' }]
     },
     {
       id: 2,
@@ -109,7 +110,7 @@ describe('template UI state and filtering', () => {
       is_pinned: 0,
       notify_enabled: 1,
       next_run_at: null,
-      tags: [{ name: '工作' }]
+      tags: [{ id: 3, name: '工作' }]
     },
     {
       id: 3,
@@ -147,7 +148,7 @@ describe('template UI state and filtering', () => {
     const result = filterAndSortTemplates(rows, {
       text: '早餐',
       frequency: 'daily',
-      tags: ['生活'],
+      tags: [8],
       pinned: true,
       notify: false,
       sort: 'next'
@@ -178,10 +179,20 @@ describe('template UI state and filtering', () => {
   it('matches any selected tag when filters contain multiple tags', () => {
     const result = filterAndSortTemplates(rows, {
       frequency: 'all',
-      tags: ['生活', '工作'],
+      tags: [8, 3],
       sort: 'next'
     })
     expect(result.map((row) => row.id)).toEqual([1, 2])
+  })
+
+  it.each([
+    [[8], [1]],
+    [[3], [2]],
+    [[99], []],
+    [[8, 99], [1]]
+  ])('filters templates by numeric tag identities %j', (tags, expectedIds) => {
+    const result = filterAndSortTemplates(rows, { frequency: 'all', tags, sort: 'next' })
+    expect(result.map((row) => row.id)).toEqual(expectedIds)
   })
 
   it('filters natural-quarter templates independently', () => {
@@ -240,5 +251,17 @@ describe('template editor state guards', () => {
     expect(isTemplateEditTarget({ id: '8' }, 8)).toBe(true)
     expect(isTemplateEditTarget({ id: 9 }, 8)).toBe(false)
     expect(isTemplateEditTarget(null, 8)).toBe(false)
+  })
+
+  it('keeps the selected boundaries and template identity in the preview request', () => {
+    const recurrenceRule = { frequency: 'daily', interval: 3, time_of_day: '09:00' }
+    expect(createTemplatePreviewRequest({ recurrenceRule })).toEqual({
+      recurrenceRule,
+      startAt: null,
+      endAt: null
+    })
+    expect(
+      createTemplatePreviewRequest({ recurrenceRule, startAt: 1000, endAt: 2000, templateId: 8 })
+    ).toEqual({ recurrenceRule, startAt: 1000, endAt: 2000, templateId: 8 })
   })
 })

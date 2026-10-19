@@ -1,11 +1,39 @@
-import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
-import { app, BrowserWindow, screen } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron'
 import koffi from 'koffi'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/titlebar-native-drag-electron.mjs',
+  mode: 'electron-ready-real-app-titlebar-native-drag',
+  prefix: 'abandon-titlebar-native-drag-',
+  metadata: {
+    realWindows: true,
+    chromiumMouseInput: true,
+    physicalCursorPositioned: true,
+    nativeDpiConversion: true,
+    customerMachine: false
+  }
+})
+const { assert, root } = lifecycle
+const scenarios = []
+const diagnosticEvidence = []
+let delayMainUpdate = false
+let mainDelayInjected = 0
+const blockOneMainUpdate = () => {
+  if (!delayMainUpdate) return
+  delayMainUpdate = false
+  mainDelayInjected++
+  const deadline = performance.now() + 90
+  while (performance.now() < deadline) {
+    /* Controlled main delivery delay. */
+  }
+}
 
 const setCursor = koffi.load('user32.dll').func('int SetCursorPos(int X, int Y)')
 function positionCursor(point) {
@@ -13,8 +41,6 @@ function positionCursor(point) {
   assert.ok(setCursor(physical.x, physical.y), 'test cursor could not be positioned')
 }
 
-const root =
-  process.env.ABANDON_TEST_USER_DATA || mkdtempSync(join(tmpdir(), 'abandon-titlebar-native-drag-'))
 app.setPath('userData', root)
 process.env.ABANDON_INTEGRATION_TEST = '1'
 process.env.ABANDON_INTEGRATION_APP_ROOT = process.cwd()
@@ -43,10 +69,13 @@ async function until(check, message) {
   const deadline = Date.now() + 10_000
   while (Date.now() < deadline) {
     const result = await check()
-    if (result) return result
+    if (result) {
+      assert.ok(true, message)
+      return result
+    }
     await wait(25)
   }
-  throw new Error(message)
+  assert.fail(message)
 }
 
 app.once('ready', () => void run())
@@ -57,10 +86,11 @@ const chunk = readdirSync(resolve('out/main/chunks')).find((name) =>
 )
 assert.ok(chunk, 'main process chunk missing')
 require(resolve('out/main/chunks', chunk))
-const timeout = setTimeout(() => app.exit(1), 90_000)
 
 async function run() {
-  let exitCode = 0
+  let completed = false,
+    failure = null,
+    current
   const originalCursor = screen.getCursorScreenPoint()
   try {
     const window = await until(
@@ -70,27 +100,62 @@ async function run() {
         ),
       'main window missing'
     )
+    current = window
     const js = (code) => window.webContents.executeJavaScript(code)
+    const motionRows = async () =>
+      (await js("window.api.queryLogs({ search: 'performance.window-', limit: 500 })")).items
+    const exportMotion = async (name) => {
+      const filePath = join(root, name + '.jsonl')
+      const original = dialog.showSaveDialog
+      try {
+        dialog.showSaveDialog = async () => ({ canceled: false, filePath })
+        const result = await js("window.api.exportLogs({ range: 'all' })")
+        assert.ok(result.filePath || result.path || result.success, 'motion export failed')
+      } finally {
+        dialog.showSaveDialog = original
+      }
+      return readFileSync(filePath, 'utf8').trim().split('\n').map(JSON.parse)
+    }
     await until(() => js("Boolean(document.querySelector('.app-titlebar'))"), 'titlebar missing')
     await js("window.api.setDockConfig({ enabledEdges: [], revealHandleMode: 'direct' })")
     const workArea = screen.getDisplayMatching(window.getBounds()).workArea
 
     // Use Chromium mouse input, not dispatched PointerEvents: DOM-only events cannot
     // trigger native text dragging or the pointercancel that interrupted the user's drag.
-    for (const style of ['apple', 'microsoft']) {
+    ipcMain.prependListener('titlebar-window:update-drag', blockOneMainUpdate)
+    let captureId
+    let stoppedCount = 0
+    for (const phase of ['daily', 'deep', 'daily-after-stop']) {
+      const style = phase === 'daily' ? 'apple' : 'microsoft'
+      if (phase === 'deep') {
+        captureId = (await js('window.api.startDeepDiagnostics()')).captureId
+        await until(
+          () => js("window.api.getDiagnosticPolicy().mode === 'deep'"),
+          'deep policy missing'
+        )
+        await js('window.api.setBlurConfig({ enabled: true })')
+      } else if (phase === 'daily-after-stop') {
+        const stopped = await js('window.api.stopDeepDiagnostics()')
+        assert.equal(stopped.mode, 'daily')
+        await until(
+          () => js("window.api.getDiagnosticPolicy().mode === 'daily'"),
+          'daily policy missing'
+        )
+        stoppedCount = (await motionRows()).length
+      }
       await js(`window.api.setSettingValue('appearance.titlebarStyle', '${style}')`)
       await until(
         () => js(`document.querySelector('.app-titlebar').dataset.style === '${style}'`),
         `${style}: style did not update`
       )
-      for (const mode of ['normal', 'top', 'bottom']) {
+      for (const mode of phase === 'daily-after-stop' ? ['normal'] : ['normal', 'top', 'bottom']) {
         await wait(600)
         await js(`window.api.setWindowZOrderMode('${mode}')`)
         window.setBounds({ x: workArea.x + 100, y: workArea.y + 100, width: 480, height: 640 })
         window.show()
         window.focus()
         await wait(150)
-        const label = `${style}/${mode}`
+        const label = `${style}/${mode}/${phase}`
         await until(
           () => js("!document.querySelector('.msg-toast')"),
           `${label}: layer toast still covers navigation`
@@ -134,6 +199,20 @@ async function run() {
           globalX: origin.x,
           globalY: origin.y
         })
+        if (phase === 'deep' && mode === 'top') {
+          // Register before pointerdown installs the component's window listener,
+          // so this controlled callback precedes its RAF in the same frame.
+          await js(`window.addEventListener('pointerdown', () => {
+            window.addEventListener('pointermove', () => {
+              requestAnimationFrame(() => {
+                const startedAt = performance.now()
+                const deadline = startedAt + 90
+                while (performance.now() < deadline) {}
+                window.__rendererMotionDelayInjected = { startedAt, finishedAt: performance.now() }
+              })
+            }, { capture: true, once: true })
+          }, { capture: true, once: true })`)
+        }
         window.webContents.sendInputEvent({
           type: 'mouseDown',
           ...point,
@@ -143,6 +222,7 @@ async function run() {
           clickCount: 1
         })
         await wait(60)
+        if (phase === 'deep' && mode === 'normal') delayMainUpdate = true
         for (const delta of [8, 24, 56, 96, 140]) {
           const current = window.getBounds()
           positionCursor({ x: origin.x + delta, y: origin.y + Math.round(delta / 2) })
@@ -162,6 +242,45 @@ async function run() {
             )
           }, `${label}: drag stopped before ${delta}px`)
         }
+        if (phase === 'deep' && mode === 'normal') {
+          const exported = await exportMotion('motion-mid-drag')
+          const metrics = exported.filter((row) => row.captureId === captureId)
+          const main = metrics.find((row) => row.scope === 'performance.window-drag-main')
+          const renderer = metrics.find((row) => row.scope === 'performance.window-drag-renderer')
+          const native = metrics.find((row) => row.scope === 'performance.window-motion-native')
+          assert.ok(main && renderer && native, 'export omitted an active motion tail')
+          assert.ok(
+            main.exportRequestId && native.exportRequestId,
+            'main/native tail missed cutoff identity'
+          )
+          assert.ok(
+            main.metadata.stages.deliveryLowerBound.maxMs >= 70,
+            'injected main delay was not attributed to delivery'
+          )
+          assert.equal(mainDelayInjected, 1)
+          assert.ok(
+            native.metadata.stages.barrier.count > 0,
+            'paired native barrier timing missing'
+          )
+          assert.ok(native.metadata.stages.staGeometry.count > 0, 'STA service timing missing')
+          assert.ok(native.metadata.stages.snapshot.count > 0, 'native validation timing missing')
+          assert.ok(
+            native.metadata.slowSamples.length > 0 && native.metadata.slowSamples.length <= 6
+          )
+          assert.ok(native.metadata.coverage && native.metadata.barrierResults)
+          assert.ok(
+            native.metadata.slowSamples.every(
+              (sample) => sample.barrier && 'errorMayBeStale' in sample.barrier
+            )
+          )
+          diagnosticEvidence.push({
+            phase,
+            mode,
+            main: main.metadata,
+            renderer: renderer.metadata,
+            native: native.metadata
+          })
+        }
         const current = window.getBounds()
         window.webContents.sendInputEvent({
           type: 'mouseUp',
@@ -177,6 +296,12 @@ async function run() {
           `${label}: no pointerup`
         )
         const events = await js('window.__nativeDragEvents')
+        await until(
+          () =>
+            globalThis.__ABANDON_WINDOW_TEST_HOOKS__?.getDockRuntimeState()
+              .interactionSuspendCount === 0,
+          `${label}: titlebar drag left dock interaction suspended`
+        )
         assert.ok(
           events.some((event) => event.type === 'pointerdown' && event.prevented && event.trusted),
           `${label}: default mouse action not blocked`
@@ -212,8 +337,41 @@ async function run() {
           'none'
         )
         console.log(`${label}: select-all + 140px window drag passed`)
+        scenarios.push(label + ': native mouse drag, selection/dragstart prevention, pointerup')
+        if (phase === 'daily') {
+          assert.equal((await motionRows()).length, 0, 'daily drag emitted detailed motion metrics')
+        } else if (phase === 'daily-after-stop') {
+          assert.equal(
+            (await motionRows()).length,
+            stoppedCount,
+            'detailed collection continued after stop'
+          )
+        } else if (mode === 'top') {
+          assert.equal(await js('Boolean(window.__rendererMotionDelayInjected)'), true)
+          const rows = await until(async () => {
+            const rows = await motionRows()
+            return (
+              rows.some(
+                (row) =>
+                  row.scope === 'performance.window-drag-renderer' &&
+                  row.metadata.scheduleWait?.maxMs >= 70
+              ) && rows
+            )
+          }, 'injected renderer delay was not attributed to RAF wait')
+          diagnosticEvidence.push({
+            phase,
+            mode,
+            renderer: rows
+              .filter((row) => row.scope === 'performance.window-drag-renderer')
+              .map((row) => row.metadata)
+          })
+        }
       }
     }
+    writeFileSync(
+      join(root, 'motion-attribution.json'),
+      JSON.stringify(diagnosticEvidence, null, 2)
+    )
 
     // Real control clicks still work; locked navigation must reject native dragging too.
     await js("window.api.setWindowZOrderMode('normal')")
@@ -241,13 +399,22 @@ async function run() {
       )
     }
     console.log('titlebar native drag prevention and lock control integration passed')
+    assert.equal(
+      globalThis.__ABANDON_WINDOW_TEST_HOOKS__?.getDockRuntimeState().interactionSuspendCount,
+      0
+    )
+    completed = true
   } catch (error) {
     console.error(error)
-    exitCode = 1
+    failure = error
   } finally {
-    positionCursor(originalCursor)
-    clearTimeout(timeout)
-    app.once('quit', () => process.exit(exitCode))
-    app.quit()
+    ipcMain.removeListener('titlebar-window:update-drag', blockOneMainUpdate)
+    await lifecycle.finish({
+      completed,
+      error: failure,
+      window: current,
+      summary: { scenarios, motionAttribution: diagnosticEvidence },
+      restore: () => positionCursor(originalCursor)
+    })
   }
 }

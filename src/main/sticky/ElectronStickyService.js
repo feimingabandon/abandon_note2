@@ -33,16 +33,6 @@ import {
   rectanglesOverlap
 } from './stickyUtils.js'
 
-const IPC_CHANNELS = [
-  'sticky:create',
-  'sticky:ready',
-  'sticky:get-state',
-  'sticky:close',
-  'sticky:toggle-pin',
-  'sticky:update-content',
-  'sticky:update-appearance'
-]
-
 class StickyCreationError extends Error {}
 
 export class ElectronStickyService extends StickyService {
@@ -55,6 +45,8 @@ export class ElectronStickyService extends StickyService {
     rendererUrl,
     stickyRepository,
     saveContent,
+    runMutation = (operation) => operation(),
+    bindMutationContinuation = (operation) => operation,
     logger = null,
     isDevelopment = false,
     onRegistryChanged,
@@ -80,15 +72,20 @@ export class ElectronStickyService extends StickyService {
     this.isDevelopment = isDevelopment
     this.onRegistryChanged = onRegistryChanged
     this.saveContent = saveContent
+    this.runMutation = runMutation
+    this.bindMutationContinuation = bindMutationContinuation
     this.logger = logger
     this.onNoteChanged = onNoteChanged
     this.onError = onError
     this.registry = new Map()
     this.byWebContentsId = new Map()
     this.initialized = false
+    this.registeredChannels = []
     this.disposing = false
+    this.lifecycleGeneration = 0
     this.restorePromise = null
     this.rendererRecoveryAttempts = new Map()
+    this.rendererRecoveryTimers = new Map()
     this.displayManager = new StickyDisplayManager(screen, (change) =>
       this.handleDisplayTopologyChange(change)
     )
@@ -96,40 +93,58 @@ export class ElectronStickyService extends StickyService {
 
   initialize() {
     if (this.initialized) return
+    this.lifecycleGeneration += 1
     this.initialized = true
     this.disposing = false
-    this.displayManager.start()
+    const handle = (channel, handler) => {
+      ipcMain.handle(channel, handler)
+      this.registeredChannels.push(channel)
+    }
+    try {
+      this.displayManager.start()
 
-    ipcMain.handle('sticky:create', async (event, payload) => {
-      const mainWindow = this.getMainWindow()
-      if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
-        return { ok: false, message: '无法创建便利贴' }
-      }
+      handle('sticky:create', async (event, payload) => {
+        const mainWindow = this.getMainWindow()
+        if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+          return { ok: false, message: '无法创建便利贴' }
+        }
+        try {
+          const sticky = await this.runMutation(() => this.create({ noteId: payload?.noteId }))
+          return { ok: true, sticky }
+        } catch (error) {
+          if (error instanceof StickyCreationError) {
+            console.warn(`[sticky] 创建便利贴被拒绝 (noteId=${payload?.noteId}):`, error.message)
+          } else {
+            console.error(`[sticky] 创建便利贴失败 (noteId=${payload?.noteId}):`, error)
+          }
+          return {
+            ok: false,
+            message: error instanceof StickyCreationError ? error.message : '无法创建便利贴，请重试'
+          }
+        }
+      })
+      handle('sticky:get-state', (event) => this.getStateForSender(event.sender.id))
+      handle('sticky:ready', (event) => this.markReady(event.sender.id))
+      handle('sticky:close', (event) =>
+        this.runMutation(() => this.closeForSender(event.sender.id))
+      )
+      handle('sticky:toggle-pin', (event) =>
+        this.runMutation(() => this.togglePinForSender(event.sender.id))
+      )
+      handle('sticky:update-content', (event, content) =>
+        this.runMutation(() => this.updateContentForSender(event.sender.id, content))
+      )
+      handle('sticky:update-appearance', (event, payload) =>
+        this.runMutation(() => this.updateAppearanceForSender(event.sender.id, payload))
+      )
+    } catch (error) {
       try {
-        const sticky = await this.create({ noteId: payload?.noteId })
-        return { ok: true, sticky }
-      } catch (error) {
-        if (error instanceof StickyCreationError) {
-          console.warn(`[sticky] 创建便利贴被拒绝 (noteId=${payload?.noteId}):`, error.message)
-        } else {
-          console.error(`[sticky] 创建便利贴失败 (noteId=${payload?.noteId}):`, error)
-        }
-        return {
-          ok: false,
-          message: error instanceof StickyCreationError ? error.message : '无法创建便利贴，请重试'
-        }
+        this.dispose()
+      } catch (cleanupError) {
+        console.error('[sticky] 部分初始化资源清理失败:', cleanupError)
       }
-    })
-    ipcMain.handle('sticky:get-state', (event) => this.getStateForSender(event.sender.id))
-    ipcMain.handle('sticky:ready', (event) => this.markReady(event.sender.id))
-    ipcMain.handle('sticky:close', (event) => this.closeForSender(event.sender.id))
-    ipcMain.handle('sticky:toggle-pin', (event) => this.togglePinForSender(event.sender.id))
-    ipcMain.handle('sticky:update-content', (event, content) =>
-      this.updateContentForSender(event.sender.id, content)
-    )
-    ipcMain.handle('sticky:update-appearance', (event, payload) =>
-      this.updateAppearanceForSender(event.sender.id, payload)
-    )
+      throw error
+    }
   }
 
   async create({ noteId }) {
@@ -256,6 +271,7 @@ export class ElectronStickyService extends StickyService {
       lastFocusedAt: Date.now(),
       persisted
     }
+    entry.completeReady = this.bindMutationContinuation(() => this.completeReady(entry))
     const readyPromise = new Promise((resolve) => {
       let settled = false
       entry.finishReadyWait = (ready) => {
@@ -357,31 +373,40 @@ export class ElectronStickyService extends StickyService {
   restoreMissing({ source = 'manual' } = {}) {
     if (!this.initialized || this.disposing) return Promise.resolve(0)
     if (this.restorePromise) return this.restorePromise
-    this.restorePromise = this.restoreMissingInternal(source)
+    const restoration = this.restoreMissingInternal(source, this.lifecycleGeneration)
       .catch((error) => {
         console.error(`[sticky] 恢复便利贴失败 (source=${source}):`, error)
         this.onError?.('恢复便利贴失败，请重试')
         return 0
       })
       .finally(() => {
-        this.restorePromise = null
-        this.onRegistryChanged?.()
+        if (this.restorePromise === restoration) {
+          this.restorePromise = null
+          this.onRegistryChanged?.()
+        }
       })
-    return this.restorePromise
+    this.restorePromise = restoration
+    return restoration
   }
 
-  async restoreMissingInternal(source) {
+  async restoreMissingInternal(source, generation) {
     const records = this.repository.list()
     let restored = 0
     let failed = 0
     for (const record of records) {
-      if (this.disposing || this.registry.size >= MAX_STICKY_WINDOWS) break
+      if (
+        generation !== this.lifecycleGeneration ||
+        this.disposing ||
+        this.registry.size >= MAX_STICKY_WINDOWS
+      )
+        break
       if (this.registry.has(record.id)) continue
       const recordId = String(record.id)
       try {
         if (!this.repository.exists(recordId)) continue
         const normalized = this.normalizeRestoredRecord(record)
         await this.openEntry({ ...normalized, persisted: true })
+        if (generation !== this.lifecycleGeneration) return 0
         const entry = this.registry.get(recordId)
         if (!entry?.ready || entry.window.isDestroyed() || !this.repository.exists(recordId)) {
           if (entry) this.destroyEntry(entry)
@@ -389,6 +414,7 @@ export class ElectronStickyService extends StickyService {
         }
         restored += 1
       } catch (error) {
+        if (generation !== this.lifecycleGeneration) return 0
         const entry = this.registry.get(recordId)
         if (entry) this.destroyEntry(entry)
         try {
@@ -517,12 +543,56 @@ export class ElectronStickyService extends StickyService {
   }
 
   scheduleRendererRecovery(id) {
-    if (this.disposing || (this.rendererRecoveryAttempts.get(id) || 0) >= 1) return
+    if (!this.initialized || this.disposing || this.rendererRecoveryAttempts.has(id)) return
+    try {
+      if (!this.repository.exists(id)) return
+    } catch (error) {
+      console.warn('[sticky] 无法确认异常便利贴的恢复记录:', error)
+      return
+    }
     this.rendererRecoveryAttempts.set(id, 1)
+    const generation = this.lifecycleGeneration
     const timer = setTimeout(() => {
-      if (!this.disposing) void this.restoreMissing({ source: 'renderer-gone' })
+      this.rendererRecoveryTimers.delete(id)
+      void Promise.resolve()
+        .then(() => {
+          if (
+            generation !== this.lifecycleGeneration ||
+            !this.initialized ||
+            this.disposing ||
+            !this.rendererRecoveryAttempts.has(id)
+          )
+            return
+          return this.runMutation(() => this.restoreMissing({ source: 'renderer-gone' }))
+        })
+        .catch((error) => console.warn('[sticky] 便利贴恢复未准入:', error.message))
     }, 500)
+    this.rendererRecoveryTimers.set(id, timer)
     timer.unref?.()
+  }
+
+  clearRendererRecovery(id) {
+    clearTimeout(this.rendererRecoveryTimers.get(id))
+    this.rendererRecoveryTimers.delete(id)
+    this.rendererRecoveryAttempts.delete(id)
+  }
+
+  clearAllRendererRecovery() {
+    for (const timer of this.rendererRecoveryTimers.values()) clearTimeout(timer)
+    this.rendererRecoveryTimers.clear()
+    this.rendererRecoveryAttempts.clear()
+  }
+
+  pruneRendererRecovery() {
+    // Keep the retry guard while the persisted sticky exists, even without a window.
+    // A deleted source note may have already removed a crashed sticky via SQL cascade.
+    try {
+      for (const id of this.rendererRecoveryAttempts.keys()) {
+        if (!this.repository.exists(id)) this.clearRendererRecovery(id)
+      }
+    } catch (error) {
+      console.warn('[sticky] 清理异常恢复记录失败:', error)
+    }
   }
 
   requireEntryForSender(webContentsId) {
@@ -539,6 +609,11 @@ export class ElectronStickyService extends StickyService {
 
   markReady(webContentsId) {
     const entry = this.requireEntryForSender(webContentsId)
+    if (entry.ready) return true
+    return entry.completeReady()
+  }
+
+  completeReady(entry) {
     if (!entry.ready) {
       if (entry.persisted) {
         let recordExists
@@ -804,6 +879,7 @@ export class ElectronStickyService extends StickyService {
     if (!entry) {
       try {
         const deleted = this.repository.delete(id)
+        this.clearRendererRecovery(id)
         if (deleted) this.onRegistryChanged?.()
         return deleted
       } catch (error) {
@@ -815,6 +891,7 @@ export class ElectronStickyService extends StickyService {
       this.destroyEntry(entry)
       if (entry.persisted) this.repository.delete(id)
       entry.persisted = false
+      this.clearRendererRecovery(id)
       this.onRegistryChanged?.()
       console.log(`[sticky] 用户已关闭便利贴 (${id})`)
       return true
@@ -830,6 +907,7 @@ export class ElectronStickyService extends StickyService {
     try {
       for (const entry of entries) this.destroyEntry(entry)
       this.repository.deleteAll()
+      this.clearAllRendererRecovery()
       for (const entry of entries) entry.persisted = false
       this.onRegistryChanged?.()
       console.log('[sticky] 用户已关闭全部便利贴')
@@ -852,9 +930,11 @@ export class ElectronStickyService extends StickyService {
         console.error(`[sticky] 彻底删除来源便签后关闭便利贴失败 (${entry.id}):`, error)
       }
     }
+    this.pruneRendererRecovery()
   }
 
   discardAllRuntime() {
+    this.clearAllRendererRecovery()
     for (const entry of [...this.registry.values()]) {
       try {
         entry.persisted = false
@@ -928,18 +1008,37 @@ export class ElectronStickyService extends StickyService {
   }
 
   dispose() {
+    this.lifecycleGeneration += 1
+    this.restorePromise = null
+    this.clearAllRendererRecovery()
     if (!this.initialized) return
     this.disposing = true
+    const failures = []
     for (const entry of [...this.registry.values()]) {
       if (entry.boundsPersistTimer) {
         clearTimeout(entry.boundsPersistTimer)
         entry.boundsPersistTimer = null
       }
       this.persistBounds(entry)
-      this.destroyEntry(entry)
+      try {
+        this.destroyEntry(entry)
+      } catch (error) {
+        failures.push(error)
+      }
     }
-    this.displayManager.stop()
-    for (const channel of IPC_CHANNELS) ipcMain.removeHandler(channel)
+    try {
+      this.displayManager.stop()
+    } catch (error) {
+      failures.push(error)
+    }
+    for (const channel of this.registeredChannels.splice(0)) {
+      try {
+        ipcMain.removeHandler(channel)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
     this.initialized = false
+    if (failures.length) throw new AggregateError(failures, '便利贴资源释放失败')
   }
 }

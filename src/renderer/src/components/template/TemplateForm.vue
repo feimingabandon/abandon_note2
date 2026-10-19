@@ -1,6 +1,8 @@
 <script setup>
 import BaseButton from '../ui/BaseButton.vue'
 import { useDraftProtection } from '../../composables/useDraftProtection.js'
+import { useNewTemplatePreferences } from '../../composables/useNewTemplatePreferences.js'
+import { useTemplatePreviewClock } from '../../composables/useTemplatePreviewClock.js'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import ResizableTextarea from '../ui/ResizableTextarea.vue'
 import TagSelector from '../ui/TagSelector.vue'
@@ -12,6 +14,7 @@ import DateTimePicker from '../ui/DateTimePicker.vue'
 import TemplateFrequencySelector from './TemplateFrequencySelector.vue'
 import {
   createTemplateFormSnapshot,
+  createTemplatePreviewRequest,
   createTemplateRuleSnapshot,
   formatTemplateDateTime,
   formatTemplateTime,
@@ -22,6 +25,7 @@ import {
   resolveStoredTemplatePreviewAt
 } from '../../utils/templateRules.js'
 import { useMessage } from '../../composables/useMessage.js'
+import { ownedPopovers } from '../../utils/anchoredPopover.js'
 import { MAX_ASSIGNED_TAGS, NOTE_TAG_LIMIT_MESSAGE } from '../../../../shared/tag-rules.js'
 
 const props = defineProps({
@@ -34,33 +38,35 @@ const props = defineProps({
 })
 const emit = defineEmits(['submit', 'cancel'])
 const { showMessage } = useMessage()
-const systemNotificationCapability = window.api.runtimeCapabilities?.systemNotifications || {
-  supported: true,
-  reason: ''
-}
-const systemNotificationsSupported = systemNotificationCapability.supported
-
 function currentTimeOfDay() {
   const current = new Date()
   return `${String(current.getHours()).padStart(2, '0')}:${String(current.getMinutes()).padStart(2, '0')}`
 }
 
 const content = ref('')
-const frequency = ref('daily')
-const interval = ref(1)
-const weekdays = ref([1])
-const monthDays = ref([1])
-const quarterMonth = ref(3)
-const quarterDays = ref([31])
-const yearDates = ref([{ month: 1, day: 1 }])
-const timeOfDay = ref(currentTimeOfDay())
-const startAt = ref('')
-const endAt = ref('')
-const reminderChannels = ref(systemNotificationsSupported ? 1 : 0)
-const isPinned = ref(false)
-const tagIds = ref([])
+const preferences = useNewTemplatePreferences({
+  enabled: () => !props.initial,
+  defaultTime: currentTimeOfDay()
+})
+const {
+  frequency,
+  interval,
+  weekdays,
+  monthDays,
+  quarterMonth,
+  quarterDays,
+  yearDates,
+  timeOfDay,
+  startAt,
+  endAt,
+  reminderChannels,
+  isPinned,
+  tagIds
+} = preferences.fields
 const previewAt = ref(null)
 const previewError = ref('')
+const previewRevision = ref(0)
+const previewNow = ref(Date.now())
 const initialSnapshot = ref('')
 const initialRuleSnapshot = ref('')
 let previewTimer = null
@@ -71,6 +77,14 @@ let entranceSequence = 0
 let entranceAnimations = []
 let hasActivated = false
 let initialLoadSequence = 0
+let forcePreview = false
+let submittedFocus = null
+const submissionLocked = ref(false)
+const lockedSurfaces = new Map()
+let submissionFrame = null
+let restoreSubmissionFocus = false
+let submittedReset = false
+let disposed = false
 const ENTER_DURATION = 250
 const ENTER_TOTAL_WINDOW = 520
 
@@ -133,7 +147,8 @@ watch(
   () => props.active,
   (active) => {
     if (active) {
-      if (!hasActivated && !props.initial) timeOfDay.value = currentTimeOfDay()
+      if (!hasActivated && !props.initial && !preferences.hasSavedChoices())
+        timeOfDay.value = currentTimeOfDay()
       hasActivated = true
       replayEntrance()
     } else cancelEntrance()
@@ -142,6 +157,10 @@ watch(
 )
 
 function loadInitial(template) {
+  if (!template) {
+    content.value = ''
+    return
+  }
   const rule = parseTemplateRule(template?.recurrence_rule || template?.recurrenceRule)
   content.value = template?.content || ''
   frequency.value = rule?.frequency || 'daily'
@@ -162,11 +181,7 @@ function loadInitial(template) {
     ? formatTemplateDateTime(template.start_at ?? template.schedule_anchor_at)
     : ''
   endAt.value = template ? formatTemplateDateTime(template.end_at) : ''
-  reminderChannels.value = template
-    ? Number(template.reminder_channels ?? (template.notify_enabled ? 1 : 0))
-    : systemNotificationsSupported
-      ? 1
-      : 0
+  reminderChannels.value = Number(template.reminder_channels ?? (template.notify_enabled ? 1 : 0))
   isPinned.value = template ? Number(template.is_pinned) === 1 : false
   tagIds.value = (template?.tags || []).map((tag) => tag.id)
 }
@@ -193,7 +208,9 @@ const parsedEndAt = computed(() => parseTemplateDateTime(endAt.value))
 const timeRangeError = computed(() => {
   if (startAt.value && !Number.isFinite(parsedStartAt.value)) return '开始时间无效'
   if (endAt.value && !Number.isFinite(parsedEndAt.value)) return '结束时间无效'
-  const effectiveStartAt = Number.isFinite(parsedStartAt.value) ? parsedStartAt.value : Date.now()
+  const effectiveStartAt = Number.isFinite(parsedStartAt.value)
+    ? parsedStartAt.value
+    : previewNow.value
   if (Number.isFinite(parsedEndAt.value) && parsedEndAt.value <= effectiveStartAt) {
     return '结束时间必须晚于开始时间'
   }
@@ -217,8 +234,10 @@ const currentRuleSnapshot = computed(() =>
     endAt: parsedEndAt.value
   })
 )
-const hasChanges = computed(
-  () => initialSnapshot.value !== '' && currentSnapshot.value !== initialSnapshot.value
+const hasChanges = computed(() =>
+  props.initial
+    ? initialSnapshot.value !== '' && currentSnapshot.value !== initialSnapshot.value
+    : !!content.value.trim()
 )
 const requiresSchedulePreview = computed(
   () => !props.initial || initialRuleSnapshot.value !== currentRuleSnapshot.value
@@ -257,13 +276,24 @@ const canSubmit = computed(
     !!content.value.trim() &&
     ruleComplete.value &&
     !timeRangeError.value &&
-    (!requiresSchedulePreview.value || (!!previewAt.value && !previewError.value)) &&
+    (!requiresSchedulePreview.value ||
+      (previewAt.value > previewNow.value && !previewError.value)) &&
     !props.submitting &&
+    !submissionLocked.value &&
     (!props.editorMode || hasChanges.value)
 )
 const previewText = computed(
   () => previewError.value || (previewAt.value ? formatTemplateTime(previewAt.value) : '正在计算…')
 )
+const previewLabel = computed(() =>
+  Number(props.initial?.is_paused) === 1 ? '恢复后生成时间' : '下一次生成'
+)
+
+function refreshPreview() {
+  forcePreview = true
+  previewAt.value = null
+  previewRevision.value += 1
+}
 
 watch(
   [
@@ -273,7 +303,8 @@ watch(
     () => props.initial?.id,
     () => props.initial?.next_run_at,
     () => props.initial?.nextRunAt,
-    initialRuleSnapshot
+    initialRuleSnapshot,
+    previewRevision
   ],
   () => {
     const sequence = ++previewSequence
@@ -284,11 +315,14 @@ watch(
       previewError.value = timeRangeError.value
       return
     }
-    const storedPreviewAt = resolveStoredTemplatePreviewAt({
-      initialTemplate: props.initial,
-      initialRuleSnapshot: initialRuleSnapshot.value,
-      currentRuleSnapshot: currentRuleSnapshot.value
-    })
+    const storedPreviewAt = forcePreview
+      ? null
+      : resolveStoredTemplatePreviewAt({
+          initialTemplate: props.initial,
+          initialRuleSnapshot: initialRuleSnapshot.value,
+          currentRuleSnapshot: currentRuleSnapshot.value
+        })
+    forcePreview = false
     if (storedPreviewAt !== null) {
       previewAt.value = storedPreviewAt
       return
@@ -296,16 +330,16 @@ watch(
     previewAt.value = null
     previewTimer = setTimeout(async () => {
       try {
-        const now = Date.now()
-        const previewAfter = Number.isFinite(parsedStartAt.value)
-          ? Math.max(now, parsedStartAt.value - 1)
-          : now
         const nextRunAt = await window.api.previewTemplateNextRun(
-          recurrenceRule.value,
-          previewAfter
+          createTemplatePreviewRequest({
+            recurrenceRule: recurrenceRule.value,
+            startAt: parsedStartAt.value,
+            endAt: parsedEndAt.value,
+            templateId: props.initial?.id
+          })
         )
         if (sequence !== previewSequence) return
-        if (Number.isFinite(parsedEndAt.value) && nextRunAt > parsedEndAt.value) {
+        if (nextRunAt === null) {
           previewAt.value = null
           previewError.value = '有效期内没有生成节点'
           return
@@ -321,12 +355,30 @@ watch(
   { deep: true, immediate: true }
 )
 
+const previewClock = useTemplatePreviewClock({
+  active: () => props.active,
+  now: previewNow,
+  previewAt,
+  endAt: parsedEndAt,
+  relativeStart: () => parsedStartAt.value === null,
+  refresh: refreshPreview
+})
+
 function submit() {
+  previewClock.sync()
   if (!canSubmit.value) return
   if (tagIds.value.length > MAX_ASSIGNED_TAGS) {
     showMessage('warning', NOTE_TAG_LIMIT_MESSAGE)
     return
   }
+  const root = formRootRef.value
+  const surfaces = root ? [root, ...ownedPopovers(root)] : []
+  submittedFocus = surfaces.some((surface) => surface.contains(document.activeElement))
+    ? document.activeElement
+    : null
+  restoreSubmissionFocus = !!submittedFocus
+  submittedReset = false
+  lockSubmission()
   emit('submit', {
     content: content.value,
     recurrenceRule: recurrenceRule.value,
@@ -336,22 +388,114 @@ function submit() {
     isPinned: isPinned.value,
     tagIds: [...tagIds.value]
   })
+  // A caller may reject the submission synchronously without entering its busy state.
+  nextTick(() => {
+    if (!props.submitting) void unlockSubmission()
+  })
 }
 
+function lockSubmissionSurfaces() {
+  if (!submissionLocked.value || !formRootRef.value) return
+  // Teleport surfaces do not inherit the form's inert state. Keep scanning while
+  // saving so panels registered after a pending nextTick, including leaving
+  // panels, cannot edit the submitted draft.
+  const surfaces = [
+    formRootRef.value.querySelector('.tf-fields'),
+    ...ownedPopovers(formRootRef.value)
+  ]
+  for (const surface of surfaces.filter(Boolean)) {
+    if (!lockedSurfaces.has(surface)) lockedSurfaces.set(surface, surface.inert)
+    surface.inert = true
+  }
+}
+
+function onSubmissionPointerDown(event) {
+  const root = formRootRef.value
+  if (
+    !root?.contains(event.target) &&
+    ![...lockedSurfaces.keys()].some((surface) => surface.contains(event.target)) &&
+    !(root && ownedPopovers(root).some((surface) => surface.contains(event.target)))
+  )
+    restoreSubmissionFocus = false
+}
+
+function lockSubmission() {
+  if (submissionLocked.value) return
+  submissionLocked.value = true
+  document.addEventListener('pointerdown', onSubmissionPointerDown, true)
+  const scan = () => {
+    lockSubmissionSurfaces()
+    if (submissionLocked.value) submissionFrame = requestAnimationFrame(scan)
+  }
+  scan()
+}
+
+async function unlockSubmission({ restoreFocus = true } = {}) {
+  if (!submissionLocked.value) return
+  submissionLocked.value = false
+  if (submissionFrame !== null) cancelAnimationFrame(submissionFrame)
+  submissionFrame = null
+  document.removeEventListener('pointerdown', onSubmissionPointerDown, true)
+  for (const [surface, wasInert] of lockedSurfaces) surface.inert = wasInert
+  lockedSurfaces.clear()
+  await nextTick()
+  const root = formRootRef.value
+  const focused = document.activeElement
+  const focusStillBelongs =
+    focused === document.body ||
+    root?.contains(focused) ||
+    (root && ownedPopovers(root).some((surface) => surface.contains(focused)))
+  if (!disposed && restoreFocus && props.active && restoreSubmissionFocus && focusStillBelongs) {
+    const target =
+      submittedReset || !submittedFocus?.isConnected || submittedFocus.disabled
+        ? root?.querySelector('textarea')
+        : submittedFocus
+    target?.focus({ preventScroll: true })
+  }
+  submittedFocus = null
+  restoreSubmissionFocus = false
+  submittedReset = false
+}
+
+watch(
+  () => props.submitting,
+  (submitting) => {
+    if (submitting) lockSubmission()
+    else void unlockSubmission()
+  }
+)
+
 function reset() {
+  const resettingSubmission = submissionLocked.value
+  submittedReset = resettingSubmission
   protectedDraft.clear()
   protectedDraft.resume()
   const sequence = ++initialLoadSequence
   loadInitial(null)
+  previewRevision.value += 1
   nextTick(() => {
     if (sequence === initialLoadSequence) {
       initialSnapshot.value = currentSnapshot.value
       initialRuleSnapshot.value = currentRuleSnapshot.value
+      if (resettingSubmission) return
+      const root = formRootRef.value
+      const focused = document.activeElement
+      const belongsToForm = root?.contains(focused)
+      const disabledSubmitLostFocus =
+        focused === document.body &&
+        submittedFocus?.isConnected &&
+        submittedFocus.disabled === true &&
+        root?.contains(submittedFocus)
+      if (props.active && !props.editorMode && (belongsToForm || disabledSubmitLostFocus))
+        root?.querySelector('textarea')?.focus({ preventScroll: true })
+      submittedFocus = null
     }
   })
 }
 defineExpose({ reset, hasChanges, clearDraft: () => protectedDraft.clear() })
 onBeforeUnmount(() => {
+  disposed = true
+  void unlockSubmission({ restoreFocus: false })
   clearTimeout(previewTimer)
   cancelEntrance()
 })
@@ -387,13 +531,14 @@ const protectedDraft = useDraftProtection({
     ref="formRootRef"
     class="tf-root"
     :class="{ 'tf-root--editor': editorMode }"
+    :aria-busy="submitting || submissionLocked"
     @submit.prevent="submit"
   >
-    <div class="tf-fields scroll-y">
+    <div class="tf-fields scroll-y" :inert="submitting || submissionLocked">
       <ResizableTextarea
         v-model="content"
         :initial-focus="editorMode"
-        :rows="4"
+        :rows="2"
         placeholder="请输入循环生成的便签内容…（Enter 换行）"
       />
 
@@ -408,12 +553,17 @@ const protectedDraft = useDraftProtection({
       />
 
       <div class="tf-row">
-        <label>生成时间</label><TimePicker v-model="timeOfDay" aria-label="选择模板生成时间" />
+        <label
+          >生成时间<HelpButton
+            text="每次在该时刻生成一条进行中的单日便签；上一条便签及其状态、稍后提醒保留。"
+        /></label>
+        <TimePicker v-model="timeOfDay" aria-label="选择模板生成时间" />
       </div>
       <div class="tf-time-range">
         <div class="tf-row">
           <label
-            >开始时间<HelpButton text="未设置时从保存模板的时间开始；设置后不会提前生成。"
+            >开始时间<HelpButton
+              text="限定循环有效期，未设置时从本次保存开始。第一条不会因保存立即生成，以“下一次生成”为准。"
           /></label>
           <DateTimePicker
             v-model="startAt"
@@ -438,7 +588,7 @@ const protectedDraft = useDraftProtection({
         <p v-if="timeRangeError" class="tf-range-error">{{ timeRangeError }}</p>
       </div>
       <div class="tf-preview">
-        <span>下一次生成</span>
+        <span>{{ previewLabel }}</span>
         <span class="tf-preview-value" aria-live="polite">
           <Transition name="tf-preview-time">
             <strong
@@ -453,7 +603,7 @@ const protectedDraft = useDraftProtection({
       <div class="tf-notification-field">
         <ReminderChannelPicker
           v-model="reminderChannels"
-          help-text="生成实例使用这些提醒方式；稍后提醒只属于本次实例。"
+          help-text="默认不提醒，开启后在每次生成时提醒。修改这里只影响之后生成的便签；稍后提醒只属于本次实例。"
         />
       </div>
       <div class="tf-row">
@@ -559,12 +709,13 @@ label,
   gap: 9rem;
 }
 .tf-time-range .tf-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   gap: 5rem;
 }
 .tf-date-picker {
-  width: 100%;
+  flex: 1 1 12em;
+  width: auto;
   min-width: 0;
 }
 .tf-range-error {
@@ -582,16 +733,20 @@ label,
 }
 .tf-preview {
   min-height: 32rem;
+  flex-wrap: wrap;
 }
 .tf-preview-value {
   display: grid;
-  min-width: 92rem;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
   justify-items: end;
 }
 .tf-preview-value strong {
   grid-area: 1 / 1;
   color: #0a84ff;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 .tf-preview-value strong:not(.is-time) {
   color: var(--text-color-secondary);
@@ -628,6 +783,11 @@ label,
 }
 .tf-row {
   flex-wrap: wrap;
+}
+.tf-row > label,
+.tf-row > :deep(.time-picker) {
+  min-width: 0;
+  max-width: 100%;
 }
 input,
 textarea {

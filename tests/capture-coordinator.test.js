@@ -20,6 +20,28 @@ function setup() {
   return { coordinator, sender }
 }
 describe('capture single session and acknowledgements', () => {
+  it('sends the explicit copy mode for global capture and keeps a running session mode unchanged', async () => {
+    const { coordinator: c } = setup()
+    await c.capture({ mode: 'copy-on-select' })
+    expect(c.host.send).toHaveBeenLastCalledWith({
+      type: 'capture',
+      sessionId: 'session-1',
+      origin: 'global',
+      mode: 'copy-on-select'
+    })
+    expect(await c.capture({ mode: 'edit' })).toEqual({ status: 'busy' })
+    expect(c.active.mode).toBe('copy-on-select')
+    c.finish('cancelled')
+  })
+  it('retains editing for source captures and unknown modes', async () => {
+    for (const options of [{ origin: 'note', mode: 'copy-on-select' }, { mode: 'other' }]) {
+      const { coordinator: c } = setup()
+      await c.capture(options)
+      expect(c.active.mode).toBe('edit')
+      expect(c.host.send).toHaveBeenLastCalledWith(expect.objectContaining({ mode: 'edit' }))
+      c.finish('cancelled')
+    }
+  })
   it('records only bounded numeric monitor metadata for the current capture', async () => {
     const { coordinator: c } = setup()
     c.logger = { info: vi.fn() }

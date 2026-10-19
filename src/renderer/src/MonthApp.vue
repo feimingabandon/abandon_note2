@@ -1,10 +1,14 @@
 <script setup>
+import { useWorkspaceRuntime } from './composables/useWorkspaceRuntime.js'
+import { useWorkspaceWallpaper } from './composables/useWorkspaceWallpaper.js'
+import { useWorkspaceNotices } from './composables/useWorkspaceNotices.js'
+import { useUpdateCheck } from './composables/useUpdateCheck.js'
 import { useModalRequest } from './composables/useQueuedModal.js'
 import EditingDraftDialog from './components/system/EditingDraftDialog.vue'
 import CaptureDelivery from './components/capture/CaptureDelivery.vue'
 import { editingDataGeneration } from './composables/useDraftProtection.js'
 import { defineAsyncComponent } from 'vue'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import AlmanacLauncher from './components/almanac/AlmanacLauncher.vue'
 import AppTitlebar from './components/system/AppTitlebar.vue'
 import TitlebarActions from './components/system/TitlebarActions.vue'
@@ -24,19 +28,8 @@ import DailyReportButton from './components/report/DailyReportButton.vue'
 import AppIcon from './components/ui/AppIcon.vue'
 import TemplatePage from './components/template/TemplatePage.vue'
 import HelpPage from './components/help/HelpPage.vue'
-import { createMessageProvider } from './composables/useMessage.js'
 import { useSlidingWorkspace } from './composables/useSlidingWorkspace.js'
-import { useTodayKey } from './composables/useTodayKey.js'
-import { usePresentationMode } from './composables/usePresentationMode.js'
-import { createQuickNoteEditSettingProvider } from './composables/useQuickNoteEditSetting.js'
-import { createTagColorSettingProvider } from './composables/useTagColorSetting.js'
-import { applySettingsSnapshot } from './utils/applySettingsSnapshot.js'
-import { retainModalBlur } from './utils/modalBlur.js'
-import {
-  createDefaultSettings,
-  FIRST_USE_NOTICE_VERSION,
-  VIEW_MODES
-} from '../../shared/settings-schema.js'
+import { createDefaultSettings, VIEW_MODES } from '../../shared/settings-schema.js'
 
 const props = defineProps({
   viewMode: {
@@ -48,22 +41,54 @@ const props = defineProps({
 const isWeekView = computed(() => props.viewMode === VIEW_MODES.WEEK)
 const viewLabel = computed(() => (isWeekView.value ? '周视图' : '月视图'))
 const defaults = createDefaultSettings(props.viewMode)
-const { showMessage } = createMessageProvider()
-const quickNoteEditSetting = createQuickNoteEditSettingProvider()
-const tagColorSetting = createTagColorSettingProvider()
-const presentationMode = usePresentationMode()
-const locked = ref(defaults.window.lockState)
-const zOrderMode = ref(defaults.window.zOrderMode)
-const titlebarStyle = ref(defaults.appearance.titlebarStyle)
+const workspaceRuntime = useWorkspaceRuntime({
+  defaults: defaults,
+  getViewMode: () => props.viewMode,
+  label: 'MonthApp',
+  hoverPhase: 'mounted',
+  windowFallback: true,
+  waitForContent: true,
+  onSnapshot: (snapshot) => {
+    void wallpaper.sync(snapshot)
+  },
+  onInitialSnapshot: (snapshot) => notices.applyInitialSnapshot(snapshot),
+  onSettingsChanged: (snapshot) => notices.revealFirstUseNoticeFromSnapshot(snapshot),
+
+  onRemoteNoticesChanged: () => {
+    void notices.loadPendingRemoteNotices({ show: true })
+  },
+  beforeReady: async () => {
+    await notices.loadPendingRemoteNotices({ show: true })
+    await notices.loadHolidayDataNotice()
+  }
+})
+const { showMessage, presentationMode, locked, zOrderMode, titlebarStyle } = workspaceRuntime
+const wallpaper = useWorkspaceWallpaper({
+  defaults: defaults,
+  cacheLoads: false,
+  releaseDelayMs: 0,
+  label: 'MonthApp'
+})
+const { wallpaperUrl, wallpaperVisible, wallpaperBlurRadius, wallpaperRenderKey } = wallpaper
+const updateCheck = useUpdateCheck({ policy: 'calendar', label: 'MonthApp' })
+const { updateQueue, showUpdateDialog, updateChecking, updateResult, checkForUpdates } = updateCheck
+const notices = useWorkspaceNotices({ showMessage, openSettings, label: 'MonthApp' })
+const {
+  noticeQueue,
+  firstUseQueue,
+  holidayQueue,
+  showRemoteNoticeDialog,
+  showFirstUseNotice,
+  showHolidayDataNoticeDialog,
+  pendingRemoteNotices,
+  pendingHolidayDataNotice,
+  dismissHolidayDataNotice,
+  closeRemoteNoticeDialog,
+  onRemoteNoticeAcknowledged,
+  onFirstUseCompleted
+} = notices
+
 const showSettings = ref(false)
-const updateQueue = useModalRequest()
-const showUpdateDialog = updateQueue.requested
-const noticeQueue = useModalRequest()
-const showRemoteNoticeDialog = noticeQueue.requested
-const firstUseQueue = useModalRequest()
-const showFirstUseNotice = firstUseQueue.requested
-const holidayQueue = useModalRequest()
-const showHolidayDataNoticeDialog = holidayQueue.requested
 const reportQueue = useModalRequest()
 const showDailyReportDialog = reportQueue.requested
 const almanacQueue = useModalRequest()
@@ -90,27 +115,8 @@ const {
   onTransitionEnd: onHelpTransitionEnd,
   onTransitionCancel: onHelpTransitionCancel
 } = helpWorkspace
-const pendingHolidayDataNotice = ref(null)
 const showShortcutNotice = ref(false)
-const holidayNoticeTodayKey = useTodayKey()
 const calendarBusinessModalOpen = ref(false)
-const pendingRemoteNotices = ref([])
-const updateChecking = ref(false)
-const updateResult = ref(null)
-const wallpaperUrl = ref('')
-const wallpaperVisible = ref(false)
-const wallpaperBlurRadius = ref(defaults.wallpaper.blurRadius)
-const wallpaperRenderKey = ref(null)
-let wallpaperSequence = 0
-let releaseSettingsBackgroundBlur = null
-let stopSettingsListener = null
-let stopAppMessageListener = null
-let stopRemoteNoticesListener = null
-let resolveCalendarWorkspaceReady = null
-const calendarWorkspaceReady = new Promise((resolve) => {
-  resolveCalendarWorkspaceReady = resolve
-})
-
 const compactBlocked = computed(
   () =>
     showSettings.value ||
@@ -142,15 +148,12 @@ async function requestCompactPresentation(anchor) {
   }
 }
 
-function onCalendarWorkspaceReady() {
-  resolveCalendarWorkspaceReady?.()
-  resolveCalendarWorkspaceReady = null
-}
+const onCalendarWorkspaceReady = workspaceRuntime.markContentReady
 
 function openSettings() {
   closeTemplates()
   closeHelp()
-  if (!releaseSettingsBackgroundBlur) releaseSettingsBackgroundBlur = retainModalBlur()
+  workspaceRuntime.retainBlur('settings')
   showSettings.value = true
 }
 
@@ -189,185 +192,8 @@ function toggleHelp() {
 }
 
 function releaseSettingsBlur() {
-  releaseSettingsBackgroundBlur?.()
-  releaseSettingsBackgroundBlur = null
+  workspaceRuntime.releaseBlur('settings')
 }
-
-async function syncWallpaper(snapshot) {
-  const sequence = ++wallpaperSequence
-  const wallpaper = snapshot?.values?.wallpaper || defaults.wallpaper
-  wallpaperBlurRadius.value = wallpaper.blurRadius
-  const visible = Boolean(
-    wallpaper.enabled && wallpaper.activeId && !snapshot?.runtime?.blur?.effectiveEnabled
-  )
-  if (!visible) {
-    wallpaperVisible.value = false
-    wallpaperUrl.value = ''
-    wallpaperRenderKey.value = null
-    return
-  }
-  try {
-    const data = await window.api.getWallpaperData(Number(wallpaper.activeId), false)
-    if (sequence !== wallpaperSequence) return
-    if (!data) {
-      wallpaperVisible.value = false
-      wallpaperUrl.value = ''
-      wallpaperRenderKey.value = null
-      return
-    }
-    wallpaperUrl.value = data
-    wallpaperRenderKey.value = Number(wallpaper.activeId)
-    wallpaperVisible.value = true
-  } catch (error) {
-    if (sequence === wallpaperSequence) wallpaperVisible.value = false
-    console.warn(`[MonthApp] 读取${viewLabel.value}壁纸失败:`, error)
-  }
-}
-
-function applySnapshot(snapshot) {
-  applySettingsSnapshot(snapshot)
-  quickNoteEditSetting.applySnapshot(snapshot)
-  tagColorSetting.applySnapshot(snapshot)
-  titlebarStyle.value =
-    snapshot?.values?.appearance?.titlebarStyle ?? defaults.appearance.titlebarStyle
-  locked.value = snapshot?.values?.window?.lockState ?? defaults.window.lockState
-  zOrderMode.value = snapshot?.values?.window?.zOrderMode ?? defaults.window.zOrderMode
-  void syncWallpaper(snapshot)
-}
-
-function revealFirstUseNoticeFromSnapshot(snapshot) {
-  const pending = (snapshot?.values?.onboarding?.noticeVersion ?? 0) < FIRST_USE_NOTICE_VERSION
-  if (!pending || showFirstUseNotice.value) return
-
-  // 恢复默认后的须知进入同一队列，不打断当前操作。
-  showFirstUseNotice.value = true
-}
-
-async function loadPendingRemoteNotices({ show = false } = {}) {
-  try {
-    pendingRemoteNotices.value = await window.api.listPendingRemoteNotices()
-    if (show) showRemoteNoticeDialog.value = pendingRemoteNotices.value.length > 0
-  } catch (error) {
-    console.warn('[MonthApp] 读取未确认通知失败:', error)
-  }
-}
-
-function maybeShowHolidayDataNotice() {
-  if (pendingHolidayDataNotice.value?.required) {
-    showHolidayDataNoticeDialog.value = true
-  }
-}
-
-async function loadHolidayDataNotice() {
-  try {
-    const notice = await window.api.getHolidayDataNotice()
-    pendingHolidayDataNotice.value = notice?.required ? notice : null
-    maybeShowHolidayDataNotice()
-  } catch (error) {
-    console.warn('[MonthApp] 读取节假日数据提醒失败:', error)
-  }
-}
-
-watch(holidayNoticeTodayKey, (nextDateKey, previousDateKey) => {
-  if (nextDateKey.slice(0, 4) !== previousDateKey.slice(0, 4)) void loadHolidayDataNotice()
-})
-
-async function dismissHolidayDataNotice({ openSettingsAfter = false } = {}) {
-  const year = pendingHolidayDataNotice.value?.year
-  showHolidayDataNoticeDialog.value = false
-  pendingHolidayDataNotice.value = null
-  if (year) {
-    await window.api
-      .dismissHolidayDataNotice(year)
-      .catch((error) => console.warn('[MonthApp] 保存节假日提醒状态失败:', error))
-  }
-  if (openSettingsAfter) setTimeout(openSettings, 220)
-}
-
-function closeRemoteNoticeDialog() {
-  showRemoteNoticeDialog.value = false
-}
-
-function onRemoteNoticeAcknowledged(id) {
-  pendingRemoteNotices.value = pendingRemoteNotices.value.filter((notice) => notice.id !== id)
-  if (!pendingRemoteNotices.value.length) {
-    showRemoteNoticeDialog.value = false
-  }
-}
-
-function onFirstUseCompleted({ route } = {}) {
-  showFirstUseNotice.value = false
-  showMessage(
-    'success',
-    route === 'support'
-      ? '感谢你的支持。你的认可，会成为 Abandon 便签继续前进的动力。'
-      : '感谢你选择 Abandon 便签。你的使用，就是对我最大的肯定。',
-    4200
-  )
-}
-
-async function checkForUpdates() {
-  if (updateChecking.value) return
-  updateChecking.value = true
-  showUpdateDialog.value = true
-  try {
-    updateResult.value = await window.api.checkForUpdate()
-  } catch (error) {
-    updateResult.value = {
-      status: 'error',
-      currentVersion: (await window.api.getAppInfo().catch(() => null))?.version || '未知',
-      downloadAvailable: false,
-      releaseLinks: null,
-      error: `检查更新失败：${error.message}`
-    }
-  } finally {
-    updateChecking.value = false
-  }
-}
-
-const onMouseEnter = () => window.api.windowHover(true)
-const onMouseLeave = () => window.api.windowHover(false)
-
-onMounted(async () => {
-  await presentationMode.start()
-  try {
-    const snapshot = await window.api.getSettingsSnapshot()
-    applySnapshot(snapshot)
-    showFirstUseNotice.value =
-      (snapshot?.values?.onboarding?.noticeVersion ?? 0) < FIRST_USE_NOTICE_VERSION
-  } catch (error) {
-    applySnapshot({ values: defaults })
-    showFirstUseNotice.value = true
-    console.warn(`[MonthApp] 读取设置失败，使用${viewLabel.value}默认值:`, error)
-  }
-  stopSettingsListener = window.api.onSettingsChanged?.((snapshot) => {
-    applySnapshot(snapshot)
-    revealFirstUseNoticeFromSnapshot(snapshot)
-  })
-  stopAppMessageListener = window.api.onAppMessage?.((payload) => {
-    if (payload?.text)
-      showMessage(payload.type || 'warning', payload.text, payload.duration ?? 2500)
-  })
-  stopRemoteNoticesListener = window.api.onRemoteNoticesChanged?.(() => {
-    void loadPendingRemoteNotices({ show: true })
-  })
-  document.addEventListener('mouseenter', onMouseEnter)
-  document.addEventListener('mouseleave', onMouseLeave)
-  await loadPendingRemoteNotices({ show: true })
-  await loadHolidayDataNotice()
-  await calendarWorkspaceReady
-  window.api.rendererReady(props.viewMode)
-})
-
-onUnmounted(() => {
-  presentationMode.stop()
-  stopSettingsListener?.()
-  stopAppMessageListener?.()
-  stopRemoteNoticesListener?.()
-  document.removeEventListener('mouseenter', onMouseEnter)
-  document.removeEventListener('mouseleave', onMouseLeave)
-  releaseSettingsBlur()
-})
 </script>
 
 <template>

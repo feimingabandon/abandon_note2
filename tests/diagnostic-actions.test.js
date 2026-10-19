@@ -8,6 +8,8 @@ import {
 describe('diagnostic action definitions', () => {
   it('maps mutating user operations but leaves read-only queries quiet', () => {
     expect(diagnosticEventForChannel('notes:save-draft')).toBe('note.save')
+    expect(diagnosticEventForChannel('notes:move-historical-to-today')).toBe('note.historical.move')
+    expect(diagnosticEventForChannel('notes:preview-historical-move')).toBeNull()
     expect(diagnosticEventForChannel('templates:pause')).toBe('template.pause')
     expect(diagnosticEventForChannel('set-setting-value')).toBe('settings.value.set')
     expect(diagnosticEventForChannel('notes:get')).toBeNull()

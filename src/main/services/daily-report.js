@@ -8,6 +8,7 @@ import {
   parseDateKey
 } from '../../shared/calendar/calendar-date-rules.js'
 import { queryCalendarNotes } from '../db/db-notes.js'
+import { getDb } from '../db/db-connection.js'
 
 export const DAILY_REPORT_STATUSES = ['initialized', 'in_progress', 'completed']
 export const DAILY_REPORT_MAX_RANGE_DAYS = 366
@@ -59,6 +60,40 @@ export function normalizeDailyReportStatuses(statuses = DAILY_REPORT_STATUSES) {
   return DAILY_REPORT_STATUSES.filter((status) => normalized.includes(status))
 }
 
+/** 报表筛选可多选；-1 是未分类筛选项，不是可写入关联表的标签 ID。 */
+export function normalizeDailyReportTagIds(tagIds = []) {
+  if (!Array.isArray(tagIds)) throw new Error('日报标签筛选必须是数组')
+  const normalized = [...new Set(tagIds)]
+  if (normalized.some((id) => !Number.isSafeInteger(id) || (id <= 0 && id !== -1))) {
+    throw new Error('日报标签筛选包含无效标签 ID')
+  }
+  return normalized
+}
+
+function withDailyReportTags(notes) {
+  if (notes.length === 0) return []
+  const db = getDb()
+  const ids = [...new Set(notes.map((note) => note.id))]
+  const tagsByNote = new Map()
+  // 日历原始查询不附带关系。只批量读取报表需要的标签，避免逐条查询或额外读取附件、提醒。
+  for (let offset = 0; offset < ids.length; offset += 500) {
+    const batch = ids.slice(offset, offset + 500)
+    const tags = db
+      .prepare(
+        `SELECT nt.note_id, t.id, t.name, t.color FROM note_tags nt
+         INNER JOIN tags t ON t.id = nt.tag_id
+         WHERE nt.note_id IN (${batch.map(() => '?').join(',')})
+         ORDER BY t.sort_order ASC, t.id ASC`
+      )
+      .all(...batch)
+    for (const { note_id, id, name, color } of tags) {
+      if (!tagsByNote.has(note_id)) tagsByNote.set(note_id, [])
+      tagsByNote.get(note_id).push({ id, name, color })
+    }
+  }
+  return notes.map((note) => ({ ...note, tags: tagsByNote.get(note.id) || [] }))
+}
+
 function dailyReportNoteSummary(note) {
   const range = noteDateRange(note)
   return {
@@ -70,7 +105,8 @@ function dailyReportNoteSummary(note) {
     duration_days: note.duration_days,
     duration_kind: note.duration_kind,
     calendar_duration_days: range.durationDays,
-    finished_at: note.finished_at
+    finished_at: note.finished_at,
+    tags: note.tags
   }
 }
 
@@ -79,10 +115,12 @@ export function queryDailyReportNotes({
   dateKey,
   startDateKey,
   endDateKey,
-  statuses = DAILY_REPORT_STATUSES
+  statuses = DAILY_REPORT_STATUSES,
+  tagIds = []
 } = {}) {
   const range = normalizeDailyReportRange({ dateKey, startDateKey, endDateKey })
   const normalizedStatuses = normalizeDailyReportStatuses(statuses)
+  const selectedTagIds = new Set(normalizeDailyReportTagIds(tagIds))
   if (normalizedStatuses.length === 0) return []
 
   const candidates = queryCalendarNotes({
@@ -93,14 +131,19 @@ export function queryDailyReportNotes({
   })
   const allowedStatuses = new Set(normalizedStatuses)
 
-  return candidates
-    .filter((note) => {
-      if (!allowedStatuses.has(note.status)) return false
-      const noteRange = noteDateRange(note)
-      return (
-        noteRange.startOrdinal <= range.endOrdinal && noteRange.endOrdinal >= range.startOrdinal
-      )
-    })
+  const matching = candidates.filter((note) => {
+    if (!allowedStatuses.has(note.status)) return false
+    const noteRange = noteDateRange(note)
+    return noteRange.startOrdinal <= range.endOrdinal && noteRange.endOrdinal >= range.startOrdinal
+  })
+
+  return withDailyReportTags(matching)
+    .filter(
+      (note) =>
+        selectedTagIds.size === 0 ||
+        (note.tags.length === 0 && selectedTagIds.has(-1)) ||
+        note.tags.some((tag) => selectedTagIds.has(tag.id))
+    )
     .sort((first, second) => {
       const statusDifference = STATUS_ORDER.get(first.status) - STATUS_ORDER.get(second.status)
       if (statusDifference) return statusDifference
@@ -139,7 +182,14 @@ function formatReportNoteContent(content, index) {
   return [`${index + 1}. ${firstLine}`, ...rest.map((line) => `   ${line}`)].join('\n')
 }
 
-/** 生成适合记事本阅读的纯文本，不写入标签或便签数量。 */
+function formatReportNoteTags(note) {
+  const names = (Array.isArray(note.tags) ? note.tags : [])
+    .map((tag) => String(tag?.name ?? '').trim())
+    .filter(Boolean)
+  return names.length ? names.join('、') : '未分类'
+}
+
+/** 生成适合记事本阅读的纯文本，不写入便签数量。 */
 export function buildDailyReportText({ dateKey, startDateKey, endDateKey, notes } = {}) {
   const range = normalizeDailyReportRange({ dateKey, startDateKey, endDateKey })
   const items = Array.isArray(notes) ? notes : []
@@ -150,7 +200,7 @@ export function buildDailyReportText({ dateKey, startDateKey, endDateKey, notes 
       .map((note, index) => {
         const timestamp = status === 'completed' ? note.finished_at : note.effective_at
         const timeLabel = status === 'completed' ? '完成时间' : '生效时间'
-        return `${formatReportNoteContent(note.content, index)}\n   ${timeLabel}：${formatReportDateTime(timestamp)}`
+        return `${formatReportNoteContent(note.content, index)}\n   标签：${formatReportNoteTags(note)}\n   ${timeLabel}：${formatReportDateTime(timestamp)}`
       })
       .join('\n\n')
     return [`【${DAILY_REPORT_STATUS_LABELS[status]}】\n${body}`]
@@ -194,6 +244,7 @@ export async function buildDailyReportExcel({ dateKey, startDateKey, endDateKey,
   })
   sheet.columns = [
     { header: '便签内容', key: 'content', width: 52 },
+    { header: '标签', key: 'tags', width: 22 },
     { header: '当前状态', key: 'status', width: 12 },
     { header: '是否完成', key: 'completed', width: 12 },
     { header: '生效时间', key: 'effectiveAt', width: 20 },
@@ -202,7 +253,7 @@ export async function buildDailyReportExcel({ dateKey, startDateKey, endDateKey,
     { header: '完成时间', key: 'finishedAt', width: 20 },
     { header: '是否置顶', key: 'pinned', width: 12 }
   ]
-  sheet.autoFilter = 'A1:H1'
+  sheet.autoFilter = 'A1:I1'
   sheet.getColumn('effectiveAt').numFmt = 'yyyy-mm-dd hh:mm'
   sheet.getColumn('endDate').numFmt = 'yyyy-mm-dd'
   sheet.getColumn('finishedAt').numFmt = 'yyyy-mm-dd hh:mm'
@@ -214,6 +265,7 @@ export async function buildDailyReportExcel({ dateKey, startDateKey, endDateKey,
     const noteRange = noteDateRange(note)
     const row = sheet.addRow({
       content: content.value,
+      tags: formatReportNoteTags(note),
       status: DAILY_REPORT_STATUS_LABELS[note.status] || String(note.status ?? ''),
       completed: note.status === 'completed' ? '是' : '否',
       effectiveAt: excelDateValue(note.effective_at),
@@ -224,6 +276,7 @@ export async function buildDailyReportExcel({ dateKey, startDateKey, endDateKey,
     })
     row.alignment = { vertical: 'top' }
     row.getCell('content').alignment = { vertical: 'top', wrapText: true }
+    row.getCell('tags').alignment = { vertical: 'top', wrapText: true }
   }
 
   const header = sheet.getRow(1)

@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto'
 
 import { collectDeviceInfo, classifySystem } from './device-info.js'
 import { RemoteClient } from './remote-client.js'
+import { chinaDate, nextChinaDayDelay } from './daily-clock.js'
 
 const MAX_NOTICE_SYNC_PAGES = 20
 
@@ -58,7 +59,11 @@ export class RemoteCoordinator {
     removePendingSessionEnd = () => {},
     clearPendingSessionEnds = () => {},
     onNoticesChanged = () => {},
-    onHealthChanged = () => {}
+    onHealthChanged = () => {},
+    getDailyState = () => ({}),
+    saveDailyState = () => {},
+    now = Date.now,
+    random = Math.random
   }) {
     this.app = app
     this.client = new RemoteClient(baseUrl)
@@ -75,9 +80,18 @@ export class RemoteCoordinator {
     this.clearPendingSessionEnds = clearPendingSessionEnds
     this.onNoticesChanged = onNoticesChanged
     this.onHealthChanged = onHealthChanged
+    this.getDailyState = getDailyState
+    this.saveDailyState = saveDailyState
+    this.now = now
+    this.random = random
+    this.dailyState = getDailyState()
+    this.dailyTimer = null
+    this.dailyBusy = false
+    this.started = false
     this.sessionId = null
     this.sessionStartPromise = null
     this.stopPromise = null
+    this.stopped = false
     this.lastHealth = {
       available: false,
       noticeService: false,
@@ -93,6 +107,9 @@ export class RemoteCoordinator {
   }
 
   async start() {
+    if (this.stopped) return
+    this.started = true
+    this.settingsChanged()
     const remote = this.getSettings()?.remote
     if (this.isServiceRetired()) {
       this.#setHealth({
@@ -120,6 +137,7 @@ export class RemoteCoordinator {
 
     this.#setHealth({ ...this.lastHealth, checking: true, error: null })
     const health = await this.checkHealth()
+    if (this.stopped) return
     if (health.retired || !health.available) {
       if (!health.retired)
         console.warn('[remote] 服务器不可用，本次启动停止远端流程:', health.error)
@@ -127,22 +145,26 @@ export class RemoteCoordinator {
     }
 
     const tasks = []
-    if (remote.uploadDeviceInfo && health.reportService) {
+    if (this.getSettings()?.remote?.uploadDeviceInfo && health.reportService) {
       tasks.push(
         (async () => {
           await this.#flushPendingSessionEnds()
+          if (this.stopped) return
           await this.#startSession()
         })()
       )
     }
-    if (remote.receiveNotices && health.noticeService) tasks.push(this.#pullNotices())
+    if (this.getSettings()?.remote?.receiveNotices && health.noticeService)
+      tasks.push(this.#pullNotices())
     await Promise.allSettled(tasks)
   }
 
   async checkHealth() {
+    if (this.stopped) return this.getHealthSnapshot()
     let health
     try {
       const result = await this.client.health()
+      if (this.stopped) return this.getHealthSnapshot()
       const compatible = result?.status === 'ok' && Number(result?.api_version) === 2
       const serviceState = compatible ? String(result?.service_state || 'active') : 'incompatible'
       const retired = compatible && serviceState === 'retired'
@@ -155,6 +177,10 @@ export class RemoteCoordinator {
         available,
         noticeService: available && result?.notice_service === true,
         reportService: available && result?.report_service === true,
+        statsProtocol: Number(result?.stats_protocol || 0),
+        statsEpoch: result?.stats_epoch || null,
+        noticeSequence: result?.notice_sequence ?? null,
+        noticeStreamId: result?.notice_stream_id || null,
         serviceState,
         retired,
         message: typeof result?.message === 'string' ? result.message : null,
@@ -169,6 +195,7 @@ export class RemoteCoordinator {
           : '服务器响应版本不兼容'
       }
     } catch (error) {
+      if (this.stopped) return this.getHealthSnapshot()
       health = {
         ...this.lastHealth,
         available: false,
@@ -193,6 +220,89 @@ export class RemoteCoordinator {
     return Boolean(this.sessionId)
   }
 
+  preventStartup() {
+    this.stopped = true
+    clearTimeout(this.dailyTimer)
+    this.dailyTimer = null
+  }
+
+  // One timer for the next China calendar day, never an hourly/minute heartbeat.
+  settingsChanged() {
+    clearTimeout(this.dailyTimer)
+    this.dailyTimer = null
+    if (!this.started || this.stopped || this.isServiceRetired() || !this.client.configured) return
+    const remote = this.getSettings()?.remote
+    if (!remote?.receiveNotices && !remote?.uploadDeviceInfo) return
+    this.dailyTimer = setTimeout(
+      () => {
+        this.dailyTimer = null
+        void this.runDaily()
+          .catch((error) => console.warn('[remote] 每日任务失败:', error))
+          .finally(() => {
+            if (!this.stopped) this.settingsChanged()
+          })
+      },
+      nextChinaDayDelay(this.now(), this.random)
+    )
+    this.dailyTimer.unref?.()
+  }
+
+  #saveDaily(patch) {
+    if (this.stopped) return
+    this.dailyState = { ...this.dailyState, ...patch }
+    this.saveDailyState(this.dailyState)
+  }
+
+  async runDaily() {
+    if (this.stopped || this.dailyBusy || this.isServiceRetired() || !this.client.configured) return
+    const remote = this.getSettings()?.remote
+    if (!remote?.uploadDeviceInfo && !remote?.receiveNotices) return
+    const day = chinaDate(this.now())
+    if (this.dailyState.attemptedDay === day) return
+    this.dailyBusy = true
+    try {
+      // Persist the attempt BEFORE a request; failure/restart cannot create a retry loop.
+      this.#saveDaily({ attemptedDay: day })
+      const health = await this.checkHealth()
+      if (this.stopped || !health.available || health.retired) return
+      if (
+        this.getSettings()?.remote?.uploadDeviceInfo &&
+        health.reportService &&
+        health.statsProtocol === 3
+      ) {
+        if (this.dailyState.successDay !== day || this.dailyState.epoch !== health.statsEpoch) {
+          try {
+            const result = await this.client.reportDaily({
+              installation_id: this.getInstallationId(),
+              session_id: this.sessionId,
+              app_version: this.app.getVersion(),
+              system_group: classifySystem(),
+              report_date: day,
+              stats_protocol: 3,
+              stats_epoch: health.statsEpoch
+            })
+            if (this.stopped) return
+            if (result?.ok === true) this.#saveDaily({ successDay: day, epoch: health.statsEpoch })
+          } catch (error) {
+            console.warn('[remote] 每日上报失败，本日不重试:', error)
+          }
+        }
+      }
+      if (this.stopped || !this.getSettings()?.remote?.receiveNotices || !health.noticeService)
+        return
+      const state = this.getNoticeSyncState()
+      if (
+        health.noticeSequence == null ||
+        health.noticeStreamId !== state.streamId ||
+        health.noticeSequence > state.cursor
+      ) {
+        await this.#pullNotices()
+      }
+    } finally {
+      this.dailyBusy = false
+    }
+  }
+
   #setHealth(health) {
     this.lastHealth = { ...health }
     const snapshot = this.getHealthSnapshot()
@@ -205,16 +315,25 @@ export class RemoteCoordinator {
   }
 
   #startSession() {
+    if (this.stopped || !this.getSettings()?.remote?.uploadDeviceInfo) return Promise.resolve()
     const sessionId = randomUUID()
     this.sessionId = sessionId
     const promise = (async () => {
       try {
         const deviceInfo = await collectDeviceInfo(this.app, this.getInstallationId())
+        if (this.stopped || !this.getSettings()?.remote?.uploadDeviceInfo) return
         const result = await this.client.startSession({
           ...deviceInfo,
+          ...(this.lastHealth.statsProtocol === 3
+            ? { stats_protocol: 3, stats_epoch: this.lastHealth.statsEpoch }
+            : {}),
           session_id: sessionId
         })
+        if (this.stopped) return
         if (result?.session_id !== sessionId) throw new Error('服务器返回的会话 ID 不一致')
+        if (this.lastHealth.statsProtocol === 3) {
+          this.#saveDaily({ successDay: chinaDate(this.now()), epoch: this.lastHealth.statsEpoch })
+        }
       } catch (error) {
         console.warn('[remote] 上传启动与设备信息失败:', error)
       }
@@ -226,10 +345,13 @@ export class RemoteCoordinator {
   }
 
   async #flushPendingSessionEnds() {
+    if (this.stopped || !this.getSettings()?.remote?.uploadDeviceInfo) return
     for (const item of this.listPendingSessionEnds()) {
+      if (this.stopped || !this.getSettings()?.remote?.uploadDeviceInfo) return
       try {
         this.markSessionEndAttempt(item.sessionId)
         const result = await this.client.endSession(item.sessionId, item.endedAt)
+        if (this.stopped) return
         if (result?.ok === true) this.removePendingSessionEnd(item.sessionId)
       } catch (error) {
         console.warn('[remote] 补报退出时间失败:', error)
@@ -241,6 +363,7 @@ export class RemoteCoordinator {
   async #pullNotices() {
     try {
       for (let page = 0; page < MAX_NOTICE_SYNC_PAGES; page += 1) {
+        if (this.stopped || !this.getSettings()?.remote?.receiveNotices) return
         const state = this.getNoticeSyncState()
         const result = await this.client.pullNotices({
           system: classifySystem(),
@@ -248,6 +371,7 @@ export class RemoteCoordinator {
           cursor: state.cursor,
           stream_id: state.streamId
         })
+        if (this.stopped || !this.getSettings()?.remote?.receiveNotices) return
         const streamId = String(result?.stream_id || '').trim()
         const nextCursor = Number(result?.next_cursor)
         if (
@@ -268,24 +392,53 @@ export class RemoteCoordinator {
     }
   }
 
-  stop() {
+  stop({ timeoutMs = 1600 } = {}) {
     if (this.stopPromise) return this.stopPromise
+    const allowed = this.getSettings()?.remote?.uploadDeviceInfo && !this.isServiceRetired()
+    const maySend = allowed && this.lastHealth.available && this.lastHealth.reportService
+    this.stopped = true
+    clearTimeout(this.dailyTimer)
+    this.dailyTimer = null
     const sessionId = this.sessionId
     this.sessionId = null
-    if (!sessionId) return Promise.resolve()
+    if (!sessionId || !allowed) {
+      this.stopPromise = Promise.resolve('completed')
+      return this.stopPromise
+    }
     const endedAt = new Date().toISOString()
+    // Persist before any wait; a timeout keeps this record for the next process.
     this.queueSessionEnd(sessionId, endedAt)
-    this.stopPromise = (async () => {
+    if (!maySend) {
+      this.stopPromise = Promise.resolve('completed')
+      return this.stopPromise
+    }
+    let acceptingResults = true
+    let timeout
+    const reporting = (async () => {
       try {
         if (this.sessionStartPromise) await this.sessionStartPromise
+        if (!acceptingResults) return 'timeout'
+        if (!this.getSettings()?.remote?.uploadDeviceInfo) return 'completed'
         this.markSessionEndAttempt(sessionId)
         const result = await this.client.endSession(sessionId, endedAt)
-        if (result?.ok === true) this.removePendingSessionEnd(sessionId)
+        if (acceptingResults && result?.ok === true) this.removePendingSessionEnd(sessionId)
       } catch (error) {
         console.warn('[remote] 上传退出时间失败，将在下次启动时补报:', error)
       }
-    })().finally(() => {
-      this.stopPromise = null
+      return 'completed'
+    })()
+    const deadline = new Promise((resolve) => {
+      timeout = setTimeout(
+        () => {
+          acceptingResults = false
+          resolve('timeout')
+        },
+        Math.max(0, Number(timeoutMs) || 0)
+      )
+    })
+    this.stopPromise = Promise.race([reporting, deadline]).finally(() => {
+      acceptingResults = false
+      clearTimeout(timeout)
     })
     return this.stopPromise
   }

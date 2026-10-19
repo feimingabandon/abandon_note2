@@ -35,7 +35,10 @@ describe('sandbox permission diagnostic collection', () => {
       await readSandboxPermissions({ isPackaged: false }, { platform: 'win32', execFile: execute })
     ).toBeNull()
     expect(
-      await readSandboxPermissions({ isPackaged: true }, { platform: 'darwin', execFile: execute })
+      await readSandboxPermissions(
+        { isPackaged: true },
+        { platform: 'unsupported-platform', execFile: execute }
+      )
     ).toBeNull()
     expect(execute).not.toHaveBeenCalled()
   })

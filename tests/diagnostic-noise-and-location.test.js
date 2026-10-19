@@ -8,13 +8,17 @@ const WEATHER_SETTINGS_PATH = new URL(
   import.meta.url
 )
 const MAIN_PATH = new URL('../src/main/index.js', import.meta.url)
+const SHUTDOWN_PATH = new URL('../src/main/application/shutdown-coordinator.js', import.meta.url)
+const ACTIVATION_PATH = new URL('../src/main/services/notification-activation.js', import.meta.url)
+const FEATURE_PATH = new URL('../src/main/application/feature-runtime.js', import.meta.url)
+const BLUR_PATH = new URL('../src/main/windows/blur-runtime.js', import.meta.url)
 const BUSINESS_IPC_PATH = new URL('../src/main/ipc/register-business-ipc.js', import.meta.url)
 const WEATHER_SERVICE_PATH = new URL('../src/main/services/weather-service.js', import.meta.url)
 const SCREENSHOT_SERVICE_PATH = new URL(
   '../src/main/capture/CaptureCoordinator.js',
   import.meta.url
 )
-const ATTACHMENT_DB_PATH = new URL('../src/main/db/db.js', import.meta.url)
+const ATTACHMENT_DB_PATH = new URL('../src/main/db/attachment-recovery.js', import.meta.url)
 const WALLPAPER_DB_PATH = new URL('../src/main/db/db-wallpapers.js', import.meta.url)
 
 describe('diagnostic noise governance', () => {
@@ -44,7 +48,10 @@ describe('device location diagnostics', () => {
     const main = readFileSync(MAIN_PATH, 'utf8')
     const permissionBlock = main.slice(
       main.indexOf('mainSession.setPermissionRequestHandler'),
-      main.indexOf('setWindowLogContext(mainWindow')
+      main.indexOf(
+        'dockRuntime.attachWindow(',
+        main.indexOf('mainSession.setPermissionRequestHandler')
+      )
     )
 
     expect(weatherSettings).toContain("reportWeatherLocation('info', '用户请求设备位置'")
@@ -63,21 +70,26 @@ describe('high-value diagnostic coverage', () => {
     const main = readFileSync(MAIN_PATH, 'utf8')
     const businessIpc = readFileSync(BUSINESS_IPC_PATH, 'utf8')
 
+    const shutdown = readFileSync(SHUTDOWN_PATH, 'utf8')
+    const activation = readFileSync(ACTIVATION_PATH, 'utf8')
+    const feature = readFileSync(FEATURE_PATH, 'utf8')
     for (const scope of [
       'lifecycle.shutdown-start',
       'lifecycle.shutdown-wait',
-      'lifecycle.shutdown-complete',
+      'lifecycle.shutdown-complete'
+    ]) {
+      expect(shutdown).toContain(scope)
+    }
+    for (const scope of [
       'notification.protocol',
       'notification.reveal-request',
-      'notification.reveal',
-      'scheduler.activation',
-      'scheduler.template-generation',
-      'settings.reset',
-      'data.clear',
-      'shortcut.view-visibility-trigger'
-    ]) {
+      'notification.reveal'
+    ])
+      expect(activation).toContain(scope)
+    for (const scope of ['scheduler.activation', 'scheduler.template-generation'])
+      expect(feature).toContain(scope)
+    for (const scope of ['settings.reset', 'data.clear', 'shortcut.view-visibility-trigger'])
       expect(main).toContain(scope)
-    }
     for (const scope of ['note.purge', 'template.purge']) {
       expect(businessIpc).toContain(scope)
     }
@@ -99,10 +111,10 @@ describe('high-value diagnostic coverage', () => {
   })
 
   it('does not broadcast blur diagnostics into a disposed renderer frame', () => {
-    const main = readFileSync(MAIN_PATH, 'utf8')
-    const broadcaster = main.slice(
-      main.indexOf('function broadcastBlurDiagnosticChanged()'),
-      main.indexOf('function updateBlurDiagnostic')
+    const blur = readFileSync(BLUR_PATH, 'utf8')
+    const broadcaster = blur.slice(
+      blur.indexOf('function broadcastBlurDiagnosticChanged()'),
+      blur.indexOf('function updateBlurDiagnostic')
     )
 
     expect(broadcaster).toContain('contents.isDestroyed()')

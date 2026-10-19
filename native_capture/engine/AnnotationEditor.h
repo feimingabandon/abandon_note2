@@ -10,9 +10,11 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QScrollArea>
 #include <QSpinBox>
 #include <QTextEdit>
 #include <QToolBar>
+#include <QToolButton>
 #include <QWidget>
 #include <functional>
 
@@ -48,6 +50,8 @@ public:
   QTransform displayTransform() const;
   void sync();
   void fitPanel(int maxWidth);
+  void closePopovers();
+  bool closePopoverForKey(QKeyEvent *event);
   QString contextHint() const;
   void addHelp(const QString &context);
   QRect
@@ -68,12 +72,17 @@ private:
   QWidget *canvas;
   Capture::ImageDocument &doc;
   QActionGroup *tools;
-  QSpinBox *size, *angle;
+  QSpinBox *size, *angle, *mosaicBlock;
+  QComboBox *mosaicMode;
   QFontComboBox *font;
   QComboBox *colors;
   QMenu *more;
+  QScrollArea *parameterPanel;
+  QWidget *parameterContent;
+  QToolBar *colorBar, *textParameters;
   QList<QAction *> colorActions;
-  QAction *fontAction, *angleAction;
+  QAction *fontAction, *angleAction, *sizeAction, *mosaicModeAction,
+      *mosaicBlockAction;
   QHash<QString, int> widths;
   QTextEdit *textEdit = nullptr;
   QGraphicsView *textView = nullptr;
@@ -85,6 +94,9 @@ private:
   int grip = -1;
   QColor color = QColor("#0071e3");
   int lineWidth = 3, fontSize = 24;
+  int blockSize = 12;
+  bool controlsVisible = false, pointerVisible = false;
+  QPointF pointer;
   QString family = "Microsoft YaHei UI";
   QString settingsPath;
   void loadPreferences();
@@ -98,5 +110,9 @@ private:
   QVector<QPointF> handles() const;
   QPointF rotationHandle() const;
   bool hitCurrent(QPointF point) const;
+  bool brushTool() const;
+  int handleAt(QPointF local) const;
+  void trackPointer(QPointF local);
+  void syncToolButtons();
   void closeTextWidget();
 };

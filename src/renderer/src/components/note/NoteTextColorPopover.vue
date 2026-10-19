@@ -85,10 +85,16 @@ watch(
 
 watch(
   () => props.visible,
-  async (visible) => {
+  async (visible, _, onCleanup) => {
+    let cancelled = false
+    onCleanup(() => {
+      cancelled = true
+      removeListeners()
+    })
     removeListeners()
     if (!visible) return
     await positionPopover()
+    if (cancelled || !props.visible || !popoverRef.value) return
     document.addEventListener('pointerdown', onOutsidePointerDown, true)
     document.addEventListener('keydown', onKeydown)
     window.addEventListener('resize', close)

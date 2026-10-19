@@ -2,7 +2,7 @@
 /**
  * MockNewNotePanel.vue — 新建便签展开面板的静态只读复刻（帮助图解专用）
  *
- * 完整还原展开后的新建面板：关闭按钮、文本域、生效时间、系统提醒、置顶、标签、图片、创建按钮。
+ * 完整还原展开后的新建面板：关闭按钮、正文、备注、生效时间、系统提醒、置顶、标签、图片、创建按钮。
  * 各区域用具名标签标注（非编号），方便帮助中心按名称逐项讲解。
  */
 </script>
@@ -24,6 +24,13 @@
     <!-- 输入区域 -->
     <div class="mnp-textarea">
       <span class="mnp-placeholder">请新建一次性便签内容…（Enter 换行）</span>
+    </div>
+
+    <div class="mnp-remark">
+      <span class="mnp-label">备注（可选）</span>
+      <div class="mnp-textarea">
+        <span class="mnp-placeholder">添加备注</span>
+      </div>
     </div>
 
     <!-- 生效时间 -->
@@ -158,6 +165,15 @@
   color: var(--text-color-secondary);
   font-size: var(--fs-secondary);
   opacity: 0.6;
+}
+.mnp-remark {
+  display: flex;
+  flex-direction: column;
+  gap: 6rem;
+  min-width: 0;
+}
+.mnp-remark .mnp-textarea {
+  min-height: 54rem;
 }
 .mnp-row {
   display: flex;

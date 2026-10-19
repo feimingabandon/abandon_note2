@@ -13,7 +13,7 @@ def rounded_icon(source: Image.Image, size: int) -> Image.Image:
     icon = source.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
 
     # Keep the artwork's rounded-square silhouette while making the corners truly
-    # transparent for Windows shortcuts, the taskbar, and macOS packaging.
+    # transparent for Windows shortcuts and the taskbar.
     scale = 4
     mask = Image.new("L", (size * scale, size * scale), 0)
     draw = ImageDraw.Draw(mask)
@@ -42,9 +42,6 @@ def main() -> None:
 
     ico_sizes = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
     png_512.save(BUILD_DIR / "icon.ico", format="ICO", sizes=ico_sizes)
-
-    png_1024 = rounded_icon(source, 1024)
-    png_1024.save(BUILD_DIR / "icon.icns", format="ICNS")
 
 
 if __name__ == "__main__":

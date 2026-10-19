@@ -1,7 +1,6 @@
 import os from 'os'
 
 export function classifySystem(platform = process.platform, release = os.release()) {
-  if (platform === 'darwin') return 'mac'
   if (platform !== 'win32') throw new Error(`不支持的远程服务平台: ${platform}`)
   const build = Number(String(release).split('.')[2] || 0)
   return build >= 22000 ? 'win11' : 'win10'

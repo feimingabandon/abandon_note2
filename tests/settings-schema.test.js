@@ -78,11 +78,53 @@ describe('titlebar appearance setting', () => {
 })
 
 describe('global main-window controls', () => {
+  it('defaults calendar quick creation to single day and persists its separate shared switch', () => {
+    for (const mode of Object.values(VIEW_MODES)) {
+      expect(createDefaultSettings(mode).notes.quickCreateUntilCompleted).toBe(false)
+    }
+    expect(serializeSetting('notes.quickCreateUntilCompleted', true)).toMatchObject({
+      type: 'notes',
+      key: 'quick_create_until_completed',
+      value: '1'
+    })
+    expect(serializeSetting('notes.quickCreateUntilCompleted', false).value).toBe('0')
+    const quickCreate = resolveSettingsRows([
+      { type: 'notes', key: 'quick_create_until_completed', value: '1' }
+    ])
+    expect(quickCreate.notes.quickCreateUntilCompleted).toBe(true)
+    expect(quickCreate.notes.autoMoveToToday).toBe(false)
+    const automaticMove = resolveSettingsRows([
+      { type: 'notes', key: 'auto_move_to_today', value: '1' },
+      { type: 'notes', key: 'quick_create_until_completed', value: 'damaged' }
+    ])
+    expect(automaticMove.notes.autoMoveToToday).toBe(true)
+    expect(automaticMove.notes.quickCreateUntilCompleted).toBe(false)
+  })
+
+  it('defaults auto move off and persists a separate key from the retired feature', () => {
+    for (const mode of Object.values(VIEW_MODES))
+      expect(createDefaultSettings(mode).notes.autoMoveToToday).toBe(false)
+    expect(serializeSetting('notes.autoMoveToToday', true)).toMatchObject({
+      type: 'notes',
+      key: 'auto_move_to_today',
+      value: '1'
+    })
+    expect(
+      resolveSettingsRows([{ type: 'notes', key: 'auto_move_to_today', value: '1' }]).notes
+        .autoMoveToToday
+    ).toBe(true)
+    expect(
+      resolveSettingsRows([{ type: 'notes', key: 'auto_move_yesterday', value: '1' }]).notes
+        .autoMoveToToday
+    ).toBe(false)
+  })
+
   it('defaults capture to F1 and ignores the old persistent gate and retired bindings', () => {
     expect(DEFAULT_SETTINGS.shortcuts).toEqual({
       enabled: true,
       viewVisibility: 'F2',
-      screenshot: 'F1'
+      screenshot: 'F1',
+      screenshotCopy: 'Control+F1'
     })
     expect(
       resolveSettingsRows([
@@ -91,7 +133,17 @@ describe('global main-window controls', () => {
         { type: 'shortcuts', key: 'clipboard_pin', value: 'F3' },
         { type: 'shortcuts', key: 'toggle_pins', value: 'F4' }
       ]).shortcuts
-    ).toEqual({ enabled: true, viewVisibility: 'F2', screenshot: 'F2' })
+    ).toEqual({
+      enabled: true,
+      viewVisibility: 'F2',
+      screenshot: 'F2',
+      screenshotCopy: 'Control+F1'
+    })
+    expect(serializeSetting('shortcuts.screenshotCopy', 'Ctrl+F3')).toMatchObject({
+      type: 'shortcuts',
+      key: 'screenshot_copy',
+      value: 'Control+F3'
+    })
     expect(() => serializeSetting('shortcuts.enabled', false)).toThrow('不持久化')
     expect(() => serializeSetting('shortcuts.clipboardPin', 'F3')).toThrow()
     expect(() => serializeSetting('shortcuts.togglePins', 'F4')).toThrow()
@@ -534,7 +586,25 @@ describe('list filter setting', () => {
   })
 })
 
-describe('weather settings', () => {
+describe('weather and almanac settings', () => {
+  it('defaults almanac on and stores its switch independently from weather', () => {
+    for (const viewMode of Object.values(VIEW_MODES)) {
+      expect(createDefaultSettings(viewMode).almanac.enabled).toBe(true)
+    }
+    const almanacRow = serializeSetting('almanac.enabled', false)
+    const weatherRow = serializeSetting('weather.enabled', true)
+    expect(almanacRow).toMatchObject({
+      type: 'almanac',
+      key: 'almanac_enabled',
+      value: 'false'
+    })
+    expect(almanacRow.key).not.toBe(weatherRow.key)
+    const resolved = resolveSettingsRows([almanacRow, weatherRow])
+    expect(resolved.almanac.enabled).toBe(false)
+    expect(resolved.weather.enabled).toBe(true)
+    expect(resolveSettingsRows([{ ...almanacRow, value: 'invalid' }]).almanac.enabled).toBe(true)
+  })
+
   it('keeps weather disabled until a valid local location is selected', () => {
     expect(DEFAULT_SETTINGS.weather).toEqual({ enabled: false, location: null })
     expect(serializeSetting('weather.enabled', true)).toMatchObject({

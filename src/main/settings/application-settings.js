@@ -1,4 +1,8 @@
-import { getAllSettings, setSettingsBatch } from '../db/db.js'
+import {
+  getAllSettings,
+  setSettingsBatch,
+  resetSettingsGroup
+} from '../db/db-settings-repository.js'
 import {
   DEFAULT_SETTINGS,
   normalizeViewMode,
@@ -25,12 +29,16 @@ export const APPLICATION_SETTING_IDS = Object.freeze([
   'appearance.iconColor',
   'shortcuts.viewVisibility',
   'shortcuts.screenshot',
+  'shortcuts.screenshotCopy',
   'calendar.recurringPreviewEnabled',
+  'notes.quickCreateUntilCompleted',
+  'notes.autoMoveToToday',
   'notes.tagColorEnabled',
   'interaction.doubleClickQuickEdit',
   'interaction.hideMainViewDuringScreenshot',
   'remote.receiveNotices',
   'remote.uploadDeviceInfo',
+  'almanac.enabled',
   'weather.enabled',
   'weather.location',
   'onboarding.noticeVersion',
@@ -61,14 +69,19 @@ const APPLICATION_SETTING_DB_KEYS = new Set([
   'shortcuts:enabled', // Retired persistent gate must not enter per-view settings.
   'shortcuts:view_visibility',
   'shortcuts:screenshot',
+  'shortcuts:screenshot_copy',
   // Retired shortcuts remain excluded from per-view inheritance.
   'shortcuts:clipboard_pin',
   'shortcuts:toggle_pins',
   'remote:receive_notices',
   'remote:upload_device_info',
+  'almanac:almanac_enabled',
   'weather:enabled',
   'weather:location',
   'calendar:recurring_preview_enabled',
+  'notes:quick_create_until_completed',
+  'notes:auto_move_to_today',
+  'notes:auto_move_checked_date',
   'notes:tag_color_enabled',
   'interaction:double_click_quick_edit',
   'interaction:hide_main_view_during_screenshot',
@@ -116,6 +129,7 @@ export function readApplicationSettings() {
     calendar: { ...applicationResolved.calendar },
     notes: { ...applicationResolved.notes },
     window: { ...applicationResolved.window },
+    almanac: { ...applicationResolved.almanac },
     weather: applicationResolved.weather,
     onboarding: applicationResolved.onboarding,
     remote: {
@@ -250,16 +264,29 @@ export function writeApplicationSettings(entries) {
 }
 
 /** 原子地把全部用户可配置的应用级设置写回 schema 默认值。 */
-export function resetApplicationSettingsToDefaults() {
-  const entries = APPLICATION_SETTING_IDS.map((id) => {
+function defaultApplicationEntries() {
+  return APPLICATION_SETTING_IDS.map((id) => {
     const defaultValue = id
       .split('.')
       .reduce((value, segment) => value?.[segment], DEFAULT_SETTINGS)
     if (defaultValue === undefined) throw new Error(`应用级设置缺少默认值: ${id}`)
     return serializeSetting(id, defaultValue)
   })
+}
+
+export function resetApplicationSettingsToDefaults() {
+  const entries = defaultApplicationEntries()
   setSettingsBatch(APPLICATION_SETTINGS_SCOPE, entries)
   return entries.length
+}
+
+/** Reset is one UI command; a view deletion failure must not reset shared settings alone. */
+export function resetCurrentViewSettings(viewMode) {
+  return resetSettingsGroup({
+    viewScope: getViewSettingsScope(viewMode),
+    applicationScope: APPLICATION_SETTINGS_SCOPE,
+    applicationEntries: defaultApplicationEntries()
+  })
 }
 
 export function getViewSettingsScope(viewMode) {

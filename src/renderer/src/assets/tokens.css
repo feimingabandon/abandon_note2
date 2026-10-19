@@ -79,8 +79,7 @@ html {
 :root {
   --font-family-text:
     'OPPOSans', 'Segoe UI', 'Microsoft YaHei', sans-serif; /* OPPOSans 为主字体，Segoe UI / 微软雅黑为回退 */
-  --font-family-mono:
-    'SF Mono', 'Consolas', monospace; /* 跨平台等宽字体：macOS 取 SF Mono，Windows 取 Consolas */
+  --font-family-mono: 'Consolas', monospace;
   --text-color-secondary: color-mix(
     in srgb,
     var(--text-color) 50%,
@@ -110,6 +109,8 @@ html {
   --window-border-outline: color-mix(in srgb, var(--text-color) 18%, transparent);
   --window-border-inner-rim: rgb(var(--bg-color) / 0.22);
   --calendar-grid-line: color-mix(in srgb, var(--text-color) 9%, transparent);
+  /* 今天使用独立的日期定位红色；不是危险操作，也不填充日期格表面。 */
+  --calendar-today-border: #ff453a;
   --ui-surface-subtle: rgb(var(--bg-color) / 0.1);
   --ui-surface-control: rgb(var(--bg-color) / 0.18);
   --ui-surface-control-hover: rgb(var(--bg-color) / 0.26);
@@ -195,8 +196,6 @@ body {
   overflow: hidden; /* 隐藏溢出内容，避免出现不必要的滚动条 */
   user-select: text; /* 所有页面默认允许选择正文和辅助文字 */
 
-  /* 字体平滑优化 —— macOS 用灰度抗锯齿，Windows 保持默认 ClearType 子像素渲染 */
-  -moz-osx-font-smoothing: grayscale; /* Firefox macOS: 灰度抗锯齿 */
   text-rendering: optimizeLegibility; /* 优先保证字形清晰度（适合正文大小文字） */
 }
 
@@ -273,4 +272,17 @@ html body :is(input, textarea, [contenteditable='true']):focus {
 .scroll-y::-webkit-scrollbar-thumb {
   background: var(--ui-border-hover);
   border-radius: 6px;
+}
+.scroll-y::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-y::-webkit-scrollbar-button {
+  display: none;
+}
+@supports selector(::-webkit-scrollbar) {
+  .scroll-y {
+    /* Chromium 的非 auto 标准属性会覆盖上述绘制规则，保留圆角细滑块而非原生箭头轨道。 */
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
 }

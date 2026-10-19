@@ -1,0 +1,275 @@
+/* Shared settings row tokens and density; inherited from the owning settings panel. */
+.setting-label small,
+.section-title small {
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  font-weight: 400;
+}
+.settings-section {
+  margin-bottom: 12rem;
+}
+.settings-section:last-child {
+  margin-bottom: 0;
+}
+.section-title {
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+  color: var(--text-color-secondary);
+  margin-bottom: 5rem;
+  padding-left: 2rem;
+}
+.setting-item {
+  display: flex;
+  flex-wrap: wrap;
+  min-height: max(40px, 2.85em);
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  padding: 6px 10px;
+  border-radius: 8rem;
+  background-color: var(--ui-surface-subtle);
+  margin-bottom: 2rem;
+}
+.setting-item:has(.setting-hint-caption),
+.setting-item:has(.setting-error) {
+  min-height: max(56px, 3.5em);
+}
+.setting-item.setting-item-full {
+  display: flex;
+}
+.setting-button-row {
+  gap: 10rem;
+}
+.setting-button-row .base-btn {
+  min-width: 0;
+  flex: 1;
+}
+.setting-left {
+  display: flex;
+  flex-direction: column;
+  gap: 3rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.setting-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.shortcut-setting .setting-right {
+  width: 156px;
+  max-width: 52%;
+}
+.shortcut-setting :deep(.settings-control-popover) {
+  width: 100%;
+}
+.settings-color-control {
+  width: 126px;
+}
+.settings-color-control :deep(.settings-control-popover) {
+  width: 100%;
+}
+.settings-color-swatch {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border-radius: 3px;
+  border: 1px solid var(--ui-border-control);
+}
+.settings-color-value {
+  font-family: var(--font-family-mono);
+  font-size: var(--fs-secondary);
+}
+.settings-color-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.settings-color-editor .color-hex-input-wrap {
+  flex: 1;
+}
+.settings-color-editor .color-hex-input {
+  width: 100%;
+  min-width: 90px;
+  border-color: var(--ui-border-control);
+  background: var(--ui-surface-control);
+}
+.settings-color-editor .color-hex-input:focus {
+  border-color: var(--ui-border-hover);
+}
+.settings-color-editor .color-hex-input.has-error {
+  border-color: var(--ui-danger);
+}
+.settings-color-editor .color-dot {
+  width: 24px;
+  height: 24px;
+}
+.settings-color-editor .color-dot.active {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}
+.settings-color-editor .color-dot:focus-visible {
+  outline: 1px solid var(--ui-border-hover);
+  outline-offset: 2px;
+}
+.setting-slider-control {
+  display: grid;
+  width: clamp(116px, 45%, 180px);
+  flex: 0 0 auto;
+  grid-template-columns: minmax(40px, 1fr) 4em;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-secondary);
+}
+.setting-slider-control .slider-root {
+  min-width: 0;
+  width: 100%;
+}
+.setting-slider-control .setting-value {
+  min-width: 0;
+}
+.setting-item-slider > .setting-label {
+  flex: 1;
+  min-width: 0;
+}
+.setting-label {
+  font-size: var(--fs-body);
+  color: var(--text-color);
+  display: block;
+  line-height: 1.45;
+}
+.setting-label small {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.setting-hint-caption {
+  display: block;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-secondary);
+  font-weight: 400;
+  margin-top: 2rem;
+  line-height: 1.3;
+}
+
+.setting-value {
+  font-size: var(--fs-secondary);
+  font-weight: 500;
+  color: var(--text-color-secondary);
+  min-width: 40rem;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.setting-hint {
+  font-size: var(--fs-secondary);
+  font-weight: 500;
+  color: var(--text-color-secondary);
+  line-height: 1.5;
+}
+.setting-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 4rem;
+  font-size: var(--fs-secondary);
+  color: #ff3b30;
+  line-height: 1.4;
+}
+.color-dot {
+  width: 20rem;
+  height: 20rem;
+  border-radius: 50%;
+  border: 2rem solid transparent;
+  cursor: pointer;
+  transition: transform 150ms ease;
+  padding: 0;
+  flex-shrink: 0;
+}
+.color-dot:hover:not(:disabled) {
+  transform: scale(1.15);
+}
+.color-dot:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.color-hex-input-wrap {
+  display: flex;
+  flex-direction: column;
+}
+.color-hex-input {
+  /* 等宽字体：7 个字符宽度恒定，宽度用 7ch 刚好包住 #RRGGBB，不再留空 */
+  width: calc(7ch + 22rem);
+  padding: 5rem 8rem;
+  border: 1px solid transparent;
+  border-radius: 6rem;
+  background: transparent;
+  color: var(--text-color);
+  font-size: var(--fs-secondary);
+  font-family: var(--font-family-mono);
+  font-weight: 500;
+  text-align: right;
+  outline: none;
+  transition: border-color 150ms ease;
+}
+.color-hex-input:focus {
+  border-color: var(--ui-border-hover);
+}
+.color-hex-input.has-error {
+  border-color: rgba(255, 59, 48, 0.4);
+}
+.color-hex-input:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.color-input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 31rem;
+  height: 31rem;
+  border: 1px solid var(--ui-border-hover);
+  border-radius: 6rem;
+  cursor: pointer;
+  padding: 0;
+  background: none;
+  flex-shrink: 0;
+}
+.color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.color-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 5rem;
+}
+@container (max-width: 300px) {
+  .setting-item {
+    align-items: flex-start;
+  }
+  .setting-right {
+    max-width: 100%;
+  }
+  .setting-left {
+    flex-basis: 100%;
+  }
+  .shortcut-setting .setting-right {
+    max-width: 100%;
+  }
+}
+.section-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8rem;
+}
+.setting-hint-inline {
+  color: var(--text-color-secondary);
+  font-weight: 400;
+  font-size: var(--fs-secondary);
+}

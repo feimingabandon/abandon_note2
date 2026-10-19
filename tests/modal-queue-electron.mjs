@@ -1,12 +1,34 @@
-import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync } from 'node:fs'
+import { readdirSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow, ipcMain, nativeImage } from 'electron'
+import { createAssertionRecorder, prepareTestProfile } from './helpers/test-result-recorder.cjs'
 
-const userData = mkdtempSync(join(tmpdir(), 'abandon-modal-queue-'))
+const recorder = createAssertionRecorder({
+  suite: 'tests/modal-queue-electron.mjs',
+  mode: 'electron-ready-real-app-modal-queue',
+  metadata: {
+    realWindows: true,
+    realDiskDatabase: true,
+    viewModes: ['list', 'month', 'week'],
+    syntheticCapturePixels: true,
+    simulatedNoticeAndUpdateHandlers: true,
+    mainProcessRestart: false
+  }
+})
+const { assert } = recorder
+const profile = prepareTestProfile({ prefix: 'abandon-modal-queue-' })
+const userData = profile.directory
+let completed = false
+let failure = null
+let shuttingDown = false
+let reachedWillQuit = false
+let cleanupTimeout = null
+let evidence = { status: 'incomplete' }
+const cleanupErrors = []
+const verifiedViewModes = []
 app.setPath('userData', userData)
 process.env.ABANDON_INTEGRATION_TEST = '1'
 process.env.ABANDON_INTEGRATION_APP_ROOT = process.cwd()
@@ -48,6 +70,96 @@ const notice = '[aria-label="软件通知"]'
 let notices = []
 let checks = 0
 const report = (message) => process.stdout.write(`[modal-queue] ${message}\n`)
+
+async function requestShutdown(error = null) {
+  if (shuttingDown) return
+  shuttingDown = true
+  failure = error
+  process.exitCode = error ? 1 : 0
+  clearTimeout(testTimeout)
+  try {
+    const root = process.env.ABANDON_TEST_EVIDENCE_DIR || userData
+    const summary = {
+      completed,
+      error: error?.stack || null,
+      requestedViews: ['list', 'month', 'week'],
+      verifiedViewModes,
+      counts: recorder.report({ cleanup: { status: 'preserved' } }).assertions
+    }
+    if (current && !current.isDestroyed()) {
+      summary.finalUrl = current.webContents.getURL()
+      let captureTimeout
+      const image = await Promise.race([
+        current.webContents.capturePage(),
+        new Promise((_, reject) => {
+          captureTimeout = setTimeout(() => reject(new Error('Final screenshot timed out')), 3000)
+        })
+      ]).finally(() => clearTimeout(captureTimeout))
+      const png = image.toPNG()
+      writeFileSync(join(root, 'modal-queue-final.png'), png, { flag: 'wx' })
+      summary.screenshotSha256 = createHash('sha256').update(png).digest('hex')
+    }
+    writeFileSync(join(root, 'modal-queue-evidence.json'), JSON.stringify(summary, null, 2), {
+      flag: 'wx'
+    })
+    evidence = {
+      status: 'complete',
+      artifacts: [
+        'modal-queue-evidence.json',
+        ...(summary.screenshotSha256 ? ['modal-queue-final.png'] : [])
+      ],
+      scope: 'GUI assertions and final screenshot; product logger closes through real quit'
+    }
+  } catch (captureError) {
+    evidence = { status: 'failed', error: captureError.stack || captureError.message }
+    process.exitCode = 1
+  }
+  // Clear only these test windows; main's normal before-quit still disposes services/DB/native.
+  cleanupTimeout = setTimeout(() => app.exit(1), 12000)
+  for (const window of BrowserWindow.getAllWindows()) {
+    try {
+      if (!window.isDestroyed()) window.destroy()
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError.message)
+      process.exitCode = 1
+    }
+  }
+  app.quit()
+}
+
+app.once('will-quit', () => {
+  reachedWillQuit = true
+})
+app.once('quit', (_event, code) => {
+  clearTimeout(cleanupTimeout)
+  const windowsClosed = BrowserWindow.getAllWindows().every((window) => window.isDestroyed())
+  const cleanupComplete = reachedWillQuit && windowsClosed && cleanupErrors.length === 0
+  try {
+    recorder.finish({
+      completed,
+      error: failure,
+      evidence,
+      profileOwnership: profile.ownership,
+      cleanup: {
+        status:
+          cleanupComplete && profile.ownership === 'runner'
+            ? 'complete'
+            : cleanupComplete
+              ? 'preserved'
+              : 'failed',
+        reachedWillQuit,
+        windowsClosed,
+        errors: cleanupErrors,
+        exitCode: code,
+        preservedProfile: profile.ownership === 'script' || failure ? userData : undefined,
+        scope: 'Main before-quit, windows and process; runner removes owned profile after exit'
+      }
+    })
+  } catch (reportError) {
+    console.error(reportError)
+    process.exitCode = 1
+  }
+})
 
 async function finishWelcome() {
   await js(
@@ -289,18 +401,20 @@ async function run() {
       report(
         `${mode}: dirty editor → child confirmation → notification → onboarding; no overlay overlap`
       )
+      verifiedViewModes.push(mode)
     }
     report('PASS')
-    app.exit(0)
+    completed = true
+    await requestShutdown()
   } catch (error) {
     console.error(error)
     if (current) console.error(await labels().catch(() => []))
-    app.exit(1)
+    await requestShutdown(error)
   }
 }
-setTimeout(() => {
+const testTimeout = setTimeout(() => {
   report('TIMEOUT')
-  app.exit(1)
+  void requestShutdown(new Error('Modal queue test timed out'))
 }, 90000)
 app.once('ready', () => void run())
 const require = createRequire(import.meta.url)

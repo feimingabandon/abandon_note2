@@ -3,10 +3,14 @@
 #include "SaveActions.h"
 #include <QApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QInputMethodEvent>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QLocalSocket>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QPushButton>
 #include <QScopeGuard>
 #include <QSettings>
@@ -14,8 +18,415 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QUuid>
+#include <QXmlStreamReader>
 #include <QtTest>
+#include <cstring>
 #include <windows.h>
+
+namespace {
+bool isolatedFeedbackCopy = false;
+QString isolatedStationName, isolatedDesktopName;
+
+QString userObjectName(HANDLE handle, DWORD *error = nullptr) {
+  DWORD bytes = 0;
+  GetUserObjectInformationW(handle, UOI_NAME, nullptr, 0, &bytes);
+  const auto sizeError = GetLastError();
+  if (!bytes || bytes % sizeof(wchar_t)) {
+    if (error)
+      *error = sizeError;
+    return {};
+  }
+  QVector<wchar_t> name(bytes / sizeof(wchar_t));
+  if (!GetUserObjectInformationW(handle, UOI_NAME, name.data(), bytes, &bytes)) {
+    const auto nameError = GetLastError();
+    if (error)
+      *error = nameError;
+    return {};
+  }
+  if (error)
+    *error = 0;
+  return QString::fromWCharArray(name.constData());
+}
+
+bool isolatedFeedbackDesktopReady() {
+  USEROBJECTFLAGS flags{};
+  DWORD bytes = 0;
+  const auto station = GetProcessWindowStation();
+  const auto actualStationName = userObjectName(station);
+  return !isolatedStationName.isEmpty() && !isolatedDesktopName.isEmpty() &&
+         actualStationName == isolatedStationName &&
+         actualStationName.compare("WinSta0", Qt::CaseInsensitive) != 0 &&
+         userObjectName(GetThreadDesktop(GetCurrentThreadId())) ==
+             isolatedDesktopName &&
+         GetUserObjectInformationW(station, UOI_FLAGS, &flags, sizeof(flags),
+                                   &bytes) &&
+         !(flags.dwFlags & WSF_VISIBLE);
+}
+
+void diagnosePrivateClipboardWrite(const QImage &source) {
+  if (!isolatedFeedbackDesktopReady()) {
+    qWarning("Private clipboard probe refused: isolation not verified");
+    return;
+  }
+  auto record = [](const char *stage, bool ok, DWORD error) {
+    qWarning().noquote()
+        << QString("Private clipboard probe: stage=%1 success=%2 error=%3")
+               .arg(stage).arg(ok).arg(ok ? 0 : error);
+  };
+  const auto image = source.convertToFormat(QImage::Format_ARGB32);
+  const SIZE_T bytes = sizeof(BITMAPV5HEADER) + SIZE_T(image.sizeInBytes());
+  SetLastError(ERROR_SUCCESS);
+  auto memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+  const auto allocationError = GetLastError();
+  record("GlobalAlloc", memory != nullptr, allocationError);
+  if (!memory)
+    return;
+  auto releaseMemory = qScopeGuard([&] { if (memory) GlobalFree(memory); });
+  SetLastError(ERROR_SUCCESS);
+  auto header = static_cast<BITMAPV5HEADER *>(GlobalLock(memory));
+  const auto lockError = GetLastError();
+  record("GlobalLock", header != nullptr, lockError);
+  if (!header)
+    return;
+  header->bV5Size = sizeof(BITMAPV5HEADER);
+  header->bV5Width = image.width();
+  header->bV5Height = -image.height();
+  header->bV5Planes = 1;
+  header->bV5BitCount = 32;
+  header->bV5Compression = BI_BITFIELDS;
+  header->bV5RedMask = 0x00ff0000;
+  header->bV5GreenMask = 0x0000ff00;
+  header->bV5BlueMask = 0x000000ff;
+  header->bV5AlphaMask = 0xff000000;
+  header->bV5CSType = LCS_sRGB;
+  std::memcpy(header + 1, image.constBits(), size_t(image.sizeInBytes()));
+  GlobalUnlock(memory);
+  SetLastError(ERROR_SUCCESS);
+  auto owner = CreateWindowExW(0, L"STATIC", L"Private clipboard diagnosis", 0,
+                               0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
+  const auto ownerError = GetLastError();
+  record("CreateWindowEx(message-owner)", owner != nullptr, ownerError);
+  if (!owner)
+    return;
+  auto releaseOwner = qScopeGuard([&] { DestroyWindow(owner); });
+  SetLastError(ERROR_SUCCESS);
+  const bool opened = OpenClipboard(owner);
+  const auto openError = GetLastError();
+  record("OpenClipboard", opened, openError);
+  if (!opened)
+    return;
+  auto closeClipboard = qScopeGuard([] { CloseClipboard(); });
+  SetLastError(ERROR_SUCCESS);
+  const bool emptied = EmptyClipboard();
+  const auto emptyError = GetLastError();
+  record("EmptyClipboard", emptied, emptyError);
+  if (!emptied)
+    return;
+  SetLastError(ERROR_SUCCESS);
+  const bool written = SetClipboardData(CF_DIBV5, memory) != nullptr;
+  const auto writeError = GetLastError();
+  record("SetClipboardData(CF_DIBV5)", written, writeError);
+  if (written)
+    memory = nullptr;
+}
+
+// Only the child uses this guard, before any QApplication or HWND exists.
+// A separate desktop alone shares its window station's clipboard.
+class FeedbackClipboardDesktop {
+public:
+  ~FeedbackClipboardDesktop() { close(); }
+  bool open() {
+    originalStation = GetProcessWindowStation();
+    if (!recordStep("GetProcessWindowStation", originalStation != nullptr,
+                    originalStation ? 0 : GetLastError()))
+      return false;
+    originalDesktop = GetThreadDesktop(GetCurrentThreadId());
+    if (!recordStep("GetThreadDesktop", originalDesktop != nullptr,
+                    originalDesktop ? 0 : GetLastError()))
+      return false;
+    DWORD nameError = 0;
+    originalStationName = userObjectName(originalStation, &nameError);
+    if (!recordStep("ReadOriginalStationName", !originalStationName.isEmpty(),
+                    nameError))
+      return false;
+    const auto suffix = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    desktopName = "copy-" + suffix;
+    // This logon may not create arbitrary named stations (ERROR_ACCESS_DENIED).
+    // Ask Windows for its permitted noninteractive station, then prove the actual binding.
+    // The station can be shared by this logon; GUI/clipboard suites must stay serial.
+    station = CreateWindowStationW(nullptr, 0, WINSTA_ALL_ACCESS, nullptr);
+    stationCreationError = GetLastError();
+    if (!recordStep("CreateWindowStationW(system-named)", station != nullptr,
+                    station ? 0 : stationCreationError))
+      return false;
+    stationName = userObjectName(station, &nameError);
+    if (!recordStep("ReadPrivateStationName", !stationName.isEmpty(), nameError))
+      return false;
+    USEROBJECTFLAGS prebindFlags{};
+    DWORD prebindBytes = 0;
+    const bool prebindFlagsRead = GetUserObjectInformationW(
+        station, UOI_FLAGS, &prebindFlags, sizeof(prebindFlags), &prebindBytes);
+    if (!recordStep("GetPrivateStationFlagsBeforeBinding", prebindFlagsRead,
+                    prebindFlagsRead ? 0 : GetLastError()))
+      return false;
+    prebindStationVerified = stationName != originalStationName &&
+        stationName.compare("WinSta0", Qt::CaseInsensitive) != 0 &&
+        !(prebindFlags.dwFlags & WSF_VISIBLE);
+    if (!recordVerification("VerifyPrivateStationBeforeBinding",
+                            prebindStationVerified,
+                            "Private station must differ, exclude WinSta0 and be non-visible"))
+      return false;
+    stationBound = SetProcessWindowStation(station);
+    if (!recordStep("SetProcessWindowStation", stationBound,
+                    stationBound ? 0 : GetLastError()))
+      return false;
+    desktop = CreateDesktopW(desktopName.toStdWString().c_str(), nullptr,
+                             nullptr, 0, GENERIC_ALL, nullptr);
+    if (!recordStep("CreateDesktopW", desktop != nullptr,
+                    desktop ? 0 : GetLastError()))
+      return false;
+    desktopBound = SetThreadDesktop(desktop);
+    if (!recordStep("SetThreadDesktop", desktopBound,
+                    desktopBound ? 0 : GetLastError()))
+      return false;
+    USEROBJECTFLAGS flags{};
+    DWORD bytes = 0;
+    const bool flagsRead = GetUserObjectInformationW(
+        station, UOI_FLAGS, &flags, sizeof(flags), &bytes);
+    if (!recordStep("GetUserObjectInformationW(UOI_FLAGS)", flagsRead,
+                    flagsRead ? 0 : GetLastError()))
+      return false;
+    stationFlags = flags.dwFlags;
+    observedStationName = userObjectName(GetProcessWindowStation(), &nameError);
+    if (!recordStep("ReadBoundStationName", !observedStationName.isEmpty(),
+                    nameError))
+      return false;
+    observedDesktopName =
+        userObjectName(GetThreadDesktop(GetCurrentThreadId()), &nameError);
+    if (!recordStep("ReadBoundDesktopName", !observedDesktopName.isEmpty(),
+                    nameError))
+      return false;
+    stationVerified = observedStationName == stationName &&
+                      stationName != originalStationName &&
+                      stationName.compare("WinSta0", Qt::CaseInsensitive) != 0 &&
+                      !(stationFlags & WSF_VISIBLE);
+    desktopVerified = observedDesktopName == desktopName;
+    return recordVerification("VerifyWindowStation", stationVerified,
+                              "Actual station must differ and be non-visible") &&
+           recordVerification("VerifyThreadDesktop", desktopVerified,
+                              "Actual desktop must match this child fixture");
+  }
+  bool close() {
+    bool complete = true;
+    if (stationBound) {
+      const bool restored = SetProcessWindowStation(originalStation);
+      const auto error = restored ? 0 : GetLastError();
+      recordStep("RestoreProcessWindowStation", restored, error);
+      if (restored)
+        stationBound = false;
+      else {
+        cleanupErrors << "Restore window station: " + QString::number(error);
+        complete = false;
+      }
+    }
+    if (desktopBound) {
+      const bool restored = SetThreadDesktop(originalDesktop);
+      const auto error = restored ? 0 : GetLastError();
+      recordStep("RestoreThreadDesktop", restored, error);
+      if (restored)
+        desktopBound = false;
+      else {
+        cleanupErrors << "Restore thread desktop: " + QString::number(error);
+        complete = false;
+      }
+    }
+    if (desktop) {
+      const bool closed = CloseDesktop(desktop);
+      const auto error = closed ? 0 : GetLastError();
+      recordStep("CloseDesktop", closed, error);
+      if (closed)
+        desktop = nullptr;
+      else {
+        cleanupErrors << "Close private desktop: " + QString::number(error);
+        complete = false;
+      }
+    }
+    if (station) {
+      const bool closed = CloseWindowStation(station);
+      const auto error = closed ? 0 : GetLastError();
+      recordStep("CloseWindowStation", closed, error);
+      if (closed)
+        station = nullptr;
+      else {
+        cleanupErrors << "Close private station: " + QString::number(error);
+        complete = false;
+      }
+    }
+    return complete;
+  }
+  QJsonObject evidence() const {
+    return {{"originalStation", originalStationName},
+            {"station", stationName},
+            {"desktop", desktopName},
+            {"stationNaming", "system-logon-station"},
+            {"stationCreationError", qint64(stationCreationError)},
+            {"observedStation", observedStationName},
+            {"observedDesktop", observedDesktopName},
+            {"stationFlags", qint64(stationFlags)},
+            {"prebindStationVerified", prebindStationVerified},
+            {"stationVerified", stationVerified},
+            {"desktopVerified", desktopVerified},
+            {"failureStage", failureStage},
+            {"failureWin32Error", qint64(failureWin32Error)},
+            {"failureReason", failureReason},
+            {"steps", steps},
+            {"cleanupErrors", QJsonArray::fromStringList(cleanupErrors)}};
+  }
+
+private:
+  HWINSTA originalStation = nullptr, station = nullptr;
+  HDESK originalDesktop = nullptr, desktop = nullptr;
+  QString originalStationName, stationName, desktopName, observedStationName,
+      observedDesktopName, failureStage, failureReason;
+  QStringList cleanupErrors;
+  QJsonArray steps;
+  DWORD stationCreationError = 0, stationFlags = 0, failureWin32Error = 0;
+  bool stationBound = false, desktopBound = false;
+  bool prebindStationVerified = false, stationVerified = false,
+       desktopVerified = false;
+  bool recordStep(const QString &stage, bool success, DWORD error) {
+    steps.append(QJsonObject{{"stage", stage},
+                             {"success", success},
+                             {"win32Error", qint64(error)}});
+    if (!success && failureStage.isEmpty()) {
+      failureStage = stage;
+      failureWin32Error = error;
+    }
+    return success;
+  }
+  bool recordVerification(const QString &stage, bool success,
+                          const QString &reason) {
+    recordStep(stage, success, 0);
+    if (!success)
+      failureReason = reason;
+    return success;
+  }
+};
+
+bool runIsolatedFeedbackCopy(QString *error) {
+  const auto evidenceRoot =
+      qEnvironmentVariable("ABANDON_CAPTURE_TEST_RESULT_DIRECTORY");
+  QTemporaryDir evidence(
+      QDir(evidenceRoot.isEmpty() ? QDir::tempPath() : evidenceRoot)
+          .filePath("capture-ui-feedback-copy-XXXXXX"));
+  if (!evidence.isValid()) {
+    *error = "Cannot create the private copy-feedback evidence directory";
+    return false;
+  }
+  // Preserve child evidence inside the current attempt, including failures.
+  evidence.setAutoRemove(false);
+  qInfo().noquote() << "Isolated copy-feedback evidence:" << evidence.path();
+  const auto token = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  auto env = QProcessEnvironment::systemEnvironment();
+  env.insert("ABANDON_CAPTURE_FEEDBACK_REPORT_DIRECTORY", evidence.path());
+  env.insert("ABANDON_CAPTURE_FEEDBACK_RUN_TOKEN", token);
+  env.insert("QT_QPA_PLATFORM", "windows");
+  QProcess child;
+  child.setWorkingDirectory(evidence.path());
+  child.setProcessEnvironment(env);
+  child.setStandardOutputFile(evidence.filePath("child.stdout.log"));
+  child.setStandardErrorFile(evidence.filePath("child.stderr.log"));
+  child.setCreateProcessArgumentsModifier(
+      [](QProcess::CreateProcessArguments *args) {
+        args->flags |= CREATE_NO_WINDOW;
+      });
+  auto ownedChildCleanup = qScopeGuard([&] {
+    if (child.state() != QProcess::NotRunning) {
+      child.kill();
+      child.waitForFinished(5000);
+    }
+  });
+  child.start(QCoreApplication::applicationFilePath(),
+              {"--isolated-feedback-copy"});
+  if (!child.waitForStarted(5000)) {
+    *error = "Copy-feedback child launch failed: " + child.errorString();
+    return false;
+  }
+  const auto pid = child.processId();
+  if (!child.waitForFinished(20000)) {
+    *error = "Copy-feedback child timed out; evidence: " + evidence.path();
+    return false;
+  }
+  if (child.exitStatus() != QProcess::NormalExit || child.exitCode() != 0) {
+    *error = "Copy-feedback child failed; evidence: " + evidence.path();
+    QFile proof(evidence.filePath("isolation.json"));
+    if (proof.open(QIODevice::ReadOnly) && proof.size() < 65536) {
+      const auto report = QJsonDocument::fromJson(proof.readAll()).object();
+      if (!report["failureStage"].toString().isEmpty())
+        *error += "; stage=" + report["failureStage"].toString() +
+                  "; Win32=" +
+                  QString::number(report["failureWin32Error"].toInteger()) +
+                  "; " + report["failureReason"].toString();
+    }
+    return false;
+  }
+  QFile proof(evidence.filePath("isolation.json"));
+  QJsonParseError parseError;
+  if (!proof.open(QIODevice::ReadOnly)) {
+    *error = "Copy-feedback isolation report is missing";
+    return false;
+  }
+  const auto document = QJsonDocument::fromJson(proof.readAll(), &parseError);
+  const auto report = document.object();
+  if (parseError.error != QJsonParseError::NoError || !document.isObject() ||
+      report["version"].toInt() != 1 ||
+      report["runToken"].toString() != token ||
+      report["pid"].toInteger() != pid || !report["stationVerified"].toBool() ||
+      !report["prebindStationVerified"].toBool() ||
+      !report["desktopVerified"].toBool() ||
+      report["station"].toString().isEmpty() ||
+      report["station"] == report["originalStation"] ||
+      !report["cleanupComplete"].toBool() ||
+      report["qtestExitCode"].toInt(-1) != 0) {
+    *error = "Copy-feedback isolation/completion/cleanup report is not proven";
+    return false;
+  }
+  QFile junit(evidence.filePath("copy.junit.xml"));
+  if (!junit.open(QIODevice::ReadOnly)) {
+    *error = "Copy-feedback business report is missing";
+    return false;
+  }
+  QXmlStreamReader xml(&junit);
+  int businessCases = 0;
+  bool suite = false, invalid = false;
+  while (!xml.atEnd()) {
+    xml.readNext();
+    if (!xml.isStartElement())
+      continue;
+    const auto tag = xml.name();
+    if (tag == QLatin1String("testsuite")) {
+      if (suite || xml.attributes().value("name") != QLatin1String("UiTest"))
+        invalid = true;
+      suite = true;
+    } else if (tag == QLatin1String("testcase")) {
+      const auto name = xml.attributes().value("name");
+      if (name == QLatin1String("completionFeedbackOutlivesOverlay"))
+        ++businessCases;
+      else if (name != QLatin1String("initTestCase") &&
+               name != QLatin1String("cleanupTestCase"))
+        invalid = true;
+    } else if (tag == QLatin1String("failure") ||
+               tag == QLatin1String("error") || tag == QLatin1String("skipped"))
+      invalid = true;
+  }
+  if (xml.hasError() || !suite || invalid || businessCases != 1) {
+    *error =
+        "Copy-feedback needs exactly one completed, non-skipped business case";
+    return false;
+  }
+  return true;
+}
+} // namespace
 
 class UiTest : public QObject {
   Q_OBJECT
@@ -46,6 +457,14 @@ private slots:
     }
   }
   void completionFeedbackOutlivesOverlay() {
+    if (!isolatedFeedbackCopy) {
+      QString error;
+      QVERIFY2(runIsolatedFeedbackCopy(&error), qPrintable(error));
+    } else {
+      QVERIFY(isolatedFeedbackDesktopReady());
+      QCOMPARE(QGuiApplication::platformName(), QString("windows"));
+      QVERIFY(QGuiApplication::primaryScreen());
+    }
     QTemporaryDir temp;
     CaptureEngine engine("feedback-" + QUuid::createUuid().toString(), "token",
                          temp.filePath("run"));
@@ -55,16 +474,116 @@ private slots:
     }
     QImage base(80, 60, QImage::Format_RGB32);
     base.fill(Qt::red);
-    for (QString action : {"copy", "quickSave"}) {
-      auto overlay =
-          new CaptureOverlay(QGuiApplication::primaryScreen(), base, "global");
+    // The interactive process never reaches production clipboard writes.
+    for (QString action : isolatedFeedbackCopy ? QStringList{"copy"}
+                                               : QStringList{"quickSave"}) {
+      auto overlay = new CaptureOverlay(QGuiApplication::primaryScreen(), base,
+                                        "global", {}, {}, action == "copy");
       QPointer<CaptureOverlay> guard(overlay);
       overlay->selection = base.rect();
       engine.session = QUuid::createUuid().toString(QUuid::WithoutBraces);
       engine.selected = overlay;
       engine.overlays << overlay;
-      engine.output(overlay, action, base);
+      HWND copyFixture = nullptr, copyActive = nullptr;
+      bool copyQtVisible = false, copyOwnVisible = false;
+      if (action == "copy") {
+        QVERIFY(isolatedFeedbackDesktopReady());
+        // Production capture shows and activates its overlay before copying.
+        // Do the same on the verified private desktop, without switching desktops.
+        overlay->showDesktop();
+        overlay->raise();
+        overlay->activateWindow();
+        overlay->setFocus();
+        copyFixture = reinterpret_cast<HWND>(overlay->winId());
+        QVERIFY(IsWindow(copyFixture));
+        QCOMPARE(GetWindowThreadProcessId(copyFixture, nullptr), GetCurrentThreadId());
+        QVERIFY(isolatedFeedbackDesktopReady());
+        for (auto entry : QList<QPair<QString, HWND>>{
+                 {"fixture", copyFixture},
+                 {"GetParent", GetParent(copyFixture)},
+                 {"GW_OWNER", GetWindow(copyFixture, GW_OWNER)},
+                 {"GA_PARENT", GetAncestor(copyFixture, GA_PARENT)},
+                 {"GA_ROOT", GetAncestor(copyFixture, GA_ROOT)},
+                 {"GA_ROOTOWNER", GetAncestor(copyFixture, GA_ROOTOWNER)},
+                 {"desktop", GetDesktopWindow()}}) {
+          DWORD windowPid = 0;
+          const auto windowThread = GetWindowThreadProcessId(entry.second, &windowPid);
+          qInfo().noquote()
+              << QString("Private window chain: role=%1 hwnd=0x%2 style=0x%3 "
+                         "visible=%4 thread=%5 pid=%6")
+                     .arg(entry.first)
+                     .arg(reinterpret_cast<quintptr>(entry.second), 0, 16)
+                     .arg(quintptr(GetWindowLongPtrW(entry.second, GWL_STYLE)), 0, 16)
+                     .arg(bool(IsWindowVisible(entry.second)))
+                     .arg(windowThread).arg(windowPid);
+        }
+        qInfo() << "Private Qt screen:" << QGuiApplication::screens().size()
+                << overlay->screen()->name() << overlay->screen()->geometry()
+                << overlay->screen()->availableGeometry();
+        // IsWindowVisible includes the deliberately hidden private desktop ancestor.
+        // Require the fixture itself to be shown; actual copy completion is separate.
+        copyQtVisible = overlay->isVisible();
+        copyOwnVisible = (GetWindowLongPtrW(copyFixture, GWL_STYLE) & WS_VISIBLE) != 0;
+        SetActiveWindow(copyFixture);
+        copyActive = GetActiveWindow();
+        QVERIFY(isolatedFeedbackDesktopReady());
+        qInfo().noquote()
+            << QString("Copy fixture on private desktop: hwnd=0x%1 active=0x%2 "
+                       "qtVisible=%3 ownWS_VISIBLE=%4")
+                   .arg(reinterpret_cast<quintptr>(copyFixture), 0, 16)
+                   .arg(reinterpret_cast<quintptr>(copyActive), 0, 16)
+                   .arg(copyQtVisible).arg(copyOwnVisible);
+      }
+      const auto activeBefore = GetActiveWindow();
+      const auto foregroundBefore = GetForegroundWindow();
+      const bool overlayVisibleBefore = overlay->isVisible();
+      SetLastError(ERROR_SUCCESS);
+      if (action == "copy") {
+        overlay->selection = {};
+        overlay->output = [&](QString selectedAction, QImage selectedImage) {
+          QCOMPARE(selectedAction, QString("copy"));
+          QCOMPARE(selectedImage, base);
+          engine.output(overlay, selectedAction, selectedImage);
+        };
+        // QTest treats a null QPoint as the widget center. Use a real corner
+        // coordinate.
+        QTest::mousePress(overlay, Qt::LeftButton, Qt::NoModifier, {1, 1});
+        QTest::mouseMove(overlay,
+                         {overlay->width() - 1, overlay->height() - 1});
+        QTest::mouseRelease(overlay, Qt::LeftButton, Qt::NoModifier,
+                            {overlay->width(), overlay->height()});
+      } else
+        engine.output(overlay, action, base);
+      const auto outputLastError = GetLastError();
+      if (action == "copy" && !engine.session.isEmpty()) {
+        QStringList hints;
+        for (auto label : overlay->findChildren<QLabel *>(
+                 QString(), Qt::FindDirectChildrenOnly))
+          hints << label->text();
+        qWarning().noquote()
+            << QString("Copy completion failed: busy=%1 isolatedReady=%2 "
+                       "overlayVisibleBefore=%3 activeBefore=0x%4 "
+                       "foregroundBefore=0x%5 activeAfter=0x%6 "
+                       "openClipboardWindow=0x%7 clipboardOwner=0x%8 "
+                       "outputLastError=%9 hints=%10")
+                   .arg(engine.busy)
+                   .arg(isolatedFeedbackDesktopReady())
+                   .arg(overlayVisibleBefore)
+                   .arg(reinterpret_cast<quintptr>(activeBefore), 0, 16)
+                   .arg(reinterpret_cast<quintptr>(foregroundBefore), 0, 16)
+                   .arg(reinterpret_cast<quintptr>(GetActiveWindow()), 0, 16)
+                   .arg(reinterpret_cast<quintptr>(GetOpenClipboardWindow()), 0, 16)
+                   .arg(reinterpret_cast<quintptr>(GetClipboardOwner()), 0, 16)
+                   .arg(outputLastError)
+                   .arg(hints.join(" | "));
+        diagnosePrivateClipboardWrite(base);
+      }
       QVERIFY(engine.session.isEmpty());
+      if (action == "copy") {
+        QVERIFY(copyQtVisible);
+        QVERIFY(copyOwnVisible);
+        QCOMPARE(copyActive, copyFixture);
+      }
       QTRY_VERIFY(guard.isNull());
       QVERIFY(engine.feedback.isVisible());
       const auto text = engine.feedback.findChild<QLabel *>()->text();
@@ -82,7 +601,7 @@ private slots:
         QCOMPARE(QImage(temp.filePath(files.first())), base);
       }
     }
-    if (Capture::interactiveDesktopAvailable()) {
+    if (!isolatedFeedbackCopy && Capture::interactiveDesktopAvailable()) {
       engine.capture(
           {{"sessionId", QUuid::createUuid().toString(QUuid::WithoutBraces)},
            {"origin", "global"}});
@@ -116,7 +635,7 @@ private slots:
   }
   void newTools_data() {
     QTest::addColumn<QString>("tool");
-    for (auto tool : {"line", "polyline", "marker", "blur", "eraser"})
+    for (auto tool : {"line", "marker", "mosaic", "eraser"})
       QTest::newRow(tool) << QString(tool);
   }
   void newTools() {
@@ -252,9 +771,11 @@ private slots:
     color->setCurrentIndex(1);
     QCOMPARE(o.document.render().pixelColor(120, 210), QColor("#e13c39"));
     auto colored = o.document.render();
-    QTest::mousePress(&o, Qt::LeftButton, Qt::NoModifier, {180, 200});
-    QTest::mouseMove(&o, {200, 220});
-    QTest::mouseRelease(&o, Qt::LeftButton, Qt::NoModifier, {200, 220});
+    // Drag the actual outline. Empty space inside the box starts a new shape.
+    QTest::mousePress(&o, Qt::LeftButton, Qt::NoModifier, {120, 210});
+    QTest::mouseMove(&o, {140, 230});
+    QTest::mouseRelease(&o, Qt::LeftButton, Qt::NoModifier, {140, 230});
+    QCOMPARE(o.document.strokes.size(), 1);
     QVERIFY(o.document.render() != colored);
     QTest::mouseClick(&o, Qt::RightButton, Qt::NoModifier, {450, 400});
     auto complete = o.document.render();
@@ -473,7 +994,7 @@ private slots:
     int cancellations = 0;
     overlay.cancel = [&] { ++cancellations; };
     auto toolbar = overlay.findChild<QToolBar *>();
-    auto actions = toolbar->actions();
+    auto actions = overlay.annotations->panel->findChildren<QAction *>();
     auto chosen = std::find_if(actions.begin(), actions.end(),
                                [&](auto a) { return a->text() == tool; });
     QVERIFY(chosen != actions.end());
@@ -583,8 +1104,13 @@ private slots:
     QCOMPARE(action, QString("copy"));
     QCOMPARE(output.size(), overlay.selection.size());
     QCOMPARE(output, overlay.document.render().copy(overlay.selection));
+    action.clear();
+    output = QImage();
     QTest::mouseDClick(&overlay, Qt::LeftButton, Qt::NoModifier, {400, 300});
-    QCOMPARE(action, QString("copy"));
+    // This fixture originated from a note: ordinary completion returns to that form.
+    // Ctrl+C above independently keeps its explicit copy action and pixel assertions.
+    QCOMPARE(action, QString("source"));
+    QCOMPARE(output, overlay.document.render().copy(overlay.selection));
     QCOMPARE(overlay.selection, QRect(101, 100, 400, 299));
     QTest::keyClick(&overlay, Qt::Key_A, Qt::ControlModifier);
     QCOMPARE(overlay.selection, image.rect());
@@ -596,10 +1122,74 @@ private slots:
     overlay.selectAll();
     QTest::qWait(20);
     QVERIFY(overlay.rect().contains(overlay.annotations->panel->geometry()));
-    for (auto id : {"pin", "save", "cancel", "copy"})
-      QVERIFY(toolbar->widgetForAction(overlay.annotations->action(id))
-                  ->isVisible());
+    for (auto id : {"pin", "save", "cancel", "source"}) {
+      auto action = overlay.annotations->action(id);
+      QVERIFY(action);
+      auto button = toolbar->widgetForAction(action);
+      QVERIFY(button);
+      QVERIFY2(button->isVisible(),
+               qPrintable(QString("Output button hidden: id=%1 hidden=%2 "
+                                  "toolbarVisible=%3 panelVisible=%4 "
+                                  "button=(%5,%6 %7x%8) toolbar=%9x%10 panel=%11x%12")
+                              .arg(id)
+                              .arg(button->isHidden())
+                              .arg(toolbar->isVisible())
+                              .arg(overlay.annotations->panel->isVisible())
+                              .arg(button->x()).arg(button->y())
+                              .arg(button->width()).arg(button->height())
+                              .arg(toolbar->width()).arg(toolbar->height())
+                              .arg(overlay.annotations->panel->width())
+                              .arg(overlay.annotations->panel->height())));
+    }
+    // Form captures keep their return action visible and copy in More.
+    auto copyAction = overlay.annotations->action("copy");
+    QVERIFY(copyAction);
+    QVERIFY(!toolbar->actions().contains(copyAction));
+    auto moreButton = toolbar->findChild<QToolButton *>("captureMore");
+    QVERIFY(moreButton);
+    QVERIFY(moreButton->isVisible());
+    QVERIFY(moreButton->menu());
+    QVERIFY(moreButton->menu()->actions().contains(copyAction));
+    QVERIFY(copyAction->isVisible());
+    QVERIFY(copyAction->isEnabled());
     overlay.close();
+  }
+  void copyOnSelectSkipsEditorAndAllowsRetry() {
+    QImage image(800, 600, QImage::Format_RGB32);
+    image.fill(Qt::red);
+    CaptureOverlay overlay(QGuiApplication::primaryScreen(), image, "global",
+                           {}, {}, true);
+    overlay.setAttribute(Qt::WA_DeleteOnClose, false);
+    overlay.resize(800, 600);
+    overlay.show();
+    int copied = 0, cancelled = 0;
+    QImage exported;
+    overlay.cancel = [&] { ++cancelled; };
+    overlay.output = [&](QString action, QImage pixels) {
+      QCOMPARE(action, QString("copy"));
+      exported = pixels;
+      ++copied;
+      if (copied == 1)
+        overlay.showError(QStringLiteral("测试剪贴板占用，可按 Enter 重试"));
+    };
+    QTest::mousePress(&overlay, Qt::LeftButton, Qt::NoModifier, {120, 160});
+    QTest::mouseMove(&overlay, {320, 260});
+    QCOMPARE(copied, 0);
+    QTest::mouseRelease(&overlay, Qt::LeftButton, Qt::NoModifier, {320, 260});
+    QCOMPARE(copied, 1);
+    QCOMPARE(exported, image.copy(overlay.selection));
+    QVERIFY(!overlay.annotations->panel->isVisible());
+    QVERIFY(overlay.document.strokes.isEmpty());
+    const auto selected = overlay.selection;
+    QTest::keyClick(&overlay, Qt::Key_Return);
+    QCOMPARE(copied, 2);
+    QCOMPARE(overlay.selection, selected);
+    QTest::keyClick(&overlay, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(copied, 3);
+    QTest::keyClick(&overlay, Qt::Key_S, Qt::ControlModifier);
+    QCOMPARE(copied, 3);
+    QTest::keyClick(&overlay, Qt::Key_Escape);
+    QCOMPARE(cancelled, 1);
   }
   void resizeHandles() {
     QImage image(800, 600, QImage::Format_RGB32);
@@ -624,6 +1214,59 @@ private slots:
       QCOMPARE(overlay.selection, expected[i]);
     }
     overlay.close();
+  }
+  void captureOverlayMemoryTracksSharedAndRenderedPixels() {
+    QImage image(160, 120, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    CaptureOverlay overlay(QGuiApplication::primaryScreen(), image, "global");
+    overlay.setAttribute(Qt::WA_DeleteOnClose, false);
+    const auto imageBytes = image.sizeInBytes();
+    QCOMPARE(overlay.memoryCost(), overlay.document.memoryCost());
+
+    overlay.document.append({"line", {{20, 20}, {80, 80}}, Qt::red, 3});
+    overlay.annotations->sync();
+    overlay.annotations->changed();
+    QCOMPARE(overlay.memoryCost(),
+             overlay.document.memoryCost() + imageBytes);
+    overlay.annotations->action("undo")->trigger();
+    QVERIFY(overlay.document.strokes.isEmpty());
+    QVERIFY(!overlay.document.redoStack.isEmpty());
+    QCOMPARE(overlay.memoryCost(), overlay.document.memoryCost());
+    overlay.annotations->action("redo")->trigger();
+    QCOMPARE(overlay.memoryCost(),
+             overlay.document.memoryCost() + imageBytes);
+    overlay.annotations->action("clear")->trigger();
+    QCOMPARE(overlay.memoryCost(), imageBytes);
+  }
+  void captureOverlayAllocationIncludesExistingComposite() {
+    QTemporaryDir root;
+    CaptureEngine engine("overlay-budget-" + QUuid::createUuid().toString(),
+                         "token", root.path());
+    engine.capture({{"sessionId", QUuid::createUuid().toString(QUuid::WithoutBraces)},
+                    {"origin", "global"}});
+    QVERIFY(!engine.session.isEmpty());
+    QCOMPARE(engine.overlays.size(), 1);
+    const auto overlay = engine.overlays.first();
+    QVERIFY(overlay);
+    overlay->hide();
+    // Reserve the remaining allowance without allocating a large collection
+    // of pins. This is an image-resource budget, not a process RSS assertion.
+    QVERIFY(overlay->annotations->allowAllocation(
+        Capture::MaxTotalBytes - overlay->document.memoryCost()));
+    overlay->document.append({"line", {{2, 2}, {12, 12}}, Qt::red, 3});
+    overlay->annotations->sync();
+    overlay->annotations->changed();
+    QVERIFY(!overlay->annotations->allowAllocation(
+        Capture::MaxTotalBytes - overlay->document.memoryCost()));
+    QVERIFY(overlay->annotations->allowAllocation(
+        Capture::MaxTotalBytes - overlay->memoryCost()));
+    QVERIFY(!overlay->annotations->allowAllocation(
+        Capture::MaxTotalBytes - overlay->memoryCost() + 1));
+    overlay->annotations->action("undo")->trigger();
+    QVERIFY(overlay->annotations->allowAllocation(
+        Capture::MaxTotalBytes - overlay->document.memoryCost()));
+    engine.finish("cancelled");
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   }
   void pinLimitsAndOriginalPixels() {
     QTemporaryDir root;
@@ -715,7 +1358,7 @@ private slots:
     overlay.selectAll();
     auto toolbar = overlay.findChild<QToolBar *>();
     auto choose = [&](QString name) {
-      for (auto a : toolbar->actions())
+      for (auto a : overlay.annotations->panel->findChildren<QAction *>())
         if (a->text() == name) {
           a->trigger();
           return true;
@@ -925,6 +1568,57 @@ private slots:
   }
 };
 int main(int argc, char **argv) {
+  if (argc > 1 && std::strcmp(argv[1], "--isolated-feedback-copy") == 0) {
+    const auto reportDirectory =
+        qEnvironmentVariable("ABANDON_CAPTURE_FEEDBACK_REPORT_DIRECTORY");
+    const auto token =
+        qEnvironmentVariable("ABANDON_CAPTURE_FEEDBACK_RUN_TOKEN");
+    if (argc != 2 || QUuid::fromString(token).isNull() ||
+        reportDirectory.isEmpty() || !QDir(reportDirectory).exists() ||
+        !QDir::setCurrent(reportDirectory))
+      return 2;
+    FeedbackClipboardDesktop desktop;
+    const bool ready = desktop.open();
+    const auto binding = desktop.evidence();
+    const auto isolationError = binding["failureWin32Error"].toInteger();
+    int result = 2;
+    if (ready) {
+      isolatedStationName = binding["station"].toString();
+      isolatedDesktopName = binding["desktop"].toString();
+      isolatedFeedbackCopy = true;
+      QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+      {
+        QApplication app(argc, argv);
+        app.setStyle("Fusion");
+        app.setQuitOnLastWindowClosed(false);
+        UiTest tests;
+        // Fixed ASCII arguments avoid command-line/path encoding ambiguity;
+        // the owned working directory contains both current child reports.
+        char program[] = "capture-ui-feedback-copy";
+        char target[] = "completionFeedbackOutlivesOverlay";
+        char output[] = "-o";
+        char textReport[] = "copy.txt,txt";
+        char junitReport[] = "copy.junit.xml,junitxml";
+        char *arguments[] = {program,    target, output,
+                             textReport, output, junitReport};
+        result = QTest::qExec(&tests, 6, arguments);
+      }
+    }
+    const bool cleanupComplete = desktop.close();
+    auto report = desktop.evidence();
+    report.insert("version", 1);
+    report.insert("runToken", token);
+    report.insert("pid", qint64(GetCurrentProcessId()));
+    report.insert("qtestExitCode", result);
+    report.insert("isolationWin32Error", qint64(isolationError));
+    report.insert("cleanupComplete", cleanupComplete);
+    QFile proof(QDir(reportDirectory).filePath("isolation.json"));
+    const auto contents = QJsonDocument(report).toJson(QJsonDocument::Compact);
+    if (!proof.open(QIODevice::WriteOnly | QIODevice::NewOnly) ||
+        proof.write(contents) != contents.size() || !proof.flush())
+      return 3;
+    return result == 0 && cleanupComplete ? 0 : 2;
+  }
   QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
   QApplication app(argc, argv);
   app.setStyle("Fusion");

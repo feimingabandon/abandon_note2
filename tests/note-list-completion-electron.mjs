@@ -1,13 +1,23 @@
-import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync } from 'node:fs'
+import { readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
+import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
 
 const require = createRequire(import.meta.url)
-const profile = mkdtempSync(join(tmpdir(), 'abandon-note-list-completion-'))
+const lifecycle = createElectronGuiResultLifecycle({
+  app,
+  BrowserWindow,
+  suite: 'tests/note-list-completion-electron.mjs',
+  mode: 'electron-legacy-window-fixture',
+  prefix: 'abandon-note-list-completion-',
+  timeoutMs: 150000,
+  metadata: { realWindows: true, productMainProcess: true, diskDatabase: true }
+})
+const { assert } = lifecycle
+const profile = lifecycle.root
 const wait = (ms) => new Promise((done) => setTimeout(done, ms))
 const report = (message) => process.stderr.write(`[list-completion] ${message}\n`)
 
@@ -53,6 +63,7 @@ async function run() {
     const js = (code) => win.webContents.executeJavaScript(code)
     const expectUI = (code, message) => until(() => js(code), message)
     await expectUI(`Boolean(document.querySelector('.nl-timeline'))`, '时间线未渲染')
+    await dismissStartupShortcutNotice(win)
     const data = await js(`(async () => {
       const now = new Date()
       const at = (days, seconds) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + days, 0, 0, seconds).getTime()
@@ -196,7 +207,7 @@ async function run() {
       '重载后更早应默认展开'
     )
     report('PASS reload; all completion-list UI checks passed')
-    app.exit(0)
+    await lifecycle.finish({ completed: true, window: win })
   } catch (error) {
     if (win && !win.isDestroyed()) {
       report(
@@ -206,7 +217,7 @@ async function run() {
       )
     }
     report(error?.stack || String(error))
-    app.exit(1)
+    await lifecycle.finish({ error, window: win })
   }
 }
 
@@ -225,5 +236,5 @@ try {
   app.once('ready', () => void run())
 } catch (error) {
   report(error?.stack || String(error))
-  app.exit(1)
+  void lifecycle.finish({ error })
 }

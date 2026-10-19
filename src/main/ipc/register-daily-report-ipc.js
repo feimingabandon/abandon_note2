@@ -33,7 +33,11 @@ export function registerDailyReportIpcHandlers({ ipcMain, dialog, shell, getMain
     return {
       startDateKey: range.startDateKey,
       endDateKey: range.endDateKey,
-      notes: queryDailyReportNotes({ ...range, statuses: options.statuses })
+      notes: queryDailyReportNotes({
+        ...range,
+        statuses: options.statuses,
+        tagIds: options.tagIds
+      })
     }
   })
 
@@ -46,7 +50,8 @@ export function registerDailyReportIpcHandlers({ ipcMain, dialog, shell, getMain
     // 导出前重新读取范围内的数据，确保最终文件不使用已经失效或删除的预览快照。
     const currentNotes = queryDailyReportNotes({
       ...range,
-      statuses: options.statuses
+      statuses: options.statuses,
+      tagIds: options.tagIds
     })
     const selectedNotes = selectDailyReportNotes(currentNotes, options.noteIds)
     const parent = getMainWindow()

@@ -13,11 +13,13 @@ export function createLogWriterClient({
   let worker = null
   let ready = false
   let closed = false
+  let stopping = false
   let requestId = 0
   let sequence = 0
   let queuedBytes = 0
   let inFlight = null
   let timer = null
+  let restartTimer = null
   let restartAt = -Infinity
   let forceThrough = 0
   let backoffUntil = 0
@@ -113,15 +115,22 @@ export function createLogWriterClient({
     scheduleRestart()
   }
   function scheduleRestart() {
-    if (Date.now() - restartAt >= 60000) {
-      restartAt = Date.now()
-      health.workerRestarts++
-      const retry = setTimeout(start, 1000)
-      retry.unref?.()
-    }
+    if (closed || stopping || worker || restartTimer) return
+    // 冷却限制重启频率，但不能让冷却期间的再次失败永久停止恢复。
+    restartTimer = setTimeout(
+      () => {
+        restartTimer = null
+        if (closed || stopping || worker) return
+        restartAt = Date.now()
+        health.workerRestarts++
+        start()
+      },
+      Math.max(1000, 60000 - (Date.now() - restartAt))
+    )
+    restartTimer.unref?.()
   }
   function start() {
-    if (closed || worker) return
+    if (closed || stopping || worker) return
     try {
       const instance = createWorker(workerFile, {
         workerData: { directory, options: workerOptions }
@@ -283,6 +292,9 @@ export function createLogWriterClient({
     },
     async close(timeoutMs = 1000) {
       if (closed) return
+      stopping = true
+      clearTimeout(restartTimer)
+      restartTimer = null
       await flush(timeoutMs)
       closed = true
       clearTimeout(timer)

@@ -296,6 +296,8 @@ onBeforeUnmount(() => {
 .fsi-wrapper {
   position: relative;
   display: inline-block;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* ============ 触发器（自闭环背景+边框，不与 .app-bg 叠加） ============ */
