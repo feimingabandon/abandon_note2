@@ -305,6 +305,91 @@ describe('main-process logging', () => {
     })
   })
 
+  for (const flushOnDestroyed of [false, true]) {
+    it(`preserves a queued console error after native window getters are destroyed (${flushOnDestroyed ? 'destroyed event' : 'late timer'})`, async () => {
+      const marker = `closed-console-${flushOnDestroyed}-${Date.now()}`
+      let destroyed = false
+      const webContents = new EventEmitter()
+      const win = new EventEmitter()
+      const readNative = (value) => {
+        if (destroyed) throw new TypeError('Object has been destroyed')
+        return value
+      }
+      Object.defineProperties(win, {
+        id: { get: () => readNative(81) },
+        webContents: { get: () => readNative(webContents) }
+      })
+      Object.defineProperty(webContents, 'id', { get: () => readNative(82) })
+      win.isDestroyed = () => destroyed
+      win.getBounds = () => readNative({ x: 0, y: 0, width: 300, height: 200 })
+      webContents.getURL = () => readNative('app://closing-window')
+      webContents.getOSProcessId = () => readNative(83)
+      windowCapture.setWindowLogContext(win, { role: 'closing-window' })
+      windowCapture.attachWindowLogging(win)
+      webContents.emit('console-message', { level: 'error', message: marker, lineNumber: 1 })
+      destroyed = true
+      expect(() => windowCapture.getWindowDiagnosticContext(win)).not.toThrow()
+      expect(() => windowCapture.getWindowDiagnosticContext(win, webContents)).not.toThrow()
+      expect(windowCapture.getWindowDiagnosticContext(win)).toMatchObject({
+        browserWindowId: 81,
+        rendererProcessId: null,
+        url: '',
+        windowState: { bounds: null }
+      })
+      if (flushOnDestroyed) {
+        expect(() => webContents.emit('destroyed')).not.toThrow()
+        expect(() =>
+          webContents.emit('render-process-gone', {}, { reason: 'clean-exit', exitCode: 0 })
+        ).not.toThrow()
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1300))
+      const result = await logging.queryLogs({ search: marker, limit: 10 })
+      expect(result.items).toHaveLength(1)
+      expect(result.items[0]).toMatchObject({
+        scope: 'renderer.console',
+        message: marker,
+        windowRole: 'closing-window',
+        webContentsId: 82,
+        metadata: { browserWindowId: 81, windowState: { bounds: null } }
+      })
+      if (flushOnDestroyed) {
+        const exits = await logging.queryLogs({ search: '渲染进程已退出：clean-exit', limit: 20 })
+        expect(exits.items).toContainEqual(
+          expect.objectContaining({
+            scope: 'renderer.render-process-gone',
+            webContentsId: 82,
+            metadata: expect.objectContaining({
+              browserWindowId: 81,
+              reason: 'clean-exit',
+              exitCode: 0
+            })
+          })
+        )
+      }
+    })
+  }
+
+  it('collects a degraded context when an unattached destroyed window throws on property access', () => {
+    const win = {}
+    Object.defineProperties(win, {
+      id: {
+        get() {
+          throw new TypeError('Object has been destroyed')
+        }
+      },
+      webContents: {
+        get() {
+          throw new TypeError('Object has been destroyed')
+        }
+      }
+    })
+    expect(windowCapture.getWindowDiagnosticContext(win)).toMatchObject({
+      browserWindowId: null,
+      rendererProcessId: null,
+      url: ''
+    })
+  })
+
   it('lists recent Crashpad dumps without reading their contents', async () => {
     const reports = join(testUserData, 'reports')
     mkdirSync(reports, { recursive: true })

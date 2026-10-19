@@ -8,6 +8,7 @@ const attached = new WeakSet()
 const structuredConsoleMessages = new WeakMap()
 const STRUCTURED_CONSOLE_DEDUPE_MS = 2_000
 const pendingConsole = new WeakMap()
+const windowIdentities = new WeakMap()
 
 function contextFor(win) {
   return contexts.get(win) || { role: 'unknown-window' }
@@ -21,15 +22,26 @@ function callSafely(target, method, fallback = null) {
   }
 }
 
+function readPropertySafely(target, property, fallback = null) {
+  try {
+    return target?.[property] ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
 /**
  * 收集能够把 renderer 异常定位到具体窗口的最小运行态。
  * 不包含页面正文、表单值等用户内容。
  */
-export function getWindowDiagnosticContext(win, webContents = win?.webContents) {
+export function getWindowDiagnosticContext(win, webContents) {
+  webContents ??= readPropertySafely(win, 'webContents')
+  const identity = windowIdentities.get(win)
+  const windowId = readPropertySafely(win, 'id', identity?.browserWindowId)
   const windowContext = win ? { ...contextFor(win) } : { role: 'unknown-window' }
   return {
     windowContext,
-    browserWindowId: Number.isSafeInteger(win?.id) ? win.id : null,
+    browserWindowId: Number.isSafeInteger(windowId) ? windowId : null,
     rendererProcessId: callSafely(webContents, 'getOSProcessId'),
     url: callSafely(webContents, 'getURL', ''),
     windowState: win
@@ -121,7 +133,11 @@ function recordWindowEvent(win, payload) {
   writeLog({
     process: 'renderer',
     windowRole: context.role,
-    webContentsId: win.webContents.id,
+    webContentsId: readPropertySafely(
+      readPropertySafely(win, 'webContents'),
+      'id',
+      windowIdentities.get(win)?.webContentsId
+    ),
     ...payload,
     metadata: {
       ...(payload.metadata || {}),
@@ -144,6 +160,17 @@ export function attachWindowLogging(win) {
   if (!win || win.isDestroyed() || attached.has(win)) return
   attached.add(win)
   const webContents = win.webContents
+  windowIdentities.set(win, {
+    browserWindowId: readPropertySafely(win, 'id'),
+    webContentsId: readPropertySafely(webContents, 'id')
+  })
+  const flushPendingConsole = () => {
+    for (const item of [...(pendingConsole.get(win) || [])]) item.emit()
+    pendingConsole.delete(win)
+    structuredConsoleMessages.delete(win)
+  }
+  // A console fallback can outlive its BrowserWindow during shutdown or view replacement.
+  webContents.once('destroyed', flushPendingConsole)
 
   webContents.on('console-message', (details) => {
     if (!['warning', 'error'].includes(details.level) && !isDeepDiagnosticMode()) return
@@ -173,7 +200,10 @@ export function attachWindowLogging(win) {
     // preload 批次可能晚于 Chromium console 回调；短暂有界等待结构化主记录。
     const pending = pendingConsole.get(win) || []
     const item = { payload, details: { level: details.level, message: payload.message } }
+    let emitted = false
     item.emit = () => {
+      if (emitted) return
+      emitted = true
       clearTimeout(item.timer)
       const index = pending.indexOf(item)
       if (index >= 0) pending.splice(index, 1)
@@ -209,7 +239,7 @@ export function attachWindowLogging(win) {
     }
   )
   webContents.on('render-process-gone', (_event, details) => {
-    for (const item of [...(pendingConsole.get(win) || [])]) item.emit()
+    flushPendingConsole()
     const recentCrashDumps = details.reason === 'clean-exit' ? undefined : getRecentCrashDumps()
     recordWindowEvent(win, {
       level: details.reason === 'clean-exit' ? 'info' : 'fatal',

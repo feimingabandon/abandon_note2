@@ -5,6 +5,12 @@ const { releaseRendererDomainRules } = require('./test-renderer-domain-rules.cjs
 const domainRules = Object.freeze({
   ...releaseMainDomainRules,
   ...releaseRendererDomainRules,
+  'src/main/logging/window-capture.js': [
+    'tests/main-logging.test.js',
+    'tests/diagnostic-controller.test.js',
+    'tests/logging-actions-electron.mjs',
+    'tests/view-visibility-shortcut-electron.mjs'
+  ],
   'tests/helpers/startup-shortcut-notice.mjs': [
     'tests/main-view-enhancements-electron.mjs',
     'tests/logging-actions-electron.mjs',

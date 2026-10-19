@@ -79,6 +79,104 @@ function getMonthWindow() {
   )
 }
 
+async function verifyDestroyedWindowConsole(mainWindow) {
+  const marker = `destroyed-console-e2e-${Date.now()}`
+  const messages = [
+    { level: 'warning', message: `${marker}-warning` },
+    { level: 'error', message: `${marker}-error` }
+  ]
+  const observed = []
+  const uncaught = []
+  const observeUncaught = (error, origin) => {
+    uncaught.push({ message: error?.message || String(error), origin })
+  }
+  // Monitoring does not handle the exception or suppress Electron's error dialog.
+  process.on('uncaughtExceptionMonitor', observeUncaught)
+  let fixture
+  try {
+    // The running product's browser-window-created listener attaches its bundled
+    // window-capture module. No source-module import or replacement logger is used.
+    fixture = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        partition: marker
+      }
+    })
+    const fixtureId = fixture.id
+    const contentsId = fixture.webContents.id
+    assert.ok(
+      fixture.webContents.listenerCount('console-message') > 0,
+      '实际应用没有为新窗口安装 Chromium 日志采集'
+    )
+    fixture.webContents.on('console-message', (details) => {
+      if (messages.some((item) => item.message === details.message)) {
+        observed.push({ level: details.level, message: details.message, receivedAt: Date.now() })
+      }
+    })
+    await fixture.loadURL(
+      'data:text/html;charset=utf-8,' +
+        encodeURIComponent(
+          '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'">' +
+            '<title>Destroyed window console regression</title>'
+        )
+    )
+    await fixture.webContents.executeJavaScript(
+      `console.warn(${JSON.stringify(messages[0].message)}); console.error(${JSON.stringify(messages[1].message)}); true`
+    )
+    await waitUntil(() => observed.length === 2, '真实 Chromium 警告和错误没有进入窗口采集')
+    assert.deepEqual(
+      observed.map(({ level, message }) => ({ level, message })),
+      messages
+    )
+    const destroyedAt = Date.now()
+    assert.ok(
+      destroyedAt - observed[0].receivedAt < 1250,
+      '必须在 Chromium 日志的延迟回调到期前销毁真实窗口'
+    )
+    fixture.destroy()
+    assert.equal(fixture.isDestroyed(), true)
+    await wait(1500)
+    assert.ok(Date.now() - destroyedAt > 1250, '未跨过原始 Chromium 日志延迟回调期限')
+    assert.equal(
+      await mainWindow.webContents.executeJavaScript('Promise.resolve("main-loop-responsive")'),
+      'main-loop-responsive',
+      '销毁窗口后主进程和实际应用 IPC 必须继续响应'
+    )
+    const fallbackLogs = await waitUntil(async () => {
+      const result = await mainWindow.webContents.executeJavaScript(
+        `window.api.queryLogs({ search: ${JSON.stringify(marker)}, limit: 20 })`
+      )
+      const rows = result.items.filter((row) => row.scope === 'renderer.console')
+      return rows.length >= 2 ? rows : null
+    }, '已销毁窗口的 Chromium 警告或错误没有安全写入实际日志')
+    assert.equal(fallbackLogs.length, 2, '销毁后延迟回调不应重复写入同一条 Chromium 日志')
+    assert.deepEqual(
+      new Set(fallbackLogs.map((row) => `${row.level}:${row.message}`)),
+      new Set([`warn:${messages[0].message}`, `error:${messages[1].message}`])
+    )
+    for (const row of fallbackLogs) {
+      assert.equal(row.webContentsId, contentsId, '销毁后必须保留真实 WebContents 身份')
+      assert.equal(row.metadata.browserWindowId, fixtureId, '销毁后必须保留真实窗口身份')
+    }
+    assert.deepEqual(uncaught, [], '销毁窗口后不应产生未捕获异常')
+    return {
+      fixtureId,
+      contentsId,
+      observed,
+      destroyedAt,
+      waitedMs: Date.now() - destroyedAt,
+      fallbackMessages: fallbackLogs.map(({ level, message }) => ({ level, message })),
+      uncaught
+    }
+  } finally {
+    if (fixture && !fixture.isDestroyed()) fixture.destroy()
+    process.removeListener('uncaughtExceptionMonitor', observeUncaught)
+  }
+}
+
 let activeWindow = null
 let failureUi = null
 
@@ -109,6 +207,7 @@ try {
 async function runTest() {
   let failure = null
   let completed = false
+  let destroyedConsoleRegression = null
   try {
     const window = await waitUntil(getMonthWindow, '月视图主窗口未启动')
     activeWindow = window
@@ -743,6 +842,10 @@ async function runTest() {
       ),
       '导出未列出已销毁窗口的缺失状态'
     )
+    destroyedConsoleRegression = await verifyDestroyedWindowConsole(window)
+    report(
+      'queued Chromium warning/error survive real BrowserWindow destruction without uncaught errors'
+    )
     report(
       'daily/deep transitions, search countdown/policy updates, sticky close drain, forced-close completeness, database readback, performance sampling and cross-window exports passed'
     )
@@ -802,6 +905,7 @@ async function runTest() {
       window: activeWindow,
       summary: {
         failureUi,
+        destroyedConsoleRegression,
         exports: [
           'export-last-hour.jsonl',
           'export-all.jsonl',
