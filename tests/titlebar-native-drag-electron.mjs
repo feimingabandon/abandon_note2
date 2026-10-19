@@ -5,6 +5,7 @@ import Database from 'better-sqlite3'
 import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron'
 import koffi from 'koffi'
 import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
 
 const lifecycle = createElectronGuiResultLifecycle({
   app,
@@ -117,6 +118,8 @@ async function run() {
       return readFileSync(filePath, 'utf8').trim().split('\n').map(JSON.parse)
     }
     await until(() => js("Boolean(document.querySelector('.app-titlebar'))"), 'titlebar missing')
+    await until(() => window.isVisible(), 'main window never became visible')
+    await dismissStartupShortcutNotice(window)
     await js("window.api.setDockConfig({ enabledEdges: [], revealHandleMode: 'direct' })")
     const workArea = screen.getDisplayMatching(window.getBounds()).workArea
 

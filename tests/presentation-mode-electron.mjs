@@ -7,6 +7,7 @@ import koffi from 'koffi'
 import { compactBoundsFromAnchor } from '../src/shared/window-compact-geometry.js'
 import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
 import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
 
 const lifecycle = createElectronGuiResultLifecycle({
   app,
@@ -130,6 +131,7 @@ async function run() {
     await until(() => window.isVisible(), 'list window never became visible')
     const js = (code) => window.webContents.executeJavaScript(code)
     await until(() => js("Boolean(document.querySelector('.app-titlebar'))"), 'titlebar missing')
+    await dismissStartupShortcutNotice(window)
     await js('window.api.setBlurConfig({ enabled: true, cornerRadius: 26 })')
     await until(() => hooks.getBlurRuntimeHealth()?.healthy, 'native blur did not initialize')
     await until(

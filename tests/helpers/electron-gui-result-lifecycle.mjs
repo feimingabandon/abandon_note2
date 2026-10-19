@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs'
+import { appendFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { createAssertionRecorder, prepareTestProfile } from './test-result-recorder.cjs'
@@ -11,7 +11,8 @@ export function createElectronGuiResultLifecycle({
   mode,
   prefix,
   metadata,
-  timeoutMs = 90000
+  timeoutMs = 90000,
+  destroyWindowsBeforeQuit = true
 }) {
   const recorder = createAssertionRecorder({ suite, mode, metadata })
   const profile = prepareTestProfile({ prefix })
@@ -22,6 +23,47 @@ export function createElectronGuiResultLifecycle({
   let evidence = { status: 'incomplete' }
   let cleanupTimeout
   const cleanupErrors = []
+  const exitEventsPath = join(
+    process.env.ABANDON_TEST_EVIDENCE_DIR || profile.directory,
+    'gui-exit-events.jsonl'
+  )
+  let exitEventSequence = 0
+  function writeExitEvent(event, details = {}) {
+    try {
+      appendFileSync(
+        exitEventsPath,
+        JSON.stringify({
+          sequence: ++exitEventSequence,
+          time: new Date().toISOString(),
+          pid: process.pid,
+          suite,
+          event,
+          ...details
+        }) + '\n',
+        'utf8'
+      )
+    } catch (diagnosticError) {
+      cleanupErrors.push(
+        'Exit phase diagnostic: ' +
+          (diagnosticError?.stack || diagnosticError?.message || String(diagnosticError))
+      )
+    }
+  }
+  function windowSnapshot(window) {
+    if (!window) return null
+    const snapshot = {}
+    for (const [key, read] of [
+      ['id', () => window.id],
+      ['destroyed', () => window.isDestroyed()]
+    ]) {
+      try {
+        snapshot[key] = read()
+      } catch (snapshotError) {
+        snapshot[key] = 'unavailable: ' + (snapshotError?.message || String(snapshotError))
+      }
+    }
+    return snapshot
+  }
   const timeout = setTimeout(
     () => void finish({ error: new Error(suite + ' timed out') }),
     timeoutMs
@@ -40,6 +82,12 @@ export function createElectronGuiResultLifecycle({
     failure = error
     clearTimeout(timeout)
     process.exitCode = error ? 1 : 0
+    writeExitEvent('finish-start', {
+      completed,
+      error: error?.message || null,
+      destroyWindowsBeforeQuit,
+      window: windowSnapshot(window)
+    })
     try {
       await restore?.()
     } catch (restoreError) {
@@ -83,16 +131,27 @@ export function createElectronGuiResultLifecycle({
       evidence = { status: 'failed', error: evidenceError.stack || evidenceError.message }
       process.exitCode = 1
     }
-    cleanupTimeout = setTimeout(() => app.exit(1), 12000)
-    for (const target of BrowserWindow.getAllWindows()) {
-      try {
-        if (!target.isDestroyed()) target.destroy()
-      } catch (closeError) {
-        cleanupErrors.push(closeError.stack || closeError.message)
-        process.exitCode = 1
+    writeExitEvent('evidence-complete', { status: evidence.status })
+    cleanupTimeout = setTimeout(() => {
+      writeExitEvent('cleanup-watchdog-fired', { exitCode: 1 })
+      app.exit(1)
+    }, 12000)
+    writeExitEvent('cleanup-watchdog-armed', { timeoutMs: 12000 })
+    if (destroyWindowsBeforeQuit) {
+      for (const target of BrowserWindow.getAllWindows()) {
+        writeExitEvent('window-destroy-before', { window: windowSnapshot(target) })
+        try {
+          if (!target.isDestroyed()) target.destroy()
+        } catch (closeError) {
+          cleanupErrors.push(closeError.stack || closeError.message)
+          process.exitCode = 1
+        }
+        writeExitEvent('window-destroy-after', { window: windowSnapshot(target) })
       }
     }
+    writeExitEvent('app-quit-before')
     app.quit()
+    writeExitEvent('app-quit-after')
   }
   app.once('will-quit', () => {
     reachedWillQuit = true
@@ -125,6 +184,13 @@ export function createElectronGuiResultLifecycle({
       console.error(reportError)
       process.exitCode = 1
     }
+  })
+  // Observe event entry before existing listeners without changing their relative order.
+  app.prependListener('will-quit', () => {
+    writeExitEvent('will-quit', { closing, completed, evidenceStatus: evidence.status })
+  })
+  app.prependListener('quit', (_event, code) => {
+    writeExitEvent('quit', { closing, completed, exitCode: code })
   })
   return { assert: recorder.assert, root: profile.directory, finish }
 }

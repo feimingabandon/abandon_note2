@@ -8,6 +8,8 @@ const domainRules = Object.freeze({
   'tests/helpers/startup-shortcut-notice.mjs': [
     'tests/main-view-enhancements-electron.mjs',
     'tests/logging-actions-electron.mjs',
+    'tests/presentation-mode-electron.mjs',
+    'tests/titlebar-native-drag-electron.mjs',
     'tests/quick-note-edit-electron.mjs',
     'tests/template-quarterly-electron.mjs',
     'tests/note-duration-electron.mjs',

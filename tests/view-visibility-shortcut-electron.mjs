@@ -22,6 +22,8 @@ const lifecycle = createElectronGuiResultLifecycle({
   suite,
   mode,
   prefix: 'abandon-note-view-shortcut-e2e-',
+  // Exercise product quit with the live main window through its asynchronous shutdown stages.
+  destroyWindowsBeforeQuit: false,
   metadata: {
     legacyFixture: true,
     stage: stage || 'controller',
