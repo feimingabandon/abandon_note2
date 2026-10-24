@@ -8,6 +8,12 @@ const { assessVitestReport, assessStandaloneReport } = require('./test-result-ad
 const storageMode = 'electron-ready-memory-sqlite-real-files'
 const supportedStorage = new Set(manifest.storageTests)
 const standaloneModes = new Map([
+  ['tests/tag-commands-electron.mjs', 'electron-ready-disk-sqlite-tag-commands-mocked-ipc'],
+  ['tests/native-async-prototype-electron.mjs', 'electron-worker-native-lifecycle-prototype'],
+  ['tests/dispatcher-queue-lifetime-electron.mjs', 'windows-native-dispatcher-queue-lifetime'],
+  ['tests/image-decode-electron.mjs', 'real-electron-owned-image-decode'],
+  ['tests/settings-write-source-electron.mjs', 'electron-settings-source-frame-and-scope'],
+  ['tests/test-failure-diagnostics-win.cjs', 'node-windows-failure-diagnostics'],
   ['tests/remote-daily-electron.mjs', 'electron-ready-remote-daily-http-sqlite'],
   ...[
     'tests/help-center-electron.mjs',
@@ -28,6 +34,11 @@ const standaloneModes = new Map([
     'tests/view-visibility-shortcut-electron.mjs'
   ].map((file) => [file, 'electron-legacy-window-fixture']),
   ['tests/renderer-resource-lifetime-electron.mjs', 'electron-component-fixture'],
+  ['tests/settings-panel-owners-electron.mjs', 'electron-component-fixture'],
+  ['tests/session-draft-assets-prototype-electron.mjs', 'electron-session-draft-assets-prototype'],
+  ['tests/session-draft-assets-electron.mjs', 'electron-session-draft-assets-production-ports'],
+  ['tests/session-draft-assets-product-electron.mjs', 'electron-session-draft-assets-real-product'],
+  ['tests/app-update-intent-electron.mjs', 'electron-real-app-update-display-intent'],
   ['tests/historical-note-move-db.mjs', 'electron-ready-disk-sqlite-historical-and-automatic-move'],
   ['tests/historical-note-move-electron.mjs', 'electron-ready-real-app-historical-move'],
   [
@@ -40,6 +51,10 @@ const standaloneModes = new Map([
   ],
   ['tests/template-quarterly-electron.mjs', 'real-app-quarterly-template-and-continuous-create'],
   ['tests/reminders-electron.mjs', 'real-app-reminder-popup-tray-and-editing'],
+  [
+    'tests/reminder-initialization-electron.mjs',
+    'electron-ready-real-reminder-load-ready-lifecycle'
+  ],
   [
     'tests/note-three-view-rules-ui-electron.mjs',
     'real-app-three-view-note-create-edit-and-calendar-defaults'
@@ -70,18 +85,40 @@ const standaloneModes = new Map([
     'electron-real-app-daily-report-selected-range-txt-xlsx-export'
   ],
   ['tests/window-motion-diagnostics-native.mjs', 'windows-native-motion-collector-no-hwnd'],
+  ['tests/window-z-order-diagnostics-native.mjs', 'windows-native-z-order-diagnostics-no-hwnd'],
+  ['tests/window-z-order-diagnostics-electron.mjs', 'electron-native-zorder-failure-to-daily-log'],
   ['tests/settings-repository-db.mjs', 'electron-ready-disk-sqlite-reopen-settings'],
   ['tests/database-runtime-db.mjs', 'electron-ready-disk-sqlite-runtime-migration'],
+  ['tests/database-migration-backup-electron.mjs', 'electron-ready-migration-backup-real-files'],
   [
     'tests/business-clear-admission-electron.mjs',
     'electron-ready-disk-sqlite-real-files-business-clear-admission-mocked-ipc'
   ],
   [
     'tests/attachment-recovery-reset-electron.mjs',
-    'electron-disk-attachment-recovery-reset-two-process'
+    'electron-disk-attachment-recovery-reset-three-process'
   ],
   ['tests/settings-runtime-electron.mjs', 'electron-main-app-settings-cross-view'],
   ['tests/settings-queue-electron.mjs', 'electron-ready-real-app-settings-queue-sections'],
+  [
+    'tests/settings-snapshot-ordering-electron.mjs',
+    'electron-real-app-settings-snapshot-ordering-and-intents'
+  ],
+  ['tests/settings-snapshot-read-electron.mjs', 'electron-real-app-read-only-settings-snapshot'],
+  ['tests/settings-page-leave-electron.mjs', 'electron-real-app-settings-page-leave-tray-sqlite'],
+  [
+    'tests/settings-application-ui-electron.mjs',
+    'electron-real-app-settings-application-state-and-retry'
+  ],
+  ['tests/settings-quit-electron.mjs', 'electron-real-app-settings-tray-quit-sqlite'],
+  [
+    'tests/settings-exit-restart-electron.mjs',
+    'electron-real-app-settings-exit-restart-two-process'
+  ],
+  [
+    'tests/settings-operation-quit-electron.mjs',
+    'electron-wallpaper-operation-direct-quit-save-rollback-and-reopen'
+  ],
   ['tests/application-lifecycle-electron.mjs', 'electron-main-app-shutdown-three-process'],
   ['tests/app-ipc-electron.mjs', 'electron-real-preload-app-ipc-authorization'],
   ['tests/note-list-refresh-electron.mjs', 'electron-ready-real-app-list-refresh'],
@@ -95,6 +132,10 @@ const standaloneModes = new Map([
   ['tests/native-leaf-runtime-electron.mjs', 'electron-main-app-native-leaf-state'],
   ['tests/dock-runtime-electron.mjs', 'electron-real-app-dock-owner-native-state'],
   ['tests/background-navigation-electron.mjs', 'electron-ready-real-app-background-navigation'],
+  ['tests/capture-delivery-electron.mjs', 'electron-ready-real-app-capture-delivery'],
+  ['tests/capture-compositor-electron.mjs', 'electron-real-app-capture-compositor-pixels'],
+  ['tests/capture-host-electron.mjs', 'electron-ready-capture-host-lifecycle'],
+  ['tests/capture-lifecycle-electron.mjs', 'electron-ready-capture-overlay-lifecycle'],
   ['tests/calendar-workspace-electron.mjs', 'electron-ready-real-app-calendar-workspace'],
   ['tests/new-note-workflow-electron.mjs', 'real-app-new-note-session-and-layout'],
   ['tests/titlebar-native-drag-electron.mjs', 'electron-ready-real-app-titlebar-native-drag'],
@@ -106,6 +147,19 @@ const standaloneModes = new Map([
     'electron-ready-file-sqlite-real-attachments-mocked-ipc'
   ],
   ['tests/sticky-persistence-electron.mjs', 'electron-ready-memory-sqlite-real-sticky-windows'],
+  [
+    'tests/sticky-quit-electron.mjs',
+    'electron-real-app-sticky-initialization-tray-quit-and-reopen'
+  ],
+  [
+    'tests/main-view-initialization-electron.mjs',
+    'electron-real-app-main-view-ready-load-lifecycle'
+  ],
+  ['tests/main-view-startup-electron.mjs', 'electron-real-app-main-view-startup-ready-lifecycle'],
+  [
+    'tests/sticky-initialization-electron.mjs',
+    'electron-ready-controlled-load-sqlite-real-sticky-initialization'
+  ],
   ['tests/modal-queue-electron.mjs', 'electron-ready-real-app-modal-queue']
 ])
 
@@ -155,6 +209,9 @@ function createFocusedPlan(argv, { root = resolve(__dirname, '..'), entries } = 
     executed: false,
     root: directory,
     buildMode: result.buildMode,
+    ...(result.selected.some((entry) => entry.file === 'tests/capture-compositor-electron.mjs')
+      ? { releaseCaptureInputDriver: true }
+      : {}),
     planOnly: result.planOnly,
     selected: result.selected.map(describe),
     dependencies: result.dependencies.map(describe),
@@ -275,15 +332,42 @@ function createFocusedJobs(
       command: executable,
       args: [entry.file],
       gui: true,
+      windowsHide: entry.runtime !== 'electron',
       // Leave cleanup time beyond the motion lifecycle and packaged app's bounded shutdown.
+      // Settings restart keeps its existing child/suite budgets, including the
+      // E12 navigation case; diagnostics and cleanup cannot turn a late exit green.
       timeoutMs: [
-        'tests/logging-motion-overhead-electron.mjs',
-        'tests/capture-package-smoke.cjs'
+        'tests/main-view-initialization-electron.mjs',
+        'tests/main-view-startup-electron.mjs'
       ].includes(entry.file)
-        ? 270_000
-        : 180_000,
+        ? 300_000 // Each main-view controller keeps its original child and suite budgets, plus diagnostics.
+        : entry.file === 'tests/sticky-initialization-electron.mjs'
+          ? 90_000 // Controlled service fixture includes two original five-second deadlines.
+          : entry.file === 'tests/settings-exit-restart-electron.mjs'
+            ? 900_000
+            : [
+                  'tests/settings-operation-quit-electron.mjs',
+                  'tests/sticky-quit-electron.mjs'
+                ].includes(entry.file)
+              ? 240_000 // Four children * 45s, plus first-failure diagnostics and cleanup.
+              : [
+                    'tests/logging-motion-overhead-electron.mjs',
+                    'tests/capture-package-smoke.cjs'
+                  ].includes(entry.file)
+                ? 270_000
+                : 180_000,
       prepare: ({ directory }) => {
         const packageEnv = {}
+        if (entry.file === 'tests/capture-compositor-electron.mjs')
+          packageEnv.ABANDON_CAPTURE_INPUT_DRIVER =
+            require('./test-build-descriptors.cjs').describeBuild({
+              root: plan.root,
+              id: 'build-capture',
+              nodeExecutable,
+              qtNames,
+              inputDriver: plan.releaseCaptureInputDriver === true,
+              env
+            }).inputDriverPath
         if (entry.file === 'tests/capture-package-smoke.cjs') {
           const supplied = env.ABANDON_TEST_PACKAGE_DIR
           if (!supplied || !isAbsolute(supplied))

@@ -20,12 +20,18 @@ export function createLogWriterClient({
   let inFlight = null
   let timer = null
   let restartTimer = null
+  let closePromise = null
   let restartAt = -Infinity
   let forceThrough = 0
   let backoffUntil = 0
   const queue = []
   const requests = new Map()
   const flushes = new Set()
+  const pendingTerminations = new Set()
+  let terminationRequested = false
+  let terminationFailures = 0
+  let terminationError = null
+  let terminationExitCode
   const health = {
     status: 'starting',
     queuedBytes: 0,
@@ -46,7 +52,7 @@ export function createLogWriterClient({
     }
   }
   function status(value, error = null) {
-    health.status = value
+    if (!closed || value === 'closed' || value === 'closed-incomplete') health.status = value
     if (error)
       health.lastError = {
         code: error.code || 'LOG_WRITER_FAILED',
@@ -110,9 +116,62 @@ export function createLogWriterClient({
       )
     }
     requests.clear()
-    void instance.terminate().catch(() => {})
+    terminateWorker(instance)
     status('unavailable', error)
     scheduleRestart()
+  }
+  function terminateWorker(instance) {
+    terminationRequested = true
+    let termination
+    try {
+      termination = instance.terminate()
+    } catch (error) {
+      termination = Promise.reject(error)
+    }
+    const pending = Promise.resolve(termination).then(
+      (exitCode) => {
+        if (exitCode !== undefined) terminationExitCode = exitCode
+      },
+      (error) => {
+        terminationFailures++
+        terminationError ??= {
+          code: error?.code || 'LOG_WORKER_TERMINATION_FAILED',
+          message: String(error?.message || error).slice(0, 240)
+        }
+      }
+    )
+    pendingTerminations.add(pending)
+    void pending.then(() => pendingTerminations.delete(pending))
+  }
+  async function finishTerminations(timeoutMs) {
+    if (pendingTerminations.size) {
+      let timeout
+      try {
+        // 当前和已失去 worker 字段归属的旧实例共用一份终止等待预算。
+        await Promise.race([
+          Promise.all([...pendingTerminations]),
+          new Promise((resolve) => {
+            timeout = setTimeout(resolve, Math.min(1000, Math.max(0, timeoutMs)))
+          })
+        ])
+      } finally {
+        clearTimeout(timeout)
+      }
+    }
+    const confirmed = !terminationFailures && !pendingTerminations.size
+    return {
+      requested: terminationRequested,
+      outcome: terminationFailures
+        ? 'failed'
+        : pendingTerminations.size
+          ? 'timed-out'
+          : terminationRequested
+            ? 'completed'
+            : 'not-created',
+      confirmed,
+      ...(terminationExitCode !== undefined ? { exitCode: terminationExitCode } : {}),
+      ...(terminationError ? { error: terminationError } : {})
+    }
   }
   function scheduleRestart() {
     if (closed || stopping || worker || restartTimer) return
@@ -212,6 +271,10 @@ export function createLogWriterClient({
           }
         },
         (error) => {
+          if (closed && error.code === 'LOG_WRITER_CLOSED') {
+            batch.unconfirmed = true
+            return
+          }
           health.writeErrors++
           backoffUntil =
             Date.now() + Math.min(30000, 1000 * 2 ** Math.min(5, health.writeErrors - 1))
@@ -238,7 +301,10 @@ export function createLogWriterClient({
         }
       )
       .finally(() => {
-        if (inFlight === batch) inFlight = null
+        if (inFlight === batch) {
+          if (batch.unconfirmed) queue.unshift(...entries)
+          inFlight = null
+        }
         checkFlushes()
         if (queue.some((entry) => entry.sequence <= forceThrough) || queuedBytes >= 64 * 1024)
           pump()
@@ -246,7 +312,7 @@ export function createLogWriterClient({
       })
   }
   function enqueue(record, priority = 0) {
-    if (closed) return false
+    if (closed || stopping) return false
     const bytes = estimateDiagnosticBytes(record)
     const capacity =
       DIAGNOSTIC_LIMITS.writerBytes - (priority < 2 ? DIAGNOSTIC_LIMITS.reservedBytes : 0)
@@ -290,23 +356,51 @@ export function createLogWriterClient({
       if (flushed.incomplete) throw new Error('日志尚未完成写入，请稍后重试')
       return rpc(operation, payload, timeoutMs)
     },
-    async close(timeoutMs = 1000) {
-      if (closed) return
+    close(flushTimeoutMs = 1000, { terminateTimeoutMs = 1000 } = {}) {
+      if (closePromise) return closePromise
       stopping = true
       clearTimeout(restartTimer)
       restartTimer = null
-      await flush(timeoutMs)
-      closed = true
-      clearTimeout(timer)
-      for (const pending of requests.values()) {
-        clearTimeout(pending.timeout)
-        pending.reject(new Error('日志写入器已关闭'))
-      }
-      requests.clear()
-      const instance = worker
-      worker = null
-      await instance?.terminate()
-      status('closed')
+      closePromise = (async () => {
+        const flushed = await flush(flushTimeoutMs)
+        closed = true
+        ready = false
+        clearTimeout(timer)
+        timer = null
+        for (const pending of requests.values()) {
+          clearTimeout(pending.timeout)
+          pending.reject(
+            Object.assign(new Error('日志写入器已关闭'), { code: 'LOG_WRITER_CLOSED' })
+          )
+        }
+        requests.clear()
+        const instance = worker
+        worker = null
+        if (instance) terminateWorker(instance)
+        const termination = await finishTerminations(terminateTimeoutMs)
+        status(termination.confirmed ? 'closed' : 'closed-incomplete')
+        const final = snapshot()
+        const outcome =
+          termination.outcome === 'failed'
+            ? 'failed'
+            : flushed.incomplete || termination.outcome === 'timed-out'
+              ? 'timed-out'
+              : flushed.status === 'degraded' || final.droppedRecords || final.writeErrors
+                ? 'degraded'
+                : 'completed'
+        return {
+          outcome,
+          incomplete: outcome !== 'completed',
+          flush: flushed,
+          termination,
+          queuedBytes: final.queuedBytes,
+          pendingRecords: final.pendingRecords,
+          droppedRecords: final.droppedRecords,
+          droppedBytes: final.droppedBytes,
+          writeErrors: final.writeErrors
+        }
+      })()
+      return closePromise
     }
   }
 }

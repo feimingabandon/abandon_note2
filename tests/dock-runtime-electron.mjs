@@ -2,6 +2,7 @@ import { createRequire } from 'node:module'
 import { rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
+import koffi from 'koffi'
 import { app, BrowserWindow, screen } from 'electron'
 import { createDatabaseSchema } from '../src/main/db/db-schema.js'
 import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
@@ -15,7 +16,10 @@ const recorder = createAssertionRecorder({
     nativeAbi: NATIVE_ABI_VERSION,
     side: 'left',
     commandDriven: true,
+    savedConfigRetry: 'same-configuration-real-snap-and-unchanged-setting-rows',
     realPointerInput: false,
+    ownedNativeHandleClickMessages: true,
+    realCaptureCancellation: true,
     realDisplayRemoval: false
   }
 })
@@ -84,6 +88,37 @@ async function visible() {
     return !state.isDockHidden && !state.isSliding && !state.hasDockMotionSession && state
   }, 'Dock did not converge to the visible state')
 }
+
+function createOwnedHandleClick() {
+  const user32 = koffi.load('user32.dll')
+  const findWindow = user32.func(
+    'intptr_t FindWindowExW(intptr_t parent, intptr_t after, str16 className, str16 title)'
+  )
+  const owner = user32.func('uint32_t GetWindowThreadProcessId(intptr_t hwnd, _Out_ uint32_t *pid)')
+  const post = user32.func(
+    'int PostMessageW(intptr_t hwnd, uint32_t message, uintptr_t wparam, intptr_t lparam)'
+  )
+  return (status) => {
+    assert.equal(status.handleState, 'ready')
+    assert.equal(status.handleVisible, true)
+    let handle = 0
+    while ((handle = findWindow(0, handle, 'AbandonNote.WindowMotion.RevealHandle.v1', null))) {
+      const pid = [0]
+      owner(handle, pid)
+      if (pid[0] === process.pid) break
+    }
+    assert.ok(handle, 'Only this test process may receive the native handle click')
+    const { left, top, right, bottom } = status.handleRect
+    const x = Math.floor((right - left) / 2)
+    const y = Math.floor((bottom - top) / 2)
+    const point = (y << 16) | x
+    // Exercise the real worker's click -> one-shot TriggerPending path without
+    // moving the user's pointer or sending input to an unrelated application.
+    assert.equal(post(handle, 0x0201, 1, point), 1)
+    assert.equal(post(handle, 0x0202, 0, point), 1)
+  }
+}
+
 async function run() {
   try {
     const window = await until(
@@ -138,6 +173,93 @@ async function run() {
       storedBeforeHide,
       'Hidden animation must not persist off-screen geometry'
     )
+
+    const coordinator = hooks.captureCoordinator()
+    for (const hidePreference of [false, true]) {
+      await js(
+        `window.api.setSettingValue('interaction.hideMainViewDuringScreenshot', ${hidePreference})`
+      )
+      let readySessionId = null
+      const observeReady = (message) => {
+        if (message.type === 'captureReady') readySessionId = message.sessionId
+      }
+      coordinator.host.on('message', observeReady)
+      try {
+        const started = await hooks.startNativeCapture()
+        assert.equal(started.status, 'started')
+        await until(
+          () => readySessionId === started.sessionId,
+          'Hidden-source screenshot did not reach actual native captureReady'
+        )
+        const during = capture(`hidden-capture-ready-hide-${hidePreference}`)
+        assert.equal(during.isDockHidden, true)
+        assert.equal(during.mainAtHiddenTarget, true)
+        assert.equal(during.sessionGeneration, hidden.sessionGeneration)
+        assert.equal(window.isVisible(), true, 'Dock must keep its off-screen native window alive')
+        assert.equal(hooks.getDockRuntimeState().interactionSuspendCount, 1)
+        coordinator.cancel()
+        await until(
+          () => !hooks.nativeCaptureState().active,
+          'Hidden capture cancellation did not finish'
+        )
+        const after = capture(`hidden-capture-cancelled-hide-${hidePreference}`)
+        assert.equal(after.isDockHidden, true)
+        assert.equal(after.mainAtHiddenTarget, true)
+        assert.equal(after.sessionGeneration, hidden.sessionGeneration)
+        assert.equal(after.edgeMonitor.workerAlive, true)
+        assert.equal(after.edgeMonitor.persistentHandleActivated, true)
+        assert.equal(hooks.getDockRuntimeState().interactionSuspendCount, 0)
+      } finally {
+        coordinator.host.removeListener('message', observeReady)
+      }
+    }
+    await js("window.api.setSettingValue('interaction.hideMainViewDuringScreenshot', false)")
+    const clickOwnedHandle = createOwnedHandleClick()
+    const beforeClick = await until(() => {
+      const status = commands.snapshot().edgeMonitor
+      return status.handleState === 'ready' && status.handleVisible && status
+    }, 'Re-armed native handle did not become clickable after capture')
+    commands.suspend('native-capture-trigger-test', { preserveHidden: true })
+    clickOwnedHandle(beforeClick)
+    const consumed = await until(() => {
+      const state = commands.snapshot()
+      return (
+        state.edgeMonitor.state === 'trigger-pending' &&
+        state.edgeMonitor.pendingEventCount === 0 &&
+        state
+      )
+    }, 'Actual one-shot native trigger was not consumed during capture suspension')
+    assert.equal(consumed.isDockHidden, true)
+    assert.equal(consumed.mainAtHiddenTarget, true)
+    assert.equal(consumed.edgeMonitor.persistentHandleActivated, false)
+    capture('native-trigger-consumed-during-capture')
+    commands.resume('native-capture-trigger-test')
+    const rearmed = await until(() => {
+      const state = commands.snapshot()
+      return (
+        state.isDockHidden &&
+        state.edgeMonitor.state === 'armed' &&
+        state.edgeMonitor.handleState === 'ready' &&
+        state.edgeMonitor.handleVisible &&
+        state
+      )
+    }, 'Capture resume did not re-arm the consumed one-shot native handle')
+    assert.equal(rearmed.sessionGeneration, hidden.sessionGeneration)
+    assert.equal(rearmed.mainAtHiddenTarget, true)
+    assert.deepEqual(
+      geometry(),
+      storedBeforeHide,
+      'Capture must preserve persisted visible geometry'
+    )
+    clickOwnedHandle(rearmed.edgeMonitor)
+    await visible()
+    capture('native-handle-revealed-after-capture')
+    commands.hide()
+    await until(
+      () => commands.snapshot().isDockHidden && !commands.snapshot().isSliding,
+      'Hide after native resume check did not complete'
+    )
+
     commands.show('test-show')
     const shown = await visible()
     capture('shown-left')
@@ -228,6 +350,34 @@ async function run() {
     assert.equal(disabled.dockSide, null)
     assert.equal(disabled.edgeMonitor.workerAlive, false)
     assert.equal(commands.resources().observer, false)
+
+    await js("window.api.setDockConfig({enabledEdges:['left'],revealHandleMode:'persistent'})")
+    const readDockRows = () => {
+      const database = new Database(join(profile.directory, 'app.db'), { readonly: true })
+      try {
+        return database
+          .prepare(
+            "SELECT * FROM app_settings WHERE window_name='main' AND type='dock' ORDER BY key"
+          )
+          .all()
+      } finally {
+        database.close()
+      }
+    }
+    const dockRows = readDockRows()
+    window.setPosition(workArea.x + 8, workArea.y + 70)
+    assert.equal(commands.retrySettings('same-saved-config').status, 'applied')
+    const retried = capture('same-config-retried')
+    assert.equal(retried.dockSide, 'left')
+    assert.equal(retried.mainMotionBounds.x, workArea.x)
+    assert.deepEqual(
+      readDockRows(),
+      dockRows,
+      'Dock application retry must not rewrite its saved rows'
+    )
+    await js("window.api.setDockConfig({enabledEdges:[],revealHandleMode:'direct'})")
+    await visible()
+    assert.deepEqual(commands.snapshot().activeDockEdges, [])
     completed = true
   } catch (error) {
     failure = error

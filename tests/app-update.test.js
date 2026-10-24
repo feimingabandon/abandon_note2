@@ -41,6 +41,34 @@ function linkRequest(result, target) {
   }
 }
 
+function deferred() {
+  let resolve, reject
+  const promise = new Promise((yes, no) => {
+    resolve = yes
+    reject = no
+  })
+  return { promise, resolve, reject }
+}
+
+function controlledFetch() {
+  const requests = []
+  return {
+    requests,
+    fetchImpl: (url, options) => {
+      const request = { url, options, ...deferred() }
+      requests.push(request)
+      return request.promise
+    }
+  }
+}
+
+function releasePayload(url, version = '0.9.2') {
+  return {
+    tag_name: `v${version}`,
+    assets: [windowsAsset(version, url.includes('gitcode.com') ? 'gitcode' : 'github')]
+  }
+}
+
 describe('app update metadata', () => {
   it('accepts stable numeric versions only', () => {
     expect(normalizeVersion('v0.9.0')).toBe('0.9.0')
@@ -340,5 +368,219 @@ describe('app update metadata', () => {
       status: 'error',
       error: '暂时无法连接更新服务，请稍后重试。'
     })
+  })
+})
+
+describe('app update in-flight check ownership', () => {
+  it('shares one complete two-endpoint result through response-body parsing and binds every caller to its links', async () => {
+    const network = controlledFetch()
+    const service = new AppUpdateService({
+      currentVersion: '0.9.1',
+      platform: 'win32',
+      arch: 'x64',
+      fetchImpl: network.fetchImpl
+    })
+    const first = service.check(),
+      joined = service.check()
+    expect(joined).toBe(first)
+    await Promise.resolve()
+    expect(network.requests).toHaveLength(2)
+    const body = deferred()
+    const gitcode = network.requests.find((request) => request.url.includes('gitcode.com'))
+    const github = network.requests.find((request) => request.url.includes('github.com'))
+    gitcode.resolve(jsonResponse(releasePayload(gitcode.url)))
+    github.resolve({ ok: true, json: () => body.promise })
+    let settled = false
+    void first.then(() => {
+      settled = true
+    })
+    for (let index = 0; index < 5; index++) await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(service.check()).toBe(first)
+    expect(network.requests).toHaveLength(2)
+    body.resolve(releasePayload(github.url))
+    const [one, two] = await Promise.all([first, joined])
+    expect(one).toBe(two)
+    expect(one).toMatchObject({ status: 'available', relation: 'upgrade', downloadAvailable: true })
+    expect(one.checkId).toBeTruthy()
+    expect(service.getExternalUrl(linkRequest(one, 'download'))).toContain('/download/v0.9.2/')
+    expect(service.getExternalUrl(linkRequest(two, 'github'))).toContain('/tag/v0.9.2')
+  })
+
+  it('publishes the task before invoking a synchronous fetch callback that joins the check', async () => {
+    let service,
+      joined,
+      entered = false,
+      requests = 0
+    service = new AppUpdateService({
+      currentVersion: '0.9.1',
+      platform: 'win32',
+      arch: 'x64',
+      fetchImpl: async (url) => {
+        requests += 1
+        if (!entered) {
+          entered = true
+          joined = service.check()
+        }
+        return jsonResponse(releasePayload(url))
+      }
+    })
+    const first = service.check()
+    const result = await first
+    expect(joined).toBe(first)
+    expect(requests).toBe(2)
+    expect((await joined).checkId).toBe(result.checkId)
+    expect(service.getExternalUrl(linkRequest(result, 'gitcode'))).toContain('/tag/v0.9.2')
+  })
+
+  it('invalidates an old selection only when a new round starts and keeps that round shared', async () => {
+    const network = controlledFetch()
+    const service = new AppUpdateService({
+      currentVersion: '0.9.1',
+      platform: 'win32',
+      arch: 'x64',
+      fetchImpl: network.fetchImpl
+    })
+    const firstTask = service.check()
+    await Promise.resolve()
+    for (const request of network.requests)
+      request.resolve(jsonResponse(releasePayload(request.url)))
+    const first = await firstTask
+    expect(service.getExternalUrl(linkRequest(first, 'github'))).toContain('/tag/v0.9.2')
+    const nextTask = service.check()
+    expect(nextTask).not.toBe(firstTask)
+    expect(() => service.getExternalUrl(linkRequest(first, 'github'))).toThrow('已经过期')
+    const joined = service.check()
+    expect(joined).toBe(nextTask)
+    await Promise.resolve()
+    expect(network.requests).toHaveLength(4)
+    for (const request of network.requests.slice(2))
+      request.resolve(jsonResponse(releasePayload(request.url, '0.9.3')))
+    const [next, sameRound] = await Promise.all([nextTask, joined])
+    expect(next.checkId).not.toBe(first.checkId)
+    expect(sameRound.checkId).toBe(next.checkId)
+    expect(service.getExternalUrl(linkRequest(sameRound, 'download'))).toContain(
+      '/download/v0.9.3/'
+    )
+    expect(() => service.getExternalUrl(linkRequest(first, 'github'))).toThrow('已经过期')
+  })
+
+  it('shares a failed network round, removes its link authority and permits a fresh successful check', async () => {
+    const network = controlledFetch()
+    const service = new AppUpdateService({
+      currentVersion: '0.9.1',
+      platform: 'win32',
+      arch: 'x64',
+      fetchImpl: network.fetchImpl
+    })
+    const successfulTask = service.check()
+    await Promise.resolve()
+    for (const request of network.requests)
+      request.resolve(jsonResponse(releasePayload(request.url)))
+    const old = await successfulTask
+    const failure = service.check(),
+      sameFailure = service.check()
+    expect(sameFailure).toBe(failure)
+    expect(() => service.getExternalUrl(linkRequest(old, 'github'))).toThrow('已经过期')
+    await Promise.resolve()
+    expect(network.requests).toHaveLength(4)
+    for (const request of network.requests.slice(2)) request.reject(new Error('controlled offline'))
+    const [one, two] = await Promise.all([failure, sameFailure])
+    expect(one).toBe(two)
+    expect(one).toMatchObject({
+      status: 'error',
+      checkId: null,
+      downloadAvailable: false,
+      releaseLinks: null
+    })
+    expect(() => service.getExternalUrl(linkRequest(old, 'github'))).toThrow('已经过期')
+    const recovery = service.check()
+    expect(recovery).not.toBe(failure)
+    await Promise.resolve()
+    expect(network.requests).toHaveLength(6)
+    for (const request of network.requests.slice(4))
+      request.resolve(jsonResponse(releasePayload(request.url, '0.9.3')))
+    const recovered = await recovery
+    expect(recovered).toMatchObject({ status: 'available', latestVersion: '0.9.3' })
+    expect(service.getExternalUrl(linkRequest(recovered, 'download'))).toContain(
+      '/download/v0.9.3/'
+    )
+  })
+
+  it('releases a rejected task even when failure happens before normal network error handling', async () => {
+    let requests = 0
+    const service = new AppUpdateService({
+      currentVersion: 'invalid-version',
+      platform: 'win32',
+      arch: 'x64',
+      fetchImpl: async (url) => {
+        requests += 1
+        return jsonResponse(releasePayload(url))
+      }
+    })
+    const first = service.check(),
+      joined = service.check()
+    expect(joined).toBe(first)
+    await expect(first).rejects.toThrow('无效版本')
+    expect(requests).toBe(0)
+    service.currentVersion = '0.9.1'
+    const next = service.check()
+    expect(next).not.toBe(first)
+    await expect(next).resolves.toMatchObject({ status: 'available', latestVersion: '0.9.2' })
+    expect(requests).toBe(2)
+  })
+
+  it.each([
+    { checkEnabled: false, platform: 'win32', status: 'current' },
+    { checkEnabled: true, platform: 'unsupported-platform', status: 'unsupported' }
+  ])(
+    'shares and releases the $status fast path without making network requests',
+    async ({ checkEnabled, platform, status }) => {
+      let requests = 0
+      const service = new AppUpdateService({
+        currentVersion: '0.9.2',
+        platform,
+        arch: 'x64',
+        checkEnabled,
+        fetchImpl: async () => {
+          requests += 1
+          throw new Error('must not fetch')
+        }
+      })
+      const first = service.check(),
+        joined = service.check()
+      expect(joined).toBe(first)
+      expect((await first).status).toBe(status)
+      const next = service.check()
+      expect(next).not.toBe(first)
+      expect((await next).status).toBe(status)
+      expect(requests).toBe(0)
+    }
+  )
+
+  it('keeps task and link identities independent across service instances', async () => {
+    const network = controlledFetch()
+    const makeService = () =>
+      new AppUpdateService({
+        currentVersion: '0.9.1',
+        platform: 'win32',
+        arch: 'x64',
+        fetchImpl: network.fetchImpl
+      })
+    const first = makeService(),
+      second = makeService()
+    const one = first.check(),
+      two = second.check()
+    expect(one).not.toBe(two)
+    await Promise.resolve()
+    expect(network.requests).toHaveLength(4)
+    for (const request of network.requests)
+      request.resolve(jsonResponse(releasePayload(request.url)))
+    const [left, right] = await Promise.all([one, two])
+    expect(left.checkId).not.toBe(right.checkId)
+    expect(first.getExternalUrl(linkRequest(left, 'github'))).toContain('/tag/v0.9.2')
+    expect(second.getExternalUrl(linkRequest(right, 'github'))).toContain('/tag/v0.9.2')
+    expect(() => first.getExternalUrl(linkRequest(right, 'github'))).toThrow('已经过期')
+    expect(() => second.getExternalUrl(linkRequest(left, 'github'))).toThrow('已经过期')
   })
 })

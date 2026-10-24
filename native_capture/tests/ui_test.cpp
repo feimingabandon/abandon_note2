@@ -3,6 +3,7 @@
 #include "SaveActions.h"
 #include <QApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
 #include <QInputMethodEvent>
@@ -14,16 +15,71 @@
 #include <QPushButton>
 #include <QScopeGuard>
 #include <QSettings>
+#include <QSysInfo>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QThread>
 #include <QToolButton>
 #include <QUuid>
 #include <QXmlStreamReader>
 #include <QtTest>
+#include <cstdio>
 #include <cstring>
+#include <functional>
 #include <windows.h>
 
 namespace {
+// Test-only observation: paint completion is a Qt callback boundary, not proof
+// of a compositor-presented frame. All pixels supplied to this probe are synthetic.
+class TimedCaptureOverlay final : public CaptureOverlay {
+public:
+  using CaptureOverlay::CaptureOverlay;
+  QElapsedTimer *clock = nullptr;
+  qint64 firstPaintStartedNs = -1, firstPaintFinishedNs = -1;
+
+protected:
+  void paintEvent(QPaintEvent *event) override {
+    const bool first = firstPaintStartedNs < 0 && clock;
+    if (first)
+      firstPaintStartedNs = clock->nsecsElapsed();
+    CaptureOverlay::paintEvent(event);
+    if (first)
+      firstPaintFinishedNs = clock->nsecsElapsed();
+  }
+};
+
+class ForegroundGrantRecorder {
+public:
+  QStringList entries;
+  std::function<void()> observed;
+  ForegroundGrantRecorder() {
+    current = this;
+    previous = qInstallMessageHandler(record);
+  }
+  ~ForegroundGrantRecorder() {
+    qInstallMessageHandler(previous);
+    current = nullptr;
+  }
+
+private:
+  inline static ForegroundGrantRecorder *current = nullptr;
+  QtMessageHandler previous = nullptr;
+  static void record(QtMsgType type, const QMessageLogContext &context,
+                     const QString &message) {
+    auto recorder = current;
+    if (recorder && type == QtInfoMsg &&
+        message.startsWith("capture.foreground-grant ")) {
+      recorder->entries << message;
+      if (recorder->observed)
+        recorder->observed();
+    }
+    if (recorder && recorder->previous)
+      recorder->previous(type, context, message);
+    else
+      std::fprintf(stderr, "%s\n", qPrintable(message));
+  }
+};
+
 bool isolatedFeedbackCopy = false;
 QString isolatedStationName, isolatedDesktopName;
 
@@ -430,7 +486,409 @@ bool runIsolatedFeedbackCopy(QString *error) {
 
 class UiTest : public QObject {
   Q_OBJECT
+private:
+  static void sendPeer(QLocalSocket &client, const QJsonObject &message) {
+    client.write(QJsonDocument(message).toJson(QJsonDocument::Compact) + '\n');
+    client.flush();
+  }
+  bool connectPeer(CaptureEngine &engine, QLocalSocket &client) {
+    client.connectToServer(engine.server.serverName());
+    if (!QTest::qWaitFor([&] {
+          return client.state() == QLocalSocket::ConnectedState &&
+                 engine.socket;
+        }))
+      return false;
+    // Keep the engine's revocation callbacks. Only production process-exit
+    // notification is removed so a rejected peer cannot quit the test runner.
+    QObject::disconnect(engine.socket, nullptr, qApp, nullptr);
+    return true;
+  }
+  bool authenticatePeer(CaptureEngine &engine, QLocalSocket &client) {
+    if (!connectPeer(engine, client))
+      return false;
+    sendPeer(client, {{"type", "hello"}, {"version", 1},
+                      {"token", "token"}, {"pid", 1}});
+    return QTest::qWaitFor([&] { return client.canReadLine(); }) &&
+           QJsonDocument::fromJson(client.readLine()).object()["type"] ==
+               "ready";
+  }
+  QJsonObject waitPeerMessage(QLocalSocket &client, const QString &type,
+                              const QString &sessionId) {
+    QJsonObject result;
+    QTest::qWaitFor([&] {
+      while (client.canReadLine()) {
+        const auto message = QJsonDocument::fromJson(client.readLine()).object();
+        if (message["type"].toString() == type &&
+            message["sessionId"].toString() == sessionId) {
+          result = message;
+          return true;
+        }
+      }
+      return false;
+    });
+    return result;
+  }
 private slots:
+  void syntheticOverlayStartupTimings() {
+    if (!Capture::interactiveDesktopAvailable())
+      QSKIP("Overlay startup timing requires an unlocked interactive Windows desktop");
+    auto screen = QGuiApplication::primaryScreen();
+    QVERIFY(screen);
+    const auto physical = Capture::nativeScreenRect(screen);
+    QVERIFY(Capture::validImageSize(physical.size()));
+    QSettings cpu("HKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                  QSettings::NativeFormat);
+    qInfo().noquote()
+        << "capture.startup-timing.metadata"
+        << QJsonDocument(QJsonObject{
+               {"os", QSysInfo::prettyProductName()},
+               {"architecture", QSysInfo::currentCpuArchitecture()},
+               {"cpu", cpu.value("ProcessorNameString").toString().trimmed()},
+               {"logicalProcessors", QThread::idealThreadCount()},
+               {"qt", qVersion()},
+               {"screenCount", QGuiApplication::screens().size()},
+               {"physicalWidth", physical.width()},
+               {"physicalHeight", physical.height()},
+               {"logicalWidth", screen->geometry().width()},
+               {"logicalHeight", screen->geometry().height()},
+               {"devicePixelRatio", screen->devicePixelRatio()},
+               {"fixedRoundsPerMode", 3},
+               {"scope", "synthetic image; overlay constructor and show to completed Qt paint; excludes shortcut, host IPC/startup, screen acquisition and compositor presentation"},
+               {"coldBoundary", "only the first normal-mode overlay is process-first; all later samples share Qt/font caches"}})
+               .toJson(QJsonDocument::Compact);
+    QImage synthetic(physical.size(), QImage::Format_ARGB32_Premultiplied);
+    QVERIFY(!synthetic.isNull());
+    synthetic.fill(QColor("#e8f0fa"));
+    {
+      QPainter p(&synthetic);
+      p.setPen(QColor("#0071e3"));
+      for (int x = 0; x < synthetic.width(); x += 64)
+        p.drawLine(x, 0, x, synthetic.height());
+      for (int y = 0; y < synthetic.height(); y += 64)
+        p.drawLine(0, y, synthetic.width(), y);
+    }
+    const Capture::DesktopLayout layout{{{physical, screen->geometry()}}};
+    // Fixed samples measure cache warming; failures end the test, never retry.
+    for (int round = 0; round < 3; ++round) {
+      for (bool quickCopy : {false, true}) {
+        QElapsedTimer elapsed;
+        elapsed.start();
+        TimedCaptureOverlay overlay(screen, synthetic, "global", layout, {}, quickCopy);
+        overlay.setAttribute(Qt::WA_DeleteOnClose, false);
+        const auto constructorNs = elapsed.nsecsElapsed();
+        overlay.clock = &elapsed;
+        const auto showStartedNs = elapsed.nsecsElapsed();
+        overlay.showDesktop();
+        const auto showReturnedNs = elapsed.nsecsElapsed();
+        const bool painted = QTest::qWaitFor([&] { return overlay.firstPaintFinishedNs >= 0; });
+        qInfo().noquote()
+            << "capture.startup-timing.sample"
+            << QJsonDocument(QJsonObject{
+                   {"round", round + 1},
+                   {"mode", quickCopy ? "copyOnSelect" : "normal"},
+                   {"processFirstOverlay", round == 0 && !quickCopy},
+                   {"constructorMs", constructorNs / 1000000.0},
+                   {"showCallMs", (showReturnedNs - showStartedNs) / 1000000.0},
+                   {"showToPaintStartMs", overlay.firstPaintStartedNs < 0 ? -1.0 : (overlay.firstPaintStartedNs - showStartedNs) / 1000000.0},
+                   {"showToPaintFinishedMs", overlay.firstPaintFinishedNs < 0 ? -1.0 : (overlay.firstPaintFinishedNs - showStartedNs) / 1000000.0},
+                   {"constructorToPaintFinishedMs", overlay.firstPaintFinishedNs / 1000000.0},
+                   {"painted", painted},
+                   {"nativePlacementValid", overlay.placementValid}})
+                   .toJson(QJsonDocument::Compact);
+        QVERIFY2(painted, "Synthetic overlay did not complete its first Qt paint");
+        QVERIFY(overlay.placementValid);
+        overlay.hide();
+      }
+    }
+  }
+  void syntheticGaussianLargestRegionTiming() {
+    // One fixed 4K case checks the new maximum strength and existing image
+    // budget. This is a measurement, not a guessed responsiveness threshold.
+    Capture::ImageDocument document;
+    document.base = QImage(3840, 2160, QImage::Format_ARGB32_Premultiplied);
+    QVERIFY(!document.base.isNull());
+    document.base.fill(Qt::white);
+    {
+      QPainter p(&document.base);
+      for (int x = 0; x < document.base.width(); x += 17)
+        p.fillRect(x, 0, 5, document.base.height(), Qt::black);
+    }
+    document.append({"blur", {{0, 0}, {3839, 2159}}, Qt::black, 32});
+    const auto workingBytes = document.gaussianWorkingCost(document.strokes.last());
+    QVERIFY(document.memoryCost() + workingBytes <= Capture::MaxTotalBytes);
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const bool cached = document.cacheEffect(document.editable);
+    const auto convolutionNs = elapsed.nsecsElapsed();
+    QVERIFY(cached);
+    elapsed.restart();
+    const auto output = document.render();
+    const auto cachedRenderNs = elapsed.nsecsElapsed();
+    qInfo().noquote()
+        << "capture.gaussian-timing.sample"
+        << QJsonDocument(QJsonObject{
+               {"width", 3840}, {"height", 2160}, {"strength", 32},
+               {"workingBytes", workingBytes},
+               {"retainedBytes", document.memoryCost()},
+               {"budgetBytes", Capture::MaxTotalBytes},
+               {"convolutionMs", convolutionNs / 1000000.0},
+               {"cachedRenderMs", cachedRenderNs / 1000000.0},
+               {"scope", "one fixed synthetic 4K region; synchronous release/strength-change work, independent of initial screenshot startup"}})
+               .toJson(QJsonDocument::Compact);
+    QVERIFY(!output.isNull());
+    QVERIFY(output != document.base);
+    QCOMPARE(output.size(), document.base.size());
+  }
+  void peerAuthenticationBindsKernelIdentity() {
+    QTemporaryDir root;
+    CaptureEngine engine("peer-auth-" + QUuid::createUuid().toString(),
+                         "token", root.path());
+    QLocalSocket client;
+    QVERIFY(connectPeer(engine, client));
+    QVERIFY(!engine.authenticated);
+    QVERIFY(!engine.peerProcess);
+    QCOMPARE(engine.peerPid, quint32(0));
+    sendPeer(client, {{"type", "hello"}, {"version", 1},
+                      {"token", "token"}, {"pid", 1}});
+    QTRY_VERIFY(client.canReadLine());
+    QCOMPARE(QJsonDocument::fromJson(client.readLine()).object()["type"],
+             QJsonValue("ready"));
+    QVERIFY(engine.authenticated);
+    QVERIFY(engine.peerProcess);
+    QCOMPARE(engine.peerSocket.data(), engine.socket.data());
+    QCOMPARE(engine.peerGeneration, engine.socketGeneration);
+    QCOMPARE(engine.peerPid, quint32(GetCurrentProcessId()));
+    QCOMPARE(GetProcessId(static_cast<HANDLE>(engine.peerProcess)),
+             GetCurrentProcessId());
+    QCOMPARE(WaitForSingleObject(static_cast<HANDLE>(engine.peerProcess), 0),
+             DWORD(WAIT_TIMEOUT));
+  }
+  void rejectedHelloDoesNotBindPeer_data() {
+    QTest::addColumn<QString>("token");
+    QTest::addColumn<int>("version");
+    QTest::newRow("wrong-token") << QString("incorrect") << 1;
+    QTest::newRow("wrong-version") << QString("token") << 2;
+  }
+  void rejectedHelloDoesNotBindPeer() {
+    QFETCH(QString, token);
+    QFETCH(int, version);
+    QTemporaryDir root;
+    CaptureEngine engine("peer-reject-" + QUuid::createUuid().toString(),
+                         "token", root.path());
+    QLocalSocket client;
+    QVERIFY(connectPeer(engine, client));
+    ForegroundGrantRecorder recorder;
+    sendPeer(client, {{"type", "hello"}, {"version", version},
+                      {"token", token}, {"pid", double(GetCurrentProcessId())}});
+    QTRY_COMPARE(client.state(), QLocalSocket::UnconnectedState);
+    QVERIFY(!engine.authenticated);
+    QVERIFY(!engine.peerProcess);
+    QVERIFY(engine.peerSocket.isNull());
+    QCOMPARE(engine.peerPid, quint32(0));
+    QCOMPARE(engine.peerGeneration, quint64(0));
+    engine.session = "rejected-peer-session";
+    engine.sessionGeneration = engine.socketGeneration;
+    QJsonObject handoff{{"oldResult", true}};
+    QVERIFY(!engine.grantPeerForeground(engine.session, "cancelled", &handoff));
+    QCOMPARE(handoff["attempted"], QJsonValue(false));
+    QCOMPARE(handoff["sessionId"].toString(), engine.session);
+    QCOMPARE(handoff["generation"].toInteger(), qint64(engine.socketGeneration));
+    QCOMPARE(handoff["reason"].toString(), QString("cancelled"));
+    QVERIFY(handoff["pid"].isNull());
+    QVERIFY(handoff["granted"].isNull());
+    QVERIFY(handoff["win32Error"].isNull());
+    QVERIFY(!handoff.contains("oldResult"));
+    QVERIFY(recorder.entries.isEmpty());
+  }
+  void disconnectedAndReplacedPeerCannotInheritSessionPermission() {
+    QTemporaryDir root;
+    CaptureEngine engine("peer-replace-" + QUuid::createUuid().toString(),
+                         "token", root.path());
+    QLocalSocket client;
+    QVERIFY(authenticatePeer(engine, client));
+    QVERIFY(engine.peerProcess);
+    const auto previousGeneration = engine.peerGeneration;
+    engine.session = "old-peer-session";
+    engine.sessionGeneration = previousGeneration;
+    ForegroundGrantRecorder recorder;
+    client.disconnectFromServer();
+    QTRY_VERIFY(engine.socket.isNull());
+    QVERIFY(!engine.authenticated);
+    QVERIFY(!engine.peerProcess);
+    QVERIFY(engine.peerSocket.isNull());
+    QCOMPARE(engine.peerPid, quint32(0));
+    QCOMPARE(engine.peerGeneration, quint64(0));
+    QJsonObject handoff;
+    QVERIFY(!engine.grantPeerForeground(engine.session, "cancelled", &handoff));
+    QCOMPARE(handoff["attempted"], QJsonValue(false));
+    QVERIFY(handoff["pid"].isNull());
+    QVERIFY(handoff["granted"].isNull());
+
+    QLocalSocket replacement;
+    QVERIFY(authenticatePeer(engine, replacement));
+    QVERIFY(engine.peerProcess);
+    QVERIFY(engine.peerGeneration > previousGeneration);
+    // Even the same live OS process on a new authenticated socket cannot
+    // inherit foreground permission from the preceding capture generation.
+    handoff = {{"oldResult", true}};
+    QVERIFY(!engine.grantPeerForeground(engine.session, "cancelled", &handoff));
+    QCOMPARE(handoff["attempted"], QJsonValue(false));
+    QCOMPARE(handoff["generation"].toInteger(), qint64(engine.socketGeneration));
+    QVERIFY(handoff["pid"].isNull());
+    QVERIFY(handoff["granted"].isNull());
+    QVERIFY(!handoff.contains("oldResult"));
+    engine.finish("cancelled");
+    QVERIFY(recorder.entries.isEmpty());
+  }
+  void businessOutputHandsOffBeforeHide_data() {
+    QTest::addColumn<QString>("action");
+    QTest::addColumn<bool>("retainedPeer");
+    for (const auto action : {"note", "source", "background"})
+      QTest::newRow(action) << QString(action) << true;
+    QTest::newRow("note-without-peer-identity") << QString("note") << false;
+  }
+  void businessOutputHandsOffBeforeHide() {
+    QFETCH(QString, action);
+    QFETCH(bool, retainedPeer);
+    QTemporaryDir root;
+    CaptureEngine engine("peer-output-" + QUuid::createUuid().toString(),
+                         "token", root.path());
+    QLocalSocket client;
+    QVERIFY(authenticatePeer(engine, client));
+    QVERIFY(engine.peerProcess);
+    if (!retainedPeer)
+      engine.revokePeerIdentity();
+    engine.session = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    engine.sessionGeneration = engine.socketGeneration;
+    const auto sessionId = engine.session;
+    QVERIFY(QDir(root.path()).mkdir(engine.session));
+    QImage image(40, 30, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    auto overlay =
+        new CaptureOverlay(QGuiApplication::primaryScreen(), image, "note");
+    overlay->selection = image.rect();
+    engine.overlays << overlay;
+    engine.selected = overlay;
+    overlay->show();
+    ForegroundGrantRecorder recorder;
+    bool visibleAtHandoff = false;
+    recorder.observed = [&] { visibleAtHandoff = overlay->isVisible(); };
+    engine.output(overlay, action, image);
+    QCOMPARE(recorder.entries.size(), retainedPeer ? 1 : 0);
+    if (retainedPeer) {
+      QVERIFY(visibleAtHandoff);
+      QVERIFY(recorder.entries.first().contains("reason " + action));
+    }
+    QVERIFY(!overlay->isVisible());
+    QTRY_VERIFY(client.canReadLine());
+    const auto output = QJsonDocument::fromJson(client.readLine()).object();
+    QCOMPARE(output["type"], QJsonValue("output"));
+    QCOMPARE(output["action"], QJsonValue(action));
+    QVERIFY(output["foregroundHandoff"].isObject());
+    const auto handoff = output["foregroundHandoff"].toObject();
+    QCOMPARE(handoff["attempted"], QJsonValue(retainedPeer));
+    QCOMPARE(handoff["sessionId"].toString(), sessionId);
+    QCOMPARE(handoff["generation"].toInteger(), qint64(engine.socketGeneration));
+    QCOMPARE(handoff["reason"].toString(), action);
+    if (retainedPeer) {
+      QCOMPARE(handoff["pid"].toInteger(), qint64(GetCurrentProcessId()));
+      QVERIFY(handoff["granted"].isBool());
+      QVERIFY(handoff["win32Error"].isDouble());
+      QVERIFY(recorder.entries.first().contains(
+          QString("granted %1 win32Error %2")
+              .arg(handoff["granted"].toBool() ? "true" : "false")
+              .arg(handoff["win32Error"].toInteger())));
+    } else {
+      QVERIFY(handoff["pid"].isNull());
+      QVERIFY(handoff["granted"].isNull());
+      QVERIFY(handoff["win32Error"].isNull());
+    }
+    const auto path = QDir(root.path()).filePath(
+        engine.session + "/" + output["deliveryId"].toString() + ".png");
+    QCOMPARE(QImage(path), image);
+    recorder.observed = {};
+    sendPeer(client, {{"type", "ack"}, {"sessionId", engine.session},
+                      {"deliveryId", output["deliveryId"]}, {"accepted", true}});
+    QTRY_VERIFY(engine.session.isEmpty());
+    QCOMPARE(recorder.entries.size(), retainedPeer ? 1 : 0);
+    QVERIFY(!QFile::exists(path));
+    const auto finished = waitPeerMessage(client, "finished", sessionId);
+    QCOMPARE(finished["status"].toString(), QString("delivered"));
+    QVERIFY(!finished.contains("foregroundHandoff"));
+  }
+  void backgroundFinishAndStaleOverlayNeverGrant() {
+    QTemporaryDir root;
+    CaptureEngine engine("peer-session-" + QUuid::createUuid().toString(),
+                         "token", root.path());
+    QLocalSocket client;
+    QVERIFY(authenticatePeer(engine, client));
+    QVERIFY(engine.peerProcess);
+    ForegroundGrantRecorder recorder;
+    const auto first = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    engine.capture({{"sessionId", first}, {"origin", "global"}});
+    QVERIFY(!engine.overlays.isEmpty());
+    const auto staleCancel = engine.overlays.first()->cancel;
+    const auto staleOutput = engine.overlays.first()->output;
+    // Exercise the real capture-installed closeEvent callback: finish clears
+    // the session before closing the overlay, so this is not a user cancel.
+    engine.finish("display-changed");
+    QVERIFY(recorder.entries.isEmpty());
+    staleCancel();
+    QVERIFY(recorder.entries.isEmpty());
+
+    const auto second = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QVERIFY(QDir(root.path()).mkdir(second));
+    engine.capture({{"sessionId", second}, {"origin", "global"}});
+    QVERIFY(!engine.overlays.isEmpty());
+    QPointer<CaptureOverlay> overlay = engine.overlays.first();
+    QImage image(20, 30, QImage::Format_RGB32);
+    image.fill(Qt::red);
+    staleCancel();
+    staleOutput("note", image);
+    QCOMPARE(engine.session, second);
+    QVERIFY(engine.delivery.isEmpty());
+    QVERIFY(recorder.entries.isEmpty());
+    const auto backgroundFinished = waitPeerMessage(client, "finished", first);
+    QCOMPARE(backgroundFinished["status"].toString(), QString("display-changed"));
+    QVERIFY(!backgroundFinished.contains("foregroundHandoff"));
+
+    overlay->selectAll();
+    overlay->output("note", image);
+    QCOMPARE(recorder.entries.size(), 1);
+    const auto delivery = engine.delivery;
+    QVERIFY(!delivery.isEmpty());
+    sendPeer(client, {{"type", "ack"}, {"sessionId", second},
+                      {"deliveryId", delivery}, {"accepted", false},
+                      {"message", "test rejection"}});
+    QTRY_VERIFY(overlay->isVisible());
+    QVERIFY(engine.delivery.isEmpty());
+    QCOMPARE(recorder.entries.size(), 1);
+    QTest::keyClick(overlay, Qt::Key_Escape);
+    QTRY_VERIFY(engine.session.isEmpty());
+    QCOMPARE(recorder.entries.size(), 2);
+    QVERIFY(recorder.entries.last().contains("reason cancelled"));
+    QTRY_VERIFY(overlay.isNull());
+    const auto cancelled = waitPeerMessage(client, "finished", second);
+    QCOMPARE(cancelled["status"].toString(), QString("cancelled"));
+    QVERIFY(cancelled["foregroundHandoff"].isObject());
+    const auto handoff = cancelled["foregroundHandoff"].toObject();
+    QCOMPARE(handoff["attempted"], QJsonValue(true));
+    QCOMPARE(handoff["pid"].toInteger(), qint64(GetCurrentProcessId()));
+    QCOMPARE(handoff["generation"].toInteger(), qint64(engine.peerGeneration));
+    QCOMPARE(handoff["sessionId"].toString(), second);
+    QCOMPARE(handoff["reason"].toString(), QString("cancelled"));
+    QVERIFY(handoff["granted"].isBool());
+    QVERIFY(handoff["win32Error"].isDouble());
+    QVERIFY(recorder.entries.last().contains(
+        QString("granted %1 win32Error %2")
+            .arg(handoff["granted"].toBool() ? "true" : "false")
+            .arg(handoff["win32Error"].toInteger())));
+    engine.receive({{"type", "ack"}, {"sessionId", second},
+                    {"deliveryId", delivery}, {"accepted", true}});
+    staleCancel();
+    QCOMPARE(recorder.entries.size(), 2);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  }
   void completionReturnsToRequestingForm() {
     QImage base(240, 180, QImage::Format_RGB32);
     base.fill(Qt::white);
@@ -621,14 +1079,18 @@ private slots:
     RECT native{};
     QVERIFY(GetWindowRect(hwnd, &native));
     POINT point{native.left + 100, native.top + 90};
-    QRect result;
-    Capture::accessibleTarget(&fixture, fixture.winId(),
-                              QPoint(point.x, point.y),
-                              [&](QRect rect) { result = rect; });
-    QTRY_VERIFY_WITH_TIMEOUT(!result.isEmpty(), 4000);
-    QVERIFY(result.contains(QPoint(point.x, point.y)));
-    QVERIFY(result.width() < native.right - native.left);
-    QVERIFY(result.height() < native.bottom - native.top);
+    // Every completed query must release its UIA references and COM apartment
+    // before admitting the next worker; retain the actual child-control checks.
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      QRect result;
+      QVERIFY(Capture::accessibleTarget(
+          &fixture, fixture.winId(), QPoint(point.x, point.y),
+          [&](QRect rect) { result = rect; }));
+      QTRY_VERIFY_WITH_TIMEOUT(!result.isEmpty(), 4000);
+      QVERIFY(result.contains(QPoint(point.x, point.y)));
+      QVERIFY(result.width() < native.right - native.left);
+      QVERIFY(result.height() < native.bottom - native.top);
+    }
     auto targets = Capture::desktopTargets(fixture.screen());
     QVERIFY(std::any_of(targets.begin(), targets.end(),
                         [&](auto t) { return t.window == fixture.winId(); }));

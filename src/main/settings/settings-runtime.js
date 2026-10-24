@@ -1,4 +1,8 @@
-import { createDefaultSettings, resolveSettingsRows } from '../../shared/settings-schema.js'
+import {
+  applyApplicationSettings,
+  createDefaultSettings,
+  resolveSettingsRows
+} from '../../shared/settings-schema.js'
 
 /** Resolve stored view rows with application values and the session-only shortcut gate. */
 export function assembleResolvedSettings({
@@ -7,19 +11,11 @@ export function assembleResolvedSettings({
   applicationSettings,
   shortcutsEnabled
 }) {
-  const next = resolveSettingsRows(viewRows, viewMode)
-  next.appearance.uiScale = applicationSettings.appearance.uiScale
-  next.appearance.titlebarIconScale = applicationSettings.appearance.titlebarIconScale
-  next.appearance.iconColor = applicationSettings.appearance.iconColor
-  next.shortcuts = { ...applicationSettings.shortcuts, enabled: shortcutsEnabled }
-  next.calendar = { ...applicationSettings.calendar }
-  next.interaction = { ...applicationSettings.interaction }
-  next.notes = { ...applicationSettings.notes }
-  next.window = { ...applicationSettings.window }
-  next.remote = { ...applicationSettings.remote }
-  next.almanac = { ...applicationSettings.almanac }
-  next.weather = structuredClone(applicationSettings.weather)
-  next.onboarding = { ...applicationSettings.onboarding }
+  const next = applyApplicationSettings(
+    resolveSettingsRows(viewRows, viewMode),
+    applicationSettings
+  )
+  next.shortcuts.enabled = shortcutsEnabled
   return next
 }
 
@@ -57,8 +53,8 @@ export function createSettingsRuntime({
     resetForView(viewMode) {
       values = freezeValues(createDefaultSettings(viewMode))
     },
-    refresh({ incrementRevision = false } = {}) {
-      // Preserve read, publish, material/theme sync, then revision ordering.
+    refresh({ incrementRevision = false, notifyResolved = true } = {}) {
+      // Publish a consistent value/revision pair before fallible runtime dependencies.
       const applicationSettings = readApplication()
       const viewMode = getViewMode()
       const next = assembleResolvedSettings({
@@ -69,9 +65,11 @@ export function createSettingsRuntime({
       })
       const changed = JSON.stringify(next) !== JSON.stringify(values)
       values = freezeValues(next)
-      onResolved(values)
       const revisionChanged = incrementRevision || changed
       if (revisionChanged) revision += 1
+      // A staged application owner can dispatch these dependencies separately.
+      // Existing callers retain their synchronous notification contract.
+      if (notifyResolved) onResolved(values)
       return revisionChanged
     },
     setShortcutsEnabled(enabled) {

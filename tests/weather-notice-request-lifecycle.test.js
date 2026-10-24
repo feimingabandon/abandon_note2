@@ -149,21 +149,41 @@ function reverseResponse(name = 'A旧定位') {
 }
 function weatherFixture({ enabled = false, location = place('C原地区') } = {}) {
   const settings = { enabled, location }
+  const almanac = { enabled: true }
+  const wallpaper = { enabled: false, activeId: null, blurRadius: 8 }
+  const runtime = { marker: 'initial' }
+  const source = { token: 'weather-settings-document', scope: 'main' }
+  let revision = 1
   const listeners = new Set()
   let success, failure
   const snapshot = () => ({
+    source,
+    revision,
     values: {
       weather: { ...settings, location: settings.location && { ...settings.location } },
-      almanac: { enabled: true }
-    }
+      almanac: { ...almanac },
+      wallpaper: { ...wallpaper }
+    },
+    runtime: { ...runtime }
   })
   const broadcast = (values) => {
     Object.assign(settings, values)
+    revision += 1
     for (const listener of listeners) listener(snapshot())
+  }
+  const commitSetting = (id, value, emit = true) => {
+    const [domain, key] = id.split('.')
+    const target = { weather: settings, almanac, wallpaper }[domain]
+    target[key] = value
+    revision += 1
+    const committed = snapshot()
+    if (emit) for (const listener of listeners) listener(committed)
+    return committed
   }
   const api = {
     getSettingsSnapshot: vi.fn(async () => snapshot()),
     getWeatherDivisionTree: vi.fn(async () => []),
+    listWallpapers: vi.fn(async () => []),
     resolveWeatherLocation: vi.fn(async (candidate) => ({
       ...candidate,
       ...place(candidate.name)
@@ -173,9 +193,7 @@ function weatherFixture({ enabled = false, location = place('C原地区') } = {}
       return () => listeners.delete(listener)
     }),
     reportLog: vi.fn(),
-    setSettingValue: vi.fn(async (id, value) => {
-      broadcast({ [id.split('.')[1]]: value })
-    })
+    setSettingValue: vi.fn(async (id, value) => commitSetting(id, value))
   }
   const fetch = vi.fn(async () => reverseResponse())
   vi.stubGlobal('window', { api })
@@ -192,6 +210,11 @@ function weatherFixture({ enabled = false, location = place('C原地区') } = {}
     api,
     fetch,
     settings,
+    almanac,
+    wallpaper,
+    runtime,
+    snapshot,
+    commitSetting,
     broadcast,
     locate: () => success({ coords: { latitude: 39.9, longitude: 116.4, accuracy: 5 } }),
     fail: (code = 2) => failure({ code })
@@ -203,9 +226,223 @@ afterEach(() => {
   apps.clear()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 describe('weather location request lifetime', () => {
+  it.each([
+    ['weather.enabled', 'enabled', true, false],
+    ['almanac.enabled', 'almanacEnabled', false, true]
+  ])(
+    'protects an in-flight %s intent and then reconciles the canonical value',
+    async (id, field, attempted, canonical) => {
+      const f = weatherFixture()
+      const writing = deferred()
+      f.api.setSettingValue.mockReturnValueOnce(writing.promise)
+      const view = await mount('weather/WeatherSettings.vue')
+      view.state[field].value = attempted
+      const saving =
+        id === 'weather.enabled'
+          ? view.state.persistEnabled(attempted)
+          : view.state.persistAlmanacEnabled(attempted)
+      f.runtime.marker = 'new native observation'
+      f.broadcast({})
+      expect(view.state[field].value).toBe(attempted)
+      expect(view.state.settingsSnapshots.latest().runtime.marker).toBe('new native observation')
+      expect(view.state.settingsSnapshots.protectedCount).toBe(1)
+      // A later unrelated snapshot can overtake the commit reply while its
+      // local preview is protected. The accepted base must still win on release.
+      const committed = f.commitSetting(id, canonical, false)
+      f.broadcast({})
+      writing.resolve(committed)
+      await saving
+      expect(view.state[field].value).toBe(canonical)
+      expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+      expect(f.api.getSettingsSnapshot).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it.each([false, true])(
+    'restores actual enabled=%s only after the failed-write read completes',
+    async (actualEnabled) => {
+      const f = weatherFixture()
+      const writing = deferred()
+      const readingActual = deferred()
+      const view = await mount('weather/WeatherSettings.vue')
+      f.api.setSettingValue.mockReturnValueOnce(writing.promise)
+      f.api.getSettingsSnapshot.mockReturnValueOnce(readingActual.promise)
+      view.state.enabled.value = true
+      const saving = view.state.persistEnabled(true)
+      if (actualEnabled) f.commitSetting('weather.enabled', true, false)
+      writing.reject(new Error('disk write failed'))
+      await flush()
+      f.broadcast({})
+      expect(view.state.enabled.value).toBe(true)
+      expect(view.state.settingsSnapshots.protectedCount).toBe(1)
+      readingActual.resolve(f.snapshot())
+      await saving
+      expect(view.state.enabled.value).toBe(actualEnabled)
+      expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+      expect(view.state.error.value).toContain('disk write failed')
+    }
+  )
+
+  it('retains an unconfirmed failed intent across broadcasts and releases it on unmount', async () => {
+    const f = weatherFixture()
+    const view = await mount('weather/WeatherSettings.vue')
+    f.api.setSettingValue.mockRejectedValueOnce(new Error('disk write failed'))
+    f.api.getSettingsSnapshot.mockRejectedValueOnce(new Error('actual state unavailable'))
+    view.state.almanacEnabled.value = false
+    await view.state.persistAlmanacEnabled(false)
+    f.broadcast({})
+    expect(view.state.almanacEnabled.value).toBe(false)
+    expect(view.state.settingsSnapshots.protectedCount).toBe(1)
+    expect(view.state.error.value).toContain('disk write failed')
+    view.unmount()
+    expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+  })
+
+  it('keeps unrelated snapshots from canceling location and enable writes in flight', async () => {
+    const f = weatherFixture()
+    const locationWrite = deferred()
+    const enabledWrite = deferred()
+    f.api.setSettingValue
+      .mockReturnValueOnce(locationWrite.promise)
+      .mockReturnValueOnce(enabledWrite.promise)
+    const view = await mount('weather/WeatherSettings.vue')
+    const candidate = place('B正在保存地区')
+    const saving = view.state.choose(candidate)
+    f.broadcast({})
+    expect(view.state.location.value.name).toBe(candidate.name)
+    locationWrite.resolve(f.commitSetting('weather.location', candidate, false))
+    await flush()
+    expect(f.api.setSettingValue.mock.calls.map(([id]) => id)).toEqual([
+      'weather.location',
+      'weather.enabled'
+    ])
+    f.broadcast({})
+    expect(view.state.enabled.value).toBe(true)
+    enabledWrite.resolve(f.commitSetting('weather.enabled', true, false))
+    expect(await saving).toBe(true)
+    expect(view.state.location.value.name).toBe(candidate.name)
+    expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+  })
+
+  it('does not auto-enable after a higher revision supplies another location during a write', async () => {
+    const f = weatherFixture()
+    const writing = deferred()
+    f.api.setSettingValue.mockReturnValueOnce(writing.promise)
+    const view = await mount('weather/WeatherSettings.vue')
+    const candidate = place('A本地候选')
+    const saving = view.state.choose(candidate)
+    const committed = f.commitSetting('weather.location', candidate, false)
+    f.broadcast({ location: place('B外部新地区') })
+    expect(view.state.location.value.name).toBe(candidate.name)
+    writing.resolve(committed)
+    expect(await saving).toBe(false)
+    expect(view.state.location.value.name).toBe('B外部新地区')
+    expect(f.api.setSettingValue.mock.calls.map(([id]) => id)).toEqual(['weather.location'])
+    expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+  })
+
+  it('restores the actual region after a failed write without enabling weather', async () => {
+    const f = weatherFixture()
+    const view = await mount('weather/WeatherSettings.vue')
+    f.api.setSettingValue.mockRejectedValueOnce(new Error('region write failed'))
+    expect(await view.state.choose(place('A保存失败地区'))).toBe(false)
+    expect(view.state.location.value.name).toBe('C原地区')
+    expect(view.state.enabled.value).toBe(false)
+    expect(view.state.error.value).toContain('region write failed')
+    expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+    expect(f.api.setSettingValue.mock.calls.map(([id]) => id)).toEqual(['weather.location'])
+    expect(f.api.getSettingsSnapshot).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows reset defaults after an unconfirmed failed weather-settings owner', async () => {
+    const f = weatherFixture()
+    const view = await mount('weather/WeatherSettings.vue')
+    f.api.setSettingValue.mockRejectedValueOnce(new Error('宜忌保存失败'))
+    f.api.getSettingsSnapshot.mockRejectedValueOnce(new Error('实际状态读取失败'))
+    view.state.almanacEnabled.value = false
+    await view.state.persistAlmanacEnabled(false)
+    const checkpoint = view.state.settingsSnapshots.captureIntentCheckpoint()
+    const reset = f.commitSetting('almanac.enabled', true, false)
+    view.state.settingsSnapshots.acceptReset(reset, { checkpoint })
+    expect(view.state.almanacEnabled.value).toBe(true)
+    expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+  })
+
+  it('does not consume a reset-revoked location reply or dispatch its second enable write', async () => {
+    const f = weatherFixture()
+    const writing = deferred()
+    f.api.setSettingValue.mockReturnValueOnce(writing.promise)
+    const view = await mount('weather/WeatherSettings.vue')
+    const saving = view.state.choose(place('A旧候选'))
+    const committed = f.commitSetting('weather.location', place('A旧候选'), false)
+    const checkpoint = view.state.settingsSnapshots.captureIntentCheckpoint()
+    // Keep the original location so the reset does not rely on a different
+    // request comparison key to cancel the old second step.
+    const reset = f.commitSetting('weather.location', place('C原地区'), false)
+    view.state.settingsSnapshots.acceptReset(reset, { checkpoint })
+    writing.resolve(committed)
+    expect(await saving).toBe(false)
+    expect(view.state.location.value.name).toBe('C原地区')
+    expect(view.state.enabled.value).toBe(false)
+    expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+    expect(f.api.setSettingValue.mock.calls.map(([id]) => id)).toEqual(['weather.location'])
+  })
+
+  it('ignores a failed toggle reply after reset instead of starting stale actual-state recovery', async () => {
+    const f = weatherFixture()
+    const writing = deferred()
+    f.api.setSettingValue.mockReturnValueOnce(writing.promise)
+    const view = await mount('weather/WeatherSettings.vue')
+    view.state.enabled.value = true
+    const saving = view.state.persistEnabled(true)
+    const checkpoint = view.state.settingsSnapshots.captureIntentCheckpoint()
+    view.state.settingsSnapshots.acceptReset(f.commitSetting('weather.enabled', false, false), {
+      checkpoint
+    })
+    writing.reject(new Error('reset之前的失败'))
+    await saving
+    expect(view.state.enabled.value).toBe(false)
+    expect(view.state.error.value).toBe('')
+    expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+    expect(f.api.getSettingsSnapshot).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['manual', 'device'])(
+    'cancels an unresolved %s location request when reset keeps the same defaults',
+    async (kind) => {
+      const f = weatherFixture()
+      const resolving = deferred()
+      if (kind === 'manual') f.api.resolveWeatherLocation.mockReturnValueOnce(resolving.promise)
+      else f.fetch.mockReturnValueOnce(resolving.promise)
+      const view = await mount('weather/WeatherSettings.vue')
+      let saving
+      if (kind === 'manual') saving = view.state.choose({ id: 3, name: 'A旧解析' })
+      else {
+        view.state.useDeviceLocation()
+        f.locate()
+      }
+      const checkpoint = view.state.settingsSnapshots.captureIntentCheckpoint()
+      const reset = f.commitSetting('weather.location', place('C原地区'), false)
+      view.state.settingsSnapshots.acceptReset(reset, { checkpoint })
+      expect(view.state.busy.value).toBe('')
+      if (kind === 'manual') {
+        resolving.resolve({ ...place('A旧解析'), id: 3 })
+        expect(await saving).toBe(false)
+      } else {
+        expect(f.fetch.mock.calls[0][1].signal.aborted).toBe(true)
+        resolving.resolve(reverseResponse())
+      }
+      await flush()
+      expect(view.state.location.value.name).toBe('C原地区')
+      expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+      expect(f.api.setSettingValue).not.toHaveBeenCalled()
+    }
+  )
+
   it('saves one manual choice and enables weather once, including its own broadcasts', async () => {
     const f = weatherFixture()
     const resolving = deferred()
@@ -363,6 +600,90 @@ describe('weather location request lifetime', () => {
     expect(f.settings.location.name).toBe('设备位置')
     expect(view.state.error.value).toContain('已保存坐标')
     expect(view.state.busy.value).toBe('')
+  })
+})
+
+describe('wallpaper blur intent lifetime', () => {
+  it('suppresses snapshot write-back and reconciles a normalized committed blur value', async () => {
+    const f = weatherFixture()
+    const writing = deferred()
+    f.api.setSettingValue.mockReturnValueOnce(writing.promise)
+    const view = await mount('wallpaper/WallpaperSettings.vue')
+    vi.useFakeTimers()
+    expect(f.api.setSettingValue).not.toHaveBeenCalled()
+    view.state.blurRadius.value = 23
+    f.broadcast({})
+    expect(view.state.blurRadius.value).toBe(23)
+    expect(view.state.settingsSnapshots.protectedCount).toBe(1)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(f.api.setSettingValue).toHaveBeenCalledExactlyOnceWith('wallpaper.blurRadius', 23)
+    const committed = f.commitSetting('wallpaper.blurRadius', 20, false)
+    f.broadcast({})
+    writing.resolve(committed)
+    await flush()
+    expect(view.state.blurRadius.value).toBe(20)
+    expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(f.api.setSettingValue).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['timer', 'unmount'])(
+    'does not dispatch a reset-revoked blur intent from its %s flush',
+    async (phase) => {
+      const f = weatherFixture()
+      const view = await mount('wallpaper/WallpaperSettings.vue')
+      vi.useFakeTimers()
+      view.state.blurRadius.value = 23
+      const checkpoint = view.state.settingsSnapshots.captureIntentCheckpoint()
+      view.state.settingsSnapshots.acceptReset(f.commitSetting('wallpaper.blurRadius', 8, false), {
+        checkpoint
+      })
+      if (phase === 'timer') await vi.advanceTimersByTimeAsync(250)
+      view.unmount()
+      await flush()
+      expect(view.state.blurRadius.value).toBe(8)
+      expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+      expect(f.api.setSettingValue).not.toHaveBeenCalled()
+    }
+  )
+
+  it('shows reset blur after an unconfirmed failed wallpaper owner without writing it back', async () => {
+    const f = weatherFixture()
+    const view = await mount('wallpaper/WallpaperSettings.vue')
+    vi.useFakeTimers()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    f.api.setSettingValue.mockRejectedValueOnce(new Error('blur save failed'))
+    view.state.blurRadius.value = 23
+    await vi.advanceTimersByTimeAsync(250)
+    expect(view.state.settingsSnapshots.protectedCount).toBe(1)
+    const checkpoint = view.state.settingsSnapshots.captureIntentCheckpoint()
+    view.state.settingsSnapshots.acceptReset(f.commitSetting('wallpaper.blurRadius', 8, false), {
+      checkpoint
+    })
+    await vi.advanceTimersByTimeAsync(250)
+    expect(view.state.blurRadius.value).toBe(8)
+    expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+    expect(f.api.setSettingValue).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not consume a late wallpaper blur commit after reset revoked its lease', async () => {
+    const f = weatherFixture()
+    const writing = deferred()
+    f.api.setSettingValue.mockReturnValueOnce(writing.promise)
+    const view = await mount('wallpaper/WallpaperSettings.vue')
+    vi.useFakeTimers()
+    view.state.blurRadius.value = 23
+    await vi.advanceTimersByTimeAsync(250)
+    const committed = f.commitSetting('wallpaper.blurRadius', 23, false)
+    const checkpoint = view.state.settingsSnapshots.captureIntentCheckpoint()
+    view.state.settingsSnapshots.acceptReset(f.commitSetting('wallpaper.blurRadius', 8, false), {
+      checkpoint
+    })
+    writing.resolve(committed)
+    await flush()
+    expect(view.state.blurRadius.value).toBe(8)
+    expect(view.state.settingsSnapshots.protectedCount).toBe(0)
+    expect(f.api.setSettingValue).toHaveBeenCalledTimes(1)
   })
 })
 

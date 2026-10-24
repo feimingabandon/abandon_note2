@@ -1,6 +1,7 @@
 /** Owns the main-window restoration ticket for one capture. Host/assets/ACK stay in CaptureCoordinator. */
 export function createCaptureWindowIntegration({
   getWindow,
+  isDockHidden = () => false,
   shouldHide,
   isQuitting,
   suspendDock,
@@ -27,13 +28,14 @@ export function createCaptureWindowIntegration({
       if (ticket) return
       const window = getWindow()
       const live = window && !window.isDestroyed()
+      const dockHidden = Boolean(live && isDockHidden())
       ticket = {
         window,
         wasVisible: Boolean(live && window.isVisible()),
         wasFocused: Boolean(live && window.isFocused()),
-        hidden: Boolean(shouldHide() && live && window.isVisible())
+        hidden: Boolean(shouldHide() && live && window.isVisible() && !dockHidden)
       }
-      suspendDock('screenshot')
+      suspendDock('screenshot', { preserveHidden: true })
       if (ticket.hidden) hideWindow(window)
     },
     finish(_origin, business = {}) {

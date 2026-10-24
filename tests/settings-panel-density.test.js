@@ -27,12 +27,13 @@ describe('shared settings panel density', () => {
 
   it('removes draft settings and shows human-readable scheduler task labels', () => {
     const panel = read('src/renderer/src/components/system/SettingsPanel.vue')
+    const diagnostics = read('src/renderer/src/composables/useSettingsDiagnostics.js')
 
     expect(panel).not.toContain('编辑草稿 <small>')
     expect(panel).not.toContain('导出未保存草稿')
     expect(panel).not.toContain('listEditingDrafts')
-    expect(panel).toContain("activationTask: '便签生效'")
-    expect(panel).toContain("reminderTask: '便签提醒与稍后提醒'")
+    expect(diagnostics).toContain("activationTask: '便签生效'")
+    expect(diagnostics).toContain("reminderTask: '便签提醒与稍后提醒'")
     expect(panel).toContain('{{ schedulerTaskLabel(task.name) }}')
   })
 

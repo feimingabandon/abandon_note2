@@ -23,7 +23,7 @@ describe('双击快速编辑正文', () => {
   })
 
   it('wires list cards and calendar bars without hijacking their explicit controls', () => {
-    const card = read('../src/renderer/src/components/list/NoteCard.vue')
+    const card = read('../src/renderer/src/components/note/NoteCard.vue')
     const eventBar = read('../src/renderer/src/components/month/MonthEventBar.vue')
 
     expect(card).toContain('@dblclick="openQuickEditor"')

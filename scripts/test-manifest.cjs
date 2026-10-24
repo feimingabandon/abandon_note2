@@ -3,6 +3,12 @@ const { dirname, extname, isAbsolute, relative, resolve, sep, win32 } = require(
 const { parse } = require('@babel/parser')
 
 const repositoryRoot = resolve(__dirname, '..')
+// Match the shared declaration, using the same source contract as build provenance.
+const nativeAbiDeclaration = /^export const NATIVE_ABI_VERSION = (\d+)\s*$/m.exec(
+  readFileSync(resolve(repositoryRoot, 'src/shared/native-abi-version.js'), 'utf8')
+)
+if (!nativeAbiDeclaration) throw new Error('Native ABI declaration was not found')
+const nativeAbiPrerequisite = `blur-engine-abi-${Number(nativeAbiDeclaration[1])}`
 
 const databaseTests = Object.freeze([
   'tests/note-state-db.mjs',
@@ -25,11 +31,23 @@ const focusedDatabaseTests = Object.freeze([
   'tests/historical-note-move-db.mjs',
   'tests/settings-repository-db.mjs',
   'tests/database-runtime-db.mjs',
+  'tests/database-migration-backup-electron.mjs',
   'tests/business-clear-admission-electron.mjs',
+  'tests/tag-commands-electron.mjs',
   'tests/attachment-recovery-reset-electron.mjs'
 ])
 const focusedGuiTests = Object.freeze([
+  'tests/image-decode-electron.mjs',
+  'tests/settings-write-source-electron.mjs',
+  'tests/window-z-order-diagnostics-electron.mjs',
   'tests/renderer-resource-lifetime-electron.mjs',
+  'tests/settings-panel-owners-electron.mjs',
+  'tests/session-draft-assets-prototype-electron.mjs',
+  'tests/session-draft-assets-electron.mjs',
+  'tests/session-draft-assets-product-electron.mjs',
+  'tests/app-update-intent-electron.mjs',
+  'tests/capture-delivery-electron.mjs',
+  'tests/capture-compositor-electron.mjs',
   'tests/historical-note-move-electron.mjs',
   'tests/new-note-workflow-electron.mjs',
   'tests/note-three-view-rules-ui-electron.mjs',
@@ -37,6 +55,18 @@ const focusedGuiTests = Object.freeze([
   'tests/remote-daily-electron.mjs',
   'tests/settings-runtime-electron.mjs',
   'tests/settings-queue-electron.mjs',
+  'tests/settings-snapshot-ordering-electron.mjs',
+  'tests/settings-snapshot-read-electron.mjs',
+  'tests/settings-page-leave-electron.mjs',
+  'tests/settings-application-ui-electron.mjs',
+  'tests/settings-quit-electron.mjs',
+  'tests/settings-exit-restart-electron.mjs',
+  'tests/settings-operation-quit-electron.mjs',
+  'tests/sticky-initialization-electron.mjs',
+  'tests/reminder-initialization-electron.mjs',
+  'tests/sticky-quit-electron.mjs',
+  'tests/main-view-initialization-electron.mjs',
+  'tests/main-view-startup-electron.mjs',
   'tests/application-lifecycle-electron.mjs',
   'tests/native-leaf-runtime-electron.mjs',
   'tests/dock-runtime-electron.mjs',
@@ -46,7 +76,12 @@ const focusedGuiTests = Object.freeze([
   'tests/app-ipc-electron.mjs',
   'tests/note-list-custom-electron.mjs'
 ])
-const focusedNativeTests = Object.freeze(['tests/window-motion-diagnostics-native.mjs'])
+const focusedNativeTests = Object.freeze([
+  'tests/native-async-prototype-electron.mjs',
+  'tests/dispatcher-queue-lifetime-electron.mjs',
+  'tests/window-motion-diagnostics-native.mjs',
+  'tests/window-z-order-diagnostics-native.mjs'
+])
 
 const windowFrameTests = Object.freeze([
   'tests/window-frame-electron.mjs',
@@ -127,6 +162,8 @@ const benchmarkTests = Object.freeze([
 ])
 
 const helperFiles = Object.freeze([
+  'tests/helpers/owned-draft-asset-io.mjs',
+  'tests/helpers/electron-fixture-frame.mjs',
   'tests/helpers/startup-shortcut-notice.mjs',
   'tests/calendar-count-preview-helper.mjs',
   'tests/helpers/capture-test-desktop.mjs',
@@ -134,6 +171,12 @@ const helperFiles = Object.freeze([
   'tests/helpers/renderer-evidence.mjs',
   'tests/helpers/electron-gui-result-lifecycle.mjs',
   'tests/fullscreen-foreground-electron.mjs'
+])
+
+const mjsFixtureFiles = Object.freeze([
+  'tests/fixtures/native-async-prototype/worker.mjs',
+  'tests/fixtures/daily-report-timezone.mjs',
+  'tests/fixtures/image-decode/controlled-child.mjs'
 ])
 
 const registeredMjsFiles = Object.freeze([
@@ -146,7 +189,8 @@ const registeredMjsFiles = Object.freeze([
   ...electronFeatureTests,
   ...acceptanceTests,
   ...benchmarkTests,
-  ...helperFiles
+  ...helperFiles,
+  ...mjsFixtureFiles
 ])
 
 // These are application entry capabilities, not assertions that every existing
@@ -220,15 +264,20 @@ const additionalHelpers = Object.freeze([
   'tests/helpers/diagnostic-mode-fixture.js',
   'tests/helpers/reminder-activation.ps1',
   'native_capture/tests/input_driver.cpp',
-  'native_blur/tests/window_motion_diagnostics_test.cpp'
+  'native_blur/tests/window_motion_diagnostics_test.cpp',
+  'native_blur/tests/dispatcher_queue_lifetime_test.cpp',
+  'native_blur/tests/window_z_order_diagnostics_test.cpp'
 ])
 const fixtureFiles = Object.freeze([
+  ...mjsFixtureFiles,
   'tests/fixtures/almanac-reference.json',
+  'tests/fixtures/sticky-initialization/preload.cjs',
   'tests/fixtures/notice-admin-server.py',
   'tests/fixtures/ui-components.vue',
   'tests/fixtures/ui-feedback.vue'
 ])
 const additionalTests = Object.freeze([
+  'tests/test-failure-diagnostics-win.cjs',
   'tests/capture-package-smoke.cjs',
   'tests/reminder-native-acceptance.cjs',
   'tests/sandbox-diagnostics-win.cjs',
@@ -282,7 +331,7 @@ const sourceReadDefinitions = {
     'src/main/ipc/register-business-ipc.js',
     'src/preload/index.js',
     'src/renderer/src/assets/tokens.css',
-    'src/renderer/src/components/list/NoteCard.vue',
+    'src/renderer/src/components/note/NoteCard.vue',
     'src/renderer/src/components/note/QuickNoteContentEditor.vue',
     'src/renderer/src/components/system/LogViewerDialog.vue',
     'src/renderer/src/components/ui/StyledSelect.vue'
@@ -343,9 +392,9 @@ const sourceReadDefinitions = {
     'src/main/ipc/register-business-ipc.js',
     'src/main/notes/note-commands.js',
     'src/preload/index.js',
-    'src/renderer/src/components/list/{NewNotePanel,NoteCard}.vue',
+    'src/renderer/src/components/list/NewNotePanel.vue',
     'src/renderer/src/components/month/{MonthCalendarGrid,MonthEventBar,MonthNoteCreator}.vue',
-    'src/renderer/src/components/note/{ImagePicker,ImagePreview,NoteEditor}.vue'
+    'src/renderer/src/components/note/{ImagePicker,ImagePreview,NoteCard,NoteEditor}.vue'
   ],
   'month-calendar-context-menu': [
     'docs/UI_DESIGN_STANDARD.md',
@@ -369,7 +418,7 @@ const sourceReadDefinitions = {
     'src/main/ipc/register-business-ipc.js',
     'src/preload/index.js',
     'src/renderer/src/assets/tokens.css',
-    'src/renderer/src/components/list/NoteCard.vue',
+    'src/renderer/src/components/note/NoteCard.vue',
     'src/renderer/src/components/note/QuickNoteContentEditor.vue',
     'src/renderer/src/components/system/SettingsPanel.vue',
     'src/renderer/src/utils/applySettingsSnapshot.js',
@@ -379,9 +428,9 @@ const sourceReadDefinitions = {
     'src/main/db/{db-notes,db-schema}.js',
     'src/main/ipc/register-business-ipc.js',
     'src/preload/index.js',
-    'src/renderer/src/components/list/{NewNotePanel,NoteCard,SearchResultCard}.vue',
+    'src/renderer/src/components/list/{NewNotePanel,SearchResultCard}.vue',
     'src/renderer/src/components/month/{MonthEventBar,MonthNoteCreator}.vue',
-    'src/renderer/src/components/note/{ColoredTextEditor,NoteEditor,NoteTextColorPopover}.vue'
+    'src/renderer/src/components/note/{ColoredTextEditor,NoteCard,NoteEditor,NoteTextColorPopover}.vue'
   ],
   'package-native-config': [
     'electron-builder.base.yml',
@@ -403,7 +452,7 @@ const sourceReadDefinitions = {
   'quick-note-edit': [
     'src/renderer/src/composables/useWorkspaceRuntime.js',
     'src/renderer/src/{App,MonthApp}.vue',
-    'src/renderer/src/components/list/NoteCard.vue',
+    'src/renderer/src/components/note/NoteCard.vue',
     'src/renderer/src/components/month/MonthEventBar.vue',
     'src/renderer/src/components/note/QuickNoteContentEditor.vue',
     'src/renderer/src/components/system/SettingsPanel.vue'
@@ -421,6 +470,7 @@ const sourceReadDefinitions = {
   'settings-panel-density': [
     'src/renderer/src/components/note/ImagePicker.vue',
     'src/renderer/src/components/system/SettingsPanel.vue',
+    'src/renderer/src/composables/useSettingsDiagnostics.js',
     'src/renderer/src/components/weather/WeatherSettings.vue'
   ],
   'sticky-entry': ['src/renderer/sticky.html', 'src/renderer/sticky/{sticky.css,sticky.js}'],
@@ -428,14 +478,16 @@ const sourceReadDefinitions = {
     'src/main/index.js',
     'src/renderer/src/{App,MonthApp}.vue',
     'src/renderer/src/composables/useWorkspaceRuntime.js',
-    'src/renderer/src/components/list/{NoteCard,SearchResultCard}.vue',
+    'src/renderer/src/components/list/SearchResultCard.vue',
+    'src/renderer/src/components/note/NoteCard.vue',
     'src/renderer/src/components/month/{MonthEventBar,MonthCalendarGrid}.vue',
     'src/renderer/src/components/list/NoteList.vue',
     'src/renderer/src/components/system/SettingsPanel.vue'
   ],
   'tag-group-ordering-ui': [
     'src/renderer/src/components/help/help-content.js',
-    'src/renderer/src/components/list/{NoteCard,NoteList}.vue',
+    'src/renderer/src/components/list/NoteList.vue',
+    'src/renderer/src/components/note/NoteCard.vue',
     'src/renderer/src/components/ui/TagEditorForm.vue',
     'src/renderer/src/composables/useTagGroupListModel.js'
   ],
@@ -451,7 +503,7 @@ const sourceReadDefinitions = {
     'docs/UI_DESIGN_STANDARD.md',
     'src/renderer/src/{App,MonthApp}.vue',
     'src/renderer/src/assets/tokens.css',
-    'src/renderer/src/components/list/NoteCard.vue',
+    'src/renderer/src/components/note/NoteCard.vue',
     'src/renderer/src/components/month/{MonthCalendarGrid,MonthCalendarToolbar,MonthDayPanel,MonthEventBar,MonthWorkspace}.vue',
     'src/renderer/src/components/report/DailyReportDialog.vue'
   ],
@@ -473,6 +525,38 @@ const sourceReadDefinitions = {
 // A reviewed protection scope is not a recorded test pass. Actual completion,
 // platform and simulation evidence belong to the immutable attempt reports.
 const reviewedScopes = Object.freeze({
+  'tests/native-async-prototype-electron.mjs': {
+    contracts: ['C-007', 'C-013'],
+    features: ['native-async-prototype']
+  },
+  'tests/dispatcher-queue-lifetime-electron.mjs': {
+    contracts: ['C-007', 'C-013'],
+    features: ['native-resource-lifetime']
+  },
+  'tests/image-preview-reader.test.js': {
+    contracts: ['C-002', 'C-013'],
+    features: ['attachment-image-decode-budget']
+  },
+  'tests/image-read-service.test.js': {
+    contracts: ['C-002', 'C-013'],
+    features: ['attachment-image-decode-budget']
+  },
+  'tests/image-preview-budget.test.js': {
+    contracts: ['C-002', 'C-013'],
+    features: ['attachment-image-decode-budget']
+  },
+  'tests/image-decode-budget.test.js': {
+    contracts: ['C-002', 'C-013'],
+    features: ['attachment-image-decode-budget']
+  },
+  'tests/image-decode-runtime.test.js': {
+    contracts: ['C-002', 'C-013'],
+    features: ['attachment-image-decode-budget']
+  },
+  'tests/image-decode-electron.mjs': {
+    contracts: ['C-002', 'C-013'],
+    features: ['attachment-image-decode-budget', 'attachment-thumbnail-cache']
+  },
   'tests/logging-motion-overhead-electron.mjs': {
     contracts: ['C-007', 'C-013'],
     features: ['diagnostic-motion-overhead']
@@ -482,18 +566,118 @@ const reviewedScopes = Object.freeze({
     features: ['application-settings']
   },
   'tests/settings-runtime.test.js': { contracts: ['C-003'], features: ['settings-runtime'] },
+  'tests/settings-application-coordinator.test.js': {
+    contracts: ['C-003'],
+    features: ['settings-runtime']
+  },
+  'tests/settings-application-state.test.js': {
+    contracts: ['C-003', 'C-012'],
+    features: ['settings-runtime']
+  },
+  'tests/register-settings-application-ipc.test.js': {
+    contracts: ['C-003', 'C-012'],
+    features: ['settings-runtime']
+  },
+  'tests/settings-application-state-store.test.js': {
+    contracts: ['C-003', 'C-012'],
+    features: ['settings-snapshots']
+  },
+  'tests/settings-application-status.test.js': {
+    contracts: ['C-003', 'C-009'],
+    features: ['settings-write-queue']
+  },
+  'tests/attachment-recovery-status.test.js': {
+    contracts: ['C-002', 'C-009', 'C-013'],
+    features: [
+      'attachment-recovery-report',
+      'attachment-recovery-diagnostics',
+      'attachment-recovery-retry'
+    ]
+  },
+  'tests/attachment-recovery-retry.test.js': {
+    contracts: ['C-002', 'C-004', 'C-012', 'C-013'],
+    features: ['attachment-recovery-retry', 'business-admission']
+  },
+  'tests/settings-application-ui-electron.mjs': {
+    contracts: ['C-003', 'C-007', 'C-009', 'C-012'],
+    features: ['settings-runtime', 'settings-write-queue', 'settings-page-leave']
+  },
+  'tests/settings-main-application.test.js': {
+    contracts: ['C-003', 'C-007'],
+    features: ['settings-runtime']
+  },
+  'tests/settings-snapshot-read-main.test.js': {
+    contracts: ['C-003', 'C-007', 'C-012'],
+    features: ['settings-runtime', 'settings-snapshots']
+  },
+  'tests/settings-snapshot-read-electron.mjs': {
+    contracts: ['C-003', 'C-007', 'C-012'],
+    features: ['settings-runtime', 'settings-snapshots']
+  },
   'tests/settings-repository-db.mjs': { contracts: ['C-003'], features: ['settings-repository'] },
   'tests/settings-runtime-electron.mjs': {
     contracts: ['C-003', 'C-007'],
     features: ['settings-runtime']
   },
+  'tests/settings-snapshots.test.js': {
+    contracts: ['C-003', 'C-012'],
+    features: ['settings-snapshots']
+  },
+  'tests/settings-receipt.test.js': {
+    contracts: ['C-003', 'C-012'],
+    features: ['settings-snapshots']
+  },
+  'tests/weather-settings-receipt.test.js': {
+    contracts: ['C-003', 'C-012'],
+    features: ['settings-snapshots']
+  },
+  'tests/wallpaper-settings-receipt.test.js': {
+    contracts: ['C-003', 'C-012'],
+    features: ['settings-snapshots']
+  },
+  'tests/note-list-settings-intent.test.js': {
+    contracts: ['C-003', 'C-007'],
+    features: ['settings-snapshots', 'note-list-filter']
+  },
+  'tests/settings-snapshot-ordering-electron.mjs': {
+    contracts: ['C-003', 'C-007', 'C-012'],
+    features: ['settings-snapshots', 'settings-write-queue']
+  },
+  'tests/settings-write-source-electron.mjs': {
+    contracts: ['C-003', 'C-012'],
+    features: ['settings-write-source']
+  },
   'tests/settings-write-queue.test.js': {
     contracts: ['C-003'],
     features: ['settings-write-queue']
   },
+  'tests/settings-operation-admission.test.js': {
+    contracts: ['C-003', 'C-007'],
+    features: ['settings-operations']
+  },
   'tests/settings-queue-electron.mjs': {
     contracts: ['C-003', 'C-009'],
     features: ['settings-write-queue']
+  },
+  'tests/page-leave.test.js': {
+    contracts: ['C-003', 'C-007'],
+    features: ['settings-page-leave']
+  },
+  'tests/settings-page-leave-electron.mjs': {
+    contracts: ['C-003', 'C-007', 'C-009', 'C-012'],
+    features: ['settings-page-leave', 'settings-write-source']
+  },
+  'tests/settings-quit-electron.mjs': {
+    contracts: ['C-003', 'C-007', 'C-012'],
+    features: ['settings-operations', 'application-lifecycle']
+  },
+  'tests/settings-exit-restart-electron.mjs': {
+    contracts: ['C-003', 'C-007', 'C-012'],
+    features: ['settings-exit-restart']
+  },
+  'tests/settings-operation-quit-electron.mjs': {
+    contracts: ['C-003', 'C-005', 'C-007'],
+    features: ['settings-operations', 'application-lifecycle']
   },
   'tests/settings-form-models.test.js': {
     contracts: ['C-003', 'C-009'],
@@ -514,20 +698,30 @@ const reviewedScopes = Object.freeze({
     contracts: ['C-001', 'C-013'],
     features: ['application-lifecycle']
   },
-  'tests/database-runtime.test.js': { contracts: ['C-001'], features: ['database-runtime'] },
+  'tests/database-runtime.test.js': {
+    contracts: ['C-001'],
+    features: ['database-runtime', 'database-migration-backup']
+  },
   'tests/platform-support.test.js': {
     contracts: ['C-006', 'C-007'],
     features: ['windows-platform']
   },
   'tests/device-info.test.js': { contracts: ['C-010'], features: ['windows-device-info'] },
-  'tests/database-runtime-db.mjs': { contracts: ['C-001'], features: ['database-runtime'] },
+  'tests/database-runtime-db.mjs': {
+    contracts: ['C-001'],
+    features: ['database-runtime', 'database-migration-backup']
+  },
+  'tests/database-migration-backup-electron.mjs': {
+    contracts: ['C-001'],
+    features: ['database-migration-backup']
+  },
   'tests/attachment-recovery-reset-electron.mjs': {
     contracts: ['C-002', 'C-004'],
-    features: ['attachment-recovery']
+    features: ['attachment-recovery', 'attachment-recovery-report']
   },
   'tests/attachment-reset-recovery.test.js': {
     contracts: ['C-002', 'C-004'],
-    features: ['attachment-recovery']
+    features: ['attachment-recovery', 'attachment-recovery-report']
   },
   'tests/note-commands.test.js': { contracts: ['C-002', 'C-004'], features: ['note-commands'] },
   'tests/note-draft-conflict-electron.mjs': {
@@ -542,10 +736,43 @@ const reviewedScopes = Object.freeze({
     contracts: ['C-004', 'C-009'],
     features: ['sticky-note-commands']
   },
+  'tests/sticky-initialization-electron.mjs': {
+    contracts: ['C-004', 'C-006', 'C-013'],
+    features: ['sticky-initialization']
+  },
+  'tests/reminder-initialization-electron.mjs': {
+    contracts: ['C-006', 'C-012', 'C-013'],
+    features: ['reminder-initialization', 'reminders', 'application-lifecycle']
+  },
+  'tests/reminder-window.test.js': {
+    contracts: ['C-006', 'C-012', 'C-013'],
+    features: ['reminder-initialization', 'reminders']
+  },
+  'tests/sticky-quit-electron.mjs': {
+    contracts: ['C-001', 'C-004', 'C-006', 'C-013'],
+    features: ['sticky-initialization', 'application-lifecycle']
+  },
+  'tests/main-view-initialization-electron.mjs': {
+    contracts: ['C-003', 'C-007', 'C-013'],
+    features: ['main-view-initialization', 'main-view-navigation', 'application-lifecycle']
+  },
+  'tests/main-view-startup-electron.mjs': {
+    contracts: ['C-003', 'C-007', 'C-013'],
+    features: [
+      'main-view-startup',
+      'main-view-navigation',
+      'application-lifecycle',
+      'notification-activation'
+    ]
+  },
+  'tests/main-view-startup.test.js': {
+    contracts: ['C-003', 'C-007', 'C-013'],
+    features: ['main-view-startup', 'main-view-navigation', 'application-lifecycle']
+  },
   'tests/register-app-ipc.test.js': { contracts: ['C-010', 'C-012'], features: ['app-ipc'] },
   'tests/register-logging-ipc.test.js': {
     contracts: ['C-012', 'C-013'],
-    features: ['logging-ipc']
+    features: ['logging-ipc', 'attachment-recovery-diagnostics']
   },
   'tests/register-remote-notice-ipc.test.js': {
     contracts: ['C-010', 'C-012'],
@@ -561,7 +788,12 @@ const reviewedScopes = Object.freeze({
   },
   'tests/logging-actions-electron.mjs': {
     contracts: ['C-013'],
-    features: ['logging-ipc', 'diagnostic-export']
+    features: [
+      'logging-ipc',
+      'diagnostic-export',
+      'attachment-recovery-diagnostics',
+      'attachment-recovery-retry'
+    ]
   },
   'tests/app-ipc-electron.mjs': {
     contracts: ['C-002', 'C-003', 'C-010', 'C-012'],
@@ -592,6 +824,26 @@ const reviewedScopes = Object.freeze({
   'tests/capture-coordinator.test.js': {
     contracts: ['C-008', 'C-012'],
     features: ['capture-window-restoration']
+  },
+  'tests/capture-host.test.js': {
+    contracts: ['C-008'],
+    features: ['capture-host-lifecycle']
+  },
+  'tests/screen-capture-delivery.test.js': {
+    contracts: ['C-008', 'C-012'],
+    features: ['capture-delivery']
+  },
+  'tests/capture-main-open.test.js': {
+    contracts: ['C-007', 'C-008'],
+    features: ['capture-delivery']
+  },
+  'tests/capture-delivery-electron.mjs': {
+    contracts: ['C-008', 'C-012'],
+    features: ['capture-delivery']
+  },
+  'tests/capture-compositor-electron.mjs': {
+    contracts: ['C-007', 'C-008'],
+    features: ['capture-compositor-pixels']
   },
   'tests/capture-business-electron.mjs': {
     contracts: ['C-008'],
@@ -634,6 +886,14 @@ const reviewedScopes = Object.freeze({
   'tests/window-motion-diagnostics-native.mjs': {
     contracts: ['C-007', 'C-011'],
     features: ['window-motion-diagnostics']
+  },
+  'tests/window-z-order-diagnostics-native.mjs': {
+    contracts: ['C-007', 'C-011'],
+    features: ['native-leaf-runtime', 'window-z-order-diagnostics']
+  },
+  'tests/window-z-order-diagnostics-electron.mjs': {
+    contracts: ['C-007', 'C-011'],
+    features: ['native-leaf-runtime', 'window-z-order-diagnostics', 'diagnostic-export']
   },
   'tests/window-drag-diagnostics.test.js': {
     contracts: ['C-007', 'C-011'],
@@ -685,6 +945,14 @@ const reviewedScopes = Object.freeze({
     contracts: ['C-003', 'C-009'],
     features: ['calendar-workspace']
   },
+  'tests/weather-manual-refresh.test.js': {
+    contracts: ['C-003', 'C-009', 'C-010'],
+    features: ['weather-lifecycle', 'settings-forms']
+  },
+  'tests/note-status-actions.test.js': {
+    contracts: ['C-004', 'C-009'],
+    features: ['note-status-actions']
+  },
   'tests/calendar-workspace-lifecycle.test.js': {
     contracts: ['C-009'],
     features: ['calendar-workspace']
@@ -708,6 +976,22 @@ const reviewedScopes = Object.freeze({
   'tests/business-clear-admission-electron.mjs': {
     contracts: ['C-001', 'C-004', 'C-006'],
     features: ['business-admission', 'reminder-lifecycle']
+  },
+  'tests/tag-commands.test.js': {
+    contracts: ['C-004', 'C-009'],
+    features: ['tag-commands']
+  },
+  'tests/tag-commands-electron.mjs': {
+    contracts: ['C-001', 'C-004', 'C-009'],
+    features: ['tag-commands', 'business-admission']
+  },
+  'tests/settings-panel-owners.test.js': {
+    contracts: ['C-003', 'C-009', 'C-013'],
+    features: ['settings-panel-owners']
+  },
+  'tests/settings-panel-owners-electron.mjs': {
+    contracts: ['C-003', 'C-009', 'C-013'],
+    features: ['settings-panel-owners']
   },
   'tests/feature-runtime.test.js': { contracts: ['C-013'], features: ['feature-lifecycle'] },
   'tests/feature-runtime-electron.mjs': {
@@ -749,6 +1033,58 @@ const reviewedScopes = Object.freeze({
   'tests/editing-draft-session.test.js': {
     contracts: ['C-004'],
     features: ['editing-draft-session']
+  },
+  'tests/session-draft-assets-store.test.js': {
+    contracts: ['C-004', 'C-006', 'C-012'],
+    features: ['session-draft-assets']
+  },
+  'tests/session-draft-assets-prototype-electron.mjs': {
+    contracts: ['C-004', 'C-006', 'C-012'],
+    features: ['session-draft-assets-prototype']
+  },
+  'tests/session-draft-files.test.js': {
+    contracts: ['C-004', 'C-012'],
+    features: ['session-draft-assets']
+  },
+  'tests/session-draft-assets-runtime.test.js': {
+    contracts: ['C-004', 'C-006', 'C-012'],
+    features: ['session-draft-assets']
+  },
+  'tests/session-draft-assets-ipc.test.js': {
+    contracts: ['C-004', 'C-006', 'C-012'],
+    features: ['session-draft-assets']
+  },
+  'tests/session-draft-assets-client.test.js': {
+    contracts: ['C-004', 'C-006', 'C-012'],
+    features: ['session-draft-assets']
+  },
+  'tests/session-draft-note-commands.test.js': {
+    contracts: ['C-004', 'C-006', 'C-012'],
+    features: ['session-draft-assets']
+  },
+  'tests/draft-protection-assets.test.js': {
+    contracts: ['C-004', 'C-006', 'C-012'],
+    features: ['session-draft-assets']
+  },
+  'tests/legacy-draft-assets.test.js': {
+    contracts: ['C-004', 'C-006', 'C-012'],
+    features: ['session-draft-assets']
+  },
+  'tests/image-picker-draft-assets.test.js': {
+    contracts: ['C-004', 'C-006', 'C-012'],
+    features: ['session-draft-assets']
+  },
+  'tests/draft-form-assets.test.js': {
+    contracts: ['C-004', 'C-006', 'C-012'],
+    features: ['session-draft-assets']
+  },
+  'tests/session-draft-assets-electron.mjs': {
+    contracts: ['C-004', 'C-006', 'C-012'],
+    features: ['session-draft-assets']
+  },
+  'tests/session-draft-assets-product-electron.mjs': {
+    contracts: ['C-004', 'C-006', 'C-012'],
+    features: ['session-draft-assets']
   },
   'tests/help-navigation-ui.test.js': { contracts: ['C-009'], features: ['help-navigation-ui'] },
   'tests/help-support-ui.test.js': { contracts: ['C-009'], features: ['help-support-ui'] },
@@ -831,6 +1167,14 @@ const reviewedScopes = Object.freeze({
     features: ['windows-sandbox-permissions']
   },
   'tests/ipc-authorization.test.js': { contracts: ['C-012'], features: ['ipc-authorization'] },
+  'tests/settings-write-source.test.js': {
+    contracts: ['C-003', 'C-012'],
+    features: ['settings-write-source']
+  },
+  'tests/settings-client.test.js': {
+    contracts: ['C-003', 'C-012'],
+    features: ['settings-write-source']
+  },
   'tests/ipc-arguments.test.js': { contracts: ['C-012', 'C-013'], features: ['ipc-arguments'] },
   'tests/attachment-rules.test.js': { contracts: ['C-002'], features: ['attachment-rules'] },
   'tests/note-scheduling-rules.test.js': {
@@ -879,6 +1223,10 @@ const reviewedScopes = Object.freeze({
     contracts: ['C-008', 'C-012'],
     features: ['capture-package-smoke']
   },
+  'tests/test-failure-diagnostics-win.cjs': {
+    contracts: ['C-012', 'C-013'],
+    features: ['test-failure-diagnostics']
+  },
   'tests/sandbox-diagnostics-win.cjs': {
     contracts: ['C-012'],
     features: ['sandbox-diagnostics-win']
@@ -906,6 +1254,10 @@ const reviewedScopes = Object.freeze({
   'tests/almanac-engine.test.js': { contracts: ['C-009'], features: ['calendar-domain'] },
   'tests/almanac-requests.test.js': { contracts: ['C-009'], features: ['calendar-domain'] },
   'tests/app-update.test.js': { contracts: ['C-010'], features: ['application-update'] },
+  'tests/app-update-intent-electron.mjs': {
+    contracts: ['C-009', 'C-010', 'C-012'],
+    features: ['application-update', 'workspace-modal-lifecycle']
+  },
   'tests/calendar-date-rules.test.js': { contracts: ['C-009'], features: ['calendar-domain'] },
   'tests/calendar-event-layout.test.js': { contracts: ['C-009'], features: ['calendar-domain'] },
   'tests/calendar-ipc.test.js': { contracts: ['C-009', 'C-012'], features: ['calendar-ipc'] },
@@ -1100,7 +1452,7 @@ const reviewedScopes = Object.freeze({
   },
   'tests/attachment-storage-electron.mjs': {
     contracts: ['C-002'],
-    features: ['attachment-storage']
+    features: ['attachment-storage', 'attachment-recovery-report', 'attachment-recovery-retry']
   },
   'tests/blur-z-order-electron.mjs': { contracts: ['C-007'], features: ['native-leaf-runtime'] },
   'tests/calendar-font-electron.mjs': {
@@ -1267,7 +1619,7 @@ const reviewedScopes = Object.freeze({
   },
   'tests/backend-integration.mjs': {
     contracts: ['C-001', 'C-002', 'C-005', 'C-006', 'C-009'],
-    features: ['database-contracts']
+    features: ['database-contracts', 'database-migration-backup']
   },
   'tests/note-state-db.mjs': {
     contracts: ['C-001', 'C-004', 'C-006'],
@@ -1297,12 +1649,243 @@ const reviewedScopes = Object.freeze({
 // Explicit consumers loaded through the built app or dynamic helpers are reviewed
 // here; they are candidates, never an automatic transitive test selection.
 const extraSourceDependencies = {
+  'tests/tag-commands-electron.mjs': ['src/main/tags/tag-commands.js', 'src/main/db/db-tags.js'],
+  'tests/native-async-prototype-electron.mjs': [
+    'tests/fixtures/native-async-prototype/worker.mjs',
+    'native_blur/blur_engine.cpp',
+    'native_blur/dispatcher_queue_lifetime.cpp',
+    'native_blur/dispatcher_queue_lifetime.h',
+    'native_blur/blur_api.cpp'
+  ],
+  'tests/dispatcher-queue-lifetime-electron.mjs': [
+    'native_blur/tests/dispatcher_queue_lifetime_test.cpp',
+    'native_blur/dispatcher_queue_lifetime.h',
+    'native_blur/dispatcher_queue_lifetime.cpp',
+    'native_blur/blur_engine.cpp',
+    'native_blur/blur_engine.h',
+    'native_blur/blur_api.cpp',
+    'native_blur/CMakeLists.txt'
+  ],
+  'tests/image-preview-reader.test.js': ['src/main/drafts/session-draft-files.js'],
+  'tests/image-decode-electron.mjs': [
+    'src/main/images/image-read-service.js',
+    'src/main/images/image-decode-entry.mjs',
+    'src/main/images/image-preview-reader.js',
+    'src/main/images/image-preview-renderer.js',
+    'src/preload/image-preview.cjs',
+    'tests/fixtures/image-preview-budget/gif-restore-previous.gif',
+    'tests/fixtures/image-decode/unsupported.svg'
+  ],
+  'tests/image-preview-budget.test.js': [
+    'tests/fixtures/image-preview-budget/provenance.json',
+    'tests/fixtures/image-preview-budget/gif-restore-previous.gif',
+    'tests/fixtures/image-preview-budget/apng-default-in-animation.png',
+    'tests/fixtures/image-preview-budget/apng-independent-poster.png',
+    'tests/fixtures/image-preview-budget/webp-offset-alpha.webp',
+    'tests/fixtures/image-preview-budget/still.png',
+    'tests/fixtures/image-preview-budget/still.jpeg',
+    'tests/fixtures/image-preview-budget/still.gif',
+    'tests/fixtures/image-preview-budget/still.bmp',
+    'tests/fixtures/image-preview-budget/still.webp'
+  ],
+  'tests/database-runtime-db.mjs': ['src/main/db/db-migration-backup.js'],
+  'tests/attachment-reset-recovery.test.js': [
+    'src/main/db/attachment-recovery.js',
+    'src/main/db/attachment-recovery-report.js'
+  ],
+  'tests/attachment-storage-electron.mjs': [
+    'src/main/db/db.js',
+    'src/main/db/attachment-recovery.js',
+    'src/main/db/attachment-recovery-report.js'
+  ],
+  'tests/attachment-recovery-reset-electron.mjs': [
+    'src/main/db/db.js',
+    'src/main/db/attachment-recovery.js',
+    'src/main/db/attachment-recovery-report.js'
+  ],
+  'tests/capture-main-open.test.js': ['src/main/index.js'],
+  'tests/session-draft-note-commands.test.js': [
+    'src/main/drafts/session-draft-assets.js',
+    'src/main/drafts/session-draft-files.js'
+  ],
+  'tests/draft-protection-assets.test.js': [
+    'src/renderer/src/composables/useDraftProtection.js',
+    'src/renderer/src/utils/draftAssets.js',
+    'src/renderer/src/utils/legacyDraftAssets.js'
+  ],
+  'tests/image-picker-draft-assets.test.js': [
+    'src/renderer/src/components/note/ImagePicker.vue',
+    'src/renderer/src/components/note/ScreenshotPicker.vue',
+    'src/renderer/src/composables/useScreenCapture.js'
+  ],
+  'tests/draft-form-assets.test.js': [
+    'src/renderer/src/components/list/NewNotePanel.vue',
+    'src/renderer/src/components/note/NoteEditor.vue',
+    'src/renderer/src/components/month/MonthNoteCreator.vue',
+    'src/renderer/src/components/capture/CaptureDelivery.vue',
+    'src/renderer/src/components/system/EditingDraftDialog.vue',
+    'src/renderer/src/composables/useScreenCapture.js',
+    'src/renderer/src/components/note/QuickNoteContentEditor.vue',
+    'src/renderer/src/components/template/TemplateForm.vue',
+    'src/renderer/src/components/template/TemplatePage.vue',
+    'src/renderer/src/components/month/MonthCalendarGrid.vue'
+  ],
+  'tests/session-draft-assets-product-electron.mjs': [
+    'src/renderer/index.html',
+    'src/renderer/month.html',
+    'src/renderer/week.html',
+    'src/main/index.js',
+    'src/preload/index.js',
+    'src/preload/draft-assets-client.js',
+    'src/main/drafts/session-draft-assets.js',
+    'src/main/drafts/session-draft-files.js',
+    'src/main/drafts/session-draft-assets-runtime.js',
+    'src/main/drafts/session-draft-note-commands.js',
+    'src/main/ipc/register-draft-assets-ipc.js',
+    'src/main/notes/note-commands.js',
+    'src/main/windows/editing-draft-guard.js',
+    'src/main/windows/main-view-navigation.js',
+    'src/renderer/src/composables/useDraftProtection.js',
+    'src/renderer/src/utils/draftAssets.js',
+    'src/renderer/src/utils/legacyDraftAssets.js',
+    'src/renderer/src/components/list/NewNotePanel.vue',
+    'src/renderer/src/components/note/NoteCard.vue',
+    'src/renderer/src/components/note/NoteEditor.vue',
+    'src/renderer/src/components/note/ImagePicker.vue',
+    'src/renderer/src/components/note/ScreenshotPicker.vue'
+  ],
+  'tests/session-draft-assets-runtime.test.js': [
+    'src/main/drafts/session-draft-assets.js',
+    'src/main/drafts/session-draft-files.js'
+  ],
+  'tests/session-draft-assets-ipc.test.js': ['src/main/drafts/session-draft-assets.js'],
+  'tests/session-draft-assets-electron.mjs': [
+    'src/main/drafts/session-draft-assets.js',
+    'src/main/drafts/session-draft-files.js',
+    'src/main/drafts/session-draft-assets-runtime.js',
+    'src/main/ipc/register-draft-assets-ipc.js',
+    'src/main/settings/settings-write-source.js',
+    'src/preload/draft-assets-client.js',
+    'src/preload/settings-client.js'
+  ],
+  'tests/session-draft-assets-prototype-electron.mjs': [
+    'scripts/prototypes/session-draft-assets/asset-store.mjs',
+    'src/main/drafts/session-draft-assets.js',
+    'src/main/drafts/session-draft-files.js',
+    'scripts/prototypes/session-draft-assets/preload.cjs',
+    'scripts/prototypes/session-draft-assets/fixture.html',
+    'src/renderer/src/composables/useDraftProtection.js',
+    'src/renderer/src/composables/useMessage.js',
+    'node_modules/vue/dist/vue.esm-browser.js'
+  ],
+  'tests/settings-snapshot-read-main.test.js': ['src/main/index.js'],
+  'tests/settings-snapshot-read-electron.mjs': [
+    'src/main/index.js',
+    'src/main/capture/CaptureCoordinator.js',
+    'src/main/settings/settings-runtime.js',
+    'src/main/settings/settings-write-source.js',
+    'src/main/settings/settings-application-coordinator.js',
+    'src/main/windows/window-geometry-persistence.js',
+    'src/main/windows/presentation-runtime.js',
+    'src/main/windows/main-view-navigation.js',
+    'src/main/window-motion/dock-runtime.js',
+    'src/preload/index.js',
+    'src/preload/settings-client.js',
+    'src/renderer/src/utils/settingsSnapshots.js'
+  ],
+  'tests/settings-main-application.test.js': [
+    'src/main/index.js',
+    'src/main/settings/settings-application-coordinator.js'
+  ],
+  'tests/weather-settings-receipt.test.js': [
+    'src/renderer/src/components/weather/WeatherSettings.vue',
+    'src/renderer/src/utils/settingsSnapshots.js'
+  ],
+  'tests/wallpaper-settings-receipt.test.js': [
+    'src/renderer/src/components/wallpaper/WallpaperSettings.vue',
+    'src/renderer/src/components/capture/CaptureDelivery.vue',
+    'src/renderer/src/utils/settingsSnapshots.js'
+  ],
+  'tests/daily-report.test.js': ['tests/fixtures/daily-report-timezone.mjs'],
+  'tests/main-view-startup-electron.mjs': [
+    'src/main/index.js',
+    'src/main/windows/main-view-navigation.js',
+    'src/main/windows/main-window-host.js',
+    'src/main/windows/editing-draft-guard.js',
+    'src/main/windows/renderer-recovery.js',
+    'src/main/services/notification-activation.js',
+    'src/main/settings/settings-write-source.js',
+    'src/main/application/shutdown-coordinator.js',
+    'src/main/tray/main-tray-controller.js',
+    'src/preload/index.js',
+    'src/preload/settings-client.js',
+    'src/renderer/src/composables/useWorkspaceRuntime.js',
+    'src/renderer/src/App.vue',
+    'src/renderer/src/MonthApp.vue',
+    'src/renderer/src/components/list/ActionBar.vue',
+    'src/renderer/src/components/list/NewNotePanel.vue',
+    'src/renderer/src/composables/useDraftProtection.js',
+    'src/renderer/src/components/system/EditingDraftDialog.vue',
+    'src/renderer/src/components/ui/ConfirmDialog.vue'
+  ],
+  'tests/main-view-initialization-electron.mjs': [
+    'src/main/index.js',
+    'src/main/windows/main-view-navigation.js',
+    'src/main/windows/main-window-host.js',
+    'src/main/windows/editing-draft-guard.js',
+    'src/main/settings/settings-write-source.js',
+    'src/main/application/shutdown-coordinator.js',
+    'src/main/tray/main-tray-controller.js',
+    'src/preload/index.js',
+    'src/preload/settings-client.js',
+    'src/renderer/src/composables/useWorkspaceRuntime.js',
+    'src/renderer/src/App.vue',
+    'src/renderer/src/MonthApp.vue'
+  ],
+  'tests/sticky-quit-electron.mjs': [
+    'src/main/index.js',
+    'src/main/application/feature-runtime.js',
+    'src/main/application/business-mutation-admission.js',
+    'src/main/application/shutdown-coordinator.js',
+    'src/main/sticky/ElectronStickyService.js',
+    'src/main/sticky/StickyTrayMenu.js',
+    'src/main/sticky/stickyConstants.js',
+    'src/main/tray/main-tray-controller.js',
+    'src/main/db/db-desktop-stickies.js',
+    'src/preload/index.js',
+    'src/preload/sticky.js',
+    'src/renderer/sticky/sticky.js'
+  ],
+  'tests/sticky-initialization-electron.mjs': [
+    'tests/fixtures/sticky-initialization/preload.cjs',
+    'src/main/sticky/ElectronStickyService.js',
+    'src/main/sticky/stickyConstants.js',
+    'src/main/application/business-mutation-admission.js'
+  ],
+  'tests/reminder-initialization-electron.mjs': [
+    'src/main/services/ReminderWindow.js',
+    'src/main/ipc/ipc-authorization.js',
+    'src/preload/reminder.js',
+    'src/renderer/src/ReminderApp.vue'
+  ],
+  'tests/page-leave.test.js': ['src/renderer/src/utils/pageLeave.js'],
+  'tests/settings-write-source-electron.mjs': ['src/preload/settings-client.js'],
   'tests/renderer-resource-lifetime-electron.mjs': [
+    'src/renderer/src/components/list/ActionBar.vue',
+    'tests/fixtures/image-preview-budget/gif-restore-previous.gif',
     'tests/fixtures/renderer-resource-lifetime/index.html',
     'tests/fixtures/renderer-resource-lifetime/main.js',
     'tests/fixtures/renderer-resource-lifetime/preload.cjs',
     'src/renderer/src/components/note/ImagePicker.vue',
-    'src/renderer/src/components/note/ImagePreview.vue'
+    'src/renderer/src/components/note/ImagePreview.vue',
+    'src/renderer/src/components/note/ImageCopyMenu.vue',
+    'src/renderer/src/utils/imageClipboard.js'
+  ],
+  'tests/settings-panel-owners-electron.mjs': [
+    'tests/fixtures/settings-panel-owners/index.html',
+    'tests/fixtures/settings-panel-owners/main.js',
+    'src/renderer/src/composables/useHolidayDataSettings.js',
+    'src/renderer/src/composables/useSettingsDiagnostics.js'
   ],
   'tests/date-context-controls-electron.mjs': [
     'src/renderer/src/components/almanac/DateContextDetails.vue',
@@ -1431,6 +2014,16 @@ const extraSourceDependencies = {
   ],
   'tests/logging-actions-electron.mjs': [
     'src/main/ipc/register-logging-ipc.js',
+    'src/main/application/attachment-recovery-retry.js',
+    'src/main/application/business-mutation-admission.js',
+    'src/main/drafts/session-draft-assets-runtime.js',
+    'src/main/db/db.js',
+    'src/main/db/attachment-recovery.js',
+    'src/main/db/attachment-recovery-report.js',
+    'src/preload/index.js',
+    'src/renderer/src/components/system/SettingsPanel.vue',
+    'src/renderer/src/components/system/settings/AttachmentRecoveryStatus.vue',
+    'src/renderer/src/components/system/settings/settings-form.css',
     'src/main/logging/diagnostic-controller.js',
     'src/main/logging/performance-diagnostics.js',
     'src/main/logging/window-motion-diagnostics.js',
@@ -1456,23 +2049,136 @@ const extraSourceDependencies = {
     'src/main/windows/main-view-navigation.js',
     'src/main/index.js'
   ],
+  'tests/settings-snapshot-ordering-electron.mjs': [
+    'src/main/index.js',
+    'src/main/settings/settings-write-source.js',
+    'src/preload/settings-client.js',
+    'src/renderer/src/utils/settingsSnapshots.js',
+    'src/renderer/src/composables/useSettingsWriteQueue.js',
+    'src/renderer/src/composables/useWorkspaceRuntime.js',
+    'src/renderer/src/components/system/SettingsPanel.vue'
+  ],
   'tests/settings-queue-electron.mjs': [
     'src/main/settings/settings-write-coordinator.js',
+    'src/main/settings/settings-write-source.js',
+    'src/main/windows/editing-draft-guard.js',
+    'src/main/windows/main-view-navigation.js',
+    'src/preload/index.js',
+    'src/preload/settings-client.js',
     'src/renderer/src/components/system/SettingsPanel.vue',
     'src/renderer/src/components/system/settings/DockSettingsSection.vue',
     'src/renderer/src/components/system/settings/StickySettingsSection.vue',
     'src/renderer/src/composables/useSettingsWriteQueue.js',
+    'src/renderer/src/utils/pageLeave.js',
     'src/renderer/src/composables/useDockSettingsForm.js',
     'src/renderer/src/composables/useStickySettingsForm.js',
+    'src/renderer/src/composables/useHolidayDataSettings.js',
+    'src/renderer/src/composables/useSettingsDiagnostics.js',
     'src/main/index.js'
   ],
+  'tests/settings-page-leave-electron.mjs': [
+    'src/renderer/src/components/system/SettingsPanel.vue',
+    'src/renderer/src/components/ui/FontSizeInput.vue',
+    'src/renderer/src/composables/useSettingsWriteQueue.js',
+    'src/renderer/src/utils/pageLeave.js',
+    'src/preload/index.js',
+    'src/preload/settings-client.js',
+    'src/main/settings/settings-write-source.js',
+    'src/main/settings/settings-write-coordinator.js',
+    'src/main/windows/editing-draft-guard.js',
+    'src/main/windows/main-view-navigation.js',
+    'src/main/tray/main-tray-controller.js',
+    'src/main/sticky/StickyTrayMenu.js',
+    'src/main/index.js'
+  ],
+  'tests/settings-application-status.test.js': [
+    'src/renderer/src/components/system/settings/SettingsApplicationStatus.vue',
+    'src/renderer/src/components/system/SettingsPanel.vue'
+  ],
+  'tests/attachment-recovery-status.test.js': [
+    'src/renderer/src/components/system/settings/AttachmentRecoveryStatus.vue',
+    'src/renderer/src/components/system/settings/settings-form.css',
+    'src/renderer/src/components/system/SettingsPanel.vue'
+  ],
+  'tests/settings-application-ui-electron.mjs': [
+    'src/main/index.js',
+    'src/main/settings/settings-application-coordinator.js',
+    'src/main/settings/settings-operation-admission.js',
+    'src/main/settings/settings-write-coordinator.js',
+    'src/main/settings/settings-write-source.js',
+    'src/main/ipc/register-settings-application-ipc.js',
+    'src/preload/index.js',
+    'src/preload/settings-client.js',
+    'src/shared/settings-application-state.js',
+    'src/renderer/src/utils/settingsApplicationState.js',
+    'src/renderer/src/utils/settingsSnapshots.js',
+    'src/renderer/src/composables/useSettingsWriteQueue.js',
+    'src/renderer/src/components/system/settings/SettingsApplicationStatus.vue',
+    'src/renderer/src/components/system/SettingsPanel.vue',
+    'src/renderer/src/components/ui/FontSizeInput.vue',
+    'src/renderer/src/utils/pageLeave.js'
+  ],
   'tests/application-lifecycle-electron.mjs': [
+    'src/main/settings/settings-operation-admission.js',
+    'src/main/settings/settings-write-source.js',
+    'src/main/windows/editing-draft-guard.js',
+    'src/main/windows/main-view-navigation.js',
     'src/main/application/bootstrap.js',
     'src/main/application/shutdown-coordinator.js',
     'src/main/application/business-mutation-admission.js',
     'src/main/application/feature-runtime.js',
     'src/main/services/remote/remote-coordinator.js',
     'src/main/index.js'
+  ],
+  'tests/settings-quit-electron.mjs': [
+    'src/main/settings/settings-operation-admission.js',
+    'src/main/settings/settings-write-source.js',
+    'src/main/settings/settings-write-coordinator.js',
+    'src/main/application/shutdown-coordinator.js',
+    'src/main/windows/editing-draft-guard.js',
+    'src/main/windows/main-view-navigation.js',
+    'src/main/windows/z-order-runtime.js',
+    'src/main/tray/main-tray-controller.js',
+    'src/main/index.js',
+    'src/preload/index.js',
+    'src/preload/settings-client.js',
+    'src/renderer/src/components/system/SettingsPanel.vue',
+    'src/renderer/src/components/ui/FontSizeInput.vue',
+    'src/renderer/src/composables/useSettingsWriteQueue.js',
+    'src/renderer/src/utils/pageLeave.js'
+  ],
+  'tests/settings-exit-restart-electron.mjs': [
+    'src/renderer/src/utils/applySettingsSnapshot.js',
+    'src/main/settings/settings-operation-admission.js',
+    'src/main/settings/settings-write-source.js',
+    'src/main/settings/settings-write-coordinator.js',
+    'src/main/application/shutdown-coordinator.js',
+    'src/main/windows/editing-draft-guard.js',
+    'src/main/windows/main-view-navigation.js',
+    'src/main/index.js',
+    'src/main/tray/main-tray-controller.js',
+    'src/preload/index.js',
+    'src/preload/settings-client.js',
+    'src/renderer/src/components/system/SettingsPanel.vue',
+    'src/renderer/src/components/ui/FontSizeInput.vue',
+    'src/renderer/src/composables/useSettingsWriteQueue.js',
+    'src/renderer/src/composables/useHolidayDataSettings.js',
+    'src/renderer/src/composables/useSettingsDiagnostics.js',
+    'src/renderer/src/utils/pageLeave.js'
+  ],
+  'tests/settings-operation-quit-electron.mjs': [
+    'src/main/settings/settings-operation-admission.js',
+    'src/main/settings/settings-write-source.js',
+    'src/main/settings/background-settings-coordinator.js',
+    'src/main/application/shutdown-coordinator.js',
+    'src/main/windows/editing-draft-guard.js',
+    'src/main/ipc/register-wallpaper-ipc.js',
+    'src/main/db/db-wallpapers.js',
+    'src/main/index.js',
+    'src/main/tray/main-tray-controller.js',
+    'src/preload/index.js',
+    'src/preload/settings-client.js',
+    'src/renderer/src/utils/pageLeave.js'
   ],
   'tests/native-leaf-runtime-electron.mjs': [
     'src/main/windows/blur-runtime.js',
@@ -1487,10 +2193,11 @@ const extraSourceDependencies = {
   ],
   'tests/note-list-refresh-electron.mjs': [
     'src/renderer/src/components/list/NoteList.vue',
+    'src/renderer/src/composables/useNoteStatusActions.js',
     'src/renderer/src/composables/useNoteListQuerySession.js',
     'src/renderer/src/composables/useTimelineListModel.js',
     'src/renderer/src/utils/noteListItem.js',
-    'src/renderer/src/components/list/NoteCard.vue',
+    'src/renderer/src/components/note/NoteCard.vue',
     'src/renderer/src/composables/useSharedMinuteClock.js',
     'src/renderer/src/composables/useTodayKey.js',
     'src/main/index.js'
@@ -1545,10 +2252,31 @@ const extraSourceDependencies = {
     'src/main/settings/settings-write-coordinator.js',
     'src/main/windows/main-view-navigation.js',
     'src/main/windows/blur-runtime.js',
-    'src/main/index.js'
+    'src/main/index.js',
+    'src/main/settings/wallpaper-retirement.js',
+    'src/preload/index.js',
+    'src/renderer/src/composables/useWorkspaceWallpaper.js',
+    'src/renderer/src/composables/useSettingsWriteQueue.js',
+    'src/renderer/src/App.vue',
+    'src/renderer/src/MonthApp.vue'
+  ],
+  'tests/capture-delivery-electron.mjs': [
+    'src/main/index.js',
+    'src/main/capture/CaptureCoordinator.js',
+    'src/main/capture/capture-window-integration.js',
+    'src/main/windows/main-view-navigation.js',
+    'src/main/windows/editing-draft-guard.js',
+    'src/preload/index.js',
+    'src/renderer/src/composables/useScreenCapture.js',
+    'src/renderer/src/components/capture/CaptureDelivery.vue',
+    'src/renderer/src/components/note/ScreenshotPicker.vue',
+    'src/renderer/src/components/note/ImagePicker.vue',
+    'src/renderer/src/components/system/EditingDraftDialog.vue'
   ],
   'tests/dock-runtime-electron.mjs': [
     'src/main/window-motion/dock-runtime.js',
+    'src/main/capture/capture-window-integration.js',
+    'src/main/capture/CaptureCoordinator.js',
     'src/main/logging/window-motion-diagnostics.js',
     'src/main/logging/performance-diagnostics.js',
     'src/shared/window-motion-metrics.js',
@@ -1564,6 +2292,14 @@ const extraSourceDependencies = {
     'src/main/index.js'
   ],
   'tests/new-note-workflow-electron.mjs': [
+    'src/main/services/new-note-shortcut.js',
+    'src/main/capture/CaptureShortcutService.js',
+    'src/shared/capture-shortcuts.js',
+    'src/shared/settings-schema.js',
+    'src/main/index.js',
+    'src/preload/index.js',
+    'src/renderer/src/components/list/ActionBar.vue',
+    'src/renderer/src/components/month/MonthWorkspace.vue',
     'src/renderer/src/composables/useNewNotePreferences.js',
     'src/renderer/src/composables/useNoteStateDraft.js',
     'src/renderer/src/components/note/NoteStateFields.vue',
@@ -1618,6 +2354,19 @@ const extraSourceDependencies = {
     'native_blur/window_motion_diagnostics.cpp',
     'native_blur/window_motion_diagnostics.h',
     'native_blur/CMakeLists.txt'
+  ],
+  'tests/window-z-order-diagnostics-native.mjs': [
+    'native_blur/tests/window_z_order_diagnostics_test.cpp',
+    'native_blur/window_z_order.cpp',
+    'native_blur/window_z_order.h',
+    'native_blur/blur_engine.h',
+    'native_blur/CMakeLists.txt'
+  ],
+  'tests/window-z-order-diagnostics-electron.mjs': [
+    'src/main/windows/z-order-runtime.js',
+    'src/main/logging/operation-context.js',
+    'src/main/logging/logger.js',
+    'src/main/bridge/blur_bridge.js'
   ],
   'tests/window-drag-diagnostics.test.js': [
     'src/renderer/src/utils/windowDragDiagnostics.js',
@@ -1678,8 +2427,24 @@ const extraSourceDependencies = {
     'native_blur/window_motion_diagnostics.cpp',
     'native_blur/window_motion_diagnostics.h'
   ],
-  'tests/capture-host-electron.mjs': ['tests/helpers/capture-owner.cjs'],
-  'tests/capture-lifecycle-electron.mjs': ['tests/helpers/capture-owner.cjs'],
+  'tests/capture-host-electron.mjs': [
+    'tests/helpers/capture-owner.cjs',
+    'tests/helpers/test-result-recorder.cjs'
+  ],
+  'tests/capture-compositor-electron.mjs': [
+    'src/main/index.js',
+    'src/main/bridge/window-layer-diagnostics.js',
+    'src/main/capture/CaptureCoordinator.js',
+    'src/main/capture/capture-window-integration.js',
+    'scripts/prototypes/show-desktop/win32.cjs',
+    'native_capture/tests/input_driver.cpp',
+    'tests/helpers/test-result-recorder.cjs'
+  ],
+  'tests/capture-lifecycle-electron.mjs': [
+    'tests/helpers/capture-owner.cjs',
+    'tests/helpers/capture-test-desktop.mjs',
+    'tests/helpers/test-result-recorder.cjs'
+  ],
   'tests/helpers/capture-owner.cjs': ['src/main/capture/CaptureHost.js'],
   'tests/window-z-order-electron.mjs': ['tests/helpers/z-order-event-emitter.cjs'],
   'tests/ui-components-electron.mjs': [
@@ -1731,6 +2496,45 @@ const extraSourceDependencies = {
     'src/renderer/src/components/weather/WeatherSettings.vue',
     'src/renderer/src/components/system/RemoteNoticeDialog.vue'
   ],
+  'tests/note-list-settings-intent.test.js': [
+    'src/renderer/src/components/list/NoteList.vue',
+    'src/renderer/src/utils/settingsSnapshots.js',
+    'src/renderer/src/composables/useDateContextSettings.js',
+    'src/renderer/src/composables/useNoteStatusActions.js'
+  ],
+  'tests/calendar-workspace-lifecycle.test.js': [
+    'src/renderer/src/components/month/MonthWorkspace.vue',
+    'src/renderer/src/composables/useNoteStatusActions.js',
+    'src/renderer/src/composables/useCalendarWorkspacePreferences.js'
+  ],
+  'tests/weather-manual-refresh.test.js': [
+    'src/renderer/src/components/system/SettingsPanel.vue',
+    'src/renderer/src/composables/useDateContextSettings.js',
+    'src/renderer/src/utils/settingsSnapshots.js'
+  ],
+  'tests/note-list-completion-electron.mjs': [
+    'src/renderer/src/components/list/NoteList.vue',
+    'src/renderer/src/components/month/MonthWorkspace.vue',
+    'src/renderer/src/composables/useNoteStatusActions.js',
+    'src/renderer/src/utils/settingsSnapshots.js',
+    'src/renderer/src/components/system/SettingsPanel.vue'
+  ],
+  'tests/weather-settings-electron.mjs': [
+    'src/renderer/src/components/list/NoteList.vue',
+    'src/renderer/src/components/month/MonthWorkspace.vue',
+    'src/renderer/src/components/system/SettingsPanel.vue',
+    'src/renderer/src/composables/useDateContextSettings.js',
+    'src/renderer/src/composables/useCalendarWorkspacePreferences.js',
+    'src/renderer/src/utils/settingsSnapshots.js',
+    'src/main/ipc/register-weather-ipc.js'
+  ],
+  'tests/app-update-intent-electron.mjs': [
+    'src/renderer/src/App.vue',
+    'src/renderer/src/composables/useUpdateCheck.js',
+    'src/renderer/src/components/system/SettingsPanel.vue',
+    'src/renderer/src/components/system/UpdateDialog.vue',
+    'src/main/ipc/register-app-ipc.js'
+  ],
   'tests/queued-modal-lifecycle.test.js': ['src/renderer/src/utils/modalQueue.js'],
   'tests/reminder-notification.test.js': ['src/shared/reminder-rules.js'],
   'tests/remote-health-cache.test.js': [
@@ -1762,6 +2566,13 @@ const standaloneWindows = new Set([
   'tests/window-z-order-electron.mjs'
 ])
 const withoutApplication = new Set([
+  'tests/settings-panel-owners-electron.mjs',
+  'tests/session-draft-assets-electron.mjs',
+  'tests/session-draft-assets-prototype-electron.mjs',
+  'tests/settings-write-source-electron.mjs',
+  'tests/sticky-initialization-electron.mjs',
+  'tests/reminder-initialization-electron.mjs',
+  'tests/window-z-order-diagnostics-electron.mjs',
   'tests/remote-daily-electron.mjs',
   ...focusedNativeTests,
   ...standaloneWindows,
@@ -1783,7 +2594,11 @@ const withoutApplication = new Set([
   'tests/maturity-db.mjs',
   'tests/thumbnail-benchmark-electron.mjs'
 ])
-const allLegacyTests = new Set(registeredMjsFiles.filter((file) => !helperFiles.includes(file)))
+const allLegacyTests = new Set(
+  registeredMjsFiles.filter(
+    (file) => !helperFiles.includes(file) && !mjsFixtureFiles.includes(file)
+  )
+)
 const allHelpers = new Set([...helperFiles, ...additionalHelpers])
 const allFixtures = new Set(fixtureFiles)
 const allAdditionalTests = new Set(additionalTests)
@@ -1916,13 +2731,17 @@ function describeAsset(root, file) {
     runtimePrerequisites.push('electron-runtime', 'electron-abi-compatible-better-sqlite3')
     limits.push(
       file === 'tests/attachment-recovery-reset-electron.mjs'
-        ? 'isolated-electron-two-process-disk-and-files'
-        : file === 'tests/business-clear-admission-electron.mjs'
-          ? 'real-disk-sqlite-and-files-single-process-clear-admission'
-          : 'real-disk-sqlite-reopen-no-main-process-restart'
+        ? 'isolated-electron-three-process-disk-files-and-second-start-idempotence'
+        : file === 'tests/tag-commands-electron.mjs'
+          ? 'real-disk-sqlite-tag-commands-single-process'
+          : file === 'tests/business-clear-admission-electron.mjs'
+            ? 'real-disk-sqlite-and-files-single-process-clear-admission'
+            : 'real-disk-sqlite-reopen-no-main-process-restart'
     )
     if (file === 'tests/business-clear-admission-electron.mjs')
       limits.push('production-business-registerer-with-authorized-ipc-fixture-no-renderer')
+    if (file === 'tests/tag-commands-electron.mjs')
+      limits.push('production-tag-commands-and-authorized-ipc-fixture-no-renderer')
   } else if (databaseTests.includes(file)) {
     level = 'database'
     runtime = 'electron'
@@ -1964,9 +2783,19 @@ function describeAsset(root, file) {
     selectionPolicy = 'explicit'
   if (role === 'test' && file.endsWith('.cjs')) {
     runtime = 'node'
-    level = file === 'tests/reminder-native-acceptance.cjs' ? 'native' : 'install'
+    const failureDiagnostics = file === 'tests/test-failure-diagnostics-win.cjs'
+    level = failureDiagnostics
+      ? 'native'
+      : file === 'tests/reminder-native-acceptance.cjs'
+        ? 'native'
+        : 'install'
     runtimePrerequisites.push('windows-desktop')
-    if (file !== 'tests/reminder-native-acceptance.cjs')
+    if (failureDiagnostics) {
+      runtimePrerequisites.push('electron-runtime')
+      limits.push(
+        'isolated-real-native-error-dialog-and-test-owned-pid-observation-no-product-build'
+      )
+    } else if (file !== 'tests/reminder-native-acceptance.cjs')
       runtimePrerequisites.push('verified-unpacked-windows-package-argument')
     else
       runtimePrerequisites.push(
@@ -1997,21 +2826,188 @@ function describeAsset(root, file) {
     level = 'native'
     requires.push('build-native')
     runtimePrerequisites.push('windows-msvc-toolchain')
-    limits.push('isolated-native-collector-no-real-hwnd-movement')
+    limits.push(
+      file === 'tests/native-async-prototype-electron.mjs'
+        ? 'isolated-worker-ffi-lifecycle-prototype-not-production-integration-or-in-flight-native-cancellation'
+        : file === 'tests/dispatcher-queue-lifetime-electron.mjs'
+          ? 'real-current-thread-dispatcher-queues-and-owned-product-dll-init-destroy-no-async-production-abi'
+          : file === 'tests/window-z-order-diagnostics-native.mjs'
+            ? 'isolated-native-controller-api-substitutes-no-real-hwnd-movement'
+            : 'isolated-native-collector-no-real-hwnd-movement'
+    )
+  }
+  if (file === 'tests/native-async-prototype-electron.mjs') {
+    selectionPolicy = 'explicit'
+    runtimePrerequisites.push('owned-isolated-profile', 'windows-desktop', nativeAbiPrerequisite)
+  }
+  if (file === 'tests/window-z-order-diagnostics-electron.mjs') {
+    level = 'native'
+    requires.push('build-native', 'build-app')
+    runtimePrerequisites.push('electron-ready', 'owned-isolated-profile', nativeAbiPrerequisite)
+    limits.push('real-dll-invalid-hwnd-through-bridge-runtime-log-worker-no-application-bootstrap')
+  }
+  if (file === 'tests/settings-write-source-electron.mjs') {
+    runtimePrerequisites.push(
+      'windows-desktop',
+      'owned-isolated-profile',
+      'electron-abi-compatible-better-sqlite3'
+    )
+    limits.push('hidden-browserwindow-production-source-and-client-fixture-not-full-application')
+  }
+  if (file === 'tests/settings-panel-owners-electron.mjs') {
+    runtimePrerequisites.push('owned-isolated-profile', 'windows-desktop', 'electron-runtime')
+    limits.push('real-vue-owner-mount-unmount-with-controlled-api-no-product-ipc-or-native-proof')
+  }
+  if (file === 'tests/session-draft-assets-prototype-electron.mjs') {
+    runtimePrerequisites.push(
+      'owned-isolated-profile',
+      'windows-desktop',
+      'electron-abi-compatible-better-sqlite3'
+    )
+    limits.push(
+      'isolated-session-draft-asset-prototype-not-production-draft-integration',
+      'real-current-draft-watchers-and-localstorage-twenty-edits-per-arm',
+      'real-source-attachment-command-handoff-no-production-renderer-ipc-or-os-notification',
+      'controlled-io-faults-and-owned-quota-fill-no-installation-or-power-loss-proof'
+    )
+  }
+  if (file === 'tests/session-draft-assets-electron.mjs') {
+    runtimePrerequisites.push('owned-isolated-profile', 'windows-desktop', 'electron-runtime')
+    limits.push(
+      'production-source-runtime-ipc-client-direct-imports-not-application-entry-or-renderer-forms',
+      'real-disk-owned-asset-cleanup-and-document-lifecycle-no-note-command-consumer',
+      'controlled-io-gates-no-installation-or-power-loss-proof'
+    )
+  }
+  if (
+    [
+      'tests/weather-settings-electron.mjs',
+      'tests/app-update-intent-electron.mjs',
+      'tests/background-navigation-electron.mjs',
+      'tests/note-list-refresh-electron.mjs',
+      'tests/note-list-completion-electron.mjs'
+    ].includes(file)
+  ) {
+    requires.push('build-native')
+    runtimePrerequisites.push('owned-isolated-profile', 'windows-desktop', nativeAbiPrerequisite)
+  }
+  if (file === 'tests/session-draft-assets-product-electron.mjs') {
+    requires.push('build-native', 'build-capture')
+    runtimePrerequisites.push('owned-isolated-profile', 'windows-desktop', nativeAbiPrerequisite)
+    limits.push(
+      'built-real-product-with-controlled-owned-io-sql-trigger-and-reply-loss',
+      'dom-file-input-not-native-keyboard-or-capture-input',
+      'same-startup-view-switch-image-draft-conflict-and-reload-no-installation-or-power-loss-proof'
+    )
+  }
+  if (file === 'tests/capture-delivery-electron.mjs') {
+    requires.push('build-native', 'build-capture')
+    runtimePrerequisites.push('owned-isolated-profile', 'windows-desktop', nativeAbiPrerequisite)
+    limits.push(
+      'real-product-preload-renderer-and-journal-with-synthetic-capture-output',
+      'awaiting-user-product-navigation-refusal-and-controlled-document-reload',
+      'default-delivery-deadlines-no-native-overlay-or-physical-input-proof'
+    )
+  }
+  if (file === 'tests/capture-compositor-electron.mjs') {
+    requires.push('build-native', 'build-capture')
+    runtimePrerequisites.push(
+      'owned-isolated-profile',
+      'windows-desktop',
+      nativeAbiPrerequisite,
+      'capture-qt-deployment',
+      'same-build-capture-input-driver',
+      'single-display'
+    )
+    limits.push(
+      'real-product-window-hide-and-qt-png-with-owned-native-keyboard-input',
+      'single-machine-digital-composition-not-optical-scanout-mouse-selection-or-mixed-dpi'
+    )
+  }
+  if (file === 'tests/settings-page-leave-electron.mjs') {
+    requires.push('build-native', 'build-capture')
+    runtimePrerequisites.push('owned-isolated-profile')
+    limits.push(
+      'production-tray-callback-not-native-menu-mouse-hit-testing',
+      'requested-0-100-299ms-delays-with-observed-dispatch-times-not-sub-ms-certification',
+      'one-held-real-setting-ipc-for-hide-cancellation-no-exit-preparation-coverage'
+    )
+  }
+  if (file === 'tests/settings-application-ui-electron.mjs') {
+    requires.push('build-native', 'build-capture')
+    runtimePrerequisites.push('owned-isolated-profile')
+    limits.push(
+      'real-settings-panel-preload-and-sqlite-with-explicit-postcommit-theme-failure-and-promise-gate',
+      'theme-host-has-no-application-ack-unconfirmed-never-counts-as-applied',
+      'test-owned-profile-no-os-auto-start-or-installation-or-process-restart-proof'
+    )
+  }
+  if (file === 'tests/settings-snapshot-read-electron.mjs') {
+    requires.push('build-native', 'build-capture')
+    runtimePrerequisites.push('owned-isolated-profile')
+    limits.push(
+      'real-sqlite-and-preload-read-with-controlled-database-read-failure',
+      'integration-only-canonical-observation-does-not-refresh-or-apply-settings',
+      'no-os-auto-start-mutation-installation-or-second-process-restart'
+    )
+  }
+  if (file === 'tests/settings-quit-electron.mjs') {
+    requires.push('build-native', 'build-capture')
+    runtimePrerequisites.push('owned-isolated-profile')
+    limits.push(
+      'production-tray-callback-with-controlled-ledger-tail-not-native-menu-hit-testing',
+      'real-normal-quit-and-sqlite-no-second-process-restart'
+    )
+  }
+  if (
+    [
+      'tests/settings-exit-restart-electron.mjs',
+      'tests/settings-operation-quit-electron.mjs',
+      'tests/sticky-quit-electron.mjs',
+      'tests/main-view-initialization-electron.mjs',
+      'tests/main-view-startup-electron.mjs'
+    ].includes(file)
+  ) {
+    requires.push('build-native', 'build-capture')
+    runtimePrerequisites.push('owned-isolated-profile')
+    limits.push(
+      'controlled-test-timing-and-production-tray-callback-no-native-menu-mouse-hit-testing',
+      'multiple-real-main-processes-owned-profiles-no-installation-or-power-loss-proof'
+    )
   }
   if (allLegacyTests.has(file) && !withoutApplication.has(file)) {
     requires.push('build-app')
     runtimePrerequisites.push(
       'windows-desktop',
       'electron-abi-compatible-better-sqlite3',
-      'blur-engine-abi-22',
+      nativeAbiPrerequisite,
       'capture-qt-deployment'
     )
     limits.push('application-start-prewarms-capture-even-without-capture-assertions')
   }
+  if (
+    [
+      'tests/reminders-electron.mjs',
+      'tests/daily-report-electron.mjs',
+      'tests/settings-runtime-electron.mjs',
+      'tests/settings-queue-electron.mjs',
+      'tests/settings-snapshot-ordering-electron.mjs',
+      'tests/note-list-custom-electron.mjs',
+      'tests/recurring-preview-electron.mjs',
+      'tests/native-leaf-runtime-electron.mjs',
+      'tests/dock-runtime-electron.mjs',
+      'tests/new-note-workflow-electron.mjs',
+      'tests/application-lifecycle-electron.mjs',
+      'tests/renderer-recovery-electron.mjs',
+      'tests/presentation-mode-electron.mjs'
+    ].includes(file)
+  ) {
+    // These fixtures import the product entry, which loads blur and prewarms capture.
+    requires.push('build-native', 'build-capture')
+  }
   if (standaloneWindows.has(file)) {
     requires.push('build-native')
-    runtimePrerequisites.push('windows-desktop', 'blur-engine-abi-22')
+    runtimePrerequisites.push('windows-desktop', nativeAbiPrerequisite)
   }
   if (file === 'tests/logging-motion-overhead-electron.mjs') {
     requires.push('build-native', 'build-capture')
@@ -2027,12 +3023,33 @@ function describeAsset(root, file) {
     ].includes(file)
   ) {
     requires.push('build-capture')
-    runtimePrerequisites.push('windows-desktop', 'capture-qt-deployment')
+    runtimePrerequisites.push('capture-qt-deployment')
+    if (file !== 'tests/capture-host-electron.mjs') runtimePrerequisites.push('windows-desktop')
     limits.push('runs-real-capture-helper')
   }
+  if (['tests/capture-host-electron.mjs', 'tests/capture-lifecycle-electron.mjs'].includes(file))
+    runtimePrerequisites.push('owned-isolated-profile')
   if (file === 'tests/capture-host-electron.mjs') {
     level = 'native'
     limits.push('background-helper-lifecycle-no-capture-overlay-or-real-input')
+  }
+  if (file === 'tests/sticky-initialization-electron.mjs') {
+    runtimePrerequisites.push(
+      'windows-desktop',
+      'owned-isolated-profile',
+      'electron-abi-compatible-better-sqlite3',
+      'loopback-http-fixture'
+    )
+    limits.push('isolated-service-real-window-ipc-sqlite-not-full-product-shutdown')
+  }
+  if (file === 'tests/reminder-initialization-electron.mjs') {
+    requires.push('build-app')
+    runtimePrerequisites.push('windows-desktop', 'owned-isolated-profile', 'loopback-http-fixture')
+    limits.push(
+      'real-reminder-renderer-preload-with-controlled-ready-and-load-tail',
+      'isolated-presentation-lifecycle-not-product-database-toast-or-full-shutdown',
+      'initial-document-only-no-arbitrary-reload-or-first-pixel-proof'
+    )
   }
   if (
     [

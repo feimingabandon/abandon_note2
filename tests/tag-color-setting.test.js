@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { RENDERER_WRITABLE_SETTING_IDS } from '../src/shared/settings-schema.js'
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 
@@ -14,7 +15,7 @@ describe('shared tag color setting', () => {
     expect(runtime).toContain('tagColorSetting.applySnapshot(snapshot)')
 
     for (const component of [
-      'src/renderer/src/components/list/NoteCard.vue',
+      'src/renderer/src/components/note/NoteCard.vue',
       'src/renderer/src/components/list/SearchResultCard.vue',
       'src/renderer/src/components/month/MonthEventBar.vue',
       'src/renderer/src/components/month/MonthCalendarGrid.vue'
@@ -34,15 +35,13 @@ describe('shared tag color setting', () => {
 
   it('allows the renderer IPC to persist the setting through the main process', () => {
     const main = read('src/main/index.js')
-    const allowlistStart = main.indexOf('const RENDERER_WRITABLE_SETTING_IDS')
-    const allowlist = main.slice(allowlistStart, main.indexOf('])', allowlistStart) + 2)
     const handlerStart = main.indexOf("mainWindowIpc.handle('set-setting-value'")
     const handlerEnd = main.indexOf('mainWindowIpc.handle(', handlerStart + 1)
     expect(handlerStart).toBeGreaterThanOrEqual(0)
     expect(handlerEnd).toBeGreaterThan(handlerStart)
     const handler = main.slice(handlerStart, handlerEnd)
 
-    expect(allowlist).toContain("'notes.tagColorEnabled'")
+    expect(RENDERER_WRITABLE_SETTING_IDS).toContain('notes.tagColorEnabled')
     expect(handler).toContain('RENDERER_WRITABLE_SETTING_IDS.has(id)')
     expect(handler).toContain('persistSettingValue(id, value)')
   })

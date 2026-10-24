@@ -20,6 +20,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 # 源文件
 set(SOURCES
     blur_engine.cpp
+    dispatcher_queue_lifetime.cpp
     blur_api.cpp
     window_z_order.cpp
     window_motion_edge_monitor.cpp
@@ -30,6 +31,7 @@ set(SOURCES
 
 set(HEADERS
     blur_engine.h
+    dispatcher_queue_lifetime.h
     blur_api.h
     window_z_order.h
     blur_effects.h
@@ -103,3 +105,36 @@ target_compile_definitions(window_motion_diagnostics_test PRIVATE
     _WIN32_WINNT=0x0A00
 )
 target_compile_options(window_motion_diagnostics_test PRIVATE /W3 /utf-8 /permissive-)
+
+# This controller test compiles the production source with Win32 API substitutes
+# confined to its own translation unit. Normal DLL builds contain no substitutes
+# or fault-injection exports, and the test never opens or reorders real windows.
+add_executable(window_z_order_diagnostics_test EXCLUDE_FROM_ALL
+    tests/window_z_order_diagnostics_test.cpp
+)
+target_include_directories(window_z_order_diagnostics_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(window_z_order_diagnostics_test PRIVATE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    _WIN32_WINNT=0x0A00
+    # The real controller includes the same C++/WinRT headers as blur_engine.
+    # Keep its C++17/MSVC compatibility setting aligned with the product target.
+    _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
+)
+target_compile_options(window_z_order_diagnostics_test PRIVATE /W3 /utf-8 /permissive-)
+
+# Focused ownership test: real current-thread queues and product DLL teardown.
+# Normal product builds do not compile or run this executable.
+add_executable(dispatcher_queue_lifetime_test EXCLUDE_FROM_ALL
+    tests/dispatcher_queue_lifetime_test.cpp
+    dispatcher_queue_lifetime.cpp
+)
+target_include_directories(dispatcher_queue_lifetime_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(dispatcher_queue_lifetime_test PRIVATE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    _WIN32_WINNT=0x0A00
+    _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
+)
+target_compile_options(dispatcher_queue_lifetime_test PRIVATE /W3 /utf-8 /permissive-)
+target_link_libraries(dispatcher_queue_lifetime_test PRIVATE blur_engine WindowsApp ole32 user32 dbghelp)

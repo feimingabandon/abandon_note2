@@ -4,6 +4,7 @@
 #include "SaveActions.h"
 #include <QApplication>
 #include <QClipboard>
+#include <QDebug>
 #include <QDir>
 #include <QFileDialog>
 #include <QJsonArray>
@@ -13,6 +14,7 @@
 #include <QRegularExpression>
 #include <QTimer>
 #include <QUuid>
+#include <windows.h>
 
 CaptureEngine::CaptureEngine(QString pipe, QString secret, QString directory)
     : token(secret), root(directory) {
@@ -30,26 +32,56 @@ CaptureEngine::CaptureEngine(QString pipe, QString secret, QString directory)
       return;
     }
     socket = candidate;
-    connect(socket, &QLocalSocket::disconnected, qApp, &QApplication::quit);
-    connect(socket, &QLocalSocket::readyRead, this, [this] {
-      input += socket->readAll();
-      if (input.size() > 65536) {
-        socket->abort();
-        return;
-      }
-      while (input.contains('\n')) {
-        int end = input.indexOf('\n');
-        auto line = input.left(end);
-        input.remove(0, end + 1);
-        QJsonParseError error;
-        auto doc = QJsonDocument::fromJson(line, &error);
-        if (error.error != QJsonParseError::NoError || !doc.isObject()) {
-          socket->abort();
-          return;
-        }
-        receive(doc.object());
+    const auto generation = ++socketGeneration;
+    connect(candidate, &QLocalSocket::disconnected, this,
+            [this, candidate, generation] {
+              if (socketGeneration != generation || socket != candidate)
+                return;
+              authenticated = false;
+              revokePeerIdentity();
+              input.clear();
+              socket = nullptr;
+              disconnect(candidate, nullptr, this, nullptr);
+              candidate->deleteLater();
+            });
+    connect(candidate, &QObject::destroyed, this, [this, generation] {
+      if (socketGeneration == generation) {
+        authenticated = false;
+        revokePeerIdentity();
+        input.clear();
+        socket = nullptr;
       }
     });
+    connect(socket, &QLocalSocket::disconnected, qApp, &QApplication::quit);
+    connect(candidate, &QLocalSocket::readyRead, this,
+            [this, candidate, generation] {
+              if (socket != candidate || socketGeneration != generation)
+                return;
+              input += candidate->readAll();
+              if (input.size() > 65536) {
+                authenticated = false;
+                revokePeerIdentity();
+                candidate->abort();
+                return;
+              }
+              while (input.contains('\n')) {
+                int end = input.indexOf('\n');
+                auto line = input.left(end);
+                input.remove(0, end + 1);
+                QJsonParseError error;
+                auto doc = QJsonDocument::fromJson(line, &error);
+                if (error.error != QJsonParseError::NoError || !doc.isObject()) {
+                  authenticated = false;
+                  revokePeerIdentity();
+                  candidate->abort();
+                  return;
+                }
+                receive(doc.object());
+                if (socket != candidate || socketGeneration != generation ||
+                    candidate->state() != QLocalSocket::ConnectedState)
+                  return;
+              }
+            });
   });
   QTimer::singleShot(10000, this, [this] {
     if (!authenticated)
@@ -81,6 +113,12 @@ CaptureEngine::CaptureEngine(QString pipe, QString secret, QString directory)
     watchScreen(screen);
 }
 CaptureEngine::~CaptureEngine() {
+  // QObject's automatic disconnection happens after member destruction.
+  // Stop socket callbacks before server teardown can emit disconnected.
+  if (socket)
+    disconnect(socket, nullptr, this, nullptr);
+  authenticated = false;
+  revokePeerIdentity();
   finish("cancelled");
   const auto owned = pins;
   for (auto p : owned)
@@ -89,6 +127,103 @@ CaptureEngine::~CaptureEngine() {
       delete p;
     }
   closedPin.reset();
+}
+void CaptureEngine::revokePeerIdentity() {
+  if (peerProcess)
+    CloseHandle(static_cast<HANDLE>(peerProcess));
+  peerProcess = nullptr;
+  peerSocket = nullptr;
+  peerPid = 0;
+  peerGeneration = 0;
+}
+void CaptureEngine::bindPeerIdentity() {
+  revokePeerIdentity();
+  if (!authenticated || !socket ||
+      socket->state() != QLocalSocket::ConnectedState)
+    return;
+  ULONG pid = 0;
+  SetLastError(ERROR_SUCCESS);
+  const bool queried = GetNamedPipeClientProcessId(
+      reinterpret_cast<HANDLE>(socket->socketDescriptor()), &pid);
+  DWORD error = queried ? ERROR_SUCCESS : GetLastError();
+  HANDLE process = nullptr;
+  if (queried && pid) {
+    process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                          FALSE, pid);
+    if (!process)
+      error = GetLastError();
+    else {
+      const auto processPid = GetProcessId(process);
+      if (!processPid)
+        error = GetLastError();
+      else if (processPid != pid)
+        error = ERROR_INVALID_DATA;
+      else {
+        const auto wait = WaitForSingleObject(process, 0);
+        if (wait != WAIT_TIMEOUT)
+          error = wait == WAIT_FAILED ? GetLastError() : ERROR_PROCESS_ABORTED;
+      }
+    }
+  } else if (queried)
+    error = ERROR_INVALID_DATA;
+  const bool retained = process && error == ERROR_SUCCESS;
+  qInfo().noquote() << "capture.foreground-peer" << "generation"
+                    << socketGeneration << "pid" << pid << "retained"
+                    << retained << "win32Error" << error;
+  if (!retained) {
+    if (process)
+      CloseHandle(process);
+    return;
+  }
+  peerProcess = process;
+  peerPid = pid;
+  peerSocket = socket;
+  peerGeneration = socketGeneration;
+}
+bool CaptureEngine::grantPeerForeground(const QString &expectedSession,
+                                       const QString &reason,
+                                       QJsonObject *foregroundHandoff) {
+  if (foregroundHandoff)
+    *foregroundHandoff = {
+        {"attempted", false},
+        {"pid", QJsonValue(QJsonValue::Null)},
+        {"generation", qint64(socketGeneration)},
+        {"sessionId", expectedSession},
+        {"reason", reason},
+        {"granted", QJsonValue(QJsonValue::Null)},
+        {"win32Error", QJsonValue(QJsonValue::Null)}};
+  if (expectedSession.isEmpty() || expectedSession != session ||
+      !authenticated || !socket || peerSocket != socket || !peerProcess ||
+      !peerPid || peerGeneration != socketGeneration ||
+      sessionGeneration != peerGeneration ||
+      socket->state() != QLocalSocket::ConnectedState)
+    return false;
+  ULONG pid = 0;
+  // Re-read this live connection's kernel identity. A cached pipe HANDLE or
+  // PID is insufficient after disconnect, process exit or a new generation.
+  if (GetProcessId(static_cast<HANDLE>(peerProcess)) != peerPid ||
+      WaitForSingleObject(static_cast<HANDLE>(peerProcess), 0) != WAIT_TIMEOUT ||
+      !GetNamedPipeClientProcessId(
+          reinterpret_cast<HANDLE>(socket->socketDescriptor()), &pid) ||
+      pid != peerPid) {
+    revokePeerIdentity();
+    return false;
+  }
+  SetLastError(ERROR_SUCCESS);
+  const bool granted = AllowSetForegroundWindow(pid);
+  const auto error = granted ? ERROR_SUCCESS : GetLastError();
+  if (foregroundHandoff) {
+    foregroundHandoff->insert("attempted", true);
+    foregroundHandoff->insert("pid", qint64(pid));
+    foregroundHandoff->insert("generation", qint64(peerGeneration));
+    foregroundHandoff->insert("granted", granted);
+    foregroundHandoff->insert("win32Error", qint64(error));
+  }
+  qInfo().noquote() << "capture.foreground-grant" << "generation"
+                    << peerGeneration << "session" << expectedSession
+                    << "reason" << reason << "pid" << pid << "granted"
+                    << granted << "win32Error" << error;
+  return granted;
 }
 void CaptureEngine::send(QJsonObject message) {
   if (socket)
@@ -104,10 +239,13 @@ void CaptureEngine::receive(QJsonObject m) {
   if (!authenticated) {
     if (type != "hello" || m["token"].toString() != token ||
         m["version"].toInt() != 1) {
-      socket->abort();
+      revokePeerIdentity();
+      if (socket)
+        socket->abort();
       return;
     }
     authenticated = true;
+    bindPeerIdentity();
     send({{"type", "ready"}, {"version", 1}});
     return;
   }
@@ -201,6 +339,7 @@ void CaptureEngine::capture(QJsonObject m) {
   if (!QRegularExpression("^[a-f0-9-]{36}$").match(id).hasMatch())
     return;
   session = id;
+  sessionGeneration = socketGeneration;
   Capture::Feedback::dismissBeforeCapture();
   QString error;
   qint64 total = 0;
@@ -260,6 +399,12 @@ void CaptureEngine::capture(QJsonObject m) {
                            m["origin"].toString() == "global" &&
                                m["mode"].toString() == "copy-on-select");
     overlays.push_back(overlay);
+    const QPointer<CaptureOverlay> guard = overlay;
+    const auto generation = sessionGeneration;
+    const auto isCurrent = [this, id, generation, guard] {
+      return guard && !id.isEmpty() && session == id &&
+             socketGeneration == generation && overlays.contains(guard);
+    };
     overlay->annotations->allowAllocation = [this](qint64 extra) {
       qint64 bytes = extra;
       for (auto o : overlays)
@@ -274,16 +419,28 @@ void CaptureEngine::capture(QJsonObject m) {
     };
     if (layout.signature() == lastScreen && image.size() == lastImageSize)
       overlay->recalledSelection = lastArea;
-    overlay->claim = [this](CaptureOverlay *o) {
-      if (selected && selected != o)
+    overlay->claim = [this, isCurrent](CaptureOverlay *o) {
+      if (!isCurrent() || (selected && selected != o))
         return false;
       selected = o;
       return true;
     };
-    overlay->clearClaim = [this] { selected = nullptr; };
-    overlay->cancel = [this] { finish("cancelled"); };
-    overlay->output = [this, overlay](QString action, QImage image) {
-      output(overlay, action, image);
+    overlay->clearClaim = [this, isCurrent] {
+      if (isCurrent())
+        selected = nullptr;
+    };
+    overlay->cancel = [this, id, isCurrent] {
+      // finish() clears session before closing overlays. Such a close, or an
+      // old overlay continuation, must never grant foreground permission.
+      if (!isCurrent())
+        return;
+      QJsonObject foregroundHandoff;
+      grantPeerForeground(id, "cancelled", &foregroundHandoff);
+      finish("cancelled", foregroundHandoff);
+    };
+    overlay->output = [this, guard, isCurrent](QString action, QImage image) {
+      if (isCurrent())
+        output(guard, action, image);
     };
   }
   for (auto o : overlays)
@@ -310,7 +467,8 @@ void CaptureEngine::capture(QJsonObject m) {
         {"sessionId", session},
         {"displays", displays}});
 }
-void CaptureEngine::finish(QString status) {
+void CaptureEngine::finish(QString status,
+                           std::optional<QJsonObject> foregroundHandoff) {
   if (session.isEmpty())
     return;
   auto id = session;
@@ -321,6 +479,7 @@ void CaptureEngine::finish(QString status) {
     lastImageSize = selected->document.base.size();
   }
   session.clear();
+  sessionGeneration = 0;
   delivery.clear();
   busy = false;
   selected = nullptr;
@@ -328,7 +487,10 @@ void CaptureEngine::finish(QString status) {
     if (o)
       o->close();
   overlays.clear();
-  send({{"type", "finished"}, {"sessionId", id}, {"status", status}});
+  QJsonObject message{{"type", "finished"}, {"sessionId", id}, {"status", status}};
+  if (foregroundHandoff)
+    message.insert("foregroundHandoff", *foregroundHandoff);
+  send(message);
 }
 bool CaptureEngine::pin(QImage image, QString *error) {
   Capture::ImageDocument document;
@@ -391,15 +553,15 @@ bool CaptureEngine::pin(Capture::ImageDocument document, QString *error,
 }
 void CaptureEngine::output(CaptureOverlay *source, QString action,
                            QImage image) {
-  if (busy)
+  if (busy || session.isEmpty() || !source || !overlays.contains(source))
     return;
   busy = true;
   QString error;
   if (action == "copy") {
     if (Capture::writeClipboardImage(image, &error)) {
-      const auto near = QCursor::pos();
+      const auto feedbackPosition = QCursor::pos();
       finish("copied");
-      feedback.showMessage(QStringLiteral("已复制到剪贴板"), near);
+      feedback.showMessage(QStringLiteral("已复制到剪贴板"), feedbackPosition);
     } else {
       busy = false;
       source->showError(error);
@@ -437,15 +599,21 @@ void CaptureEngine::output(CaptureOverlay *source, QString action,
     delivery = QUuid::createUuid().toString(QUuid::WithoutBraces);
     auto path = QDir(root).filePath(session + "/" + delivery + ".png");
     if (Capture::saveImage(image, path, &error)) {
+      QJsonObject foregroundHandoff;
+      if (action == "note" || action == "source" || action == "background")
+        grantPeerForeground(session, action, &foregroundHandoff);
       for (auto o : overlays)
         if (o)
           o->hide();
-      send({{"type", "output"},
-            {"sessionId", session},
-            {"deliveryId", delivery},
-            {"action", action},
-            {"width", image.width()},
-            {"height", image.height()}});
+      QJsonObject message{{"type", "output"},
+                          {"sessionId", session},
+                          {"deliveryId", delivery},
+                          {"action", action},
+                          {"width", image.width()},
+                          {"height", image.height()}};
+      if (!foregroundHandoff.isEmpty())
+        message.insert("foregroundHandoff", foregroundHandoff);
+      send(message);
       return;
     }
     delivery.clear();

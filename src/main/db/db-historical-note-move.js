@@ -74,7 +74,7 @@ export function previewHistoricalNotesToToday(selection = {}, { now = Date.now()
  */
 export function moveHistoricalNotesToToday(
   selection = {},
-  { now = Date.now(), validateTargetDate = true } = {}
+  { now = Date.now(), validateTargetDate = true, excludeRecurring = false } = {}
 ) {
   const range = normalizeHistoricalNoteMoveSelection(selection, now)
   if (validateTargetDate && selection.targetDateKey !== range.targetDateKey) {
@@ -91,6 +91,8 @@ export function moveHistoricalNotesToToday(
   return db.transaction(() => {
     const { clauses, params } = buildCandidateWhere(range)
     clauses.push("duration_kind = 'single_day'")
+    // 自动移动保留各期循环实例的原日期；手动选择仍允许移动这些真实便签。
+    if (excludeRecurring) clauses.push('from_template = 0')
     // JSON1 将任意页数的 ID 压成一个绑定参数，避免 SQLite 的占位符数量上限。
     if (noteIds !== null) {
       clauses.push('id IN (SELECT value FROM json_each(?))')

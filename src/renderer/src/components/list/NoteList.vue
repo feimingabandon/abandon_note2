@@ -6,25 +6,27 @@ import { useModalRequest } from '../../composables/useQueuedModal.js'
  * 3.5 + 3.6: 新增自定义拖拽模式，集成 vuedraggable
  * - 三状态：initialized / in_progress / completed
  */
-import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useSharedMinuteClock } from '../../composables/useSharedMinuteClock.js'
 import { useTodayKey } from '../../composables/useTodayKey.js'
 import { useWeatherRecovery } from '../../composables/useWeatherRecovery.js'
 import { useDateContextSettings } from '../../composables/useDateContextSettings.js'
+import { getSettingsSnapshotStore } from '../../utils/settingsSnapshots.js'
+import { parseSettingsReceipt } from '../../../../shared/settings-receipt.js'
 import DateContextSummary from '../almanac/DateContextSummary.vue'
 import draggable from 'vuedraggable'
 import TagSelector from '../ui/TagSelector.vue'
 import FilterTabs from '../ui/FilterTabs.vue'
-import NoteCard from './NoteCard.vue'
+import NoteCard from '../note/NoteCard.vue'
 import ListDisclosure from './ListDisclosure.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import TagManagerDialog from '../ui/TagManagerDialog.vue'
 import { DEFAULT_SETTINGS } from '../../../../shared/settings-schema.js'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
 import { useMessage } from '../../composables/useMessage.js'
-import { weatherLocationKey } from '../../../../shared/weather-rules.js'
 import { buildDisplayableWeatherByDate, getWeatherForNote } from '../../utils/noteWeather.js'
 import { useNoteListQuerySession } from '../../composables/useNoteListQuerySession.js'
+import { useNoteStatusActions } from '../../composables/useNoteStatusActions.js'
 import { useTimelineListModel } from '../../composables/useTimelineListModel.js'
 import { useCustomListModel } from '../../composables/useCustomListModel.js'
 import { useTagGroupListModel } from '../../composables/useTagGroupListModel.js'
@@ -54,8 +56,16 @@ function traceListLoad(mode, options, work, notes) {
 const emit = defineEmits(['edit'])
 const { showMessage } = useMessage()
 const todayKey = useTodayKey()
+const settingsSnapshots = getSettingsSnapshotStore(window.api)
+const filterIntentOwner = Symbol('note-list-filter')
+const sortIntentOwner = Symbol('note-list-sort-presentation')
 useWeatherRecovery()
-const { weatherEnabled: weatherDisplayEnabled, almanacEnabled } = useDateContextSettings()
+const dateContext = useDateContextSettings()
+const {
+  weatherEnabled: weatherDisplayEnabled,
+  almanacEnabled,
+  forecast: weatherForecast
+} = dateContext
 
 /** 排序模式：timeline | custom | tag-group */
 const sortMode = ref(DEFAULT_SETTINGS.listFilter.listMode)
@@ -74,23 +84,61 @@ const sortModeLabel = computed(
 let modeSwitchRunning = false
 let modePresenceSwitching = false
 let pendingSortMode = null
-async function selectSortMode(nextMode) {
-  if (modeSwitchRunning || replayRefreshRunning) {
-    pendingSortMode = nextMode
+let activeSortIntent = null
+let sortWriteOrigin = null
+function assignSortModeFromIntent(nextMode, intent) {
+  const previous = sortWriteOrigin
+  sortWriteOrigin = intent.release
+  try {
+    sortMode.value = nextMode
+  } finally {
+    sortWriteOrigin = previous
+  }
+}
+async function selectSortMode(nextMode, existingIntent = null) {
+  if (querySession.disposed || !modeOptions.some((option) => option.value === nextMode)) {
+    existingIntent?.release()
     return
   }
-  if (nextMode === sortMode.value) return
+  if (!modeSwitchRunning && !replayRefreshRunning && nextMode === sortMode.value) {
+    existingIntent?.release()
+    return
+  }
+  const intent = existingIntent || {
+    mode: nextMode,
+    // Empty-domain leases join reset checkpoints without projecting a mode
+    // that is still waiting for its departure animation.
+    release: settingsSnapshots.protectDomain(sortIntentOwner, 'sort-presentation')
+  }
+  if (modeSwitchRunning || replayRefreshRunning) {
+    pendingSortMode?.release()
+    pendingSortMode = intent
+    return
+  }
+  if (!intent.release.isActive()) {
+    intent.release()
+    return
+  }
   if (nextMode !== 'tag-group') exitTagGroupSortMode()
   modeSwitchRunning = true
+  activeSortIntent = intent
   const previousMode = sortMode.value
   const previousTimeline = noteList.value
   const previousCustom = customList.value
   const previousTagGroups = tagGroups.value
   const switchSeq = ++presenceMotionSeq
+  const current = () =>
+    !querySession.disposed &&
+    activeSortIntent === intent &&
+    intent.release.isActive() &&
+    switchSeq === presenceMotionSeq
+  const cancelExits = () => {
+    if (!querySession.disposed) cancelCurrentPresenceExits()
+  }
   try {
     await animateCurrentCardsOut({ includeAuxiliary: true })
-    if (switchSeq !== presenceMotionSeq) {
-      cancelCurrentPresenceExits()
+    if (!current()) {
+      cancelExits()
       return
     }
 
@@ -104,40 +152,73 @@ async function selectSortMode(nextMode) {
       tagGroups.value = []
     }
     await nextTick()
+    if (!current()) {
+      cancelExits()
+      return
+    }
 
     modePresenceSwitching = true
-    sortMode.value = nextMode
+    assignSortModeFromIntent(nextMode, intent)
     await nextTick()
+    if (!current()) {
+      cancelExits()
+      return
+    }
     const result = await switchMode(nextMode, { showLoading: false, preserveAnchor: false }, false)
+    if (!current()) {
+      cancelExits()
+      return
+    }
     if (result?.status !== 'success') {
       timelineModel.replaceItems(previousTimeline)
       customModel.replaceItems(previousCustom)
       tagGroups.value = previousTagGroups
       syncCustomZones()
-      sortMode.value = previousMode
+      assignSortModeFromIntent(previousMode, intent)
       await nextTick()
+      if (!current()) return
       animateAuxiliaryIn()
       animateRetainedCards(new Map())
       return
     }
-    if (switchSeq !== presenceMotionSeq) {
-      cancelCurrentPresenceExits()
+    await nextTick()
+    if (!current()) {
+      cancelExits()
       return
     }
-    await nextTick()
     animateAuxiliaryIn()
     animateRetainedCards(new Map())
   } finally {
-    modePresenceSwitching = false
-    modeSwitchRunning = false
-    resumePendingSortMode()
+    intent.release()
+    if (!querySession.disposed && activeSortIntent === intent) {
+      activeSortIntent = null
+      modePresenceSwitching = false
+      modeSwitchRunning = false
+      resumePendingSortMode()
+    }
   }
 }
 
 function resumePendingSortMode() {
-  const nextMode = pendingSortMode
+  const intent = pendingSortMode
   pendingSortMode = null
-  if (nextMode && nextMode !== sortMode.value) void selectSortMode(nextMode)
+  if (!intent) return
+  if (querySession.disposed || !intent.release.isActive() || intent.mode === sortMode.value) {
+    intent.release()
+    return
+  }
+  void selectSortMode(intent.mode, intent)
+}
+
+function cancelResetSortIntents() {
+  if (pendingSortMode && !pendingSortMode.release.isActive()) {
+    pendingSortMode.release()
+    pendingSortMode = null
+  }
+  if (activeSortIntent && !activeSortIntent.release.isActive()) {
+    presenceMotionSeq += 1
+    cancelCurrentPresenceExits()
+  }
 }
 
 // 筛选面板 chip 的轻量错峰；便签本身的进出场由列表 ID 差分协调器统一处理。
@@ -155,11 +236,7 @@ const querySession = useNoteListQuerySession({
   getFilters: () => ({ statuses: statusFilter.value, tagIds: tagFilterIds.value })
 })
 const { loading, loadError, allNoteTotal, lastRefreshedAt } = querySession
-const weatherEnabled = ref(false)
-const weatherForecast = ref(null)
 const weatherNow = useSharedMinuteClock()
-const weatherSettingsKey = ref('')
-let weatherLoadSequence = 0
 const weatherByDate = computed(() =>
   buildDisplayableWeatherByDate(weatherForecast.value, Math.max(weatherNow.value, Date.now()))
 )
@@ -185,33 +262,6 @@ function formatRefreshTime(timestamp) {
 
 function weatherForNote(note) {
   return getWeatherForNote(note, weatherByDate.value)
-}
-
-async function loadWeatherForecast() {
-  const sequence = ++weatherLoadSequence
-  try {
-    const forecast = await window.api.getWeatherForecast()
-    if (sequence !== weatherLoadSequence || !weatherEnabled.value) return
-    weatherForecast.value = forecast
-  } catch (error) {
-    if (sequence !== weatherLoadSequence) return
-    weatherForecast.value = null
-    console.warn('[NoteList] 加载便签天气失败:', error)
-  }
-}
-
-function applyWeatherSettings(snapshot, { load = true } = {}) {
-  const weather = snapshot?.values?.weather
-  const nextKey = weather?.enabled ? weatherLocationKey(weather.location) : ''
-  const changed = nextKey !== weatherSettingsKey.value
-  weatherSettingsKey.value = nextKey
-  weatherEnabled.value = Boolean(nextKey)
-  if (!nextKey) {
-    weatherLoadSequence += 1
-    weatherForecast.value = null
-    return
-  }
-  if (load && changed) void loadWeatherForecast()
 }
 
 /** 标签筛选 ID 列表 */
@@ -608,8 +658,44 @@ async function onCustomNormalDragEnd() {
   syncCustomZones()
 }
 
-const statusTransitions = reactive(new Map())
-const statusTransitionTimers = new Map()
+const statusActions = useNoteStatusActions({
+  api: window.api,
+  onCommit(updated, note, { from, to }) {
+    // Keep the old group until the ring finishes its early-start transition.
+    const resetsEffectiveTime = from === 'initialized' && to === 'in_progress'
+    patchVisibleNote(
+      resetsEffectiveTime ? { ...updated, effective_at: note.effective_at } : updated,
+      true
+    )
+  },
+  onFinish(updated, note, { from, to, reconcile = false }) {
+    const remainsVisible =
+      statusFilter.value.length === 0 || statusFilter.value.includes(updated.status)
+    const resetsEffectiveTime = from === 'initialized' && to === 'in_progress'
+    const changedEffectiveTimeOrdering =
+      resetsEffectiveTime &&
+      ((sortMode.value === 'timeline' && !note.is_pinned) || sortMode.value === 'tag-group')
+    const changedCompletionOrdering =
+      (from === 'completed' || to === 'completed') && sortMode.value !== 'custom'
+    if (reconcile || !remainsVisible || changedEffectiveTimeOrdering || changedCompletionOrdering) {
+      scheduleNotesRefresh({
+        reenterIds: changedEffectiveTimeOrdering && remainsVisible ? [note.id] : []
+      })
+    }
+  },
+  onError(error, note, { committed }) {
+    console.error('[NoteList] 状态操作失败:', note.id, error)
+    showMessage(
+      'error',
+      committed ? '便签状态已保存，显示更新失败，请刷新' : error?.message || '无法修改便签状态'
+    )
+  }
+})
+const {
+  transitions: statusTransitions,
+  transitionFor: statusTransitionFor,
+  execute: executeCardStatusAction
+} = statusActions
 const earlyStartConfirmVisible = ref(false)
 const earlyStartNote = ref(null)
 const earlyStartMessage = computed(() => {
@@ -623,44 +709,9 @@ const earlyStartMessage = computed(() => {
   return '该便签尚未到达生效时间。提前执行后，生效时间将改为当前时间。是否确认提前执行？'
 })
 
-function statusTransitionFor(noteId) {
-  return statusTransitions.get(noteId) || null
-}
-
-function setStatusTransition(noteId, state) {
-  if (state) statusTransitions.set(noteId, state)
-  else statusTransitions.delete(noteId)
-}
-
-function statusTimerKey(noteId, kind) {
-  return `${noteId}:${kind}`
-}
-
-function clearStatusTimer(noteId, kind) {
-  const key = statusTimerKey(noteId, kind)
-  clearTimeout(statusTransitionTimers.get(key))
-  statusTransitionTimers.delete(key)
-}
-
-function scheduleStatusTransition(noteId, kind, delay, callback) {
-  const key = statusTimerKey(noteId, kind)
-  clearTimeout(statusTransitionTimers.get(key))
-  const timer = setTimeout(async () => {
-    statusTransitionTimers.delete(key)
-    await callback?.()
-  }, delay)
-  statusTransitionTimers.set(key, timer)
-}
-
-function finishStatusTransition(noteId, delay, callback) {
-  scheduleStatusTransition(noteId, 'finish', delay, async () => {
-    setStatusTransition(noteId, null)
-    await callback?.()
-  })
-}
-
 /** 未开始便签先确认提前执行；其他状态保持原有单击流程。 */
 function onCardStatusAction(note) {
+  if (querySession.disposed || statusTransitions.has(note.id)) return
   if (note.status === 'initialized') {
     earlyStartNote.value = note
     earlyStartConfirmVisible.value = true
@@ -677,77 +728,6 @@ function confirmEarlyStart() {
 
 function cancelEarlyStart() {
   earlyStartNote.value = null
-}
-
-/** 状态圆环的主操作：未开始提前开始，进行中标记完成，已完成重新进行。 */
-async function executeCardStatusAction(note) {
-  if (statusTransitions.has(note.id)) return
-  const from = note.status
-  const to =
-    from === 'initialized' || from === 'completed'
-      ? 'in_progress'
-      : from === 'in_progress'
-        ? 'completed'
-        : null
-  if (!to) return
-
-  // 先给 0 延迟的点击确认；只有请求超过 120ms 才显示轨道等待光。
-  setStatusTransition(note.id, { from, to, phase: 'acknowledging' })
-  scheduleStatusTransition(note.id, 'waiting', 120, () => {
-    const current = statusTransitions.get(note.id)
-    if (current?.phase === 'acknowledging') {
-      setStatusTransition(note.id, { from, to, phase: 'waiting' })
-    }
-  })
-
-  try {
-    let updated = null
-    if (from === 'initialized') {
-      updated = await window.api.startProgress(note.id)
-    } else if (from === 'in_progress') {
-      updated = await window.api.completeNote(note.id)
-    } else if (from === 'completed') {
-      updated = await window.api.reopenNote(note.id)
-    }
-
-    if (!updated) throw new Error('状态接口未返回更新后的便签')
-    clearStatusTimer(note.id, 'waiting')
-    const remainsVisible =
-      statusFilter.value.length === 0 || statusFilter.value.includes(updated.status)
-    // 完成态的灰层必须等扫描真正抵达卡片右端后才出现。
-    const commitDelay = to === 'completed' ? 920 : 125
-    const totalDuration = 1000
-
-    // 主动画先使用旧状态起跑；颜色传播到中点后才提交文字、卡片和常驻发光颜色。
-    setStatusTransition(note.id, { from, to, phase: 'playing' })
-    scheduleStatusTransition(note.id, 'commit', commitDelay, () => {
-      // 提前开始会改变时间线分组。动画期间保留旧生效时间，避免卡片在圆环
-      // 过渡尚未完成时被 Vue 从“未来”卸载、又在“今天”重新挂载。
-      const resetsEffectiveTime = from === 'initialized' && to === 'in_progress'
-      const displayUpdate = resetsEffectiveTime
-        ? { ...updated, effective_at: note.effective_at }
-        : updated
-      patchVisibleNote(displayUpdate, true)
-    })
-    finishStatusTransition(note.id, totalDuration, async () => {
-      const resetsEffectiveTime = from === 'initialized' && to === 'in_progress'
-      const changedEffectiveTimeOrdering =
-        resetsEffectiveTime &&
-        ((sortMode.value === 'timeline' && !note.is_pinned) || sortMode.value === 'tag-group')
-      const changedCompletionOrdering =
-        (from === 'completed' || to === 'completed') && sortMode.value !== 'custom'
-      if (!remainsVisible || changedEffectiveTimeOrdering || changedCompletionOrdering) {
-        scheduleNotesRefresh({
-          reenterIds: changedEffectiveTimeOrdering && remainsVisible ? [note.id] : []
-        })
-      }
-    })
-  } catch (e) {
-    clearStatusTimer(note.id, 'waiting')
-    console.error('[NoteList] 状态修改失败:', note.id, e)
-    setStatusTransition(note.id, { from, to, phase: 'error' })
-    finishStatusTransition(note.id, 320)
-  }
 }
 
 function patchVisibleNote(updated, force = false) {
@@ -827,8 +807,10 @@ async function replayListRefresh() {
     if (refreshedContainer) refreshedContainer.scrollTop = scrollTop
     animateRetainedCards(new Map())
   } finally {
-    replayRefreshRunning = false
-    resumePendingSortMode()
+    if (!querySession.disposed) {
+      replayRefreshRunning = false
+      resumePendingSortMode()
+    }
   }
 }
 
@@ -879,15 +861,60 @@ function retryLoad() {
 
 /** 是否正在恢复持久化状态（恢复期间抑制自动重载/持久化，避免重复请求） */
 let restoring = false
+let bootstrappingSettings = true
+let pendingFilterIntent = null
+let filterWriteTail = null
 
-/** 持久化筛选状态到数据库 */
-async function saveFilterState() {
-  const state = {
+function currentFilterState() {
+  return {
     listMode: sortMode.value,
     tagIds: [...tagFilterIds.value],
     statusFilter: [...statusFilter.value]
   }
-  await window.api.setSettingValue('listFilter', state)
+}
+
+function protectFilterIntent() {
+  const previous = pendingFilterIntent
+  const value = currentFilterState()
+  const intent = {
+    value,
+    started: false,
+    cancelled: false,
+    task: null,
+    release: settingsSnapshots.protectSetting(filterIntentOwner, 'listFilter', value, {
+      continuationOf: sortWriteOrigin
+    })
+  }
+  pendingFilterIntent = intent
+  if (previous && !previous.started) previous.cancelled = true
+  previous?.release()
+}
+
+/** 同一个设置键串行落盘；列表查询和动画仍由原 watcher 协调。 */
+function saveFilterState() {
+  const intent = pendingFilterIntent
+  if (!intent || querySession.disposed) return Promise.resolve()
+  if (intent.task) return intent.task
+  const previous = filterWriteTail
+  const task = (async () => {
+    if (previous) await previous
+    if (intent.cancelled || querySession.disposed || !intent.release.isActive()) return
+    intent.started = true
+    try {
+      const result = await window.api.setSettingValue('listFilter', intent.value)
+      const receipt = parseSettingsReceipt(result, { source: settingsSnapshots.latest()?.source })
+      if (!receipt.saved) throw new Error(receipt.error?.message || '筛选设置保存结果尚未确认')
+      if (pendingFilterIntent === intent) pendingFilterIntent = null
+      settingsSnapshots.settleWrite(intent.release, result)
+    } catch (error) {
+      // The existing list behavior keeps the chosen filters on save failure.
+      // Keep that intent protected until another choice replaces it or disposal.
+      if (!querySession.disposed) console.warn('[NoteList] 保存筛选状态失败:', error)
+    }
+  })()
+  intent.task = task
+  filterWriteTail = task
+  return task
 }
 
 function isCurrentFilterState(state) {
@@ -914,20 +941,17 @@ async function applyFilterState(state) {
 async function loadFilterState() {
   restoring = true
   try {
-    const snapshot = await window.api.getSettingsSnapshot()
-    minimalMode.value =
-      snapshot.values.listAppearance?.minimalMode ?? DEFAULT_SETTINGS.listAppearance.minimalMode
-    const state = snapshot.values.listFilter
-    sortMode.value = state.listMode
-    tagFilterIds.value = [...state.tagIds]
-    statusFilter.value = [...state.statusFilter]
-    applyWeatherSettings(snapshot, { load: false })
+    await dateContext.settingsReady
   } catch (e) {
-    sortMode.value = DEFAULT_SETTINGS.listFilter.listMode
-    tagFilterIds.value = [...DEFAULT_SETTINGS.listFilter.tagIds]
-    statusFilter.value = [...DEFAULT_SETTINGS.listFilter.statusFilter]
-    applyWeatherSettings(null, { load: false })
-    console.warn('[NoteList] 恢复筛选状态失败，使用共享默认值:', e)
+    if (querySession.disposed) return
+    if (!settingsSnapshots.latest() && !settingsSnapshots.status().awaitingCanonical)
+      applyInitialSettings({ values: DEFAULT_SETTINGS })
+    console.warn(
+      settingsSnapshots.status().awaitingCanonical
+        ? '[NoteList] 设置已保存，筛选状态仍待读回确认:'
+        : '[NoteList] 恢复筛选状态失败，保留当前值或共享默认值:',
+      e
+    )
   } finally {
     // 等响应式 flush 完成后再解除抑制，防止恢复赋值触发重复加载
     await nextTick()
@@ -935,9 +959,21 @@ async function loadFilterState() {
   }
 }
 
+function applyInitialSettings(snapshot) {
+  if (!snapshot?.values) return
+  restoring = true
+  minimalMode.value =
+    snapshot.values.listAppearance?.minimalMode ?? DEFAULT_SETTINGS.listAppearance.minimalMode
+  const state = snapshot.values.listFilter
+  sortMode.value = state.listMode
+  tagFilterIds.value = [...state.tagIds]
+  statusFilter.value = [...state.statusFilter]
+}
+
 onMounted(async () => {
   await loadFilterState()
-  if (weatherEnabled.value) void loadWeatherForecast()
+  if (querySession.disposed) return
+  bootstrappingSettings = false
   // 统一入口：根据当前模式加载（时间线 / 自定义 / 标签分组）
   const result = await switchMode(sortMode.value)
   if (result?.status === 'success') {
@@ -978,23 +1014,21 @@ watch(todayKey, () => {
   scheduleNotesRefresh()
 })
 
-const stopSettingsChanged = window.api.onSettingsChanged?.(async (snapshot) => {
-  minimalMode.value =
-    snapshot?.values?.listAppearance?.minimalMode ?? DEFAULT_SETTINGS.listAppearance.minimalMode
-  applyWeatherSettings(snapshot)
-  const changed = await applyFilterState(snapshot?.values?.listFilter)
-  if (changed) await switchMode(sortMode.value)
-})
-const stopWeatherForecastUpdated = window.api.onWeatherForecastUpdated?.((forecast) => {
-  if (
-    !weatherEnabled.value ||
-    weatherLocationKey(forecast?.location) !== weatherSettingsKey.value
-  ) {
-    return
-  }
-  weatherLoadSequence += 1
-  weatherForecast.value = forecast
-})
+const stopSettingsChanged = settingsSnapshots.subscribe(
+  async (snapshot, { origin } = {}) => {
+    if (!querySession.disposed && origin === 'reset') cancelResetSortIntents()
+    if (querySession.disposed || !snapshot?.values) return
+    if (bootstrappingSettings) {
+      applyInitialSettings(snapshot)
+      return
+    }
+    minimalMode.value =
+      snapshot?.values?.listAppearance?.minimalMode ?? DEFAULT_SETTINGS.listAppearance.minimalMode
+    const changed = await applyFilterState(snapshot?.values?.listFilter)
+    if (changed && !querySession.disposed) await switchMode(sortMode.value)
+  },
+  { availabilityEvents: true }
+)
 
 let tagsChangedTimer = null
 const stopTagsChanged = window.api.onTagsChanged?.(() => {
@@ -1007,28 +1041,38 @@ const stopTagsChanged = window.api.onTagsChanged?.(() => {
 })
 
 onUnmounted(() => {
+  statusActions.dispose()
+  pendingSortMode?.release()
   pendingSortMode = null
+  settingsSnapshots.clearOwner(sortIntentOwner)
   for (const animation of panelMotions.values()) animation.cancel()
   panelMotions.clear()
   presenceMotionSeq++
   querySession.dispose()
+  if (pendingFilterIntent && !pendingFilterIntent.started) pendingFilterIntent.cancelled = true
+  pendingFilterIntent = null
+  settingsSnapshots.clearOwner(filterIntentOwner)
   exitTagGroupSortMode()
   disposePresenceMotion()
   clearTimeout(notesChangedTimer)
   clearTimeout(tagsChangedTimer)
   clearTimeout(_customSyncTimer)
-  for (const timer of statusTransitionTimers.values()) clearTimeout(timer)
-  statusTransitionTimers.clear()
   stopNotesChanged?.()
   stopSettingsChanged?.()
-  stopWeatherForecastUpdated?.()
   stopTagsChanged?.()
-  weatherLoadSequence += 1
   closeTagGroupContextMenu()
 })
 
 // 统一响应式入口：排序模式 / 标签 / 状态任一变化 → 重载 + 持久化
 // （切换按钮只翻转 sortMode，加载与持久化都由这里负责，二者与按钮解耦）
+// Protect user values in the same stack; keep asynchronous query/motion batching below.
+watch(
+  [sortMode, tagFilterIds, statusFilter],
+  () => {
+    if (!restoring && !querySession.disposed) protectFilterIntent()
+  },
+  { deep: true, flush: 'sync' }
+)
 watch(
   [sortMode, tagFilterIds, statusFilter],
   ([nextMode], [previousMode]) => {

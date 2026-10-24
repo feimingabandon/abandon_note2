@@ -6,6 +6,7 @@ import { app, BrowserWindow, dialog, nativeImage, screen } from 'electron'
 import { DEFAULT_STICKY_WIDTH } from '../src/main/sticky/stickyConstants.js'
 import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
 import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
+import { waitForFixtureFrame } from './helpers/electron-fixture-frame.mjs'
 
 const require = createRequire(import.meta.url)
 const lifecycle = createElectronGuiResultLifecycle({
@@ -77,6 +78,124 @@ function getMonthWindow() {
   return BrowserWindow.getAllWindows().find(
     (window) => !window.isDestroyed() && /\/month\.html(?:$|[?#])/.test(window.webContents.getURL())
   )
+}
+
+async function verifyAttachmentRecoveryOutsider() {
+  const outsider = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      preload: resolve('out/preload/index.js'),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  try {
+    await outsider.loadURL('data:text/html,<html><body>Recovery IPC outsider</body></html>')
+    const result = await outsider.webContents.executeJavaScript(`(async () => {
+      try { await window.api.getAttachmentRecoveryReport(); return { accepted: true } }
+      catch (error) { return { accepted: false, message: error.message } }
+    })()`)
+    assert.equal(result.accepted, false, '非主窗口不得读取附件诊断')
+    assert.match(result.message, /无权访问/)
+    result.retry = await outsider.webContents.executeJavaScript(`(async () => {
+      try { await window.api.retryAttachmentRecovery(); return { accepted: true } }
+      catch (error) { return { accepted: false, message: error.message } }
+    })()`)
+    assert.equal(result.retry.accepted, false, '非主窗口不得执行附件恢复')
+    assert.match(result.retry.message, /无权访问/)
+    return result
+  } finally {
+    outsider.destroy()
+  }
+}
+
+async function captureAttachmentRecoverySurfaces(window) {
+  window.show()
+  window.focus()
+  await waitUntil(() => window.isFocused(), '附件诊断视觉检查主窗口未获得焦点')
+  await window.webContents.executeJavaScript(`Promise.allSettled(
+    ['.settings-panel', '.diagnostics-content'].flatMap(selector =>
+      document.querySelector(selector).getAnimations().map(animation => animation.finished)))`)
+  const visuals = []
+  try {
+    for (const variant of [
+      { name: 'white', bg: '255 255 255', text: '#1d1d1f', backdrop: '#fff', marker: 37 },
+      { name: 'black', bg: '0 0 0', text: '#f5f5f7', backdrop: '#000', marker: 73 },
+      {
+        name: 'complex',
+        bg: '255 255 255',
+        text: '#1d1d1f',
+        marker: 109,
+        backdrop: 'repeating-conic-gradient(#063b72 0% 25%, #f7c957 0% 50%) 0 0 / 80px 80px'
+      },
+      {
+        name: 'narrow-large',
+        bg: '255 255 255',
+        text: '#1d1d1f',
+        backdrop: '#fff',
+        marker: 149,
+        narrow: true
+      }
+    ]) {
+      const paint = waitForFixtureFrame({
+        webContents: window.webContents,
+        name: 'attachment-recovery-' + variant.name,
+        marker: [variant.marker, variant.marker, variant.marker],
+        palette:
+          variant.name === 'black' ? 'black' : variant.name === 'complex' ? 'complex' : 'white',
+        viewport: await window.webContents.executeJavaScript(
+          '({width:innerWidth,height:innerHeight})'
+        )
+      })
+      try {
+        const css = `:root{--bg-color:${variant.bg}!important;--text-color:${variant.text}!important;}
+          body,.settings-wrapper{background:${variant.backdrop}!important;}
+          /* Test-only drawing probe identifies the presented CSS generation. */
+          #recovery-paint-marker{position:fixed;left:8px;top:160px;width:4px;height:4px;pointer-events:none;z-index:var(--z-global-critical);background:rgb(${variant.marker} ${variant.marker} ${variant.marker})!important;}
+          ${variant.narrow ? '.settings-panel{width:340px!important;max-width:100%!important;left:0!important;right:auto!important;--fs-secondary:16px!important;}' : ''}`
+        await window.webContents.executeJavaScript(`(() => {
+          document.getElementById('recovery-test-visual')?.remove()
+          document.getElementById('recovery-paint-marker')?.remove()
+          const style = document.createElement('style'); style.id='recovery-test-visual'; style.textContent=${JSON.stringify(css)}
+          document.head.append(style)
+          const marker = document.createElement('div'); marker.id='recovery-paint-marker'; document.body.append(marker)
+          document.querySelector('.attachment-recovery-status').scrollIntoView({block:'center',behavior:'instant'})
+        })()`)
+        const presented = await paint.ready
+        assert.equal(paint.trace.cleanupError, undefined)
+        const metrics = await window.webContents.executeJavaScript(`(() => {
+          const root=document.querySelector('.attachment-recovery-status'), r=root.getBoundingClientRect()
+          const button=root.querySelector('button'), b=button.getBoundingClientRect(), reading=root.closest('.panel-body').getBoundingClientRect()
+          return {top:r.top,bottom:r.bottom,readingTop:reading.top,readingBottom:reading.bottom,
+            width:root.clientWidth,scrollWidth:root.scrollWidth,backgroundToken:getComputedStyle(document.documentElement).getPropertyValue('--bg-color').trim(),
+            hit:document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)?.closest('button')===button}
+        })()`)
+        assert.equal(metrics.backgroundToken, variant.bg)
+        assert.equal(
+          metrics.hit,
+          true,
+          variant.name + ' report action must be visible and unoccluded'
+        )
+        assert.ok(
+          metrics.top >= metrics.readingTop - 1 && metrics.bottom <= metrics.readingBottom + 1,
+          variant.name + ' report must fit inside its scrollable reading surface'
+        )
+        assert.ok(metrics.scrollWidth <= metrics.width + 1)
+        const file = `attachment-recovery-${variant.name}.png`
+        writeFileSync(join(testEvidenceRoot, file), presented.toPNG(), { flag: 'wx' })
+        visuals.push({ file, metrics, frame: paint.trace })
+      } finally {
+        paint.close()
+      }
+    }
+    return visuals
+  } finally {
+    await window.webContents.executeJavaScript(`(() => {
+      document.getElementById('recovery-test-visual')?.remove()
+      document.getElementById('recovery-paint-marker')?.remove()
+    })()`)
+  }
 }
 
 async function verifyDestroyedWindowConsole(mainWindow) {
@@ -208,6 +327,7 @@ async function runTest() {
   let failure = null
   let completed = false
   let destroyedConsoleRegression = null
+  let attachmentRecoveryEvidence = null
   try {
     const window = await waitUntil(getMonthWindow, '月视图主窗口未启动')
     activeWindow = window
@@ -221,6 +341,15 @@ async function runTest() {
       `window.api.getDiagnosticState()`
     )
     assert.equal(initialState.mode, 'daily', '每次启动必须默认日常模式')
+    const initialRecovery = await window.webContents.executeJavaScript(
+      `window.api.getAttachmentRecoveryReport()`
+    )
+    assert.equal(initialRecovery.scope, 'pending-attachment-recovery-round')
+    assert.equal(initialRecovery.phase, 'finished')
+    assert.equal(initialRecovery.partial, false)
+    assert.equal(initialRecovery.status, 'completed')
+    assert.equal(initialRecovery.operations.length, 0)
+    let expectedRecovery = initialRecovery
     const deepState = await window.webContents.executeJavaScript(
       `window.api.startDeepDiagnostics()`
     )
@@ -476,6 +605,77 @@ async function runTest() {
     )
     try {
       await window.webContents.executeJavaScript(`document.querySelector('[title="设置"]').click()`)
+      await waitUntil(
+        () =>
+          window.webContents.executeJavaScript(
+            `Boolean(document.querySelector('.diagnostics-toggle'))`
+          ),
+        '设置页高级诊断入口未挂载'
+      )
+      await window.webContents.executeJavaScript(`(() => {
+        const toggle = document.querySelector('.diagnostics-toggle')
+        if (toggle.getAttribute('aria-expanded') !== 'true') toggle.click()
+      })()`)
+      await waitUntil(
+        () =>
+          window.webContents.executeJavaScript(
+            `document.querySelector('.attachment-recovery-status')?.textContent.includes('本轮未发现待恢复操作')`
+          ),
+        '附件恢复报告未通过真实SettingsPanel读取'
+      )
+      const recoveryUi = await window.webContents.executeJavaScript(`(() => {
+        const element = document.querySelector('.attachment-recovery-status')
+        element.scrollIntoView({ block: 'center' })
+        return { text: element.textContent, buttons: [...element.querySelectorAll('button')].map(b => b.textContent.trim()) }
+      })()`)
+      assert.match(recoveryUi.text, /不是全部附件完整性检查/)
+      assert.ok(recoveryUi.buttons.includes('重新读取报告'))
+      assert.ok(recoveryUi.buttons.includes('查看日志'))
+      assert.ok(recoveryUi.buttons.includes('尝试恢复'))
+      assert.equal(
+        recoveryUi.buttons.some((label) => /重试恢复|重新恢复/.test(label)),
+        false
+      )
+      const recoveryVisuals = await captureAttachmentRecoverySurfaces(window)
+      await window.webContents.executeJavaScript(`(() => {
+        const reread = Array.from(document.querySelectorAll('.attachment-recovery-status button')).find(button => button.textContent.trim() === '重新读取报告')
+        reread.click()
+      })()`)
+      await waitUntil(
+        () =>
+          window.webContents.executeJavaScript(
+            `!document.querySelector('.attachment-recovery-status button').disabled`
+          ),
+        '附件恢复报告手动读取未结束'
+      )
+      assert.deepEqual(
+        await window.webContents.executeJavaScript(`window.api.getAttachmentRecoveryReport()`),
+        initialRecovery
+      )
+      await window.webContents.executeJavaScript(
+        `Array.from(document.querySelectorAll('.attachment-recovery-status button')).find(button => button.textContent.trim() === '尝试恢复').click()`
+      )
+      await waitUntil(
+        () =>
+          window.webContents.executeJavaScript(
+            `document.querySelector('.attachment-recovery-status')?.textContent.includes('本轮附件恢复已结束')`
+          ),
+        '真实设置页附件恢复未结束'
+      )
+      expectedRecovery = await window.webContents.executeJavaScript(
+        `window.api.getAttachmentRecoveryReport()`
+      )
+      assert.notEqual(expectedRecovery.roundId, initialRecovery.roundId)
+      assert.equal(expectedRecovery.scope, 'pending-attachment-recovery-round')
+      assert.equal(expectedRecovery.phase, 'finished')
+      assert.equal(expectedRecovery.partial, false)
+      assert.equal(expectedRecovery.operations.length, 0)
+      attachmentRecoveryEvidence = {
+        initialRecovery,
+        retriedRecovery: expectedRecovery,
+        recoveryUi,
+        visuals: recoveryVisuals
+      }
       report(
         await window.webContents.executeJavaScript(`JSON.stringify({
         phase: 'before-log-open',
@@ -497,7 +697,7 @@ async function runTest() {
         '设置页日志入口未出现'
       )
       await window.webContents.executeJavaScript(
-        `[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '查看日志').click()`
+        `[...document.querySelectorAll('.attachment-recovery-status button')].find((button) => button.textContent.trim() === '查看日志').click()`
       )
       await waitUntil(
         () =>
@@ -529,6 +729,7 @@ async function runTest() {
           range === 'all'
         )
         assert.equal(exportedRecords.at(-1).type, 'diagnostic-system')
+        assert.deepEqual(exportedRecords.at(-1).snapshot.attachmentRecovery, expectedRecovery)
         const completion = exportedRecords.find((record) => record.type === 'diagnostic-complete')
         assert.equal(completion.exportFinished, true)
         assert.ok(
@@ -842,6 +1043,9 @@ async function runTest() {
       ),
       '导出未列出已销毁窗口的缺失状态'
     )
+    // A deliberately destroyed outsider also owns a diagnostic producer. Create
+    // it after the normal/forced-close completeness assertions, preserving both.
+    attachmentRecoveryEvidence.outsiderRecovery = await verifyAttachmentRecoveryOutsider()
     destroyedConsoleRegression = await verifyDestroyedWindowConsole(window)
     report(
       'queued Chromium warning/error survive real BrowserWindow destruction without uncaught errors'
@@ -906,6 +1110,7 @@ async function runTest() {
       summary: {
         failureUi,
         destroyedConsoleRegression,
+        attachmentRecoveryEvidence,
         exports: [
           'export-last-hour.jsonl',
           'export-all.jsonl',

@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
+import { EventEmitter } from 'node:events'
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { createMainWindowIpc } from '../src/main/ipc/ipc-authorization.js'
 import { registerWallpaperIpc } from '../src/main/ipc/register-wallpaper-ipc.js'
+import { createSettingsOperationAdmission } from '../src/main/settings/settings-operation-admission.js'
+import { createSettingsWriteSource } from '../src/main/settings/settings-write-source.js'
 
 const channels = [
   'wallpapers:list',
@@ -9,7 +14,8 @@ const channels = [
   'wallpapers:save',
   'wallpapers:activate',
   'wallpapers:disable',
-  'wallpapers:delete'
+  'wallpapers:delete',
+  'wallpapers:retirement-ack'
 ]
 
 function fixture() {
@@ -31,9 +37,12 @@ function fixture() {
   }
   const thumbnail = vi.fn(() => 'data:image/png;base64,thumbnail')
   const data = vi.fn(async () => 'data:image/png;base64,crop')
+  const retirement = { acknowledge: vi.fn(() => ({ accepted: true })) }
   const options = {
     mainWindowIpc: createMainWindowIpc(ipc, () => window),
     removeHandler: ipc.removeHandler,
+    assertDocumentSource: vi.fn(),
+    wallpaperRetirement: retirement,
     backgroundSettingsCoordinator: coordinator,
     getWallpaperThumbnail: thumbnail,
     getWallpaperDataUrl: data
@@ -44,6 +53,7 @@ function fixture() {
     coordinator,
     thumbnail,
     data,
+    retirement,
     options,
     ipc,
     event: { sender: window.webContents }
@@ -51,6 +61,138 @@ function fixture() {
 }
 
 describe('wallpaper transport', () => {
+  it('accepts the original document retirement ACK during seal/drain while ordinary writes remain closed', async () => {
+    const f = fixture()
+    const admission = createSettingsOperationAdmission()
+    const path = resolve('out/renderer/index.html')
+    const frame = { url: pathToFileURL(path).href, isDestroyed: () => false }
+    Object.assign(f.window, {
+      webContents: Object.assign(new EventEmitter(), {
+        mainFrame: frame,
+        isDestroyed: () => false,
+        isCrashed: () => false
+      })
+    })
+    f.event.sender = f.window.webContents
+    f.event.senderFrame = frame
+    const sources = createSettingsWriteSource({
+      getMainWindow: () => f.window,
+      getActiveWindowName: () => 'main',
+      getActiveRendererLocation: () => ({ type: 'file', value: path }),
+      assertCanWrite: admission.assertOpen
+    })
+    const source = sources.issue(f.event)
+    let finish
+    f.coordinator.activateWallpaper.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve
+      })
+    )
+    const accepted = { accepted: true }
+    f.retirement.acknowledge.mockImplementationOnce(() => {
+      finish({ completed: true })
+      return accepted
+    })
+    registerWallpaperIpc({
+      ...f.options,
+      assertWriteSource: sources.assert,
+      assertDocumentSource: sources.assertDocument,
+      runMutation: admission.run
+    })
+    const pending = f.handlers.get('wallpapers:activate')(f.event, { id: 7 }, source)
+    const owner = {}
+    let drained = false
+    const leaving = admission.sealAndDrain(owner).then(() => {
+      drained = true
+    })
+    await Promise.resolve()
+    expect(drained).toBe(false)
+    expect(() => f.handlers.get('wallpapers:disable')(f.event, source)).toThrow()
+    const payload = { id: 'retirement-ticket', outcome: 'left' }
+    expect(() =>
+      f.handlers.get('wallpapers:retirement-ack')(f.event, payload, { ...source, token: 'expired' })
+    ).toThrow('页面已失效')
+    expect(f.retirement.acknowledge).not.toHaveBeenCalled()
+    expect(f.handlers.get('wallpapers:retirement-ack')(f.event, payload, source)).toBe(accepted)
+    expect(f.retirement.acknowledge).toHaveBeenCalledExactlyOnceWith(f.event, payload, source)
+    expect(await pending).toEqual({ completed: true })
+    await leaving
+    expect(drained).toBe(true)
+    expect(admission.snapshot().pending).toBe(0)
+    expect(() => f.handlers.get('wallpapers:disable')(f.event, source)).toThrow()
+    expect(admission.resume(owner)).toBe(true)
+  })
+
+  it('checks document ownership before reading or forwarding a retirement payload', () => {
+    const f = fixture()
+    const assertDocumentSource = vi.fn(() => {
+      throw new Error('expired document')
+    })
+    registerWallpaperIpc({ ...f.options, assertDocumentSource })
+    const payload = {
+      get id() {
+        throw new Error('payload accessed')
+      }
+    }
+    const source = { token: 'expired', scope: 'main' }
+    expect(() => f.handlers.get('wallpapers:retirement-ack')(f.event, payload, source)).toThrow(
+      'expired document'
+    )
+    expect(assertDocumentSource).toHaveBeenCalledExactlyOnceWith(f.event, source)
+    expect(f.retirement.acknowledge).not.toHaveBeenCalled()
+    for (const operation of Object.values(f.coordinator)) expect(operation).not.toHaveBeenCalled()
+  })
+
+  it('joins the full wallpaper mutation in settings leave admission without blocking reads', async () => {
+    const f = fixture()
+    const admission = createSettingsOperationAdmission()
+    let finish
+    f.coordinator.saveWallpaper.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        })
+    )
+    registerWallpaperIpc({
+      ...f.options,
+      assertWriteSource: admission.assertOpen,
+      runMutation: admission.run
+    })
+    const saving = f.handlers.get('wallpapers:save')(f.event, {})
+    const owner = {}
+    let drained = false
+    const leaving = admission.sealAndDrain(owner).then(() => {
+      drained = true
+    })
+    expect(admission.snapshot().pending).toBe(1)
+    expect(() => f.handlers.get('wallpapers:activate')(f.event, { id: 7 })).toThrow()
+    expect(f.handlers.get('wallpapers:list')(f.event)).toEqual([])
+    await Promise.resolve()
+    expect(drained).toBe(false)
+    finish({ id: 7 })
+    expect(await saving).toEqual({ id: 7 })
+    await leaving
+    expect(admission.resume(owner)).toBe(true)
+    expect(f.handlers.get('wallpapers:activate')(f.event, { id: 7 })).toEqual({
+      record: { id: 7 },
+      snapshot: {}
+    })
+  })
+  it('rejects expired setting sources before mutating wallpaper state', () => {
+    const f = fixture()
+    const assertWriteSource = vi.fn(() => {
+      throw new Error('source expired')
+    })
+    registerWallpaperIpc({ ...f.options, assertWriteSource })
+    const source = { token: 'old' }
+    for (const channel of ['wallpapers:save', 'wallpapers:activate', 'wallpapers:delete']) {
+      expect(() => f.handlers.get(channel)(f.event, { id: 7 }, source)).toThrow('expired')
+      expect(assertWriteSource).toHaveBeenLastCalledWith(f.event, source)
+    }
+    expect(() => f.handlers.get('wallpapers:disable')(f.event, source)).toThrow('expired')
+    expect(assertWriteSource).toHaveBeenLastCalledWith(f.event, source)
+    for (const owner of Object.values(f.coordinator)) expect(owner).not.toHaveBeenCalled()
+  })
   it('authorizes the live main window before reading payloads or calling storage/settings owners', () => {
     const f = fixture()
     registerWallpaperIpc(f.options)

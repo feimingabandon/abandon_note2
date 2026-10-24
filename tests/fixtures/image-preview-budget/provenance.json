@@ -1,0 +1,113 @@
+{
+  "validation": "Frozen owned fixtures. Animation source run-OzzkTR accepted four cases/nine explicit animation pixel frames. The independent APNG poster is present in the container structure; its pixels were not additionally decoded. format-run-1IOTYL Chromium Image decoded each static fixture at declared dimensions. These small decoder results do not prove allocation bounds or general format compatibility.",
+  "fixtures": [
+    {
+      "file": "gif-restore-previous.gif",
+      "format": "gif",
+      "width": 3,
+      "height": 2,
+      "frameCount": 3,
+      "posterFrames": 0,
+      "bytes": 117,
+      "sha256": "7a3e5ea30b5dedb0ee639c24c6e74b37a5c9364a81e257d045ed9eebaac113d3",
+      "sourceEvidence": "tmp/system-improvement-20261020/e832-animation-probe/run-OzzkTR/gif-restore-previous.gif",
+      "source": "Owned literal-only GIF89a generator; clear/literal LZW; global palette; three frames and NETSCAPE loop=0."
+    },
+    {
+      "file": "apng-default-in-animation.png",
+      "format": "png",
+      "width": 3,
+      "height": 2,
+      "frameCount": 2,
+      "posterFrames": 0,
+      "bytes": 199,
+      "sha256": "b94807786cf37e1830e0b8d13d6b6bf356cf1037b8557cebbdead20fedf198b3",
+      "sourceEvidence": "tmp/system-improvement-20261020/e832-animation-probe/run-OzzkTR/apng-default-in-animation.png",
+      "source": "Owned RGBA8/filter0 PNG rows compressed by Node zlib; hand-authored APNG control chunks; CRC32 for every chunk."
+    },
+    {
+      "file": "apng-independent-poster.png",
+      "format": "png",
+      "width": 3,
+      "height": 2,
+      "frameCount": 2,
+      "posterFrames": 1,
+      "bytes": 231,
+      "sha256": "e15617b41bc745f1ae9bd57aea84b044fe8e413472cd5e397c7f8b9f1fc7fe16",
+      "sourceEvidence": "tmp/system-improvement-20261020/e832-animation-probe/run-OzzkTR/apng-independent-poster.png",
+      "source": "Owned RGBA8/filter0 PNG rows compressed by Node zlib; hand-authored APNG control chunks; CRC32 for every chunk."
+    },
+    {
+      "file": "webp-offset-alpha.webp",
+      "format": "webp",
+      "width": 4,
+      "height": 2,
+      "frameCount": 2,
+      "posterFrames": 0,
+      "bytes": 604,
+      "sha256": "ba691782db36923034052be7aac2244763a8ce90a349f439e9b4915662b5082d",
+      "sourceEvidence": "tmp/system-improvement-20261020/e832-animation-probe/run-OzzkTR/webp-offset-alpha.webp",
+      "source": "Owned sandbox canvas.toDataURL(image/webp,1) still bitstreams wrapped in owned VP8X/ANIM/ANMF chunks; no third-party codec."
+    },
+    {
+      "file": "still.png",
+      "format": "png",
+      "width": 4,
+      "height": 2,
+      "frameCount": 1,
+      "posterFrames": 0,
+      "bytes": 97,
+      "sha256": "63b9f86a6f6b80de2d7b1920432a5f5241e63aba090292c72740c9fac0bdf1bf",
+      "sourceEvidence": "tmp/system-improvement-20261020/e83-electron-child-probe/format-run-1IOTYL/fixture.png",
+      "source": "Electron nativeImage.createFromBitmap(4x2 owned BGRA), toPNG"
+    },
+    {
+      "file": "still.jpeg",
+      "format": "jpeg",
+      "width": 4,
+      "height": 2,
+      "frameCount": 1,
+      "posterFrames": 0,
+      "bytes": 312,
+      "sha256": "ccb0c92336a5a7e5093efd50e2149d34120b0cbce9d7b824e84e35be12285235",
+      "sourceEvidence": "tmp/system-improvement-20261020/e83-electron-child-probe/format-run-1IOTYL/fixture.jpeg",
+      "source": "Same owned nativeImage seed, toJPEG(90)"
+    },
+    {
+      "file": "still.gif",
+      "format": "gif",
+      "width": 1,
+      "height": 1,
+      "frameCount": 1,
+      "posterFrames": 0,
+      "bytes": 43,
+      "sha256": "693d949d8c3fdc7fd4ace7c340b5f177a9f0c5be7bafee8bc93a7d88b7523d75",
+      "sourceEvidence": "tmp/system-improvement-20261020/e83-electron-child-probe/format-run-1IOTYL/fixture.gif",
+      "source": "Fixed self-contained GIF89a base64, canonical bytes and minimal LZW codes checked"
+    },
+    {
+      "file": "still.bmp",
+      "format": "bmp",
+      "width": 3,
+      "height": 2,
+      "frameCount": 1,
+      "posterFrames": 0,
+      "bytes": 78,
+      "sha256": "b2dba35e3ed3b36b6c7f7ee9927f1ca9d7ef92d9388523ac2aea02e34ed3a052",
+      "sourceEvidence": "tmp/system-improvement-20261020/e83-electron-child-probe/format-run-1IOTYL/fixture.bmp",
+      "source": "Generated uncompressed Windows 24-bit BITMAPINFOHEADER with aligned BGR rows"
+    },
+    {
+      "file": "still.webp",
+      "format": "webp",
+      "width": 4,
+      "height": 2,
+      "frameCount": 1,
+      "posterFrames": 0,
+      "bytes": 552,
+      "sha256": "a1038a2b0b6301019cf62150ba838ee62de7efefd944ce17ae9626c81e8c8975",
+      "sourceEvidence": "tmp/system-improvement-20261020/e83-electron-child-probe/format-run-1IOTYL/fixture.webp",
+      "source": "Chromium fixed sandboxed Canvas.toDataURL(image/webp, 0.9), RIFF/WEBP container checked"
+    }
+  ]
+}

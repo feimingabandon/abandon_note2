@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
+import { createSettingsOperationAdmission } from '../src/main/settings/settings-operation-admission.js'
 import { parseForESLint } from 'vue-eslint-parser'
+import { RENDERER_WRITABLE_SETTING_IDS } from '../src/shared/settings-schema.js'
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8')
 
@@ -76,7 +78,20 @@ function settingIpcContract() {
   const allowlist = astNodes.find(
     (node) => node.type === 'VariableDeclarator' && node.id.name === 'RENDERER_WRITABLE_SETTING_IDS'
   )
-  const ids = new Set(allowlist.init.arguments[0].elements.map((element) => element.value))
+  const schemaImport = astNodes.find(
+    (node) =>
+      node.type === 'ImportDeclaration' && node.source.value === '../shared/settings-schema.js'
+  )
+  const importedIds = schemaImport.specifiers.find(
+    (specifier) => specifier.imported?.name === 'RENDERER_WRITABLE_SETTING_IDS'
+  )
+  expect(importedIds, 'main must use the shared renderer write policy').toBeDefined()
+  expect(allowlist.init.callee.name).toBe('Set')
+  expect(allowlist.init.arguments[0]).toMatchObject({
+    type: 'Identifier',
+    name: importedIds.local.name
+  })
+  const ids = new Set(RENDERER_WRITABLE_SETTING_IDS)
   const handler = astNodes.find(
     (node) =>
       node.type === 'CallExpression' &&
@@ -84,16 +99,30 @@ function settingIpcContract() {
       callName(node) === 'handle' &&
       node.arguments[0].value === 'set-setting-value'
   ).arguments[1]
-  const persist = vi.fn()
+  const committed = { source: { token: 'current', scope: 'main' }, revision: 3, values: {} }
+  const persist = vi.fn(() => committed)
+  const source = { assert: vi.fn() }
   const invoke = new Function(
     'RENDERER_WRITABLE_SETTING_IDS',
     'persistSettingValue',
+    'settingsWriteSource',
+    'settingsOperations',
     `return (${main.slice(...handler.range)})`
-  )(ids, persist)
-  return { ids, persist, invoke }
+  )(ids, persist, source, createSettingsOperationAdmission())
+  return { ids, persist, invoke, source, committed }
 }
 
 describe('便签备注', () => {
+  it('rejects an expired page before the actual setting handler persists a value', async () => {
+    const { source, persist, invoke } = settingIpcContract()
+    source.assert.mockImplementation(() => {
+      throw new Error('source expired')
+    })
+    await expect(invoke(null, 'css.noteRemarkFontSize', 18, { token: 'old' })).rejects.toThrow(
+      'expired'
+    )
+    expect(persist).not.toHaveBeenCalled()
+  })
   it('passes the optional remark from both creation forms and the full editor', () => {
     for (const path of [
       '../src/renderer/src/components/list/NewNotePanel.vue',
@@ -104,8 +133,13 @@ describe('便签备注', () => {
       const ast = nodes(source)
       const options = path.endsWith('NoteEditor.vue')
         ? property(
-            ast.find((node) => node.type === 'CallExpression' && callName(node) === 'saveNoteDraft')
-              .arguments[0],
+            ast.find(
+              (node) =>
+                node.type === 'CallExpression' &&
+                callName(node) === 'commitNote' &&
+                node.arguments[0]?.value === 'save' &&
+                property(node.arguments[1], 'fields')
+            ).arguments[1],
             'fields'
           )
         : ast.find((node) => node.type === 'VariableDeclarator' && node.id.name === 'options').init
@@ -149,7 +183,7 @@ describe('便签备注', () => {
   })
 
   it('shows the remark below the body and opens one shared two-field editor', () => {
-    const card = read('../src/renderer/src/components/list/NoteCard.vue')
+    const card = read('../src/renderer/src/components/note/NoteCard.vue')
     const editor = read('../src/renderer/src/components/note/QuickNoteContentEditor.vue')
     const tokens = read('../src/renderer/src/assets/tokens.css')
     const contentIndex = card.indexOf('ref="contentTextRef"')
@@ -201,9 +235,9 @@ describe('便签备注', () => {
   })
 
   it('allows both almanac switch values through the guarded setting handler', async () => {
-    const { persist, invoke } = settingIpcContract()
-    await expect(invoke(null, 'almanac.enabled', false)).resolves.toBe(true)
-    await expect(invoke(null, 'almanac.enabled', true)).resolves.toBe(true)
+    const { persist, invoke, committed } = settingIpcContract()
+    await expect(invoke(null, 'almanac.enabled', false)).resolves.toBe(committed)
+    await expect(invoke(null, 'almanac.enabled', true)).resolves.toBe(committed)
     expect(persist.mock.calls).toEqual([
       ['almanac.enabled', false],
       ['almanac.enabled', true]
@@ -215,13 +249,13 @@ describe('便签备注', () => {
   })
 
   it('persists remark font size through the actual handler while retaining dedicated IPC guards', async () => {
-    const { ids, persist, invoke } = settingIpcContract()
+    const { ids, persist, invoke, committed } = settingIpcContract()
     for (const id of ['blur.enabled', 'dock.enabledEdges', 'shortcuts.viewVisibility']) {
       expect(ids.has(id)).toBe(false)
       await expect(invoke(null, id, true)).rejects.toThrow('renderer 无权直接写入设置项')
     }
     expect(persist).not.toHaveBeenCalled()
-    await expect(invoke(null, 'css.noteRemarkFontSize', 14)).resolves.toBe(true)
+    await expect(invoke(null, 'css.noteRemarkFontSize', 14)).resolves.toBe(committed)
     expect(persist).toHaveBeenCalledExactlyOnceWith('css.noteRemarkFontSize', 14)
   })
 })

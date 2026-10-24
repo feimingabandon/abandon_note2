@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import AlmanacSummary from '../almanac/AlmanacSummary.vue'
 import DateContextSummary from '../almanac/DateContextSummary.vue'
-import NoteCard from '../list/NoteCard.vue'
+import NoteCard from '../note/NoteCard.vue'
 import { useNotePresenceMotion } from '../../composables/useNotePresenceMotion.js'
 import { useDateContextSettings } from '../../composables/useDateContextSettings.js'
 import { dateOrdinal } from '../../../../shared/calendar/calendar-date-rules.js'

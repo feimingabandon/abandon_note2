@@ -4,6 +4,7 @@ import AppModalShell from '../ui/AppModalShell.vue'
 import BaseButton from '../ui/BaseButton.vue'
 import { useModalRequest } from '../../composables/useQueuedModal.js'
 import { unavailableShortcuts } from '../../../../shared/shortcut-status.js'
+import { getSettingsSnapshotStore } from '../../utils/settingsSnapshots.js'
 
 const emit = defineEmits(['update:visible', 'open-settings'])
 const queue = useModalRequest()
@@ -11,6 +12,7 @@ const visible = queue.requested
 const failures = ref([])
 const busy = ref(false)
 const feedback = ref('')
+const settingsSnapshots = getSettingsSnapshotStore(window.api)
 let disposed = false
 let stopSettingsListener = null
 
@@ -34,7 +36,7 @@ async function retry() {
   try {
     const snapshot = await window.api.retryShortcuts()
     if (disposed) return
-    failures.value = unavailableShortcuts(snapshot.runtime.shortcuts)
+    settingsSnapshots.acceptCommitted(snapshot)
     feedback.value = failures.value.length
       ? '仍有快捷键无法启用，请释放占用后重试，或前往设置更换按键。'
       : '快捷键已恢复，无需重启。'
@@ -46,7 +48,7 @@ async function retry() {
 }
 
 onMounted(async () => {
-  stopSettingsListener = window.api.onSettingsChanged((snapshot) => {
+  stopSettingsListener = settingsSnapshots.subscribe((snapshot) => {
     if (visible.value) failures.value = unavailableShortcuts(snapshot.runtime.shortcuts)
   })
   try {

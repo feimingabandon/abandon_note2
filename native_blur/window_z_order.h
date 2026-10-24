@@ -17,6 +17,9 @@ enum class ResultCode : int {
 int SetBottom(HWND hwnd, bool enabled);
 int Reassert(HWND hwnd);
 const char* GetStatusJson(HWND hwnd);
+// Bounded process-lifetime evidence: successful operations and ResetState never
+// clear the first failure or the most recent failure. No window titles are read.
+const char* GetLastFailureJson() noexcept;
 void Shutdown();
 
 }

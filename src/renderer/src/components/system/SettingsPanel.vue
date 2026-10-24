@@ -2,11 +2,16 @@
 import { useModalRequest } from '../../composables/useQueuedModal.js'
 import { reportEvidence } from '../../utils/diagnosticEvidence.js'
 import { useSettingsWriteQueue } from '../../composables/useSettingsWriteQueue.js'
+import SettingsApplicationStatus from './settings/SettingsApplicationStatus.vue'
+import AttachmentRecoveryStatus from './settings/AttachmentRecoveryStatus.vue'
+import { registerPageLeaveParticipant } from '../../utils/pageLeave.js'
 import { useDockSettingsForm } from '../../composables/useDockSettingsForm.js'
 import { useStickySettingsForm } from '../../composables/useStickySettingsForm.js'
 import DockSettingsSection from './settings/DockSettingsSection.vue'
 import StickySettingsSection from './settings/StickySettingsSection.vue'
 import { useSettingsSearch } from '../../composables/useSettingsSearch.js'
+import { useHolidayDataSettings } from '../../composables/useHolidayDataSettings.js'
+import { useSettingsDiagnostics } from '../../composables/useSettingsDiagnostics.js'
 import { stopScrollInertia } from '../../utils/smoothScroll.js'
 import { ownedPopovers } from '../../utils/anchoredPopover.js'
 /**
@@ -34,7 +39,7 @@ import AppSlider from '../ui/AppSlider.vue'
 import ShortcutRecorder from '../ui/ShortcutRecorder.vue'
 import SettingsControlPopover from './SettingsControlPopover.vue'
 import { formatViewVisibilityShortcut } from '../../../../shared/view-visibility-shortcut.js'
-import { CAPTURE_SHORTCUTS } from '../../../../shared/capture-shortcuts.js'
+import { ACTION_SHORTCUTS } from '../../../../shared/capture-shortcuts.js'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import HelpButton from '../ui/HelpButton.vue'
 import WallpaperSettings from '../wallpaper/WallpaperSettings.vue'
@@ -42,6 +47,8 @@ import LogViewerDialog from './LogViewerDialog.vue'
 import RemoteNoticeHistoryDialog from './RemoteNoticeHistoryDialog.vue'
 import WeatherSettings from '../weather/WeatherSettings.vue'
 import { useMessage } from '../../composables/useMessage.js' // 消息弹窗
+import { useDateContextSettings } from '../../composables/useDateContextSettings.js'
+import { weatherLocationKey } from '../../../../shared/weather-rules.js'
 import {
   applyUiScale,
   applyGlassBaseSettings,
@@ -62,49 +69,6 @@ import {
   UI_SCALES,
   VIEW_MODES
 } from '../../../../shared/settings-schema.js'
-
-// ---- 调度器健康数据 ----
-const schedulerHealth = ref(null)
-let _schedulerTimer = null
-
-const SCHEDULER_TASK_LABELS = Object.freeze({
-  activationTask: '便签生效',
-  reminderTask: '便签提醒与稍后提醒',
-  noteGenerationTask: '循环便签生成',
-  blurRuntimeDiagnosticTask: '窗口模糊运行诊断',
-  dockHealthTask: '贴边隐藏健康检查',
-  weatherRefreshTask: '天气自动更新'
-})
-
-function schedulerTaskLabel(name) {
-  return SCHEDULER_TASK_LABELS[name] || name
-}
-
-async function loadSchedulerHealth() {
-  try {
-    schedulerHealth.value = await window.api.getSchedulerHealth()
-  } catch (e) {
-    console.warn('[SettingsPanel] 获取调度器健康数据失败:', e)
-    schedulerHealth.value = null
-  }
-}
-
-function formatTickTime(ts) {
-  if (!ts) return '——'
-  return new Date(ts).toLocaleString('zh-CN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  })
-}
-
-function tickTimeAgo(ts) {
-  if (!ts) return '——'
-  const diff = Date.now() - ts
-  if (diff < 60000) return `${Math.floor(diff / 1000)} 秒前`
-  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`
-  return `${Math.floor(diff / 3600000)} 小时前`
-}
 
 function shortcutSummary(value, runtime) {
   const key = formatViewVisibilityShortcut(value) || '未设置'
@@ -224,10 +188,6 @@ const showLogViewer = logQueue.requested
 const historyQueue = useModalRequest()
 const showNoticeHistory = historyQueue.requested
 const appVersion = ref('未知')
-const currentHolidayYear = new Date().getFullYear()
-const holidayDataStatus = ref(null)
-const holidayDataBusy = ref('')
-const holidayDataError = ref('')
 
 /** 关闭动画定时器 ID，用于取消竞态关闭 */
 let closeTimer = null
@@ -247,7 +207,8 @@ let dragLatestPoint = 0
 let dragRaf = null
 
 function onDragStart(e) {
-  if (isResetting.value || closeSaving.value || e.button !== 0 || isDragging) return
+  if (isResetting.value || isLeaving.value || closeSaving.value || e.button !== 0 || isDragging)
+    return
   cancelScrollRestore()
 
   isDragging = true
@@ -330,7 +291,7 @@ onMounted(() => document.addEventListener('click', onDocClick, true))
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick, true))
 
 const close = async () => {
-  if (isResetting.value || closeTimer || closeSaving.value) return
+  if (isResetting.value || isLeaving.value || closeTimer || closeSaving.value) return
   closeSaving.value = true
   onDragEnd()
   try {
@@ -428,54 +389,11 @@ const minimalMode = ref(DEFAULT_SETTINGS.listAppearance.minimalMode)
 const hideMainViewDuringScreenshot = ref(DEFAULT_SETTINGS.interaction.hideMainViewDuringScreenshot)
 const receiveRemoteNotices = ref(DEFAULT_SETTINGS.remote.receiveNotices)
 const uploadDeviceInfo = ref(DEFAULT_SETTINGS.remote.uploadDeviceInfo)
-const remoteHealthStatus = ref('checking')
-const remoteHealthError = ref('')
-
-function applyRemoteHealth(result) {
-  remoteHealthStatus.value = result?.retired
-    ? 'retired'
-    : result?.checking
-      ? 'checking'
-      : result?.available
-        ? 'available'
-        : result?.skipped
-          ? 'skipped'
-          : 'unavailable'
-  remoteHealthError.value = result?.retired
-    ? result?.message || '远程服务已正式停止，本地功能不受影响'
-    : result?.available
-      ? ''
-      : result?.error || '连接失败'
-}
-
-const remoteHealthLabel = computed(() => {
-  if (remoteHealthStatus.value === 'checking') return '检测中'
-  if (remoteHealthStatus.value === 'available') return '● 连接正常'
-  if (remoteHealthStatus.value === 'retired') return '○ 服务已停止'
-  if (remoteHealthStatus.value === 'skipped') return '○ 本次未检测'
-  return '○ 连接异常'
-})
-
-async function loadRemoteHealth() {
-  remoteHealthStatus.value = 'checking'
-  remoteHealthError.value = ''
-  try {
-    // 只读取主进程在启动阶段保存的结果；这里绝不访问服务器。
-    const result = await window.api.getRemoteHealth()
-    applyRemoteHealth(result)
-  } catch (error) {
-    console.error('[SettingsPanel] 检查远程服务健康状态失败:', error)
-    remoteHealthStatus.value = 'unavailable'
-    remoteHealthError.value = error?.message || '连接失败'
-  }
-}
 
 /** 字体大小预设（datalist 选项） */
-const fontSizeMax = computed(() => (isCalendarView.value ? 28 : 22))
-const fontSizePresets = computed(() =>
-  Array.from({ length: fontSizeMax.value - 13 }, (_, index) => index + 14)
-)
-const noteRemarkFontSizePresets = Array.from({ length: 17 }, (_, index) => index + 12)
+const fontSizeMax = 40
+const fontSizePresets = Array.from({ length: 33 }, (_, index) => index + 8)
+const noteRemarkFontSizePresets = fontSizePresets
 /** 十六进制颜色预设（文字颜色 / 背景颜色共用） */
 const hexPresets = [
   { label: '纯黑', value: '#000000' },
@@ -593,129 +511,7 @@ const blurError = ref(null) // 持久错误（如 DLL 未加载），恒显示�
 const blurRadius = ref(DEFAULT_SETTINGS.blur.radius)
 const blurSaturation = ref(DEFAULT_SETTINGS.blur.saturation)
 const blurCornerRadius = ref(DEFAULT_SETTINGS.blur.cornerRadius)
-const blurDiagnostic = ref({
-  status: 'pending',
-  lastCheckedAt: null,
-  message: '等待调度器执行首次诊断'
-})
-let stopBlurRuntimeListener = null
-let stopBlurDiagnosticListener = null
-let stopRemoteHealthListener = null
-let stopHolidayDataListener = null
-
-const holidayDataStatusLabel = computed(() =>
-  holidayDataStatus.value?.available ? '● 数据可用' : '○ 需要更新'
-)
-
-const holidayDataSourceLabel = computed(() => {
-  const status = holidayDataStatus.value
-  if (!status?.available) return '暂无数据'
-  if (status.source === 'download') return '在线下载'
-  if (status.source === 'import') return '手动导入'
-  return '应用内置'
-})
-
-const holidayCoveredYearsLabel = computed(() => {
-  const years = holidayDataStatus.value?.coveredYears || []
-  if (!years.length) return '无'
-  const ranges = []
-  let start = years[0]
-  let end = years[0]
-  for (const year of years.slice(1)) {
-    if (year === end + 1) {
-      end = year
-      continue
-    }
-    ranges.push(start === end ? String(start) : `${start}–${end}`)
-    start = year
-    end = year
-  }
-  ranges.push(start === end ? String(start) : `${start}–${end}`)
-  return ranges.join('、')
-})
-
-const holidayDataSourceDetail = computed(() => {
-  const status = holidayDataStatus.value
-  if (!status?.available) return '未安装当前年份数据'
-  return [status.sourceName, formatHolidayDataTime(status.updatedAt)].filter(Boolean).join(' · ')
-})
-
-function formatHolidayDataTime(timestamp) {
-  if (!timestamp) return '随应用提供'
-  return new Date(timestamp).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
-
-async function loadHolidayDataStatus() {
-  try {
-    holidayDataStatus.value = await window.api.getHolidayDataStatus(currentHolidayYear)
-    holidayDataError.value = ''
-  } catch (error) {
-    console.warn('[SettingsPanel] 读取节假日数据状态失败:', error)
-    holidayDataError.value = error?.message || '无法读取节假日数据状态'
-  }
-}
-
-async function importHolidayData() {
-  if (holidayDataBusy.value) return
-  holidayDataBusy.value = 'import'
-  holidayDataError.value = ''
-  try {
-    const result = await window.api.importHolidayData()
-    if (result?.canceled) return
-    holidayDataStatus.value = result.status
-    const years = result.importedYears || []
-    showMessage('success', `已导入 ${years.join('、')} 年节假日数据`)
-  } catch (error) {
-    console.warn('[SettingsPanel] 导入节假日数据失败:', error)
-    holidayDataError.value = error?.message || '导入失败'
-    showMessage('error', holidayDataError.value, 4000)
-  } finally {
-    holidayDataBusy.value = ''
-  }
-}
-
-async function downloadCurrentHolidayData() {
-  if (holidayDataBusy.value) return
-  holidayDataBusy.value = 'download'
-  holidayDataError.value = ''
-  try {
-    const result = await window.api.downloadHolidayData(currentHolidayYear)
-    holidayDataStatus.value = result.status
-    showMessage('success', `${currentHolidayYear} 年节假日数据已下载并导入`)
-  } catch (error) {
-    console.warn('[SettingsPanel] 下载节假日数据失败:', error)
-    holidayDataError.value = error?.message || '下载失败'
-    showMessage('error', holidayDataError.value, 4000)
-  } finally {
-    holidayDataBusy.value = ''
-  }
-}
-
-async function openHolidayDataLink() {
-  try {
-    await window.api.openHolidayDataLink(currentHolidayYear)
-  } catch (error) {
-    console.warn('[SettingsPanel] 打开节假日数据地址失败:', error)
-    showMessage('error', error?.message || '无法打开下载地址', 4000)
-  }
-}
-
-const blurDiagnosticMeta = computed(() => {
-  const states = {
-    healthy: { label: '● 正常', className: 'sched-badge--ok' },
-    error: { label: '⚠ 异常', className: 'sched-badge--danger' },
-    disabled: { label: '○ 未启用', className: 'sched-badge--warn' },
-    unsupported: { label: '— 不支持', className: 'sched-badge--warn' },
-    pending: { label: '… 待诊断', className: 'sched-badge--warn' }
-  }
-  return states[blurDiagnostic.value.status] || states.pending
-})
+let hasAssignedSettingsSnapshot = false
 
 // ---- 窗口透明度（仅系统模糊关闭时显示） ----
 const windowOpacity = ref(DEFAULT_SETTINGS.css.windowOpacity)
@@ -725,7 +521,35 @@ const cssBlur = ref(DEFAULT_SETTINGS.css.bgBlur)
 const cssOpacity = ref(DEFAULT_SETTINGS.css.popupOpacity)
 
 const { showMessage } = useMessage()
-const weatherRefreshing = ref(false)
+const holidayData = useHolidayDataSettings({ showMessage })
+const {
+  currentHolidayYear,
+  holidayDataStatus,
+  holidayDataBusy,
+  holidayDataError,
+  holidayDataStatusLabel,
+  holidayDataSourceLabel,
+  holidayCoveredYearsLabel,
+  holidayDataSourceDetail,
+  importHolidayData,
+  downloadCurrentHolidayData,
+  openHolidayDataLink
+} = holidayData
+const diagnostics = useSettingsDiagnostics({ showMessage })
+const {
+  schedulerHealth,
+  blurDiagnostic,
+  blurDiagnosticMeta,
+  remoteHealthStatus,
+  remoteHealthError,
+  remoteHealthLabel,
+  loadSchedulerHealth,
+  retryScheduler,
+  schedulerTaskLabel,
+  formatTickTime,
+  tickTimeAgo
+} = diagnostics
+const { weatherRefreshing, refreshWeatherManually } = useManualWeatherRefresh(showMessage)
 
 function weatherRefreshTime(timestamp) {
   if (!timestamp) return '未知时间'
@@ -742,36 +566,63 @@ function weatherRefreshErrorMessage(error) {
   )
 }
 
-async function refreshWeatherManually() {
-  if (weatherRefreshing.value) return
-  weatherRefreshing.value = true
-  const startedAt = performance.now()
-  try {
-    const forecast = await window.api.refreshWeatherForecast()
-    const place = forecast?.location?.name || '当前地区'
-    const updatedAt = weatherRefreshTime(forecast?.fetchedAt)
-    const status = forecast?.manualRefresh?.status
-    if (status === 'current') {
-      showMessage('success', `复用最近 5 分钟内获取的天气：${place}，获取于 ${updatedAt}`)
-    } else if (status === 'stale') {
-      showMessage(
-        'warning',
-        `天气更新失败，继续使用 ${updatedAt} 的缓存：${forecast?.warning || '网络不可用'}`,
-        4000
-      )
-    } else {
-      showMessage(
-        'success',
-        `天气已更新：${place}，共 ${forecast?.days?.length || 0} 天预报（${updatedAt}）`
-      )
+function useManualWeatherRefresh(notify) {
+  const { captureWeatherContext, isWeatherContextCurrent } = useDateContextSettings()
+  const weatherRefreshing = ref(false)
+  let disposed = false
+  let requestSequence = 0
+  onBeforeUnmount(() => {
+    disposed = true
+    requestSequence += 1
+  })
+
+  async function refreshWeatherManually() {
+    if (disposed || weatherRefreshing.value) return
+    const context = captureWeatherContext()
+    if (!context) {
+      notify('warning', '请先开启天气显示并选择有效地区，再更新天气')
+      return
     }
-  } catch (error) {
-    showMessage('error', weatherRefreshErrorMessage(error), 4000)
-  } finally {
-    const remaining = 520 - (performance.now() - startedAt)
-    if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining))
-    weatherRefreshing.value = false
+    const sequence = ++requestSequence
+    const ownsRequest = () => !disposed && sequence === requestSequence
+    const currentContext = () => ownsRequest() && isWeatherContextCurrent(context)
+    weatherRefreshing.value = true
+    const startedAt = performance.now()
+    try {
+      const forecast = await window.api.refreshWeatherForecast()
+      if (!currentContext()) return
+      if (!forecast || weatherLocationKey(forecast.location) !== context.key) {
+        notify('warning', '天气更新尚未完成，请稍后重试', 4000)
+        return
+      }
+      const place = forecast.location.name
+      const updatedAt = weatherRefreshTime(forecast.fetchedAt)
+      const status = forecast.manualRefresh?.status
+      if (status === 'current') {
+        notify('success', `复用最近 5 分钟内获取的天气：${place}，获取于 ${updatedAt}`)
+      } else if (status === 'stale') {
+        notify(
+          'warning',
+          `天气更新失败，继续使用 ${updatedAt} 的缓存：${forecast.warning || '网络不可用'}`,
+          4000
+        )
+      } else {
+        notify(
+          'success',
+          `天气已更新：${place}，共 ${forecast.days?.length || 0} 天预报（${updatedAt}）`
+        )
+      }
+    } catch (error) {
+      if (currentContext()) notify('error', weatherRefreshErrorMessage(error), 4000)
+    } finally {
+      const remaining = 520 - (performance.now() - startedAt)
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining))
+      // Shared context changes cancel feedback; this local request still owns its
+      // spinner. A disposed/replaced instance must never receive the delayed write.
+      if (ownsRequest()) weatherRefreshing.value = false
+    }
   }
+  return { weatherRefreshing, refreshWeatherManually }
 }
 
 /**
@@ -830,7 +681,38 @@ const settingsWrites = useSettingsWriteQueue({
   showMessage,
   reportEvidence
 })
-const { isResetting, persistSetting, debouncedSave, loadSettingsSnapshot } = settingsWrites
+const {
+  isResetting,
+  isLeaving,
+  snapshotUnavailable,
+  hasPendingWrites,
+  hasUnconfirmedWrites,
+  awaitingCanonical,
+  applicationState,
+  applicationAvailability,
+  applicationError,
+  applicationReading,
+  applicationBusy,
+  persistSetting,
+  debouncedSave,
+  loadSettingsSnapshot
+} = settingsWrites
+const unregisterPageLeave = registerPageLeaveParticipant({
+  prepare(operationId) {
+    onDragEnd()
+    // Editable controls commit local text on blur; tray navigation need not move
+    // DOM focus. Commit before the queue's nextTick captures the last intent.
+    const activeElement = document.activeElement
+    if (
+      panelRef.value?.contains(activeElement) ||
+      (panelRef.value &&
+        ownedPopovers(panelRef.value).some((panel) => panel.contains(activeElement)))
+    )
+      activeElement?.blur()
+    return settingsWrites.prepareToLeave(operationId)
+  },
+  resume: (operationId) => settingsWrites.resumeAfterLeave(operationId)
+})
 const { failedSettings } = settingsWrites
 const settingLabels = {
   'appearance.titlebarStyle': '导航栏风格',
@@ -868,6 +750,22 @@ async function retrySettingSaves() {
     console.warn('[SettingsPanel] 重试保存设置失败:', error)
   } finally {
     if (!componentUnmounted) retryingSettingSaves.value = false
+  }
+}
+
+async function retrySettingsApplication(targets) {
+  try {
+    await settingsWrites.retrySettingsApplication(targets)
+  } catch (error) {
+    console.warn('[SettingsPanel] 重试应用设置失败:', error)
+  }
+}
+
+async function readSettingsApplicationState() {
+  try {
+    await settingsWrites.refreshSettingsApplicationState()
+  } catch (error) {
+    console.warn('[SettingsPanel] 读取应用状态失败:', error)
   }
 }
 
@@ -1004,6 +902,7 @@ watch(blurCornerRadius, (v) => {
 })
 
 function assignSettingsSnapshot(snapshot) {
+  if (!snapshot?.values) return
   const appearance = snapshot.values.appearance || DEFAULT_SETTINGS.appearance
   const css = snapshot.values.css
   const blur = snapshot.values.blur
@@ -1015,18 +914,24 @@ function assignSettingsSnapshot(snapshot) {
   panelSize.value = Number(
     snapshot.values.ui?.settingsPanelSize ?? viewDefaults.value.ui.settingsPanelSize
   )
-  dockForm.assignConfig(snapshot.values.dock)
+  if (!settingsWrites.isProtected('dock')) dockForm.assignConfig(snapshot.values.dock)
   dockForm.assignRuntime(snapshot.runtime?.dock)
 
   titlebarStyle.value = appearance.titlebarStyle
   uiScale.value = appearance.uiScale
   titlebarIconScale.value = appearance.titlebarIconScale
   iconColor.value = appearance.iconColor
-  viewVisibilityShortcut.value = shortcuts.viewVisibility
-  captureShortcuts.value = { ...shortcuts }
+  const capturingShortcut = viewVisibilityShortcutRuntime.value.capturing
+  if (!capturingShortcut) {
+    viewVisibilityShortcut.value = shortcuts.viewVisibility
+    captureShortcuts.value = { ...shortcuts }
+  }
   captureShortcutRuntime.value = { ...snapshot.runtime?.shortcuts }
   if (snapshot.runtime?.shortcuts?.viewVisibility) {
-    viewVisibilityShortcutRuntime.value = snapshot.runtime.shortcuts.viewVisibility
+    viewVisibilityShortcutRuntime.value = {
+      ...snapshot.runtime.shortcuts.viewVisibility,
+      ...(capturingShortcut ? { capturing: true } : {})
+    }
   }
   bgColor.value = css.bgColor
   cssOpacity.value = css.popupOpacity
@@ -1053,12 +958,18 @@ function assignSettingsSnapshot(snapshot) {
   uploadDeviceInfo.value = remote.uploadDeviceInfo
   // “用户希望开启”与“当前确实生效”分开：支持平台初始化失败时，开关必须
   // 显示为关闭，同时保留错误信息，让用户可以再次主动开启并触发重试。
-  blurEnabled.value = runtimeBlur?.supported
-    ? Boolean(blur.enabled && runtimeBlur.effectiveEnabled)
-    : false
-  blurRadius.value = blur.radius
-  blurSaturation.value = blur.saturation
-  blurCornerRadius.value = blur.cornerRadius
+  if (!settingsWrites.isProtected('blur')) {
+    const wasEnabled = blurEnabled.value
+    blurEnabled.value = runtimeBlur?.supported
+      ? Boolean(blur.enabled && runtimeBlur.effectiveEnabled)
+      : false
+    blurRadius.value = blur.radius
+    blurSaturation.value = blur.saturation
+    blurCornerRadius.value = blur.cornerRadius
+    if (hasAssignedSettingsSnapshot && wasEnabled && !blurEnabled.value && runtimeBlur?.error) {
+      showMessage('error', `毛玻璃已停止：${runtimeBlur.error}`, 5000)
+    }
+  }
 
   if (runtimeBlur) {
     blurCaps.value = {
@@ -1066,32 +977,32 @@ function assignSettingsSnapshot(snapshot) {
       strategy: runtimeBlur.strategy
     }
     blurError.value = runtimeBlur.error ?? null
-    if (runtimeBlur.diagnostic) blurDiagnostic.value = runtimeBlur.diagnostic
+    diagnostics.acceptBlurSnapshot(runtimeBlur.diagnostic)
   }
 
-  if (runtimeAutoStart) {
+  if (runtimeAutoStart && !settingsWrites.isProtected('autoStart')) {
     autoStart.value = runtimeAutoStart.value
     autoStartError.value = runtimeAutoStart.error ?? null
   }
 
   applySettingsSnapshot(snapshot)
+  hasAssignedSettingsSnapshot = true
 }
 
 // 每次父组件打开设置时都会重新挂载本组件，因此这里必定重新查询完整快照。
 onMounted(async () => {
   // 视图切换为整页导航，pagehide 时仍可读取滚动容器。
   window.addEventListener('pagehide', freezeScrollPosition)
-  // 先订阅再读取快照，避免健康请求恰好在两步之间完成而丢失最终状态。
-  stopRemoteHealthListener = window.api.onRemoteHealthChanged?.(applyRemoteHealth)
+  // Remote/holiday owners subscribe before their initial local reads.
+  const secondaryLoads = Promise.all([diagnostics.start(), holidayData.start()])
   window.api
     .getAppInfo()
     .then((info) => {
-      if (info?.version) appVersion.value = info.version
+      if (!componentUnmounted && info?.version) appVersion.value = info.version
     })
     .catch((error) => console.warn('[SettingsPanel] 获取应用版本失败:', error))
   // 面板尺寸决定进场起点，必须先读取保存值再启动动画；否则月/周视图会先按
   // 默认 40% 宽度出现，随后在动画途中瞬间跳到用户保存的宽度。
-  const secondaryLoads = Promise.all([loadRemoteHealth(), loadHolidayDataStatus()])
   await loadSettingsSnapshot()
   if (componentUnmounted) return
   await nextTick()
@@ -1106,78 +1017,16 @@ onMounted(async () => {
   // 两项都是本地 IPC；设置面板只在用户点击下载时访问网络。
   await secondaryLoads
   if (componentUnmounted) return
-
-  stopBlurRuntimeListener = window.api.onSettingsChanged?.((snapshot) => {
-    if (snapshot?.values?.shortcuts && !viewVisibilityShortcutRuntime.value.capturing) {
-      captureShortcuts.value = { ...snapshot.values.shortcuts }
-      viewVisibilityShortcut.value = snapshot.values.shortcuts.viewVisibility
-    }
-    if (snapshot?.runtime?.shortcuts) {
-      captureShortcutRuntime.value = { ...snapshot.runtime.shortcuts }
-    }
-    if (snapshot?.runtime?.shortcuts?.viewVisibility) {
-      viewVisibilityShortcutRuntime.value = snapshot.runtime.shortcuts.viewVisibility
-    }
-    const runtimeBlur = snapshot?.runtime?.blur
-    const configuredEnabled = Boolean(snapshot?.values?.blur?.enabled)
-    if (snapshot?.values?.dock && !settingsWrites.isInFlight('dock')) {
-      dockForm.assignConfig(snapshot.values.dock)
-    }
-    dockForm.assignRuntime(snapshot?.runtime?.dock)
-    if (!runtimeBlur) return
-
-    blurCaps.value = {
-      supported: runtimeBlur.supported,
-      strategy: runtimeBlur.strategy
-    }
-    blurError.value = runtimeBlur.error ?? null
-    if (runtimeBlur.diagnostic) blurDiagnostic.value = runtimeBlur.diagnostic
-
-    const effectiveEnabled = Boolean(
-      runtimeBlur.supported && configuredEnabled && runtimeBlur.effectiveEnabled
-    )
-    // 毛玻璃启用请求执行期间，主进程会先广播“壁纸已关闭”的过渡快照。
-    // 这时不能用数据库中的旧 blur.enabled 把用户刚打开的开关拨回去；最终
-    // 成功或失败状态由本次 IPC 返回值统一收敛。
-    if (!settingsWrites.isInFlight('blur') && effectiveEnabled !== blurEnabled.value) {
-      const wasEnabled = blurEnabled.value
-      void settingsWrites.withoutWrite('blur', () => {
-        blurEnabled.value = effectiveEnabled
-      })
-
-      if (
-        wasEnabled &&
-        !effectiveEnabled &&
-        runtimeBlur.error &&
-        !settingsWrites.isInFlight('blur')
-      ) {
-        showMessage('error', `毛玻璃已停止：${runtimeBlur.error}`, 5000)
-      }
-    }
-  })
-  stopBlurDiagnosticListener = window.api.onBlurDiagnosticChanged?.((diagnostic) => {
-    if (diagnostic) blurDiagnostic.value = diagnostic
-  })
-  stopHolidayDataListener = window.api.onHolidayDataChanged?.(() => {
-    void loadHolidayDataStatus()
-  })
-
-  loadSchedulerHealth()
-  _schedulerTimer = setInterval(loadSchedulerHealth, 10000)
+  diagnostics.startBlurDiagnostics()
 })
 
 onBeforeUnmount(() => {
   freezeScrollPosition()
   window.removeEventListener('pagehide', freezeScrollPosition)
   componentUnmounted = true
-  stopBlurRuntimeListener?.()
-  stopBlurRuntimeListener = null
-  stopBlurDiagnosticListener?.()
-  stopBlurDiagnosticListener = null
-  stopRemoteHealthListener?.()
-  stopRemoteHealthListener = null
-  stopHolidayDataListener?.()
-  stopHolidayDataListener = null
+  unregisterPageLeave()
+  diagnostics.dispose()
+  holidayData.dispose()
   onDragEnd()
   // 正常关闭时这里已完成 flush；强制卸载时也不能丢失最后一次修改。
   settingsWrites.dispose().catch((e) => console.warn('[SettingsPanel] 卸载前保存设置失败:', e))
@@ -1193,11 +1042,6 @@ onBeforeUnmount(() => {
   if (openRaf) {
     cancelAnimationFrame(openRaf)
     openRaf = null
-  }
-  // 清理调度器健康检查定时器
-  if (_schedulerTimer) {
-    clearInterval(_schedulerTimer)
-    _schedulerTimer = null
   }
   // 等父组件撤销底层 inert 后再恢复，否则浏览器会拒绝聚焦原触发按钮。
   setTimeout(() => restoreFocusedElement(settingsPreviousFocus), 0)
@@ -1234,14 +1078,6 @@ watch(
     if (!visible) settingsSearch.cancel()
   }
 )
-async function retryScheduler() {
-  try {
-    schedulerHealth.value = await window.api.retryScheduler()
-    showMessage('info', '已重新检查核心任务，请查看诊断状态')
-  } catch (error) {
-    showMessage('error', error.message || '重试失败')
-  }
-}
 </script>
 
 <template>
@@ -1264,10 +1100,11 @@ async function retryScheduler() {
           'settings-panel--month': isCalendarView
         }"
         :style="panelStyle"
+        :inert="isLeaving"
         role="dialog"
         aria-modal="true"
         aria-label="设置"
-        :aria-busy="isResetting || closeSaving"
+        :aria-busy="isResetting || isLeaving || closeSaving"
         @pointerdown.capture="cancelScrollRestore"
         @keydown="onPanelKeydown"
       >
@@ -1323,6 +1160,22 @@ async function retryScheduler() {
           </BaseButton>
         </div>
 
+        <SettingsApplicationStatus
+          :state="applicationState"
+          :availability="applicationAvailability"
+          :state-error="applicationError"
+          :has-pending-writes="hasPendingWrites"
+          :has-unconfirmed-writes="hasUnconfirmedWrites"
+          :has-save-failures="failedSettings.length > 0"
+          :awaiting-canonical="awaitingCanonical"
+          :applying="applicationBusy"
+          :reading="applicationReading"
+          :disabled="isResetting || isLeaving || closeSaving"
+          @retry-application="retrySettingsApplication"
+          @read-state="readSettingsApplicationState"
+          @read-values="loadSettingsSnapshot"
+        />
+
         <div class="settings-search">
           <input
             v-model="settingsSearch.query.value"
@@ -1355,12 +1208,27 @@ async function retryScheduler() {
           ref="panelBodyRef"
           class="panel-body scroll-y"
           :class="{ 'is-resetting': isResetting }"
-          :inert="isResetting || closeSaving"
+          :inert="isResetting || isLeaving || closeSaving"
           @wheel.passive="onManualScroll"
           @pointerdown="onManualScroll"
           @keydown="onManualScroll"
         >
-          <fieldset class="settings-controls" :disabled="isResetting || closeSaving">
+          <div
+            v-if="snapshotUnavailable"
+            class="settings-save-unavailable"
+            role="status"
+            aria-live="polite"
+          >
+            <p>设置已保存，当前值尚待确认。重新读取后即可继续修改。</p>
+            <BaseButton size="sm" :disabled="isResetting" @click="loadSettingsSnapshot"
+              >重新读取设置</BaseButton
+            >
+          </div>
+          <fieldset
+            v-else
+            class="settings-controls"
+            :disabled="isResetting || isLeaving || closeSaving"
+          >
             <!-- ========== 基础样式 ========== -->
             <div
               class="settings-category"
@@ -1466,7 +1334,7 @@ async function retryScheduler() {
                     <SettingsControlPopover
                       label="背景颜色"
                       :summary="bgColorHex"
-                      :disabled="isResetting || !panelActive"
+                      :disabled="isResetting || isLeaving || !panelActive"
                       :width="260"
                     >
                       <template #summary>
@@ -1577,7 +1445,7 @@ async function retryScheduler() {
                       v-model="fontSizeBase"
                       data-diagnostic-action="settings.fontSizeBase"
                       :presets="fontSizePresets"
-                      :min="14"
+                      :min="8"
                       :max="fontSizeMax"
                       width="max(76rem, 5.5em)"
                     />
@@ -1596,8 +1464,8 @@ async function retryScheduler() {
                       v-model="noteRemarkFontSize"
                       data-diagnostic-action="settings.noteRemarkFontSize"
                       :presets="noteRemarkFontSizePresets"
-                      :min="12"
-                      :max="28"
+                      :min="8"
+                      :max="40"
                       width="max(76rem, 5.5em)"
                     />
                   </div>
@@ -1615,8 +1483,8 @@ async function retryScheduler() {
                       v-model="compactFontSize"
                       data-diagnostic-action="settings.compactFontSize"
                       :presets="noteRemarkFontSizePresets"
-                      :min="12"
-                      :max="28"
+                      :min="8"
+                      :max="40"
                       width="max(76rem, 5.5em)"
                     />
                   </div>
@@ -1634,7 +1502,7 @@ async function retryScheduler() {
                     <SettingsControlPopover
                       label="文字颜色"
                       :summary="textColor"
-                      :disabled="isResetting || !panelActive"
+                      :disabled="isResetting || isLeaving || !panelActive"
                       :width="260"
                     >
                       <template #summary>
@@ -1882,13 +1750,13 @@ async function retryScheduler() {
                       :summary="
                         shortcutSummary(viewVisibilityShortcut, viewVisibilityShortcutRuntime)
                       "
-                      :disabled="isResetting || !panelActive"
+                      :disabled="isResetting || isLeaving || !panelActive"
                       data-shortcut="viewVisibility"
                     >
                       <ShortcutRecorder
                         v-model="viewVisibilityShortcut"
                         :runtime="viewVisibilityShortcutRuntime"
-                        :disabled="isResetting"
+                        :disabled="isResetting || isLeaving"
                         @update:runtime="viewVisibilityShortcutRuntime = $event"
                         @feedback="showMessage($event.type, $event.message, $event.duration)"
                       />
@@ -1969,9 +1837,9 @@ async function retryScheduler() {
                 :panel-active="panelActive"
               />
               <section class="settings-section">
-                <h4 class="section-title">截图与贴图 <small>所有</small></h4>
+                <h4 class="section-title">快捷键与截图 <small>所有</small></h4>
                 <div
-                  v-for="(definition, action) in CAPTURE_SHORTCUTS"
+                  v-for="(definition, action) in ACTION_SHORTCUTS"
                   :key="action"
                   class="setting-item shortcut-setting"
                 >
@@ -1989,14 +1857,14 @@ async function retryScheduler() {
                       :summary="
                         shortcutSummary(captureShortcuts[action], captureShortcutRuntime[action])
                       "
-                      :disabled="isResetting || !panelActive"
+                      :disabled="isResetting || isLeaving || !panelActive"
                       :data-shortcut="action"
                     >
                       <ShortcutRecorder
                         v-model="captureShortcuts[action]"
                         :action="action"
                         :runtime="captureShortcutRuntime[action]"
-                        :disabled="isResetting"
+                        :disabled="isResetting || isLeaving"
                         @update:runtime="captureShortcutRuntime[action] = $event"
                         @feedback="showMessage($event.type, $event.message, $event.duration)"
                       />
@@ -2291,6 +2159,10 @@ async function retryScheduler() {
                     id="settings-diagnostics-content"
                     class="diagnostics-content"
                   >
+                    <AttachmentRecoveryStatus
+                      :active="visible && diagnosticsExpanded"
+                      @show-logs="showLogViewer = true"
+                    />
                     <section class="settings-section">
                       <h4 class="section-title">窗口诊断</h4>
                       <div class="setting-item">
@@ -2506,15 +2378,22 @@ async function retryScheduler() {
 </template>
 
 <style scoped>
-.settings-save-error {
+.settings-save-error,
+.settings-save-unavailable {
   flex: 0 0 auto;
   max-height: 148px;
   padding: 0 var(--settings-gutter) 8rem var(--settings-gutter-start);
-  color: var(--ui-danger);
   font-size: var(--fs-secondary);
   overflow-wrap: anywhere;
 }
-.settings-save-error p {
+.settings-save-error {
+  color: var(--ui-danger);
+}
+.settings-save-unavailable {
+  color: var(--text-color-secondary);
+}
+.settings-save-error p,
+.settings-save-unavailable p {
   margin: 0 0 4rem;
 }
 .settings-search {

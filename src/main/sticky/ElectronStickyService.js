@@ -33,7 +33,13 @@ import {
   rectanglesOverlap
 } from './stickyUtils.js'
 
-class StickyCreationError extends Error {}
+class StickyCreationError extends Error {
+  constructor(message, { cause, committed = false, stickyId } = {}) {
+    super(message, { cause })
+    this.committed = committed
+    this.stickyId = stickyId
+  }
+}
 
 export class ElectronStickyService extends StickyService {
   constructor({
@@ -80,6 +86,7 @@ export class ElectronStickyService extends StickyService {
     this.registry = new Map()
     this.byWebContentsId = new Map()
     this.initialized = false
+    this.initializationsStopped = false
     this.registeredChannels = []
     this.disposing = false
     this.lifecycleGeneration = 0
@@ -92,7 +99,7 @@ export class ElectronStickyService extends StickyService {
   }
 
   initialize() {
-    if (this.initialized) return
+    if (this.initialized || this.initializationsStopped) return
     this.lifecycleGeneration += 1
     this.initialized = true
     this.disposing = false
@@ -119,7 +126,10 @@ export class ElectronStickyService extends StickyService {
           }
           return {
             ok: false,
-            message: error instanceof StickyCreationError ? error.message : '无法创建便利贴，请重试'
+            message:
+              error instanceof StickyCreationError ? error.message : '无法创建便利贴，请重试',
+            ...(error?.committed ? { committed: true, stickyId: error.stickyId } : {}),
+            ...(error?.cleanupError ? { cleanupIncomplete: true } : {})
           }
         }
       })
@@ -148,6 +158,7 @@ export class ElectronStickyService extends StickyService {
   }
 
   async create({ noteId }) {
+    if (this.initializationsStopped) throw new StickyCreationError('便利贴初始化已停止')
     if (!this.initialized || this.disposing) throw new StickyCreationError('便利贴服务尚未就绪')
     if (this.getOccupiedSlotCount() >= MAX_STICKY_WINDOWS) {
       throw new StickyCreationError(
@@ -209,6 +220,8 @@ export class ElectronStickyService extends StickyService {
     createdAt,
     persisted
   }) {
+    if (this.initializationsStopped) throw new StickyCreationError('便利贴初始化已停止')
+    const deadline = Date.now() + STICKY_READY_TIMEOUT_MS
     const win = new BrowserWindow({
       ...bounds,
       minWidth: MIN_STICKY_WIDTH,
@@ -239,14 +252,6 @@ export class ElectronStickyService extends StickyService {
         backgroundThrottling: true
       }
     })
-    try {
-      if (pinned) this.applyAlwaysOnTop(win, true)
-    } catch (error) {
-      win.destroy()
-      throw new StickyCreationError(error.message || '便利贴置顶初始化失败')
-    }
-    setWindowLogContext(win, { role: 'sticky', stickyId: id, noteId })
-
     const entry = {
       id,
       noteId,
@@ -264,59 +269,268 @@ export class ElectronStickyService extends StickyService {
       transparent: true,
       pinned,
       ready: false,
-      finishReadyWait: null,
       readyTimer: null,
       boundsPersistTimer: null,
       createdAt,
       lastFocusedAt: Date.now(),
       persisted
     }
-    entry.completeReady = this.bindMutationContinuation(() => this.completeReady(entry))
-    const readyPromise = new Promise((resolve) => {
-      let settled = false
-      entry.finishReadyWait = (ready) => {
-        if (settled) return
-        settled = true
-        if (entry.readyTimer) {
-          clearTimeout(entry.readyTimer)
-          entry.readyTimer = null
-        }
-        resolve(ready)
-      }
-      entry.readyTimer = setTimeout(() => entry.finishReadyWait(false), STICKY_READY_TIMEOUT_MS)
+    const initialization = {
+      state: 'pending',
+      generation: this.lifecycleGeneration,
+      deadline,
+      error: null,
+      continueReady: null,
+      commitInProgress: false,
+      stopAfterCommit: false,
+      stopCleanupInProgress: false,
+      resolve: null,
+      promise: null
+    }
+    initialization.promise = new Promise((resolve) => {
+      initialization.resolve = resolve
     })
+    entry.initialization = initialization
+    // Check before entering the retained mutation scope. This wrapper exists as
+    // soon as ownership is registered, including constructor-stop cleanup failure.
+    entry.completeReady = () =>
+      initialization.state === 'pending' && initialization.continueReady
+        ? initialization.continueReady()
+        : false
     this.registry.set(id, entry)
     this.byWebContentsId.set(entry.webContentsId, id)
-    this.attachWindowListeners(entry)
-    this.onRegistryChanged?.()
-
-    try {
-      if (this.rendererUrl) {
-        await win.loadURL(this.rendererUrl)
-      } else {
-        await win.loadFile(this.rendererFile)
+    // BrowserWindow construction emits synchronous app callbacks before returning.
+    // If one stopped initialization, own the new window before cancelling it so
+    // a failed destroy still remains available to the normal disposal retry.
+    if (this.initializationsStopped) {
+      try {
+        this.destroyEntry(entry)
+      } catch (error) {
+        this.logInitializationError(
+          'sticky.stop-initialization',
+          `[sticky] 构造期间停止初始化后关闭窗口失败 (${entry.id}):`,
+          error,
+          entry
+        )
       }
+    } else {
+      try {
+        initialization.continueReady = this.bindMutationContinuation(() =>
+          this.completeReady(entry)
+        )
+        if (this.initializationsStopped || initialization.state !== 'pending') {
+          // bindMutationContinuation itself may synchronously trigger shutdown.
+          initialization.continueReady = null
+        } else {
+          entry.readyTimer = setTimeout(
+            () =>
+              this.failInitialization(entry, new StickyCreationError('便利贴初始化失败，请重试')),
+            Math.max(0, deadline - Date.now())
+          )
+          this.attachWindowListeners(entry)
+          if (pinned) this.applyAlwaysOnTop(win, true)
+          setWindowLogContext(win, { role: 'sticky', stickyId: id, noteId })
+          this.notifyRegistryChanged()
+          // Notification callbacks may also stop this entry. Never load its page
+          // after cancellation, even when the cancelled window failed to close.
+          if (!this.initializationsStopped && initialization.state === 'pending') {
+            // The renderer sends ready after applying its content and appearance;
+            // browser load completion is observed, not another business gate.
+            try {
+              const loading = this.rendererUrl
+                ? win.loadURL(this.rendererUrl)
+                : win.loadFile(this.rendererFile)
+              void Promise.resolve(loading).catch((error) =>
+                this.handleEntryLoadFailure(entry, error)
+              )
+            } catch (error) {
+              this.handleEntryLoadFailure(entry, error)
+            }
+          }
+        }
+      } catch (error) {
+        this.failInitialization(
+          entry,
+          new StickyCreationError(error?.message || '便利贴初始化失败，请重试', { cause: error })
+        )
+      }
+    }
+
+    const outcome = await initialization.promise
+    if (outcome.error) throw outcome.error
+    return outcome.value
+  }
+
+  notifyRegistryChanged() {
+    try {
+      this.onRegistryChanged?.()
     } catch (error) {
-      let restorationCancelled = false
-      if (persisted) {
-        try {
-          restorationCancelled = !this.repository.exists(id)
-        } catch {
-          // 继续记录原始页面加载错误。
+      console.error('[sticky] 刷新便利贴注册表通知失败:', error)
+    }
+  }
+
+  logInitializationError(event, message, error, entry, details = {}) {
+    try {
+      console.error(message, error)
+    } catch {
+      // Diagnostic sink failure must never replace the operation's terminal result.
+    }
+    try {
+      this.logger?.error?.(event, error, { stickyId: entry.id, ...details })
+    } catch {
+      // The original creation result retains the error even if both sinks fail.
+    }
+  }
+
+  settleInitialization(entry, state, error = null) {
+    const initialization = entry.initialization
+    if (!['pending', 'committing', 'cancelling'].includes(initialization?.state)) return false
+    initialization.state = state
+    initialization.error = error
+    initialization.continueReady = null
+    if (entry.readyTimer) clearTimeout(entry.readyTimer)
+    entry.readyTimer = null
+    initialization.resolve({
+      error,
+      value: error ? null : { id: entry.id, count: this.registry.size, limit: MAX_STICKY_WINDOWS }
+    })
+    initialization.resolve = null
+    return true
+  }
+
+  cancelInitialization(entry) {
+    const committed = entry.persisted
+    return this.settleInitialization(
+      entry,
+      'cancelled',
+      new StickyCreationError(
+        committed ? '便利贴初始化已取消，已保存记录保留供下次恢复' : '便利贴初始化已取消',
+        { committed, stickyId: entry.id, cause: entry.initialization?.cancellationCause }
+      )
+    )
+  }
+
+  stopInitializations() {
+    const report = {
+      stopped: true,
+      alreadyStopped: this.initializationsStopped,
+      cancelled: [],
+      preserved: [],
+      pendingCommit: [],
+      cleanupErrors: []
+    }
+    // Seal every entry point before destruction can invoke user callbacks. An
+    // admitted restore scope may outlive admission shutdown, so invalidate it too.
+    this.initializationsStopped = true
+    this.lifecycleGeneration += 1
+    this.restorePromise = null
+    this.clearAllRendererRecovery()
+    const entries = [...this.registry.values()]
+    for (const entry of entries) {
+      if (entry.boundsPersistTimer) clearTimeout(entry.boundsPersistTimer)
+      entry.boundsPersistTimer = null
+      const initialization = entry.initialization
+      if (entry.ready && initialization?.state === 'succeeded') {
+        report.preserved.push(entry.id)
+        continue
+      }
+      if (['pending', 'committing', 'cancelling'].includes(initialization?.state)) {
+        initialization.state = 'cancelling'
+        initialization.continueReady = null
+        if (entry.readyTimer) clearTimeout(entry.readyTimer)
+        entry.readyTimer = null
+        if (initialization.commitInProgress) {
+          // insert may not have returned yet. Its synchronous stack must publish
+          // the real persisted result before cancellation constructs its error.
+          initialization.stopAfterCommit = true
+          report.pendingCommit.push(entry.id)
         }
       }
-      this.destroyEntry(entry)
-      if (restorationCancelled) throw new StickyCreationError('便利贴恢复已取消')
-      console.error(`[sticky] 页面加载失败 (${this.rendererUrl || this.rendererFile}):`, error)
-      throw new StickyCreationError('便利贴页面加载失败')
     }
-
-    if (!(await readyPromise)) {
-      this.destroyEntry(entry)
-      throw new StickyCreationError('便利贴初始化失败，请重试')
+    for (const entry of entries) {
+      const initialization = entry.initialization
+      if (entry.ready || initialization?.commitInProgress || initialization?.stopCleanupInProgress)
+        continue
+      initialization.stopCleanupInProgress = true
+      try {
+        this.destroyEntry(entry)
+      } catch (error) {
+        report.cleanupErrors.push({ stickyId: entry.id, error })
+      } finally {
+        initialization.stopCleanupInProgress = false
+      }
+      if (entry.initialization?.state === 'cancelled') report.cancelled.push(entry.id)
     }
+    // This is a synchronous snapshot. Deferred committing cleanup reports through
+    // the original creation outcome and logger, never by mutating this report.
+    return report
+  }
 
-    return { id, count: this.registry.size, limit: MAX_STICKY_WINDOWS }
+  failInitialization(entry, error) {
+    // A close request already owns cancellation; stopping the browser load while
+    // it closes cannot replace that intent with a competing load/timeout failure.
+    if (entry.initialization?.state === 'cancelling') return false
+    if (!this.settleInitialization(entry, 'failed', error)) return false
+    // Invalidate first, then destroy. A failing destroy retains the registry entry
+    // for the normal shutdown cleanup retry, but can never revive initialization.
+    try {
+      this.destroyEntry(entry)
+    } catch (cleanupError) {
+      console.error(`[sticky] 初始化失败后关闭窗口失败 (${entry.id}):`, cleanupError)
+    }
+    return true
+  }
+
+  handleInitializationClose(entry, event) {
+    const initialization = entry.initialization
+    if (!['pending', 'committing', 'cancelling'].includes(initialization?.state)) return
+    // The service owns close requests for its not-yet-ready window, including a
+    // request another close listener prevents. Completed windows keep native close.
+    event.preventDefault()
+    if (initialization.state === 'cancelling') return
+    initialization.state = 'cancelling'
+    initialization.continueReady = null
+    // Revoke ready synchronously, but let the close dispatch unwind before destroy.
+    // destroyEntry settles cancellation and attempts cleanup in the same microtask,
+    // before observers can see the resulting creation rejection.
+    queueMicrotask(() => {
+      try {
+        this.destroyEntry(entry)
+      } catch (error) {
+        console.error(`[sticky] 初始化关闭请求清理失败 (${entry.id}):`, error)
+      }
+    })
+  }
+
+  markInitializationRecordRemoved(entry) {
+    // close/closeAll remove records only after window destruction succeeded.
+    // Until the SQL deletion succeeds, a cancelled restoration retains its row.
+    const initialization = entry.initialization
+    if (initialization?.state === 'cancelled' && initialization.error?.committed) {
+      initialization.error.committed = false
+      initialization.error.message = '便利贴初始化已取消'
+    }
+  }
+
+  handleEntryLoadFailure(entry, error) {
+    if (['pending', 'committing'].includes(entry.initialization.state)) {
+      let restorationCancelled = false
+      if (entry.persisted) {
+        try {
+          restorationCancelled = !this.repository.exists(entry.id)
+        } catch {
+          // Preserve the original load failure when the repository cannot be read.
+        }
+      }
+      this.failInitialization(
+        entry,
+        new StickyCreationError(restorationCancelled ? '便利贴恢复已取消' : '便利贴页面加载失败', {
+          cause: error
+        })
+      )
+    }
+    // A late load rejection does not undo an already committed and shown sticky.
+    console.error(`[sticky] 页面加载失败 (${this.rendererUrl || this.rendererFile}):`, error)
   }
 
   /**
@@ -361,7 +575,7 @@ export class ElectronStickyService extends StickyService {
   }
 
   getRecoverableCount() {
-    if (!this.initialized || this.disposing) return 0
+    if (!this.initialized || this.disposing || this.initializationsStopped) return 0
     try {
       return this.repository.list().filter((record) => !this.registry.has(record.id)).length
     } catch (error) {
@@ -371,7 +585,8 @@ export class ElectronStickyService extends StickyService {
   }
 
   restoreMissing({ source = 'manual' } = {}) {
-    if (!this.initialized || this.disposing) return Promise.resolve(0)
+    if (!this.initialized || this.disposing || this.initializationsStopped)
+      return Promise.resolve(0)
     if (this.restorePromise) return this.restorePromise
     const restoration = this.restoreMissingInternal(source, this.lifecycleGeneration)
       .catch((error) => {
@@ -382,7 +597,7 @@ export class ElectronStickyService extends StickyService {
       .finally(() => {
         if (this.restorePromise === restoration) {
           this.restorePromise = null
-          this.onRegistryChanged?.()
+          this.notifyRegistryChanged()
         }
       })
     this.restorePromise = restoration
@@ -397,6 +612,7 @@ export class ElectronStickyService extends StickyService {
       if (
         generation !== this.lifecycleGeneration ||
         this.disposing ||
+        this.initializationsStopped ||
         this.registry.size >= MAX_STICKY_WINDOWS
       )
         break
@@ -496,6 +712,7 @@ export class ElectronStickyService extends StickyService {
     win.on('focus', () => {
       entry.lastFocusedAt = Date.now()
     })
+    win.on('close', (event) => this.handleInitializationClose(entry, event))
     win.once('closed', () => this.removeEntry(entry))
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     win.webContents.on('will-navigate', (event, url) => {
@@ -512,7 +729,7 @@ export class ElectronStickyService extends StickyService {
   }
 
   scheduleBoundsPersistence(entry) {
-    if (!entry.ready || !entry.persisted || this.disposing) return
+    if (!entry.ready || !entry.persisted || this.disposing || this.initializationsStopped) return
     if (entry.boundsPersistTimer) clearTimeout(entry.boundsPersistTimer)
     entry.boundsPersistTimer = setTimeout(() => {
       entry.boundsPersistTimer = null
@@ -543,7 +760,13 @@ export class ElectronStickyService extends StickyService {
   }
 
   scheduleRendererRecovery(id) {
-    if (!this.initialized || this.disposing || this.rendererRecoveryAttempts.has(id)) return
+    if (
+      !this.initialized ||
+      this.disposing ||
+      this.initializationsStopped ||
+      this.rendererRecoveryAttempts.has(id)
+    )
+      return
     try {
       if (!this.repository.exists(id)) return
     } catch (error) {
@@ -560,6 +783,7 @@ export class ElectronStickyService extends StickyService {
             generation !== this.lifecycleGeneration ||
             !this.initialized ||
             this.disposing ||
+            this.initializationsStopped ||
             !this.rendererRecoveryAttempts.has(id)
           )
             return
@@ -614,43 +838,98 @@ export class ElectronStickyService extends StickyService {
   }
 
   completeReady(entry) {
-    if (!entry.ready) {
+    const initialization = entry.initialization
+    if (initialization?.state !== 'pending') return false
+    if (
+      !this.initialized ||
+      this.disposing ||
+      this.initializationsStopped ||
+      initialization.generation !== this.lifecycleGeneration ||
+      this.registry.get(entry.id) !== entry ||
+      entry.window.isDestroyed()
+    ) {
+      this.cancelInitialization(entry)
+      return false
+    }
+    if (Date.now() >= initialization.deadline) {
+      this.failInitialization(entry, new StickyCreationError('便利贴初始化失败，请重试'))
+      return false
+    }
+    initialization.state = 'committing'
+    initialization.commitInProgress = true
+    let phase = entry.persisted ? 'verify' : 'insert'
+    try {
       if (entry.persisted) {
-        let recordExists
-        try {
-          recordExists = this.repository.exists(entry.id)
-        } catch (error) {
-          entry.finishReadyWait?.(false)
-          this.destroyEntry(entry)
-          console.error(`[sticky] 验证便利贴记录失败 (${entry.id}):`, error)
-          throw new Error('便利贴记录验证失败，已停止恢复')
-        }
-        if (!recordExists) {
-          entry.finishReadyWait?.(false)
-          this.destroyEntry(entry)
+        if (!this.repository.exists(entry.id)) {
           throw new Error('便利贴记录已被删除，已停止恢复')
         }
       } else {
+        this.repository.insert(this.toPersistentRecord(entry))
+        entry.persisted = true
+        console.log(`[sticky] 便利贴已持久化 (${entry.id})`)
+      }
+      phase = 'show'
+      if (initialization.state !== 'committing') return false
+      this.persistBounds(entry)
+      if (initialization.state !== 'committing') return false
+      if (entry.window.isDestroyed()) {
+        this.removeEntry(entry)
+        return false
+      }
+      entry.window.showInactive()
+      if (initialization.state !== 'committing') return false
+      if (entry.window.isDestroyed()) {
+        this.removeEntry(entry)
+        return false
+      }
+      if (!entry.window.isVisible()) throw new Error('便利贴窗口未能显示')
+      entry.ready = true
+      this.settleInitialization(entry, 'succeeded')
+      this.notifyRegistryChanged()
+      return true
+    } catch (cause) {
+      if (initialization.stopAfterCommit) {
+        initialization.cancellationCause = cause
+        this.logInitializationError(
+          'sticky.stop-initialization-operation',
+          `[sticky] 停止初始化时同步操作失败 (${entry.id}, phase=${phase}):`,
+          cause,
+          entry,
+          { phase }
+        )
+        return false
+      }
+      const error = new StickyCreationError(
+        phase === 'show'
+          ? '便利贴已保存，但窗口显示失败，请通过托盘重试恢复'
+          : phase === 'insert'
+            ? '便利贴保存失败，未显示到桌面'
+            : cause?.message === '便利贴记录已被删除，已停止恢复'
+              ? cause.message
+              : '便利贴记录验证失败，已停止恢复',
+        { cause, committed: phase === 'show' && entry.persisted, stickyId: entry.id }
+      )
+      this.failInitialization(entry, error)
+      throw error
+    } finally {
+      initialization.commitInProgress = false
+      if (initialization.stopAfterCommit) {
+        initialization.stopAfterCommit = false
+        initialization.stopCleanupInProgress = true
         try {
-          this.repository.insert(this.toPersistentRecord(entry))
-          entry.persisted = true
-          console.log(`[sticky] 便利贴已持久化 (${entry.id})`)
-        } catch (error) {
-          entry.finishReadyWait?.(false)
           this.destroyEntry(entry)
-          console.error(`[sticky] 保存新便利贴失败 (${entry.id}):`, error)
-          throw new Error('便利贴保存失败，未显示到桌面')
+        } catch (error) {
+          this.logInitializationError(
+            'sticky.stop-initialization',
+            `[sticky] 停止初始化后关闭窗口失败 (${entry.id}):`,
+            error,
+            entry
+          )
+        } finally {
+          initialization.stopCleanupInProgress = false
         }
       }
-      entry.ready = true
-      this.persistBounds(entry)
-      entry.window.showInactive()
-      const finishReadyWait = entry.finishReadyWait
-      entry.finishReadyWait = null
-      finishReadyWait?.(true)
-      this.onRegistryChanged?.()
     }
-    return true
   }
 
   closeForSender(webContentsId) {
@@ -891,6 +1170,7 @@ export class ElectronStickyService extends StickyService {
       this.destroyEntry(entry)
       if (entry.persisted) this.repository.delete(id)
       entry.persisted = false
+      this.markInitializationRecordRemoved(entry)
       this.clearRendererRecovery(id)
       this.onRegistryChanged?.()
       console.log(`[sticky] 用户已关闭便利贴 (${id})`)
@@ -908,7 +1188,10 @@ export class ElectronStickyService extends StickyService {
       for (const entry of entries) this.destroyEntry(entry)
       this.repository.deleteAll()
       this.clearAllRendererRecovery()
-      for (const entry of entries) entry.persisted = false
+      for (const entry of entries) {
+        entry.persisted = false
+        this.markInitializationRecordRemoved(entry)
+      }
       this.onRegistryChanged?.()
       console.log('[sticky] 用户已关闭全部便利贴')
       return true
@@ -947,12 +1230,26 @@ export class ElectronStickyService extends StickyService {
 
   destroyEntry(entry) {
     if (!entry) return
+    this.cancelInitialization(entry)
     if (entry.boundsPersistTimer) {
       clearTimeout(entry.boundsPersistTimer)
       entry.boundsPersistTimer = null
     }
     if (!entry.window.isDestroyed()) {
-      entry.window.destroy()
+      try {
+        entry.window.destroy()
+        if (!entry.window.isDestroyed()) throw new Error('便利贴窗口未能关闭')
+        // Setup can fail before the closed listener was installed. Do not rely on
+        // that listener alone to release this operation's registered ownership.
+        this.removeEntry(entry)
+      } catch (error) {
+        const initializationError = entry.initialization?.error
+        if (initializationError && !initializationError.cleanupError) {
+          initializationError.cleanupError = error?.message || String(error)
+          initializationError.message += '；窗口清理失败，请正常退出应用以重试释放'
+        }
+        throw error
+      }
     } else {
       this.removeEntry(entry)
     }
@@ -960,13 +1257,12 @@ export class ElectronStickyService extends StickyService {
 
   removeEntry(entry) {
     if (this.registry.get(entry.id) !== entry) return
+    this.cancelInitialization(entry)
     if (entry.boundsPersistTimer) clearTimeout(entry.boundsPersistTimer)
     entry.boundsPersistTimer = null
-    entry.finishReadyWait?.(false)
-    entry.finishReadyWait = null
     this.byWebContentsId.delete(entry.webContentsId)
     this.registry.delete(entry.id)
-    this.onRegistryChanged?.()
+    this.notifyRegistryChanged()
   }
 
   handleDisplayTopologyChange({ previous, current }) {
@@ -1011,7 +1307,7 @@ export class ElectronStickyService extends StickyService {
     this.lifecycleGeneration += 1
     this.restorePromise = null
     this.clearAllRendererRecovery()
-    if (!this.initialized) return
+    if (!this.initialized && !this.registry.size) return
     this.disposing = true
     const failures = []
     for (const entry of [...this.registry.values()]) {

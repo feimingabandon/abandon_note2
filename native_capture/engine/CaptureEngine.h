@@ -19,6 +19,10 @@ private:
   friend class UiTest;
   QLocalServer server;
   QPointer<QLocalSocket> socket;
+  QPointer<QLocalSocket> peerSocket;
+  void *peerProcess = nullptr; // Owned Win32 process HANDLE; never a pipe HANDLE.
+  quint32 peerPid = 0;
+  quint64 socketGeneration = 0, peerGeneration = 0, sessionGeneration = 0;
   QByteArray input;
   QString token, root, session, delivery;
   bool authenticated = false, hidden = false, busy = false;
@@ -35,10 +39,16 @@ private:
   QSize lastImageSize;
   QString settingsPath;
   Capture::Feedback feedback;
+  void revokePeerIdentity();
+  void bindPeerIdentity();
+  bool grantPeerForeground(const QString &expectedSession,
+                           const QString &reason,
+                           QJsonObject *foregroundHandoff = nullptr);
   void send(QJsonObject message);
   void receive(QJsonObject message);
   void capture(QJsonObject message);
-  void finish(QString status);
+  void finish(QString status,
+              std::optional<QJsonObject> foregroundHandoff = std::nullopt);
   void output(CaptureOverlay *source, QString action, QImage image);
   bool pin(QImage image, QString *error);
   bool pin(Capture::ImageDocument document, QString *error, QRect geometry = {},

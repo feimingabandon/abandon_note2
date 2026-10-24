@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useQueuedModal } from '../../composables/useQueuedModal.js'
+import { editingDataGeneration } from '../../composables/useDraftProtection.js'
 import TemplateForm from './TemplateForm.vue'
 import TemplateCard from './TemplateCard.vue'
 import TemplateCreatePanel from './TemplateCreatePanel.vue'
@@ -304,14 +305,23 @@ async function createTemplate(payload) {
   if (creating.value) return
   creating.value = true
   const before = captureVisibleCardLayout()
+  const generation = editingDataGeneration.value
+  let committed = false
   try {
     await window.api.createTemplate(payload)
-    createPanelRef.value?.reset()
+    committed = true
+    if (disposed || generation !== editingDataGeneration.value) return
+    await createPanelRef.value?.reset()
+    if (disposed || generation !== editingDataGeneration.value) return
     showMessage('success', '循环模板已创建')
     await refreshInBackground({ before })
   } catch (error) {
     console.error('[TemplatePage] 创建模板失败:', error)
-    showMessage('error', error.message || '创建失败')
+    if (!disposed && generation === editingDataGeneration.value)
+      showMessage(
+        committed ? 'warning' : 'error',
+        committed ? '模板已创建，但界面收尾未完成，请核对列表。' : error.message || '创建失败'
+      )
   } finally {
     creating.value = false
   }
@@ -346,9 +356,13 @@ function requestCloseEdit() {
   closeEdit()
 }
 
-function discardEdit() {
-  editFormRef.value?.clearDraft()
-  closeEdit()
+async function discardEdit() {
+  const form = editFormRef.value
+  const target = editing.value
+  const generation = editingDataGeneration.value
+  await form?.clearDraft()
+  if (!disposed && generation === editingDataGeneration.value && editing.value === target)
+    closeEdit()
 }
 
 async function performAction(name, template) {
@@ -414,16 +428,34 @@ async function saveEdit(payload) {
   const before = captureVisibleCardLayout()
   const editedId = editing.value.id
   const requestSequence = ++saveEditSequence
+  const generation = editingDataGeneration.value
+  let committed = false
   try {
     await window.api.updateTemplate(editedId, payload)
-    if (requestSequence !== saveEditSequence) return
-    editFormRef.value?.clearDraft()
+    committed = true
+    if (
+      disposed ||
+      generation !== editingDataGeneration.value ||
+      requestSequence !== saveEditSequence
+    )
+      return
+    await editFormRef.value?.clearDraft()
+    if (
+      disposed ||
+      generation !== editingDataGeneration.value ||
+      requestSequence !== saveEditSequence
+    )
+      return
     if (isTemplateEditTarget(editing.value, editedId)) editing.value = null
     showMessage('success', '模板修改已保存')
     await refreshInBackground({ before, reenterIds: [editedId] })
   } catch (error) {
     console.error(`[TemplatePage] 保存模板修改失败 (templateId=${editedId}):`, error)
-    showMessage('error', error.message || '保存失败')
+    if (!disposed && generation === editingDataGeneration.value)
+      showMessage(
+        committed ? 'warning' : 'error',
+        committed ? '模板已保存，但界面收尾未完成，请核对列表。' : error.message || '保存失败'
+      )
   } finally {
     savingEdit.value = false
   }

@@ -5,6 +5,7 @@ import { createAssertionRecorder, prepareTestProfile } from './helpers/test-resu
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow, ipcMain } from 'electron'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
 
 const ipcTrace = []
 let earlierDelayMs = 0
@@ -188,6 +189,8 @@ async function run() {
     const js = (code) => win.webContents.executeJavaScript(code)
     const expectUI = (code, message) => until(() => js(code), message)
     await expectUI(`Boolean(document.querySelector('.nl-timeline'))`, '时间线未渲染')
+    await dismissStartupShortcutNotice(win)
+    await expectUI("!document.querySelector('.app-scene').inert", '启动场景仍被模态占用')
     const data = await js(`(async () => {
       const now = new Date()
       const at = (days, seconds) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + days, 0, 0, seconds).getTime()
@@ -211,6 +214,8 @@ async function run() {
 
     win.webContents.reload()
     await expectUI("document.querySelectorAll('.nl-timeline .nl-card').length === 16", '首批未加载')
+    await dismissStartupShortcutNotice(win)
+    await expectUI("!document.querySelector('.app-scene').inert", '重载场景仍被模态占用')
     for (const count of [36, 41]) {
       await js(
         "(() => { const el = document.querySelector('.nl-timeline'); el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll')); })()"
@@ -223,6 +228,7 @@ async function run() {
     await wait(600)
     const results = []
     async function measure(name, scrollId, trigger, expectedCount = 41) {
+      await expectUI("!document.querySelector('.app-scene').inert", name + ': 场景不可交互')
       await js(
         scrollId
           ? 'document.querySelector(\'.nl-card[data-note-id="' + scrollId + '"]\').scrollIntoView()'
@@ -473,6 +479,12 @@ async function run() {
     }
     report(
       'PASS stable card/scroll lifecycle, one refresh/animation, slow queries, concurrent completion, >100 retention, failure/collapse/mode cancellation, automatic midnight refresh'
+    )
+    assert.ok(
+      await js(
+        "!document.querySelector('.app-scene').inert && !document.querySelector('[role=dialog]')"
+      ),
+      '最终刷新场景可交互且未被模态遮挡'
     )
     completed = true
     await requestShutdown()

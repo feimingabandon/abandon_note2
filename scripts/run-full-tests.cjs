@@ -14,6 +14,7 @@ function createJobs() {
     command: electron,
     args: [file],
     gui: true,
+    windowsHide: false,
     requires: ['build-native', 'build-capture', 'build-app']
   })
   return [
@@ -85,6 +86,7 @@ function createJobs() {
     ...manifest.focusedNativeTests.map((file) => ({
       ...guiJob(file),
       gui: false,
+      windowsHide: true,
       requires: ['build-native']
     })),
     ...[...manifest.databaseTests, 'tests/maturity-db.mjs'].map((file) => ({

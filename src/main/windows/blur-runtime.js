@@ -65,6 +65,21 @@ export function createBlurRuntime({
     blurConfig.tintOpacity = getSettings().css.windowOpacity
   }
 
+  function destroyBlurForRecovery() {
+    const result = blurDestroy()
+    if (result?.outcome === 'failed') {
+      // Internal recovery still consumes the former synchronous error contract.
+      // The public destroy returns the result directly to the shutdown owner.
+      const error = new Error(result.error?.message || '原生毛玻璃资源销毁失败')
+      error.code = result.error?.code || 'NATIVE_BLUR_SHUTDOWN_FAILED'
+      error.phase = result.error?.phase
+      error.nativeShutdown = result.nativeShutdown
+      error.shutdownResult = result
+      throw error
+    }
+    return result
+  }
+
   function initializeBlurRuntime() {
     if (blurInitialized) return { success: true, strategy: blurCaps.strategy }
     const visualWindow = getActiveVisualWindow()
@@ -92,7 +107,9 @@ export function createBlurRuntime({
       blurRuntimeFailed = false
       blurInitializationError = null
       blurInitializationNativeError = null
-      if (process.platform === 'win32') blurSetConfig(blurConfig)
+      if (process.platform === 'win32' && blurSetConfig(blurConfig) === false) {
+        throw new Error('原生毛玻璃首次配置未确认执行')
+      }
       updateBlurDiagnostic(
         {
           status: blurConfig.enabled ? 'pending' : 'disabled',
@@ -108,7 +125,7 @@ export function createBlurRuntime({
       // blurInit 成功而首次配置失败时也必须完整回滚，否则 JS、bridge 和
       // native 三层会处于互相矛盾的初始化状态，后续重试还会被短路。
       try {
-        blurDestroy()
+        destroyBlurForRecovery()
       } catch (destroyError) {
         console.error('[blur] 初始化回滚时销毁原生资源失败:', destroyError)
       }
@@ -172,7 +189,7 @@ export function createBlurRuntime({
       )
 
       try {
-        blurDestroy()
+        destroyBlurForRecovery()
       } catch (destroyError) {
         console.error('[blur] 运行期失效后销毁原生资源失败:', destroyError)
       }
@@ -280,7 +297,9 @@ export function createBlurRuntime({
   function runBlurRuntimeOperation(operation, label) {
     if (process.platform !== 'win32' || !blurInitialized) return false
     try {
-      operation()
+      // Geometry/order operations intentionally return void. An explicit false
+      // is a rejection and must take the same safety path as a native exception.
+      if (operation() === false) throw new Error('原生接口未确认执行')
       return true
     } catch (error) {
       const wrapped = new Error(`${label}失败：${error?.message || '原生接口调用异常'}`)
@@ -327,9 +346,73 @@ export function createBlurRuntime({
   }
 
   function applyResolvedBlurRuntime() {
-    if (blurInitialized && process.platform === 'win32') {
-      runBlurRuntimeOperation(() => blurSetConfig(blurConfig), '更新毛玻璃配置')
+    if (!blurInitialized && !blurConfig.enabled) {
+      // The saved disabled target needs no engine, but a prior failure remains
+      // diagnostic fact. A no-op must not clear that failure or start the engine.
+      return { status: 'applied', error: blurInitializationError, retryable: false }
     }
+    if (!blurCaps.supported || process.platform !== 'win32') {
+      return {
+        status: 'failed',
+        error: blurInitializationError || blurCaps.reason || '系统毛玻璃不可用',
+        retryable: false
+      }
+    }
+    if (!blurInitialized) {
+      return {
+        status: blurRuntimeFailed ? 'failed' : 'deferred',
+        error: blurInitializationError || '系统毛玻璃尚未初始化',
+        retryable: true
+      }
+    }
+    let confirmed = false
+    const applied = runBlurRuntimeOperation(() => {
+      const result = blurSetConfig(blurConfig)
+      confirmed = result === true
+      return result
+    }, '更新毛玻璃配置')
+    if (!applied) {
+      return {
+        status: 'failed',
+        error: blurInitializationError || '原生毛玻璃配置未应用',
+        retryable: blurConfig.enabled
+      }
+    }
+    return {
+      status: confirmed ? 'applied' : 'unconfirmed',
+      error: confirmed ? null : '原生接口未确认毛玻璃配置',
+      retryable: !confirmed
+    }
+  }
+
+  function retryResolvedBlurRuntime() {
+    syncBlurConfigFromResolved()
+    if (!blurConfig.enabled || !blurCaps.supported || process.platform !== 'win32') {
+      return applyResolvedBlurRuntime()
+    }
+    const visualWindow = getActiveVisualWindow()
+    if (!visualWindow || visualWindow.isDestroyed()) {
+      return { status: 'deferred', error: '主窗口尚未就绪', retryable: true }
+    }
+    if (!visualWindow.isVisible()) {
+      return { status: 'deferred', error: '主窗口当前不可见', retryable: true }
+    }
+    if (!blurInitialized) {
+      const result = initializeBlurRuntime()
+      if (!result.success) {
+        const error = new Error(result.error || '系统毛玻璃初始化失败')
+        error.nativeError = result.nativeError ?? null
+        // The existing owner retains resource teardown, disabled persistence and
+        // publication. In particular, a failed compensation SQL must propagate.
+        handleBlurRuntimeFailure(error)
+        return {
+          status: 'failed',
+          error: blurInitializationError,
+          retryable: blurConfig.enabled
+        }
+      }
+    }
+    return applyResolvedBlurRuntime()
   }
 
   function restoreBlurForVisibleWindow(window, source) {
@@ -382,7 +465,7 @@ export function createBlurRuntime({
         error: firstError?.message
       })
       try {
-        blurDestroy()
+        destroyBlurForRecovery()
       } catch (destroyError) {
         logger.error('presentation-mode.blur-rebuild-destroy', destroyError, { source })
       }
@@ -406,6 +489,7 @@ export function createBlurRuntime({
     runBlurRuntimeOperation,
     attachBlurWindowSyncListeners,
     applyResolvedBlurRuntime,
+    retryResolvedBlurRuntime,
     restoreBlurForVisibleWindow,
     synchronizePresentationBlur,
     get config() {
@@ -447,9 +531,12 @@ export function createBlurRuntime({
       blurDiagnostic = { ...state.diagnostic }
     },
     destroy() {
-      for (const window of blurListeners.keys()) detachWindow(window)
-      blurDestroy()
-      blurInitialized = false
+      try {
+        for (const window of blurListeners.keys()) detachWindow(window)
+        return blurDestroy()
+      } finally {
+        blurInitialized = false
+      }
     }
   }
 }

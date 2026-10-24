@@ -135,21 +135,92 @@ describe('resolved settings runtime', () => {
     expect(runtime.values.notes.autoMoveToToday).toBe(false)
   })
 
-  it('refreshes values before material/theme sync and advances the revision afterwards', () => {
+  it('publishes values and their revision before material/theme sync', () => {
     const observations = []
     let runtime
     ;({ runtime } = fixture({
       onResolved: (values) =>
-        observations.push([values.geometry.width, runtime.values === values, runtime.revision])
+        observations.push([
+          values.geometry.width,
+          runtime.values === values,
+          runtime.revision,
+          runtime.snapshot().revision
+        ])
     }))
     expect(runtime.refresh()).toBe(true)
-    expect(observations).toEqual([[801, true, 0]])
+    expect(observations).toEqual([[801, true, 1, 1]])
     expect(runtime.revision).toBe(1)
     expect(runtime.refresh()).toBe(false)
     expect(runtime.revision).toBe(1)
     expect(runtime.refresh({ incrementRevision: true })).toBe(true)
     expect(runtime.revision).toBe(2)
     expect(observations).toHaveLength(3)
+  })
+
+  it('keeps the published value and revision consistent when a resolved dependency throws', () => {
+    const failure = new Error('capture theme dependency failed')
+    let publishedInCallback
+    const onResolved = vi.fn().mockImplementationOnce(() => {
+      publishedInCallback = runtime.snapshot()
+      throw failure
+    })
+    const { runtime } = fixture({ onResolved })
+    const before = runtime.snapshot()
+    expect(() => runtime.refresh()).toThrow(failure)
+    const after = runtime.snapshot()
+    expect(after.values.geometry.width).toBe(801)
+    expect(after.values.geometry.width).not.toBe(before.values.geometry.width)
+    expect(after.revision).toBe(before.revision + 1)
+    expect(publishedInCallback.revision).toBe(after.revision)
+    expect(publishedInCallback.values.geometry.width).toBe(after.values.geometry.width)
+    expect(runtime.refresh()).toBe(false)
+    expect(runtime.revision).toBe(after.revision)
+    expect(onResolved).toHaveBeenCalledTimes(2)
+  })
+
+  it('can publish stored values without dispatching dependencies owned by the application coordinator', () => {
+    const onResolved = vi.fn()
+    const { runtime } = fixture({ onResolved })
+    expect(runtime.refresh({ incrementRevision: true, notifyResolved: false })).toBe(true)
+    expect(runtime.values.geometry.width).toBe(801)
+    expect(runtime.revision).toBe(1)
+    expect(onResolved).not.toHaveBeenCalled()
+    // The existing entry remains compatible until its consumer migration.
+    expect(runtime.refresh()).toBe(false)
+    expect(onResolved).toHaveBeenCalledOnce()
+    expect(onResolved).toHaveBeenCalledWith(runtime.values)
+    expect(runtime.revision).toBe(1)
+  })
+
+  it('does not publish an old value/revision pair as a new resolution when a silent read fails', () => {
+    const onResolved = vi.fn()
+    const { runtime, readViewRows } = fixture({ onResolved })
+    runtime.refresh({ notifyResolved: false })
+    const before = runtime.values
+    const beforeRevision = runtime.revision
+    readViewRows.mockImplementationOnce(() => {
+      throw new Error('settings resolve read failed')
+    })
+    expect(() => runtime.refresh({ incrementRevision: true, notifyResolved: false })).toThrow(
+      'settings resolve read failed'
+    )
+    expect(runtime.values).toBe(before)
+    expect(runtime.revision).toBe(beforeRevision)
+    expect(onResolved).not.toHaveBeenCalled()
+  })
+
+  it('leaves a provider failure explicit after publication instead of inventing OS observations', () => {
+    const { runtime, readRuntime } = fixture()
+    runtime.refresh({ notifyResolved: false })
+    const before = runtime.values
+    const beforeRevision = runtime.revision
+    readRuntime.mockImplementationOnce(() => {
+      throw new Error('OS runtime observation unavailable')
+    })
+    expect(() => runtime.snapshot()).toThrow('OS runtime observation unavailable')
+    expect(runtime.values).toBe(before)
+    expect(runtime.revision).toBe(beforeRevision)
+    expect(runtime.values.system?.autoStart).toBeUndefined()
   })
 
   it('keeps the shortcut pause across refresh, view switch and stored-default reset', () => {
@@ -186,27 +257,34 @@ describe('resolved settings runtime', () => {
     expect(readRuntime).toHaveBeenCalledTimes(1)
   })
 
-  it('does not replace values or revise state when a storage read fails', () => {
-    const { runtime, readViewRows } = fixture()
+  it.each(['readApplication', 'readViewRows'])('does not publish when %s fails', (failingRead) => {
+    const onResolved = vi.fn()
+    const f = fixture({ onResolved })
+    const { runtime } = f
     runtime.refresh()
+    onResolved.mockClear()
     const before = runtime.values
-    readViewRows.mockImplementationOnce(() => {
+    f[failingRead].mockImplementationOnce(() => {
       throw new Error('SQLite read failed')
     })
     expect(() => runtime.refresh({ incrementRevision: true })).toThrow('SQLite read failed')
     expect(runtime.values).toBe(before)
     expect(runtime.revision).toBe(1)
+    expect(onResolved).not.toHaveBeenCalled()
   })
 
-  it('preserves published values and the old revision when the existing sync side effect fails', () => {
+  it('publishes a forced revision for unchanged values before a dependency fails', () => {
+    let fail = false
     const { runtime } = fixture({
       onResolved: () => {
-        throw new Error('theme sync failed')
+        if (fail) throw new Error('theme sync failed')
       }
     })
+    runtime.refresh()
+    fail = true
     expect(() => runtime.refresh({ incrementRevision: true })).toThrow('theme sync failed')
     expect(runtime.values.geometry.width).toBe(801)
-    expect(runtime.revision).toBe(0)
+    expect(runtime.revision).toBe(2)
   })
 
   it('advances runtime-only revision without reading or persisting settings', () => {

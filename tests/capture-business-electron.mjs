@@ -32,7 +32,71 @@ const recorder = createAssertionRecorder({
 const { assert } = recorder
 let completed = false
 let failure = null
+let diagnosticWindow = null
+let quitDraftPreparation = null
 const wait = (ms) => new Promise((done) => setTimeout(done, ms))
+async function recordDraftDiagnostic(phase) {
+  const report = { phase, at: new Date().toISOString(), window: null, quitDraftPreparation }
+  let timer
+  try {
+    if (diagnosticWindow && !diagnosticWindow.isDestroyed()) {
+      report.window = {
+        visible: diagnosticWindow.isVisible(),
+        minimized: diagnosticWindow.isMinimized(),
+        focused: diagnosticWindow.isFocused()
+      }
+      report.renderer = await Promise.race([
+        diagnosticWindow.webContents.executeJavaScript(`(() => {
+          const capture = document.querySelector('.app-modal-card[aria-label="截图新建便签"]');
+          return {
+            visibility: document.visibilityState,
+            focused: document.hasFocus(),
+            activeModals: Array.from(document.querySelectorAll('.app-modal-card,.confirm-card.active')).slice(0,16).map(node => ({
+              label: node.getAttribute('aria-label'),
+              role: node.getAttribute('role')
+            })),
+            confirmationCards: Array.from(document.querySelectorAll('.confirm-card')).slice(0,16).map(node => ({
+              label: node.getAttribute('aria-label'),
+              rendered: true,
+              active: node.classList.contains('active')
+            })),
+            captureMounted: Boolean(capture),
+            targetMounted: Boolean(capture?.querySelector('.nnp-root')),
+            targetThumbnails: capture?.querySelectorAll('.ip-thumb').length || 0,
+            targetBusy: Boolean(capture?.querySelector('.sp-btn--busy')),
+            importErrors: Array.from(capture?.querySelectorAll('[role="alert"]') || []).slice(0,8).map(node => node.textContent.trim().slice(0,300)),
+            journals: Object.keys(localStorage).filter(key => key.startsWith('abandon:editing-draft:')).slice(0,32).map(key => {
+              try {
+                const value=JSON.parse(localStorage.getItem(key));
+                return { key, version:value?.version, ownerId:value?.owner?.ownerId,
+                  pendingAsset:Boolean(value?.data?.pendingAsset),
+                  pendingAction:value?.data?.pendingAsset?.action,
+                  addedAssetCount:value?.data?.attachments?.addedImages?.length || 0,
+                  captureReceiptCount:value?.data?.captureReceipts?.length || 0,
+                  handoff:Boolean(value?.handoff) };
+              } catch { return {key,unreadable:true}; }
+            })
+          };
+        })()`),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Draft diagnostic renderer query timed out')),
+            2000
+          )
+        })
+      ])
+    }
+  } catch (error) {
+    report.error = error.stack || error.message
+  } finally {
+    clearTimeout(timer)
+  }
+  writeFileSync(
+    join(process.env.ABANDON_TEST_EVIDENCE_DIR || profile, `capture-draft-${phase}.json`),
+    JSON.stringify(report, null, 2),
+    { flag: 'wx' }
+  )
+}
 async function until(predicate, label, timeout = 10000) {
   const deadline = Date.now() + timeout
   while (Date.now() < deadline) {
@@ -56,7 +120,11 @@ for (const [type, key, value] of [
   ['shortcuts', 'screenshot', ''],
   ['shortcuts', 'screenshot_copy', ''],
   ['shortcuts', 'clipboard_pin', ''],
-  ['shortcuts', 'toggle_pins', '']
+  ['shortcuts', 'toggle_pins', ''],
+  // F2 may belong to the user's application. It is unrelated to this suite's
+  // explicit F10/F11/F12 capture-shortcut assertions and would queue a startup
+  // notice ahead of the capture modal. Preserve that product FIFO behavior.
+  ['shortcuts', 'view_visibility', '']
 ])
   insert.run('application', type, key, value)
 insert.run('main', 'system', 'blur_enabled', 'false')
@@ -82,6 +150,7 @@ app.once('ready', async () => {
         ),
       'Main window missing'
     )
+    diagnosticWindow = window
     const js = (body) => window.webContents.executeJavaScript(body)
     await until(() => window.isVisible(), 'Main window never appeared')
     const hooks = globalThis.__ABANDON_WINDOW_TEST_HOOKS__
@@ -181,6 +250,12 @@ app.once('ready', async () => {
     // The default Ctrl+F1 value is asserted by the shortcut/schema unit tests.
     assert.equal(configured.screenshotCopy, '')
     assert.equal(
+      configured.viewVisibility,
+      '',
+      'Unrelated view shortcut is isolated in this profile'
+    )
+    assert.deepEqual(await js('window.api.getShortcutStartupNotice()'), [])
+    assert.equal(
       (await js(`window.api.setCaptureShortcut('screenshotCopy', 'Control+Alt+Shift+F10')`)).status,
       'saved'
     )
@@ -251,6 +326,12 @@ app.once('ready', async () => {
 
     // Temporary PNG -> validated host delivery -> independent renderer draft.
     // In real-input mode this also verifies recapture after Alt+F4.
+    await recordDraftDiagnostic('before-global-note')
+    assert.equal(
+      await js(`Boolean(document.querySelector('.app-modal-card[aria-label="快捷键启用提示"]'))`),
+      false,
+      'Startup shortcut notice must not occupy the capture fixture modal queue'
+    )
     await capture()
     await press('N', true)
     await until(
@@ -261,8 +342,8 @@ app.once('ready', async () => {
       () => !hooks.nativeCaptureState().active,
       'Business acknowledgement did not finish native session'
     )
-    const draftCount = await js(`window.__prepareEditingDrafts().dirty`)
-    assert.equal(draftCount, true)
+    const draftState = await js(`window.__prepareEditingDrafts()`)
+    assert.equal(draftState.dirty, true)
     assert.equal(
       window.isVisible(),
       true,
@@ -270,6 +351,15 @@ app.once('ready', async () => {
     )
 
     // Declining an app quit must leave the owned engine and shortcuts alive.
+    // A thumbnail and native ACK precede pending-owner cleanup. The receiver
+    // legitimately blocks page leave until that cleanup finishes (unit held at
+    // the actual clear await), so this scene starts only after full preparation.
+    quitDraftPreparation = { initial: draftState, latest: draftState }
+    await until(async () => {
+      quitDraftPreparation.latest = await js(`window.__prepareEditingDrafts()`)
+      return quitDraftPreparation.latest.dirty && !quitDraftPreparation.latest.blocked
+    }, 'Capture draft receiver did not finish preparation for quit confirmation')
+    await recordDraftDiagnostic('before-quit')
     const beforeQuitPid = coordinator.host.pid
     app.quit()
     await until(
@@ -343,6 +433,11 @@ app.once('ready', async () => {
     console.error(error)
     failure = error
     code = 1
+    try {
+      await recordDraftDiagnostic('failure')
+    } catch (diagnosticError) {
+      console.error('Capture failure diagnostic could not be saved:', diagnosticError)
+    }
   } finally {
     uncover?.()
     globalShortcut.unregisterAll()

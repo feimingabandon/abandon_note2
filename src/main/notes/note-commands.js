@@ -10,6 +10,7 @@ import {
   addImageRecord,
   cleanupStagedImage,
   commitStagedImage,
+  getImageCount,
   stageImage,
   stageImageDeletion
 } from '../db/db-images.js'
@@ -83,6 +84,42 @@ export async function createNoteWithAssets({ options, images, tagIds }) {
   // SQLite has committed: notification failures must never remove committed files.
   await Promise.all(stagedImages.map(cleanupStagedImage))
   return created
+}
+
+export async function addNoteImages({ noteId, images }) {
+  const batch = Array.isArray(images) ? images : []
+  const remaining = MAX_ATTACHMENTS_PER_NOTE - getImageCount(noteId)
+  assertAttachmentBatchWithinLimit(batch, { maxCount: remaining })
+
+  const db = getDb()
+  const writtenImages = []
+  const stagedImages = []
+  try {
+    for (const image of batch) stagedImages.push(await stageImage(image.base64, image.ext))
+  } catch (error) {
+    await compensateFailedNoteAssets({ stagedImages })
+    throw error
+  }
+
+  const transaction = db.transaction(() => {
+    const results = []
+    for (const staged of stagedImages) {
+      const { relativePath, fileSize } = commitStagedImage(noteId, staged)
+      writtenImages.push({ relativePath, staged })
+      results.push(addImageRecord({ noteId, filePath: relativePath, fileSize }))
+    }
+    return results
+  })
+
+  let results
+  try {
+    results = transaction()
+  } catch (error) {
+    await compensateFailedNoteAssets({ writtenImages, stagedImages })
+    throw error
+  }
+  await Promise.all(stagedImages.map(cleanupStagedImage))
+  return results
 }
 
 export async function saveNoteDraft(payload = {}) {

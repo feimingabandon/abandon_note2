@@ -1,4 +1,7 @@
 import { createThumbnailCache } from '../services/thumbnail-cache.js'
+import { imageReadService } from '../images/image-read-service.js'
+import { startImageDecodeChild, imageFileVersion } from '../images/image-decode-child.js'
+import { startImagePreviewRead } from '../images/image-preview-reader.js'
 /**
  * db-images.js — 图片附件存储模块（主进程）
  *
@@ -10,14 +13,14 @@ import { createThumbnailCache } from '../services/thumbnail-cache.js'
 
 import { dirname, join, resolve, sep } from 'path'
 import { randomUUID } from 'crypto'
-import { app, nativeImage } from 'electron'
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync, statSync } from 'fs'
+import { app } from 'electron'
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'fs'
 import {
   beginPerformanceOperation,
   recordPerformanceOperation,
   measureSyncPerformance
 } from '../logging/operation-performance.js'
-import { mkdir, writeFile, unlink, stat, readFile, rm } from 'fs/promises'
+import { mkdir, writeFile, unlink, stat, lstat, rm } from 'fs/promises'
 import { getDb } from './db-connection.js'
 import {
   MAX_ATTACHMENTS_PER_NOTE,
@@ -214,15 +217,15 @@ export async function getImageBase64(relativePath) {
   const finish = beginPerformanceOperation('image', 'original.read')
   const metrics = {}
   try {
-    const absPath = resolveImagePath(relativePath)
-    const buffer = await readFile(absPath)
+    const source = captureStoredImageSource(relativePath, 'original')
+    const value = await imageOriginalPort.request(source.key, source)
+    if (!value || !imageSourceCurrent(source)) return null
+    const buffer = value.payload
     metrics.bytes = buffer.length
-    const ext = relativePath.split('.').pop()?.toLowerCase() || 'png'
-    const mime = ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext
     return measureSyncPerformance(
       'image',
       'original.encode',
-      () => `data:image/${mime};base64,${buffer.toString('base64')}`,
+      () => `data:${value.mime};base64,${buffer.toString('base64')}`,
       () => ({ bytes: buffer.length })
     )
   } catch (error) {
@@ -234,92 +237,195 @@ export async function getImageBase64(relativePath) {
   }
 }
 
-/** 读取原图像素尺寸，供卡片按正文可视宽度计算等比展示尺寸。 */
-export function getImageDimensions(relativePath) {
-  const finish = beginPerformanceOperation('image', 'dimensions')
-  const metrics = {}
-  try {
-    const image = nativeImage.createFromPath(resolveImagePath(relativePath))
-    if (image.isEmpty()) {
+// The queue keeps only paths and source identities. One owned child reads/admits/decodes
+// the same bytes; no full-resolution NativeImage is created in the product main process.
+const thumbnailCache = createThumbnailCache()
+const pendingThumbnails = new Map()
+const imageSourceCurrent = (source) =>
+  imageReadService.isCurrent(source.generation) &&
+  source.profile === resolve(app.getPath('userData'))
+
+const imageDecodePort = imageReadService.createPort({
+  name: 'stored-derived',
+  start: startStoredImageDecode,
+  isCurrent: imageSourceCurrent,
+  onInvalidate() {
+    thumbnailCache.clear()
+  }
+})
+const imageOriginalPort = imageReadService.createPort({
+  name: 'stored-original',
+  start: (source) => startImagePreviewRead(source, { app, purpose: 'original' }),
+  isCurrent: imageSourceCurrent
+})
+
+function captureStoredImageSource(relativePath, purpose, size) {
+  if (typeof relativePath !== 'string' || !relativePath || relativePath.length > 32767)
+    throw Object.assign(new Error('图片路径元数据超限或类型无效'), {
+      code: 'IMAGE_SOURCE_METADATA_BUDGET'
+    })
+  const source = {
+    kind: 'stored',
+    profile: resolve(app.getPath('userData')),
+    generation: imageReadService.generation(),
+    path: resolveImagePath(relativePath),
+    size
+  }
+  if (source.profile.length > 32767 || source.path.length > 32767)
+    throw Object.assign(new Error('图片完整路径超过 Windows 上限'), {
+      code: 'IMAGE_SOURCE_METADATA_BUDGET'
+    })
+  source.key = JSON.stringify([source.profile, source.generation, source.path, purpose, size])
+  if (source.key.length > 128 * 1024)
+    throw Object.assign(new Error('图片请求键超过元数据预算'), {
+      code: 'IMAGE_SOURCE_METADATA_BUDGET'
+    })
+  return source
+}
+
+function startStoredImageDecode(source) {
+  let child
+  let cancelled = false
+  let resolveClosed, rejectClosed
+  const closed = new Promise((done, reject) => {
+    resolveClosed = done
+    rejectClosed = reject
+  })
+  const result = (async () => {
+    const finish = beginPerformanceOperation('image', 'thumbnail.decode')
+    const metrics = {}
+    try {
+      const before = await lstat(source.path, { bigint: true })
+      if (!before.isFile() || before.nlink !== 1n || cancelled || !imageSourceCurrent(source))
+        return null
+      metrics.bytes = Number(before.size)
+      const cacheKey = source.key + ':' + imageFileVersion(before)
+      const cached = thumbnailCache.get(cacheKey)
+      if (cached !== undefined) {
+        metrics.cacheHits = 1
+        return JSON.parse(cached)
+      }
+      metrics.cacheMisses = 1
+      child = startImageDecodeChild(source, {
+        app,
+        onDiagnostic: (detail) => {
+          if (!['IMAGE_DECODER_STARTED', 'IMAGE_DECODER_CLOSED'].includes(detail.code))
+            console.warn('[images] 图片解码子进程:', detail)
+        }
+      })
+      if (cancelled) child.cancel()
+      const value = await child.result
+      await child.closed
+      if (!value || cancelled || !imageSourceCurrent(source)) return null
+      const after = await lstat(source.path, { bigint: true })
+      if (!after.isFile() || imageFileVersion(after) !== value.version) return null
+      Object.assign(metrics, {
+        width: value.width,
+        height: value.height,
+        pixels: value.width * value.height
+      })
+      // The result is retained once, within the existing 16MiB / 128-entry LRU.
+      thumbnailCache.set(source.key + ':' + value.version, JSON.stringify(value))
+      return value
+    } catch (error) {
       metrics.errors = 1
+      console.warn('[images] 图片派生读取失败:', error, { path: source.path })
+      child?.cancel()
       return null
+    } finally {
+      finish(metrics)
+      try {
+        const closure = child ? await child.closed : undefined
+        resolveClosed(closure)
+      } catch (error) {
+        rejectClosed(error)
+      }
     }
-    const { width, height } = image.getSize()
-    Object.assign(metrics, { width, height, pixels: width * height })
-    return width > 0 && height > 0 ? { width, height } : null
-  } catch (error) {
-    metrics.errors = 1
-    console.warn('[images] 读取附件尺寸失败:', error, { relativePath })
-    return null
-  } finally {
-    finish(metrics)
+  })()
+  return {
+    result,
+    closed,
+    cancel() {
+      cancelled = true
+      child?.cancel()
+    }
   }
 }
 
-/** 生成列表展示用缩略图，原图只在大图预览时读取。 */
-const thumbnailCache = createThumbnailCache()
-const pendingThumbnails = new Map()
-let thumbnailQueue = Promise.resolve()
+function requestImageDecode(relativePath, size) {
+  try {
+    const source = captureStoredImageSource(relativePath, 'derived', size)
+    return {
+      key: source.key,
+      promise: imageDecodePort.request(source.key, source)
+    }
+  } catch (error) {
+    console.warn('[images] 图片读取来源无效:', error)
+    return { key: null, promise: Promise.resolve(null) }
+  }
+}
 
-export function getImageThumbnail(relativePath, maxSize = 240) {
-  const size = Math.max(32, Math.min(512, Number(maxSize) || 240))
-  const key = relativePath + ':' + size
+/** Async internally; preload has always exposed a Promise. Shares the default thumbnail job. */
+export function getImageDimensions(relativePath) {
+  const finish = beginPerformanceOperation('image', 'dimensions')
+  return requestImageDecode(relativePath, 240).promise.then((value) => {
+    finish(
+      value
+        ? { width: value.width, height: value.height, pixels: value.width * value.height }
+        : { errors: 1 }
+    )
+    return value ? { width: value.width, height: value.height } : null
+  })
+}
+
+export function invalidateImageDecodes() {
+  imageReadService.invalidate()
+}
+
+export function suspendImageDecodes(owner) {
+  return imageReadService.suspend(owner)
+}
+
+export function resumeImageDecodes(owner) {
+  return imageReadService.resume(owner)
+}
+
+export function disposeImageDecodes() {
+  return imageReadService.dispose()
+}
+
+function requestThumbnailDecode(relativePath, maxSize) {
+  const size = Math.floor(Math.max(32, Math.min(512, Number(maxSize) || 240)))
+  const { key, promise } = requestImageDecode(relativePath, size)
   if (pendingThumbnails.has(key)) {
     recordPerformanceOperation('image', 'thumbnail.deduplicated')
     return pendingThumbnails.get(key)
   }
   const finishWait = beginPerformanceOperation('image', 'thumbnail.queue')
   const queueDepth = pendingThumbnails.size + 1
-  const pending = thumbnailQueue
-    .then(() => new Promise((resolve) => setImmediate(resolve)))
-    .then(() => {
-      finishWait({ queueDepth })
-      return decodeThumbnail(relativePath, size)
-    })
-    .finally(() => pendingThumbnails.delete(key))
-  thumbnailQueue = pending.catch(() => {})
+  const pending = {
+    details: promise
+      .then((value) => {
+        finishWait({ queueDepth })
+        return value ? { data: value.data, width: value.width, height: value.height } : null
+      })
+      .finally(() => pendingThumbnails.delete(key)),
+    thumbnail: null
+  }
   pendingThumbnails.set(key, pending)
   return pending
 }
 
-function decodeThumbnail(relativePath, maxSize) {
-  const finish = beginPerformanceOperation('image', 'thumbnail.decode')
-  const metrics = {}
-  try {
-    const path = resolveImagePath(relativePath)
-    const metadata = statSync(path)
-    metrics.bytes = metadata.size
-    const cacheKey =
-      path + ':' + metadata.mtimeMs + ':' + metadata.ctimeMs + ':' + metadata.size + ':' + maxSize
-    const cached = thumbnailCache.get(cacheKey)
-    if (cached !== undefined) {
-      metrics.cacheHits = 1
-      return cached
-    }
-    metrics.cacheMisses = 1
-    const image = nativeImage.createFromPath(path)
-    if (image.isEmpty()) {
-      metrics.errors = 1
-      console.warn('[images] 无法解析附件缩略图:', { relativePath })
-      return null
-    }
-    const { width, height } = image.getSize()
-    Object.assign(metrics, { width, height, pixels: width * height })
-    const limit = Math.max(32, Math.min(512, Number(maxSize) || 240))
-    const resized =
-      width >= height
-        ? image.resize({ width: Math.min(width, limit), quality: 'good' })
-        : image.resize({ height: Math.min(height, limit), quality: 'good' })
-    const data = resized.toDataURL()
-    thumbnailCache.set(cacheKey, data)
-    return data
-  } catch (error) {
-    metrics.errors = 1
-    console.warn('[images] 生成附件缩略图失败:', error, { relativePath, maxSize })
-    return null
-  } finally {
-    finish(metrics)
-  }
+/** One derived read supplies both the bounded thumbnail and original geometry. */
+export function getImageThumbnailDetails(relativePath, maxSize = 240) {
+  return requestThumbnailDecode(relativePath, maxSize).details
+}
+
+export function getImageThumbnail(relativePath, maxSize = 240) {
+  const pending = requestThumbnailDecode(relativePath, maxSize)
+  // Retain the legacy API's same-key Promise identity as well as its string result.
+  pending.thumbnail ||= pending.details.then((value) => value?.data || null)
+  return pending.thumbnail
 }
 
 // ============================================================

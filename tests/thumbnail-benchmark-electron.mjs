@@ -15,7 +15,10 @@ app.whenReady().then(async () => {
     const pixels = Buffer.alloc(1600 * 1200 * 4, 130)
     const png = nativeImage.createFromBitmap(pixels, { width: 1600, height: 1200 }).toPNG()
     writeFileSync(join(folder, 'fixture.png'), png)
-    assert.deepEqual(getImageDimensions('attachments/fixture.png'), { width: 1600, height: 1200 })
+    assert.deepEqual(await getImageDimensions('attachments/fixture.png'), {
+      width: 1600,
+      height: 1200
+    })
     const start = performance.now()
     for (let i = 0; i < 100; i++) await getImageThumbnail('attachments/fixture.png', 240)
     const result = {

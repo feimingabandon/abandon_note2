@@ -153,6 +153,53 @@ describe('reviewed build descriptors', () => {
     expect(descriptor.snapshotOptions.closure.complete).toBe(false)
   })
 
+  it('builds capture deployment and the acceptance input driver in one explicit target invocation', () => {
+    const root = fixture()
+    const descriptor = describeBuild({ root, id: 'build-capture', inputDriver: true, env: {} })
+    expect(descriptor.args).toContain('-InputDriver')
+    expect(descriptor.args).not.toContain('-TestsOnly')
+    expect(descriptor.outputs).toEqual(
+      expect.arrayContaining([
+        'native_capture/deploy',
+        'native_capture/deploy/AbandonCapture.exe',
+        'native_capture/deploy/capture_host.dll',
+        relative(root, descriptor.inputDriverPath).replaceAll('\\', '/')
+      ])
+    )
+    expect(descriptor.snapshotOptions.mode.inputDriver).toBe(true)
+    expect(descriptor.snapshotOptions.closure.complete).toBe(false)
+  })
+  it('keeps deployment, selected Qt targets and the input driver together in a combined build', () => {
+    const root = fixture()
+    const descriptor = describeBuild({
+      root,
+      id: 'build-capture',
+      qtNames: ['capture_core'],
+      inputDriver: true,
+      env: {}
+    })
+    expect(descriptor.args).toContain('-Test')
+    expect(descriptor.args).toContain('-InputDriver')
+    expect(descriptor.args).not.toContain('-TestsOnly')
+    expect(descriptor.args.slice(descriptor.args.indexOf('-TestName'), -1)).toEqual([
+      '-TestName',
+      'capture_core'
+    ])
+    expect(descriptor.outputs).toEqual(
+      expect.arrayContaining([
+        'native_capture/deploy/AbandonCapture.exe',
+        'native_capture/deploy/capture_host.dll',
+        relative(root, descriptor.inputDriverPath).replaceAll('\\', '/'),
+        relative(root, join(descriptor.buildDirectory, 'bin/capture_core_tests.exe')).replaceAll(
+          '\\',
+          '/'
+        )
+      ])
+    )
+    expect(descriptor.snapshotOptions.mode.product).toBe(true)
+    expect(descriptor.snapshotOptions.mode.qtNames).toEqual(['capture_core'])
+  })
+
   it('refuses unknown, duplicate and misplaced Qt names instead of widening to all targets', () => {
     const root = fixture()
     for (const qtNames of [['unknown'], ['capture_core', 'capture_core']])

@@ -8,18 +8,25 @@
  *   - 放大/缩小/旋转按钮
  *   - ESC / 点击遮罩关闭
  */
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onUnmounted, ref, watch } from 'vue'
 import { retainModalBlur } from '../../utils/modalBlur.js'
 import { modalQueue } from '../../utils/modalQueue.js'
+import { copyImageToClipboard, imageClipboardBusy } from '../../utils/imageClipboard.js'
+import { useMessage } from '../../composables/useMessage.js'
+import ImageCopyMenu from './ImageCopyMenu.vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
   src: { type: String, default: '' },
   sources: { type: Array, default: () => [] },
-  initialIndex: { type: Number, default: 0 }
+  initialIndex: { type: Number, default: 0 },
+  resolveSource: { type: Function, default: null }
 })
 
 const emit = defineEmits(['close', 'change'])
+const { showMessage } = useMessage()
+const copyMenu = ref(null)
+let displayedImage = null
 
 /** 缩放比例（1 = 100%） */
 const scale = ref(1)
@@ -34,7 +41,23 @@ const navigationDirection = ref('next')
 const availableSources = computed(() =>
   props.sources.length ? props.sources : props.src ? [props.src] : []
 )
-const activeSrc = computed(() => availableSources.value[activeIndex.value] || '')
+const managed = computed(() => typeof props.resolveSource === 'function')
+const activeEntry = ref(null)
+const legacySource = ref('')
+const activeSrc = computed(() =>
+  managed.value ? activeEntry.value?.src || '' : legacySource.value
+)
+const imageKey = computed(() => (managed.value ? activeEntry.value?.id : activeIndex.value))
+const renderOpen = ref(false)
+const leases = new Map()
+let entrySequence = 0
+let epoch = 0
+let preparing = null
+let requestedIndex = 0
+let closing = false
+let openRequested = false
+let disposed = false
+let returnFocus = null
 const hasMultiple = computed(() => availableSources.value.length > 1)
 const imageTransitionName = computed(() =>
   navigationDirection.value === 'previous' ? 'ipv-image-previous' : 'ipv-image-next'
@@ -70,27 +93,266 @@ let dragStartY = 0
 let dragStartTX = 0
 let dragStartTY = 0
 
-/** 打开时重置状态 */
+function releaseEntry(entry) {
+  if (!entry || !leases.has(entry.id)) return
+  if (entry.copyHolds) {
+    entry.releaseRequested = true
+    return
+  }
+  leases.delete(entry.id)
+  entry.src = ''
+  const release = entry.release
+  entry.release = null
+  release?.()
+}
+
+function bindImage(element) {
+  if (!element) return
+  displayedImage = element
+  const entry = leases.get(Number(element.dataset.previewLease))
+  if (entry) entry.element = element
+}
+
+async function copyCurrentImage() {
+  const entry = activeEntry.value
+  const src = activeSrc.value
+  const index = activeIndex.value
+  const element = entry?.element || displayedImage
+  const current = () =>
+    !disposed &&
+    !closing &&
+    renderOpen.value &&
+    props.visible &&
+    activeSrc.value === src &&
+    activeIndex.value === index &&
+    requestedIndex === index
+  try {
+    const result = await copyImageToClipboard({
+      isCurrent: current,
+      acquire: () => {
+        if (entry) entry.copyHolds = (entry.copyHolds || 0) + 1
+        return {
+          src,
+          image: element?.src === src ? element : null,
+          release() {
+            if (!entry) return
+            entry.copyHolds--
+            if (entry.releaseRequested) releaseEntry(entry)
+            if (closing || disposed) void overlayLeft()
+            else void pump()
+          }
+        }
+      }
+    })
+    if (result === 'copied' && !disposed) showMessage('success', '图片已复制')
+  } catch (error) {
+    if (current()) showMessage('warning', error.message || '图片复制失败，请重试')
+  }
+}
+
+function openCopyMenu(event) {
+  event.preventDefault()
+  event.stopPropagation()
+  if (
+    event.currentTarget.getAttribute('aria-hidden') === 'true' ||
+    event.currentTarget.getAttribute('src') !== activeSrc.value
+  )
+    return
+  void copyMenu.value?.open(event)
+}
+
+function beforeImageLeave(element) {
+  element.setAttribute('aria-hidden', 'true')
+}
+
+function releaseDetached() {
+  for (const entry of leases.values()) {
+    // A never-mounted prepared result has no DOM reader. Connected nodes retain
+    // their lease even when a transition was cancelled.
+    if (!entry.element || !entry.element.isConnected) releaseEntry(entry)
+  }
+}
+
+async function imageLeft(element) {
+  const entry = leases.get(Number(element.dataset.previewLease))
+  if (!entry) return
+  if (element.isConnected) await nextTick()
+  if (!element.isConnected) releaseEntry(entry)
+  void pump()
+}
+
+async function overlayLeft() {
+  await nextTick()
+  releaseDetached()
+  if (leases.size) return // No capacity is returned without a detached node ACK.
+  activeEntry.value = null
+  displayedImage = null
+  legacySource.value = ''
+  closing = false
+  freeModalBlur()
+  if (!disposed && openRequested && props.visible) void scheduleOpen()
+  else {
+    if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true })
+    returnFocus = null
+  }
+}
+
+async function pump() {
+  if (
+    disposed ||
+    !openRequested ||
+    !props.visible ||
+    closing ||
+    !managed.value ||
+    preparing ||
+    leases.size > 1
+  )
+    return
+  if (activeEntry.value?.index === requestedIndex) return
+  const generation = epoch
+  const index = requestedIndex
+  const resolver = props.resolveSource
+  const read = Promise.resolve().then(() => {
+    // Navigation and close can occur in the same handler before this deferred
+    // call runs. Do not start an IPC read for an already cancelled preparation.
+    if (
+      disposed ||
+      !openRequested ||
+      !props.visible ||
+      closing ||
+      generation !== epoch ||
+      index !== requestedIndex
+    )
+      return null
+    return resolver(index)
+  })
+  preparing = read
+  let value
+  try {
+    value = await read
+    if (
+      !value ||
+      typeof value.src !== 'string' ||
+      !value.src ||
+      typeof value.release !== 'function'
+    )
+      throw new Error('图片预览响应无效')
+    if (
+      disposed ||
+      !openRequested ||
+      !props.visible ||
+      closing ||
+      generation !== epoch ||
+      index !== requestedIndex
+    ) {
+      value.release()
+      return
+    }
+    const entry = {
+      id: ++entrySequence,
+      index,
+      src: value.src,
+      release: value.release,
+      element: null
+    }
+    leases.set(entry.id, entry)
+    activeEntry.value = entry
+    activeIndex.value = index
+    const opening = !renderOpen.value
+    renderOpen.value = true
+    resetTransform()
+    if (opening) await nextTick(() => overlayRef.value?.focus({ preventScroll: true }))
+  } catch {
+    if (
+      generation === epoch &&
+      index === requestedIndex &&
+      props.visible &&
+      !closing &&
+      !disposed
+    ) {
+      // A failed navigation keeps the displayed original. An initial failure has
+      // no useful overlay and asks its owner to close the request.
+      if (!activeEntry.value) emit('close')
+      requestedIndex = activeEntry.value?.index ?? index
+    }
+  } finally {
+    if (preparing === read) preparing = null
+    // Discarded results may free the second slot; only the latest intent runs.
+    if (
+      !disposed &&
+      props.visible &&
+      !closing &&
+      (!activeEntry.value || activeEntry.value.index !== requestedIndex) &&
+      generation !== epoch
+    )
+      void pump()
+    else if (!disposed && props.visible && !closing && index !== requestedIndex) void pump()
+  }
+}
+
+function openSession() {
+  if (disposed || closing || !openRequested || !props.visible) return
+  epoch++
+  if (!returnFocus) returnFocus = document.activeElement
+  acquireModalBlur()
+  requestedIndex = Math.max(
+    0,
+    Math.min(availableSources.value.length - 1, Number(props.initialIndex) || 0)
+  )
+  activeIndex.value = requestedIndex
+  resetTransform()
+  if (managed.value) void pump()
+  else {
+    legacySource.value = availableSources.value[activeIndex.value] || ''
+    renderOpen.value = true
+    nextTick(() => overlayRef.value?.focus({ preventScroll: true }))
+  }
+}
+
+async function scheduleOpen() {
+  const generation = epoch
+  // Vue patches a child's props in order. A synchronous visible=true watcher
+  // can otherwise see the previous sources/initialIndex from the same patch.
+  await nextTick()
+  if (!disposed && openRequested && props.visible && !closing && generation === epoch) openSession()
+}
+
+function closeSession() {
+  copyMenu.value?.close()
+  // A local close precedes the parent's next props patch. The still-true visible
+  // prop is not a new opening request; only a subsequent true edge can reopen.
+  openRequested = false
+  if (closing) return
+  epoch++
+  onMouseUp()
+  closing = true
+  const hadOverlay = renderOpen.value
+  renderOpen.value = false
+  if (!hadOverlay) void overlayLeft()
+}
+
 watch(
   () => props.visible,
-  (v) => {
-    if (v) {
-      acquireModalBlur()
-      activeIndex.value = Math.max(
-        0,
-        Math.min(availableSources.value.length - 1, Number(props.initialIndex) || 0)
-      )
-      resetTransform()
-      nextTick(() => overlayRef.value?.focus({ preventScroll: true }))
-    } else {
-      // 预览可能在拖拽途中被 ESC、遮罩或父组件关闭；立即释放 document 监听。
-      onMouseUp()
-    }
+  (visible) => {
+    if (visible) {
+      openRequested = true
+      void scheduleOpen()
+    } else closeSession()
   },
-  { immediate: true }
+  { immediate: true, flush: 'sync' }
+)
+
+watch(
+  () => [props.src, props.sources],
+  () => {
+    copyMenu.value?.close()
+    if (!managed.value && openRequested && props.visible && !closing)
+      legacySource.value = availableSources.value[activeIndex.value] || ''
+  }
 )
 
 function onClose() {
+  closeSession()
   emit('close')
 }
 
@@ -112,7 +374,9 @@ function onKeydown(e) {
     return
   }
   if (e.key !== 'Tab') return
-  const focusable = [...overlayRef.value.querySelectorAll('button:not(:disabled)')]
+  const focusable = [
+    ...overlayRef.value.querySelectorAll('button:not(:disabled), .ipv-image')
+  ].filter((element) => element.getAttribute('aria-hidden') !== 'true')
   if (focusable.length === 0) return
   const first = focusable[0]
   const last = focusable[focusable.length - 1]
@@ -153,19 +417,25 @@ function reset() {
 }
 
 function changeImage(index, direction) {
-  if (!availableSources.value.length) return
+  if (!availableSources.value.length || closing) return
+  copyMenu.value?.close()
   navigationDirection.value = direction
-  activeIndex.value = (index + availableSources.value.length) % availableSources.value.length
-  resetTransform()
-  emit('change', activeIndex.value)
+  requestedIndex = (index + availableSources.value.length) % availableSources.value.length
+  emit('change', requestedIndex)
+  if (managed.value) void pump()
+  else {
+    activeIndex.value = requestedIndex
+    legacySource.value = availableSources.value[activeIndex.value] || ''
+    resetTransform()
+  }
 }
 
 function showPrevious() {
-  changeImage(activeIndex.value - 1, 'previous')
+  changeImage(requestedIndex - 1, 'previous')
 }
 
 function showNext() {
-  changeImage(activeIndex.value + 1, 'next')
+  changeImage(requestedIndex + 1, 'next')
 }
 
 // ============================================================
@@ -198,7 +468,17 @@ function onMouseUp() {
   document.removeEventListener('mouseup', onMouseUp)
 }
 
+onBeforeUnmount(() => {
+  disposed = true
+  epoch++
+  onMouseUp()
+})
 onUnmounted(() => {
+  // Vue has removed the component/Teleport subtree by this lifecycle hook.
+  releaseDetached()
+  activeEntry.value = null
+  displayedImage = null
+  legacySource.value = ''
   freeModalBlur()
   document.removeEventListener('mousemove', onMouseMove)
   document.removeEventListener('mouseup', onMouseUp)
@@ -207,11 +487,14 @@ onUnmounted(() => {
 
 <template>
   <Teleport to="body">
-    <Transition name="ipv" appear @after-leave="freeModalBlur">
+    <Transition name="ipv" appear @after-leave="overlayLeft" @leave-cancelled="overlayLeft">
       <div
-        v-if="visible"
+        v-if="renderOpen"
         ref="overlayRef"
         class="ipv-overlay"
+        role="dialog"
+        aria-modal="true"
+        aria-label="图片预览"
         data-modal-layer="image-preview"
         data-keep-settings-open
         tabindex="-1"
@@ -275,6 +558,19 @@ onUnmounted(() => {
               <path d="M3 21v-5h5" />
             </svg>
           </button>
+          <button
+            class="ipv-btn"
+            type="button"
+            :title="imageClipboardBusy ? '正在复制…' : '复制图片'"
+            aria-label="复制图片"
+            :disabled="imageClipboardBusy || !activeSrc"
+            @click="copyCurrentImage"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="8" y="8" width="12" height="12" rx="2" />
+              <path d="M16 8V4H4v12h4" />
+            </svg>
+          </button>
           <div class="ipv-spacer" />
           <span class="ipv-info">
             <template v-if="hasMultiple"
@@ -309,16 +605,26 @@ onUnmounted(() => {
             ‹
           </button>
           <div class="ipv-image-stage">
-            <Transition :name="imageTransitionName">
+            <Transition
+              :name="imageTransitionName"
+              @before-leave="beforeImageLeave"
+              @after-leave="imageLeft"
+              @leave-cancelled="imageLeft"
+            >
               <img
-                :key="activeIndex"
+                :key="imageKey"
+                :ref="bindImage"
+                :data-preview-lease="managed ? activeEntry?.id : undefined"
                 :src="activeSrc"
                 class="ipv-image"
                 :class="{ 'ipv-image--dragging': isDragging }"
                 :style="{
                   transform: `translate(${translateX}px, ${translateY}px) scale(${scale}) rotate(${rotate}deg)`
                 }"
+                tabindex="0"
+                aria-haspopup="menu"
                 @mousedown="onMouseDown"
+                @contextmenu="openCopyMenu"
                 @click.stop
               />
             </Transition>
@@ -334,6 +640,12 @@ onUnmounted(() => {
             ›
           </button>
         </div>
+        <ImageCopyMenu
+          ref="copyMenu"
+          in-preview
+          :disabled="imageClipboardBusy"
+          @copy="copyCurrentImage"
+        />
       </div>
     </Transition>
   </Teleport>
@@ -421,6 +733,10 @@ onUnmounted(() => {
 }
 .ipv-btn:hover {
   background: rgba(255, 255, 255, 0.22);
+}
+.ipv-btn:disabled {
+  opacity: 0.38;
+  cursor: default;
 }
 .ipv-btn:active {
   transform: scale(0.98);

@@ -13,19 +13,23 @@ function finish(accepted = false) {
   request?.resolve(accepted)
 }
 
-function requestConfirmation(nextAction) {
-  if (pending) return pending.promise
+function requestConfirmation(nextAction, { owner = null } = {}) {
+  if (pending) return pending.owner === owner ? pending.promise : Promise.resolve(false)
   action.value = nextAction === '退出' ? '退出' : '切换视图'
   const promise = new Promise((resolve) => {
-    pending = { resolve }
+    pending = { resolve, owner }
   })
   pending.promise = promise
   visible.value = true
   return promise
 }
 
+function cancelConfirmation(owner) {
+  if (arguments.length === 0 || pending?.owner === owner) finish(false)
+}
+
 window.__confirmEditingDrafts = requestConfirmation
-window.__cancelEditingDraftConfirmation = finish
+window.__cancelEditingDraftConfirmation = cancelConfirmation
 onBeforeUnmount(() => {
   finish(false)
   delete window.__confirmEditingDrafts

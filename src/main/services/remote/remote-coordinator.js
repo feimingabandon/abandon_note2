@@ -91,6 +91,7 @@ export class RemoteCoordinator {
     this.sessionId = null
     this.sessionStartPromise = null
     this.stopPromise = null
+    this.stopPreparation = null
     this.stopped = false
     this.lastHealth = {
       available: false,
@@ -392,22 +393,35 @@ export class RemoteCoordinator {
     }
   }
 
-  stop({ timeoutMs = 1600 } = {}) {
-    if (this.stopPromise) return this.stopPromise
+  prepareStop() {
+    if (this.stopPreparation) return this.stopPreparation
     const allowed = this.getSettings()?.remote?.uploadDeviceInfo && !this.isServiceRetired()
     const maySend = allowed && this.lastHealth.available && this.lastHealth.reportService
     this.stopped = true
     clearTimeout(this.dailyTimer)
     this.dailyTimer = null
     const sessionId = this.sessionId
+    const endedAt = new Date().toISOString()
+    // Checkpoint synchronously at shutdown admission, before an earlier owner
+    // can consume the overall deadline. The serial stop stage still owns HTTP.
+    if (sessionId && allowed) this.queueSessionEnd(sessionId, endedAt)
     this.sessionId = null
-    if (!sessionId || !allowed) {
+    this.stopPreparation = Object.freeze({
+      sessionId: allowed ? sessionId : null,
+      endedAt,
+      maySend: Boolean(maySend),
+      queued: Boolean(sessionId && allowed)
+    })
+    return this.stopPreparation
+  }
+
+  stop({ timeoutMs = 1600 } = {}) {
+    if (this.stopPromise) return this.stopPromise
+    const { sessionId, endedAt, maySend } = this.prepareStop()
+    if (!sessionId) {
       this.stopPromise = Promise.resolve('completed')
       return this.stopPromise
     }
-    const endedAt = new Date().toISOString()
-    // Persist before any wait; a timeout keeps this record for the next process.
-    this.queueSessionEnd(sessionId, endedAt)
     if (!maySend) {
       this.stopPromise = Promise.resolve('completed')
       return this.stopPromise

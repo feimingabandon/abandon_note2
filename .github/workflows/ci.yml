@@ -57,8 +57,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "CI scope planning failed; inspect tmp/ci-plan.json" }
           $plan = Get-Content -LiteralPath tmp/ci-plan.json -Raw | ConvertFrom-Json
           $prerequisites = @($plan.selected | ForEach-Object { $_.runtimePrerequisites })
-          $capture = ($prerequisites -contains 'capture-qt-deployment') -or ($prerequisites -contains 'windows-qt-6.8.3-msvc2022-x64')
-          $native = $capture -or ($prerequisites -contains 'blur-engine-abi-22') -or ($prerequisites -contains 'windows-msvc-toolchain')
+          $requiredBuilds = @($plan.selected | ForEach-Object { $_.requires })
+          $capture = ($requiredBuilds -contains 'build-capture') -or ($prerequisites -contains 'capture-qt-deployment') -or ($prerequisites -contains 'windows-qt-6.8.3-msvc2022-x64')
+          $native = $capture -or ($requiredBuilds -contains 'build-native') -or (@($prerequisites | Where-Object { $_ -like 'blur-engine-abi-*' }).Count -gt 0) -or ($prerequisites -contains 'windows-msvc-toolchain')
           "capture=$($capture.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "native=$($native.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
@@ -85,13 +86,21 @@ jobs:
       - name: Test committed change scope
         run: npm run test:ci
 
+      - name: Record original failures and completed scope
+        if: always()
+        env:
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RELEASE_JOB_STATUS: ${{ job.status }}
+        run: node scripts/release-candidate.cjs collect ci
+
       - name: Upload focused test evidence
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: focused-test-evidence-windows-x64
+          name: focused-test-evidence-windows-x64-attempt-${{ github.run_attempt }}
           path: |
             tmp/test-runs/
             tmp/ci-plan.json
+            tmp/release-evidence/
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 30

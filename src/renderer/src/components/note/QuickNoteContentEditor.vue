@@ -1,5 +1,5 @@
 <script setup>
-import { useDraftProtection } from '../../composables/useDraftProtection.js'
+import { editingDataGeneration, useDraftProtection } from '../../composables/useDraftProtection.js'
 import { nextTick, onBeforeUnmount, onMounted, reactive, ref, useId } from 'vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { quickNoteEditorPosition } from '../../utils/quickNoteEditorPosition.js'
@@ -26,6 +26,8 @@ const phase = ref('editing')
 let pendingSave = null
 let mounted = false
 let validationResetTimer = null
+const dataGeneration = editingDataGeneration.value
+const currentDraft = () => mounted && dataGeneration === editingDataGeneration.value
 
 function positionEditor() {
   const editor = editorRef.value
@@ -49,17 +51,33 @@ function focusEditor() {
   textarea.setSelectionRange(caret, caret)
 }
 
-function closeEditor() {
+async function closeEditor({ committed = false } = {}) {
   if (phase.value === 'closed') return
-  protectedDraft.clear()
+  const clearing = protectedDraft.clear()
   phase.value = 'closed'
-  emit('close')
+  try {
+    await clearing
+  } catch (error) {
+    if (!currentDraft()) return
+    if (!committed) {
+      phase.value = 'editing'
+      showMessage('error', error.message || '草稿清除失败，请重试')
+      return false
+    }
+    showMessage('warning', '便签已保存，但旧草稿未能清除，请核对后再编辑。')
+  }
+  if (currentDraft()) emit('close')
+  return true
 }
 
 async function commit() {
   if (phase.value === 'closed') return true
   if (phase.value === 'saving') return pendingSave
   if (phase.value === 'invalid' || conflict.value) return false
+  const prepared = await protectedDraft.flush()
+  if (!currentDraft() || phase.value === 'closed') return true
+  if (phase.value === 'saving') return pendingSave
+  if (!prepared.persisted || phase.value === 'invalid' || conflict.value) return false
 
   const content = contentDraft.value.replace(/\r\n?/g, '\n')
   const remark = remarkDraft.value.replace(/\r\n?/g, '\n')
@@ -75,21 +93,22 @@ async function commit() {
     return false
   }
   if (content === originalContent.value && remark === originalRemark.value) {
-    closeEditor()
-    return true
+    return closeEditor()
   }
 
   phase.value = 'saving'
   pendingSave = window.api
     .updateNote(props.note.id, { content, remark }, originalContent.value, originalRemark.value)
-    .then((updated) => {
+    .then(async (updated) => {
       if (!updated) throw new Error('便签不存在或已被删除')
+      if (!currentDraft()) return true
       showMessage('success', '便签已保存')
       emit('saved', updated)
-      closeEditor()
+      await closeEditor({ committed: true })
       return true
     })
     .catch(async (error) => {
+      if (!currentDraft()) return false
       console.error('[QuickNoteContentEditor] 保存失败:', props.note.id, error)
       phase.value = 'editing'
       conflict.value = true
@@ -108,7 +127,7 @@ function cancel(event) {
   if (event.isComposing || phase.value !== 'editing') return
   event.preventDefault()
   event.stopPropagation()
-  closeEditor()
+  void closeEditor()
 }
 
 function onFocusOut(event) {

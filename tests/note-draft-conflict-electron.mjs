@@ -11,6 +11,7 @@ import { flushLogs } from '../src/main/logging/logger.js'
 import {
   completeNote,
   createNote,
+  deleteNote,
   getNoteById,
   updateNote,
   updateNoteTextColor
@@ -24,6 +25,8 @@ import {
 } from '../src/main/db/db-images.js'
 import { registerBusinessIpcHandlers } from '../src/main/ipc/register-business-ipc.js'
 import { enqueueReminder, getPendingReminder } from '../src/main/db/db-reminders.js'
+import { addNoteImages } from '../src/main/notes/note-commands.js'
+import { MAX_ATTACHMENTS_PER_NOTE } from '../src/shared/attachment-rules.js'
 import { createAssertionRecorder, prepareTestProfile } from './helpers/test-result-recorder.cjs'
 
 const recorder = createAssertionRecorder({
@@ -41,6 +44,254 @@ const profile = prepareTestProfile({ prefix: 'abandon-note-draft-conflict-' })
 const testRoot = profile.directory
 app.setPath('userData', testRoot)
 const image = { base64: Buffer.from('isolated attachment bytes').toString('base64'), ext: 'png' }
+
+const stagingEntries = () => {
+  const directory = join(testRoot, '.attachments-staging')
+  return existsSync(directory) ? readdirSync(directory).sort() : []
+}
+
+function snapshotNoteAssets(noteId) {
+  const directory = join(testRoot, 'attachments', 'images', String(noteId))
+  return {
+    note: getDb().prepare('SELECT * FROM notes WHERE id = ?').get(noteId),
+    rows: getDb()
+      .prepare('SELECT * FROM note_attachments WHERE note_id = ? ORDER BY id')
+      .all(noteId),
+    files: existsSync(directory)
+      ? readdirSync(directory)
+          .sort()
+          .map((fileName) => ({
+            fileName,
+            bytes: readFileSync(join(directory, fileName)).toString('hex')
+          }))
+      : []
+  }
+}
+
+// Observe actual SQLite results without replacing guards, return values or transactions.
+function observeAttachmentSql(noteId) {
+  const db = getDb()
+  const originalDescriptor = Object.getOwnPropertyDescriptor(db, 'prepare')
+  const originalPrepare = db.prepare
+  const events = []
+  let phase = 'batch-entry'
+  const observedSql = new Map([
+    [
+      'select count(*) as count from note_attachments a inner join notes n on n.id = a.note_id where a.note_id = ? and n.is_deleted = 0',
+      'preflight'
+    ],
+    ['select count(*) as count from note_attachments where note_id = ?', 'commit-count'],
+    ['select id from notes where id = ? and is_deleted = 0', 'active-note']
+  ])
+  Object.defineProperty(db, 'prepare', {
+    configurable: true,
+    writable: true,
+    value: function (...parameters) {
+      const statement = Reflect.apply(originalPrepare, this, parameters)
+      const kind = observedSql.get(String(parameters[0]).replace(/\s+/g, ' ').trim().toLowerCase())
+      if (!kind) return statement
+      const originalGet = statement.get
+      statement.get = function (...bindings) {
+        const result = Reflect.apply(originalGet, this, bindings)
+        if (Number(bindings[0]) === noteId) {
+          events.push({
+            phase,
+            kind,
+            inTransaction: db.inTransaction,
+            ...(kind === 'active-note' ? { exists: Boolean(result) } : { count: result?.count })
+          })
+        }
+        return result
+      }
+      return statement
+    }
+  })
+  return {
+    events,
+    setPhase: (value) => {
+      phase = value
+    },
+    restore: () => {
+      if (originalDescriptor) Object.defineProperty(db, 'prepare', originalDescriptor)
+      else delete db.prepare
+    }
+  }
+}
+
+async function verifyAttachmentLimitRace(broadcasts, healthyBroadcasts) {
+  assert.equal(MAX_ATTACHMENTS_PER_NOTE, 50)
+  const note = createNote({ content: 'batch limit staging race' })
+  const originalImages = Array.from({ length: MAX_ATTACHMENTS_PER_NOTE - 2 }, (_, index) => ({
+    base64: Buffer.from(`original limit attachment ${index}`).toString('base64'),
+    ext: 'png'
+  }))
+  await addNoteImages({ noteId: note.id, images: originalImages })
+  const original = snapshotNoteAssets(note.id)
+  assert.equal(original.rows.length, 48)
+  assert.equal(original.files.length, 48)
+  const initialStaging = stagingEntries()
+  assert.deepEqual(initialStaging, [])
+  const competitor = await stageImage(
+    Buffer.from('concurrent attachment committed before batch').toString('base64'),
+    'png'
+  )
+  const broadcastCounts = [broadcasts.length, healthyBroadcasts.length]
+  let observer
+  let outcome
+  try {
+    const competitorStaging = stagingEntries()
+    assert.equal(competitorStaging.length, 1)
+    observer = observeAttachmentSql(note.id)
+    const pending = addNoteImages({
+      noteId: note.id,
+      images: ['first failed batch attachment', 'second failed batch attachment'].map((text) => ({
+        base64: Buffer.from(text).toString('base64'),
+        ext: 'png'
+      }))
+    })
+    // Install the rejection handler before assertions or any asynchronous work.
+    outcome = pending.then(
+      (value) => ({ value }),
+      (error) => ({ error })
+    )
+    assert.deepEqual(observer.events, [
+      { phase: 'batch-entry', kind: 'preflight', inTransaction: false, count: 48 }
+    ])
+
+    // stageImage has yielded; the competing writer commits in this same stack.
+    observer.setPhase('competitor')
+    getDb().transaction(() => {
+      const committed = commitStagedImage(note.id, competitor)
+      addImageRecord({
+        noteId: note.id,
+        filePath: committed.relativePath,
+        fileSize: committed.fileSize
+      })
+    })()
+    assert.deepEqual(
+      observer.events.filter((event) => event.phase === 'competitor'),
+      [
+        { phase: 'competitor', kind: 'active-note', inTransaction: true, exists: true },
+        { phase: 'competitor', kind: 'commit-count', inTransaction: true, count: 48 }
+      ]
+    )
+    const beforeRejection = snapshotNoteAssets(note.id)
+    assert.equal(beforeRejection.rows.length, 49)
+    assert.equal(beforeRejection.files.length, 49)
+    assert.deepEqual(beforeRejection.rows.slice(0, 48), original.rows)
+    for (const originalFile of original.files) {
+      assert.deepEqual(
+        beforeRejection.files.find((file) => file.fileName === originalFile.fileName),
+        originalFile
+      )
+    }
+
+    observer.setPhase('batch-settlement')
+    const result = await outcome
+    assert.ok(result.error instanceof Error, '超限批次必须拒绝')
+    assert.match(result.error.message, /单个便签图片数量不能超过 50 张/)
+    assert.deepEqual(
+      observer.events.filter((event) => event.phase === 'batch-settlement'),
+      [
+        { phase: 'batch-settlement', kind: 'active-note', inTransaction: true, exists: true },
+        { phase: 'batch-settlement', kind: 'commit-count', inTransaction: true, count: 49 },
+        { phase: 'batch-settlement', kind: 'active-note', inTransaction: true, exists: true },
+        { phase: 'batch-settlement', kind: 'commit-count', inTransaction: true, count: 50 }
+      ]
+    )
+    assert.deepEqual(
+      snapshotNoteAssets(note.id),
+      beforeRejection,
+      '回滚保留竞争者的49行及原文件字节'
+    )
+    // The only remaining stage belongs to this test's committed competitor.
+    // Failed command resources must be gone before startup recovery or test cleanup.
+    assert.deepEqual(stagingEntries(), competitorStaging)
+    assert.deepEqual([broadcasts.length, healthyBroadcasts.length], broadcastCounts)
+    console.log('attachment limit race SQL observations:', JSON.stringify(observer.events))
+  } finally {
+    try {
+      if (outcome) await outcome
+      await cleanupStagedImage(competitor)
+    } finally {
+      observer?.restore()
+    }
+  }
+  assert.deepEqual(stagingEntries(), initialStaging)
+}
+
+async function verifyAttachmentSoftDeleteRace(handlers, window, broadcasts, healthyBroadcasts) {
+  const note = createNote({
+    content: 'batch soft-delete staging race',
+    effectiveAt: Date.now() + 3_600_000,
+    reminderChannels: 2
+  })
+  await addNoteImages({ noteId: note.id, images: [image] })
+  const reminder = enqueueReminder(note.id, Date.now() + 1_800_000)
+  const readRound = () =>
+    getDb().prepare('SELECT * FROM note_reminders WHERE id = ?').get(reminder.id)
+  assert.equal(readRound().state, 'scheduled')
+  const original = snapshotNoteAssets(note.id)
+  assert.equal(original.rows.length, 1)
+  assert.equal(original.note.notify_enabled, 1)
+  assert.equal(original.note.reminder_channels, 2)
+  const initialStaging = stagingEntries()
+  assert.deepEqual(initialStaging, [])
+  const observer = observeAttachmentSql(note.id)
+  const broadcastCounts = [broadcasts.length, healthyBroadcasts.length]
+  let outcome
+  try {
+    const pending = handlers.get('images:save-batch')(
+      { sender: window.webContents },
+      {
+        noteId: note.id,
+        images: [
+          { base64: Buffer.from('rejected after soft delete').toString('base64'), ext: 'png' }
+        ]
+      }
+    )
+    outcome = pending.then(
+      (value) => ({ value }),
+      (error) => ({ error })
+    )
+    assert.deepEqual(observer.events, [
+      { phase: 'batch-entry', kind: 'preflight', inTransaction: false, count: 1 }
+    ])
+    observer.setPhase('soft-delete')
+    assert.equal(deleteNote(note.id), true)
+    const deleted = snapshotNoteAssets(note.id)
+    const cancelledRound = readRound()
+    assert.equal(deleted.note.is_deleted, 1)
+    assert.equal(deleted.note.notify_enabled, 0)
+    assert.equal(deleted.note.reminder_channels, 0)
+    assert.deepEqual(deleted.rows, original.rows)
+    assert.deepEqual(deleted.files, original.files)
+    assert.equal(cancelledRound.state, 'cancelled')
+    assert.equal(getPendingReminder(note.id), null)
+
+    observer.setPhase('batch-settlement')
+    const result = await outcome
+    assert.ok(result.error instanceof Error, '软删后批次必须拒绝')
+    assert.match(result.error.message, /^便签不存在$/)
+    assert.deepEqual(
+      observer.events.filter((event) => event.phase === 'batch-settlement'),
+      [{ phase: 'batch-settlement', kind: 'active-note', inTransaction: true, exists: false }]
+    )
+    assert.deepEqual(snapshotNoteAssets(note.id), deleted, '失败批次不得复活便签或更改原附件')
+    assert.deepEqual(readRound(), cancelledRound, '失败批次不得恢复已取消的提醒轮次')
+    assert.equal(getNoteById(note.id), null)
+    assert.equal(getPendingReminder(note.id), null)
+    assert.deepEqual(stagingEntries(), initialStaging, '补偿必须在startup recovery之前完成')
+    assert.deepEqual([broadcasts.length, healthyBroadcasts.length], broadcastCounts)
+    console.log('attachment soft-delete race SQL observations:', JSON.stringify(observer.events))
+  } finally {
+    try {
+      if (outcome) await outcome
+    } finally {
+      observer.restore()
+    }
+  }
+}
 
 app.whenReady().then(async () => {
   let exitCode = 0
@@ -327,6 +578,8 @@ app.whenReady().then(async () => {
       readFileSync(resolveImagePath(recovered.attachments[0].file_path), 'utf8'),
       'isolated attachment bytes'
     )
+    await verifyAttachmentLimitRace(broadcasts, healthyBroadcasts)
+    await verifyAttachmentSoftDeleteRace(handlers, window, broadcasts, healthyBroadcasts)
     failBroadcast = true
     const broadcastCount = healthyBroadcasts.length
     const createdWithFailure = await handlers.get('notes:create-with-assets')(

@@ -7,7 +7,7 @@ describe('系统剪贴板与全局文字选择', () => {
   it('copies through the restricted Electron preload API instead of navigator.clipboard', () => {
     const preload = read('../src/preload/index.js')
     const ipc = read('../src/main/ipc/register-business-ipc.js')
-    const card = read('../src/renderer/src/components/list/NoteCard.vue')
+    const card = read('../src/renderer/src/components/note/NoteCard.vue')
     const quickEditor = read('../src/renderer/src/components/note/QuickNoteContentEditor.vue')
     const logViewer = read('../src/renderer/src/components/system/LogViewerDialog.vue')
 

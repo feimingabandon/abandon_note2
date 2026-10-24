@@ -1,8 +1,10 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useQueuedModal } from '../../composables/useQueuedModal.js'
 import { useCalendarWorkspaceModel } from '../../composables/useCalendarWorkspaceModel.js'
 import { useCalendarWorkspacePreferences } from '../../composables/useCalendarWorkspacePreferences.js'
+import { useNoteStatusActions } from '../../composables/useNoteStatusActions.js'
+import { getSettingsSnapshotStore } from '../../utils/settingsSnapshots.js'
 import { useSharedMinuteClock } from '../../composables/useSharedMinuteClock.js'
 import { useWeatherRecovery } from '../../composables/useWeatherRecovery.js'
 import MonthCalendarToolbar from './MonthCalendarToolbar.vue'
@@ -29,6 +31,7 @@ import {
 } from '../../utils/diagnosticEvidence.js'
 
 const { showMessage } = useMessage()
+let stopNewNoteShortcut = null
 useWeatherRecovery()
 const props = defineProps({
   viewMode: {
@@ -42,6 +45,7 @@ const isWeekView = computed(() => props.viewMode === VIEW_MODES.WEEK)
 const calendarViewLabel = computed(() => (isWeekView.value ? '周视图' : '月视图'))
 const todayKey = useTodayKey()
 const defaultDayPanelSize = createDefaultSettings(props.viewMode).ui.dayPanelSize
+const settingsSnapshots = getSettingsSnapshotStore(window.api)
 const calendarPreferences = useCalendarWorkspacePreferences({
   api: window.api,
   clock: useSharedMinuteClock(),
@@ -57,7 +61,6 @@ const {
   weatherState,
   weatherError,
   weatherByDate,
-  loadWeather,
   updateRecurringPreviewEnabled
 } = calendarPreferences
 const calendarModel = useCalendarWorkspaceModel({
@@ -124,8 +127,22 @@ const calendarSurfaceRef = ref(null)
 const creatorRef = ref(null)
 const creatorOverlayRef = ref(null)
 const editorOverlayRef = ref(null)
-const statusTransitions = reactive(new Map())
-const statusTransitionTimers = new Map()
+const statusActions = useNoteStatusActions({
+  api: window.api,
+  onCommit(updated, _note, { from }) {
+    calendarModel.patchNote(updated, { preserveEffectiveAt: from === 'initialized' })
+  },
+  onFinish() {
+    queueNotesRefresh()
+  },
+  onError(error, note, { committed }) {
+    console.error('[MonthWorkspace] 状态操作失败:', note.id, { committed }, error)
+    if (committed) showMessage('warning', '便签状态已保存，但显示更新失败，请稍后核对。')
+    else showMessage('error', `便签状态修改未确认：${error?.message || '请稍后重试'}`)
+  }
+})
+const statusTransitions = statusActions.transitions
+const executeCardStatusAction = statusActions.execute
 const earlyStartConfirmVisible = ref(false)
 const earlyStartNote = ref(null)
 const deleteConfirmVisible = ref(false)
@@ -134,8 +151,7 @@ const deletingNote = ref(false)
 let stopNotesListener = null
 let stopTemplatesListener = null
 let stopHolidayDataListener = null
-let stopWeatherSettingsListener = null
-let stopWeatherForecastListener = null
+let stopSettingsListener = null
 let resizeCleanup = null
 let notesChangedTimer = null
 let previouslyFocused = null
@@ -323,33 +339,6 @@ async function onHistoricalNotesMoved() {
   }
 }
 
-function statusTimerKey(noteId, kind) {
-  return `${noteId}:${kind}`
-}
-
-function clearStatusTimer(noteId, kind) {
-  const key = statusTimerKey(noteId, kind)
-  clearTimeout(statusTransitionTimers.get(key))
-  statusTransitionTimers.delete(key)
-}
-
-function scheduleStatusTransition(noteId, kind, delay, callback) {
-  const key = statusTimerKey(noteId, kind)
-  clearTimeout(statusTransitionTimers.get(key))
-  const timer = setTimeout(async () => {
-    statusTransitionTimers.delete(key)
-    await callback?.()
-  }, delay)
-  statusTransitionTimers.set(key, timer)
-}
-
-function setStatusTransition(noteId, state) {
-  if (state) statusTransitions.set(noteId, state)
-  else statusTransitions.delete(noteId)
-}
-
-const mergeCalendarNote = calendarModel.patchNote
-
 function onCardStatusAction(note) {
   if (note.status === 'initialized') {
     earlyStartNote.value = note
@@ -408,54 +397,6 @@ async function confirmDeleteNote() {
   }
 }
 
-async function executeCardStatusAction(note) {
-  if (statusTransitions.has(note.id)) return
-  const from = note.status
-  const to =
-    from === 'initialized' || from === 'completed'
-      ? 'in_progress'
-      : from === 'in_progress'
-        ? 'completed'
-        : null
-  if (!to) return
-
-  setStatusTransition(note.id, { from, to, phase: 'acknowledging' })
-  scheduleStatusTransition(note.id, 'waiting', 120, () => {
-    const current = statusTransitions.get(note.id)
-    if (current?.phase === 'acknowledging') {
-      setStatusTransition(note.id, { from, to, phase: 'waiting' })
-    }
-  })
-
-  try {
-    let updated = null
-    if (from === 'initialized') updated = await window.api.startProgress(note.id)
-    else if (from === 'in_progress') updated = await window.api.completeNote(note.id)
-    else if (from === 'completed') updated = await window.api.reopenNote(note.id)
-    if (!updated) throw new Error('状态接口未返回更新后的便签')
-
-    clearStatusTimer(note.id, 'waiting')
-    setStatusTransition(note.id, { from, to, phase: 'playing' })
-    const commitDelay = to === 'completed' ? 920 : 125
-    scheduleStatusTransition(note.id, 'commit', commitDelay, () => {
-      mergeCalendarNote(updated, { preserveEffectiveAt: from === 'initialized' })
-    })
-    scheduleStatusTransition(note.id, 'finish', 1000, async () => {
-      setStatusTransition(note.id, null)
-      clearTimeout(notesChangedTimer)
-      notesChangedTimer = null
-      if (transitioning.value) queueNotesRefresh()
-      else await refreshCalendarContent()
-    })
-  } catch (error) {
-    clearStatusTimer(note.id, 'waiting')
-    console.error('[MonthWorkspace] 状态修改失败:', note.id, error)
-    showMessage('error', error.message || '无法修改便签状态')
-    setStatusTransition(note.id, { from, to, phase: 'error' })
-    scheduleStatusTransition(note.id, 'finish', 320, () => setStatusTransition(note.id, null))
-  }
-}
-
 async function selectDate(day) {
   if (!(day?.isActive ?? day?.inCurrentMonth)) return
   selectedKey.value = day.key
@@ -483,6 +424,28 @@ function openCreator(dayOrKey) {
   if (!dateKey) return
   creatorDate.value = dateKey
 }
+
+onMounted(() => {
+  stopNewNoteShortcut = window.api.onNewNoteRequested?.(() => {
+    const creatorDialog = creatorOverlayRef.value?.querySelector('.month-creator')
+    const anotherModal = [...document.querySelectorAll('[aria-modal="true"]')].some(
+      (modal) => modal !== creatorDialog
+    )
+    if (anotherModal) {
+      showMessage('warning', '请先完成或关闭当前面板，再新建便签')
+      return
+    }
+    if (creatorDate.value) {
+      if (creatorDisplayed.value) focusModal(creatorOverlayRef.value)
+      return
+    }
+    if (workspaceBodyRef.value?.closest('[inert]')) {
+      showMessage('warning', '请先完成或关闭当前面板，再新建便签')
+      return
+    }
+    openCreator(selectedKey.value || todayKey.value)
+  })
+})
 
 function onQuickCreateOpened(day) {
   if (!(day?.isActive ?? day?.inCurrentMonth)) return
@@ -609,30 +572,29 @@ function startPanelResize(event) {
 }
 
 onMounted(async () => {
-  try {
-    const snapshot = await window.api.getSettingsSnapshot()
+  let bootstrappingSettings = true
+  stopSettingsListener = settingsSnapshots.subscribe((snapshot) => {
     if (calendarModel.disposed) return
-    calendarPreferences.applyInitialSettings(snapshot)
-    dayPanelSize.value = Math.min(
-      50,
-      Math.max(25, Number(snapshot?.values?.ui?.dayPanelSize) || defaultDayPanelSize)
-    )
+    if (bootstrappingSettings) {
+      calendarPreferences.applyInitialSettings(snapshot)
+      dayPanelSize.value = Math.min(
+        50,
+        Math.max(25, Number(snapshot?.values?.ui?.dayPanelSize) || defaultDayPanelSize)
+      )
+    } else if (calendarPreferences.applySettings(snapshot).previewChanged) queueNotesRefresh()
+  })
+  try {
+    await calendarPreferences.settingsReady
   } catch (error) {
     console.warn('[MonthWorkspace] 读取日期侧栏设置失败:', error)
   }
   if (calendarModel.disposed) return
+  bootstrappingSettings = false
   stopNotesListener = window.api.onNotesChanged?.(queueNotesRefresh)
   stopTemplatesListener = window.api.onTemplatesChanged?.(queueNotesRefresh)
   stopHolidayDataListener = window.api.onHolidayDataChanged?.(queueNotesRefresh)
-  stopWeatherSettingsListener = window.api.onSettingsChanged?.((snapshot) => {
-    if (calendarPreferences.applySettings(snapshot).previewChanged) queueNotesRefresh()
-  })
-  stopWeatherForecastListener = window.api.onWeatherForecastUpdated?.((forecast) => {
-    calendarPreferences.acceptForecast(forecast)
-  })
   const calendarLoadPromise = isWeekView.value ? loadWeek(todayKey.value) : loadMonth()
   // 日历可见性只依赖本地数据；天气网络请求在后台补齐，不能阻塞窗口就绪。
-  if (weatherEnabled.value) void loadWeather({ quiet: true })
   await calendarLoadPromise
   if (!calendarModel.disposed) emit('ready')
 })
@@ -657,16 +619,15 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  stopNewNoteShortcut?.()
+  statusActions.dispose()
   calendarModel.dispose()
   calendarPreferences.dispose()
   stopNotesListener?.()
   stopTemplatesListener?.()
   stopHolidayDataListener?.()
-  stopWeatherSettingsListener?.()
-  stopWeatherForecastListener?.()
+  stopSettingsListener?.()
   clearTimeout(notesChangedTimer)
-  for (const timer of statusTransitionTimers.values()) clearTimeout(timer)
-  statusTransitionTimers.clear()
   if (modalFocusFrame !== null) cancelAnimationFrame(modalFocusFrame)
   restoreFocusedElement(previouslyFocused)
   resizeCleanup?.()

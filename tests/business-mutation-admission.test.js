@@ -227,3 +227,171 @@ describe('business clear admission and complete mutation drain', () => {
     }
   })
 })
+
+describe('exclusive attachment maintenance admission', () => {
+  it('seals synchronously while admitted continuations, child work and postcommit cleanup finish first', async () => {
+    const owner = createBusinessMutationAdmission()
+    const stage = deferred(),
+      cleanup = deferred(),
+      child = deferred(),
+      maintenance = deferred()
+    const entered = deferred()
+    const events = []
+    let continuation
+    const mutation = owner.run(async () => {
+      continuation = owner.bindContinuation(() => child.promise)
+      await stage.promise
+      owner.run(() => events.push('committed'))
+      await cleanup.promise
+      events.push('mutation cleanup')
+    })
+    const body = vi.fn(async () => {
+      events.push('maintenance')
+      entered.resolve()
+      await maintenance.promise
+      return 'maintenance complete'
+    })
+    const exclusive = owner.exclusive(body)
+    const drained = vi.fn()
+    const draining = owner.drain().then(drained)
+    expect(owner.snapshot()).toEqual({ clearing: false, pending: 1 })
+    expect(owner.canAdmit()).toBe(false)
+    expect(() => owner.run(() => 'new external write')).toThrow('正在维护附件存储')
+    const admittedChild = continuation()
+    stage.resolve()
+    await Promise.resolve()
+    expect(events).toEqual(['committed'])
+    expect(body).not.toHaveBeenCalled()
+    cleanup.resolve()
+    await mutation
+    expect(body).not.toHaveBeenCalled()
+    expect(() => continuation()).toThrow('已经结束')
+    child.resolve()
+    await admittedChild
+    await entered.promise
+    expect(events).toEqual(['committed', 'mutation cleanup', 'maintenance'])
+    expect(owner.snapshot()).toEqual({ clearing: false, pending: 0 })
+    expect(owner.canAdmit()).toBe(false)
+    expect(drained).not.toHaveBeenCalled()
+    maintenance.resolve()
+    expect(await exclusive).toBe('maintenance complete')
+    await draining
+    expect(drained).toHaveBeenCalledOnce()
+    expect(owner.canAdmit()).toBe(true)
+    expect(owner.run(() => 'new write')).toBe('new write')
+    expect(() => owner.runCleanup(() => true)).toThrow('排空完成')
+  })
+
+  it('waits for failed compensation without changing the mutation rejection', async () => {
+    const owner = createBusinessMutationAdmission()
+    const compensation = deferred()
+    const failure = new Error('attachment SQL failed after staging')
+    const mutation = owner.run(async () => {
+      try {
+        throw failure
+      } finally {
+        await compensation.promise
+      }
+    })
+    const outcome = mutation.catch((error) => error)
+    const body = vi.fn(() => 'recovered after compensation')
+    const exclusive = owner.exclusive(body)
+    expect(body).not.toHaveBeenCalled()
+    expect(owner.canAdmit()).toBe(false)
+    compensation.resolve()
+    expect(await outcome).toBe(failure)
+    expect(await exclusive).toBe('recovered after compensation')
+    expect(body).toHaveBeenCalledOnce()
+    expect(owner.snapshot()).toEqual({ clearing: false, pending: 0 })
+    expect(owner.canAdmit()).toBe(true)
+  })
+
+  it('rejects exclusive admission synchronously and preserves asynchronous clear rejection and mutual exclusion', async () => {
+    const owner = createBusinessMutationAdmission()
+    const clearGate = deferred(),
+      maintenanceGate = deferred()
+    const rejectedBody = vi.fn()
+    owner.run(() => {
+      expect(() => owner.exclusive(rejectedBody)).toThrow('业务写入内部不能开始附件存储维护')
+    })
+    await expect(owner.run(() => owner.clear(rejectedBody))).rejects.toThrow(
+      '业务写入内部不能清空便签数据'
+    )
+    const clearing = owner.clear(() => clearGate.promise)
+    expect(owner.snapshot().clearing).toBe(true)
+    expect(() => owner.exclusive(rejectedBody)).toThrow('正在清空便签数据，请完成后再试')
+    let repeatedClear
+    expect(() => {
+      repeatedClear = owner.clear(rejectedBody)
+    }).not.toThrow()
+    await expect(repeatedClear).rejects.toThrow('正在清空便签数据，请勿重复操作')
+    clearGate.resolve()
+    await clearing
+    const exclusive = owner.exclusive(() => maintenanceGate.promise)
+    expect(owner.snapshot().clearing).toBe(false)
+    expect(owner.canAdmit()).toBe(false)
+    expect(() => owner.exclusive(rejectedBody)).toThrow('正在维护附件存储')
+    let clearDuringMaintenance
+    expect(() => {
+      clearDuringMaintenance = owner.clear(rejectedBody)
+    }).not.toThrow()
+    await expect(clearDuringMaintenance).rejects.toThrow('正在维护附件存储')
+    expect(rejectedBody).not.toHaveBeenCalled()
+    maintenanceGate.resolve()
+    await exclusive
+    expect(owner.canAdmit()).toBe(true)
+  })
+
+  it.each(['throw', 'rejection'])('releases maintenance after callback %s', async (kind) => {
+    const owner = createBusinessMutationAdmission()
+    const failure = new Error(`maintenance ${kind}`)
+    const exclusive = owner.exclusive(() => {
+      if (kind === 'throw') throw failure
+      return Promise.reject(failure)
+    })
+    expect(owner.canAdmit()).toBe(false)
+    await expect(exclusive).rejects.toBe(failure)
+    expect(owner.snapshot()).toEqual({ clearing: false, pending: 0 })
+    expect(owner.canAdmit()).toBe(true)
+    expect(owner.run(() => 'retry write')).toBe('retry write')
+  })
+
+  it('holds shutdown through the leading drain and complete maintenance, including failures, without reopening', async () => {
+    for (const failure of [null, new Error('maintenance callback failed')]) {
+      const owner = createBusinessMutationAdmission()
+      const mutationGate = deferred(),
+        maintenanceGate = deferred(),
+        entered = deferred()
+      const mutation = owner.run(() => mutationGate.promise)
+      const exclusive = owner.exclusive(async () => {
+        entered.resolve()
+        await maintenanceGate.promise
+        if (failure) throw failure
+        return 'maintained'
+      })
+      const outcome = exclusive.catch((error) => error)
+      owner.preventNewMutations()
+      const finalCleanup = vi.fn(() => 'saved final sticky bounds')
+      const draining = owner.drain().then(() => owner.runCleanup(finalCleanup))
+      expect(() => owner.runCleanup(finalCleanup)).toThrow('排空完成')
+      mutationGate.resolve()
+      await mutation
+      await entered.promise
+      expect(finalCleanup).not.toHaveBeenCalled()
+      expect(() => owner.runCleanup(finalCleanup)).toThrow('排空完成')
+      maintenanceGate.resolve()
+      expect(await outcome).toBe(failure || 'maintained')
+      expect(await draining).toBe('saved final sticky bounds')
+      expect(finalCleanup).toHaveBeenCalledOnce()
+      expect(owner.snapshot()).toEqual({ clearing: false, pending: 0 })
+      expect(owner.canAdmit()).toBe(false)
+      expect(() => owner.run(() => 'late write')).toThrow('正在退出')
+      expect(() => owner.exclusive(() => true)).toThrow('正在退出')
+      let lateClear
+      expect(() => {
+        lateClear = owner.clear(() => true)
+      }).not.toThrow()
+      await expect(lateClear).rejects.toThrow('正在退出')
+    }
+  })
+})

@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -17,26 +18,42 @@ jobs:
   validate:
     name: Validate release version
     runs-on: ubuntu-latest
+    outputs:
+      candidate-run-id: ${{ steps.candidate.outputs.run-id }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
           persist-credentials: false
 
-      - name: Verify tag matches package version
-        if: github.event_name == 'push'
+      - name: Verify consistent package and tag versions
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          if [ "$RELEASE_TAG" != "v$PACKAGE_VERSION" ]; then
-            echo "Tag $RELEASE_TAG does not match package.json version v$PACKAGE_VERSION."
-            exit 1
-          fi
+          node -e "const p=require('./package.json'),l=require('./package-lock.json');if(p.version!==l.version||p.version!==l.packages[''].version)throw Error('Package and lockfile versions differ');if(process.env.GITHUB_EVENT_NAME==='push'&&process.env.RELEASE_TAG!=='v'+p.version)throw Error('Tag and package version differ')"
+
+      - name: Select the latest verified candidate for this exact commit
+        id: candidate
+        if: github.event_name == 'push'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            let existing;
+            try {
+              existing = (await github.rest.repos.getReleaseByTag({...context.repo, tag: context.ref.replace('refs/tags/', '')})).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (existing && !existing.draft) throw new Error('Published releases are immutable; use a new version.');
+            const { selectCandidate, requireSuccessfulCi } = require(process.env.GITHUB_WORKSPACE + '/scripts/release-candidate.cjs');
+            await requireSuccessfulCi({github, ...context.repo, commit: context.sha});
+            const runId = await selectCandidate({github, ...context.repo, commit: context.sha});
+            core.setOutput('run-id', runId);
 
   quality:
     name: Quality gate
     needs: validate
+    if: needs.validate.outputs.candidate-run-id == ''
     runs-on: windows-latest
     steps:
       - name: Check out repository
@@ -59,20 +76,35 @@ jobs:
       - name: Verify explicit release quality scope
         run: npm run test:release:quality
 
+      - name: Record all quality attempts and reject unresolved failures
+        if: always()
+        env:
+          RELEASE_JOB_STATUS: ${{ job.status }}
+        run: node scripts/release-candidate.cjs collect quality
+
+      - name: Upload quality attestation
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-quality-report
+          path: tmp/release-evidence/quality.json
+          if-no-files-found: error
+
       - name: Upload release quality evidence
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: release-quality-evidence
-          path: tmp/test-runs/
+          name: release-quality-evidence-attempt-${{ github.run_attempt }}
+          path: |
+            tmp/test-runs/
+            tmp/release-evidence/
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 30
 
   windows:
     name: Windows x64
     needs:
       - validate
-      - quality
+    if: needs.validate.outputs.candidate-run-id == ''
     runs-on: windows-latest
     steps:
       - name: Check out repository
@@ -97,8 +129,8 @@ jobs:
           modules: qtimageformats
           cache: true
 
-      - name: Compile Windows native engines
-        run: npm run build:native:win
+      - name: Build once and verify all release window contracts
+        run: node scripts/run-electron-window-tests.cjs release-window-frame
 
       - name: Verify blur engine
         shell: pwsh
@@ -107,33 +139,51 @@ jobs:
             throw "native_blur/build/bin/blur_engine.dll was not generated."
           }
 
-      - name: Verify frameless window style
-        run: npm run test:window-frame:win
-
-      - name: Build renderer and main process
-        run: npm run build
-
       - name: Package Windows installer
-        run: npx electron-builder --config electron-builder.win.yml --win nsis --x64 --publish never
-
-      - name: Build package acceptance input driver
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File native_capture/build.ps1 -InputDriver
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force tmp/release-build-logs | Out-Null
+          node node_modules/electron-builder/out/cli/cli.js --config electron-builder.win.yml --win nsis --x64 --publish never 1>tmp/release-build-logs/installer.stdout.log 2>tmp/release-build-logs/installer.stderr.log
+          $installerExit = $LASTEXITCODE
+          @{ exitCode = $installerExit; run = $env:GITHUB_RUN_ID; attempt = $env:GITHUB_RUN_ATTEMPT; commit = $env:GITHUB_SHA } | ConvertTo-Json | Set-Content -LiteralPath tmp/release-build-logs/installer-result.json -Encoding utf8
+          Get-Content -LiteralPath tmp/release-build-logs/installer.stdout.log
+          Get-Content -LiteralPath tmp/release-build-logs/installer.stderr.log
+          if ($installerExit -ne 0) { throw "Installer build failed with exit code $installerExit; inspect retained build logs" }
 
       - name: Verify actual packaged screenshot and cold restart
         shell: pwsh
         run: |
           $env:ABANDON_TEST_PACKAGE_DIR = (Resolve-Path -LiteralPath dist/win-unpacked).Path
+          $driver = node -e "process.stdout.write(require('./scripts/run-electron-window-tests.cjs').createReleasePlan(['--plan']).packageAcceptanceEnvironment.ABANDON_CAPTURE_INPUT_DRIVER)"
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $driver)) { throw "Current-run package input driver is missing" }
+          $env:ABANDON_CAPTURE_INPUT_DRIVER = $driver
           node scripts/run-focused-tests.cjs --file tests/capture-package-smoke.cjs
           if ($LASTEXITCODE -ne 0) { throw "Packaged application acceptance failed" }
+
+      - name: Record all Windows attempts and reject unresolved failures
+        if: always()
+        env:
+          RELEASE_JOB_STATUS: ${{ job.status }}
+        run: node scripts/release-candidate.cjs collect windows
+
+      - name: Upload Windows attestation
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-windows-report
+          path: tmp/release-evidence/windows.json
+          if-no-files-found: error
 
       - name: Upload packaged application evidence
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: packaged-application-evidence
-          path: tmp/test-runs/
+          name: packaged-application-evidence-attempt-${{ github.run_attempt }}
+          path: |
+            tmp/test-runs/
+            tmp/release-evidence/
+            tmp/release-build-logs/
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 30
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v6
@@ -144,25 +194,73 @@ jobs:
             dist/Abandon-Note-*-windows-x64-setup.exe.blockmap
             dist/latest.yml
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
+
+  candidate-proof:
+    name: Bind verified evidence to immutable installer bytes
+    needs:
+      - quality
+      - windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: abandon-note-windows-x64
+          path: release-assets
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: release-*-report
+          path: candidate-evidence
+          merge-multiple: true
+      - name: Verify both gates and fingerprint the accepted installer
+        run: node scripts/release-candidate.cjs assemble
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-candidate-proof
+          path: candidate-evidence/candidate.json
+          if-no-files-found: error
+          retention-days: 30
 
   draft-release:
     name: Create GitHub Draft Release
-    if: github.event_name == 'push'
+    if: always() && github.event_name == 'push' && needs.validate.result == 'success' && (needs.validate.outputs.candidate-run-id != '' || needs.candidate-proof.result == 'success')
     needs:
-      - windows
+      - validate
+      - candidate-proof
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_SOURCE_RUN_ID: ${{ needs.validate.outputs.candidate-run-id || github.run_id }}
     steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
       - name: Download build artifacts
         uses: actions/download-artifact@v7
         with:
           name: abandon-note-windows-x64
           path: release-assets
+          run-id: ${{ env.RELEASE_SOURCE_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Download candidate proof
+        uses: actions/download-artifact@v7
+        with:
+          name: release-candidate-proof
+          path: candidate-evidence
+          run-id: ${{ env.RELEASE_SOURCE_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Verify exact commit, test evidence and all artifact hashes
+        run: node scripts/release-candidate.cjs verify
 
       - name: Generate SHA-256 checksums
         working-directory: release-assets
@@ -171,6 +269,11 @@ jobs:
       - name: Create or refresh Draft Release
         run: |
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            IS_DRAFT="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+            if [ "$IS_DRAFT" != "true" ]; then
+              echo "Refusing to overwrite an already published release."
+              exit 1
+            fi
             gh release upload "$RELEASE_TAG" release-assets/* \
               --clobber \
               --repo "$GITHUB_REPOSITORY"

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCaptureWindowIntegration } from '../src/main/capture/capture-window-integration.js'
 
-function fixture({ visible = true, focused = true, hide = true } = {}) {
+function fixture({ visible = true, focused = true, hide = true, dockHidden = false } = {}) {
   const window = {
     isDestroyed: () => false,
     isVisible: () => visible,
@@ -20,6 +20,7 @@ function fixture({ visible = true, focused = true, hide = true } = {}) {
   }
   const owner = createCaptureWindowIntegration({
     getWindow: () => current,
+    isDockHidden: () => dockHidden,
     shouldHide: () => hide,
     isQuitting: () => quitting,
     ...ports
@@ -37,6 +38,23 @@ function fixture({ visible = true, focused = true, hide = true } = {}) {
   }
 }
 describe('capture window restoration ticket', () => {
+  it.each([true, false])('preserves off-screen Dock state with hide preference %s', (hide) => {
+    const f = fixture({ dockHidden: true, hide })
+    f.owner.begin()
+    expect(f.suspendDock).toHaveBeenCalledWith('screenshot', { preserveHidden: true })
+    expect(f.owner.snapshot()).toMatchObject({ wasVisible: true, hidden: false })
+    expect(f.hideWindow).not.toHaveBeenCalled()
+    f.owner.finish('global')
+    expect(f.window.showInactive).not.toHaveBeenCalled()
+    expect(f.window.focus).not.toHaveBeenCalled()
+    expect(f.resumeDock).toHaveBeenCalledWith('screenshot')
+  })
+  it('keeps an explicitly opened business form visible after a rejected delivery from Dock', () => {
+    const f = fixture({ dockHidden: true })
+    f.owner.begin()
+    f.owner.finish('global', { businessOpened: true, businessAccepted: false })
+    expect(f.hideWindow).not.toHaveBeenCalled()
+  })
   it('restores the originally hidden window and its prior focus once', () => {
     const f = fixture()
     f.owner.begin()

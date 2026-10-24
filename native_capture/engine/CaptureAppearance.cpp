@@ -131,6 +131,16 @@ public:
       for (int y = 4; y <= 14; y += 10)
         for (int x = 4; x <= 14; x += 10)
           p->drawRoundedRect(QRectF(x, y, 6, 6), 1, 1);
+    } else if (name == "blur") {
+      // Soft concentric dots distinguish Gaussian diffusion from mosaic blocks.
+      const auto ink = p->pen().color();
+      p->setPen(Qt::NoPen);
+      for (int radius : {9, 6, 3}) {
+        auto tint = ink;
+        tint.setAlpha(radius == 9 ? 45 : radius == 6 ? 90 : 180);
+        p->setBrush(tint);
+        p->drawEllipse(QPointF(12, 12), radius, radius);
+      }
     } else if (name == "parameters") {
       line(5, 6, 19, 6);
       line(5, 12, 19, 12);

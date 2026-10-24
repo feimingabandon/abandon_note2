@@ -5,6 +5,7 @@ import {
 } from './application-settings.js'
 import {
   getAllSettings as readRows,
+  runSettingsTransaction as runTransaction,
   setSettingsBatch as writeViewBatch
 } from '../db/db-settings-repository.js'
 import { diagnosticState } from '../logging/diagnostic-state.js'
@@ -21,13 +22,17 @@ export function createSettingsWriteCoordinator({
   reconcileDockRuntimeConfig,
   getResolvedSettingsSnapshot,
   broadcastSettingsChanged,
+  completeCommittedSettings,
   getAllSettings = readRows,
+  runSettingsTransaction = runTransaction,
   setSettingsBatch = writeViewBatch,
   writeApplicationSettings = writeApplicationBatch,
   observeVerification = () => diagnosticState.observation(currentOperation()?.actionId)
 }) {
+  if (completeCommittedSettings !== undefined && typeof completeCommittedSettings !== 'function')
+    throw new TypeError('设置提交后端口必须是函数')
   const APPLICATION_SETTING_ID_SET = new Set(APPLICATION_SETTING_IDS)
-  function persistSettingValues(entries, { applyBlurRuntime = true } = {}) {
+  function persistSettingValues(entries, { applyBlurRuntime = true, applicationContext } = {}) {
     const changesDockConfig = entries.some(({ id }) => id.startsWith('dock.'))
     const previousDockConfig = changesDockConfig ? getDockRuntimeConfig() : null
     const normalizedEntries = entries.map(({ id, value }) => ({
@@ -48,9 +53,44 @@ export function createSettingsWriteCoordinator({
       APPLICATION_SETTING_ID_SET.has(id)
     )
     const viewEntries = normalizedEntries.filter(({ id }) => !APPLICATION_SETTING_ID_SET.has(id))
-    if (viewEntries.length) setSettingsBatch(getActiveWindowName(), viewEntries)
-    if (applicationEntries.length) {
-      writeApplicationSettings(applicationEntries.map(({ id, value }) => ({ id, value })))
+    runSettingsTransaction(() => {
+      if (viewEntries.length) setSettingsBatch(getActiveWindowName(), viewEntries)
+      if (applicationEntries.length) {
+        writeApplicationSettings(applicationEntries.map(({ id, value }) => ({ id, value })))
+      }
+    })
+    if (completeCommittedSettings) {
+      return completeCommittedSettings({
+        scope: evidenceScope,
+        ...(applicationContext === undefined ? {} : { context: applicationContext }),
+        ids: normalizedEntries.map(({ id }) => id),
+        previousDockConfig,
+        applyBlurRuntime,
+        verify: () => {
+          if (!evidenceTicket.enabled) return { status: 'skipped', reason: evidenceTicket.reason }
+          const afterEvidence = readSettingEvidence(
+            normalizedEntries,
+            getAllSettings,
+            APPLICATION_SETTING_ID_SET,
+            evidenceScope,
+            evidenceTicket
+          )
+          reportSettingEvidence(beforeEvidence, afterEvidence)
+          const completeEvidence =
+            Array.isArray(afterEvidence) &&
+            afterEvidence.length === normalizedEntries.length &&
+            afterEvidence.every(
+              (entry, index) =>
+                entry?.id === normalizedEntries[index].id &&
+                entry.scope ===
+                  (APPLICATION_SETTING_ID_SET.has(entry.id) ? 'application' : evidenceScope)
+            )
+          if (!completeEvidence) return { status: 'unconfirmed', reason: 'readback-unavailable' }
+          if (afterEvidence.some((entry) => !entry.exists || entry.stored !== entry.expected))
+            return { status: 'unconfirmed', reason: 'readback-mismatch' }
+          return { status: 'completed', reason: evidenceTicket.reason }
+        }
+      })
     }
     reportSettingEvidence(
       beforeEvidence,

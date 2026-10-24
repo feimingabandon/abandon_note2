@@ -1,13 +1,87 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const rendererRoot = resolve(projectRoot, 'src/renderer')
 const stickyHtmlPath = resolve(rendererRoot, 'sticky.html')
 
+async function createStickyRenderer(fontSize) {
+  const elements = new Map()
+  const element = (selector) => {
+    if (!elements.has(selector)) {
+      elements.set(selector, {
+        dataset: {},
+        handlers: new Map(),
+        setAttribute() {},
+        querySelectorAll: () => [],
+        addEventListener(type, handler) {
+          this.handlers.set(type, handler)
+        }
+      })
+    }
+    return elements.get(selector)
+  }
+  const requests = []
+  const css = new Map()
+  let state = { fontSize, content: '字号边界', palette: [] }
+  const api = {
+    async getState() {
+      return state
+    },
+    async ready() {},
+    async updateAppearance(patch) {
+      requests.push(patch)
+      state = { ...state, ...patch }
+      return state
+    }
+  }
+  const script = readFileSync(resolve(rendererRoot, 'sticky/sticky.js'), 'utf8')
+  runInNewContext(script.replace(/^import .*\r?\n/, ''), {
+    installBrowserErrorCapture() {},
+    window: { stickyAPI: api, addEventListener() {} },
+    document: {
+      querySelector: element,
+      addEventListener() {},
+      documentElement: { style: { setProperty: (name, value) => css.set(name, value) } }
+    }
+  })
+  await new Promise((resolveReady) => setImmediate(resolveReady))
+  return {
+    requests,
+    css,
+    down: element('[data-action="font-down"]'),
+    up: element('[data-action="font-up"]'),
+    async click(button) {
+      button.handlers.get('click')()
+      await new Promise((resolveUpdate) => setImmediate(resolveUpdate))
+    }
+  }
+}
+
 describe('sticky renderer entry', () => {
+  it('allows the expanded endpoints and disables only the corresponding boundary button', async () => {
+    for (const fontSize of [8, 16, 40]) {
+      const renderer = await createStickyRenderer(fontSize)
+      expect(renderer.css.get('--sticky-font-size')).toBe(`${fontSize}px`)
+      expect(renderer.down.disabled).toBe(fontSize === 8)
+      expect(renderer.up.disabled).toBe(fontSize === 40)
+    }
+  })
+
+  it('clamps one button step at 8 and 40 for persisted odd font sizes', async () => {
+    const low = await createStickyRenderer(9)
+    await low.click(low.down)
+    expect(low.requests).toEqual([{ fontSize: 8 }])
+    expect(low.down.disabled).toBe(true)
+    const high = await createStickyRenderer(39)
+    await high.click(high.up)
+    expect(high.requests).toEqual([{ fontSize: 40 }])
+    expect(high.up.disabled).toBe(true)
+  })
+
   it('keeps development assets inside the electron-vite renderer root', () => {
     const html = readFileSync(stickyHtmlPath, 'utf8')
     const localAssets = [...html.matchAll(/(?:href|src)="(\.\/sticky\/[^"]+)"/g)].map(

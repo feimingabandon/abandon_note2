@@ -9,6 +9,7 @@ import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
 
 const require = createRequire(import.meta.url)
 const { createPackageWithOptions } = require('@electron/asar')
+const { AppInfo, WinPackager } = require('app-builder-lib')
 const {
   default: configurePackagedNative,
   collectFilePatterns
@@ -96,6 +97,83 @@ async function createPackagedFixture(
     }
   }
 }
+
+describe('Windows publisher metadata', () => {
+  async function loadMetadata(configName = 'electron-builder.win.yml') {
+    const { getConfig, validateConfiguration } = require('app-builder-lib/out/util/config/config')
+    const { readPackageJson } = require('app-builder-lib/out/util/packageMetadata')
+    const root = path.resolve(import.meta.dirname, '..')
+    const metadata = await readPackageJson(path.join(root, 'package.json'))
+    const config = await getConfig(root, path.join(root, configName))
+    await validateConfiguration(config, { isEnabled: false })
+    return { metadata, config, appInfo: new AppInfo({ metadata, config }, undefined, config.win) }
+  }
+
+  it.each(['electron-builder.win.yml', 'electron-builder.yml'])(
+    'resolves %s to the display publisher while preserving upgrade and repository identities',
+    async (configName) => {
+      const { NsisTarget } = require('app-builder-lib/out/targets/nsis/NsisTarget')
+      const { metadata, config, appInfo } = await loadMetadata(configName)
+      expect(metadata.author.name).toBe('炁体源流')
+      expect(appInfo.companyName).toBe('炁体源流')
+      expect(appInfo.copyright).toBe('Copyright © 2026 炁体源流')
+      expect(appInfo.id).toBe('com.abandon.note')
+      expect(config.nsis.guid).toBe('41249b74-bbe0-5d8d-8a9d-7f1bd6f04a19')
+      expect(metadata.homepage).toBe('https://github.com/feimingabandon/abandon_note2')
+      expect(metadata.repository.url).toBe(
+        'git+https://github.com/feimingabandon/abandon_note2.git'
+      )
+      // Certificate publisher names identify real signers; display metadata cannot supply one.
+      expect(config.win.publisherName).toBeUndefined()
+      expect(config.win.signtoolOptions?.publisherName).toBeUndefined()
+      expect(config.win.azureSignOptions?.publisherName).toBeUndefined()
+      const defines = {}
+      NsisTarget.prototype.configureDefinesForAllTypeOfInstaller.call(
+        { packager: { appInfo }, options: config.nsis, isWebInstaller: false },
+        defines
+      )
+      expect(defines.COMPANY_NAME).toBe('炁体源流')
+      const template = readFileSync(
+        require.resolve('app-builder-lib/templates/nsis/include/installer.nsh'),
+        'utf8'
+      )
+      expect(template).toContain(
+        'WriteRegStr SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}" "Publisher" "${COMPANY_NAME}"'
+      )
+    }
+  )
+
+  it('passes the display publisher and copyright to the real Windows PE resource editor', async () => {
+    const resourceEditor = require('app-builder-lib/out/util/resEdit')
+    const { config, appInfo } = await loadMetadata()
+    const edit = vi.spyOn(resourceEditor, 'editWindowsResources').mockResolvedValue(undefined)
+    try {
+      await WinPackager.prototype.signAndEditResources.call(
+        {
+          appInfo,
+          // Disable executable cache discovery: this probe only observes resource-editor inputs.
+          config: { ...config, electronDist: 'metadata-only-probe' },
+          platformSpecificBuildOptions: config.win,
+          getIconPath: async () => null,
+          signIf: vi.fn(async () => false)
+        },
+        'metadata-only.exe',
+        Arch.x64,
+        'metadata-only-output'
+      )
+      expect(edit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          versionStrings: expect.objectContaining({
+            CompanyName: '炁体源流',
+            LegalCopyright: 'Copyright © 2026 炁体源流'
+          })
+        })
+      )
+    } finally {
+      edit.mockRestore()
+    }
+  })
+})
 
 describe('Windows x64 native module configuration', () => {
   it('admits exactly one platform and architecture', () => {

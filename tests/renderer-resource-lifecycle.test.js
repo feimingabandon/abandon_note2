@@ -19,8 +19,14 @@ async function loadComponent(path) {
     let dependency
     if (name === 'vue') dependency = vue
     else if (name.endsWith('.vue')) dependency = { default: {} }
+    else if (name.endsWith('/modalBlur.js')) dependency = { retainModalBlur: () => vi.fn() }
+    else if (name.endsWith('/modalQueue.js')) dependency = { modalQueue: { hold: () => vi.fn() } }
     else if (name.endsWith('/useMessage.js'))
       dependency = { useMessage: () => ({ showMessage: vi.fn() }) }
+    else if (name.endsWith('/useDraftProtection.js'))
+      // This suite owns TemplatePage's subscriptions, not the browser journal.
+      // The page imports only this reactive invalidation signal.
+      dependency = { editingDataGeneration: vue.ref(0) }
     else if (name.endsWith('/useQueuedModal.js'))
       dependency = {
         useQueuedModal: (requested) => ({
@@ -146,6 +152,11 @@ beforeEach(() => {
     ),
     getImageThumbnail: vi.fn(async (path) => 'thumbnail:' + path),
     getImageDimensions: vi.fn(async () => ({ width: 128, height: 128 })),
+    getImageThumbnailDetails: vi.fn(async (path) => ({
+      data: 'thumbnail:' + path,
+      width: 128,
+      height: 128
+    })),
     getImageBase64: vi.fn(async (path) => 'original:' + path),
     saveImages: vi.fn(async () => [{ id: 100, file_path: 'saved-100', file_size: 3 }])
   }
@@ -265,21 +276,73 @@ describe('image original preview lifetime', () => {
     await flush()
     return result
   }
-  const originals = (state) =>
-    state.previewSources.value.filter((src) => src.startsWith('original:'))
   function expectClosed(state) {
     expect(state.previewVisible.value).toBe(false)
     expect(state.previewSources.value).toEqual([])
   }
+  async function preview(initial = {}) {
+    const releases = []
+    const resolveSource = vi.fn(async (index) => {
+      const release = vi.fn()
+      releases.push({ index, release })
+      return { src: 'original:' + index, release }
+    })
+    const page = mount(await loadComponent('note/ImagePreview.vue'), {
+      visible: true,
+      src: '',
+      sources: ['thumb:0', 'thumb:1', 'thumb:2', 'thumb:3'],
+      initialIndex: 0,
+      resolveSource,
+      ...initial
+    })
+    await flush()
+    return { ...page, resolveSource, releases }
+  }
+  function node(state) {
+    const element = {
+      dataset: { previewLease: String(state.activeEntry.value.id) },
+      isConnected: true
+    }
+    state.bindImage(element)
+    return element
+  }
 
-  it('keeps only the current original and releases it on every close without changing thumbnails', async () => {
+  it('opens with the final sources and initial index when visible is patched first in the same Vue update', async () => {
+    const page = await preview({ visible: false, sources: ['thumb:0', 'thumb:1', 'thumb:2'] })
+    page.props.visible = true
+    page.props.sources = ['thumb:0', 'thumb:1', 'thumb:2', 'thumb:3']
+    page.props.initialIndex = 3
+    await flush()
+    expect(page.resolveSource.mock.calls.map(([index]) => index)).toEqual([3])
+    expect(page.state.activeEntry.value.index).toBe(3)
+    expect(page.state.activeEntry.value.src).toBe('original:3')
+  })
+
+  it.each(['close', 'unmount'])('does not start a scheduled opening after %s', async (action) => {
+    const page = await preview({ visible: false })
+    page.props.visible = true
+    // The parent update has patched visible, while the deferred open still
+    // belongs to the nextTick continuation registered by the child watcher.
+    await vue.nextTick()
+    if (action === 'close') {
+      page.state.closeSession()
+      page.props.visible = false
+    } else page.unmount()
+    await flush()
+    expect(page.resolveSource).not.toHaveBeenCalled()
+    expect(page.state.renderOpen.value).toBe(false)
+  })
+
+  it('keeps picker models at thumbnails and reads the original only through the display resolver', async () => {
     const { state } = await picker()
     for (let cycle = 0; cycle < 20; cycle++) {
       for (const image of state.images.value) {
-        await state.handlePreview(image)
-        expect(state.previewVisible.value).toBe(true)
-        expect(originals(state)).toHaveLength(1)
+        state.handlePreview(image)
+        const source = await state.resolvePreviewSource(state.images.value.indexOf(image))
+        expect(source.src).toBe('original:' + image.filePath)
+        expect(state.previewSources.value.every((src) => src.startsWith('thumbnail:'))).toBe(true)
         expect(state.images.value.every((item) => !item.fullDataUrl)).toBe(true)
+        source.release()
         state.closePreview()
         expectClosed(state)
       }
@@ -293,12 +356,14 @@ describe('image original preview lifetime', () => {
   })
 
   it.each(['close', 'unmount', 'note-change', 'clear'])(
-    'ignores a late original after %s',
+    'rejects an original from the old picker after %s',
     async (action) => {
       const page = await picker()
       const read = deferred()
       api.getImageBase64.mockReturnValueOnce(read.promise)
-      const preview = page.state.handlePreview(page.state.images.value[0])
+      page.state.handlePreview(page.state.images.value[0])
+      const pending = page.state.resolvePreviewSource(0)
+      const rejected = expect(pending).rejects.toThrow('图片预览已失效')
       if (action === 'close') page.state.closePreview()
       else if (action === 'unmount') page.unmount()
       else if (action === 'clear') page.state.clearImages()
@@ -307,71 +372,144 @@ describe('image original preview lifetime', () => {
         await flush()
       }
       read.resolve('original:old-note')
-      await preview
-      await flush()
+      await rejected
       expectClosed(page.state)
-      expect(page.state.images.value.every((image) => !image.fullDataUrl)).toBe(true)
     }
   )
 
-  it('does not reopen when close falls between the original completion and opening continuation', async () => {
-    const { state } = await picker()
-    const read = deferred()
-    api.getImageBase64.mockReturnValueOnce(read.promise)
-    const preview = state.handlePreview(state.images.value[0])
-    void read.promise.then(() => state.closePreview())
-    read.resolve('original:late')
-    await preview
-    expectClosed(state)
-  })
-
-  it('coalesces navigation behind one original read and drops superseded targets', async () => {
-    const { state } = await picker()
-    await state.handlePreview(state.images.value[0])
-    const read = deferred()
-    api.getImageBase64.mockReturnValueOnce(read.promise)
-    state.onPreviewChange(1)
-    state.onPreviewChange(2)
-    state.onPreviewChange(3)
-    expect(api.getImageBase64).toHaveBeenCalledTimes(2)
-    read.resolve('original:image-1')
+  it('holds connected leaving nodes and coalesces navigation without preparing a third original', async () => {
+    const page = await preview()
+    const first = node(page.state)
+    page.state.showNext()
     await flush()
-    expect(api.getImageBase64.mock.calls.map(([path]) => path)).toEqual([
-      'image-0',
-      'image-1',
-      'image-3'
-    ])
-    expect(originals(state)).toEqual(['original:image-3'])
-    expect(state.previewIndex.value).toBe(3)
+    node(page.state)
+    expect(page.resolveSource.mock.calls.map(([index]) => index)).toEqual([0, 1])
+    page.state.showNext()
+    page.state.showNext()
+    await flush()
+    expect(page.resolveSource).toHaveBeenCalledTimes(2)
+    await page.state.imageLeft(first) // A cancelled leave with a still-connected node.
+    expect(page.releases[0].release).not.toHaveBeenCalled()
+    expect(page.resolveSource).toHaveBeenCalledTimes(2)
+    first.isConnected = false
+    await page.state.imageLeft(first)
+    await flush()
+    expect(page.resolveSource.mock.calls.map(([index]) => index)).toEqual([0, 1, 3])
+    expect(page.releases[0].release).toHaveBeenCalledOnce()
+    expect(page.state.leases.size).toBe(2)
   })
 
-  it('does not let a closed session overwrite a new preview waiting for its read', async () => {
-    const { state } = await picker()
-    const read = deferred()
-    api.getImageBase64.mockReturnValueOnce(read.promise)
-    const oldPreview = state.handlePreview(state.images.value[0])
-    state.closePreview()
-    const nextPreview = state.handlePreview(state.images.value[2])
-    expect(api.getImageBase64).toHaveBeenCalledTimes(1)
-    read.resolve('original:old-session')
-    await Promise.all([oldPreview, nextPreview])
-    expect(state.previewVisible.value).toBe(true)
-    expect(originals(state)).toEqual(['original:image-2'])
-    expect(state.previewIndex.value).toBe(2)
+  it('drops a superseded prepared result and serves only the latest intent', async () => {
+    const page = await preview()
+    node(page.state)
+    const held = deferred()
+    page.resolveSource.mockReturnValueOnce(held.promise)
+    page.state.showNext()
+    await flush()
+    page.state.showNext()
+    page.state.showNext()
+    expect(page.resolveSource).toHaveBeenCalledTimes(2)
+    const release = vi.fn()
+    held.resolve({ src: 'original:obsolete', release })
+    await flush()
+    expect(release).toHaveBeenCalledOnce()
+    expect(page.resolveSource.mock.calls.map(([index]) => index)).toEqual([0, 1, 3])
+    expect(page.state.activeEntry.value.src).toBe('original:3')
   })
 
-  it('preserves draft image data and can reopen it without reading a stored original', async () => {
-    const { state } = await picker({ mode: 'memory', noteId: null })
-    const dataUrl = 'data:image/png;base64,AQID'
-    await state.addImage(dataUrl, 'png', 'draft.png', 3)
-    await state.handlePreview(state.images.value[0])
-    expect(state.previewSources.value).toEqual([dataUrl])
-    state.closePreview()
+  it('does not call a deferred navigation resolver after a close in the same handler', async () => {
+    const page = await preview()
+    const first = node(page.state)
+    page.state.showNext()
+    page.state.onClose()
+    await flush()
+    expect(page.resolveSource.mock.calls.map(([index]) => index)).toEqual([0])
+    expect(page.state.renderOpen.value).toBe(false)
+    page.props.visible = false
+    first.isConnected = false
+    await page.state.overlayLeft()
+    expect(page.releases[0].release).toHaveBeenCalledOnce()
+  })
+
+  it('serializes close/reopen behind actual overlay removal and ignores its late prepare', async () => {
+    const page = await preview()
+    const first = node(page.state)
+    const held = deferred()
+    page.resolveSource.mockReturnValueOnce(held.promise)
+    page.state.showNext()
+    await flush()
+    page.props.visible = false
+    await flush()
+    page.props.visible = true
+    await flush()
+    expect(page.releases[0].release).not.toHaveBeenCalled()
+    expect(page.resolveSource).toHaveBeenCalledTimes(2)
+    first.isConnected = false
+    await page.state.overlayLeft()
+    const release = vi.fn()
+    held.resolve({ src: 'original:closed-session', release })
+    await flush()
+    expect(release).toHaveBeenCalledOnce()
+    expect(page.state.activeEntry.value.src).toBe('original:0')
+    expect(page.resolveSource).toHaveBeenCalledTimes(3)
+    expect(page.releases[0].release).toHaveBeenCalledOnce()
+  })
+
+  it('preserves the wallpaper legacy single-source path and transform controls', async () => {
+    const page = await preview({ resolveSource: null, sources: [], src: 'wallpaper:original' })
+    expect(page.state.activeSrc.value).toBe('wallpaper:original')
+    const event = { deltaY: -1, preventDefault: vi.fn() }
+    page.state.onWheel(event)
+    page.state.rotate90()
+    expect(page.state.scale.value).toBe(1.1)
+    expect(page.state.rotate.value).toBe(90)
+    page.state.reset()
+    expect(page.state.scale.value).toBe(1)
+    expect(page.state.rotate.value).toBe(0)
+    page.state.onMouseDown({ button: 0, clientX: 10, clientY: 20, preventDefault() {} })
+    expect(document.listenerCount()).toBe(2)
+    page.state.onKeydown({ key: 'Escape', preventDefault() {}, stopPropagation() {} })
+    expect(document.listenerCount()).toBe(0)
+    page.props.visible = false
+    page.props.src = ''
+    await flush()
+    expect(page.state.activeSrc.value).toBe('wallpaper:original')
+    await page.state.overlayLeft()
+    expect(page.state.activeSrc.value).toBe('')
+  })
+
+  it('preserves draft asset metadata and uses a non-consuming preview lease', async () => {
+    const metadata = {
+      assetId: 'draft-asset',
+      ext: 'png',
+      name: 'draft.png',
+      size: 3,
+      sha256: 'a'.repeat(64)
+    }
+    const imageGeneration = vue.ref(0)
+    const assetPort = {
+      imageGeneration,
+      stageImage: vi.fn(async () => metadata),
+      thumbnailAsset: vi.fn(async () => ({ data: 'thumbnail:draft', width: 128, height: 128 })),
+      previewAsset: vi.fn(async () => ({ bytes: new Uint8Array([1, 2, 3]), ext: 'png' })),
+      releaseAssets: vi.fn(async () => true),
+      flush: vi.fn(async () => ({ dirty: true, blocked: false, persisted: true }))
+    }
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:draft-original')
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    const { state } = await picker({ mode: 'memory', noteId: null, assetPort })
+    await state.addImage('data:image/png;base64,AQID', 'png', 'draft.png', 3)
+    state.handlePreview(state.images.value[0])
+    const lease = await state.resolvePreviewSource(0)
+    expect(state.previewSources.value).toEqual(['thumbnail:draft'])
+    imageGeneration.value++
+    await flush()
     expectClosed(state)
-    expect(state.getImages()).toEqual([{ base64: 'AQID', ext: 'png', name: 'draft.png', size: 3 }])
-    expect(state.images.value[0].dataUrl).toBe(dataUrl)
-    await state.handlePreview(state.images.value[0])
-    expect(state.previewVisible.value).toBe(true)
+    expect(revoke).not.toHaveBeenCalled()
+    lease.release()
+    expect(revoke).toHaveBeenCalledWith('blob:draft-original')
+    expect(state.getImages()).toEqual([metadata])
+    expect(assetPort.releaseAssets).not.toHaveBeenCalled()
     expect(api.getImageBase64).not.toHaveBeenCalled()
   })
 
@@ -401,7 +539,13 @@ describe('image original preview lifetime', () => {
       ).toBe(false)
       expect(state.busy.value).toBe(false)
       await state.handlePreview(saved)
-      expect(originals(state)).toEqual(['original:saved-100'])
+      expect(
+        (
+          await state.resolvePreviewSource(
+            state.images.value.findIndex((image) => image.id === 100)
+          )
+        ).src
+      ).toBe('original:saved-100')
       state.closePreview()
       expectClosed(state)
     }
@@ -413,8 +557,7 @@ describe('image original preview lifetime', () => {
       const { state } = await writablePicker()
       vi.spyOn(console, 'warn').mockImplementation(() => {})
       const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
-      api.getImageThumbnail.mockRejectedValueOnce(new Error('thumbnail unavailable'))
-      api.getImageDimensions.mockRejectedValueOnce(new Error('dimensions unavailable'))
+      api.getImageThumbnailDetails.mockRejectedValueOnce(new Error('derived image unavailable'))
       const result = await upload(state, method)
       if (method === 'capture') expect(result).toBe(true)
       expect(state.images.value.find((image) => image.id === 100)).toMatchObject({
@@ -426,7 +569,13 @@ describe('image original preview lifetime', () => {
       expect(state.busy.value).toBe(false)
       expect(errorLog).not.toHaveBeenCalled()
       await state.handlePreview(state.images.value.find((image) => image.id === 100))
-      expect(originals(state)).toEqual(['original:saved-100'])
+      expect(
+        (
+          await state.resolvePreviewSource(
+            state.images.value.findIndex((image) => image.id === 100)
+          )
+        ).src
+      ).toBe('original:saved-100')
     }
   )
 
@@ -440,11 +589,12 @@ describe('image original preview lifetime', () => {
     const page = await writablePicker()
     const delayed = deferred()
     if (stage === 'save') api.saveImages.mockReturnValueOnce(delayed.promise)
-    else api.getImageThumbnail.mockReturnValueOnce(delayed.promise)
+    else api.getImageThumbnailDetails.mockReturnValueOnce(delayed.promise)
     const pending = upload(page.state, method)
     await flush()
     expect(api.saveImages).toHaveBeenCalledTimes(1)
-    if (stage === 'thumbnail') expect(api.getImageThumbnail).toHaveBeenCalledWith('saved-100', 512)
+    if (stage === 'thumbnail')
+      expect(api.getImageThumbnailDetails).toHaveBeenCalledWith('saved-100', 512)
     if (action === 'clear') page.state.clearImages()
     else if (action === 'unmount') page.unmount()
     else {
@@ -452,7 +602,9 @@ describe('image original preview lifetime', () => {
       await flush()
     }
     delayed.resolve(
-      stage === 'save' ? [{ id: 100, file_path: 'saved-100', file_size: 3 }] : 'thumbnail:saved-100'
+      stage === 'save'
+        ? [{ id: 100, file_path: 'saved-100', file_size: 3 }]
+        : { data: 'thumbnail:saved-100', width: 128, height: 128 }
     )
     const result = await pending
     if (method === 'capture') expect(result).toBe(true)
@@ -486,8 +638,10 @@ describe('image original preview lifetime', () => {
         return lateList ? listing.promise : listedRecords
       })
       const thumbnail = deferred()
-      api.getImageThumbnail.mockImplementation((path) =>
-        path === 'saved-100' ? thumbnail.promise : Promise.resolve('thumbnail:' + path)
+      api.getImageThumbnailDetails.mockImplementation((path) =>
+        path === 'saved-100'
+          ? thumbnail.promise
+          : Promise.resolve({ data: 'thumbnail:' + path, width: 128, height: 128 })
       )
       const pending = page.state.processFiles([
         { name: 'one.png', size: 3, dataUrl: 'data:image/png;base64,AQID' },
@@ -496,7 +650,7 @@ describe('image original preview lifetime', () => {
       await flush()
       page.props.refreshKey = 'save-broadcast'
       await vue.nextTick()
-      thumbnail.resolve('thumbnail:saved-100')
+      thumbnail.resolve({ data: 'thumbnail:saved-100', width: 128, height: 128 })
       await pending
       if (lateList) listing.resolve(listedRecords)
       await flush()

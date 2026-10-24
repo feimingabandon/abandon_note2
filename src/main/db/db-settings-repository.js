@@ -9,6 +9,11 @@ export function getAllSettings(windowName) {
     .all(windowName)
 }
 
+/** Keep related scope writes on the same connection and commit them together. */
+export function runSettingsTransaction(operation) {
+  return getDb().transaction(operation)()
+}
+
 /** Commit a related group of settings in one synchronous SQLite transaction. */
 export function setSettingsBatch(windowName, settings) {
   if (!Array.isArray(settings) || settings.length === 0) return

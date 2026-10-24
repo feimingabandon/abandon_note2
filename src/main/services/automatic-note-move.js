@@ -4,7 +4,7 @@ import { addCalendarDays, localDateKey } from '../../shared/calendar/calendar-da
 
 export const AUTOMATIC_NOTE_MOVE_CHECKED_DATE_KEY = 'auto_move_checked_date'
 
-/** 每天只检查昨天；移动和检查日期同一事务，开启开关时可主动再检查。 */
+/** 每天只检查昨天的非循环便签；移动和检查日期同一事务，开启开关时可主动再检查。 */
 export function runAutomaticNoteMove({ enabled, now = Date.now(), force = false } = {}) {
   if (!enabled) return { count: 0, skipped: true, reason: 'disabled' }
   const timestamp = Number(now)
@@ -36,7 +36,7 @@ export function runAutomaticNoteMove({ enabled, now = Date.now(), force = false 
         endDateKey: sourceDateKey,
         excludedNoteIds: []
       },
-      { now: timestamp, validateTargetDate: false }
+      { now: timestamp, validateTargetDate: false, excludeRecurring: true }
     )
     db.prepare(
       `INSERT INTO app_settings (window_name, type, key, value, created_at, updated_at)

@@ -3,6 +3,10 @@ export function createThumbnailCache({ maxBytes = 16 * 1024 * 1024, maxEntries =
   const values = new Map()
   let bytes = 0
   return {
+    clear() {
+      values.clear()
+      bytes = 0
+    },
     get(key) {
       const value = values.get(key)
       if (value === undefined) return undefined

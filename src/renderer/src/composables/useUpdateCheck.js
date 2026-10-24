@@ -9,27 +9,34 @@ export function useUpdateCheck({ policy = 'calendar', label, api = window.api })
   let startupTimer = null
   let minimumTimer = null
   let resolveMinimum = null
+  let activeCheck = null
   let disposed = false
 
-  async function checkForUpdates({ showResult = true } = {}) {
-    if (disposed || updateChecking.value) return
-    const display = policy === 'calendar' || showResult
-    const startedAt = performance.now()
-    updateChecking.value = true
-    if (display) showUpdateDialog.value = true
+  const isCurrent = (operation) => !disposed && activeCheck === operation
+
+  function requestDisplay(operation) {
+    operation.display = true
+    if (policy === 'list') operation.minimumUntil = performance.now() + 500
+    showUpdateDialog.value = true
+  }
+
+  async function runCheck(operation) {
     try {
       const result = await api.checkForUpdate()
-      if (disposed) return
+      if (!isCurrent(operation)) return
       updateResult.value = result
-      if (!display && result?.status === 'available') showUpdateDialog.value = true
+      if (!operation.display && result?.status === 'available') showUpdateDialog.value = true
     } catch (error) {
+      if (!isCurrent(operation)) return
       if (policy === 'list') console.error(`[${label}] 检查更新失败:`, error)
-      const appInfo = await api.getAppInfo().catch((infoError) => {
+      let appInfo = null
+      try {
+        appInfo = await api.getAppInfo()
+      } catch (infoError) {
         if (policy === 'list')
           console.warn(`[${label}] 更新检查失败后读取应用版本也失败:`, infoError)
-        return null
-      })
-      if (disposed) return
+      }
+      if (!isCurrent(operation)) return
       updateResult.value = {
         status: 'error',
         currentVersion: appInfo?.version || '未知',
@@ -40,21 +47,40 @@ export function useUpdateCheck({ policy = 'calendar', label, api = window.api })
         releaseLinks: null,
         error: `检查更新失败：${error.message}`
       }
-      if (display) showUpdateDialog.value = true
+      if (operation.display) showUpdateDialog.value = true
     } finally {
-      const remaining = 500 - (performance.now() - startedAt)
-      if (!disposed && policy === 'list' && display && remaining > 0) {
+      // A manual request can join a silent check or its minimum-display wait.
+      // Each click owns its own 500ms feedback boundary without restarting IPC.
+      while (isCurrent(operation) && operation.minimumUntil > performance.now()) {
         await new Promise((resolve) => {
           resolveMinimum = resolve
           minimumTimer = setTimeout(() => {
             minimumTimer = null
             resolveMinimum = null
             resolve()
-          }, remaining)
+          }, operation.minimumUntil - performance.now())
         })
       }
-      if (!disposed) updateChecking.value = false
+      if (isCurrent(operation)) {
+        activeCheck = null
+        updateChecking.value = false
+      }
     }
+  }
+
+  function checkForUpdates({ showResult = true } = {}) {
+    if (disposed) return Promise.resolve()
+    const display = policy === 'calendar' || showResult
+    if (activeCheck) {
+      if (display) requestDisplay(activeCheck)
+      return activeCheck.promise
+    }
+    const operation = { display: false, minimumUntil: 0, promise: null }
+    activeCheck = operation
+    updateChecking.value = true
+    if (display) requestDisplay(operation)
+    operation.promise = runCheck(operation)
+    return operation.promise
   }
 
   function scheduleStartup() {
@@ -67,6 +93,7 @@ export function useUpdateCheck({ policy = 'calendar', label, api = window.api })
 
   onUnmounted(() => {
     disposed = true
+    activeCheck = null
     clearTimeout(startupTimer)
     clearTimeout(minimumTimer)
     startupTimer = null

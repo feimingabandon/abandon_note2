@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
 import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
 
 const lifecycle = createElectronGuiResultLifecycle({
   app,
@@ -435,6 +436,11 @@ async function run() {
     )
     await until(() => js('!!window.api && !!document.querySelector(".app-scene")'), 'renderer')
     await until(() => globalThis.__ABANDON_WINDOW_TEST_HOOKS__?.getReminderService(), 'service')
+    // A real conflict notice can cover later reminder controls on a shared desktop.
+    // Defer it through the product button and handler before testing those controls.
+    const deferredShortcutNotice = await dismissStartupShortcutNotice(main)
+    assert.equal(await js('!!document.querySelector(".shortcut-conflict-notice")'), false)
+    report('startup shortcut notice preparation: deferred=' + deferredShortcutNotice)
     const service = globalThis.__ABANDON_WINDOW_TEST_HOOKS__.getReminderService()
     db = new Database(join(root, 'app.db'))
     const now = Date.now()

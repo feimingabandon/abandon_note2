@@ -32,6 +32,8 @@ struct Stroke {
   bool mosaicBrush = false;
   int brushSize = 32;
   QRect clipBounds;
+  // Gaussian gestures show a region guide until release; exports finalize it.
+  bool effectDraft = false;
   bool freehand() const;
   QRectF bounds() const;
   QTransform localTransform() const;
@@ -43,12 +45,16 @@ public:
   QVector<Stroke> redoStack;
   // Only the most recently created/redone object is editable (free-core model).
   int editable = -1;
+  // Fully composited pixels of commands older than the undo window. The base
+  // remains unchanged and is still the source restored by the eraser.
   QImage archivedLayer;
   QTransform transform;
   bool append(const Stroke &stroke, bool textDraft = false);
   void undo();
   void redo();
   QImage render(int hiddenStroke = -1) const;
+  qint64 gaussianWorkingCost(const Stroke &stroke) const;
+  bool cacheEffect(int index);
   void clear();
   ImageDocument cropped(QRect area) const;
   QTransform contentTransform() const;

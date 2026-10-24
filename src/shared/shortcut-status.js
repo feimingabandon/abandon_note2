@@ -1,9 +1,9 @@
 import { formatViewVisibilityShortcut } from './view-visibility-shortcut.js'
-import { CAPTURE_SHORTCUTS } from './capture-shortcuts.js'
+import { ACTION_SHORTCUTS } from './capture-shortcuts.js'
 
 const labels = {
   viewVisibility: '显示／隐藏当前视图',
-  ...Object.fromEntries(Object.entries(CAPTURE_SHORTCUTS).map(([key, value]) => [key, value.label]))
+  ...Object.fromEntries(Object.entries(ACTION_SHORTCUTS).map(([key, value]) => [key, value.label]))
 }
 
 export function unavailableShortcuts(runtime = {}) {

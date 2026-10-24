@@ -132,6 +132,7 @@ AnnotationEditor::AnnotationEditor(QWidget *parent,
       {"marker", QStringLiteral("荧光笔")},
       {"text", QStringLiteral("文字")},
       {"mosaic", QStringLiteral("马赛克")},
+      {"blur", QStringLiteral("高斯模糊")},
       {"eraser", QStringLiteral("橡皮擦")}};
   for (auto [id, label] : names) {
     auto a = new QAction(Capture::actionIcon(id), label, panel);
@@ -148,6 +149,8 @@ AnnotationEditor::AnnotationEditor(QWidget *parent,
       tip += QStringLiteral(" · 拖角缩放，圆柄旋转");
     if (id == "pen" || id == "marker" || id == "eraser" || id == "mosaic")
       tip += QStringLiteral(" · 连续拖动绘制，Alt 拖动当前笔画");
+    if (id == "blur")
+      tip += QStringLiteral(" · 框选区域，松开应用 · 滚轮调整强度");
     a->setToolTip(tip);
     tools->addAction(a);
     auto button = qobject_cast<QToolButton *>(toolbar->widgetForAction(a));
@@ -291,14 +294,22 @@ AnnotationEditor::AnnotationEditor(QWidget *parent,
   connect(this, &AnnotationEditor::actionRequested, this, [this](QString id) {
     if (id == "undo") {
       finishText();
+      if (auto stroke = current(); stroke && stroke->tool == "blur")
+        stroke->effectDraft = false;
+      before = {};
       gesture.clear();
       doc.undo();
       sync();
       emit changed();
     }
     if (id == "redo") {
-      complete();
+      if (!complete())
+        return;
       doc.redo();
+      if (auto stroke = current(); stroke && stroke->tool == "blur") {
+        stroke->effectDraft = stroke->effectPixels.isNull();
+        finishBlur();
+      }
       sync();
       emit changed();
     }
@@ -378,15 +389,13 @@ void AnnotationEditor::choose(QString name) {
   if (name == "polyline")
     name = "pen";
   closePopovers();
-  // Blur has no separate editor entry; old in-memory documents still render.
-  if (name == "blur")
-    name = "mosaic";
   if (tool != "select" && tool != "text")
     widths[tool] = lineWidth;
-  complete();
+  if (!complete())
+    return;
   tool = name;
   const int initial = name == "mosaic" || name == "eraser" ? 32
-                      : name == "marker"                   ? 12
+                      : name == "marker" || name == "blur" ? 12
                                                            : 3;
   if (name != "text")
     lineWidth = widths.value(name, initial);
@@ -413,17 +422,22 @@ void AnnotationEditor::sync() {
   for (auto a : tools->actions())
     a->setChecked(a->data() == tool);
   syncToolButtons();
+  size->setRange(1, tool == "blur" ? 32 : 200);
   size->setValue(tool == "text" ? fontSize : lineWidth);
   size->setPrefix(tool == "mosaic" || tool == "eraser" ? QStringLiteral("笔刷 ")
                   : tool == "text" ? QStringLiteral("字号 ")
+                  : tool == "blur" ? QStringLiteral("强度 ")
                                    : QStringLiteral("线宽 "));
   size->setFixedWidth(102);
   size->setAccessibleName(tool == "text" ? QStringLiteral("字号")
+                          : tool == "blur" ? QStringLiteral("高斯模糊强度")
                           : tool == "mosaic" || tool == "eraser"
                               ? QStringLiteral("笔刷大小")
                               : QStringLiteral("线宽"));
   size->setToolTip(tool == "mosaic" || tool == "eraser"
                        ? QStringLiteral("圆形笔刷直径 · 滚轮 / [、]")
+                   : tool == "blur"
+                       ? QStringLiteral("高斯模糊范围 · 滚轮 / [、]")
                        : QStringLiteral("线宽 / 字号 · 滚轮 / [、]"));
   sizeAction->setVisible(tool != "mosaic" || mosaicMode->currentIndex() == 0);
   mosaicBlock->setValue(blockSize);
@@ -477,12 +491,14 @@ void AnnotationEditor::loadPreferences() {
   fontSize = validSize("fontSize", fontSize);
   blockSize = std::max(2, validSize("width/mosaic", 12));
   for (QString name : {"rectangle", "ellipse", "line", "polyline", "arrow",
-                       "pen", "marker", "mosaic", "eraser"}) {
+                       "pen", "marker", "mosaic", "blur", "eraser"}) {
     const int initial = name == "mosaic" || name == "eraser" ? 32
-                        : name == "marker"                   ? 12
+                        : name == "marker" || name == "blur" ? 12
                                                              : 3;
     widths[name] = validSize(
         name == "mosaic" ? "brushSize/mosaic" : "width/" + name, initial);
+    if (name == "blur")
+      widths[name] = std::clamp(widths[name], 1, 32);
   }
 }
 void AnnotationEditor::savePreference(const QString &key,
@@ -505,6 +521,8 @@ void AnnotationEditor::applyParameters(const QString &parameter) {
     lineWidth = size->value();
   blockSize = mosaicBlock->value();
   if (auto stroke = current()) {
+    if (stroke->tool == "blur" && gesture.isEmpty())
+      before = *stroke;
     stroke->color = color;
     stroke->width = tool == "mosaic" ? blockSize : lineWidth;
     stroke->brushSize = lineWidth;
@@ -513,6 +531,11 @@ void AnnotationEditor::applyParameters(const QString &parameter) {
     stroke->rotation = angle->value();
     stroke->effectPixels = {};
     doc.redoStack.clear();
+  }
+  if (gesture.isEmpty() && !finishBlur()) {
+    sync();
+    emit changed();
+    return;
   }
   if (tool != "text" && tool != "select")
     widths[tool] = lineWidth;
@@ -555,6 +578,8 @@ QString AnnotationEditor::contextHint() const {
     text = mosaicMode->currentIndex() == 0
                ? QStringLiteral("连续涂抹 · 滚轮调整笔刷 · 颗粒大小独立调整")
                : QStringLiteral("拖动覆盖矩形区域 · 滚轮调整颗粒大小");
+  else if (tool == "blur")
+    text = QStringLiteral("框选区域，松开应用模糊 · 滚轮调整强度 · Alt 拖动区域");
   else if (tool == "eraser")
     text = QStringLiteral("连续擦除标注 · 滚轮调整笔刷范围");
   else if (tool == "pen" || tool == "marker")
@@ -606,6 +631,31 @@ bool AnnotationEditor::reserveEdit() {
     return false;
   }
   return true;
+}
+bool AnnotationEditor::finishBlur() {
+  auto stroke = current();
+  if (!stroke || stroke->tool != "blur" ||
+      (!stroke->effectDraft && !stroke->effectPixels.isNull()))
+    return true;
+  // The previous patch can still be shared by the rollback snapshot while the
+  // new region is calculated. Include it in the engine's shared pin budget.
+  const auto extra = doc.gaussianWorkingCost(*stroke) +
+                     before.effectPixels.sizeInBytes();
+  const bool hasBudget = (!allowAllocation || allowAllocation(extra)) &&
+                         doc.memoryCost() + extra <= Capture::MaxTotalBytes;
+  if (hasBudget && doc.cacheEffect(doc.editable)) {
+    before = {};
+    return true;
+  }
+  if (before.tool == "blur" && !before.effectPixels.isNull() && gesture != "draw")
+    *stroke = before;
+  else
+    stroke->effectDraft = true;
+  before = {};
+  emit notice(hasBudget
+                  ? QStringLiteral("未能应用此区域的模糊，请调整区域或按 Esc 取消")
+                  : QStringLiteral("此区域的模糊处理超出图像内存预算，请先关闭其他贴图或按 Esc 取消"));
+  return false;
 }
 void AnnotationEditor::adjustSize(int d) {
   if (tool == "mosaic" && mosaicMode->currentIndex() == 1)
@@ -740,6 +790,18 @@ void AnnotationEditor::trackPointer(QPointF local) {
   canvas->update();
 }
 void AnnotationEditor::paintHandles(QPainter &p) {
+  if (auto stroke = current(); stroke && stroke->tool == "blur" && stroke->effectDraft) {
+    p.save();
+    const auto bounds = displayTransform().mapRect(stroke->bounds().intersected(editBounds));
+    p.setBrush(Qt::NoBrush);
+    // A black/white drawing guide remains legible over any screenshot; it is
+    // display-only and never included in copied/saved/pinned image pixels.
+    p.setPen(QPen(Qt::black, 3, Qt::DashLine));
+    p.drawRect(bounds);
+    p.setPen(QPen(Qt::white, 1, Qt::DashLine));
+    p.drawRect(bounds);
+    p.restore();
+  }
   // Black/white paired outlines are drawing guides, readable over arbitrary
   // screenshot pixels; they are not themed component borders or export pixels.
   if (brushTool() && pointerVisible && gesture != "move") {
@@ -817,7 +879,7 @@ bool AnnotationEditor::press(QMouseEvent *e) {
   finishText();
   grip = -1;
 
-  if (auto s = current(); s && (!(s->freehand() || tool == "mosaic") ||
+  if (auto s = current(); s && (!(s->freehand() || tool == "mosaic" || tool == "blur") ||
                                 e->modifiers().testFlag(Qt::AltModifier))) {
     grip = handleAt(e->position());
     if (grip >= 0 || hitCurrent(pt)) {
@@ -832,9 +894,12 @@ bool AnnotationEditor::press(QMouseEvent *e) {
     return false;
   if (!reserveEdit())
     return true;
-  complete();
+  if (!complete())
+    return true;
+  before = {};
   Capture::Stroke s{tool, {pt, pt}, color, lineWidth, fontSize, {}};
   s.clipBounds = editBounds;
+  s.effectDraft = tool == "blur";
   if (tool == "mosaic") {
     s.mosaicBrush = mosaicMode->currentIndex() == 0;
     s.width = blockSize;
@@ -868,7 +933,7 @@ bool AnnotationEditor::move(QMouseEvent *e) {
     controlsVisible = false;
     if (auto s = current()) {
       if (hitCurrent(imagePoint(e->position())) &&
-          (!(s->freehand() || tool == "mosaic") ||
+          (!(s->freehand() || tool == "mosaic" || tool == "blur") ||
            e->modifiers().testFlag(Qt::AltModifier))) {
         cursor = Qt::SizeAllCursor;
         controlsVisible = true;
@@ -905,6 +970,7 @@ bool AnnotationEditor::move(QMouseEvent *e) {
 
   auto s = current();
   s->effectPixels = {};
+  s->effectDraft = s->tool == "blur";
   if (gesture == "rotate") {
     const auto center = before.bounds().center();
     const auto a = start - center, b = pt - center;
@@ -998,6 +1064,7 @@ bool AnnotationEditor::move(QMouseEvent *e) {
 bool AnnotationEditor::release(QMouseEvent *e) {
   if (e->button() != Qt::LeftButton || gesture.isEmpty())
     return false;
+  finishBlur();
   if (gesture != "polyline")
     gesture.clear();
   controlsVisible = false;
@@ -1099,17 +1166,21 @@ void AnnotationEditor::finishText() {
   emit changed();
 }
 
-void AnnotationEditor::complete() {
+bool AnnotationEditor::complete() {
   finishText();
+  if (!finishBlur())
+    return false;
   gesture.clear();
   controlsVisible = false;
   doc.editable = -1;
   sync();
   emit changed();
+  return true;
 }
 
 void AnnotationEditor::discard() {
   closeTextWidget();
+  before = {};
   composing = false;
   gesture.clear();
   if (hasCurrent())
@@ -1146,12 +1217,15 @@ bool AnnotationEditor::key(QKeyEvent *e) {
     if (e->key() == Qt::Key_Down)
       delta = {0, 1};
     if (!delta.isNull()) {
+      if (current()->tool == "blur")
+        before = *current();
       if (e->modifiers().testFlag(Qt::ShiftModifier))
         delta *= 10;
       for (auto &point : current()->points)
         point += delta;
       current()->effectPixels = {};
       doc.redoStack.clear();
+      finishBlur();
       emit changed();
       return true;
     }

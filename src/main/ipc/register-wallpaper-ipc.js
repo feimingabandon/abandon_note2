@@ -1,6 +1,11 @@
 /** Owns wallpaper transport; storage, settings ordering and compensation remain with the background coordinator. */
 export function registerWallpaperIpc({
   mainWindowIpc,
+  assertWriteSource = () => {},
+  assertDocumentSource,
+  wallpaperRetirement,
+  createSettingsOperation,
+  runMutation = (operation) => operation(),
   removeHandler,
   backgroundSettingsCoordinator,
   getWallpaperThumbnail,
@@ -26,16 +31,38 @@ export function registerWallpaperIpc({
     handle('wallpapers:get-data', (_event, { id, original = false }) =>
       getWallpaperDataUrl(id, { original })
     )
-    handle('wallpapers:save', (_event, payload) =>
-      backgroundSettingsCoordinator.saveWallpaper(payload || {})
-    )
-    handle('wallpapers:activate', (_event, payload) =>
-      backgroundSettingsCoordinator.activateWallpaper(payload)
-    )
-    handle('wallpapers:disable', () => backgroundSettingsCoordinator.disableWallpaper())
-    handle('wallpapers:delete', (_event, payload) =>
-      backgroundSettingsCoordinator.deleteWallpaper(payload)
-    )
+    handle('wallpapers:save', (event, payload, source) => {
+      assertWriteSource(event, source)
+      return runMutation(() => backgroundSettingsCoordinator.saveWallpaper(payload || {}))
+    })
+    handle('wallpapers:activate', (event, payload, source) => {
+      assertWriteSource(event, source)
+      const operation = createSettingsOperation?.(source)
+      return runMutation(() =>
+        operation
+          ? backgroundSettingsCoordinator.activateWallpaper(payload, operation)
+          : backgroundSettingsCoordinator.activateWallpaper(payload)
+      )
+    })
+    handle('wallpapers:disable', (event, source) => {
+      assertWriteSource(event, source)
+      const operation = createSettingsOperation?.(source)
+      return runMutation(() =>
+        operation
+          ? backgroundSettingsCoordinator.disableWallpaper(operation)
+          : backgroundSettingsCoordinator.disableWallpaper()
+      )
+    })
+    handle('wallpapers:delete', (event, payload, source) => {
+      assertWriteSource(event, source)
+      return runMutation(() => backgroundSettingsCoordinator.deleteWallpaper(payload))
+    })
+    handle('wallpapers:retirement-ack', (event, payload, source) => {
+      // Completion must stay available while a page-leave seal drains the
+      // original mutation. Document and ticket ownership still apply.
+      assertDocumentSource(event, source)
+      return wallpaperRetirement.acknowledge(event, payload, source)
+    })
     return dispose
   } catch (error) {
     dispose()

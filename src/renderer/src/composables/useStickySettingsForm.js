@@ -1,6 +1,6 @@
 import { ref, watch } from 'vue'
 
-const fontSizePresets = [12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
+const fontSizePresets = Array.from({ length: 17 }, (_, index) => 8 + index * 2)
 const colorPresets = [
   { label: '便签黄', value: '#fff2a8' },
   { label: '柔粉', value: '#ffd4e1' },

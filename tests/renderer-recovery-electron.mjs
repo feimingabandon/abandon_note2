@@ -36,6 +36,7 @@ using System.Runtime.InteropServices;
 public static class RecoveryWindowObservation {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr hwnd);
 }
 '@
 $recoveryMainHandle = [IntPtr]::new([long]${mainHandle})
@@ -46,6 +47,8 @@ $recoveryForeground = [RecoveryWindowObservation]::GetForegroundWindow()
   nativeSentinelHandle = $recoverySentinelHandle.ToInt64().ToString()
   nativeForeground = $recoveryForeground.ToInt64().ToString()
   nativeVisible = [RecoveryWindowObservation]::IsWindowVisible($recoveryMainHandle)
+  nativeSentinelVisible = [RecoveryWindowObservation]::IsWindowVisible($recoverySentinelHandle)
+  nativeSentinelEnabled = [RecoveryWindowObservation]::IsWindowEnabled($recoverySentinelHandle)
   nativeForegroundIsMain = $recoveryForeground -eq $recoveryMainHandle
   nativeForegroundIsSentinel = $recoverySentinelHandle -ne [IntPtr]::Zero -and $recoveryForeground -eq $recoverySentinelHandle
 } | ConvertTo-Json -Compress
@@ -60,6 +63,7 @@ $recoveryForeground = [RecoveryWindowObservation]::GetForegroundWindow()
 const readyCounts = new Map()
 const scenarios = []
 const visibility = []
+const sentinelEvents = []
 const presentationCalls = []
 const windowStates = []
 const cleanupStages = []
@@ -137,13 +141,43 @@ async function run() {
     current = window
     const handleOf = (target) =>
       target && !target.isDestroyed() ? target.getNativeWindowHandle().readBigUInt64LE(0) : 0n
+    const rendererState = (target) => {
+      if (!target || target.isDestroyed()) return null
+      const contents = target.webContents
+      const snapshot = {}
+      for (const [key, read] of Object.entries({
+        id: () => contents.id,
+        destroyed: () => contents.isDestroyed(),
+        crashed: () => contents.isCrashed(),
+        loading: () => contents.isLoading(),
+        url: () => contents.getURL(),
+        osProcessId: () => contents.getOSProcessId()
+      })) {
+        try {
+          snapshot[key] = read()
+        } catch (error) {
+          snapshot[key] = { observationError: error.message }
+        }
+      }
+      return snapshot
+    }
     const state = () => {
+      const destroyed = window.isDestroyed()
+      const sentinelDestroyed = sentinel ? sentinel.isDestroyed() : null
       return {
-        visible: window.isVisible(),
-        focused: window.isFocused(),
+        mainWindowId: window.id,
+        destroyed,
+        visible: !destroyed && window.isVisible(),
+        focused: !destroyed && window.isFocused(),
         electronFocusedWindowId: BrowserWindow.getFocusedWindow()?.id ?? null,
+        mainRenderer: rendererState(window),
         sentinelWindowId: sentinel?.id ?? null,
-        sentinelFocused: Boolean(sentinel && !sentinel.isDestroyed() && sentinel.isFocused())
+        sentinelDestroyed,
+        sentinelVisible: Boolean(sentinel && !sentinelDestroyed && sentinel.isVisible()),
+        sentinelEnabled: Boolean(sentinel && !sentinelDestroyed && sentinel.isEnabled()),
+        sentinelFocusable: Boolean(sentinel && !sentinelDestroyed && sentinel.isFocusable()),
+        sentinelFocused: Boolean(sentinel && !sentinelDestroyed && sentinel.isFocused()),
+        sentinelRenderer: rendererState(sentinel)
       }
     }
     const recordState = (phase) => {
@@ -169,7 +203,7 @@ async function run() {
     )
     for (const event of ['show', 'focus', 'hide', 'blur']) {
       const listener = () => {
-        if (observing) visibility.push({ event, at: Date.now() })
+        if (observing) visibility.push({ event, at: Date.now(), ...state() })
       }
       window.on(event, listener)
       observationListeners.push([window, event, listener])
@@ -250,6 +284,25 @@ async function run() {
       title: 'Renderer recovery foreground sentinel',
       webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true }
     })
+    for (const event of ['show', 'hide', 'focus', 'blur', 'closed']) {
+      const listener = () => {
+        if (observing) sentinelEvents.push({ event, at: Date.now(), ...state() })
+      }
+      sentinel.on(event, listener)
+      observationListeners.push([sentinel, event, listener])
+    }
+    const sentinelContents = sentinel.webContents
+    const sentinelRendererGone = (_event, details) => {
+      if (observing)
+        sentinelEvents.push({
+          event: 'render-process-gone',
+          at: Date.now(),
+          details,
+          ...state()
+        })
+    }
+    sentinelContents.on('render-process-gone', sentinelRendererGone)
+    observationListeners.push([sentinelContents, 'render-process-gone', sentinelRendererGone])
     await sentinel.loadURL(
       'data:text/html,<title>Recovery foreground sentinel</title>Foreground sentinel'
     )
@@ -263,6 +316,16 @@ async function run() {
     // Electron reports the sentinel focused. Preserve that actual foreground.
     // Never reassert focus after the crash: that would hide a product regression.
     const sentinelState = await recordNativeState('hidden-crash:foreground-baseline')
+    assert.equal(
+      sentinel.isVisible(),
+      true,
+      'foreground sentinel must be visible before the hidden crash'
+    )
+    assert.equal(
+      sentinelState.nativeSentinelVisible,
+      true,
+      'foreground sentinel must be visible to Windows before the hidden crash'
+    )
     assert.notEqual(sentinelState.nativeForeground, '0', 'a real foreground window is required')
     assert.equal(
       sentinelState.nativeForegroundIsMain,
@@ -304,13 +367,6 @@ async function run() {
       'hidden recovery must not reveal or focus the window'
     )
     scenarios.push('a real renderer crash keeps a tray-hidden window hidden')
-    sentinel.destroy()
-    sentinel = null
-    markCleanup('sentinel-destroyed', {
-      remainingWindowIds: BrowserWindow.getAllWindows().map((target) => target.id),
-      mainWindowId: window.id,
-      mainWindowDestroyed: window.isDestroyed()
-    })
 
     hooks.triggerTrayClick()
     await until(() => window.isVisible(), 'tray could not reopen the recovered window')
@@ -318,6 +374,56 @@ async function run() {
     assert.equal(hooks.getPresentationModeState().mode, 'compact')
     assert.equal(hooks.getDockRuntimeState().interactionSuspendCount, 1)
     assert.equal(await js(`window.api.beginCompactWindowDrag(${JSON.stringify(point())})`), true)
+    // Establish an actual foreground owner before reload; the first failure had
+    // destroyed the sentinel and only observed the main HWND after its user hide.
+    // Do not reassert sentinel focus after reload or hide.
+    recordState('compact-reload:sentinel-focus-before')
+    sentinel.focus()
+    recordState('compact-reload:sentinel-focus-returned')
+    try {
+      await until(
+        () => sentinel.isFocused() && !window.isFocused(),
+        'sentinel did not acquire Electron focus before the compact reload'
+      )
+    } catch (error) {
+      recordState('compact-reload:sentinel-focus-failed')
+      try {
+        await recordNativeState('compact-reload:sentinel-focus-failed-native')
+      } catch (nativeError) {
+        windowStates.push({
+          phase: 'compact-reload:sentinel-focus-failed-native-unavailable',
+          at: Date.now(),
+          ...state(),
+          nativeObservationError: {
+            message: nativeError.message,
+            code: nativeError.code,
+            stack: nativeError.stack
+          }
+        })
+      }
+      throw error
+    }
+    const compactForegroundBaseline = await recordNativeState('compact-reload:foreground-baseline')
+    assert.equal(
+      sentinel.isVisible(),
+      true,
+      'foreground sentinel must be visible before compact reload'
+    )
+    assert.equal(
+      compactForegroundBaseline.nativeSentinelVisible,
+      true,
+      'foreground sentinel must be visible to Windows before compact reload'
+    )
+    assert.notEqual(
+      compactForegroundBaseline.nativeForeground,
+      '0',
+      'a real foreground window is required before compact reload'
+    )
+    assert.equal(
+      compactForegroundBaseline.nativeForegroundIsMain,
+      false,
+      'compact main window must not own actual Windows foreground before reload'
+    )
     const compactReady = readyCounts.get(window.webContents.id)
     window.webContents.once('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
       if (mainFrame && !inPlace) window.close()
@@ -331,6 +437,11 @@ async function run() {
     assert.equal(compactState.nativeVisible, false)
     assert.equal(compactState.focused, false)
     assert.equal(compactState.nativeForegroundIsMain, false)
+    assert.equal(
+      compactState.nativeForeground,
+      compactForegroundBaseline.nativeForeground,
+      'compact reload changed the actual foreground window after the user hide'
+    )
     assert.deepEqual(
       presentationCalls.slice(compactCalls),
       [],
@@ -352,6 +463,13 @@ async function run() {
     scenarios.push(
       'manual compact reload releases its drag while preserving a later user hide and the mode pause'
     )
+    sentinel.destroy()
+    sentinel = null
+    markCleanup('sentinel-destroyed', {
+      remainingWindowIds: BrowserWindow.getAllWindows().map((target) => target.id),
+      mainWindowId: window.id,
+      mainWindowDestroyed: window.isDestroyed()
+    })
     completed = true
   } catch (error) {
     failure = error
@@ -361,6 +479,7 @@ async function run() {
     const summary = {
       scenarios,
       visibility,
+      sentinelEvents,
       presentationCalls,
       windowStates,
       readyCounts: Object.fromEntries(readyCounts)

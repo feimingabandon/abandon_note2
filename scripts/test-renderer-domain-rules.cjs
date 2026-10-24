@@ -152,6 +152,7 @@ const releaseRendererDomainRules = Object.freeze({
     'tests/note-three-view-rules-ui-electron.mjs'
   ],
   'src/renderer/src/components/system/SettingsPanel.vue': [
+    'tests/settings-panel-owners.test.js',
     'tests/settings-panel-density.test.js',
     'tests/titlebar-icon-scale-ui.test.js',
     'tests/view-visibility-shortcut-ui.test.js',
@@ -159,6 +160,17 @@ const releaseRendererDomainRules = Object.freeze({
     'tests/settings-queue-electron.mjs',
     'tests/date-context-controls-electron.mjs',
     'tests/weather-settings-electron.mjs'
+  ],
+  'src/renderer/src/composables/useHolidayDataSettings.js': [
+    'tests/settings-panel-owners.test.js',
+    'tests/settings-panel-owners-electron.mjs',
+    'tests/settings-queue-electron.mjs'
+  ],
+  'src/renderer/src/composables/useSettingsDiagnostics.js': [
+    'tests/settings-panel-density.test.js',
+    'tests/settings-panel-owners.test.js',
+    'tests/settings-panel-owners-electron.mjs',
+    'tests/settings-queue-electron.mjs'
   ],
   'src/renderer/src/components/system/settings/settings-form.css': [
     'tests/settings-queue-electron.mjs'
@@ -246,12 +258,18 @@ const releaseRendererDomainRules = Object.freeze({
     'tests/view-visibility-shortcut-ui.test.js',
     'tests/new-note-workflow-electron.mjs'
   ],
-  'src/renderer/src/components/list/NoteCard.vue': [
+  'src/renderer/src/components/note/NoteCard.vue': [
+    'tests/clipboard-and-selection.test.js',
+    'tests/image-only-note.test.js',
     'tests/note-remark.test.js',
+    'tests/note-text-color.test.js',
+    'tests/quick-note-edit.test.js',
     'tests/ui-interaction-standard.test.js',
     'tests/tag-color-setting.test.js',
+    'tests/tag-group-ordering-ui.test.js',
     'tests/date-context-controls-electron.mjs',
     'tests/quick-note-edit-electron.mjs',
+    'tests/note-list-refresh-electron.mjs',
     'tests/note-duration-electron.mjs'
   ],
   'src/renderer/src/components/list/NoteList.vue': [

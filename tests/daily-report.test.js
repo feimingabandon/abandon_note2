@@ -1,4 +1,9 @@
 import ExcelJS from 'exceljs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -52,6 +57,20 @@ function taggedQueryFixture() {
   mocks.queryCalendarNotes.mockReturnValue(notes)
   mocks.readTags.mockImplementation((...ids) => tagRows.filter((row) => ids.includes(row.note_id)))
   return notes
+}
+
+async function readWorkbookSheet(options) {
+  const { buffer } = await buildDailyReportExcel(options)
+  const workbook = new ExcelJS.Workbook()
+  await workbook.xlsx.load(buffer)
+  return workbook.getWorksheet('便签报表')
+}
+
+function floatingCellValue(sheet, reference) {
+  const value = sheet.getCell(reference).value
+  expect(value).toBeInstanceOf(Date)
+  // UTC fields describe the Excel floating clock, not the original stored instant.
+  return value.toISOString()
 }
 
 describe('daily report', () => {
@@ -289,6 +308,266 @@ describe('daily report', () => {
     expect(sheet.getRow(3).getCell(8).value).toBeInstanceOf(Date)
     expect(sheet.autoFilter).toBe('A1:I1')
   })
+
+  it('preserves local clock precision and a cross-year natural end date in Excel carriers', async () => {
+    const options = {
+      startDateKey: '2026-12-31',
+      endDateKey: '2027-01-01',
+      notes: [
+        {
+          id: 1,
+          content: '跨年仍保留本地钟面',
+          status: 'completed',
+          effective_at: new Date(2026, 11, 31, 23, 59, 58, 678).getTime(),
+          finished_at: new Date(2027, 0, 1, 0, 1, 2, 345).getTime(),
+          duration_kind: 'fixed_days',
+          duration_days: 2,
+          tags: []
+        }
+      ]
+    }
+    const sheet = await readWorkbookSheet(options)
+    expect(sheet.rowCount).toBe(2)
+    expect(floatingCellValue(sheet, 'E2')).toBe('2026-12-31T23:59:58.678Z')
+    expect(floatingCellValue(sheet, 'F2')).toBe('2027-01-01T00:00:00.000Z')
+    expect(floatingCellValue(sheet, 'H2')).toBe('2027-01-01T00:01:02.345Z')
+    expect(sheet.getCell('G2').value).toBe(2)
+    expect(sheet.getCell('E2').numFmt).toBe('yyyy-mm-dd hh:mm')
+    expect(sheet.getCell('F2').numFmt).toBe('yyyy-mm-dd')
+    expect(sheet.getCell('H2').numFmt).toBe('yyyy-mm-dd hh:mm')
+    expect(buildDailyReportText(options)).toContain('完成时间：2027-01-01 00:01')
+  })
+
+  it('keeps leap-day midnight and until-completed end dates on their natural days', async () => {
+    const sheet = await readWorkbookSheet({
+      startDateKey: '2028-02-28',
+      endDateKey: '2028-03-01',
+      notes: [
+        {
+          id: 1,
+          content: '闰日零点单日便签',
+          status: 'in_progress',
+          effective_at: new Date(2028, 1, 29, 0, 0).getTime(),
+          finished_at: new Date(2028, 2, 1, 1).getTime(),
+          duration_kind: 'single_day',
+          duration_days: 1
+        },
+        {
+          id: 2,
+          content: '跨闰日至完成',
+          status: 'completed',
+          effective_at: new Date(2028, 1, 28, 22, 30).getTime(),
+          finished_at: new Date(2028, 2, 1, 0, 5).getTime(),
+          duration_kind: 'until_completed',
+          duration_days: 1
+        }
+      ]
+    })
+    expect(sheet.rowCount).toBe(3)
+    expect(floatingCellValue(sheet, 'E2')).toBe('2028-02-29T00:00:00.000Z')
+    expect(floatingCellValue(sheet, 'F2')).toBe('2028-02-29T00:00:00.000Z')
+    expect(sheet.getCell('G2').value).toBe(1)
+    expect(sheet.getCell('H2').value).toBeNull()
+    expect(floatingCellValue(sheet, 'F3')).toBe('2028-03-01T00:00:00.000Z')
+    expect(floatingCellValue(sheet, 'H3')).toBe('2028-03-01T00:05:00.000Z')
+    expect(sheet.getCell('G3').value).toBe(3)
+  })
+
+  it.each([
+    ['missing', undefined],
+    ['null', null],
+    ['zero', 0],
+    ['negative', -1],
+    ['NaN', NaN],
+    ['infinite', Infinity],
+    ['negative infinite', -Infinity],
+    ['outside the valid Date range', 8_640_000_000_000_001],
+    ['nonnumeric', 'not-a-timestamp']
+  ])('keeps %s completion timestamps blank without adding rows', async (_label, finishedAt) => {
+    const sheet = await readWorkbookSheet({
+      dateKey: '2026-10-19',
+      notes: [
+        {
+          id: 1,
+          content: '保持未记录时间为空',
+          status: 'completed',
+          effective_at: new Date(2026, 9, 19, 9).getTime(),
+          finished_at: finishedAt,
+          duration_kind: 'single_day',
+          duration_days: 1
+        }
+      ]
+    })
+    expect(sheet.rowCount).toBe(2)
+    expect(floatingCellValue(sheet, 'E2')).toBe('2026-10-19T09:00:00.000Z')
+    expect(sheet.getCell('H2').value).toBeNull()
+  })
+
+  it('preserves the existing blank-cell rule for a zero effective timestamp', async () => {
+    const sheet = await readWorkbookSheet({
+      dateKey: '2026-10-19',
+      notes: [
+        {
+          id: 1,
+          content: '零时间值不导出为生效时刻',
+          status: 'in_progress',
+          effective_at: 0,
+          duration_kind: 'single_day',
+          duration_days: 1
+        }
+      ]
+    })
+    expect(sheet.rowCount).toBe(2)
+    expect(sheet.getCell('E2').value).toBeNull()
+    expect(sheet.getCell('H2').value).toBeNull()
+  })
+
+  it.each([NaN, Infinity, -Infinity, 8_640_000_000_000_001])(
+    'keeps rejecting a malformed effective timestamp %s through the calendar rules',
+    async (effectiveAt) => {
+      await expect(
+        buildDailyReportExcel({
+          dateKey: '2026-10-19',
+          notes: [
+            {
+              status: 'in_progress',
+              effective_at: effectiveAt,
+              duration_kind: 'single_day',
+              duration_days: 1
+            }
+          ]
+        })
+      ).rejects.toThrow('无效时间')
+    }
+  )
+
+  it('writes correct raw XLSX values in isolated Shanghai, UTC and New York processes', () => {
+    const evidenceBase = mkdtempSync(
+      join(process.env.ABANDON_TEST_EVIDENCE_DIR || tmpdir(), 'daily-report-timezone-')
+    )
+    const cwd = fileURLToPath(new URL('../', import.meta.url))
+    const references = ['E2', 'F2', 'H2', 'E3', 'F3', 'E4', 'F4', 'H4']
+    for (const [zone, offset] of [
+      ['Asia/Shanghai', -480],
+      ['UTC', 0],
+      ['America/New_York', 240]
+    ]) {
+      const output = join(evidenceBase, zone.replaceAll('/', '-'))
+      mkdirSync(output)
+      const args = ['tests/fixtures/daily-report-timezone.mjs', output]
+      const startedAt = Date.now()
+      const child = spawnSync(process.execPath, args, {
+        cwd,
+        env: { ...process.env, TZ: zone },
+        windowsHide: true,
+        timeout: 10000,
+        encoding: 'utf8',
+        maxBuffer: 4 * 1024 * 1024
+      })
+      writeFileSync(join(output, 'stdout.log'), child.stdout || '', { flag: 'wx' })
+      writeFileSync(join(output, 'stderr.log'), child.stderr || '', { flag: 'wx' })
+      writeFileSync(
+        join(output, 'process-result.json'),
+        JSON.stringify(
+          {
+            executable: process.execPath,
+            args,
+            cwd,
+            timezone: zone,
+            exitCode: child.status,
+            signal: child.signal,
+            elapsedMs: Date.now() - startedAt,
+            error: child.error ? { message: child.error.message, code: child.error.code } : null
+          },
+          null,
+          2
+        ),
+        { flag: 'wx' }
+      )
+      const context = `${zone}; evidence: ${output}`
+      expect(child.error, context).toBeUndefined()
+      expect(child.signal, context).toBeNull()
+      expect(child.status, context).toBe(0)
+      const resultPath = join(output, 'result.json')
+      expect(existsSync(resultPath), context).toBe(true)
+      const result = JSON.parse(readFileSync(resultPath, 'utf8'))
+      expect(result, context).toMatchObject({
+        timezone: zone,
+        offsetMinutes: offset,
+        completed: true,
+        failures: [],
+        truncatedCount: 0,
+        databaseOpened: false,
+        containerReader: { purpose: 'ZIP container only; no ExcelJS Date readback' }
+      })
+      expect(result.failures, context).toEqual([])
+      expect(
+        result.observations.map((cell) => cell.reference),
+        context
+      ).toEqual(references)
+      for (const cell of result.observations) {
+        expect(cell.type, `${context}; ${cell.reference}`).toBe('n')
+        expect(Number.isFinite(cell.actual), context).toBe(true)
+        expect(Number(cell.raw), context).toBe(cell.actual)
+        expect(cell.actual, `${context}; ${cell.reference}`).toBeCloseTo(cell.expected, 9)
+        expect(cell.format, `${context}; ${cell.reference}`).toBe(
+          cell.reference.startsWith('F') ? 'yyyy-mm-dd' : 'yyyy-mm-dd hh:mm'
+        )
+        expect(cell.matches, `${context}; ${cell.reference}`).toBe(true)
+      }
+      expect(
+        result.earlyDateObservations.map((cell) => cell.reference),
+        context
+      ).toEqual(['F2', 'F3', 'F4'])
+      expect(
+        result.earlyDateObservations.map((cell) => [cell.year, cell.month, cell.day]),
+        context
+      ).toEqual([
+        [1900, 1, 1],
+        [1900, 2, 28],
+        [1900, 3, 1]
+      ])
+      expect(
+        result.earlyDateObservations.map((cell) => cell.actual),
+        context
+      ).toEqual([1, 59, 61])
+      for (const cell of result.earlyDateObservations) {
+        expect(typeof cell.actual, `${context}; early ${cell.reference}`).toBe('number')
+        expect(cell.actual, `${context}; early ${cell.reference}`).toBe(cell.expected)
+        expect(cell.timestampBlank, `${context}; early ${cell.reference}`).toBe(true)
+        expect(cell.format, `${context}; early ${cell.reference}`).toBe('yyyy-mm-dd')
+        expect(cell.matches, `${context}; early ${cell.reference}`).toBe(true)
+      }
+      const maximumCompletion = result.maxCompletionObservation
+      const maximumCarrierValid = zone !== 'Asia/Shanghai'
+      expect(maximumCompletion, context).toMatchObject({
+        originalTimestamp: 8_640_000_000_000_000,
+        originalDateValid: true,
+        carrierValid: maximumCarrierValid,
+        blank: !maximumCarrierValid,
+        finiteNumeric: maximumCarrierValid,
+        matches: true
+      })
+      if (maximumCarrierValid) {
+        expect(typeof maximumCompletion.raw, context).toBe('string')
+        expect(Number.isFinite(Number(maximumCompletion.raw)), context).toBe(true)
+      } else {
+        expect(maximumCompletion.raw, context).toBeNull()
+      }
+      const values = Object.fromEntries(
+        result.observations.map((cell) => [cell.reference, cell.actual])
+      )
+      if (zone === 'Asia/Shanghai') {
+        expect(values.E2, context).toBe(46314.375)
+        expect(values.F2, context).toBe(46314)
+        expect(values.H2, context).toBeCloseTo(46314 + 632 / 1440, 9)
+      }
+      if (zone === 'America/New_York') {
+        expect(values.E4, context).toBeCloseTo(46327 + 90 / 1440, 9)
+        expect(values.H4, context).toBe(values.E4)
+      }
+    }
+  }, 20000)
 
   it('reports Excel cell truncation without adding extra note rows', async () => {
     const { buffer, truncatedCount } = await buildDailyReportExcel({

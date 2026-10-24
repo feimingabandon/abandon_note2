@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const NOTE_LIST_PATH = new URL('../src/renderer/src/components/list/NoteList.vue', import.meta.url)
-const NOTE_CARD_PATH = new URL('../src/renderer/src/components/list/NoteCard.vue', import.meta.url)
+const NOTE_CARD_PATH = new URL('../src/renderer/src/components/note/NoteCard.vue', import.meta.url)
 const TAG_EDITOR_PATH = new URL(
   '../src/renderer/src/components/ui/TagEditorForm.vue',
   import.meta.url

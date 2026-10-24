@@ -1,5 +1,6 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { applySettingsSnapshot } from '../utils/applySettingsSnapshot.js'
+import { getSettingsSnapshotStore } from '../utils/settingsSnapshots.js'
 import { retainModalBlur } from '../utils/modalBlur.js'
 import { createMessageProvider } from './useMessage.js'
 import { createQuickNoteEditSettingProvider } from './useQuickNoteEditSetting.js'
@@ -29,6 +30,7 @@ export function useWorkspaceRuntime({
   const quickNoteEditSetting = createQuickNoteEditSettingProvider()
   const tagColorSetting = createTagColorSettingProvider()
   const presentationMode = usePresentationMode()
+  const settingsSnapshots = getSettingsSnapshotStore(api)
   const locked = ref(defaults.window.lockState)
   const zOrderMode = ref(defaults.window.zOrderMode)
   const titlebarStyle = ref(defaults.appearance.titlebarStyle)
@@ -95,23 +97,27 @@ export function useWorkspaceRuntime({
   }
 
   onMounted(async () => {
+    subscriptions.push(
+      settingsSnapshots.subscribe((snapshot, { origin }) => {
+        if (disposed) return
+        applySnapshot(snapshot)
+        if (origin === 'broadcast') onSettingsChanged?.(snapshot)
+      })
+    )
     started = true
     await presentationMode.start()
     if (disposed) return
-    let snapshot
+    let fallback = null
     try {
-      snapshot = await api.getSettingsSnapshot()
+      await settingsSnapshots.read()
     } catch (error) {
-      snapshot = { values: defaults }
+      if (disposed) return
+      fallback = { values: defaults }
+      if (!settingsSnapshots.latest()) applySnapshot(fallback)
       console.warn(`[${label}] 读取设置快照失败，使用共享默认值:`, error)
     }
     if (disposed) return
-    applySnapshot(snapshot)
-    onInitialSnapshot?.(snapshot)
-    subscribe(api.onSettingsChanged, (next) => {
-      applySnapshot(next)
-      onSettingsChanged?.(next)
-    })
+    onInitialSnapshot?.(settingsSnapshots.latest() || fallback)
     if (onNotesChanged) subscribe(api.onNotesChanged, onNotesChanged)
     subscribe(api.onAppMessage, (payload) => {
       if (payload?.text)
@@ -146,7 +152,6 @@ export function useWorkspaceRuntime({
     locked,
     zOrderMode,
     titlebarStyle,
-    applySnapshot,
     markContentReady,
     retainBlur,
     releaseBlur

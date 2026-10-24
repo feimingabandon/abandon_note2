@@ -1,9 +1,11 @@
-import { mkdirSync, readdirSync } from 'node:fs'
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
+import { describeWeatherCode } from '../src/shared/weather-rules.js'
 
 const lifecycle = createElectronGuiResultLifecycle({
   app,
@@ -12,10 +14,17 @@ const lifecycle = createElectronGuiResultLifecycle({
   mode: 'electron-legacy-window-fixture',
   prefix: 'abandon-note-weather-settings-e2e-',
   timeoutMs: 150000,
-  metadata: { realWindows: true, legacyFixture: true }
+  metadata: {
+    realWindows: true,
+    legacyFixture: true,
+    forecastTransport: 'owned IPC response gate and explicit forecast broadcasts',
+    forecastScope:
+      'real built renderer/preload/settings across list/month/week; no live weather-service claim'
+  }
 })
 const { assert, root: testUserData } = lifecycle
 let activeTestWindow = null
+let forecastRead = () => null
 
 const WAIT_STEP_MS = 25
 const require = createRequire(import.meta.url)
@@ -100,8 +109,24 @@ async function runWeatherSettingsTest() {
   try {
     const listWindow = await waitUntil(getListWindow, '列表主窗口未启动', 10000)
     activeTestWindow = listWindow
+    // The isolated application still uses its real settings and preload. Replace
+    // only the forecast read boundary so renderer ownership can be exercised
+    // without live-network timing or a replacement product implementation.
+    ipcMain.removeHandler('weather:get-forecast')
+    ipcMain.handle('weather:get-forecast', (event) => {
+      if (event.sender !== listWindow.webContents || event.senderFrame !== event.sender.mainFrame)
+        throw new Error('Forecast fixture accepts only its owned main document')
+      return forecastRead()
+    })
+    ipcMain.removeHandler('weather:refresh-forecast')
+    ipcMain.handle('weather:refresh-forecast', (event) => {
+      if (event.sender !== listWindow.webContents || event.senderFrame !== event.sender.mainFrame)
+        throw new Error('Manual forecast fixture accepts only its owned main document')
+      return null
+    })
     await waitUntil(() => listWindow.isVisible(), '列表视图渲染就绪后没有显示')
     listWindow.setSize(445, 852)
+    await dismissStartupShortcutNotice(listWindow)
 
     await listWindow.webContents.executeJavaScript(
       `document.querySelector('.titlebar-btn-settings[title="设置"]').click()`
@@ -449,6 +474,7 @@ async function runWeatherSettingsTest() {
       ]
     )
     report('manual province-city-district selection persisted successfully')
+    await verifySharedForecastViews(listWindow)
   } catch (error) {
     failure = error
     report(error?.stack || error)
@@ -458,5 +484,154 @@ async function runWeatherSettingsTest() {
       error: failure,
       window: activeTestWindow
     })
+  }
+}
+
+async function verifySharedForecastViews(window) {
+  const js = (source) => window.webContents.executeJavaScript(source)
+  const locationA = {
+    name: '北京',
+    latitude: 39.9,
+    longitude: 116.4,
+    timezone: 'Asia/Shanghai',
+    countryCode: 'CN'
+  }
+  const locationB = {
+    name: '上海',
+    latitude: 31.2,
+    longitude: 121.5,
+    timezone: 'Asia/Shanghai',
+    countryCode: 'CN'
+  }
+  const date = await js("new Date().toLocaleDateString('sv-SE')")
+  const forecast = (location, min, max) => ({
+    location,
+    timezone: 'Asia/Shanghai',
+    fetchedAt: Date.now(),
+    days: [
+      { date, weatherCode: 0, ...describeWeatherCode(0), temperatureMin: min, temperatureMax: max }
+    ]
+  })
+  const readSummary = () => js("document.querySelector('.weather-brief')?.textContent || ''")
+  const setWeather = (id, value) =>
+    js(`window.api.setSettingValue(${JSON.stringify(id)},${JSON.stringify(value)})`)
+  const publish = async (value) => {
+    await js(`(() => {
+      window.__weatherProbeSeen = false;
+      const stop = window.api.onWeatherForecastUpdated(() => {
+        stop();
+        window.__weatherProbeSeen = true;
+      });
+    })()`)
+    window.webContents.send('weather:forecast-updated', value)
+    await waitUntil(() => js('window.__weatherProbeSeen'), 'forecast broadcast was not delivered')
+  }
+  const traces = []
+  try {
+    await js("document.querySelector('.settings-panel.active .panel-close-btn').click()")
+    await waitUntil(
+      () => js("!document.querySelector('.settings-panel')"),
+      'settings panel did not finish closing'
+    )
+    for (const mode of ['list', 'month', 'week']) {
+      if (mode !== 'list') {
+        const file = mode === 'month' ? '/month.html' : '/week.html'
+        await globalThis.__ABANDON_WINDOW_TEST_HOOKS__.switchMainViewFromTray(mode)
+        await waitUntil(
+          () =>
+            window.webContents.getURL().endsWith(file) &&
+            js("Boolean(document.querySelector('.month-workspace'))"),
+          `weather consumer ${mode} did not mount`
+        )
+      }
+      const trace = { mode }
+      traces.push(trace)
+      await setWeather('weather.enabled', false)
+      await setWeather('weather.location', locationA)
+      forecastRead = () => forecast(locationA, 11, 23)
+      await setWeather('weather.enabled', true)
+      await waitUntil(
+        async () => (await readSummary()).includes('11°～23°'),
+        `${mode}: A forecast missing`
+      )
+      trace.initial = await readSummary()
+      assert.match(trace.initial, /11°～23°/, `${mode}: real summary displays A`)
+      let resolveB
+      const pending = new Promise((resolve) => {
+        resolveB = resolve
+      })
+      let requestedB = false
+      forecastRead = () => {
+        requestedB = true
+        return pending
+      }
+      try {
+        await setWeather('weather.location', locationB)
+        await waitUntil(() => requestedB, `${mode}: B forecast request missing`)
+        trace.waiting = await readSummary()
+        assert.match(
+          trace.waiting,
+          /天气暂无数据/,
+          `${mode}: switching region immediately removes A`
+        )
+        await publish(forecast(locationA, 11, 23))
+        trace.oldBroadcast = await readSummary()
+        assert.match(trace.oldBroadcast, /天气暂无数据/, `${mode}: A broadcast cannot fill B`)
+        resolveB(forecast(locationB, 17, 29))
+        await waitUntil(
+          async () => (await readSummary()).includes('17°～29°'),
+          `${mode}: B forecast missing`
+        )
+        trace.current = await readSummary()
+        assert.match(trace.current, /17°～29°/, `${mode}: the matching B response displays`)
+        if (mode === 'list') {
+          await js('document.querySelector(\'.titlebar-btn-settings[title="设置"]\').click()')
+          await waitUntil(
+            () =>
+              js("Boolean(document.querySelector('.settings-panel.active .weather-refresh-btn'))"),
+            'manual weather action was not mounted'
+          )
+          await js("document.querySelector('.weather-refresh-btn').click()")
+          await waitUntil(
+            () =>
+              js(
+                "[...document.querySelectorAll('.msg-text')].some(el => el.textContent.includes('天气更新尚未完成'))"
+              ),
+            'a null manual reply was not reported as unfinished'
+          )
+          trace.manualNull = await js(`(() => {
+            const toast = [...document.querySelectorAll('.msg-toast')].find(el => el.textContent.includes('天气更新尚未完成'));
+            return {text: toast.querySelector('.msg-text').textContent, icon: toast.querySelector('.msg-icon').textContent.trim()};
+          })()`)
+          assert.deepEqual(trace.manualNull, { text: '天气更新尚未完成，请稍后重试', icon: '!' })
+          await waitUntil(
+            () => js("!document.querySelector('.weather-refresh-btn').disabled"),
+            'manual weather spinner did not settle'
+          )
+          await js("document.querySelector('.settings-panel.active .panel-close-btn').click()")
+          await waitUntil(
+            () => js("!document.querySelector('.settings-panel')"),
+            'settings did not close after manual refresh'
+          )
+        }
+        await setWeather('weather.enabled', false)
+        await publish(forecast(locationB, 17, 29))
+        trace.disabled = await readSummary()
+        assert.equal(
+          trace.disabled,
+          '',
+          `${mode}: a late broadcast cannot restore disabled weather`
+        )
+      } finally {
+        resolveB(null)
+        forecastRead = () => null
+      }
+    }
+  } finally {
+    writeFileSync(
+      join(process.env.ABANDON_TEST_EVIDENCE_DIR || testUserData, 'forecast-view-traces.json'),
+      JSON.stringify(traces, null, 2),
+      { flag: 'wx' }
+    )
   }
 }

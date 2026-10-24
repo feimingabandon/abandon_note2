@@ -33,7 +33,7 @@ export function normalizeFontSize(value) {
     fontSize < MIN_STICKY_FONT_SIZE ||
     fontSize > MAX_STICKY_FONT_SIZE
   ) {
-    throw new Error('字号必须是 12～32 之间的整数')
+    throw new Error(`字号必须是 ${MIN_STICKY_FONT_SIZE}～${MAX_STICKY_FONT_SIZE} 之间的整数`)
   }
   return fontSize
 }

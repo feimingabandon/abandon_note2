@@ -114,6 +114,42 @@ beforeEach(() => {
     runtimeCapabilities: { editingDraftSessionId: 'calendar-intent-test' },
     createNoteWithAssets: vi.fn(async () => ({ id: 1 }))
   }
+  const requests = new Map()
+  browserWindow.api.draftAssets = {
+    openOwner: vi.fn(
+      async (key, resume) =>
+        resume || {
+          sessionId: 'calendar-intent-test',
+          key,
+          ownerId: crypto.randomUUID(),
+          generation: 1
+        }
+    ),
+    discardOwner: vi.fn(async () => ({ cancelled: true, cleanupErrors: [] })),
+    submitNote: vi.fn(async (_owner, requestId, kind, payload) => {
+      expect(kind).toBe('create')
+      let receipt
+      try {
+        receipt = {
+          requestId,
+          status: 'committed',
+          result: await browserWindow.api.createNoteWithAssets(payload)
+        }
+      } catch (error) {
+        receipt = {
+          requestId,
+          status: 'failed',
+          error: { code: 'CREATE_FAILED', message: error.message }
+        }
+      }
+      requests.set(requestId, receipt)
+      return receipt
+    }),
+    noteState: vi.fn(
+      async (_owner, requestId) => requests.get(requestId) || { requestId, status: 'unknown' }
+    ),
+    waitNote: vi.fn(async (_owner, requestId) => requests.get(requestId))
+  }
   vi.stubGlobal('window', browserWindow)
   vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn() })
   vi.stubGlobal('localStorage', storage)
@@ -223,11 +259,20 @@ describe('calendar detailed creation keeps the entry time intention', () => {
     )
   })
 
-  it('keeps legacy draft date/time instead of guessing a newly immediate appointment', async () => {
+  it('keeps a recorded draft date/time when its data has no immediate intention', async () => {
     vi.setSystemTime(new Date('2026-10-15T00:00:10'))
     storage.setItem(
-      'abandon:editing-draft:v2:calendar-intent-test:new:calendar:2026-10-15',
+      'abandon:editing-draft:v3:calendar-intent-test:new:calendar:2026-10-15',
       JSON.stringify({
+        version: 3,
+        sessionId: 'calendar-intent-test',
+        key: 'new:calendar:2026-10-15',
+        owner: {
+          sessionId: 'calendar-intent-test',
+          key: 'new:calendar:2026-10-15',
+          ownerId: 'calendar-recorded-owner',
+          generation: 1
+        },
         data: { content: '旧预约草稿', time: '00:01', timeDirty: false }
       })
     )
@@ -259,8 +304,8 @@ describe('calendar detailed creation remark draft', () => {
     state.remark.value = '尚未填写正文的备注'
     await flush()
     expect(state.canCreate.value).toBe(false)
-    expect(window.__prepareEditingDrafts().dirty).toBe(true)
-    state.requestClose()
+    expect((await window.__prepareEditingDrafts()).dirty).toBe(true)
+    await state.requestClose()
     expect(state.discardVisible.value).toBe(true)
     await state.create()
     expect(browserWindow.api.createNoteWithAssets).not.toHaveBeenCalled()

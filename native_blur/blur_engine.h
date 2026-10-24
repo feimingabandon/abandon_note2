@@ -192,6 +192,19 @@ private:
     void CreateOverlayWindow(HWND parentHwnd);
 
     // ---- 线程数据 ----
+    struct ShutdownDiagnostic {
+        std::uint64_t generation = 0;
+        const char* status = "not-created";
+        bool threadExitConfirmed = false;
+        bool hasWaitResult = false;
+        DWORD waitResult = 0;
+        DWORD nativeCode = ERROR_SUCCESS;
+        bool abandoned = false;
+        bool modulePinned = false;
+        DWORD pinNativeCode = ERROR_SUCCESS;
+    };
+    mutable std::mutex m_shutdownMutex;
+    ShutdownDiagnostic m_shutdown;
     std::thread m_staThread;
     std::atomic<bool> m_running{ false };
     std::atomic<bool> m_threadAbandoned{ false };

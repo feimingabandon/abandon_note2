@@ -26,9 +26,13 @@ describe('sticky input validation', () => {
   })
 
   it('validates the temporary appearance values', () => {
+    expect(normalizeFontSize(8)).toBe(8)
     expect(normalizeFontSize(12)).toBe(12)
     expect(normalizeFontSize(13)).toBe(13)
     expect(normalizeFontSize(32)).toBe(32)
+    expect(normalizeFontSize(40)).toBe(40)
+    expect(() => normalizeFontSize(7)).toThrow('8～40')
+    expect(() => normalizeFontSize(41)).toThrow('8～40')
     expect(() => normalizeFontSize(12.5)).toThrow('整数')
     expect(normalizeBackgroundColor('#ffd4e1')).toBe('#FFD4E1')
     expect(() => normalizeBackgroundColor('red')).toThrow('无效')

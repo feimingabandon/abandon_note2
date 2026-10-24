@@ -13,6 +13,18 @@ import {
 } from './view-visibility-shortcut.js'
 import { COMPACT_WINDOW_LIMITS } from './window-compact-geometry.js'
 
+export const SETTING_SCOPES = Object.freeze({
+  APPLICATION: 'application',
+  VIEW: 'view',
+  SESSION: 'session'
+})
+export const SETTING_WRITE_CHANNELS = Object.freeze({
+  RENDERER: 'renderer',
+  SPECIALIZED: 'specialized',
+  MAIN: 'main',
+  NONE: 'none'
+})
+
 const VALID_NOTE_STATUSES = new Set(['initialized', 'in_progress', 'completed'])
 export const DOCK_EDGES = Object.freeze(['top', 'left', 'right'])
 export const DOCK_REVEAL_HANDLE_MODES = Object.freeze({
@@ -270,6 +282,8 @@ export function normalizeUiScale(value) {
 const definitions = [
   {
     id: 'appearance.uiScale',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['appearance', 'uiScale'],
     db: { type: 'appearance', key: 'ui_scale' },
     defaultValue: 1,
@@ -279,6 +293,8 @@ const definitions = [
   },
   {
     id: 'appearance.titlebarStyle',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['appearance', 'titlebarStyle'],
     db: { type: 'appearance', key: 'titlebar_style' },
     defaultValue: 'apple',
@@ -288,6 +304,8 @@ const definitions = [
   },
   {
     id: 'appearance.titlebarIconScale',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['appearance', 'titlebarIconScale'],
     db: { type: 'appearance', key: 'titlebar_icon_scale' },
     defaultValue: TITLEBAR_ICON_SCALE_LIMITS.defaultValue,
@@ -302,6 +320,8 @@ const definitions = [
   },
   {
     id: 'appearance.iconColor',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['appearance', 'iconColor'],
     db: { type: 'appearance', key: 'icon_color' },
     defaultValue: ICON_COLORS.BLACK,
@@ -311,6 +331,8 @@ const definitions = [
   },
   {
     id: 'shortcuts.enabled',
+    scope: SETTING_SCOPES.SESSION,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['shortcuts', 'enabled'],
     // Session state only. Ignore the persisted gate from older versions.
     defaultValue: true,
@@ -320,6 +342,8 @@ const definitions = [
   },
   {
     id: 'shortcuts.viewVisibility',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['shortcuts', 'viewVisibility'],
     db: { type: 'shortcuts', key: 'view_visibility' },
     defaultValue: VIEW_VISIBILITY_SHORTCUT_DEFAULT,
@@ -328,7 +352,20 @@ const definitions = [
     remark: '全视图共享的显示或隐藏当前视图快捷键'
   },
   {
+    id: 'shortcuts.newNote',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
+    path: ['shortcuts', 'newNote'],
+    db: { type: 'shortcuts', key: 'new_note' },
+    defaultValue: 'F3',
+    parse: normalizeViewVisibilityShortcut,
+    serialize: String,
+    remark: '唤起当前视图并打开新建便签的全局快捷键'
+  },
+  {
     id: 'shortcuts.screenshot',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['shortcuts', 'screenshot'],
     db: { type: 'shortcuts', key: 'screenshot' },
     defaultValue: 'F1',
@@ -338,6 +375,8 @@ const definitions = [
   },
   {
     id: 'shortcuts.screenshotCopy',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['shortcuts', 'screenshotCopy'],
     db: { type: 'shortcuts', key: 'screenshot_copy' },
     defaultValue: 'Control+F1',
@@ -347,6 +386,8 @@ const definitions = [
   },
   {
     id: 'css.bgColor',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['css', 'bgColor'],
     db: { type: 'css', key: 'bg_color' },
     defaultValue: '255 255 255',
@@ -356,6 +397,8 @@ const definitions = [
   },
   {
     id: 'css.popupOpacity',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['css', 'popupOpacity'],
     db: { type: 'css', key: 'win_opacity' },
     defaultValue: 0.2,
@@ -365,6 +408,8 @@ const definitions = [
   },
   {
     id: 'css.bgBlur',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['css', 'bgBlur'],
     db: { type: 'css', key: 'bg_blur' },
     defaultValue: 10,
@@ -374,6 +419,8 @@ const definitions = [
   },
   {
     id: 'css.windowOpacity',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['css', 'windowOpacity'],
     db: { type: 'css', key: 'window_opacity' },
     defaultValue: 0.3,
@@ -383,6 +430,8 @@ const definitions = [
   },
   {
     id: 'css.windowBorder',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['css', 'windowBorder'],
     db: { type: 'css', key: 'window_border_enabled' },
     defaultValue: false,
@@ -392,24 +441,30 @@ const definitions = [
   },
   {
     id: 'css.fontSizeBase',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['css', 'fontSizeBase'],
     db: { type: 'css', key: 'font_size_base' },
     defaultValue: 17,
-    parse: (value, fallback) => parseNumber(value, fallback, { min: 14, max: 28, integer: true }),
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 8, max: 40, integer: true }),
     serialize: String,
     remark: '基准字号（rem 单位数值）'
   },
   {
     id: 'css.noteRemarkFontSize',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['css', 'noteRemarkFontSize'],
     db: { type: 'css', key: 'note_remark_font_size' },
     defaultValue: 16,
-    parse: (value, fallback) => parseNumber(value, fallback, { min: 12, max: 28, integer: true }),
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 8, max: 40, integer: true }),
     serialize: String,
     remark: '便签卡片备注字号（rem 单位数值）'
   },
   {
     id: 'css.textColor',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['css', 'textColor'],
     db: { type: 'css', key: 'text_color' },
     defaultValue: '#1d1d1f',
@@ -419,6 +474,8 @@ const definitions = [
   },
   {
     id: 'blur.enabled',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['blur', 'enabled'],
     db: { type: 'system', key: 'blur_enabled' },
     defaultValue: true,
@@ -428,6 +485,8 @@ const definitions = [
   },
   {
     id: 'blur.radius',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['blur', 'radius'],
     db: { type: 'system', key: 'blur_radius' },
     defaultValue: 12,
@@ -437,6 +496,8 @@ const definitions = [
   },
   {
     id: 'blur.saturation',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['blur', 'saturation'],
     db: { type: 'system', key: 'blur_saturation' },
     defaultValue: 1.8,
@@ -446,6 +507,8 @@ const definitions = [
   },
   {
     id: 'blur.cornerRadius',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['blur', 'cornerRadius'],
     db: { type: 'system', key: 'blur_corner_radius' },
     defaultValue: 12,
@@ -455,6 +518,8 @@ const definitions = [
   },
   {
     id: 'wallpaper.enabled',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['wallpaper', 'enabled'],
     db: { type: 'wallpaper', key: 'wallpaper_enabled' },
     defaultValue: false,
@@ -464,6 +529,8 @@ const definitions = [
   },
   {
     id: 'wallpaper.activeId',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['wallpaper', 'activeId'],
     db: { type: 'wallpaper', key: 'active_wallpaper_id' },
     defaultValue: null,
@@ -473,6 +540,8 @@ const definitions = [
   },
   {
     id: 'wallpaper.blurRadius',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['wallpaper', 'blurRadius'],
     db: { type: 'wallpaper', key: 'wallpaper_blur_radius' },
     defaultValue: 8,
@@ -482,6 +551,8 @@ const definitions = [
   },
   {
     id: 'ui.settingsPanelSize',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['ui', 'settingsPanelSize'],
     db: { type: 'ui', key: 'settings_panel_size' },
     defaultValue: 70,
@@ -491,6 +562,8 @@ const definitions = [
   },
   {
     id: 'ui.dayPanelSize',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['ui', 'dayPanelSize'],
     db: { type: 'ui', key: 'day_panel_size' },
     defaultValue: 25,
@@ -500,6 +573,8 @@ const definitions = [
   },
   {
     id: 'calendar.recurringPreviewEnabled',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['calendar', 'recurringPreviewEnabled'],
     db: { type: 'calendar', key: 'recurring_preview_enabled' },
     defaultValue: false,
@@ -509,6 +584,8 @@ const definitions = [
   },
   {
     id: 'listAppearance.minimalMode',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['listAppearance', 'minimalMode'],
     db: { type: 'notes', key: 'minimal_mode' },
     defaultValue: false,
@@ -518,6 +595,8 @@ const definitions = [
   },
   {
     id: 'notes.quickCreateUntilCompleted',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['notes', 'quickCreateUntilCompleted'],
     db: { type: 'notes', key: 'quick_create_until_completed' },
     defaultValue: false,
@@ -527,6 +606,8 @@ const definitions = [
   },
   {
     id: 'notes.autoMoveToToday',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['notes', 'autoMoveToToday'],
     db: { type: 'notes', key: 'auto_move_to_today' },
     defaultValue: false,
@@ -536,6 +617,8 @@ const definitions = [
   },
   {
     id: 'notes.tagColorEnabled',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['notes', 'tagColorEnabled'],
     db: { type: 'notes', key: 'tag_color_enabled' },
     defaultValue: true,
@@ -545,6 +628,8 @@ const definitions = [
   },
   {
     id: 'interaction.doubleClickQuickEdit',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['interaction', 'doubleClickQuickEdit'],
     db: { type: 'interaction', key: 'double_click_quick_edit' },
     defaultValue: true,
@@ -554,6 +639,8 @@ const definitions = [
   },
   {
     id: 'interaction.hideMainViewDuringScreenshot',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['interaction', 'hideMainViewDuringScreenshot'],
     db: { type: 'interaction', key: 'hide_main_view_during_screenshot' },
     defaultValue: false,
@@ -563,6 +650,8 @@ const definitions = [
   },
   {
     id: 'window.lockState',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['window', 'lockState'],
     db: { type: 'system', key: 'lock_state' },
     defaultValue: false,
@@ -572,6 +661,8 @@ const definitions = [
   },
   {
     id: 'window.zOrderMode',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['window', 'zOrderMode'],
     db: { type: 'system', key: 'z_order_mode' },
     defaultValue: WINDOW_Z_ORDER_MODES.TOP,
@@ -581,6 +672,8 @@ const definitions = [
   },
   {
     id: 'window.compactWidth',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['window', 'compactWidth'],
     db: { type: 'presentation', key: 'compact_width' },
     defaultValue: COMPACT_WINDOW_LIMITS.defaultWidth,
@@ -595,6 +688,8 @@ const definitions = [
   },
   {
     id: 'window.compactHeight',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['window', 'compactHeight'],
     db: { type: 'presentation', key: 'compact_height' },
     defaultValue: COMPACT_WINDOW_LIMITS.defaultHeight,
@@ -609,15 +704,19 @@ const definitions = [
   },
   {
     id: 'window.compactFontSize',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['window', 'compactFontSize'],
     db: { type: 'presentation', key: 'compact_font_size' },
     defaultValue: 17,
-    parse: (value, fallback) => parseNumber(value, fallback, { min: 12, max: 28, integer: true }),
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 8, max: 40, integer: true }),
     serialize: String,
-    remark: '灵动岛便签文字字号（12~28px）'
+    remark: '灵动岛便签文字字号（8~40px）'
   },
   {
     id: 'dock.revealHandleMode',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['dock', 'revealHandleMode'],
     db: { type: 'dock', key: 'dock_reveal_handle_enabled' },
     defaultValue: DOCK_REVEAL_HANDLE_MODES.DIRECT,
@@ -627,6 +726,8 @@ const definitions = [
   },
   {
     id: 'dock.enabledEdges',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.SPECIALIZED,
     path: ['dock', 'enabledEdges'],
     db: { type: 'dock', key: 'dock_enabled_edges' },
     // 各视图兼容默认值由 buildDefaults 注入；直接序列化非法输入时回退为空，
@@ -638,15 +739,19 @@ const definitions = [
   },
   {
     id: 'sticky.fontSize',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['sticky', 'fontSize'],
     db: { type: 'sticky', key: 'sticky_font_size' },
     defaultValue: 16,
-    parse: (value, fallback) => parseNumber(value, fallback, { min: 12, max: 32, integer: true }),
+    parse: (value, fallback) => parseNumber(value, fallback, { min: 8, max: 40, integer: true }),
     serialize: String,
-    remark: '新建便利贴默认字号（12~32px）'
+    remark: '新建便利贴默认字号（8~40px）'
   },
   {
     id: 'sticky.backgroundColor',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['sticky', 'backgroundColor'],
     db: { type: 'sticky', key: 'sticky_background_color' },
     defaultValue: '#fff2a8',
@@ -656,6 +761,8 @@ const definitions = [
   },
   {
     id: 'sticky.cornerRadius',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['sticky', 'cornerRadius'],
     db: { type: 'sticky', key: 'sticky_corner_radius' },
     defaultValue: 0,
@@ -665,6 +772,8 @@ const definitions = [
   },
   {
     id: 'sticky.alwaysOnTop',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['sticky', 'alwaysOnTop'],
     db: { type: 'sticky', key: 'sticky_always_on_top' },
     defaultValue: true,
@@ -674,6 +783,8 @@ const definitions = [
   },
   {
     id: 'almanac.enabled',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['almanac', 'enabled'],
     // app_settings 的唯一键不包含 type，不能复用 weather 的 enabled。
     db: { type: 'almanac', key: 'almanac_enabled' },
@@ -684,6 +795,8 @@ const definitions = [
   },
   {
     id: 'weather.enabled',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['weather', 'enabled'],
     db: { type: 'weather', key: 'enabled' },
     defaultValue: false,
@@ -693,6 +806,8 @@ const definitions = [
   },
   {
     id: 'weather.location',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['weather', 'location'],
     db: { type: 'weather', key: 'location' },
     defaultValue: null,
@@ -702,6 +817,8 @@ const definitions = [
   },
   {
     id: 'remote.receiveNotices',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['remote', 'receiveNotices'],
     db: { type: 'remote', key: 'receive_notices' },
     defaultValue: true,
@@ -711,6 +828,8 @@ const definitions = [
   },
   {
     id: 'remote.uploadDeviceInfo',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['remote', 'uploadDeviceInfo'],
     db: { type: 'remote', key: 'upload_device_info' },
     defaultValue: true,
@@ -720,6 +839,8 @@ const definitions = [
   },
   {
     id: 'onboarding.noticeVersion',
+    scope: SETTING_SCOPES.APPLICATION,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['onboarding', 'noticeVersion'],
     db: { type: 'onboarding', key: 'first_use_notice_version' },
     defaultValue: 0,
@@ -729,6 +850,8 @@ const definitions = [
   },
   {
     id: 'listFilter',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.RENDERER,
     path: ['listFilter'],
     db: { type: 'filter', key: 'list_filter' },
     defaultValue: DEFAULT_LIST_FILTER,
@@ -738,6 +861,8 @@ const definitions = [
   },
   {
     id: 'geometry.posX',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.MAIN,
     path: ['geometry', 'posX'],
     db: { type: 'geometry', key: 'pos_x' },
     defaultValue: null,
@@ -747,6 +872,8 @@ const definitions = [
   },
   {
     id: 'geometry.posY',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.MAIN,
     path: ['geometry', 'posY'],
     db: { type: 'geometry', key: 'pos_y' },
     defaultValue: null,
@@ -756,6 +883,8 @@ const definitions = [
   },
   {
     id: 'geometry.width',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.MAIN,
     path: ['geometry', 'width'],
     db: { type: 'geometry', key: 'width' },
     defaultValue: null,
@@ -765,6 +894,8 @@ const definitions = [
   },
   {
     id: 'geometry.height',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.MAIN,
     path: ['geometry', 'height'],
     db: { type: 'geometry', key: 'height' },
     defaultValue: null,
@@ -774,6 +905,8 @@ const definitions = [
   },
   {
     id: 'geometry.widthRatio',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.NONE,
     path: ['geometry', 'widthRatio'],
     db: null,
     defaultValue: 0.25,
@@ -783,6 +916,8 @@ const definitions = [
   },
   {
     id: 'geometry.heightRatio',
+    scope: SETTING_SCOPES.VIEW,
+    writeChannel: SETTING_WRITE_CHANNELS.NONE,
     path: ['geometry', 'heightRatio'],
     db: null,
     defaultValue: 0.9,
@@ -793,6 +928,18 @@ const definitions = [
 ]
 
 export const SETTING_DEFINITIONS = deepFreeze(definitions)
+
+export const APPLICATION_SETTING_DEFINITIONS = Object.freeze(
+  SETTING_DEFINITIONS.filter((definition) => definition.scope === SETTING_SCOPES.APPLICATION)
+)
+export const APPLICATION_SETTING_IDS = Object.freeze(
+  APPLICATION_SETTING_DEFINITIONS.map((definition) => definition.id)
+)
+export const RENDERER_WRITABLE_SETTING_IDS = Object.freeze(
+  SETTING_DEFINITIONS.filter(
+    (definition) => definition.writeChannel === SETTING_WRITE_CHANNELS.RENDERER
+  ).map((definition) => definition.id)
+)
 
 const definitionById = new Map(SETTING_DEFINITIONS.map((definition) => [definition.id, definition]))
 
@@ -808,6 +955,21 @@ function setAtPath(target, path, value) {
 
 function getAtPath(target, path) {
   return path.reduce((cursor, segment) => cursor?.[segment], target)
+}
+
+/** Copy only defined application paths; null remains an explicit value. */
+export function applyApplicationSettings(target, applicationValues) {
+  const next = cloneValue(target)
+  for (const definition of APPLICATION_SETTING_DEFINITIONS) {
+    const value = getAtPath(applicationValues, definition.path)
+    if (value !== undefined) setAtPath(next, definition.path, cloneValue(value))
+  }
+  return next
+}
+
+/** Return an independent application-only shape without parsing or defaults. */
+export function projectApplicationSettings(values) {
+  return applyApplicationSettings({}, values)
 }
 
 function buildDefaults(viewMode = VIEW_MODES.LIST) {

@@ -16,12 +16,13 @@ describe('editing draft launch session', () => {
     expect(preload).toContain('editingDraftSessionId')
   })
 
-  it('names drafts by launch session and removes records from older launches', () => {
+  it('names metadata journals by launch session and only cleans recognized v3 records', () => {
     const drafts = read('src/renderer/src/composables/useDraftProtection.js')
-
-    expect(drafts).toContain('const PREFIX = `${DRAFT_PREFIX}v2:${sessionId}:`')
-    expect(drafts).toContain('key.startsWith(DRAFT_PREFIX) && !key.startsWith(PREFIX)')
-    expect(drafts).toContain('localStorage.removeItem(key)')
+    const assets = read('src/renderer/src/utils/draftAssets.js')
+    expect(drafts).toContain('const PREFIX = `${EDITING_DRAFT_PREFIX}v3:${sessionId}:`')
+    expect(drafts).toContain('removePreviousDraftSessions(localStorage, sessionId)')
+    expect(assets).toContain('parseDraftJournal(JSON.stringify(value), value.sessionId, value.key)')
+    expect(assets).not.toContain('!key.startsWith(PREFIX)')
     expect(drafts).toContain('localStorage.setItem(')
   })
 })

@@ -1,6 +1,6 @@
 <script setup>
 import BaseButton from '../ui/BaseButton.vue'
-import { useDraftProtection } from '../../composables/useDraftProtection.js'
+import { editingDataGeneration, useDraftProtection } from '../../composables/useDraftProtection.js'
 import { useNewNotePreferences } from '../../composables/useNewNotePreferences.js'
 import { useNoteStateDraft } from '../../composables/useNoteStateDraft.js'
 /**
@@ -8,7 +8,7 @@ import { useNoteStateDraft } from '../../composables/useNoteStateDraft.js'
  *
  * 职责：
  *   1. 收集用户输入的表单字段（正文/备注/标签/生效时间/图片/通知/置顶）
- *   2. 调用 window.api.createNote 创建便签
+ *   2. 通过固定草稿提交端口创建便签
  *   3. 创建成功后重置表单并 emit('create') 通知父组件
  *
  * 不负责：面板标题栏、面板高度拖拽（由 ActionBar 统一管理）
@@ -50,6 +50,9 @@ const ENTER_TOTAL_WINDOW = 520
 let enterRaf = null
 let entranceSeq = 0
 let entranceAnimations = []
+let disposed = false
+const dataGeneration = editingDataGeneration.value
+const currentDraft = () => !disposed && dataGeneration === editingDataGeneration.value
 
 function entranceItems() {
   const bodyItems = entranceBodyRef.value ? Array.from(entranceBodyRef.value.children) : []
@@ -135,6 +138,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  disposed = true
   cancelEntranceAnimations()
 })
 
@@ -150,11 +154,12 @@ const { durationKind, durationDays, tagIds, reminderChannels, isPinned, statusCh
 const finishedAt = ref('') // 空值始终表示本次保存时完成，而不是上次完成的时间戳。
 const cleanEffectiveAt = ref('')
 const cleanFinishedAt = ref('')
-const submitState = ref('idle') // idle | creating
+const submitState = ref('idle') // idle | creating | querying
 /** ScreenshotPicker 组件引用 */
 const imagePickerRef = ref(null)
 const draftImageCount = ref(0)
 const attachmentsBusy = ref(false)
+const captureReceipts = ref([])
 
 // ---- 联动逻辑 ----
 const effectiveTimestamp = computed(() =>
@@ -174,11 +179,15 @@ const {
 } = useNoteStateDraft({ effectiveTimestamp, statusChoice, finishedAt })
 const canCreate = computed(() => Boolean(content.value.trim()) || draftImageCount.value > 0)
 const submitLabel = computed(() => {
+  if (submitState.value === 'querying') return '查询中…'
   if (submitState.value === 'creating') return '创建中…'
+  if (commitLocked.value) return '查询创建结果'
   if (attachmentsBusy.value) return '图片处理中…'
   return '创建便签'
 })
-const submitEmpty = computed(() => submitState.value === 'idle' && !canCreate.value)
+const submitEmpty = computed(
+  () => submitState.value === 'idle' && !commitLocked.value && !canCreate.value
+)
 
 function dateAtDefaultScheduleTime(dayOffset = 0) {
   const date = new Date()
@@ -200,7 +209,7 @@ const dateShortcuts = [
 // ============================================================
 // 创建便签
 // ============================================================
-function resetForm() {
+async function resetForm() {
   content.value = ''
   remark.value = ''
   contentColorRanges.value = []
@@ -208,11 +217,29 @@ function resetForm() {
   // "complete on save" remain empty intentions, resolved anew on each submit.
   cleanEffectiveAt.value = effectiveAt.value
   cleanFinishedAt.value = finishedAt.value
-  imagePickerRef.value?.clearImages()
+  captureReceipts.value = []
+  await imagePickerRef.value?.clearImages()
 }
 
 async function handleCreate() {
-  if (attachmentsBusy.value) return
+  if (attachmentsBusy.value || submitState.value !== 'idle') return
+  if (commitLocked.value) {
+    submitState.value = 'querying'
+    try {
+      await protectedDraft.commitNote('create', {})
+    } catch (error) {
+      if (currentDraft()) showMessage('error', error.message || '创建结果尚未确认，请查询原请求')
+    } finally {
+      submitState.value = 'idle'
+    }
+    return
+  }
+  const prepared = await protectedDraft.flush()
+  if (!currentDraft() || attachmentsBusy.value || submitState.value !== 'idle') return
+  if (!prepared.persisted) {
+    showMessage('warning', '请先确认草稿暂存完成后再保存便签')
+    return
+  }
   const text = content.value
 
   if (!canCreate.value) {
@@ -232,8 +259,6 @@ async function handleCreate() {
     showMessage('warning', error.message || '请核对状态与时间')
     return
   }
-  const historicalBackfill = isHistoricalBackfill.value
-
   if (submitState.value !== 'idle') return
   submitState.value = 'creating'
 
@@ -249,33 +274,14 @@ async function handleCreate() {
     }
     Object.assign(options, stateFields)
     const imgs = imagePickerRef.value?.getImages() || []
-    // 检查 API 是否存在
-    if (typeof window.api.createNoteWithAssets !== 'function') {
-      throw new Error('接口未就绪，请完全重启应用（npm run dev）')
-    }
-
-    const created = await window.api.createNoteWithAssets({
+    const created = await protectedDraft.commitNote('create', {
       options,
       images: imgs,
       tagIds: [...tagIds.value]
     })
     if (!created?.id) throw new Error('创建接口未返回便签')
-
-    protectedDraft.clear()
-    resetForm()
-    protectedDraft.resume()
-    submitState.value = 'idle'
-    emit('create')
-    showMessage(
-      'success',
-      historicalBackfill ? '历史便签补录成功，已按生效日期归档' : '便签创建成功'
-    )
-    await nextTick()
-    if (props.active)
-      requestAnimationFrame(() => {
-        if (props.active && submitState.value === 'idle') focusTextareaAtTop()
-      })
   } catch (e) {
+    if (!currentDraft()) return
     console.error('[NewNotePanel] 创建便签失败:', e)
     showMessage('error', e.message || '创建失败，请重试')
     submitState.value = 'idle'
@@ -298,7 +304,8 @@ const protectedDraft = useDraftProtection({
     durationDays,
     reminderChannels,
     isPinned,
-    tagIds
+    tagIds,
+    captureReceipts
   },
   dirty: () =>
     !!content.value ||
@@ -306,21 +313,87 @@ const protectedDraft = useDraftProtection({
     effectiveAt.value !== cleanEffectiveAt.value ||
     finishedAt.value !== cleanFinishedAt.value ||
     (imagePickerRef.value?.getImages().length || 0) > 0,
-  busy: () => submitState.value === 'creating' || attachmentsBusy.value,
+  busy: () => submitState.value !== 'idle' || attachmentsBusy.value,
   extra: () => ({ attachments: imagePickerRef.value?.getDraftChanges() }),
-  restoreExtra: (data) => imagePickerRef.value?.restoreDraft(data.attachments)
+  restoreExtra: (data) => imagePickerRef.value?.restoreDraft(data.attachments),
+  resumeAfterCommit: true,
+  onCommitted: async (_created, { recovered }) => {
+    if (!currentDraft()) return
+    const historicalBackfill = isHistoricalBackfill.value
+    await resetForm()
+    if (!currentDraft()) return
+    submitState.value = 'idle'
+    emit('create')
+    showMessage(
+      'success',
+      recovered
+        ? '已确认上次便签创建成功'
+        : historicalBackfill
+          ? '历史便签补录成功，已按生效日期归档'
+          : '便签创建成功'
+    )
+    await nextTick()
+    if (currentDraft() && props.active)
+      requestAnimationFrame(() => {
+        if (currentDraft() && props.active && submitState.value === 'idle') focusTextareaAtTop()
+      })
+  }
 })
+const commitLocked = computed(() => protectedDraft.commitLocked.value)
+function hasCapture({ sessionId, deliveryId }) {
+  const images = imagePickerRef.value?.getImages() || []
+  return (Array.isArray(captureReceipts.value) ? captureReceipts.value : []).some(
+    (receipt) =>
+      receipt.sessionId === sessionId &&
+      receipt.deliveryId === deliveryId &&
+      images.some((image) => image.assetId === receipt.assetId)
+  )
+}
+async function addCapture(asset) {
+  const generation = editingDataGeneration.value
+  const current = () => currentDraft() && generation === editingDataGeneration.value
+  const prepared = await protectedDraft.flush()
+  if (!current() || commitLocked.value || !prepared.persisted) return false
+  if (!hasCapture(asset)) {
+    const added = await imagePickerRef.value?.addCapture(asset, {
+      onStaged: (metadata) => {
+        if (!current()) throw new Error('截图接收草稿已失效')
+        captureReceipts.value.push({
+          sessionId: asset.sessionId,
+          deliveryId: asset.deliveryId,
+          assetId: metadata.assetId
+        })
+      }
+    })
+    if (!added || !current()) return false
+  }
+  const state = await protectedDraft.flush()
+  return current() && state.persisted === true
+}
 defineExpose({
-  addCapture: (asset) => imagePickerRef.value?.addCapture(asset),
+  focus: focusTextareaAtTop,
+  addCapture,
+  hasCapture,
   draftState: () => protectedDraft.flush(),
-  discard: () => protectedDraft.clear()
+  discard: async () => {
+    if (commitLocked.value) {
+      showMessage('warning', '创建结果尚未确认，请先查询原请求')
+      return false
+    }
+    await protectedDraft.clear()
+    return true
+  }
 })
 </script>
 
 <template>
   <div class="nnp-root">
     <!-- 可滚动表单区域 -->
-    <div ref="entranceBodyRef" class="nnp-body scroll-y" :inert="submitState !== 'idle'">
+    <div
+      ref="entranceBodyRef"
+      class="nnp-body scroll-y"
+      :inert="submitState !== 'idle' || commitLocked"
+    >
       <!-- 便签内容 -->
       <ColoredTextEditor
         ref="textareaRef"
@@ -397,6 +470,7 @@ defineExpose({
         /></label>
         <ScreenshotPicker
           ref="imagePickerRef"
+          :asset-port="protectedDraft"
           mode="memory"
           @count-change="draftImageCount = $event"
           @busy-change="attachmentsBusy = $event"
@@ -410,9 +484,9 @@ defineExpose({
       class="nnp-submit"
       :class="{
         'is-empty': submitEmpty,
-        'is-creating': submitState === 'creating'
+        'is-creating': submitState !== 'idle'
       }"
-      :disabled="submitState !== 'idle' || attachmentsBusy || !canCreate"
+      :disabled="submitState !== 'idle' || attachmentsBusy || (!canCreate && !commitLocked)"
       data-diagnostic-action="note.create"
       variant="primary"
       @click="handleCreate"

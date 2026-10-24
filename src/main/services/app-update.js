@@ -156,6 +156,7 @@ export class AppUpdateService {
     this.fetch = fetchImpl
     this.checkEnabled = checkEnabled
     this.externalSelection = null
+    this.checkTask = null
   }
 
   async fetchLatestReleases() {
@@ -231,8 +232,20 @@ export class AppUpdateService {
     return url
   }
 
-  async check() {
+  check() {
+    if (this.checkTask) return this.checkTask
     this.externalSelection = null
+    // Install ownership before invoking fetch: a second caller (including a
+    // synchronous bridge callback) joins the entire two-endpoint check/result.
+    const task = Promise.resolve().then(() => this.performCheck())
+    const shared = task.finally(() => {
+      if (this.checkTask === shared) this.checkTask = null
+    })
+    this.checkTask = shared
+    return shared
+  }
+
+  async performCheck() {
     const base = emptyResult({
       currentVersion: this.currentVersion,
       platform: this.platform,

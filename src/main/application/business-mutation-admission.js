@@ -1,18 +1,23 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 
-/** Clear closes admission before draining complete mutations, including resource cleanup. */
+/** Exclusive maintenance seals admission before complete mutations and resource cleanup drain. */
 export function createBusinessMutationAdmission() {
   const pending = new Set()
   const scopes = new AsyncLocalStorage()
-  let clearing = false
+  let exclusiveKind = null
   let stopped = false
-  let clearTask = null
+  let exclusiveTask = null
   let shutdownDrainComplete = false
 
   function run(operation) {
     const internal = scopes.getStore()?.active === true
     if (stopped && !internal) throw new Error('软件正在退出，请稍后重试')
-    if (clearing && !internal) throw new Error('正在清空便签数据，请完成后再试')
+    if (exclusiveKind && !internal)
+      throw new Error(
+        exclusiveKind === 'clear'
+          ? '正在清空便签数据，请完成后再试'
+          : '正在维护附件存储，请完成后再试'
+      )
     const scope = { active: true }
     let result
     try {
@@ -40,36 +45,52 @@ export function createBusinessMutationAdmission() {
   }
 
   async function drain() {
-    // Shutdown waits for an already-started clear, including file/draft presentation.
-    // clear itself calls drainMutations, otherwise it would wait on its own task.
-    while (pending.size || clearTask) {
+    // Shutdown also owns the complete clear/maintenance callback, not just its leading drain.
+    // Exclusive tasks use drainMutations to avoid waiting on themselves.
+    while (pending.size || exclusiveTask) {
       await drainMutations()
-      if (clearTask) await Promise.allSettled([clearTask])
+      if (exclusiveTask) await Promise.allSettled([exclusiveTask])
     }
     if (stopped) shutdownDrainComplete = true
   }
 
-  function clear(operation) {
-    // Keep rejections asynchronous for the IPC contract, while sealing immediately.
-    try {
-      if (stopped) throw new Error('软件正在退出，请稍后重试')
-      if (scopes.getStore()?.active) throw new Error('业务写入内部不能清空便签数据')
-      if (clearing) throw new Error('正在清空便签数据，请勿重复操作')
-    } catch (error) {
-      return Promise.reject(error)
-    }
-    clearing = true
+  function startExclusive(operation, kind) {
+    if (stopped) throw new Error('软件正在退出，请稍后重试')
+    if (scopes.getStore()?.active)
+      throw new Error(
+        kind === 'clear' ? '业务写入内部不能清空便签数据' : '业务写入内部不能开始附件存储维护'
+      )
+    if (exclusiveKind === 'clear')
+      throw new Error(
+        kind === 'clear' ? '正在清空便签数据，请勿重复操作' : '正在清空便签数据，请完成后再试'
+      )
+    if (exclusiveKind) throw new Error('正在维护附件存储，请完成后再试')
+    exclusiveKind = kind
     const completion = (async () => {
       try {
         await drainMutations()
         return await operation()
       } finally {
-        clearing = false
-        clearTask = null
+        exclusiveKind = null
+        exclusiveTask = null
       }
     })()
-    clearTask = completion
+    exclusiveTask = completion
     return completion
+  }
+
+  function clear(operation) {
+    // Keep clear's asynchronous rejection contract while sealing immediately.
+    try {
+      return startExclusive(operation, 'clear')
+    } catch (error) {
+      return Promise.reject(error)
+    }
+  }
+
+  function exclusive(operation) {
+    // Callers can synchronously release a draft lock when admission is rejected.
+    return startExclusive(operation, 'maintenance')
   }
 
   function bindContinuation(operation) {
@@ -84,7 +105,7 @@ export function createBusinessMutationAdmission() {
   }
 
   function runCleanup(operation) {
-    if (!stopped || !shutdownDrainComplete || pending.size || clearTask) {
+    if (!stopped || !shutdownDrainComplete || pending.size || exclusiveTask) {
       throw new Error('退出业务排空完成后才能同步清理')
     }
     if (operation.constructor?.name === 'AsyncFunction') {
@@ -109,13 +130,14 @@ export function createBusinessMutationAdmission() {
     run,
     bindContinuation,
     runCleanup,
-    canAdmit: () => !clearing && !stopped,
+    canAdmit: () => !exclusiveKind && !stopped,
     clear,
+    exclusive,
     preventNewMutations() {
       stopped = true
       shutdownDrainComplete = false
     },
     drain,
-    snapshot: () => ({ clearing, pending: pending.size })
+    snapshot: () => ({ clearing: exclusiveKind === 'clear', pending: pending.size })
   })
 }

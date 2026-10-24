@@ -8,6 +8,7 @@ import DateRangePicker from '../ui/DateRangePicker.vue'
 import { useModalRequest } from '../../composables/useQueuedModal.js'
 import { useTodayKey } from '../../composables/useTodayKey.js'
 import { useMessage } from '../../composables/useMessage.js'
+import { getSettingsSnapshotStore } from '../../utils/settingsSnapshots.js'
 import {
   MIN_CALENDAR_DATE,
   addCalendarDays
@@ -37,6 +38,7 @@ const modalShellQueue = {
 const open = modalQueue.requested
 const todayKey = useTodayKey()
 const { showMessage } = useMessage()
+const settingsSnapshots = getSettingsSnapshotStore(window.api)
 const presets = [
   { value: 'yesterday', label: '昨天' },
   { value: 'recent3', label: '最近3天' },
@@ -370,10 +372,7 @@ async function loadSettings() {
   autoError.value = ''
   quickCreateError.value = ''
   try {
-    const snapshot = await window.api.getSettingsSnapshot()
-    if (!disposed && sequence === settingsLoadSequence && revision === settingsRevision) {
-      applySettings(snapshot)
-    }
+    await settingsSnapshots.read()
   } catch (error) {
     if (!disposed && sequence === settingsLoadSequence && revision === settingsRevision) {
       settingsError.value = error?.message || '无法读取便签延续与移动设置'
@@ -489,7 +488,7 @@ function requestOpen() {
 
 onMounted(() => {
   stopNotesListener = window.api.onNotesChanged?.(onPreviewChanged)
-  stopSettingsListener = window.api.onSettingsChanged?.(applySettings)
+  stopSettingsListener = settingsSnapshots.subscribe(applySettings)
   void loadSettings()
 })
 onBeforeUnmount(() => {
@@ -554,7 +553,7 @@ onBeforeUnmount(() => {
         <div>
           <strong id="historical-move-auto-label">每天自动移至今天</strong>
           <p id="historical-move-auto-help">
-            每天自动移动昨天未完成的仅当天便签，开启后立即检查。所有视图共用此设置。
+            每天自动移动昨天未完成的仅当天便签，循环便签除外。开启后立即检查，所有视图共用此设置。
           </p>
           <p v-if="autoError" class="historical-note-move__error" role="alert">{{ autoError }}</p>
         </div>

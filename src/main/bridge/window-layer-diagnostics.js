@@ -219,7 +219,7 @@ export function captureWindowLayerSnapshot(reader, { parentHwnd, pid }) {
   }
 }
 
-/** Called once, before rollback, only after the original confirmation has already failed. */
+/** Failure-only observation, captured before retry/rollback can change the window order. */
 export function captureWindowLayerDiagnostic(window) {
   try {
     if (process.platform !== 'win32' || process.arch !== 'x64')

@@ -2,6 +2,7 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QPointer>
+#include <QScopeGuard>
 #include <QtGui/qscreen_platform.h>
 #include <atomic>
 #include <thread>
@@ -104,6 +105,9 @@ bool accessibleTarget(QObject *receiver, quintptr window, QPoint physical,
     budget.start();
     const auto init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (SUCCEEDED(init)) {
+      // Declared before UIA references so their Release calls run while the
+      // worker's COM apartment is still initialized (including S_FALSE).
+      const auto uninitialize = qScopeGuard([] { CoUninitialize(); });
       ComPtr<IUIAutomation> automation;
       if (SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation8, nullptr,
                                      CLSCTX_INPROC_SERVER,
@@ -148,7 +152,6 @@ bool accessibleTarget(QObject *receiver, quintptr window, QPoint physical,
           element = found;
         }
       }
-      CoUninitialize();
     }
     running = false;
     QMetaObject::invokeMethod(

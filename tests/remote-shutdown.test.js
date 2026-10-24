@@ -62,6 +62,41 @@ function fixture() {
 afterEach(() => vi.useRealTimers())
 
 describe('remote shutdown lifetime', () => {
+  it('checkpoints once before earlier shutdown waits without starting session-end HTTP', async () => {
+    const state = fixture()
+    await state.coordinator.start()
+    const sessionId = state.coordinator.sessionId
+    expect(sessionId).toBeTruthy()
+
+    const prepared = state.coordinator.prepareStop()
+    expect(prepared).toMatchObject({ sessionId, queued: true, maySend: true })
+    expect(state.coordinator.prepareStop()).toBe(prepared)
+    expect(state.ports.queueSessionEnd).toHaveBeenCalledExactlyOnceWith(sessionId, prepared.endedAt)
+    expect(state.coordinator.client.endSession).not.toHaveBeenCalled()
+    expect(state.coordinator.hasActiveSession()).toBe(false)
+
+    expect(await state.coordinator.stop()).toBe('completed')
+    expect(state.ports.queueSessionEnd).toHaveBeenCalledTimes(1)
+    expect(state.coordinator.client.endSession).toHaveBeenCalledExactlyOnceWith(
+      sessionId,
+      prepared.endedAt
+    )
+    expect(state.ports.removePendingSessionEnd).toHaveBeenCalledExactlyOnceWith(sessionId)
+  })
+
+  it('retains the session identity when the admission checkpoint cannot be written', async () => {
+    const state = fixture()
+    await state.coordinator.start()
+    const sessionId = state.coordinator.sessionId
+    state.ports.queueSessionEnd.mockImplementation(() => {
+      throw new Error('outbox disk failure')
+    })
+    expect(() => state.coordinator.prepareStop()).toThrow('outbox disk failure')
+    expect(state.coordinator.sessionId).toBe(sessionId)
+    expect(state.coordinator.stopPreparation).toBe(null)
+    expect(state.coordinator.client.endSession).not.toHaveBeenCalled()
+  })
+
   it('stops an in-flight health check before starting sessions or touching closed storage', async () => {
     const state = fixture()
     const health = deferred()

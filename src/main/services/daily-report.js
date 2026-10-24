@@ -224,12 +224,31 @@ function excelDateValue(timestamp) {
   const value = Number(timestamp)
   if (!Number.isFinite(value) || value <= 0) return null
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? null : date
+  if (Number.isNaN(date.getTime())) return null
+  // Excel dates store floating calendar fields. This UTC carrier preserves the
+  // timestamp's local clock fields when ExcelJS serializes its epoch value.
+  const carrier = new Date(
+    Date.UTC(
+      date.getFullYear(),
+      date.getMonth(),
+      date.getDate(),
+      date.getHours(),
+      date.getMinutes(),
+      date.getSeconds(),
+      date.getMilliseconds()
+    )
+  )
+  return Number.isNaN(carrier.getTime()) ? null : carrier
 }
 
 function excelDateKeyValue(dateKey) {
   const { year, month, day } = parseDateKey(dateKey)
-  return new Date(year, month - 1, day)
+  // A natural date has no local-midnight instant or timezone offset to convert.
+  const utc = Date.UTC(year, month - 1, day)
+  // ExcelJS applies the offset after Excel's fictitious 1900-02-29 to every
+  // epoch. Before March, the carrier must be one UTC day earlier so Excel's
+  // serial still displays the requested natural date; this is not its instant.
+  return new Date(utc - (year === 1900 && month < 3 ? 86_400_000 : 0))
 }
 
 /** 生成标准 XLSX 工作簿；每条便签固定占一行。 */

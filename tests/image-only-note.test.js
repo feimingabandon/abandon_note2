@@ -11,8 +11,8 @@ describe('纯图片便签', () => {
     const commands = read('../src/main/notes/note-commands.js')
 
     expect(listCreator).toContain('Boolean(content.value.trim()) || draftImageCount.value > 0')
-    expect(listCreator).toContain(
-      "const submitEmpty = computed(() => submitState.value === 'idle' && !canCreate.value)"
+    expect(listCreator).toMatch(
+      /const submitEmpty = computed\(\s*\(\) => submitState\.value === 'idle' && !commitLocked\.value && !canCreate\.value\s*\)/
     )
     expect(calendarCreator).toContain('Boolean(content.value.trim()) || draftImageCount.value > 0')
     expect(editor).toContain('Boolean(content.value.trim()) || draftImageCount.value > 0')
@@ -23,7 +23,7 @@ describe('纯图片便签', () => {
   })
 
   it('shows a stable-height carousel in the body position and does not repeat the drawer', () => {
-    const card = read('../src/renderer/src/components/list/NoteCard.vue')
+    const card = read('../src/renderer/src/components/note/NoteCard.vue')
     const picker = read('../src/renderer/src/components/note/ImagePicker.vue')
     const preload = read('../src/preload/index.js')
     const ipc = read('../src/main/ipc/register-business-ipc.js')
@@ -48,7 +48,11 @@ describe('纯图片便签', () => {
     expect(picker).toContain('.ip-carousel:hover .ip-carousel__nav')
     expect(picker).toContain('pointer-events: none')
     expect(picker).not.toContain('.ip-carousel__image:hover')
-    expect(picker).toContain('window.api.getImageDimensions(rec.file_path)')
+    expect(picker).toContain('window.api.getImageThumbnailDetails(rec.file_path, 512)')
+    expect(preload).toContain(
+      "ipcRenderer.invoke('images:get-thumbnail-details', { relativePath, maxSize })"
+    )
+    expect(ipc).toContain("ipcMain.handle('images:get-thumbnail-details'")
     expect(preload).toContain("ipcRenderer.invoke('images:get-dimensions', { relativePath })")
     expect(ipc).toContain("ipcMain.handle('images:get-dimensions'")
   })
@@ -68,10 +72,12 @@ describe('纯图片便签', () => {
     expect(preview).toContain("e.key === 'ArrowLeft'")
     expect(preview).toContain("e.key === 'ArrowRight'")
     expect(preview).toContain("navigationDirection.value === 'previous'")
-    expect(preview).toContain('<Transition :name="imageTransitionName">')
+    expect(preview).toContain(':name="imageTransitionName"')
+    expect(preview).toContain('@after-leave="imageLeft"')
+    expect(preview).toContain('@leave-cancelled="imageLeft"')
     expect(preview).toContain('.ipv-image-next-enter-from')
     expect(preview).toContain('.ipv-image-previous-enter-from')
-    expect(preview).toContain('} else {\n      // 预览可能在拖拽途中')
+    expect(preview).toContain('function closeSession()')
     expect(preview).toContain('onMouseUp()')
   })
 })

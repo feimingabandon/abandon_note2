@@ -54,7 +54,6 @@ const remark = computed({
 .note-remark-field__optional {
   font-size: 0.86em;
   font-weight: 400;
-  white-space: nowrap;
 }
 
 .note-remark-field__input {

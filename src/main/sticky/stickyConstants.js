@@ -7,8 +7,8 @@ export const MIN_STICKY_WIDTH = 180
 export const MIN_STICKY_HEIGHT = 140
 export const STICKY_TOOLBAR_HEIGHT = 30
 
-export const MIN_STICKY_FONT_SIZE = 12
-export const MAX_STICKY_FONT_SIZE = 32
+export const MIN_STICKY_FONT_SIZE = 8
+export const MAX_STICKY_FONT_SIZE = 40
 export const DEFAULT_STICKY_FONT_SIZE = 16
 export const STICKY_FONT_SIZE_STEP = 2
 

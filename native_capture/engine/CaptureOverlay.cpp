@@ -330,7 +330,8 @@ void CaptureOverlay::selectAll() {
   if (claim && !claim(this))
     return;
   drag.clear();
-  annotations->complete();
+  if (!annotations->complete())
+    return;
   toolbarMonitor = monitorAt(pixel(hover));
   selection = toolbarMonitor < 0
                   ? document.base.rect()
@@ -341,7 +342,8 @@ void CaptureOverlay::selectAll() {
 }
 void CaptureOverlay::clearSelection() {
   drag.clear();
-  annotations->complete();
+  if (!annotations->complete())
+    return;
   selection = {};
   detected = {};
   annotations->choose("select");
@@ -355,7 +357,8 @@ void CaptureOverlay::finish(QString action) {
     return;
   drag.clear();
   annotations->closePopovers();
-  annotations->complete();
+  if (!annotations->complete())
+    return;
   if (output)
     output(action, document.render().copy(selection));
 }
@@ -671,7 +674,8 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *e) {
   if (key == Qt::Key_R && !recalledSelection.isEmpty()) {
     if (claim && !claim(this))
       return;
-    annotations->complete();
+    if (!annotations->complete())
+      return;
     selection = recalledSelection.intersected(document.base.rect());
     placeToolbar();
     update();

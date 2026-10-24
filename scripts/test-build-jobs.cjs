@@ -21,6 +21,7 @@ function createBuildJob(
       id: entry.id,
       nodeExecutable,
       qtNames,
+      inputDriver: entry.id === 'build-capture' && plan.releaseCaptureInputDriver === true,
       env
     })
   const configured = describe()
@@ -154,6 +155,7 @@ function createQtJob(
         id: 'build-capture',
         nodeExecutable,
         qtNames,
+        inputDriver: plan.releaseCaptureInputDriver === true,
         env
       })
       return {

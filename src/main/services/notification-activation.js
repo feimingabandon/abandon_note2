@@ -4,16 +4,25 @@ import { parseReminderProtocol } from '../../shared/reminder-protocol.js'
 export function createNotificationActivation({
   protocol,
   getWindow,
-  exitCompactPresentation,
   openMainWindow,
+  canRequestOpen = (window) => !window.webContents.isLoadingMainFrame(),
   logger,
   now = Date.now
 }) {
-  let pendingReveal = false
-  let revealContext = null
+  let pendingReveal = null
+  let openingReveal = null
+  let revealGeneration = 0
   const actions = []
   let reminderAction = null
   let disposed = false
+
+  function observe(level, ...args) {
+    try {
+      logger[level](...args)
+    } catch {
+      // Logging is an observer, never ownership of a display request or cancellation.
+    }
+  }
 
   function windowSnapshot() {
     const window = getWindow()
@@ -24,69 +33,112 @@ export function createNotificationActivation({
         alive && !window.webContents.isDestroyed() && window.webContents.isLoadingMainFrame()
       ),
       visible: Boolean(alive && window.isVisible()),
-      pending: pendingReveal
+      pending: Boolean(pendingReveal)
     }
+  }
+
+  function currentOpening(intent) {
+    return Boolean(
+      !disposed &&
+      openingReveal === intent &&
+      intent.generation === revealGeneration &&
+      intent.window === getWindow() &&
+      !intent.window.isDestroyed() &&
+      !intent.window.webContents.isDestroyed()
+    )
   }
 
   function settlePendingReveal() {
     const window = getWindow()
+    const intent = pendingReveal
+    if (disposed || !intent || !window || window.isDestroyed() || window.webContents.isDestroyed())
+      return false
+    let allowed
+    try {
+      allowed = canRequestOpen(window)
+    } catch (error) {
+      observe('error', 'notification.reveal-gate', error, intent.context)
+      return false
+    }
     if (
+      !allowed ||
       disposed ||
-      !pendingReveal ||
-      !window ||
+      pendingReveal !== intent ||
+      intent.generation !== revealGeneration ||
+      window !== getWindow() ||
       window.isDestroyed() ||
-      window.webContents.isDestroyed() ||
-      window.webContents.isLoadingMainFrame()
+      window.webContents.isDestroyed()
     )
       return false
-    const context = revealContext || {
-      source: 'unknown',
-      hadLegacyNoteId: false,
-      requestedAt: null
-    }
-    pendingReveal = false
-    revealContext = null
-    logger.info('notification.reveal', '开始显示通知对应的应用主视图', {
+    intent.window = window
+    pendingReveal = null
+    openingReveal = intent
+    const context = intent.context
+    observe('info', 'notification.reveal', '开始显示通知对应的应用主视图', {
       ...context,
       queuedMs: context.requestedAt ? now() - context.requestedAt : null,
       ...windowSnapshot()
     })
     void Promise.resolve()
-      .then(() =>
-        disposed
-          ? undefined
-          : exitCompactPresentation({ source: 'notification', showWhenDone: true })
-      )
-      .then(() => {
-        if (disposed) return
-        openMainWindow()
-        logger.info('notification.reveal', '通知唤醒与主视图显示完成', {
-          ...context,
-          result: 'shown',
-          ...windowSnapshot()
-        })
+      .then(() => (currentOpening(intent) ? openMainWindow() : undefined))
+      .then((shown) => {
+        if (!currentOpening(intent)) return
+        const snapshot = windowSnapshot()
+        if (!currentOpening(intent)) return
+        openingReveal = null
+        observe(
+          'info',
+          'notification.reveal',
+          shown === true ? '通知唤醒与主视图显示完成' : '通知唤醒未显示主视图',
+          {
+            ...context,
+            result: shown === true ? 'shown' : 'not-shown',
+            ...snapshot
+          }
+        )
       })
       .catch((error) => {
-        if (disposed) return
-        logger.error('presentation-mode.notification-expand', error, context)
-        openMainWindow()
+        if (!currentOpening(intent)) return
+        openingReveal = null
+        observe('error', 'notification.reveal', error, { ...context, result: 'failed' })
+      })
+      .finally(() => {
+        if (openingReveal === intent) openingReveal = null
       })
     return true
   }
 
   function reveal(context = {}) {
     if (disposed) return false
-    pendingReveal = true
-    revealContext = {
+    const contextDetails = {
       source: context.source || 'notification-click',
       hadLegacyNoteId: Boolean(context.hadLegacyNoteId),
       requestedAt: now()
     }
-    logger.info('notification.reveal-request', '收到系统通知唤醒请求', {
-      ...revealContext,
+    pendingReveal = {
+      generation: ++revealGeneration,
+      context: contextDetails,
+      window: null
+    }
+    openingReveal = null
+    observe('info', 'notification.reveal-request', '收到系统通知唤醒请求', {
+      ...contextDetails,
       ...windowSnapshot()
     })
     settlePendingReveal()
+    return true
+  }
+
+  function cancelPendingReveal(reason = 'cancelled') {
+    const current = pendingReveal || openingReveal
+    if (!current) return false
+    revealGeneration += 1
+    pendingReveal = null
+    openingReveal = null
+    observe('info', 'notification.reveal-cancel', '通知唤醒显示意图已取消', {
+      ...current.context,
+      reason
+    })
     return true
   }
 
@@ -103,7 +155,7 @@ export function createNotificationActivation({
       }
       if (url.pathname === '/open') {
         const hadLegacyNoteId = url.searchParams.has('id')
-        logger.info('notification.protocol', '已接收系统通知协议', {
+        observe('info', 'notification.protocol', '已接收系统通知协议', {
           source,
           action: 'open',
           hadLegacyNoteId,
@@ -112,7 +164,7 @@ export function createNotificationActivation({
         return reveal({ source, hadLegacyNoteId })
       }
     } catch (error) {
-      logger.error('notification.protocol', error, { source })
+      observe('error', 'notification.protocol', error, { source })
     }
     return false
   }
@@ -125,6 +177,7 @@ export function createNotificationActivation({
     },
     reveal,
     settlePendingReveal,
+    cancelPendingReveal,
     attachReminderAction(handler) {
       if (disposed) return false
       reminderAction = handler
@@ -132,7 +185,7 @@ export function createNotificationActivation({
         try {
           handler(action)
         } catch (error) {
-          logger.error('notification.pending-action', error)
+          observe('error', 'notification.pending-action', error)
         }
       }
       return true
@@ -141,17 +194,17 @@ export function createNotificationActivation({
       reminderAction = null
     },
     dispose() {
+      if (disposed) return
       disposed = true
+      cancelPendingReveal('disposed')
       reminderAction = null
-      pendingReveal = false
-      revealContext = null
       actions.length = 0
     },
     snapshot: () => ({
       disposed,
-      pendingReveal,
+      pendingReveal: Boolean(pendingReveal),
       pendingActions: actions.length,
-      revealContext: revealContext ? { ...revealContext } : null
+      revealContext: pendingReveal ? { ...pendingReveal.context } : null
     })
   })
 }

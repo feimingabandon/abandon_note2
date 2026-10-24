@@ -19,7 +19,14 @@ async function formComponent() {
     if (name === 'vue') dependency = vue
     else if (name.endsWith('.vue')) dependency = { default: {} }
     else if (name.endsWith('/useDraftProtection.js'))
-      dependency = { useDraftProtection: () => ({ clear: vi.fn(), resume: vi.fn() }) }
+      dependency = {
+        editingDataGeneration: vue.ref(0),
+        useDraftProtection: () => ({
+          clear: vi.fn(async () => true),
+          resume: vi.fn(async () => true),
+          flush: vi.fn(async () => ({ persisted: true, blocked: false, dirty: true }))
+        })
+      }
     else if (name.endsWith('/useTemplatePreviewClock.js'))
       dependency = { useTemplatePreviewClock: () => ({ sync: vi.fn() }) }
     else if (name.endsWith('/useMessage.js'))
@@ -184,12 +191,13 @@ describe('actual recurring-template form submission lock', () => {
         panel = element([popupInput])
       registerPanel(panel, form.trigger)
       popupInput.focus()
-      form.state.submit()
-      expect(form.onSubmit).toHaveBeenCalledTimes(1)
+      const submission = form.state.submit()
+      expect(form.onSubmit).not.toHaveBeenCalled()
       expect(form.fields.inert).toBe(true)
       expect(panel.inert).toBe(true)
       expect(form.state.canSubmit.value).toBe(false)
-      form.state.submit()
+      await submission
+      await form.state.submit()
       expect(form.onSubmit).toHaveBeenCalledTimes(1)
       await flush()
       form.props.submitting = false
@@ -204,7 +212,7 @@ describe('actual recurring-template form submission lock', () => {
   it('locks late registered and leaving panels, and restores their original inert states', async () => {
     const form = await mount()
     form.submitButton.focus()
-    form.state.submit()
+    await form.state.submit()
     await flush()
     const late = element(),
       alreadyInert = element()
@@ -224,9 +232,9 @@ describe('actual recurring-template form submission lock', () => {
   it('waits until saving ends before restoring new-content focus after a successful reset', async () => {
     const form = await mount()
     form.submitButton.focus()
-    form.state.submit()
+    await form.state.submit()
     await flush()
-    form.state.reset()
+    await form.state.reset()
     await flush()
     expect(form.state.content.value).toBe('')
     expect(form.textarea.focus).not.toHaveBeenCalled()
@@ -239,20 +247,20 @@ describe('actual recurring-template form submission lock', () => {
   it('does not steal focus after an outside interaction or an inactive form', async () => {
     const form = await mount()
     form.submitButton.focus()
-    form.state.submit()
+    await form.state.submit()
     await flush()
     listeners.get('pointerdown')({ target: element() })
-    form.state.reset()
+    await form.state.reset()
     form.props.submitting = false
     await flush()
     expect(form.textarea.focus).not.toHaveBeenCalled()
     form.submitButton.focus()
     form.state.content.value = '第二条'
     form.state.previewAt.value = Date.now() + 86_400_000
-    form.state.submit()
+    await form.state.submit()
     await flush()
     form.props.active = false
-    form.state.reset()
+    await form.state.reset()
     form.props.submitting = false
     await flush()
     expect(form.textarea.focus).not.toHaveBeenCalled()
@@ -263,7 +271,7 @@ describe('actual recurring-template form submission lock', () => {
     const panel = element()
     registerPanel(panel, form.trigger)
     form.submitButton.focus()
-    form.state.submit()
+    await form.state.submit()
     await flush()
     panel.isConnected = false
     form.app.unmount()

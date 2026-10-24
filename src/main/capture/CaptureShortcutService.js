@@ -3,15 +3,16 @@ import { normalizeViewVisibilityShortcut } from '../../shared/view-visibility-sh
 import { CAPTURE_SHORTCUTS } from '../../shared/capture-shortcuts.js'
 
 export class CaptureShortcutService {
-  constructor({ globalShortcut, viewService, onTrigger, logger }) {
+  constructor({ globalShortcut, viewService, onTrigger, logger, definitions = CAPTURE_SHORTCUTS }) {
     this.viewService = viewService
+    this.definitions = definitions
     this.services = Object.fromEntries(
-      Object.keys(CAPTURE_SHORTCUTS).map((key) => [
+      Object.keys(definitions).map((key) => [
         key,
         new ViewVisibilityShortcutService({
           globalShortcut,
           logger,
-          canRegister: (value) => !this.conflicts(key, value),
+          canRegister: (value) => !this.registrationConflicts(key, value),
           onTrigger: () => onTrigger(key)
         })
       ])
@@ -23,7 +24,7 @@ export class CaptureShortcutService {
     const seen = new Set([this.viewService.snapshot().configured].filter(Boolean))
     for (const [key, service] of Object.entries(this.services)) {
       const value = normalizeViewVisibilityShortcut(
-        values[key] ?? CAPTURE_SHORTCUTS[key].defaultValue
+        values[key] ?? this.definitions[key].defaultValue
       )
       service.dispose()
       service.enabled = enabled
@@ -49,6 +50,20 @@ export class CaptureShortcutService {
         ([other, service]) => other !== key && service.snapshot().configured === accelerator
       )
     )
+  }
+  registrationConflicts(key, value) {
+    const accelerator = normalizeViewVisibilityShortcut(value)
+    // Preserve existing actions when a new default collides with a saved key.
+    // The same priority applies after recording or toggling the master switch;
+    // a lower-priority conflict must not block the original binding's recovery.
+    for (const [other, service] of Object.entries({
+      viewVisibility: this.viewService,
+      ...this.services
+    })) {
+      if (other === key) return false
+      if (accelerator && service.snapshot().configured === accelerator) return true
+    }
+    return true
   }
   beginCapture(owner) {
     for (const service of [this.viewService, ...Object.values(this.services)])

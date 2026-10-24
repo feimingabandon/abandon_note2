@@ -1,5 +1,6 @@
 const { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } = require('node:fs')
 const { createHash } = require('node:crypto')
+const { spawnSync } = require('node:child_process')
 const { dirname, isAbsolute, join, relative, resolve, sep } = require('node:path')
 
 const QT_NAMES = Object.freeze([
@@ -96,6 +97,34 @@ function cacheValue(root, filename, key) {
   return result && isAbsolute(result) ? result : null
 }
 
+function visualStudioTools(env) {
+  const programFiles = environmentValue(env, 'ProgramFiles(x86)')
+  if (!programFiles) return {}
+  const vswhere = join(programFiles, 'Microsoft Visual Studio/Installer/vswhere.exe')
+  if (!existsSync(vswhere)) return {}
+  const found = spawnSync(
+    vswhere,
+    [
+      '-latest',
+      '-products',
+      '*',
+      '-requires',
+      'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+      '-property',
+      'installationPath'
+    ],
+    { encoding: 'utf8', env, windowsHide: true, timeout: 10_000 }
+  )
+  if (found.status !== 0 || found.error) throw new Error('Visual Studio tool discovery failed')
+  const directory = found.stdout.trim()
+  if (!directory || /[\r\n]/.test(directory))
+    throw new Error('Visual Studio tool discovery returned no unique installation')
+  return {
+    vswhere,
+    cmake: join(directory, 'Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe')
+  }
+}
+
 function nativeSourceFiles(root, directory) {
   const target = localSource(root, directory)
   return readdirSync(target)
@@ -184,7 +213,7 @@ function nativeDescriptor({ root, id, qtNames, env, inputDriver }) {
   const capture = id === 'build-capture'
   if (!capture && qtNames.length) throw new Error('Qt names only apply to build-capture')
   const selected = checkedQtNames(qtNames)
-  const testsOnly = selected.length > 0
+  const testsOnly = selected.length > 0 && !inputDriver
   const namesHash = createHash('sha256')
     .update(JSON.stringify({ selected, inputDriver }))
     .digest('hex')
@@ -203,7 +232,12 @@ function nativeDescriptor({ root, id, qtNames, env, inputDriver }) {
     : 'native_blur/build/CMakeCache.txt'
   const cachedCmake =
     cacheValue(root, cacheName, 'CMAKE_COMMAND') || cacheValue(root, fallbackCache, 'CMAKE_COMMAND')
-  const cmake = cachedCmake || findOnPath(process.platform === 'win32' ? 'cmake.exe' : 'cmake', env)
+  const visualStudio = visualStudioTools(env)
+  // Match the two build scripts before the first CMake cache exists. Capture
+  // always selects VS's CMake; blur first uses PATH and then the VS fallback.
+  const cmake = capture
+    ? visualStudio.cmake || cachedCmake || findOnPath('cmake.exe', env)
+    : findOnPath('cmake.exe', env) || visualStudio.cmake || cachedCmake
   const ctest = cmake
     ? join(dirname(cmake), process.platform === 'win32' ? 'ctest.exe' : 'ctest')
     : null
@@ -215,6 +249,7 @@ function nativeDescriptor({ root, id, qtNames, env, inputDriver }) {
   )
   const files = [
     toolFile('powershell', powershell),
+    toolFile('vswhere', visualStudio.vswhere),
     toolFile('cmake', cmake),
     toolFile('ctest', ctest)
   ]
@@ -229,16 +264,15 @@ function nativeDescriptor({ root, id, qtNames, env, inputDriver }) {
   const relativeBuild = relative(root, buildDirectory).replaceAll('\\', '/')
   const outputs = capture
     ? testsOnly
-      ? [
-          relativeBuild + '/bin',
-          ...selected.map((name) => relativeBuild + '/bin/' + name + '_tests.exe')
-        ]
+      ? [relativeBuild + '/bin']
       : [
           'native_capture/deploy',
           'native_capture/deploy/AbandonCapture.exe',
           'native_capture/deploy/capture_host.dll'
         ]
     : ['native_blur/build/bin', 'native_blur/build/bin/blur_engine.dll']
+  if (capture)
+    outputs.push(...selected.map((name) => relativeBuild + '/bin/' + name + '_tests.exe'))
   if (inputDriver) outputs.push(relativeBuild + '/bin/capture_input_driver.exe')
   const args = [
     '-NoProfile',
@@ -249,7 +283,11 @@ function nativeDescriptor({ root, id, qtNames, env, inputDriver }) {
   ]
   if (capture) {
     args.push('-QtRoot', qtRoot, '-BuildDirectory', buildDirectory, '-BuildOnly')
-    if (testsOnly) args.push('-Test', '-TestsOnly', '-TestName', selected.join(','))
+    if (selected.length) {
+      args.push('-Test')
+      if (testsOnly) args.push('-TestsOnly')
+      args.push('-TestName', selected.join(','))
+    }
     if (inputDriver) args.push('-InputDriver')
   } else args.push('-Architecture', 'x64', '-Configuration', 'Release')
   const snapshotOptions = {
@@ -292,6 +330,9 @@ function nativeDescriptor({ root, id, qtNames, env, inputDriver }) {
     args,
     outputs,
     buildDirectory,
+    ...(inputDriver
+      ? { inputDriverPath: join(buildDirectory, 'bin/capture_input_driver.exe') }
+      : {}),
     ctest,
     ...(capture ? { qtRoot } : { requireValidation: 'native-runtime-probe' })
   }

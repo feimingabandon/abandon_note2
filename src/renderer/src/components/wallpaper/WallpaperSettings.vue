@@ -9,8 +9,12 @@ import ImagePreview from '../note/ImagePreview.vue'
 import WallpaperCropEditor from './WallpaperCropEditor.vue'
 import { useMessage } from '../../composables/useMessage.js'
 import { useQueuedModal } from '../../composables/useQueuedModal.js'
+import { getSettingsSnapshotStore } from '../../utils/settingsSnapshots.js'
+import { parseSettingsReceipt } from '../../../../shared/settings-receipt.js'
 
 const { showMessage } = useMessage()
+const settingsSnapshots = getSettingsSnapshotStore(window.api)
+const settingsIntentOwner = Symbol('wallpaper-settings')
 const fileInput = ref(null)
 const records = ref([])
 const thumbnails = ref({})
@@ -55,6 +59,8 @@ let cropCloseTimer = null
 let previewRequestSequence = 0
 let libraryLoadSequence = 0
 let pendingBlurRadius = null
+let releasePendingBlur = null
+let assigningSettings = false
 let unmounted = false
 let stopSettingsListener = null
 let libraryPanelAnimation = null
@@ -91,25 +97,27 @@ function onLibraryPanelLeave(el, done) {
 }
 
 function syncWallpaperSettings(snapshot) {
+  if (unmounted) return
   const wallpaper = snapshot?.values?.wallpaper
   if (!wallpaper) return
-  activeId.value = wallpaper.activeId ?? null
-  enabled.value = Boolean(wallpaper.enabled)
-  blurRadius.value = Number(wallpaper.blurRadius ?? 8)
+  assigningSettings = true
+  try {
+    activeId.value = wallpaper.activeId ?? null
+    enabled.value = Boolean(wallpaper.enabled)
+    blurRadius.value = Number(wallpaper.blurRadius ?? 8)
+  } finally {
+    assigningSettings = false
+  }
 }
 
 async function loadLibrary() {
   const sequence = ++libraryLoadSequence
   loading.value = true
   try {
-    const [items, snapshot] = await Promise.all([
-      window.api.listWallpapers(),
-      window.api.getSettingsSnapshot()
-    ])
+    const [items] = await Promise.all([window.api.listWallpapers(), settingsSnapshots.read()])
     if (unmounted) return
     records.value = items || []
     thumbnails.value = {}
-    syncWallpaperSettings(snapshot)
     loading.value = false
     void loadThumbnailsProgressively(records.value, sequence)
   } catch (error) {
@@ -251,11 +259,27 @@ function closePreview() {
   }, 220)
 }
 
+function consumeWallpaperReceipt(result, successMessage, pendingMessage) {
+  const receipt = parseSettingsReceipt(result, { source: settingsSnapshots.latest()?.source })
+  if (!receipt.saved) throw new Error(receipt.error?.message || '壁纸设置保存结果尚未确认')
+  if (receipt.canonical) settingsSnapshots.acceptCommitted(receipt.canonical, { reconcile: true })
+  if (unmounted) return
+  if (!receipt.canonical || (receipt.application && receipt.application.status !== 'applied'))
+    showMessage('warning', pendingMessage, 4000)
+  else showMessage('success', successMessage)
+}
+
+function settleBlurRadius(release, result) {
+  const receipt = parseSettingsReceipt(result, { source: settingsSnapshots.latest()?.source })
+  if (!receipt.saved) throw new Error(receipt.error?.message || '壁纸模糊设置保存结果尚未确认')
+  settingsSnapshots.settleWrite(release, result)
+}
+
 async function onCropSaved(record) {
   closeCropEditor()
   try {
-    await window.api.activateWallpaper(record.id)
-    showMessage('success', '主页面壁纸已应用')
+    const result = await window.api.activateWallpaper(record.id)
+    consumeWallpaperReceipt(result, '主页面壁纸已应用', '壁纸设置已保存，当前效果尚待确认')
   } catch (error) {
     console.error(`[WallpaperSettings] 应用已保存壁纸 ${record.id} 失败:`, error)
     showMessage('error', `壁纸已保存，但应用失败：${error?.message || '未知错误'}`, 4000)
@@ -268,10 +292,8 @@ async function activate(record) {
   if (activatingId.value !== null) return
   activatingId.value = record.id
   try {
-    await window.api.activateWallpaper(record.id)
-    activeId.value = record.id
-    enabled.value = true
-    showMessage('success', '已切换主页面壁纸')
+    const result = await window.api.activateWallpaper(record.id)
+    consumeWallpaperReceipt(result, '已切换主页面壁纸', '壁纸设置已保存，当前效果尚待确认')
     await loadLibrary()
   } catch (error) {
     console.error(`[WallpaperSettings] 激活壁纸 ${record.id} 失败:`, error)
@@ -285,9 +307,8 @@ async function disable() {
   if (disabling.value) return
   disabling.value = true
   try {
-    await window.api.disableWallpaper()
-    enabled.value = false
-    showMessage('success', '主页面壁纸已关闭')
+    const result = await window.api.disableWallpaper()
+    consumeWallpaperReceipt(result, '主页面壁纸已关闭', '壁纸关闭设置已保存，当前效果尚待确认')
   } catch (error) {
     console.error('[WallpaperSettings] 关闭壁纸失败:', error)
     showMessage('error', `关闭壁纸失败：${error?.message || '未知错误'}`)
@@ -323,21 +344,35 @@ function cancelCrop() {
   closeCropEditor()
 }
 
-watch(blurRadius, (value) => {
-  if (loading.value) return
-  pendingBlurRadius = value
-  clearTimeout(overlayTimer)
-  overlayTimer = setTimeout(() => {
-    const valueToSave = pendingBlurRadius
-    pendingBlurRadius = null
-    window.api
-      .setSettingValue('wallpaper.blurRadius', valueToSave)
-      .catch((error) => console.warn('[WallpaperSettings] 保存壁纸模糊失败:', error))
-  }, 250)
-})
+watch(
+  blurRadius,
+  (value) => {
+    if (loading.value || assigningSettings) return
+    pendingBlurRadius = value
+    releasePendingBlur?.()
+    releasePendingBlur = settingsSnapshots.protectSetting(
+      settingsIntentOwner,
+      'wallpaper.blurRadius',
+      value
+    )
+    clearTimeout(overlayTimer)
+    overlayTimer = setTimeout(() => {
+      const valueToSave = pendingBlurRadius
+      const release = releasePendingBlur
+      pendingBlurRadius = null
+      releasePendingBlur = null
+      if (!release?.isActive()) return
+      window.api
+        .setSettingValue('wallpaper.blurRadius', valueToSave)
+        .then((result) => settleBlurRadius(release, result))
+        .catch((error) => console.warn('[WallpaperSettings] 保存壁纸模糊失败:', error))
+    }, 250)
+  },
+  { flush: 'sync' }
+)
 
 onMounted(() => {
-  stopSettingsListener = window.api.onSettingsChanged?.(syncWallpaperSettings)
+  stopSettingsListener = settingsSnapshots.subscribe(syncWallpaperSettings)
   loadLibrary()
 })
 onBeforeUnmount(() => {
@@ -349,12 +384,16 @@ onBeforeUnmount(() => {
   libraryPanelAnimation = null
   previewRequestSequence += 1
   libraryLoadSequence += 1
-  if (pendingBlurRadius !== null) {
+  if (pendingBlurRadius !== null && releasePendingBlur?.isActive()) {
+    const release = releasePendingBlur
     window.api
       .setSettingValue('wallpaper.blurRadius', pendingBlurRadius)
+      .then((result) => settleBlurRadius(release, result))
       .catch((error) => console.warn('[WallpaperSettings] 卸载前保存壁纸模糊失败:', error))
     pendingBlurRadius = null
+    releasePendingBlur = null
   }
+  settingsSnapshots.clearOwner(settingsIntentOwner)
   stopSettingsListener?.()
 })
 </script>

@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   stageImage: vi.fn(),
   commitStagedImage: vi.fn(),
   addImageRecord: vi.fn(),
+  getImageCount: vi.fn(),
   cleanupStagedImage: vi.fn(),
   deleteImageFile: vi.fn(),
   stageImageDeletion: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock('../src/main/db/db-images.js', () => ({
   stageImage: state.stageImage,
   commitStagedImage: state.commitStagedImage,
   addImageRecord: state.addImageRecord,
+  getImageCount: state.getImageCount,
   cleanupStagedImage: state.cleanupStagedImage,
   deleteImageFile: state.deleteImageFile,
   stageImageDeletion: state.stageImageDeletion,
@@ -46,6 +48,7 @@ vi.mock('../src/main/db/db-images.js', () => ({
 }))
 
 import {
+  addNoteImages,
   createNoteWithAssets,
   normalizeNoteCreateOptions,
   saveNoteDraft
@@ -74,6 +77,7 @@ beforeEach(() => {
   }
   state.ownedRows = [{ id: 1, file_path: 'original.png' }]
   state.createNote.mockReturnValue(state.note)
+  state.getImageCount.mockReturnValue(0)
   state.stageImage.mockResolvedValue(staged)
   state.commitStagedImage.mockReturnValue({ relativePath: 'controlled-committed.png', fileSize: 5 })
   state.cleanupStagedImage.mockResolvedValue()
@@ -91,6 +95,195 @@ const draft = (patch = {}) => ({
   addedImages: [image],
   deletedImageIds: [1],
   ...patch
+})
+
+function deferred() {
+  let resolve
+  const promise = new Promise((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+describe('complete existing-note image addition command', () => {
+  it('stages the whole batch before one transaction and returns the original ordered attachment records', async () => {
+    const second = { ...staged, operationDirectory: 'op-second' }
+    const records = [{ id: 21 }, { id: 22 }]
+    state.stageImage.mockResolvedValueOnce(staged).mockResolvedValueOnce(second)
+    state.commitStagedImage
+      .mockReturnValueOnce({ relativePath: 'first.png', fileSize: 5 })
+      .mockReturnValueOnce({ relativePath: 'second.png', fileSize: 6 })
+    state.addImageRecord.mockReturnValueOnce(records[0]).mockReturnValueOnce(records[1])
+    state.transaction.mockImplementation((body) => {
+      expect(state.stageImage).toHaveBeenCalledTimes(2)
+      expect(state.commitStagedImage).not.toHaveBeenCalled()
+      return () => body()
+    })
+
+    const result = await addNoteImages({ noteId: 37, images: [image, image] })
+
+    expect(state.getImageCount).toHaveBeenCalledExactlyOnceWith(37)
+    expect(state.transaction).toHaveBeenCalledOnce()
+    expect(state.commitStagedImage.mock.calls).toEqual([
+      [37, staged],
+      [37, second]
+    ])
+    expect(state.addImageRecord.mock.calls).toEqual([
+      [{ noteId: 37, filePath: 'first.png', fileSize: 5 }],
+      [{ noteId: 37, filePath: 'second.png', fileSize: 6 }]
+    ])
+    expect(result).toEqual(records)
+    expect(result[0]).toBe(records[0])
+    expect(result[1]).toBe(records[1])
+    expect(state.cleanupStagedImage.mock.calls.map(([item]) => item)).toEqual([staged, second])
+    expect(state.createNote).not.toHaveBeenCalled()
+    expect(state.deleteImageFile).not.toHaveBeenCalled()
+  })
+
+  it.each([{ images: [] }, { images: null }])(
+    'preserves the empty array result for an empty or non-array batch: $images',
+    async ({ images }) => {
+      await expect(addNoteImages({ noteId: 999, images })).resolves.toEqual([])
+      expect(state.getImageCount).toHaveBeenCalledExactlyOnceWith(999)
+      expect(state.transaction).toHaveBeenCalledOnce()
+      expect(state.stageImage).not.toHaveBeenCalled()
+      expect(state.addImageRecord).not.toHaveBeenCalled()
+    }
+  )
+
+  it('rejects a batch above the current remaining capacity before staging or SQL', async () => {
+    state.getImageCount.mockReturnValue(49)
+    await expect(addNoteImages({ noteId: 1, images: [image, image] })).rejects.toThrow(
+      '最多添加 1 张'
+    )
+    expect(state.stageImage).not.toHaveBeenCalled()
+    expect(state.transaction).not.toHaveBeenCalled()
+    expect(state.cleanupStagedImage).not.toHaveBeenCalled()
+  })
+
+  it('cleans earlier staged files and retains the original later staging rejection before SQL', async () => {
+    const failure = new Error('batch second staging failed')
+    const cleanup = deferred()
+    state.stageImage.mockResolvedValueOnce(staged).mockRejectedValueOnce(failure)
+    state.cleanupStagedImage.mockReturnValueOnce(cleanup.promise)
+    let completed = false
+    const outcome = addNoteImages({ noteId: 1, images: [image, image] }).catch((error) => error)
+    void outcome.then(() => {
+      completed = true
+    })
+    try {
+      for (let index = 0; index < 20; index++) await Promise.resolve()
+      expect(state.transaction).not.toHaveBeenCalled()
+      expect(state.commitStagedImage).not.toHaveBeenCalled()
+      expect(state.cleanupStagedImage).toHaveBeenCalledExactlyOnceWith(staged)
+      expect(state.deleteImageFile).not.toHaveBeenCalled()
+      expect(completed).toBe(false)
+      cleanup.resolve()
+      expect(await outcome).toBe(failure)
+    } finally {
+      cleanup.resolve()
+      await outcome
+    }
+  })
+
+  it('compensates every published batch file when a later attachment record rejects the transaction', async () => {
+    const second = { ...staged, operationDirectory: 'op-second' }
+    const failure = new Error('batch second attachment INSERT failed')
+    state.stageImage.mockResolvedValueOnce(staged).mockResolvedValueOnce(second)
+    state.commitStagedImage
+      .mockReturnValueOnce({ relativePath: 'first.png', fileSize: 5 })
+      .mockReturnValueOnce({ relativePath: 'second.png', fileSize: 6 })
+    state.addImageRecord.mockReturnValueOnce({ id: 21 }).mockImplementationOnce(() => {
+      throw failure
+    })
+
+    await expect(addNoteImages({ noteId: 1, images: [image, image] })).rejects.toBe(failure)
+    expect(state.deleteImageFile.mock.calls.map(([file]) => file)).toEqual([
+      'first.png',
+      'second.png'
+    ])
+    expect(state.cleanupStagedImage.mock.calls.map(([item]) => item)).toEqual([staged, second])
+    expect(state.transaction).toHaveBeenCalledOnce()
+  })
+
+  it('waits all failed-transaction compensation and retains each failed final unlink manifest', async () => {
+    const first = { ...staged, operationDirectory: 'op-first' }
+    const second = { ...staged, operationDirectory: 'op-second' }
+    const deletion = deferred()
+    const failure = new Error('original batch SQL failure')
+    state.stageImage.mockResolvedValueOnce(first).mockResolvedValueOnce(second)
+    state.commitStagedImage
+      .mockReturnValueOnce({ relativePath: 'first.png', fileSize: 5 })
+      .mockReturnValueOnce({ relativePath: 'second.png', fileSize: 6 })
+    state.addImageRecord.mockReturnValueOnce({ id: 21 }).mockImplementationOnce(() => {
+      throw failure
+    })
+    state.deleteImageFile
+      .mockReturnValueOnce(deletion.promise)
+      .mockRejectedValueOnce(new Error('second batch unlink failed'))
+    let completed = false
+    const outcome = addNoteImages({ noteId: 1, images: [image, image] }).catch((error) => error)
+    void outcome.then(() => {
+      completed = true
+    })
+    try {
+      for (let index = 0; index < 20; index++) await Promise.resolve()
+      expect(state.deleteImageFile).toHaveBeenCalledTimes(2)
+      expect(completed).toBe(false)
+      expect(state.cleanupStagedImage).not.toHaveBeenCalled()
+      deletion.resolve(true)
+      expect(await outcome).toBe(failure)
+      expect(state.cleanupStagedImage).toHaveBeenCalledExactlyOnceWith(first)
+      expect(state.restoreStagedImageDeletion).not.toHaveBeenCalled()
+    } finally {
+      deletion.resolve(true)
+      await outcome
+    }
+  })
+
+  it('keeps the command pending until all postcommit staging cleanup has completed', async () => {
+    const firstCleanup = deferred()
+    const secondCleanup = deferred()
+    const second = { ...staged, operationDirectory: 'op-second' }
+    const records = [{ id: 21 }, { id: 22 }]
+    state.stageImage.mockResolvedValueOnce(staged).mockResolvedValueOnce(second)
+    state.addImageRecord.mockReturnValueOnce(records[0]).mockReturnValueOnce(records[1])
+    state.cleanupStagedImage
+      .mockReturnValueOnce(firstCleanup.promise)
+      .mockReturnValueOnce(secondCleanup.promise)
+    let completed = false
+    const outcome = addNoteImages({ noteId: 1, images: [image, image] })
+    const settled = () => {
+      completed = true
+    }
+    void outcome.then(settled, settled)
+    try {
+      for (let index = 0; index < 20; index++) await Promise.resolve()
+      expect(state.addImageRecord).toHaveBeenCalledTimes(2)
+      expect(state.cleanupStagedImage).toHaveBeenCalledTimes(2)
+      expect(completed).toBe(false)
+      firstCleanup.resolve()
+      for (let index = 0; index < 20; index++) await Promise.resolve()
+      expect(completed).toBe(false)
+      secondCleanup.resolve()
+      expect(await outcome).toEqual(records)
+      expect(state.deleteImageFile).not.toHaveBeenCalled()
+    } finally {
+      firstCleanup.resolve()
+      secondCleanup.resolve()
+      await outcome
+    }
+  })
+
+  it('never compensates durable attachments when a postcommit cleanup dependency rejects', async () => {
+    const failure = new Error('batch postcommit cleanup failed')
+    state.addImageRecord.mockReturnValueOnce({ id: 21 })
+    state.cleanupStagedImage.mockRejectedValueOnce(failure)
+    await expect(addNoteImages({ noteId: 1, images: [image] })).rejects.toBe(failure)
+    expect(state.addImageRecord).toHaveBeenCalledOnce()
+    expect(state.deleteImageFile).not.toHaveBeenCalled()
+    expect(state.restoreStagedImageDeletion).not.toHaveBeenCalled()
+  })
 })
 
 describe('complete note command coordination with controlled dependency fixtures', () => {

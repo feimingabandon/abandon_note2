@@ -33,6 +33,8 @@ const domainRules = Object.freeze({
   'tests/fixtures/renderer-resource-lifetime/index.html': [
     'tests/renderer-resource-lifetime-electron.mjs'
   ],
+  'tests/fixtures/settings-panel-owners/index.html': ['tests/settings-panel-owners-electron.mjs'],
+  'tests/fixtures/settings-panel-owners/main.js': ['tests/settings-panel-owners-electron.mjs'],
   'tests/fixtures/renderer-resource-lifetime/main.js': [
     'tests/renderer-resource-lifetime-electron.mjs'
   ],

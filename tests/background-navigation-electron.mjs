@@ -1,9 +1,10 @@
-import { readdirSync } from 'node:fs'
+import { readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow, ipcMain, nativeImage } from 'electron'
 import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
+import { dismissStartupShortcutNotice } from './helpers/startup-shortcut-notice.mjs'
 
 const lifecycle = createElectronGuiResultLifecycle({
   app,
@@ -11,12 +12,14 @@ const lifecycle = createElectronGuiResultLifecycle({
   suite: 'tests/background-navigation-electron.mjs',
   mode: 'electron-ready-real-app-background-navigation',
   prefix: 'abandon-background-navigation-',
+  destroyWindowsBeforeQuit: false,
   metadata: {
     realWindows: true,
     realDiskDatabase: true,
     realPreloadApis: true,
     nativeBlurEnableVerified: true,
-    actualWallpaperExitDelay: true,
+    actualWallpaperAfterLeaveAcknowledgment: true,
+    controlledAckHolds: true,
     sqlFailureInjectedWithRealTrigger: true,
     mixedDpi: false,
     mainProcessRestart: false
@@ -29,10 +32,34 @@ const trace = []
 const scenarios = []
 const navigatedViews = []
 let lastBlurCompletion = null
+let nextAckGate = null
+const ackGates = []
+function holdNextAck(label) {
+  let release
+  const gate = { label, arrived: null, result: null, error: null, released: false }
+  gate.waiting = new Promise((resolve) => {
+    release = resolve
+  })
+  gate.release = () => {
+    if (gate.released) return
+    gate.released = true
+    release()
+  }
+  ackGates.push(gate)
+  nextAckGate = gate
+  return gate
+}
+const releaseAckGates = () => ackGates.forEach((gate) => gate.release())
+app.once('will-quit', releaseAckGates)
 const originalHandle = ipcMain.handle.bind(ipcMain)
 ipcMain.handle = (channel, listener) =>
   originalHandle(channel, async (event, ...args) => {
-    const interested = ['set-blur-config', 'wallpapers:activate', 'view:switch'].includes(channel)
+    const interested = [
+      'set-blur-config',
+      'wallpapers:activate',
+      'wallpapers:retirement-ack',
+      'view:switch'
+    ].includes(channel)
     const startedAt = Date.now()
     if (interested)
       trace.push({
@@ -41,8 +68,27 @@ ipcMain.handle = (channel, listener) =>
         at: startedAt,
         requestedMode: channel === 'view:switch' ? args[0]?.mode : undefined
       })
+    let gate
     try {
+      if (channel === 'wallpapers:retirement-ack' && nextAckGate) {
+        gate = nextAckGate
+        nextAckGate = null
+        gate.arrived = {
+          at: Date.now(),
+          payload: args[0],
+          source: args[1],
+          nativeEnabled:
+            globalThis.__ABANDON_WINDOW_TEST_HOOKS__.getResolvedSettingsSnapshot().runtime.blur
+              .effectiveEnabled,
+          dom: await event.sender.executeJavaScript(`({
+            wallpaperNodes:document.querySelectorAll('.app-wallpaper,.month-wallpaper').length,
+            visible:document.visibilityState
+          })`)
+        }
+        await gate.waiting
+      }
       const result = await listener(event, ...args)
+      if (gate) gate.result = result
       if (interested) trace.push({ channel, phase: 'complete', at: Date.now() })
       if (channel === 'set-blur-config') {
         const hooks = globalThis.__ABANDON_WINDOW_TEST_HOOKS__
@@ -57,6 +103,7 @@ ipcMain.handle = (channel, listener) =>
       }
       return result
     } catch (error) {
+      if (gate) gate.error = error.message
       if (interested) trace.push({ channel, phase: 'error', at: Date.now(), error: error.message })
       throw error
     }
@@ -150,6 +197,8 @@ async function run() {
       if (match) navigatedViews.push(match[1])
     })
     await until(() => js("Boolean(document.querySelector('.app-titlebar'))"), 'list UI ready')
+    await dismissStartupShortcutNotice(current)
+    await until(() => js("!document.querySelector('.app-scene').inert"), 'list scene interactive')
     await js("window.api.setDockConfig({enabledEdges:[],revealHandleMode:'direct'})")
     const windowId = current.id
     const hwnd = current.getNativeWindowHandle().toString('hex')
@@ -167,7 +216,9 @@ async function run() {
     const monthBefore = readBackgroundRows('month')
     const weekBefore = readBackgroundRows('week')
 
-    // Keep the product's real 190 ms delay. No timer substitution or held IPC replies.
+    // Hold the actual after-leave ACK at the transport boundary. Product CSS,
+    // renderer hooks and the main owner all remain real.
+    const navigationAck = holdNextAck('navigation')
     lastBlurCompletion = null
     await js(
       'window.__backgroundBlurRequest=window.api.setBlurConfig({enabled:true}).then(result=>{window.__backgroundBlurResult=result;return result}); true'
@@ -179,6 +230,16 @@ async function run() {
     )
     assert.equal(hooks.navigationState().mode, 'list')
     assert.equal(readBackgroundRows('main').wallpaper_enabled, 'false')
+    await until(() => navigationAck.arrived, 'real after-leave ACK reached its transport gate')
+    assert.equal(navigationAck.arrived.payload.outcome, 'left')
+    assert.equal(navigationAck.arrived.dom.wallpaperNodes, 0)
+    assert.equal(navigationAck.arrived.dom.visible, 'visible')
+    assert.equal(navigationAck.arrived.nativeEnabled, false)
+    // Deliberate fault-injection hold, longer than the removed 190ms wait.
+    await wait(250)
+    assert.equal(lastBlurCompletion, null)
+    assert.equal(hooks.getResolvedSettingsSnapshot().runtime.blur.effectiveEnabled, false)
+    assert.ok(hooks.wallpaperRetirementState().pending)
     assert.equal(await js("window.api.switchMainView('month')"), true)
     await until(
       () => hooks.navigationState().queuedTarget === 'month',
@@ -197,15 +258,24 @@ async function run() {
       navigation: hooks.navigationState(),
       mainRows: readBackgroundRows('main')
     }
+    navigationAck.release()
     await until(() => lastBlurCompletion !== null, 'actual preload blur request completed')
     assert.equal(lastBlurCompletion.result.success, true)
     assert.equal(lastBlurCompletion.result.runtime.effectiveEnabled, true)
     assert.equal(lastBlurCompletion.nativeHealth?.healthy, true)
     assert.equal(lastBlurCompletion.nativeHealth?.zOrderSynchronized, true)
+    assert.deepEqual(navigationAck.result, { accepted: true })
     assert.ok(
-      lastBlurCompletion.elapsedMs >= 185,
-      'wallpaper retirement was not the product 190 ms path'
+      navigationAck.arrived.at < Date.now(),
+      'native completed after the actual ACK arrived'
     )
+    assert.deepEqual(hooks.wallpaperRetirementState(), {
+      stopped: false,
+      pending: null,
+      timers: 0,
+      listeners: 0
+    })
+    summary.navigationRetirement = navigationAck.arrived
     assert.equal(lastBlurCompletion.navigation.mode, 'list')
     summary.blurCompletion = lastBlurCompletion
     await until(
@@ -258,7 +328,7 @@ async function run() {
       weekRows: readBackgroundRows('week')
     }
     scenarios.push(
-      'real 190 ms wallpaper-to-native-blur; month/week latest target and source SQLite scope preserved'
+      'real after-leave ACK before native blur; held ACK blocks native beyond the old wait, latest navigation target and source SQLite scope preserved'
     )
 
     // Actual SQL rejection of the atomic wallpaper activation must preserve glass state.
@@ -314,16 +384,215 @@ async function run() {
     await js('window.api.setBlurConfig({enabled:false})')
     assert.equal(hooks.backgroundSettingsState().blurInFlight, 0)
     assert.equal(hooks.backgroundSettingsState().pendingRequests, 0)
+
+    async function activateVisibleWallpaper() {
+      await js(`window.api.activateWallpaper(${wallpaper.id})`)
+      await until(
+        () => js("Boolean(document.querySelector('.month-wallpaper'))"),
+        'week wallpaper element is present before retirement'
+      )
+    }
+    async function clickExposed(selector) {
+      await js(
+        `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'})`
+      )
+      await until(
+        () =>
+          js(`(() => {
+            const target=document.querySelector(${JSON.stringify(selector)});
+            if(!target || target.disabled || target.closest('[inert]'))return false;
+            const r=target.getBoundingClientRect();
+            return r.width>0 && r.height>0 &&
+              target.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
+          })()`),
+        'real control exposed to the user: ' + selector
+      )
+      await js(`document.querySelector(${JSON.stringify(selector)}).click()`)
+    }
+
+    // Exercise the new unchanged-failure receipt through the actual settings
+    // queue, rather than assigning a result to a renderer test double.
+    await activateVisibleWallpaper()
+    await dismissStartupShortcutNotice(current)
+    await clickExposed('.titlebar-btn-settings[title="设置"]')
+    await until(
+      () => js("Boolean(document.querySelector('.settings-panel.active'))"),
+      'settings open'
+    )
+    const toggle = '.settings-panel.active [data-diagnostic-action="settings.blurEnabled"]'
+    await until(
+      () => js(`Boolean(document.querySelector(${JSON.stringify(toggle)}))`),
+      'native toggle ready'
+    )
+    assert.equal(
+      await js(`document.querySelector(${JSON.stringify(toggle)}).getAttribute('aria-checked')`),
+      'false'
+    )
+    const hiddenAck = holdNextAck('hidden-settings-queue')
+    lastBlurCompletion = null
+    await clickExposed(toggle)
+    await until(() => hiddenAck.arrived, 'settings action reached actual week after-leave ACK')
+    assert.equal(hiddenAck.arrived.payload.outcome, 'left')
+    assert.equal(hiddenAck.arrived.dom.wallpaperNodes, 0)
+    current.hide()
+    await until(
+      () => lastBlurCompletion !== null,
+      'hidden window cancels the waiting native action'
+    )
+    assert.equal(lastBlurCompletion.result.success, false)
+    assert.equal(lastBlurCompletion.result.persistence.status, 'unchanged')
+    assert.equal(lastBlurCompletion.result.retirement.status, 'cancelled')
+    assert.equal(hooks.wallpaperRetirementState().pending, null)
+    assert.equal(hooks.wallpaperRetirementState().timers, 0)
+    assert.equal(hooks.wallpaperRetirementState().listeners, 0)
+    assert.equal(readBackgroundRows('week').blur_enabled, 'false')
+    assert.equal(readBackgroundRows('week').wallpaper_enabled, 'true')
+    hiddenAck.release()
+    await until(() => hiddenAck.result !== null, 'late ACK from hidden retirement was consumed')
+    assert.deepEqual(hiddenAck.result, { accepted: false })
+    current.show()
+    current.focus()
+    await until(
+      () =>
+        js(
+          `document.querySelector(${JSON.stringify(toggle)})?.getAttribute('aria-checked')==='false'`
+        ),
+      'real settings queue converges its toggle to unchanged actual config'
+    )
+    await until(
+      () =>
+        js(
+          "[...document.querySelectorAll('.msg-text,.setting-error')].some(el=>/退场|隐藏|取消/.test(el.textContent))"
+        ),
+      'actual settings feedback describes the cancelled background operation'
+    )
+    summary.hidden = {
+      completion: lastBlurCompletion,
+      lateAck: hiddenAck.result,
+      rows: readBackgroundRows('week')
+    }
+    await clickExposed('.settings-panel.active .panel-close-btn')
+    await until(() => js("!document.querySelector('.settings-panel')"), 'settings finished leaving')
+    scenarios.push(
+      'real settings queue accepts unchanged actual after hide, restores wallpaper and rejects late ACK'
+    )
+
+    await activateVisibleWallpaper()
+    const reloadAck = holdNextAck('reload')
+    lastBlurCompletion = null
+    await js(
+      'window.__retirementReload=window.api.setBlurConfig({enabled:true}).catch(error=>({error:String(error)}));true'
+    )
+    await until(() => reloadAck.arrived, 'reload scenario waits at actual after-leave ACK')
+    const originalSource = reloadAck.arrived.source
+    let reloaded = false
+    const onReloaded = () => {
+      reloaded = true
+    }
+    current.webContents.once('did-finish-load', onReloaded)
+    try {
+      current.webContents.reload()
+      await until(() => reloaded, 'same-view reload completed its real document load')
+    } finally {
+      current.webContents.removeListener('did-finish-load', onReloaded)
+    }
+    await until(() => lastBlurCompletion !== null, 'reload cancelled old background request')
+    assert.equal(lastBlurCompletion.result.success, false)
+    assert.equal(lastBlurCompletion.result.retirement.status, 'cancelled')
+    const newSnapshot = await until(
+      () => js('window.api.getSettingsSnapshot().then(s=>s.source?.token?s:null)'),
+      'reloaded document obtained its own source'
+    )
+    assert.notEqual(newSnapshot.source.token, originalSource.token)
+    reloadAck.release()
+    await until(() => reloadAck.error !== null, 'old document ACK rejected after reload')
+    assert.match(reloadAck.error, /页面已失效/)
+    assert.equal(hooks.getResolvedSettingsSnapshot().runtime.blur.effectiveEnabled, false)
+    assert.deepEqual(hooks.wallpaperRetirementState(), {
+      stopped: false,
+      pending: null,
+      timers: 0,
+      listeners: 0
+    })
+    summary.reload = {
+      originalSource,
+      newSource: newSnapshot.source,
+      completion: lastBlurCompletion,
+      lateAckError: reloadAck.error
+    }
+    scenarios.push(
+      'real reload cancels old visual owner, rotates document token and rejects its late ACK'
+    )
+
+    await activateVisibleWallpaper()
+    const shutdownAck = holdNextAck('shutdown')
+    lastBlurCompletion = null
+    await js(
+      'window.__retirementShutdown=window.api.setBlurConfig({enabled:true}).catch(error=>({error:String(error)}));true'
+    )
+    await until(() => shutdownAck.arrived, 'quit scenario has a genuine pending visual wait')
+    app.once('before-quit', () => {
+      summary.shutdownBeforeQuit = hooks.wallpaperRetirementState()
+    })
+    app.once('will-quit', () => {
+      const result = {
+        beforeQuit: summary.shutdownBeforeQuit,
+        retirement: hooks.wallpaperRetirementState(),
+        background: hooks.backgroundSettingsState(),
+        settings: hooks.settingsOperationState(),
+        completion: lastBlurCompletion
+      }
+      try {
+        assert.ok(result.beforeQuit.pending, 'quit started with its owned visual wait pending')
+        assert.deepEqual(result.retirement, {
+          stopped: true,
+          pending: null,
+          timers: 0,
+          listeners: 0
+        })
+        assert.equal(result.background.pendingRequests, 0)
+        assert.equal(result.settings.pending, 0)
+        assert.equal(result.completion.result.success, false)
+        assert.equal(result.completion.result.retirement.status, 'cancelled')
+      } catch (error) {
+        result.error = error.stack || String(error)
+        console.error(error)
+        process.exitCode = 1
+      } finally {
+        writeFileSync(
+          join(process.env.ABANDON_TEST_EVIDENCE_DIR || root, 'wallpaper-retirement-shutdown.json'),
+          JSON.stringify(result, null, 2),
+          { flag: 'wx' }
+        )
+      }
+    })
+    scenarios.push(
+      'normal app quit cancels pending retirement before settings drain and releases owner resources'
+    )
     completed = true
   } catch (error) {
     failure = error
     console.error(error)
   } finally {
+    if (failure) releaseAckGates()
     await lifecycle.finish({
       completed,
       error: failure,
       window: current,
-      summary: { ...summary, scenarios, trace, navigatedViews }
+      summary: {
+        ...summary,
+        scenarios,
+        trace,
+        navigatedViews,
+        ackGates: ackGates.map(({ label, arrived, result, error, released }) => ({
+          label,
+          arrived,
+          result,
+          error,
+          released
+        })),
+        shutdownEvidenceFile: 'wallpaper-retirement-shutdown.json'
+      }
     })
   }
 }

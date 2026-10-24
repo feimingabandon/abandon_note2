@@ -2,22 +2,25 @@
 /**
  * ImagePicker.vue — 图片选择组件
  *
- * 两种模式：
- *   mode="memory" — 图片暂存内存，由父组件决定何时持久化
+ * 三种模式：
+ *   mode="memory" — 图片暂存会话资产，由父组件决定何时提交
  *   mode="persist" — 图片即时写入磁盘（需提供 noteId）
- *   mode="draft"   — 加载已有图片，新增和删除只记录为前端草稿
+ *   mode="draft"   — 加载已有图片，新增和删除只记录为未提交草稿
  *   readonly        — 只展示已保存图片，隐藏上传和删除操作
  *
  * Props:
  *   noteId  — 便签 ID（persist 模式必传，memory 模式传 null）
- *   mode    — 'memory' | 'persist'，默认 'persist'
+ *   mode    — 'memory' | 'persist' | 'draft'，默认 'persist'
+ *   assetPort — memory/draft 模式使用所属表单的草稿资产端口
  *
  * 暴露方法（memory 模式）：
- *   getImages()    → { base64, ext, name, size }[]
+ *   getImages()    → { assetId, ext, name, size, sha256 }[]
  *   clearImages()  → void
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, unref, watch } from 'vue'
 import ImagePreview from './ImagePreview.vue'
+import ImageCopyMenu from './ImageCopyMenu.vue'
+import { copyImageToClipboard, imageClipboardBusy } from '../../utils/imageClipboard.js'
 import { useMessage } from '../../composables/useMessage.js'
 import {
   MAX_ATTACHMENTS_PER_NOTE,
@@ -31,6 +34,7 @@ const { showMessage } = useMessage()
 const props = defineProps({
   noteId: { type: Number, default: null },
   mode: { type: String, default: 'persist' },
+  assetPort: { type: Object, default: null },
   readonly: { type: Boolean, default: false },
   readonlyMaxSize: { type: Number, default: 92 },
   carousel: { type: Boolean, default: false },
@@ -50,7 +54,17 @@ const dragover = ref(false)
 /** 文件选择器 */
 const fileInput = ref(null)
 const loadingImages = ref(false)
-const busy = computed(() => loadingImages.value || images.value.some((image) => image._loading))
+const restoringImages = ref(false)
+const pendingMutations = ref(0)
+const mutationTokens = new Set()
+const assetOrigins = new Map()
+const busy = computed(
+  () =>
+    loadingImages.value ||
+    restoringImages.value ||
+    pendingMutations.value > 0 ||
+    images.value.some((image) => image._loading)
+)
 // 同步通知父表单，不能等下一次渲染才阻止保存或切换视图。
 watch(busy, (value) => emit('busy-change', value), { immediate: true, flush: 'sync' })
 
@@ -58,13 +72,15 @@ let imageLoadSeq = 0
 let imageMutationSeq = 0
 let disposed = false
 let previewSession = 0
-let previewRequestSequence = 0
-let previewRead = null
 
 /** 支持的图片扩展名 */
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']
 const canAdd = computed(
-  () => !props.readonly && !loadingImages.value && images.value.length < MAX_ATTACHMENTS_PER_NOTE
+  () =>
+    !props.readonly &&
+    !loadingImages.value &&
+    !restoringImages.value &&
+    images.value.length < MAX_ATTACHMENTS_PER_NOTE
 )
 const pendingAddedBytes = computed(() =>
   images.value
@@ -76,6 +92,8 @@ const pendingAddedBytes = computed(() =>
 const previewVisible = ref(false)
 const previewSources = ref([])
 const previewIndex = ref(0)
+const copyMenu = ref(null)
+let copyTarget = null
 const carouselIndex = ref(0)
 const carouselDirection = ref('next')
 const carouselRef = ref(null)
@@ -125,21 +143,18 @@ async function loadImages() {
     // 列表只加载缩略图；原图在用户点击预览时按需读取。
     const items = await Promise.all(
       records.map(async (rec) => {
-        const [thumbnail, dimensions] = await Promise.all([
-          window.api.getImageThumbnail(rec.file_path, 512),
-          window.api.getImageDimensions(rec.file_path)
-        ])
+        const thumbnail = await window.api.getImageThumbnailDetails(rec.file_path, 512)
         return {
           id: rec.id,
           name: rec.file_path.split(/[\\/]/).pop(),
           size: rec.file_size,
           filePath: rec.file_path,
-          dataUrl: thumbnail || '',
-          _naturalWidth: Number(dimensions?.width) || null,
-          _naturalHeight: Number(dimensions?.height) || null,
+          dataUrl: thumbnail?.data || '',
+          _naturalWidth: Number(thumbnail?.width) || null,
+          _naturalHeight: Number(thumbnail?.height) || null,
           _thumbnailAspect:
-            Number(dimensions?.width) > 0 && Number(dimensions?.height) > 0
-              ? Number(dimensions.width) / Number(dimensions.height)
+            Number(thumbnail?.width) > 0 && Number(thumbnail?.height) > 0
+              ? Number(thumbnail.width) / Number(thumbnail.height)
               : null,
           saved: true
         }
@@ -149,15 +164,24 @@ async function loadImages() {
     // A save broadcast may refresh this same note before a multi-file upload
     // finishes. Keep its reserved slots; note changes never inherit those slots.
     const pending = images.value.filter(
-      (image) => image._loading && image._noteId === props.noteId && image._mode === props.mode
+      (image) =>
+        image._loading &&
+        image._noteId === props.noteId &&
+        image._mode === props.mode &&
+        image._mutationSequence === imageMutationSeq
     )
     const loadedIds = new Set(items.map((image) => image.id))
     const newlySaved = images.value.filter(
       (image) => image.saved && !previousIds.has(image.id) && !loadedIds.has(image.id)
     )
-    images.value = [...items, ...newlySaved, ...pending]
+    const staged = images.value.filter((image) => image.assetId)
+    images.value = [
+      ...items.filter((image) => !deletedImageIds.value.includes(image.id)),
+      ...newlySaved,
+      ...staged,
+      ...pending
+    ]
     carouselIndex.value = 0
-    deletedImageIds.value = []
     await nextTick()
     observeCarouselSize()
   } catch (e) {
@@ -170,13 +194,12 @@ async function loadImages() {
 }
 
 async function savedImageItem(record, { name, size, key } = {}) {
-  const [thumbnail, dimensions] = await Promise.allSettled([
-    Promise.resolve().then(() => window.api.getImageThumbnail(record.file_path, 512)),
-    Promise.resolve().then(() => window.api.getImageDimensions(record.file_path))
-  ])
-  if (thumbnail.status === 'rejected')
-    console.warn('[ImagePicker] 图片已保存，缩略图暂时无法读取:', thumbnail.reason)
-  const geometry = dimensions.status === 'fulfilled' ? dimensions.value : null
+  let thumbnail = null
+  try {
+    thumbnail = await window.api.getImageThumbnailDetails(record.file_path, 512)
+  } catch (error) {
+    console.warn('[ImagePicker] 图片已保存，缩略图暂时无法读取:', error)
+  }
   return {
     id: record.id,
     ...(key ? { _key: key } : {}),
@@ -187,17 +210,142 @@ async function savedImageItem(record, { name, size, key } = {}) {
         .pop(),
     size: record.file_size || size,
     filePath: record.file_path,
-    dataUrl: thumbnail.status === 'fulfilled' ? thumbnail.value || '' : '',
-    _naturalWidth: Number(geometry?.width) || null,
-    _naturalHeight: Number(geometry?.height) || null,
+    dataUrl: thumbnail?.data || '',
+    _naturalWidth: Number(thumbnail?.width) || null,
+    _naturalHeight: Number(thumbnail?.height) || null,
     saved: true
   }
 }
 
-function currentImageMutation(sequence, noteId, mode) {
+function currentImageMutation(sequence, noteId, mode, port) {
   return (
-    !disposed && sequence === imageMutationSeq && props.noteId === noteId && props.mode === mode
+    !disposed &&
+    sequence === imageMutationSeq &&
+    props.noteId === noteId &&
+    props.mode === mode &&
+    props.assetPort === port
   )
+}
+
+function beginMutation() {
+  const token = Symbol('image-mutation')
+  mutationTokens.add(token)
+  pendingMutations.value = mutationTokens.size
+  return () => {
+    mutationTokens.delete(token)
+    pendingMutations.value = mutationTokens.size
+  }
+}
+
+function assetMetadata(image) {
+  if (
+    typeof image?.assetId !== 'string' ||
+    !image.assetId ||
+    typeof image.ext !== 'string' ||
+    typeof image.name !== 'string' ||
+    !Number.isSafeInteger(image.size) ||
+    image.size < 1 ||
+    !/^[a-f0-9]{64}$/i.test(image.sha256 || '')
+  )
+    throw new Error('草稿图片信息无效，请保留原草稿后重试')
+  return {
+    assetId: image.assetId,
+    ext: image.ext,
+    name: image.name,
+    size: image.size,
+    sha256: image.sha256
+  }
+}
+
+function requireAssetPort(port) {
+  if (
+    !port?.stageImage ||
+    !port?.previewAsset ||
+    !port?.thumbnailAsset ||
+    !port?.releaseAssets ||
+    !port?.flush
+  )
+    throw new Error('草稿图片暂存尚未就绪，请稍后重试')
+  return port
+}
+
+function releaseLocalImages() {
+  assetOrigins.clear()
+}
+
+function thumbnailMetadata(value) {
+  if (!value) return null
+  return {
+    dataUrl: value.data,
+    _naturalWidth: value.width,
+    _naturalHeight: value.height,
+    _thumbnailAspect: value.width / value.height
+  }
+}
+
+function imageBlob({ bytes, ext }) {
+  const subtype = ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext
+  return new Blob([bytes], { type: 'image/' + subtype })
+}
+
+async function stageDraftImage(dataUrl, ext, name, size, tempId, current, port, onStaged) {
+  let staged
+  let thumbnail
+  let compensating = false
+  try {
+    requireAssetPort(port)
+    const base64 = dataUrl.split(',')[1]
+    staged = assetMetadata(await port.stageImage({ base64, ext, name, size }))
+    if (!current() || !images.value.some((image) => image.id === tempId)) {
+      compensating = true
+      await port.releaseAssets([staged.assetId])
+      return false
+    }
+    try {
+      thumbnail = thumbnailMetadata(await port.thumbnailAsset(staged.assetId, 512))
+    } catch (error) {
+      if (current()) console.warn('[ImagePicker] 图片已暂存，缩略图暂时无法读取:', error)
+    }
+    const index = images.value.findIndex((image) => image.id === tempId)
+    if (!current() || index < 0) {
+      compensating = true
+      await port.releaseAssets([staged.assetId])
+      return false
+    }
+    onStaged?.(staged)
+    if (!current() || images.value[index]?.id !== tempId) {
+      compensating = true
+      await port.releaseAssets([staged.assetId])
+      return false
+    }
+    assetOrigins.set(staged.assetId, port)
+    images.value[index] = {
+      ...staged,
+      ...thumbnail,
+      _key: tempId,
+      dataUrl: thumbnail?.dataUrl || '',
+      saved: false
+    }
+    emitCount()
+    emitDraftChange()
+    return true
+  } catch (error) {
+    if (staged && !compensating && !assetOrigins.has(staged.assetId)) {
+      try {
+        await port.releaseAssets([staged.assetId])
+      } catch (cleanupError) {
+        console.warn('[ImagePicker] 迟到草稿图片清理失败:', cleanupError)
+      }
+    }
+    if (current()) {
+      const index = images.value.findIndex((image) => image.id === tempId)
+      if (index >= 0) images.value.splice(index, 1)
+      console.error('[ImagePicker] 草稿图片暂存失败:', error)
+      showMessage('warning', error.message || '图片暂存失败，请重试')
+      emitCount()
+    }
+    return false
+  }
 }
 
 function collapsedHeightPixels() {
@@ -240,7 +388,8 @@ async function processFiles(files) {
   const sequence = imageMutationSeq
   const noteId = props.noteId
   const mode = props.mode
-  const current = () => currentImageMutation(sequence, noteId, mode)
+  const port = props.assetPort
+  const current = () => currentImageMutation(sequence, noteId, mode, port)
   const available = MAX_ATTACHMENTS_PER_NOTE - images.value.length
   if (available <= 0) return
 
@@ -279,79 +428,76 @@ async function processFiles(files) {
       size: file.size,
       _loading: true,
       _noteId: noteId,
-      _mode: mode
+      _mode: mode,
+      _mutationSequence: sequence
     })
   }
   emitCount()
 
-  // 逐个处理
-  for (let i = 0; i < valid.length; i++) {
-    if (!current()) break
-    const file = valid[i]
-    const tempId = placeholders[i]
-    const ext = file.name.split('.').pop()?.toLowerCase()
-
-    let dataUrl
-    try {
-      dataUrl = await readFileAsDataURL(file)
-    } catch (error) {
+  const finishMutation = beginMutation()
+  try {
+    // 逐个处理
+    for (let i = 0; i < valid.length; i++) {
       if (!current()) break
-      // 读取失败，移除占位
-      console.error(
-        `[ImagePicker] 读取图片失败 (name=${file.name}, size=${file.size}, type=${file.type}):`,
-        error
-      )
-      const idx = images.value.findIndex((img) => img.id === tempId)
-      if (idx !== -1) images.value.splice(idx, 1)
-      continue
-    }
+      const file = valid[i]
+      const tempId = placeholders[i]
+      const ext = file.name.split('.').pop()?.toLowerCase()
 
-    if (!current()) break
-    const idx = images.value.findIndex((img) => img.id === tempId)
-    if (idx === -1) continue
-
-    if (mode === 'persist' && noteId) {
+      let dataUrl
       try {
-        const base64 = dataUrl.split(',')[1]
-        const results = await window.api.saveImages(noteId, [{ base64, ext }])
+        dataUrl = await readFileAsDataURL(file)
+      } catch (error) {
         if (!current()) break
-        if (results && results.length > 0) {
-          const item = await savedImageItem(results[0], {
-            key: tempId,
-            name: file.name,
-            size: file.size
-          })
-          if (!current()) break
-          const currentIndex = images.value.findIndex((img) => img.id === tempId)
-          if (currentIndex !== -1) {
-            if (images.value.some((image) => image.id === item.id))
-              images.value.splice(currentIndex, 1)
-            else images.value[currentIndex] = item
-          }
-        }
-      } catch (e) {
-        if (!current()) break
-        console.error('[ImagePicker] 保存失败:', e)
-        const currentIndex = images.value.findIndex((img) => img.id === tempId)
-        if (currentIndex !== -1) images.value.splice(currentIndex, 1)
+        // 读取失败，移除占位
+        console.error(
+          `[ImagePicker] 读取图片失败 (name=${file.name}, size=${file.size}, type=${file.type}):`,
+          error
+        )
+        const idx = images.value.findIndex((img) => img.id === tempId)
+        if (idx !== -1) images.value.splice(idx, 1)
+        continue
       }
-    } else {
-      images.value[idx] = {
-        id: null,
-        _key: tempId,
-        name: file.name,
-        size: file.size,
-        dataUrl,
-        ext,
-        base64: dataUrl.split(',')[1],
-        saved: false
+
+      if (!current()) break
+      const idx = images.value.findIndex((img) => img.id === tempId)
+      if (idx === -1) continue
+
+      if (mode === 'persist' && noteId) {
+        try {
+          const base64 = dataUrl.split(',')[1]
+          const results = await window.api.saveImages(noteId, [{ base64, ext }])
+          if (!current()) break
+          if (results && results.length > 0) {
+            const item = await savedImageItem(results[0], {
+              key: tempId,
+              name: file.name,
+              size: file.size
+            })
+            if (!current()) break
+            const currentIndex = images.value.findIndex((img) => img.id === tempId)
+            if (currentIndex !== -1) {
+              if (images.value.some((image) => image.id === item.id))
+                images.value.splice(currentIndex, 1)
+              else images.value[currentIndex] = item
+            }
+          }
+        } catch (e) {
+          if (!current()) break
+          console.error('[ImagePicker] 保存失败:', e)
+          const currentIndex = images.value.findIndex((img) => img.id === tempId)
+          if (currentIndex !== -1) images.value.splice(currentIndex, 1)
+        }
+      } else {
+        await stageDraftImage(dataUrl, ext, file.name, file.size, tempId, current, port)
       }
     }
-  }
 
-  if (current()) {
-    emitCount()
-    emitDraftChange()
+    if (current()) {
+      emitCount()
+      emitDraftChange()
+    }
+  } finally {
+    finishMutation()
   }
 }
 
@@ -393,9 +539,47 @@ async function onFileChange(e) {
 }
 
 async function handleDelete(img, index) {
+  if (disposed || props.readonly) return
+  index = images.value.indexOf(img)
+  if (index < 0) return
+  closePreview()
   if (img._loading) {
     images.value.splice(index, 1)
     emitCount()
+    return
+  }
+  if (img.assetId) {
+    const port = assetOrigins.get(img.assetId) || props.assetPort
+    const sequence = imageMutationSeq
+    const noteId = props.noteId
+    const mode = props.mode
+    const current = () => currentImageMutation(sequence, noteId, mode, port)
+    const finishMutation = beginMutation()
+    images.value.splice(index, 1)
+    emitCount()
+    emitDraftChange()
+    let persisted = false
+    try {
+      const result = await requireAssetPort(port).flush()
+      if (!current()) return
+      if (!result?.persisted) throw new Error('草稿暂存失败，图片尚未删除，请重试')
+      persisted = true
+      await port.releaseAssets([img.assetId])
+      assetOrigins.delete(img.assetId)
+    } catch (error) {
+      if (current() && !persisted) {
+        images.value.splice(Math.min(index, images.value.length), 0, img)
+        emitCount()
+        emitDraftChange()
+      }
+      if (persisted) {
+        assetOrigins.delete(img.assetId)
+      }
+      console.error('[ImagePicker] 草稿图片删除失败:', error)
+      if (current()) showMessage('warning', error.message || '图片删除失败，请重试')
+    } finally {
+      finishMutation()
+    }
     return
   }
   if (img.saved && img.id) {
@@ -403,8 +587,13 @@ async function handleDelete(img, index) {
       if (!deletedImageIds.value.includes(img.id)) deletedImageIds.value.push(img.id)
     } else {
       // persist 模式：已保存的图片立即删 DB + 磁盘。
+      const sequence = imageMutationSeq
+      const noteId = props.noteId
+      const mode = props.mode
+      const port = props.assetPort
       try {
         await window.api.deleteImage(img.id)
+        if (!currentImageMutation(sequence, noteId, mode, port)) return
       } catch (e) {
         console.error('[ImagePicker] 删除图片失败:', e)
         showMessage('warning', e.message || '图片删除失败，请重试')
@@ -417,64 +606,90 @@ async function handleDelete(img, index) {
   emitDraftChange()
 }
 
-/** 打开大图预览 */
-async function loadPreviewSource(index, session = previewSession) {
-  const request = ++previewRequestSequence
+/** Originals are leased by ImagePreview until its actual image nodes leave. */
+async function resolvePreviewSource(index) {
+  const session = previewSession
   const img = images.value[index]
-  const current = () =>
-    !disposed &&
-    session === previewSession &&
-    request === previewRequestSequence &&
-    images.value[index] === img
-  if (!img || img._loading || !current()) return false
-  // Only the active preview owns an original; card models keep thumbnails/drafts.
-  previewSources.value = images.value.map((image) => image.dataUrl || '')
-  let source = img.dataUrl
+  const current = () => !disposed && session === previewSession && images.value[index] === img
+  return resolveOriginalSource(img, current)
+}
+
+async function resolveOriginalSource(img, current) {
+  if (!img || img._loading || !current()) throw new Error('图片预览已失效')
   try {
-    if (img.saved && img.filePath) {
-      // Coalesce rapid navigation behind one read, then serve only the latest target.
-      if (previewRead) await previewRead.catch(() => {})
-      if (!current()) return false
-      const read = window.api.getImageBase64(img.filePath)
-      previewRead = read
-      try {
-        source = await read
-      } finally {
-        if (previewRead === read) previewRead = null
+    const value = img.assetId
+      ? await requireAssetPort(assetOrigins.get(img.assetId) || props.assetPort).previewAsset(
+          img.assetId
+        )
+      : img.saved && img.filePath
+        ? await window.api.getImageBase64(img.filePath)
+        : img.dataUrl
+    if (!current() || !value) throw new Error('图片预览已失效')
+    if (!img.assetId) return { src: value, release() {} }
+    const src = URL.createObjectURL(imageBlob(value))
+    let released = false
+    return {
+      src,
+      release() {
+        if (!released) {
+          released = true
+          URL.revokeObjectURL(src)
+        }
       }
     }
-    if (!source || !current()) return false
-    previewSources.value[index] = source
-    return true
   } catch (error) {
     if (current()) {
       console.error('[ImagePicker] 读取预览图片失败:', error)
       showMessage('warning', '图片暂时无法读取，请重试')
     }
-    return false
+    throw error
   }
 }
 
-async function handlePreview(img) {
-  if (disposed || img._loading) return
+function openCopyMenu(event, image) {
+  event.preventDefault()
+  event.stopPropagation()
+  if (disposed || image._loading || event.currentTarget.getAttribute('src') !== image.dataUrl)
+    return
+  copyTarget = image
+  void copyMenu.value?.open(event)
+}
+
+async function copySelectedImage() {
+  const image = copyTarget
+  copyTarget = null
+  const sequence = imageMutationSeq
+  const current = () => !disposed && sequence === imageMutationSeq && images.value.includes(image)
+  try {
+    const result = await copyImageToClipboard({
+      acquire: () => resolveOriginalSource(image, current),
+      isCurrent: current
+    })
+    if (result === 'copied' && !disposed) showMessage('success', '图片已复制')
+  } catch (error) {
+    if (current()) showMessage('warning', error.message || '图片复制失败，请重试')
+  }
+}
+
+function handlePreview(img) {
+  if (disposed || img._loading) return false
   const index = images.value.indexOf(img)
-  if (index < 0) return
-  const session = ++previewSession
+  if (index < 0) return false
+  previewSession++
   previewIndex.value = index
-  if (!(await loadPreviewSource(index, session))) return
-  if (disposed || session !== previewSession || images.value[index] !== img) return
+  previewSources.value = images.value.map((image) => image.dataUrl || '')
   previewVisible.value = true
+  return true
 }
 
 function onPreviewChange(index) {
-  if (disposed || !previewVisible.value) return
   previewIndex.value = index
-  void loadPreviewSource(index)
 }
 
 function closePreview() {
+  copyMenu.value?.close()
+  copyTarget = null
   previewSession++
-  previewRequestSequence++
   previewVisible.value = false
   previewSources.value = []
 }
@@ -557,16 +772,18 @@ function emitDraftChange() {
 // memory 模式暴露给父组件
 // ============================================================
 function getImages() {
-  return images.value
-    .filter((img) => !img._loading && !img.saved)
-    .map((img) => ({ base64: img.base64, ext: img.ext, name: img.name, size: img.size }))
+  return images.value.filter((img) => !img._loading && !img.saved).map(assetMetadata)
 }
 
 function clearImages() {
   closePreview()
   imageLoadSeq++
   imageMutationSeq++
+  mutationTokens.clear()
+  pendingMutations.value = 0
   loadingImages.value = false
+  restoringImages.value = false
+  releaseLocalImages()
   images.value = []
   deletedImageIds.value = []
   emitCount()
@@ -574,12 +791,15 @@ function clearImages() {
 }
 
 /** 程序化添加图片（供 ScreenshotPicker 等外部调用） */
-async function addImage(dataUrl, ext, name, size) {
+async function addImage(dataUrl, ext, name, size, { onStaged, deliveryOperation } = {}) {
   if (disposed || !canAdd.value) return false
   const sequence = imageMutationSeq
   const noteId = props.noteId
   const mode = props.mode
-  const current = () => currentImageMutation(sequence, noteId, mode)
+  const port = props.assetPort
+  const currentTarget = () => currentImageMutation(sequence, noteId, mode, port)
+  const current = () => currentTarget() && (deliveryOperation?.isCurrent() ?? true)
+  if (!current()) return false
   const base64 = dataUrl.split(',')[1]
   const resolvedSize = Number(size) > 0 ? Number(size) : getBase64DecodedSize(base64)
   if (resolvedSize > MAX_IMAGE_BYTES) {
@@ -597,12 +817,16 @@ async function addImage(dataUrl, ext, name, size) {
       .then(async (results) => {
         if (results && results.length > 0) {
           if (!current()) return true // The durable save still succeeded for its original note.
-          const item = await savedImageItem(results[0], { name, size: resolvedSize })
-          if (current()) {
-            const existingIndex = images.value.findIndex((image) => image.id === item.id)
-            if (existingIndex === -1) images.value.push(item)
-            else images.value[existingIndex] = item
-            emitCount()
+          try {
+            const item = await savedImageItem(results[0], { name, size: resolvedSize })
+            if (current()) {
+              const existingIndex = images.value.findIndex((image) => image.id === item.id)
+              if (existingIndex === -1) images.value.push(item)
+              else images.value[existingIndex] = item
+              emitCount()
+            }
+          } catch (error) {
+            console.warn('[ImagePicker] 图片已保存，界面暂时无法更新:', error)
           }
           return true
         }
@@ -612,36 +836,88 @@ async function addImage(dataUrl, ext, name, size) {
         return false
       })
   } else {
+    const tempId = `memory-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
     images.value.push({
-      id: null,
-      _key: `memory-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      id: tempId,
       name,
       size: resolvedSize,
-      dataUrl,
-      ext,
-      base64,
-      saved: false
+      _loading: true,
+      _noteId: noteId,
+      _mode: mode,
+      _mutationSequence: sequence
     })
     emitCount()
-    emitDraftChange()
-    return true
+    const finishMutation = beginMutation()
+    try {
+      return await stageDraftImage(
+        dataUrl,
+        ext,
+        name,
+        resolvedSize,
+        tempId,
+        current,
+        port,
+        onStaged
+      )
+    } finally {
+      // Delivery cancellation does not invalidate the whole form. Remove only
+      // this request's unpublished placeholder; never clear another image or
+      // delete a staged image already published to its journal owner.
+      if (currentTarget()) {
+        const index = images.value.findIndex((image) => image.id === tempId && image._loading)
+        if (index >= 0) {
+          images.value.splice(index, 1)
+          emitCount()
+        }
+      }
+      finishMutation()
+    }
   }
 }
 
 async function restoreDraft(draft) {
   if (!draft) return
-  await loadImages()
-  deletedImageIds.value = [...(draft.deletedImageIds || [])]
-  images.value = images.value.filter((image) => !deletedImageIds.value.includes(image.id))
-  for (const image of draft.addedImages || []) {
-    addImage(
-      'data:image/' + image.ext + ';base64,' + image.base64,
-      image.ext,
-      image.name,
-      image.size
+  const sequence = ++imageMutationSeq
+  const noteId = props.noteId
+  const mode = props.mode
+  const port = props.assetPort
+  const current = () => currentImageMutation(sequence, noteId, mode, port)
+  restoringImages.value = true
+  images.value = images.value.filter((image) => !image._loading)
+  const restored = []
+  try {
+    const metadata = (draft.addedImages || []).map(assetMetadata)
+    await loadImages()
+    if (!current()) return false
+    for (const image of metadata) {
+      const thumbnail = thumbnailMetadata(
+        await requireAssetPort(port).thumbnailAsset(image.assetId, 512)
+      )
+      if (!current()) {
+        return false
+      }
+      restored.push({
+        ...image,
+        ...thumbnail,
+        dataUrl: thumbnail?.dataUrl || '',
+        _key: image.assetId,
+        saved: false
+      })
+    }
+    if (!current()) return false
+    deletedImageIds.value = [...(draft.deletedImageIds || [])]
+    const saved = images.value.filter(
+      (image) => image.saved && !deletedImageIds.value.includes(image.id)
     )
+    assetOrigins.clear()
+    for (const image of restored) assetOrigins.set(image.assetId, port)
+    images.value = [...saved, ...restored]
+    emitCount()
+    emitDraftChange()
+    return true
+  } finally {
+    if (current()) restoringImages.value = false
   }
-  emitDraftChange()
 }
 
 defineExpose({ restoreDraft, getImages, getDraftChanges, clearImages, addImage, images })
@@ -650,11 +926,17 @@ defineExpose({ restoreDraft, getImages, getDraftChanges, clearImages, addImage, 
 // noteId 变化时重新加载
 // ============================================================
 watch(
-  () => [props.noteId, props.refreshKey],
-  ([noteId], [previousNoteId]) => {
-    if (noteId !== previousNoteId) imageMutationSeq++
+  () => [props.noteId, props.mode, props.assetPort, props.refreshKey],
+  ([noteId, mode, port], [previousNoteId, previousMode, previousPort]) => {
+    if (noteId !== previousNoteId || mode !== previousMode || port !== previousPort) clearImages()
     void loadImages()
-  }
+  },
+  { flush: 'sync' }
+)
+watch(
+  () => unref(props.assetPort?.imageGeneration),
+  () => closePreview(),
+  { flush: 'sync' }
 )
 onMounted(loadImages)
 onUnmounted(() => {
@@ -662,6 +944,9 @@ onUnmounted(() => {
   closePreview()
   imageLoadSeq++
   imageMutationSeq++
+  mutationTokens.clear()
+  pendingMutations.value = 0
+  releaseLocalImages()
   carouselResizeObserver?.disconnect()
 })
 
@@ -724,8 +1009,11 @@ function formatSize(bytes) {
             :src="carouselActiveImage.dataUrl"
             class="ip-carousel__image"
             :alt="carouselActiveImage.name"
+            tabindex="0"
+            aria-haspopup="menu"
             @load="updateThumbnailAspect(carouselActiveImage, $event)"
             @click.stop="handlePreview(carouselActiveImage)"
+            @contextmenu="openCopyMenu($event, carouselActiveImage)"
           />
           <span class="ip-thumb__size">{{ formatSize(carouselActiveImage.size) }}</span>
         </div>
@@ -779,8 +1067,11 @@ function formatSize(bytes) {
             :src="img.dataUrl"
             class="ip-thumb__img"
             :alt="img.name"
+            tabindex="0"
+            aria-haspopup="menu"
             @load="updateThumbnailAspect(img, $event)"
             @click.stop="handlePreview(img)"
+            @contextmenu="openCopyMenu($event, img)"
           />
         </Transition>
         <button
@@ -795,11 +1086,14 @@ function formatSize(bytes) {
       </div>
     </TransitionGroup>
 
+    <ImageCopyMenu ref="copyMenu" :disabled="imageClipboardBusy" @copy="copySelectedImage" />
+
     <!-- 大图预览 -->
     <ImagePreview
       :visible="previewVisible"
       :sources="previewSources"
       :initial-index="previewIndex"
+      :resolve-source="resolvePreviewSource"
       @change="onPreviewChange"
       @close="closePreview"
     />

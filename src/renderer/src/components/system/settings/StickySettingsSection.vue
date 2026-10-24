@@ -38,8 +38,8 @@ const {
           v-model="stickyFontSize"
           data-diagnostic-action="settings.stickyFontSize"
           :presets="stickyFontSizePresets"
-          :min="12"
-          :max="32"
+          :min="8"
+          :max="40"
           width="76px"
         />
       </div>

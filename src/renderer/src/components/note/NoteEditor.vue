@@ -1,12 +1,12 @@
 <script setup>
 import BaseButton from '../ui/BaseButton.vue'
-import { useDraftProtection } from '../../composables/useDraftProtection.js'
+import { editingDataGeneration, useDraftProtection } from '../../composables/useDraftProtection.js'
 import { parseNoteDraftTime, useNoteStateDraft } from '../../composables/useNoteStateDraft.js'
 /**
  * NoteEditor.vue — 便签修改草稿。
  * 所有可编辑字段和附件只修改前端草稿，点击保存后统一持久化。
  */
-import { ref, watch, computed, onMounted, nextTick } from 'vue'
+import { ref, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import DateTimePicker from '../ui/DateTimePicker.vue'
 import TagSelector from '../ui/TagSelector.vue'
 import ScreenshotPicker from './ScreenshotPicker.vue'
@@ -44,6 +44,7 @@ const pendingReminderCancelled = ref(false)
 const isPinned = ref(false)
 const tagIds = ref([])
 const saving = ref(false)
+const querying = ref(false)
 const mounted = ref(false)
 const imagePickerRef = ref(null)
 const draftImageCount = ref(0)
@@ -52,6 +53,12 @@ const attachmentDirty = ref(false)
 const initialSnapshot = ref(null)
 const initialVersion = ref(null)
 const confirmVisible = ref(false)
+let disposed = false
+const dataGeneration = editingDataGeneration.value
+const currentDraft = () => !disposed && dataGeneration === editingDataGeneration.value
+onBeforeUnmount(() => {
+  disposed = true
+})
 
 function pad(value) {
   return String(value).padStart(2, '0')
@@ -112,7 +119,15 @@ function resetFromNote(note) {
   draftImageCount.value = Number(note.attachment_count) || 0
 }
 
-watch(() => props.note, resetFromNote, { immediate: true })
+resetFromNote(props.note)
+watch(
+  () => props.note,
+  (note) => {
+    // A save broadcast may arrive before the original submit reply. Its fields
+    // still belong to that locked request until onCommitted completes it.
+    if (!commitLocked.value) resetFromNote(note)
+  }
+)
 
 onMounted(async () => {
   await nextTick()
@@ -220,22 +235,57 @@ function onAttachmentDraftChange(changes) {
   attachmentDirty.value = !!changes?.dirty
 }
 
-function requestClose() {
+async function requestClose() {
   if (saving.value || attachmentsBusy.value) return
-  if (!hasChanges.value) {
-    emit('cancel')
+  if (commitLocked.value) {
+    showMessage('warning', '保存结果尚未确认，请先查询原请求')
     return
   }
-  confirmVisible.value = true
+  const state = await protectedDraft.flush()
+  if (!currentDraft() || saving.value || attachmentsBusy.value) return
+  if (hasChanges.value) {
+    confirmVisible.value = true
+    return
+  }
+  if (state.blocked) {
+    showMessage('warning', '请等待附件处理完成并确认草稿已暂存')
+    return
+  }
+  await protectedDraft.clear()
+  if (currentDraft()) emit('cancel')
 }
 
-function handleConfirm() {
-  protectedDraft.clear()
-  emit('cancel')
+async function handleConfirm() {
+  if (commitLocked.value) {
+    showMessage('warning', '保存结果尚未确认，请先查询原请求')
+    return
+  }
+  await protectedDraft.clear()
+  if (currentDraft()) emit('cancel')
 }
 
 async function handleSave() {
-  if (saving.value || attachmentsBusy.value || !hasChanges.value) return
+  if (saving.value || attachmentsBusy.value) return
+  if (commitLocked.value) {
+    saving.value = true
+    querying.value = true
+    try {
+      await protectedDraft.commitNote('save', {})
+    } catch (error) {
+      if (currentDraft()) showMessage('error', error.message || '保存结果尚未确认，请查询原请求')
+    } finally {
+      saving.value = false
+      querying.value = false
+    }
+    return
+  }
+  if (!hasChanges.value) return
+  const prepared = await protectedDraft.flush()
+  if (!currentDraft() || saving.value || attachmentsBusy.value || !hasChanges.value) return
+  if (!prepared.persisted) {
+    showMessage('warning', '请先确认草稿暂存完成后再保存便签')
+    return
+  }
   const text = content.value
   if (!canSave.value) {
     showMessage('warning', '请输入便签内容或保留至少一张图片')
@@ -271,7 +321,7 @@ async function handleSave() {
       addedImages: [],
       deletedImageIds: []
     }
-    const updated = await window.api.saveNoteDraft({
+    await protectedDraft.commitNote('save', {
       id: props.note.id,
       expectedVersion: initialVersion.value,
       fields: {
@@ -301,10 +351,8 @@ async function handleSave() {
       tagIds: [...tagIds.value],
       ...attachmentChanges
     })
-    showMessage('success', '便签已保存')
-    protectedDraft.clear()
-    emit('saved', updated)
   } catch (error) {
+    if (!currentDraft()) return
     console.error('[NoteEditor] 保存失败:', error)
     showMessage('error', error.message || '保存失败，请重试')
   } finally {
@@ -334,13 +382,19 @@ const protectedDraft = useDraftProtection({
   dirty: () => hasChanges.value,
   busy: () => saving.value || attachmentsBusy.value,
   extra: () => ({ attachments: imagePickerRef.value?.getDraftChanges() }),
-  restoreExtra: (data) => imagePickerRef.value?.restoreDraft(data.attachments)
+  restoreExtra: (data) => imagePickerRef.value?.restoreDraft(data.attachments),
+  onCommitted: (updated, { recovered }) => {
+    if (!currentDraft()) return
+    showMessage('success', recovered ? '已确认上次便签保存成功' : '便签已保存')
+    emit('saved', updated)
+  }
 })
+const commitLocked = computed(() => protectedDraft.commitLocked.value)
 </script>
 
 <template>
-  <div class="ne-root" :class="{ 'ne-enter': mounted }">
-    <div class="ne-body scroll-y" :inert="saving">
+  <div class="ne-root scroll-y" :class="{ 'ne-enter': mounted }">
+    <div class="ne-body scroll-y" :inert="saving || commitLocked">
       <ColoredTextEditor
         v-model="content"
         v-model:color-ranges="contentColorRanges"
@@ -427,6 +481,7 @@ const protectedDraft = useDraftProtection({
         /></label>
         <ScreenshotPicker
           ref="imagePickerRef"
+          :asset-port="protectedDraft"
           :note-id="note.id"
           mode="draft"
           @count-change="draftImageCount = $event"
@@ -448,11 +503,21 @@ const protectedDraft = useDraftProtection({
       <BaseButton
         class="ne-submit"
         data-diagnostic-action="note.save"
-        :disabled="!canSave || !hasChanges || saving || attachmentsBusy"
+        :disabled="saving || attachmentsBusy || ((!canSave || !hasChanges) && !commitLocked)"
         variant="primary"
         @click="handleSave"
       >
-        {{ saving ? '保存中…' : attachmentsBusy ? '图片处理中…' : '保存修改' }}
+        {{
+          saving
+            ? querying
+              ? '查询中…'
+              : '保存中…'
+            : commitLocked
+              ? '查询保存结果'
+              : attachmentsBusy
+                ? '图片处理中…'
+                : '保存修改'
+        }}
       </BaseButton>
     </div>
 
@@ -479,7 +544,8 @@ const protectedDraft = useDraftProtection({
 .ne-body {
   flex: 1;
   min-width: 0;
-  min-height: 0;
+  /* 大字号窄窗口下保留可编辑区域，头尾放不下时由根容器滚动。 */
+  min-height: min(160rem, 30vh);
   overflow-x: hidden;
   padding: 14rem 14rem 16rem;
   -webkit-mask-image: linear-gradient(

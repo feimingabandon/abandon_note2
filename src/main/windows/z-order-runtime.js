@@ -12,6 +12,8 @@ import {
 } from '../bridge/blur_bridge.js'
 import { writeApplicationSetting } from '../settings/application-settings.js'
 import { captureWindowLayerDiagnostic } from '../bridge/window-layer-diagnostics.js'
+import { randomUUID } from 'node:crypto'
+import { checkpoint } from '../logging/operation-context.js'
 
 export function createZOrderRuntime({
   getMainWindow,
@@ -25,6 +27,7 @@ export function createZOrderRuntime({
   refreshResolvedSettings,
   getResolvedSettingsSnapshot,
   broadcastSettingsChanged,
+  completeCommittedSettings,
   sendAppMessage,
   logger
 }) {
@@ -46,14 +49,127 @@ export function createZOrderRuntime({
   let bottomZOrderRetryAttempt = 0
 
   let bottomZOrderRetryExhaustedNotified = false
+  let firstNativeFailureRecorded = false
+  let lastBlurSynchronization = null
+
+  function synchronizeBlurOrder(label) {
+    const blur = readBlurState()
+    if (!blur.initialized) {
+      // No native request or observation occurred. Preserve the last unresolved
+      // attempt rather than replacing it with a successful no-op.
+      return {
+        ...(lastBlurSynchronization || {
+          status: 'deferred',
+          error: '系统毛玻璃尚未初始化，未请求层级同步',
+          retryable: Boolean(blur.config.enabled)
+        })
+      }
+    }
+    const requested = runBlurRuntimeOperation(blurReSyncZOrder, label)
+    lastBlurSynchronization = requested
+      ? {
+          // The bridge queues a void request; it does not acknowledge actual
+          // HWND/Overlay convergence. Only a separate health check can prove it.
+          status: 'unconfirmed',
+          error: lastBlurSynchronization?.error ?? null,
+          retryable: true
+        }
+      : {
+          status: 'failed',
+          error: readBlurState().error || '毛玻璃窗口层级同步失败',
+          retryable: Boolean(readBlurState().config.enabled)
+        }
+    return { ...lastBlurSynchronization }
+  }
 
   function captureTitlebarZOrderStatus() {
-    if (!getMainWindow() || getMainWindow().isDestroyed()) return null
     try {
+      if (!getMainWindow() || getMainWindow().isDestroyed()) return null
       return getWindowZOrderStatus(getMainWindow())
     } catch (error) {
       return { error: error?.message || String(error) }
     }
+  }
+
+  function observeFailure(stage, mode, result, window = getActiveVisualWindow()) {
+    const diagnosticId = randomUUID()
+    // Failure-only, bounded records bypass stack-based error aggregation. checkpoint also
+    // carries the IPC actionId; startup failures have their own diagnosticId instead.
+    try {
+      const { isSliding, isDockHidden } = readDockState()
+      // An earlier hook/message failure may precede the direct call's latest failure.
+      // Write it separately so it survives both rollback and the per-record size budget.
+      if (result.nativeFirstFailure && !firstNativeFailureRecorded) {
+        if (result.nativeFirstFailure.sequence !== result.nativeFailure?.sequence) {
+          checkpoint(
+            'window.z-order.first-native-failure',
+            { diagnosticId, nativeFailure: result.nativeFirstFailure },
+            {
+              scope: 'window.z-order-first-native-failure',
+              kind: 'event',
+              level: 'warn',
+              stage,
+              outcome: 'failure'
+            }
+          )
+        }
+        firstNativeFailureRecorded = true
+      }
+      checkpoint(
+        'window.z-order.failure',
+        {
+          diagnosticId,
+          mode,
+          nativeCode: result.code ?? result.nativeCode ?? null,
+          nativeFailureCount: result.nativeFailureCount ?? null,
+          nativeFailure: result.nativeFailure ?? null,
+          nativeFailureCaptureError: result.nativeFailureCaptureError ?? null,
+          nativeZOrder: captureTitlebarZOrderStatus(),
+          isSliding,
+          isDockHidden
+        },
+        { scope: 'window.z-order-failure', kind: 'event', level: 'warn', stage, outcome: 'failure' }
+      )
+      checkpoint(
+        'window.z-order.layers',
+        { diagnosticId, mode, windowLayers: captureWindowLayerDiagnostic(window) },
+        { scope: 'window.z-order-layers', kind: 'event', level: 'warn', stage, outcome: 'failure' }
+      )
+    } catch {
+      // Observation cannot change the original failure or prevent its rollback.
+    }
+    return {
+      ...result,
+      diagnosticId,
+      blurSynchronization: lastBlurSynchronization
+        ? { ...lastBlurSynchronization }
+        : { status: 'deferred', error: '窗口层级未应用，未请求毛玻璃同步', retryable: true }
+    }
+  }
+
+  function observeRollback(stage, metadata) {
+    try {
+      checkpoint(
+        'window.z-order.rollback',
+        { ...metadata, nativeZOrder: captureTitlebarZOrderStatus() },
+        { scope: 'window.z-order-rollback-state', kind: 'event', level: 'warn', stage }
+      )
+    } catch {
+      // Failed diagnostics cannot prevent restoring the previous layer.
+    }
+  }
+
+  function applicationError(result, fallback = '切换窗口层级失败') {
+    const error = new Error(result.error || fallback)
+    error.code = 'WINDOW_Z_ORDER_APPLY_FAILED'
+    error.nativeCode = result.code
+    error.diagnosticId = result.diagnosticId
+    if (result.nativeFailure) {
+      const { sequence, operation, stage, resultCode, win32Error, win32ErrorSource } =
+        result.nativeFailure
+      error.nativeFailure = { sequence, operation, stage, resultCode, win32Error, win32ErrorSource }
+    }
+    return error
   }
 
   function cancelBottomWindowZOrderRetry() {
@@ -113,7 +229,16 @@ export function createZOrderRuntime({
   function applyWindowZOrder(mode = zOrderMode) {
     const visualWindow = getActiveVisualWindow()
     if (!visualWindow || visualWindow.isDestroyed()) {
-      return { success: false, code: null, error: '应用窗口尚未创建' }
+      return observeFailure(
+        'window-unavailable',
+        mode,
+        {
+          success: false,
+          code: null,
+          error: '应用窗口尚未创建'
+        },
+        visualWindow
+      )
     }
     const normalized = normalizeWindowZOrderMode(mode)
     if (normalized !== WINDOW_Z_ORDER_MODES.BOTTOM) cancelBottomWindowZOrderRetry()
@@ -127,11 +252,13 @@ export function createZOrderRuntime({
       if (normalized === WINDOW_Z_ORDER_MODES.BOTTOM) {
         visualWindow.setAlwaysOnTop(false)
         const result = setWindowAlwaysOnBottom(visualWindow, true)
-        if (!result.success) return result
+        if (!result.success)
+          return observeFailure('enable-bottom', normalized, result, visualWindow)
         cancelBottomWindowZOrderRetry()
       } else {
         const result = setWindowAlwaysOnBottom(visualWindow, false)
-        if (!result.success) return result
+        if (!result.success)
+          return observeFailure('disable-bottom', normalized, result, visualWindow)
         visualWindow.setAlwaysOnTop(normalized === WINDOW_Z_ORDER_MODES.TOP, 'pop-up-menu')
       }
 
@@ -146,18 +273,33 @@ export function createZOrderRuntime({
         if (expectedTopmost) visualWindow.setAlwaysOnTop(true, 'pop-up-menu')
       }
       if (visualWindow.isAlwaysOnTop() !== expectedTopmost) {
-        return { success: false, code: null, error: '系统未能应用窗口层级，请重新选择后重试' }
+        return observeFailure(
+          'topmost-mismatch',
+          normalized,
+          {
+            success: false,
+            code: null,
+            error: '系统未能应用窗口层级，请重新选择后重试'
+          },
+          visualWindow
+        )
       }
     } catch (error) {
-      return {
-        success: false,
-        code: error?.nativeCode ?? null,
-        error: error?.message || String(error)
-      }
+      return observeFailure(
+        'apply-exception',
+        normalized,
+        {
+          success: false,
+          code: error?.nativeCode ?? null,
+          error: error?.message || String(error),
+          nativeFailure: error?.nativeFailure ?? null
+        },
+        visualWindow
+      )
     }
 
-    runBlurRuntimeOperation(blurReSyncZOrder, '同步毛玻璃窗口层级')
-    return { success: true, code: 1, mode: normalized }
+    const blurSynchronization = synchronizeBlurOrder('同步毛玻璃窗口层级')
+    return { success: true, code: 1, mode: normalized, blurSynchronization }
   }
 
   function reassertBottomWindowZOrder(source) {
@@ -173,27 +315,38 @@ export function createZOrderRuntime({
         !result.success &&
         (result.code === WINDOW_Z_ORDER_NOT_ENABLED_CODE || result.code == null)
       ) {
+        observeFailure('reassert-before-reinstall', zOrderMode, result, visualWindow)
         result = setWindowAlwaysOnBottom(visualWindow, true)
       }
       if (!result.success) {
+        result = observeFailure('reassert', zOrderMode, result, visualWindow)
         logger.error('window.z-order-reassert', new Error(result.error), {
           source,
-          code: result.code
+          code: result.code,
+          diagnosticId: result.diagnosticId
         })
         scheduleBottomWindowZOrderRetry(source, result)
         return false
       }
     } catch (error) {
+      observeFailure('reassert-exception', zOrderMode, error, visualWindow)
       logger.error('window.z-order-reassert-exception', error, { source })
       scheduleBottomWindowZOrderRetry(source, error)
       return false
     }
     cancelBottomWindowZOrderRetry()
-    runBlurRuntimeOperation(blurReSyncZOrder, '重同步置底窗口毛玻璃层级')
+    synchronizeBlurOrder('重同步置底窗口毛玻璃层级')
     return true
   }
 
-  async function confirmWindowZOrder(mode, window) {
+  function assertCurrentOperation(operation) {
+    if (operation.isCurrent && !operation.isCurrent())
+      throw Object.assign(new Error('设置请求所属页面已失效，请在当前页面重试'), {
+        code: 'SETTINGS_SOURCE_EXPIRED'
+      })
+  }
+
+  async function confirmWindowZOrder(mode, window, operation = {}) {
     // 毛玻璃在独立 STA 线程处理排层消息。先等待实际 HWND 和 Overlay 一致，
     // 必要时受限地重发同步；队列接收成功不能代替可见层级已经生效。
     let lastCheck = null
@@ -201,6 +354,7 @@ export function createZOrderRuntime({
     const confirmationStartedAt = Date.now()
     for (const delay of [0, 40, 120, 240]) {
       if (delay) await new Promise((resolveWait) => setTimeout(resolveWait, delay))
+      assertCurrentOperation(operation)
       if (window.isDestroyed() || window !== getActiveVisualWindow()) {
         throw new Error('窗口已切换，请在当前窗口重新选择层级')
       }
@@ -234,8 +388,9 @@ export function createZOrderRuntime({
         return
       }
       if (delay === 240) break
+      assertCurrentOperation(operation)
       const result = applyWindowZOrder(mode)
-      if (!result.success) throw new Error(result.error)
+      if (!result.success) throw applicationError(result)
     }
     logger.warn('window.z-order-confirm', '窗口层级核验未收敛', {
       ...lastCheck,
@@ -252,39 +407,52 @@ export function createZOrderRuntime({
     throw new Error('窗口层级未能同步，请重新选择后重试')
   }
 
-  async function persistWindowZOrderMode(mode) {
+  async function persistWindowZOrderMode(mode, operation = {}) {
     const normalized = normalizeWindowZOrderMode(mode)
     const previousMode = zOrderMode
 
-    let persistenceUpdated = false
     try {
+      assertCurrentOperation(operation)
       // 原生排层期间可能同步触发 show 等回调；这些回调必须看到目标模式，
       // 不能在退出置底时重新装回旧的置底拦截器。失败时在下方恢复原模式。
       pendingWindowZOrderMode = normalized
       zOrderMode = normalized
       const runtimeResult = applyWindowZOrder(normalized)
       if (!runtimeResult.success) {
-        const error = new Error(runtimeResult.error || '切换窗口层级失败')
-        error.code = 'WINDOW_Z_ORDER_APPLY_FAILED'
-        error.nativeCode = runtimeResult.code
-        throw error
+        throw applicationError(runtimeResult)
       }
-      await confirmWindowZOrder(normalized, getActiveVisualWindow())
+      await confirmWindowZOrder(normalized, getActiveVisualWindow(), operation)
+      assertCurrentOperation(operation)
       // 保存模式相同也必须重应用真实窗口状态，允许用户修复系统重排后的层级漂移。
       if (normalized === previousMode) {
+        pendingWindowZOrderMode = null
         return { mode: previousMode, changed: false, throttled: false }
       }
       writeApplicationSetting('window.zOrderMode', normalized)
-      persistenceUpdated = true
-      refreshResolvedSettings({ incrementRevision: true })
-      zOrderMode = getSettings().window.zOrderMode
-      const snapshot = getResolvedSettingsSnapshot()
-      broadcastSettingsChanged(snapshot)
-      return { mode: zOrderMode, changed: true, throttled: false }
     } catch (error) {
+      if (operation.isCurrent && !operation.isCurrent()) {
+        pendingWindowZOrderMode = null
+        zOrderMode = getSettings().window.zOrderMode
+        throw error
+      }
+      // Record the failed state before rollback can move the windows or replace native lastFailure.
+      const failureDiagnosticId = error.diagnosticId ?? randomUUID()
+      observeRollback('before-rollback', {
+        diagnosticId: failureDiagnosticId,
+        requestedMode: normalized,
+        previousMode
+      })
       pendingWindowZOrderMode = previousMode
       zOrderMode = previousMode
       const rollbackResult = applyWindowZOrder(previousMode)
+      observeRollback('after-rollback', {
+        diagnosticId: failureDiagnosticId,
+        rollbackDiagnosticId: rollbackResult.diagnosticId ?? null,
+        requestedMode: normalized,
+        previousMode,
+        success: rollbackResult.success,
+        code: rollbackResult.code ?? null
+      })
       if (!rollbackResult.success) {
         logger.error('window.z-order-rollback', new Error(rollbackResult.error), {
           requestedMode: normalized,
@@ -292,25 +460,30 @@ export function createZOrderRuntime({
           code: rollbackResult.code
         })
       }
-      if (persistenceUpdated) {
-        try {
-          writeApplicationSetting('window.zOrderMode', previousMode)
-          refreshResolvedSettings({ incrementRevision: true })
-          zOrderMode = getSettings().window.zOrderMode
-          broadcastSettingsChanged(getResolvedSettingsSnapshot())
-        } catch (persistenceRollbackError) {
-          logger.error('window.z-order-persistence-rollback', persistenceRollbackError, {
-            requestedMode: normalized,
-            previousMode
-          })
-        }
-      }
+      pendingWindowZOrderMode = null
       throw error
+    }
+    // SQL has committed. Reading, application and delivery cannot roll this write
+    // back or re-enter the pre-commit native compensation above.
+    try {
+      let receipt
+      if (completeCommittedSettings) {
+        receipt = await completeCommittedSettings({
+          ids: ['window.zOrderMode'],
+          context: operation.context
+        })
+      } else {
+        refreshResolvedSettings({ incrementRevision: true })
+        zOrderMode = getSettings().window.zOrderMode
+        receipt = getResolvedSettingsSnapshot()
+        broadcastSettingsChanged(receipt)
+      }
+      return { mode: normalized, changed: true, throttled: false, snapshot: receipt }
     } finally {
       pendingWindowZOrderMode = null
     }
   }
-  async function setWindowZOrderMode(requestedMode) {
+  async function setWindowZOrderMode(requestedMode, operation = {}) {
     const requested = normalizeWindowZOrderMode(requestedMode, null)
     if (!requested) throw new Error('无效的窗口层级')
 
@@ -334,7 +507,7 @@ export function createZOrderRuntime({
     }
     zOrderChangeInFlight = true
     try {
-      const result = await persistWindowZOrderMode(requested)
+      const result = await persistWindowZOrderMode(requested, operation)
       logger.info('window.control-change', '窗口层级状态已核验', {
         control: 'z-order',
         requested,
@@ -350,7 +523,12 @@ export function createZOrderRuntime({
           nativeZOrder: captureTitlebarZOrderStatus()
         }
       })
-      if (result.changed) {
+      if (
+        result.changed &&
+        (!operation.isCurrent || operation.isCurrent()) &&
+        (!completeCommittedSettings ||
+          result.snapshot?.application?.domains?.window?.status === 'applied')
+      ) {
         const message =
           result.mode === WINDOW_Z_ORDER_MODES.TOP
             ? '主窗口已切换为始终置顶'
@@ -361,8 +539,14 @@ export function createZOrderRuntime({
       }
       return result
     } catch (error) {
-      logger.error('window.z-order-change', error, { requestedMode: requested })
-      sendAppMessage('error', `切换窗口层级失败：${error.message}`)
+      logger.error('window.z-order-change', error, {
+        requestedMode: requested,
+        diagnosticId: error.diagnosticId ?? null,
+        before,
+        after: { zOrderMode, nativeZOrder: captureTitlebarZOrderStatus() }
+      })
+      if (!operation.isCurrent || operation.isCurrent())
+        sendAppMessage('error', `切换窗口层级失败：${error.message}`)
       throw error
     } finally {
       lastZOrderChangeAt = Date.now()
@@ -390,7 +574,8 @@ export function createZOrderRuntime({
         pendingMode: pendingWindowZOrderMode,
         changing: zOrderChangeInFlight,
         retryPending: Boolean(bottomZOrderRetryTimer),
-        retryAttempt: bottomZOrderRetryAttempt
+        retryAttempt: bottomZOrderRetryAttempt,
+        blurSynchronization: lastBlurSynchronization ? { ...lastBlurSynchronization } : null
       }
     }
   }

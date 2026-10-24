@@ -17,6 +17,7 @@ const {
   writeSync
 } = require('node:fs')
 const { dirname, isAbsolute, join, relative, resolve, sep } = require('node:path')
+const { createFailureDiagnostics } = require('./test-failure-diagnostics.cjs')
 
 // Run and case attempts are immutable names, including retries and sanitized-ID collisions.
 function createRunDirectory(
@@ -182,7 +183,14 @@ function summarizeResults(results) {
 
 async function runJob(
   job,
-  { directory, cwd = process.cwd(), env = process.env, cleanupTemporary, writeLog = writeSync } = {}
+  {
+    directory,
+    cwd = process.cwd(),
+    env = process.env,
+    cleanupTemporary,
+    writeLog = writeSync,
+    collectFailureDiagnostics
+  } = {}
 ) {
   const runRootReal = realpathSync(directory)
   const caseDirectory = mkdtempSync(
@@ -196,6 +204,9 @@ async function runJob(
   const startedAt = new Date().toISOString()
   const startedMs = Date.now()
   const context = { directory: caseDirectory, temporary, profile, cwd, startedMs }
+  // GUI adapters opt out explicitly: Windows launch hiding can suppress show().
+  // `gui` also covers Node diagnostic fixtures, whose consoles must stay hidden.
+  const windowsHide = job.windowsHide !== false
   let args = Array.isArray(job.args) ? job.args : []
   let childEnv = { ...env }
   let preparationError
@@ -242,6 +253,11 @@ async function runJob(
   let timedOut = false
   let launchError = null
   let terminationIncomplete = false
+  let firstFailure = null
+  let failureDiagnostics
+  const recordFirstFailure = (kind, details) => {
+    firstFailure ||= { kind, at: new Date().toISOString(), ...details }
+  }
   let completion = { code: null, signal: null }
   if (!job.blockedReason && !preparationError && !logErrors.length) {
     let child
@@ -256,17 +272,31 @@ async function runJob(
         clearTimeout(killFallback)
         done(value)
       }
-      const stopOwnedChild = () => {
+      let stopping = false
+      const stopOwnedChild = async (reason) => {
         if (!child || settled) return
-        if (process.platform === 'win32' && child.pid) {
+        if (stopping) return
+        stopping = true
+        // The business deadline has already failed. Diagnostic time must not
+        // turn an earlier log failure into a later timeout or erase its cause.
+        clearTimeout(timeout)
+        await failureDiagnostics?.capture(reason)
+        if (settled) return
+        // `exit` can precede `close` while descendants retain the output pipes.
+        // Do not send a PID-based tree kill after the root exited during capture.
+        const rootRunning = () => child.exitCode === null && child.signalCode === null
+        if (!rootRunning()) terminationIncomplete = true
+        else if (process.platform === 'win32' && child.pid) {
           const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
             windowsHide: true,
             stdio: 'ignore'
           })
           killer.unref()
-          killer.on('error', () => child.kill())
+          killer.on('error', () => {
+            if (rootRunning()) child.kill()
+          })
           killer.on('exit', (code) => {
-            if (code !== 0 && !settled) child.kill()
+            if (code !== 0 && !settled && rootRunning()) child.kill()
           })
         } else child.kill('SIGKILL')
         if (!killFallback)
@@ -279,12 +309,32 @@ async function runJob(
           }, 5000)
       }
       try {
+        const spawnedMs = Date.now()
         child = spawn(job.command, args, {
           cwd,
           env: childEnv,
-          windowsHide: true,
+          windowsHide,
           stdio: ['ignore', 'pipe', 'pipe']
         })
+        failureDiagnostics = createFailureDiagnostics(
+          {
+            gui: job.gui,
+            directory: caseDirectory,
+            command: job.command,
+            args,
+            spawnedMs,
+            pid: child.pid,
+            cwd,
+            writeEvidence(name, entry) {
+              writeFileSync(
+                ownedDestination(caseDirectory, caseDirectoryReal, join(caseDirectory, name)),
+                JSON.stringify(entry, null, 2) + '\n',
+                { flag: 'wx' }
+              )
+            }
+          },
+          collectFailureDiagnostics ? { collect: collectFailureDiagnostics } : undefined
+        )
         for (const name of ['stdout', 'stderr']) {
           child[name].on('data', (chunk) => {
             if (settled || logErrors.length) return
@@ -297,28 +347,38 @@ async function runJob(
               }
             } catch (error) {
               logErrors.push(`${name}: ${error.message}`)
-              stopOwnedChild()
+              recordFirstFailure('output-write', { stream: name, error: error.message })
+              void stopOwnedChild('output-write')
             }
           })
           child[name].on('error', (error) => {
             logErrors.push(`${name}: ${error.message}`)
-            stopOwnedChild()
+            recordFirstFailure('output-stream', { stream: name, error: error.message })
+            void stopOwnedChild('output-stream')
           })
         }
         child.on('error', (error) => {
-          launchError = error.message
+          launchError ||= error.message
+          recordFirstFailure('launch-error', { error: error.message })
+        })
+        child.on('exit', (code, signal) => {
+          if (code !== 0 || signal) recordFirstFailure('process-exit', { code, signal })
+          failureDiagnostics.exited(code, signal)
         })
         child.on('close', (code, signal) => finish({ code, signal }))
         timeout = setTimeout(() => {
           timedOut = true
-          stopOwnedChild()
+          recordFirstFailure('timeout', { timeoutMs: job.timeoutMs || 180_000 })
+          void stopOwnedChild('timeout')
         }, job.timeoutMs || 180_000)
       } catch (error) {
-        launchError = error.message
+        launchError ||= error.message
+        recordFirstFailure('launch-error', { error: error.message })
         finish({ code: null, signal: null })
       }
     })
   }
+  const diagnosticResult = await failureDiagnostics?.finish()
   for (const [name, descriptor] of Object.entries(descriptors)) {
     try {
       closeSync(descriptor)
@@ -351,6 +411,7 @@ async function runJob(
     ...(job.metadata ? { metadata: job.metadata } : {}),
     command: job.command,
     args,
+    windowsHide,
     startedAt,
     durationMs: Date.now() - startedMs,
     ...completion,
@@ -361,6 +422,8 @@ async function runJob(
     ...(preparationError ? { reason: preparationError } : {}),
     directory: caseDirectory,
     processResult,
+    ...(firstFailure ? { firstFailure } : {}),
+    ...(diagnosticResult ? { failureDiagnostics: diagnosticResult } : {}),
     businessResult: {
       status: 'unproven',
       mode: 'legacy-process-exit',

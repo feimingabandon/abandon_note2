@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Session draft assets isolated prototype</title>
+    <script type="importmap">
+      { "imports": { "vue": "/vendor/vue.js" } }
+    </script>
+    <style>
+      body {
+        font:
+          16px 'Segoe UI',
+          sans-serif;
+        padding: 24px;
+      }
+      textarea {
+        display: block;
+        width: 90%;
+        height: 90px;
+        margin: 16px 0;
+      }
+      img {
+        display: block;
+        width: 160px;
+        height: 160px;
+        object-fit: contain;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Session draft assets isolated prototype</h1>
+    <p>Actual Vue draft watcher; isolated session assets; no product integration.</p>
+    <div id="app"></div>
+    <script type="module">
+      import { createApp, h, nextTick, ref } from 'vue'
+      import { useDraftProtection } from '/product/useDraftProtection.js'
+      import { createMessageProvider } from '/product/useMessage.js'
+
+      const sessionId = window.api.runtimeCapabilities.editingDraftSessionId
+      const draftKey = (arm) => `abandon:editing-draft:v2:${sessionId}:prototype:${arm}`
+      const quotaPrefix = 'abandon:prototype-quota:'
+      const originalStringify = JSON.stringify
+      const originalSetItem = Storage.prototype.setItem
+      const originalCreateUrl = URL.createObjectURL
+      const originalRevokeUrl = URL.revokeObjectURL
+      const liveUrls = new Set()
+      const urlEvents = []
+      let app,
+        state,
+        measurement = null,
+        finalEvidenceAnimation = null
+      function evidenceAnimationState() {
+        return {
+          active: Boolean(finalEvidenceAnimation?.active),
+          scheduled: finalEvidenceAnimation?.rafId != null,
+          ticks: finalEvidenceAnimation?.ticks || 0,
+          cancelledRequests: finalEvidenceAnimation?.cancelledRequests || 0
+        }
+      }
+      function stopFinalEvidence() {
+        if (finalEvidenceAnimation) {
+          finalEvidenceAnimation.active = false
+          if (finalEvidenceAnimation.rafId !== null) {
+            cancelAnimationFrame(finalEvidenceAnimation.rafId)
+            finalEvidenceAnimation.cancelledRequests++
+            finalEvidenceAnimation.rafId = null
+          }
+          finalEvidenceAnimation.cue.remove()
+        }
+        return evidenceAnimationState()
+      }
+      JSON.stringify = function (...args) {
+        const measured = measurement && args[0]?.data?.prototypeArm === measurement.arm
+        const started = performance.now()
+        const result = Reflect.apply(originalStringify, this, args)
+        if (measured)
+          measurement.stringify.push({
+            ms: performance.now() - started,
+            utf16Bytes: result.length * 2,
+            utf8Bytes: new TextEncoder().encode(result).length
+          })
+        return result
+      }
+      Storage.prototype.setItem = function (key, value) {
+        const measured = measurement && this === localStorage && key === draftKey(measurement.arm)
+        const started = performance.now()
+        let error
+        try {
+          return Reflect.apply(originalSetItem, this, [key, value])
+        } catch (failure) {
+          error = failure
+          throw failure
+        } finally {
+          if (measured)
+            measurement.storage.push({
+              ms: performance.now() - started,
+              utf16Bytes: String(value).length * 2,
+              utf8Bytes: new TextEncoder().encode(String(value)).length,
+              success: !error,
+              ...(error
+                ? { error: { name: error.name, code: error.code, message: error.message } }
+                : {})
+            })
+        }
+      }
+      URL.createObjectURL = function (blob) {
+        const value = Reflect.apply(originalCreateUrl, this, [blob])
+        liveUrls.add(value)
+        urlEvents.push({ action: 'create', url: value })
+        return value
+      }
+      URL.revokeObjectURL = function (value) {
+        liveUrls.delete(value)
+        urlEvents.push({ action: 'revoke', url: value })
+        return Reflect.apply(originalRevokeUrl, this, [value])
+      }
+      function closePreview() {
+        for (const url of [...liveUrls]) URL.revokeObjectURL(url)
+        document.querySelector('[data-preview]')?.remove()
+      }
+      async function stop() {
+        measurement = null
+        closePreview()
+        // clear() discards before unmount so final composable flush is excluded.
+        state?.draft.clear()
+        app?.unmount()
+        app = null
+        state = null
+        await nextTick()
+      }
+      async function mount(arm, options = {}) {
+        await stop()
+        const Form = {
+          setup() {
+            const content = ref('')
+            const owner = ref(options.owner || null)
+            const assetIds = ref(options.assetIds || [])
+            const images = options.images || []
+            const draft = useDraftProtection({
+              key: `prototype:${arm}`,
+              fields: { content },
+              dirty: () => Boolean(content.value),
+              extra: () =>
+                arm === 'legacy'
+                  ? { prototypeArm: arm, images }
+                  : { prototypeArm: arm, owner: owner.value, assetIds: assetIds.value },
+              restoreExtra(data) {
+                if (arm === 'asset') {
+                  owner.value = data.owner
+                  assetIds.value = data.assetIds
+                }
+              }
+            })
+            state = { arm, content, owner, assetIds, draft }
+            return () =>
+              h('textarea', {
+                'data-input': arm,
+                value: content.value,
+                onInput: (event) => {
+                  content.value = event.target.value
+                }
+              })
+          }
+        }
+        app = createApp({
+          setup() {
+            createMessageProvider()
+            return () => h(Form)
+          }
+        })
+        app.mount('#app')
+        await nextTick()
+        await nextTick()
+      }
+      async function input(value) {
+        const field = document.querySelector('[data-input]')
+        field.value = value
+        field.dispatchEvent(new Event('input', { bubbles: true }))
+        // These ticks await the actual post watcher. No explicit flush is called.
+        await nextTick()
+        await nextTick()
+      }
+      async function runInputs(count, prefix) {
+        const report = { arm: state.arm, stringify: [], storage: [], inputs: [] }
+        measurement = report
+        try {
+          for (let index = 0; index < count; index++) {
+            const value = `${prefix}-${index + 1}`
+            const started = performance.now()
+            await input(value)
+            report.inputs.push({ ms: performance.now() - started, value })
+          }
+        } finally {
+          measurement = null
+        }
+        const persisted = JSON.parse(localStorage.getItem(draftKey(state.arm)) || 'null')
+        return {
+          ...report,
+          finalValue: persisted?.data.content,
+          persistedBytes: localStorage.getItem(draftKey(state.arm))?.length * 2
+        }
+      }
+      window.fixture = {
+        ready: false,
+        async legacy(image) {
+          await mount('legacy', { images: [image] })
+        },
+        async asset(image) {
+          await stop()
+          const owner = await window.draftApi.openOwner('prototype:asset')
+          const started = performance.now()
+          const asset = await window.draftApi.stage(owner, image)
+          const stageIpcRoundTripMs = performance.now() - started
+          await mount('asset', { owner, assetIds: [asset.assetId] })
+          return { owner, asset, stageIpcRoundTripMs }
+        },
+        runInputs,
+        stop,
+        snapshot() {
+          return {
+            arm: state?.arm,
+            content: state?.content.value,
+            // executeJavaScript returns structured-clone data, never Vue proxies.
+            owner: state?.owner.value ? { ...state.owner.value } : null,
+            assetIds: state ? [...state.assetIds.value] : [],
+            liveUrls: liveUrls.size,
+            urlEvents: [...urlEvents],
+            stored: state ? localStorage.getItem(draftKey(state.arm)) : null
+          }
+        },
+        async preview() {
+          closePreview()
+          const started = performance.now()
+          const result = await window.draftApi.preview(
+            { ...state.owner.value },
+            state.assetIds.value[0]
+          )
+          const ipcRoundTripMs = performance.now() - started
+          const decodeStarted = performance.now()
+          const url = URL.createObjectURL(new Blob([result.bytes], { type: 'image/' + result.ext }))
+          const image = document.createElement('img')
+          image.dataset.preview = 'true'
+          image.src = url
+          document.body.append(image)
+          await image.decode()
+          return {
+            size: result.size,
+            sha256: result.sha256,
+            width: image.naturalWidth,
+            liveUrls: liveUrls.size,
+            ipcRoundTripMs,
+            blobDecodeMs: performance.now() - decodeStarted
+          }
+        },
+        closePreview,
+        beginHandoff: () =>
+          window.draftApi.beginHandoff({ ...state.owner.value }, [...state.assetIds.value]),
+        operation: (id) => window.draftApi.operationState({ ...state.owner.value }, id),
+        async waitHandoff(id) {
+          const result = await window.draftApi.waitHandoff({ ...state.owner.value }, id)
+          state.draft.clear()
+          state.assetIds.value = []
+          closePreview()
+          return result
+        },
+        async quota() {
+          const key = draftKey(state.arm)
+          const before = localStorage.getItem(key)
+          const fillers = []
+          let oversizeProbe = null
+          try {
+            // Electron v43.4.0 patches both DOM storage quotas to 100MiB:
+            // patches/chromium/dom_storage_limits.patch. Chromium counts UTF-16
+            // key/value length. Construct and retain strings only in this renderer.
+            const nativeQuotaBytes = 100 * 1024 * 1024
+            const oversizeKey = quotaPrefix + 'oversize-probe'
+            try {
+              localStorage.setItem(oversizeKey, 'q'.repeat(nativeQuotaBytes / 2))
+              fillers.push(oversizeKey)
+            } catch (error) {
+              oversizeProbe = {
+                name: error.name,
+                code: error.code,
+                attemptedUtf16Bytes: nativeQuotaBytes + oversizeKey.length * 2
+              }
+            }
+            if (oversizeProbe?.name !== 'QuotaExceededError')
+              throw new Error('Native 100MiB localStorage quota probe did not reject as expected')
+            const existingQuotaBytes = Object.keys(localStorage).reduce(
+              (sum, itemKey) => sum + (itemKey.length + localStorage.getItem(itemKey).length) * 2,
+              0
+            )
+            const headroomBytes = 512 * 1024
+            const fillerKey = quotaPrefix + 'near-capacity'
+            const fillerCharacters =
+              Math.floor((nativeQuotaBytes - headroomBytes - existingQuotaBytes) / 2) -
+              fillerKey.length
+            if (fillerCharacters < 0) throw new Error('Unexpected pre-existing prototype quota use')
+            localStorage.setItem(fillerKey, 'q'.repeat(fillerCharacters))
+            fillers.push(fillerKey)
+            if (localStorage.getItem(fillerKey).length !== fillerCharacters)
+              throw new Error('Native quota prefill did not retain its complete value')
+            const report = { arm: state.arm, stringify: [], storage: [] }
+            measurement = report
+            try {
+              await input('quota-target-' + 'x'.repeat(1024 * 1024))
+            } finally {
+              measurement = null
+            }
+            return {
+              ...report,
+              oversizeProbe,
+              nativeQuotaBytes,
+              existingQuotaBytes,
+              headroomBytes,
+              fillerCharacters,
+              preserved: localStorage.getItem(key) === before,
+              previousValue: JSON.parse(before).data.content
+            }
+          } finally {
+            measurement = null
+            for (const fillerKey of fillers) localStorage.removeItem(fillerKey)
+          }
+        },
+        async dispose() {
+          stopFinalEvidence()
+          await stop()
+          for (const key of Object.keys(localStorage))
+            if (
+              key.startsWith(quotaPrefix) ||
+              key.startsWith(`abandon:editing-draft:v2:${sessionId}:prototype:`)
+            )
+              localStorage.removeItem(key)
+          JSON.stringify = originalStringify
+          Storage.prototype.setItem = originalSetItem
+          URL.createObjectURL = originalCreateUrl
+          URL.revokeObjectURL = originalRevokeUrl
+          return {
+            liveUrls: liveUrls.size,
+            prototypeKeys: Object.keys(localStorage).filter(
+              (key) => key.startsWith(quotaPrefix) || key.includes(':prototype:')
+            ).length
+          }
+        },
+        prepareFinalEvidence(marker) {
+          stopFinalEvidence()
+          const markerNode = document.createElement('div')
+          markerNode.dataset.finalEvidenceMarker = 'true'
+          markerNode.style.cssText = `position:fixed;left:0;top:154px;width:24px;height:24px;background:rgb(${marker.join(',')});z-index:2147483647`
+          const paletteNode = document.createElement('div')
+          paletteNode.style.cssText =
+            'position:fixed;left:calc(5vw - 8px);top:calc(20vh - 8px);width:16px;height:16px;background:white;z-index:2147483647'
+          const cue = document.createElement('div')
+          cue.dataset.finalEvidenceCue = 'true'
+          cue.style.cssText =
+            'position:fixed;left:24px;top:154px;width:1px;height:1px;background:black;z-index:2147483647;pointer-events:none'
+          document.body.append(markerNode, paletteNode, cue)
+          // Keep a separate pixel changing while the real frame-copy subscription
+          // is pending. The sampled marker and palette remain fixed throughout.
+          const animation = { active: true, rafId: null, ticks: 0, cancelledRequests: 0, cue }
+          finalEvidenceAnimation = animation
+          const damage = () => {
+            if (!animation.active) return
+            animation.ticks++
+            cue.style.backgroundColor = animation.ticks % 2 ? 'white' : 'black'
+            animation.rafId = requestAnimationFrame(damage)
+          }
+          animation.rafId = requestAnimationFrame(damage)
+          return {
+            visibility: document.visibilityState,
+            focused: document.hasFocus(),
+            readyState: document.readyState,
+            fixtureReady: window.fixture.ready,
+            liveUrls: liveUrls.size,
+            markerRect: markerNode.getBoundingClientRect().toJSON(),
+            paletteRect: paletteNode.getBoundingClientRect().toJSON(),
+            evidenceAnimation: evidenceAnimationState()
+          }
+        },
+        stopFinalEvidence,
+        evidenceAnimationState
+      }
+      // Reload restores public owner metadata and IDs only. The fresh preload asks
+      // main for a new document capability; a stored generation is never upgraded.
+      const saved = JSON.parse(localStorage.getItem(draftKey('asset')) || 'null')
+      if (saved?.data?.owner) {
+        const owner = await window.draftApi.openOwner('prototype:asset', saved.data.owner)
+        await mount('asset', { owner, assetIds: saved.data.assetIds })
+      }
+      window.fixture.ready = true
+      window.addEventListener('beforeunload', closePreview)
+      window.addEventListener('beforeunload', stopFinalEvidence)
+    </script>
+  </body>
+</html>

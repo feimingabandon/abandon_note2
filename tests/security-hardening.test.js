@@ -13,6 +13,16 @@ describe('渲染入口 CSP', () => {
       expect(html).toContain("object-src 'none'")
       expect(html).toContain("base-uri 'none'")
       expect(html).toContain("form-action 'none'")
+      if (['sticky.html', 'reminder.html'].includes(entry)) expect(html).toContain("img-src 'none'")
+    }
+  )
+
+  it.each(['index.html', 'month.html', 'week.html'])(
+    '%s 允许会话图片 Blob，脚本仍只允许同源',
+    (entry) => {
+      const html = read(`src/renderer/${entry}`)
+      expect(html).toContain("img-src 'self' data: https: blob:;")
+      expect(html).toContain("script-src 'self';")
     }
   )
 })

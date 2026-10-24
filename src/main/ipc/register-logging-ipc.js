@@ -8,11 +8,14 @@ export function registerLoggingIpc({
   diagnosticController,
   logStore,
   collectSystemDiagnostics,
+  getAttachmentRecoveryReport,
   getCrashDumpsPath,
   refreshCrashDumpIndex,
   logger,
   now = Date.now
 }) {
+  if (typeof getAttachmentRecoveryReport !== 'function')
+    throw new TypeError('附件恢复报告读取器不可用')
   const owned = []
   let disposed = false
   let diagnosticExporting = false
@@ -27,6 +30,10 @@ export function registerLoggingIpc({
   }
   try {
     handle('logs:query', async (_event, query) => logStore.queryLogs(query))
+    handle('logs:attachment-recovery', (_event, ...args) => {
+      if (args.length) throw new Error('附件恢复报告查询不接受参数')
+      return structuredClone(getAttachmentRecoveryReport())
+    })
     handle('logs:open-folder', async () => {
       await logStore.flushLogs()
       const errorMessage = await shell.openPath(logStore.getLogDirectory())
@@ -42,6 +49,16 @@ export function registerLoggingIpc({
         if (!['all', 'last-hour'].includes(range)) throw new Error('不支持的日志导出范围')
         // Freeze at the click boundary, before the user waits in the save dialog.
         const requestedAt = now()
+        let attachmentRecovery
+        let attachmentRecoveryError = null
+        try {
+          attachmentRecovery = structuredClone(getAttachmentRecoveryReport())
+        } catch (error) {
+          attachmentRecoveryError = {
+            field: 'attachmentRecovery',
+            message: error?.message || String(error)
+          }
+        }
         const frozen = await diagnosticController.freeze('export', requestedAt)
         fileSnapshot = await logStore.freezeLogSnapshot()
         const selection =
@@ -63,6 +80,26 @@ export function registerLoggingIpc({
             capturedAt: new Date(now()).toISOString(),
             collectionErrors: [{ field: 'system', message: error?.message || String(error) }]
           }
+        }
+        const systemSnapshot = { ...systemDiagnostics }
+        // This field belongs to the click-time read, including when that read failed.
+        delete systemSnapshot.attachmentRecovery
+        const hasCollectionErrors =
+          attachmentRecoveryError || Object.hasOwn(systemSnapshot, 'collectionErrors')
+        const collectionErrors = attachmentRecoveryError
+          ? [
+              ...(Array.isArray(systemSnapshot.collectionErrors)
+                ? systemSnapshot.collectionErrors
+                : []),
+              attachmentRecoveryError
+            ]
+          : systemSnapshot.collectionErrors
+        delete systemSnapshot.collectionErrors
+        // Preserve small errors before report operations can consume the shared export budget.
+        systemDiagnostics = {
+          ...(hasCollectionErrors ? { collectionErrors } : {}),
+          ...(attachmentRecoveryError ? {} : { attachmentRecovery }),
+          ...systemSnapshot
         }
         await logStore.exportLogs(
           result.filePath,

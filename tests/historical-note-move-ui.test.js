@@ -90,9 +90,11 @@ describe('historical move UI boundaries', () => {
   it('submits the preview date and stores the shared automatic preference', () => {
     expect(control).toContain('targetDateKey: preview.value.targetDateKey')
     expect(control).toContain("setSettingValue('notes.autoMoveToToday', Boolean(value))")
-    expect(control).toContain('window.api.onSettingsChanged?.(applySettings)')
+    expect(control).toContain('settingsSnapshots.subscribe(applySettings)')
+    expect(control).toContain('await settingsSnapshots.read()')
     expect(control).toContain('window.api.onNotesChanged?.(onPreviewChanged)')
-    expect(control).toContain('每天自动移动昨天未完成的仅当天便签，开启后立即检查')
+    expect(control).toContain('每天自动移动昨天未完成的仅当天便签，循环便签除外')
+    expect(control).toContain('开启后立即检查')
     expect(control).not.toContain('recurrence_id')
     expect(control).not.toContain('template_id')
   })

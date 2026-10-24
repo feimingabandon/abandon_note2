@@ -5,17 +5,17 @@ import { pointerMenuStyle } from '../../utils/anchoredPopover.js'
 import { measureRendererLayout } from '../../utils/performanceDiagnostics.js'
 import { reminderChannelLabels } from '../../../../shared/reminder-rules.js'
 /**
- * NoteCard.vue — 便签列表项
+ * NoteCard.vue — 列表与月周日期侧栏共用的便签卡片
  *
  * 左侧状态圆环既表达状态，也承担主要状态操作：
  * initialized → 提前开始；in_progress → 完成；completed → 重新进行。
  */
 import { computed, ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
-import ImagePicker from '../note/ImagePicker.vue'
+import ImagePicker from './ImagePicker.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
-import StatusRing from './StatusRing.vue'
-import QuickNoteContentEditor from '../note/QuickNoteContentEditor.vue'
-import NoteTextColorPopover from '../note/NoteTextColorPopover.vue'
+import StatusRing from '../list/StatusRing.vue'
+import QuickNoteContentEditor from './QuickNoteContentEditor.vue'
+import NoteTextColorPopover from './NoteTextColorPopover.vue'
 import DateContextBadge from '../almanac/DateContextBadge.vue'
 import { useDateContextSettings } from '../../composables/useDateContextSettings.js'
 import { getNoteEffectiveDateKey } from '../../utils/noteWeather.js'

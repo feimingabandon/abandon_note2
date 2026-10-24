@@ -19,7 +19,7 @@ describe('便签正文局部文字颜色', () => {
   })
 
   it('offers one popover for setting, selected clearing and whole-note clearing', () => {
-    const card = read('../src/renderer/src/components/list/NoteCard.vue')
+    const card = read('../src/renderer/src/components/note/NoteCard.vue')
     const popover = read('../src/renderer/src/components/note/NoteTextColorPopover.vue')
 
     expect(card).toContain('@pointerup="onContentPointerUp"')

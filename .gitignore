@@ -30,3 +30,13 @@ docs/发布构建与应用更新流程.md
 
 # Isolated Electron test profiles retained locally beside acceptance evidence
 /docs/testing/evidence/**/temp-*/
+
+# Local working records and standalone experiments; keep files on this machine.
+/docs/planning/2026-10-20-system-improvement/
+/docs/releases/investigations/2026-10-19-release-optimization.md
+/docs/testing/2026-10-15-show-desktop-prototype.md
+/docs/testing/2026-10-19-z-order-failure-diagnostics.md
+/scripts/prototypes/frame-pacing/
+/scripts/prototypes/show-desktop/matrix.cjs
+/scripts/prototypes/show-desktop/probe.mjs
+/scripts/prototypes/show-desktop/run.cjs

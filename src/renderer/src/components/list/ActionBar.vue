@@ -2,8 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import NewNotePanel from './NewNotePanel.vue'
 import SearchBox from './SearchBox.vue'
+import { useMessage } from '../../composables/useMessage.js'
 
 const emit = defineEmits(['create', 'edit'])
+const { showMessage } = useMessage()
+const newPanelRef = ref(null)
+let stopNewNoteShortcut = null
 
 const mode = ref('new')
 const phase = ref('collapsed') // collapsed | opening | open | closing-content | closing
@@ -44,11 +48,13 @@ function openExpanded() {
 
 function closeExpanded(nextMode = null, reopen = false) {
   if (phase.value !== 'open') return
+  const waitForSearchFade = mode.value === 'search' && searchContentReady.value
   searchContentReady.value = false
   pendingMode = nextMode
   pendingOpen = reopen
-  // 新建面板的内容淡出与外壳收缩并行；搜索结果较密集，仍先淡出内容再收壳。
-  phase.value = mode.value === 'new' ? 'closing' : 'closing-content'
+  // 搜索内容尚未完成淡入时可能还没有 opacity 过渡，不能等待不存在的结束事件。
+  // 已完全显示的搜索仍先淡出再收壳，其余状态让内容淡出与外壳收缩并行。
+  phase.value = waitForSearchFade ? 'closing-content' : 'closing'
 }
 
 function onContentTransitionEnd(event, kind) {
@@ -64,7 +70,9 @@ function onBoxTransitionEnd(event, kind) {
   if (event.target !== event.currentTarget || event.propertyName !== 'height') return
   if (mode.value !== kind) return
   if (phase.value === 'opening') {
-    phase.value = 'open'
+    // Search content has not appeared yet, so there is no opacity fade-out to
+    // wait for when F3 arrived during the shell's opening transition.
+    phase.value = pendingMode === 'new' && kind !== 'new' ? 'closing' : 'open'
     return
   }
   if (phase.value !== 'closing') return
@@ -119,6 +127,24 @@ function onGlobalKeydown(event) {
   openSearch()
 }
 
+function openNewNote() {
+  if (newButtonRef.value?.closest('[inert]') || document.querySelector('[aria-modal="true"]')) {
+    showMessage('warning', '请先完成或关闭当前面板，再新建便签')
+    return
+  }
+  if (phase.value === 'open' && mode.value === 'new') {
+    newPanelRef.value?.focus()
+  } else if (phase.value === 'collapsed') {
+    mode.value = 'new'
+    openExpanded()
+  } else if (phase.value === 'open') {
+    closeExpanded('new', true)
+  } else if (phase.value !== 'opening' || mode.value !== 'new') {
+    pendingMode = 'new'
+    pendingOpen = true
+  }
+}
+
 // ============================================================
 // 拖拽调整面板高度
 // ============================================================
@@ -165,9 +191,13 @@ onBeforeUnmount(() => {
   document.removeEventListener('mousemove', onDragMove)
   document.removeEventListener('mouseup', onDragEnd)
   window.removeEventListener('keydown', onGlobalKeydown)
+  stopNewNoteShortcut?.()
 })
 
-onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onGlobalKeydown)
+  stopNewNoteShortcut = window.api.onNewNoteRequested?.(openNewNote)
+})
 
 // ============================================================
 // 新建便签创建完成回调
@@ -281,7 +311,11 @@ defineExpose({
         :class="{ 'is-visible': contentVisible && mode === 'new' }"
         @transitionend="onContentTransitionEnd($event, 'new')"
       >
-        <NewNotePanel :active="contentVisible && mode === 'new'" @create="onNoteCreated" />
+        <NewNotePanel
+          ref="newPanelRef"
+          :active="contentVisible && mode === 'new'"
+          @create="onNoteCreated"
+        />
         <div class="ab-drag-handle" @mousedown="onDragStart">
           <div class="ab-drag-bar" />
         </div>

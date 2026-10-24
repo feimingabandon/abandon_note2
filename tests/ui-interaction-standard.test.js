@@ -23,7 +23,7 @@ const MONTH_EVENT_BAR_PATH = new URL(
   import.meta.url
 )
 const UI_STANDARD_PATH = new URL('../docs/UI_DESIGN_STANDARD.md', import.meta.url)
-const NOTE_CARD_PATH = new URL('../src/renderer/src/components/list/NoteCard.vue', import.meta.url)
+const NOTE_CARD_PATH = new URL('../src/renderer/src/components/note/NoteCard.vue', import.meta.url)
 const DAILY_REPORT_PATH = new URL(
   '../src/renderer/src/components/report/DailyReportDialog.vue',
   import.meta.url
@@ -63,7 +63,7 @@ describe('UI interaction standard', () => {
     const panel = readFileSync(MONTH_DAY_PANEL_PATH, 'utf8')
     const card = readFileSync(NOTE_CARD_PATH, 'utf8')
 
-    expect(panel).toContain("import NoteCard from '../list/NoteCard.vue'")
+    expect(panel).toContain("import NoteCard from '../note/NoteCard.vue'")
     expect(panel).toContain('<NoteCard')
     expect(panel).not.toContain(':draggable=')
     expect(panel).toContain('month-day-panel__weather-slot')
@@ -145,7 +145,9 @@ describe('UI interaction standard', () => {
     expect(grid).toContain('placeholder="新建便签"')
     expect(grid).toContain('window.api.createNote(options)')
     expect(grid).toContain("showMessage('warning', '请输入便签内容')")
-    expect(grid).toContain("day.key < props.todayKey ? '历史便签补录成功' : '便签创建成功'")
+    expect(grid).toMatch(
+      /day\.key < props\.todayKey\s*\?\s*'历史便签补录成功'\s*:\s*'便签创建成功'/
+    )
     expect(grid).toContain("emit('quick-created', created)")
     expect(grid).toContain('@pointerdown.prevent.stop')
     expect(grid).not.toContain('resettingQuickCreateKey')

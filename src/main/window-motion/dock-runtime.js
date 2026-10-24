@@ -115,6 +115,7 @@ export function createDockRuntime({
   let nativeEdgeCleanupTimer = null
 
   let dockInteractionSuspendCount = 0
+  let suspendedDockGeneration = null
 
   const dockNativeStatusObserver = new DockNativeStatusObserver({
     getStatus: () => windowMotionBackend?.getEdgeMonitorStatus() || {},
@@ -189,21 +190,33 @@ export function createDockRuntime({
   }
 
   function reconcileDockRuntimeConfig(previousConfig, source = 'settings') {
+    return reconcileDockRuntimeConfigWithResult(previousConfig, source).config
+  }
+
+  function reconcileDockRuntimeConfigWithResult(previousConfig, source, confirm = false) {
     const nextConfig = getDockRuntimeConfig()
-    if (dockRuntimeConfigEqual(previousConfig, nextConfig)) return nextConfig
+    const configChanged = !dockRuntimeConfigEqual(previousConfig, nextConfig)
+    if (!configChanged && !confirm) {
+      return { config: nextConfig, result: { status: 'unconfirmed', retryable: true } }
+    }
 
     cancelPendingDockHide(`dock-config:${source}`)
 
-    logger.info('dock.config', '贴边隐藏配置已更新', {
-      source,
-      previous: previousConfig,
-      next: nextConfig,
-      isDockHidden,
-      isSliding,
-      hasSession: Boolean(dockMotionSession)
-    })
+    if (configChanged) {
+      logger.info('dock.config', '贴边隐藏配置已更新', {
+        source,
+        previous: previousConfig,
+        next: nextConfig,
+        isDockHidden,
+        isSliding,
+        hasSession: Boolean(dockMotionSession)
+      })
+    }
 
-    if (isDockTransitionActive()) {
+    if (confirm) {
+      const blocked = prepareDockRuntimeApply(source, { recoverTransition: configChanged })
+      if (blocked) return { config: nextConfig, result: blocked }
+    } else if (isDockTransitionActive()) {
       emergencyRestoreDock(
         'dock-config-changed',
         new Error('贴边隐藏会话期间配置发生变化，已恢复窗口可见')
@@ -212,11 +225,83 @@ export function createDockRuntime({
 
     if (!getMainWindow() || getMainWindow().isDestroyed() || !getMainWindow().isVisible()) {
       dockSide = null
-      return nextConfig
+      return { config: nextConfig, result: { status: 'deferred', retryable: true } }
     }
 
-    syncVisibleDockSide({ source: `dock-config:${source}`, snap: true })
-    return nextConfig
+    const { result } = syncVisibleDockSideWithResult({
+      source: `dock-config:${source}`,
+      snap: true,
+      forceSnap: confirm,
+      requireBackend: confirm,
+      config: nextConfig
+    })
+    return { config: nextConfig, result }
+  }
+
+  function dockApplyDeferred(message, retryable = true) {
+    return { status: 'deferred', error: new Error(message), retryable }
+  }
+
+  function prepareDockRuntimeApply(source, { recoverTransition = false } = {}) {
+    if (stopping || disposed || isQuitting()) {
+      return dockApplyDeferred('贴边运行时正在退出，未应用配置', false)
+    }
+    if (isCompactPresentationActive()) return dockApplyDeferred('灵动岛展示期间暂缓贴边配置')
+    const window = getMainWindow()
+    if (!window || window.isDestroyed() || !window.isVisible()) {
+      return dockApplyDeferred('窗口不可见或不可用，暂缓贴边配置')
+    }
+    if (isWindowLocked() || dockInteractionSuspendCount > 0) {
+      return dockApplyDeferred('窗口锁定或交互暂停期间暂缓贴边配置')
+    }
+    // 原生清理仍由原 owner 完成；重试不能绕过旧代次，也不重新 arm。
+    if (nativeEdgeCleanupPending && !attemptNativeEdgeCleanup(`dock-config:${source}`)) {
+      return dockApplyDeferred('原生边缘监视器清理尚未完成')
+    }
+    if (isDockTransitionActive()) {
+      if (!recoverTransition) return dockApplyDeferred('贴边会话进行中，暂缓贴边配置')
+      emergencyRestoreDock(
+        'dock-config-changed',
+        new Error('贴边隐藏会话期间配置发生变化，已恢复窗口可见')
+      )
+      if (isDockTransitionActive()) return dockApplyDeferred('贴边会话恢复或原生清理尚未完成')
+    }
+    return null
+  }
+
+  function applyDockRuntimeConfig(previousConfig, source = 'settings') {
+    try {
+      return reconcileDockRuntimeConfigWithResult(previousConfig, source, true).result
+    } catch (error) {
+      return { status: 'failed', error, retryable: true }
+    }
+  }
+
+  function retryDockRuntimeConfig(source = 'settings-retry') {
+    if (typeof source !== 'string') {
+      return {
+        status: 'failed',
+        error: new TypeError('贴边配置重试仅接受来源标识，不接受旧配置'),
+        retryable: false
+      }
+    }
+    try {
+      // 只读取本次调用时已保存的配置，重试不携带旧值，不主动显示用户隐藏的窗口。
+      const config = getDockRuntimeConfig()
+      const blocked = prepareDockRuntimeApply(source)
+      if (blocked) return blocked
+      cancelPendingDockHide(`dock-config:${source}`)
+      const { result } = syncVisibleDockSideWithResult({
+        source: `dock-config:${source}`,
+        snap: true,
+        forceSnap: true,
+        requireBackend: true,
+        config
+      })
+      return result
+    } catch (error) {
+      return { status: 'failed', error, retryable: true }
+    }
   }
 
   function scheduleNativeEdgeCleanup() {
@@ -301,9 +386,31 @@ export function createDockRuntime({
     return false
   }
 
-  function beginDockInteractionSuspension(source) {
+  function beginDockInteractionSuspension(source, { preserveHidden = false } = {}) {
     dockInteractionSuspendCount += 1
     cancelPendingDockHide(`suspend:${source}`)
+    if (preserveHidden && isDockHidden && dockMotionSession) {
+      suspendedDockGeneration = dockMotionSession.generation
+      // Screenshot selection must not reveal an off-screen window. Finish an
+      // in-flight hide at its existing target before freezing the desktop.
+      dockTransitionState.consumeQueuedShow()
+      if (isSliding) {
+        try {
+          const plan = dockMotionSession.motionPlan
+          setDockPosition({ x: plan.hiddenX, y: plan.hiddenY }, plan)
+          clearInterval(slideAnimTimer)
+          slideAnimTimer = null
+          isSliding = false
+          dockSlideStartedAt = null
+          slideDiagnostics?.finish('capture-hide-settled')
+          slideDiagnostics = null
+          runPendingSlideCallback()
+        } catch (error) {
+          emergencyRestoreDock('capture-hide-settle-failed', error)
+        }
+      }
+      return
+    }
     if (isSliding || isDockHidden || dockMotionSession) {
       emergencyRestoreDock(`suspend:${source}`, new Error(`${source} 会话期间暂停贴边隐藏`))
     }
@@ -312,7 +419,43 @@ export function createDockRuntime({
   function endDockInteractionSuspension(source) {
     dockInteractionSuspendCount = Math.max(0, dockInteractionSuspendCount - 1)
     if (dockInteractionSuspendCount !== 0) return
-    if (getMainWindow() && !getMainWindow().isDestroyed() && getMainWindow().isVisible()) {
+    const suspendedGeneration = suspendedDockGeneration
+    suspendedDockGeneration = null
+    const session = dockMotionSession
+    if (isDockHidden && session && session.generation === suspendedGeneration) {
+      // Retire every suspended monitor, including events not yet consumed by
+      // the deferred message hook. Native disarm joins the worker and clears
+      // its queue before re-arming; a one-shot trigger cannot escape the pause.
+      try {
+        if (!windowMotionBackend.disarmEdgeMonitor(session.generation)) {
+          beginNativeEdgeCleanup(session.generation, windowMotionBackend, 'capture-edge-resume')
+          throw new Error('截图结束后原生边缘监视器尚未停止')
+        }
+        const result = windowMotionBackend.armEdgeMonitor(session.side, session.generation, {
+          thicknessDip: EDGE_TRIGGER_THICKNESS_DIP,
+          pollIntervalMs: EDGE_MONITOR_POLL_INTERVAL_MS,
+          revealHandleMode: session.revealHandleMode
+        })
+        if (!result.success) {
+          if (result.cleanupRequired)
+            beginNativeEdgeCleanup(session.generation, windowMotionBackend, 'capture-edge-rearm')
+          throw new Error(result.error || '截图结束后无法恢复边缘监视器')
+        }
+        if (session.revealHandleMode === DOCK_REVEAL_HANDLE_MODES.PERSISTENT) {
+          const shown = windowMotionBackend.showPersistentHandle(session.generation)
+          if (!shown.success) throw new Error(shown.error || '截图结束后无法恢复贴边提示条')
+          applyDockPersistentHandlePosition(session, source)
+        }
+      } catch (error) {
+        emergencyRestoreDock('capture-edge-resume-failed', error)
+      }
+    }
+    if (
+      !isDockHidden &&
+      getMainWindow() &&
+      !getMainWindow().isDestroyed() &&
+      getMainWindow().isVisible()
+    ) {
       syncVisibleDockSide({ source: `resume:${source}`, snap: true })
     }
   }
@@ -400,6 +543,9 @@ export function createDockRuntime({
       return
     }
     if (event.kind === 'trigger') {
+      if (dockInteractionSuspendCount > 0) {
+        return
+      }
       if (isDockHidden) {
         try {
           doShow('native-edge')
@@ -534,7 +680,9 @@ export function createDockRuntime({
     if (getMainWindow() && !getMainWindow().isDestroyed()) {
       const display = screen.getDisplayMatching(getMainWindow().getBounds())
       if (display) cachedWorkArea = display.workArea
+      return display?.workArea || null
     }
+    return null
   }
 
   function setDockPosition(position, motionPlan) {
@@ -760,6 +908,7 @@ export function createDockRuntime({
   }
 
   function resetDockState({ source = 'reset-dock-state', skipNativeDisarm = false } = {}) {
+    suspendedDockGeneration = null
     slideDiagnostics?.finish(source)
     slideDiagnostics = null
     const generation = dockMotionSession?.generation || nativeEdgeCleanupPending?.generation || 0
@@ -1160,7 +1309,7 @@ export function createDockRuntime({
     dockPowerListeners.length = 0
   }
 
-  function detectDockSide() {
+  function detectDockSide(config) {
     if (!getMainWindow() || getMainWindow().isDestroyed()) return null
     if (getMainWindow().isMaximized() || getMainWindow().isMinimized()) return null
 
@@ -1173,35 +1322,105 @@ export function createDockRuntime({
     return selectNearestDockSide({
       bounds: b,
       workArea: wa,
-      activeEdges: getDockRuntimeConfig().activeEdges,
+      activeEdges: (config || getDockRuntimeConfig()).activeEdges,
       threshold: SNAP_THRESHOLD,
       isExposed: (side) => Boolean(windowMotionBackend?.isDockEdgeExposed(side))
     })
   }
 
   function syncVisibleDockSide({ source = 'unknown', snap = false, forceSnap = false } = {}) {
-    if (isCompactPresentationActive()) return null
+    return syncVisibleDockSideWithResult({ source, snap, forceSnap }).side
+  }
+
+  function syncVisibleDockSideWithResult({
+    source = 'unknown',
+    snap = false,
+    forceSnap = false,
+    requireBackend = false,
+    config
+  } = {}) {
+    if (isCompactPresentationActive()) {
+      return { side: null, result: { status: 'deferred', retryable: true } }
+    }
     if (
       !getMainWindow() ||
       getMainWindow().isDestroyed() ||
       !getMainWindow().isVisible() ||
       isDockTransitionActive()
     ) {
-      return dockSide
+      return { side: dockSide, result: { status: 'deferred', retryable: true } }
+    }
+    if (requireBackend && !windowMotionBackend && config.activeEdges.length > 0) {
+      return {
+        side: dockSide,
+        result: {
+          status: 'failed',
+          error: new Error('Windows 原生窗口移动后端不可用'),
+          retryable: true
+        }
+      }
     }
 
     const previousSide = dockSide
     let nextSide = null
     try {
-      nextSide = detectDockSide()
+      if (requireBackend) {
+        if (config.activeEdges.length > 0) {
+          const capability = getDockRuntimeCapability()
+          if (!capability.supported) {
+            return {
+              side: dockSide,
+              result: {
+                status: 'failed',
+                error: new Error(capability.reason || 'Windows 原生边缘监视器不可用'),
+                retryable: true
+              }
+            }
+          }
+        }
+        if (getMainWindow().isMaximized() || getMainWindow().isMinimized()) {
+          return {
+            side: dockSide,
+            result: dockApplyDeferred('窗口最大化或最小化期间暂缓贴边配置')
+          }
+        }
+        // 当前显示器不可观测时，旧缓存不能证明本次配置已经应用。
+        const workArea = updateWorkArea()
+        const bounds = getMainWindow().getBounds()
+        if (
+          ![workArea, bounds].every(
+            (rect) =>
+              rect &&
+              [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) &&
+              rect.width > 0 &&
+              rect.height > 0
+          )
+        ) {
+          return {
+            side: dockSide,
+            result: {
+              status: 'unconfirmed',
+              error: new Error('无法读取当前显示器工作区或窗口边界，未确认贴边配置'),
+              retryable: true
+            }
+          }
+        }
+      }
+      nextSide = detectDockSide(config)
     } catch (error) {
       dockSide = null
       logger.error('dock.side-sync', error, { source, previousSide })
-      return null
+      return { side: null, result: { status: 'failed', error, retryable: true } }
     }
 
     dockSide = nextSide
-    if (nextSide && snap && (forceSnap || nextSide !== previousSide)) snapToEdge(nextSide)
+    let result = { status: 'applied' }
+    if (nextSide) {
+      result =
+        snap && (forceSnap || nextSide !== previousSide)
+          ? snapToEdge(nextSide)
+          : { status: 'unconfirmed', retryable: true }
+    }
 
     if (dockSide !== previousSide) {
       logger.info('dock.side-sync', '可见窗口贴边方向已同步', {
@@ -1210,27 +1429,48 @@ export function createDockRuntime({
         dockSide
       })
     }
-    return dockSide
+    return { result, side: dockSide }
   }
 
   function snapToEdge(side) {
     updateWorkArea()
-    if (!cachedWorkArea || !windowMotionBackend) return
+    if (!cachedWorkArea || !windowMotionBackend) {
+      return {
+        status: 'unconfirmed',
+        error: new Error('缺少工作区或 Windows 原生窗口移动后端，未确认吸附结果'),
+        retryable: true
+      }
+    }
     try {
       const motionPlan = windowMotionBackend.createDockPlan(side, HIDE_OVERSHOOT)
       const alreadySnapped =
         Math.abs(motionPlan.initial.x - motionPlan.visibleX) <= 1 &&
         Math.abs(motionPlan.initial.y - motionPlan.visibleY) <= 1
-      if (alreadySnapped) return
+      if (alreadySnapped) return { status: 'applied' }
       const electronContentBounds = getMainWindow().getContentBounds()
       motionPlan.expectedElectronContentSize = {
         width: electronContentBounds.width,
         height: electronContentBounds.height
       }
-      setDockPosition({ x: motionPlan.visibleX, y: motionPlan.visibleY }, motionPlan)
+      const after = setDockPosition({ x: motionPlan.visibleX, y: motionPlan.visibleY }, motionPlan)
+      if (!after || !Number.isFinite(after.x) || !Number.isFinite(after.y)) {
+        return {
+          status: 'unconfirmed',
+          error: new Error('原生窗口移动未返回可确认的吸附位置'),
+          retryable: true
+        }
+      }
+      if (
+        Math.abs(after.x - Math.round(motionPlan.visibleX)) > 1 ||
+        Math.abs(after.y - Math.round(motionPlan.visibleY)) > 1
+      ) {
+        throw new Error('原生窗口移动后的实际位置未到达吸附目标')
+      }
+      return { status: 'applied' }
     } catch (error) {
       console.error('[dock] 吸附窗口失败:', error)
       resetDockState()
+      return { status: 'failed', error, retryable: true }
     }
   }
 
@@ -1745,6 +1985,8 @@ export function createDockRuntime({
     getDockRuntimeConfig,
     getDockRuntimeCapability,
     reconcileDockRuntimeConfig,
+    applyDockRuntimeConfig,
+    retryDockRuntimeConfig,
     beginDockInteractionSuspension,
     endDockInteractionSuspension,
     cancelPendingDockHide,

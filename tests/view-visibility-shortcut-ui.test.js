@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { compileScript, parse } from '@vue/compiler-sfc'
+import { parseForESLint } from 'vue-eslint-parser'
 import { isComposingInput } from '../src/renderer/src/utils/inputComposition.js'
+import { RENDERER_WRITABLE_SETTING_IDS } from '../src/shared/settings-schema.js'
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 
@@ -154,17 +156,17 @@ describe('view visibility shortcut UI wiring', () => {
   it('uses dedicated IPC and the existing cross-mode window toggle path', () => {
     const main = read('src/main/index.js')
     const preload = read('src/preload/index.js')
-    const genericAllowlistStart = main.indexOf('const RENDERER_WRITABLE_SETTING_IDS')
-    const genericAllowlist = main.slice(
-      genericAllowlistStart,
-      main.indexOf('])', genericAllowlistStart) + 2
+    const shortcutNode = parseForESLint(main, {
+      ecmaVersion: 'latest',
+      sourceType: 'module'
+    }).ast.body.find(
+      (node) =>
+        node.type === 'FunctionDeclaration' && node.id.name === 'handleViewVisibilityShortcut'
     )
-    const shortcutHandler = main.slice(
-      main.indexOf('function handleViewVisibilityShortcut()'),
-      main.indexOf('function openMainWindow()')
-    )
+    expect(shortcutNode, 'actual shortcut handler must exist').toBeDefined()
+    const shortcutHandler = main.slice(...shortcutNode.range)
 
-    expect(genericAllowlist).not.toContain('shortcuts.viewVisibility')
+    expect(RENDERER_WRITABLE_SETTING_IDS).not.toContain('shortcuts.viewVisibility')
     expect(preload).toContain('beginViewVisibilityShortcutCapture')
     expect(preload).toContain('endViewVisibilityShortcutCapture')
     expect(preload).toContain('setViewVisibilityShortcut')

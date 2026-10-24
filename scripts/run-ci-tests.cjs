@@ -8,13 +8,33 @@ const { domainRules } = require('./test-domain-rules.cjs')
 // Each rule names reviewed consumers. Registry imports/source reads are displayed
 // as candidates, never promoted to execution because a filename looks relevant.
 const infrastructureRules = Object.freeze({
-  'scripts/test-manifest.cjs': ['tests/test-manifest.test.js', 'tests/test-selection.test.js'],
+  'scripts/test-manifest.cjs': [
+    'tests/test-manifest.test.js',
+    'tests/test-selection.test.js',
+    'tests/run-focused-tests.test.js',
+    'tests/ci-test-selection.test.js'
+  ],
   'scripts/test-selection.cjs': [
     'tests/test-selection.test.js',
     'tests/run-focused-tests.test.js',
     'tests/test-entrypoints.test.js'
   ],
-  'scripts/test-runner.cjs': ['tests/test-runner.test.js', 'tests/run-focused-tests.test.js'],
+  'scripts/test-runner.cjs': [
+    'tests/test-runner.test.js',
+    'tests/run-focused-tests.test.js',
+    'tests/test-failure-diagnostics.test.js',
+    'tests/test-failure-diagnostics-win.cjs'
+  ],
+  'scripts/test-failure-diagnostics.cjs': [
+    'tests/test-failure-diagnostics.test.js',
+    'tests/test-runner.test.js',
+    'tests/test-failure-diagnostics-win.cjs'
+  ],
+  'scripts/test-failure-windows.ps1': [
+    'tests/test-failure-diagnostics.test.js',
+    'tests/test-failure-diagnostics-win.cjs'
+  ],
+  'tests/test-failure-diagnostics-win.cjs': ['tests/test-failure-diagnostics-win.cjs'],
   'scripts/test-result-adapters.cjs': [
     'tests/test-result-adapters.test.js',
     'tests/run-focused-tests.test.js'
@@ -33,6 +53,10 @@ const infrastructureRules = Object.freeze({
     'tests/ci-test-selection.test.js'
   ],
   'scripts/run-ci-tests.cjs': ['tests/ci-test-selection.test.js'],
+  'scripts/release-candidate.cjs': [
+    'tests/release-candidate.test.js',
+    'tests/ci-test-selection.test.js'
+  ],
   'scripts/test-domain-rules.cjs': ['tests/ci-test-selection.test.js'],
   'scripts/test-main-domain-rules.cjs': ['tests/ci-test-selection.test.js'],
   'scripts/test-renderer-domain-rules.cjs': ['tests/ci-test-selection.test.js'],
@@ -47,18 +71,27 @@ const infrastructureRules = Object.freeze({
   ],
   'scripts/test-build-jobs.cjs': [
     'tests/run-focused-tests.test.js',
-    'tests/test-build-provenance.test.js'
+    'tests/test-build-provenance.test.js',
+    'tests/release-window-entry.test.js'
   ],
   'scripts/run-capture-test.cjs': ['tests/capture-build-selection.test.js'],
   'scripts/run-electron-node-tests.cjs': ['tests/test-entrypoints.test.js'],
-  'scripts/run-electron-window-tests.cjs': ['tests/test-entrypoints.test.js'],
+  'scripts/run-electron-window-tests.cjs': [
+    'tests/test-entrypoints.test.js',
+    'tests/release-window-entry.test.js'
+  ],
   'scripts/run-full-tests.cjs': ['tests/test-runner.test.js'],
   'scripts/run-electron-wallpaper-tests.cjs': ['tests/run-focused-tests.test.js'],
   'scripts/run-electron-attachment-tests.cjs': ['tests/run-focused-tests.test.js'],
-  '.github/workflows/ci.yml': ['tests/ci-test-selection.test.js'],
+  '.github/workflows/ci.yml': [
+    'tests/ci-test-selection.test.js',
+    'tests/release-candidate.test.js'
+  ],
   '.github/workflows/release.yml': [
     'tests/ci-test-selection.test.js',
-    'tests/test-entrypoints.test.js'
+    'tests/test-entrypoints.test.js',
+    'tests/release-candidate.test.js',
+    'tests/release-window-entry.test.js'
   ],
   'vitest.config.mjs': [
     'tests/test-manifest.test.js',
@@ -97,6 +130,8 @@ const storageRules = Object.freeze({
 // The old JS edge predicate was removed in favor of the native monitor. Preserve
 // its protection through the monitor contracts and actual native edge exercises.
 const replacementProtectionRules = Object.freeze({
+  'src/renderer/src/components/list/NoteCard.vue':
+    domainRules['src/renderer/src/components/note/NoteCard.vue'],
   'tests/dock-edge.test.js': [
     'tests/native-edge-monitor.test.js',
     'tests/native-edge-monitor-source.test.js',
@@ -122,6 +157,7 @@ const reviewedOptInChanges = Object.freeze({
   ]
 })
 const verifiedDomainTargets = new Set([
+  'tests/test-failure-diagnostics-win.cjs',
   ...manifest.storageTests,
   ...manifest.databaseTests,
   ...Object.values(domainRules).flat(),
@@ -170,6 +206,7 @@ function selectCiTests({
   registry,
   platform = process.platform,
   packageScriptOnly = false,
+  packagePublisherOnly = false,
   lockfileVersionOnly = false
 } = {}) {
   requireSupportedCiPlatform(platform)
@@ -263,7 +300,9 @@ function selectCiTests({
         })
     } else if (change.file === 'package-lock.json' && lockfileVersionOnly) {
       addTargets(infrastructureRules['package.json'], change, 'reviewed-lockfile-version-only')
-    } else if (change.file === 'package.json' && !packageScriptOnly)
+    } else if (change.file === 'package.json' && packagePublisherOnly)
+      addTargets(infrastructureRules['package.json'], change, 'reviewed-publisher-metadata')
+    else if (change.file === 'package.json' && !packageScriptOnly)
       needsDomainValidation.push({
         file: change.file,
         reason:
@@ -455,7 +494,9 @@ function classifyPackageChange(
         reason: 'Committed package changes are confined to script entries or formatting'
       }
     }
-    if (validReleaseVersion(base.version) && validReleaseVersion(head.version)) {
+    const releaseVersionsValid =
+      validReleaseVersion(base.version) && validReleaseVersion(head.version)
+    if (releaseVersionsValid) {
       delete base.version
       delete head.version
       if (isDeepStrictEqual(base, head)) {
@@ -465,6 +506,17 @@ function classifyPackageChange(
           reason:
             'Only the valid release version and script entries changed; dependencies are identical'
         }
+      }
+    }
+    const validPublisher = typeof head.author === 'string' && head.author.trim().length > 0
+    delete base.author
+    delete head.author
+    if (validPublisher && releaseVersionsValid && isDeepStrictEqual(base, head)) {
+      return {
+        scriptOnly: false,
+        publisherAndScriptsOnly: true,
+        reason:
+          'Only the publisher display name, valid version and scripts changed; dependencies and application identity are identical'
       }
     }
     return {
@@ -547,6 +599,8 @@ async function main(argv = process.argv.slice(2), options = {}) {
       packageScriptOnly:
         (packageChange?.scriptOnly === true || packageChange?.versionAndScriptsOnly === true) &&
         lockfileChange?.versionOnly === true,
+      packagePublisherOnly:
+        packageChange?.publisherAndScriptsOnly === true && lockfileChange?.versionOnly === true,
       lockfileVersionOnly: lockfileChange?.versionOnly === true
     }),
     range,

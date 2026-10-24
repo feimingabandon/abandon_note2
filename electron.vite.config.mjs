@@ -46,6 +46,8 @@ export default defineConfig({
         input: {
           index: resolve('src/main/bootstrap.js'),
           'capture-image': resolve('src/main/capture/capture-image-worker.mjs'),
+          'image-decode': resolve('src/main/images/image-decode-entry.mjs'),
+          'image-decode-gate': resolve('src/main/images/image-decode-gate.cjs'),
           'log-writer': resolve('src/main/logging/log-writer.mjs')
         }
       }
@@ -58,7 +60,8 @@ export default defineConfig({
         input: {
           index: resolve('src/preload/index.js'),
           reminder: resolve('src/preload/reminder.js'),
-          sticky: resolve('src/preload/sticky.js')
+          sticky: resolve('src/preload/sticky.js'),
+          'image-preview': resolve('src/preload/image-preview.cjs')
         }
       }
     }

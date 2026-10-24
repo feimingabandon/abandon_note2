@@ -1,9 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
+  APPLICATION_SETTING_DEFINITIONS,
+  APPLICATION_SETTING_IDS,
   DEFAULT_SETTINGS,
   DOCK_REVEAL_HANDLE_MODES,
   ICON_COLORS,
+  RENDERER_WRITABLE_SETTING_IDS,
+  SETTING_DEFINITIONS,
+  SETTING_SCOPES,
+  SETTING_WRITE_CHANNELS,
+  applyApplicationSettings,
   createDefaultSettings,
+  projectApplicationSettings,
   resolveSettingsRows,
   serializeSetting,
   VIEW_MODES,
@@ -123,6 +131,7 @@ describe('global main-window controls', () => {
     expect(DEFAULT_SETTINGS.shortcuts).toEqual({
       enabled: true,
       viewVisibility: 'F2',
+      newNote: 'F3',
       screenshot: 'F1',
       screenshotCopy: 'Control+F1'
     })
@@ -136,6 +145,7 @@ describe('global main-window controls', () => {
     ).toEqual({
       enabled: true,
       viewVisibility: 'F2',
+      newNote: 'F3',
       screenshot: 'F2',
       screenshotCopy: 'Control+F1'
     })
@@ -228,7 +238,7 @@ describe('global main-window controls', () => {
     expect(
       resolveSettingsRows([{ type: 'presentation', key: 'compact_font_size', value: '99' }]).window
         .compactFontSize
-    ).toBe(28)
+    ).toBe(40)
   })
 })
 
@@ -687,7 +697,7 @@ describe('calendar font settings', () => {
           .fontSizeBase
       ).toBe(28)
     }
-    expect(serializeSetting('css.fontSizeBase', 40).value).toBe('28')
+    expect(serializeSetting('css.fontSizeBase', 40).value).toBe('40')
   })
 
   it('keeps note remark size independent and slightly smaller than body by default', () => {
@@ -702,8 +712,19 @@ describe('calendar font settings', () => {
     expect(serializeSetting('css.noteRemarkFontSize', 40)).toMatchObject({
       type: 'css',
       key: 'note_remark_font_size',
-      value: '28'
+      value: '40'
     })
+  })
+  it.each([
+    'css.fontSizeBase',
+    'css.noteRemarkFontSize',
+    'window.compactFontSize',
+    'sticky.fontSize'
+  ])('accepts and bounds all note font sizes for %s', (id) => {
+    for (const value of [8, 9, 17, 39, 40])
+      expect(serializeSetting(id, value).value).toBe(String(value))
+    expect(serializeSetting(id, 7).value).toBe('8')
+    expect(serializeSetting(id, 41).value).toBe('40')
   })
 })
 
@@ -715,5 +736,363 @@ describe('list minimal card setting', () => {
       expect(row).toMatchObject({ type: 'notes', key: 'minimal_mode', value: enabled ? '1' : '0' })
       expect(resolveSettingsRows([row]).listAppearance.minimalMode).toBe(enabled)
     }
+  })
+})
+
+// Fixed contracts from the existing application scope and IPC entrypoints.
+// Keep these independent of the schema metadata and its derived collections.
+const expectedScopeIds = {
+  application: [
+    'appearance.uiScale',
+    'appearance.titlebarIconScale',
+    'appearance.iconColor',
+    'shortcuts.viewVisibility',
+    'shortcuts.newNote',
+    'shortcuts.screenshot',
+    'shortcuts.screenshotCopy',
+    'calendar.recurringPreviewEnabled',
+    'notes.quickCreateUntilCompleted',
+    'notes.autoMoveToToday',
+    'notes.tagColorEnabled',
+    'interaction.doubleClickQuickEdit',
+    'interaction.hideMainViewDuringScreenshot',
+    'remote.receiveNotices',
+    'remote.uploadDeviceInfo',
+    'almanac.enabled',
+    'weather.enabled',
+    'weather.location',
+    'onboarding.noticeVersion',
+    'window.lockState',
+    'window.zOrderMode',
+    'window.compactWidth',
+    'window.compactHeight',
+    'window.compactFontSize'
+  ],
+  view: [
+    'appearance.titlebarStyle',
+    'css.bgColor',
+    'css.popupOpacity',
+    'css.bgBlur',
+    'css.windowOpacity',
+    'css.windowBorder',
+    'css.fontSizeBase',
+    'css.noteRemarkFontSize',
+    'css.textColor',
+    'blur.enabled',
+    'blur.radius',
+    'blur.saturation',
+    'blur.cornerRadius',
+    'wallpaper.enabled',
+    'wallpaper.activeId',
+    'wallpaper.blurRadius',
+    'ui.settingsPanelSize',
+    'ui.dayPanelSize',
+    'listAppearance.minimalMode',
+    'dock.revealHandleMode',
+    'dock.enabledEdges',
+    'sticky.fontSize',
+    'sticky.backgroundColor',
+    'sticky.cornerRadius',
+    'sticky.alwaysOnTop',
+    'listFilter',
+    'geometry.posX',
+    'geometry.posY',
+    'geometry.width',
+    'geometry.height',
+    'geometry.widthRatio',
+    'geometry.heightRatio'
+  ],
+  session: ['shortcuts.enabled']
+}
+
+const expectedWriteChannelIds = {
+  renderer: [
+    'appearance.titlebarStyle',
+    'appearance.uiScale',
+    'appearance.titlebarIconScale',
+    'appearance.iconColor',
+    'css.bgColor',
+    'css.popupOpacity',
+    'css.bgBlur',
+    'css.windowOpacity',
+    'css.windowBorder',
+    'css.fontSizeBase',
+    'css.noteRemarkFontSize',
+    'css.textColor',
+    'sticky.fontSize',
+    'sticky.backgroundColor',
+    'sticky.cornerRadius',
+    'sticky.alwaysOnTop',
+    'wallpaper.blurRadius',
+    'ui.settingsPanelSize',
+    'ui.dayPanelSize',
+    'calendar.recurringPreviewEnabled',
+    'notes.quickCreateUntilCompleted',
+    'notes.autoMoveToToday',
+    'notes.tagColorEnabled',
+    'listAppearance.minimalMode',
+    'interaction.doubleClickQuickEdit',
+    'interaction.hideMainViewDuringScreenshot',
+    'almanac.enabled',
+    'weather.enabled',
+    'weather.location',
+    'remote.receiveNotices',
+    'remote.uploadDeviceInfo',
+    'onboarding.noticeVersion',
+    'window.compactWidth',
+    'window.compactHeight',
+    'window.compactFontSize',
+    'listFilter'
+  ],
+  specialized: [
+    'shortcuts.enabled',
+    'shortcuts.viewVisibility',
+    'shortcuts.newNote',
+    'shortcuts.screenshot',
+    'shortcuts.screenshotCopy',
+    'blur.enabled',
+    'blur.radius',
+    'blur.saturation',
+    'blur.cornerRadius',
+    'wallpaper.enabled',
+    'wallpaper.activeId',
+    'window.lockState',
+    'window.zOrderMode',
+    'dock.revealHandleMode',
+    'dock.enabledEdges'
+  ],
+  main: ['geometry.posX', 'geometry.posY', 'geometry.width', 'geometry.height'],
+  none: ['geometry.widthRatio', 'geometry.heightRatio']
+}
+
+function sortedIds(ids) {
+  return [...ids].sort()
+}
+
+describe('setting scope and write channel contracts', () => {
+  it('assigns every existing definition its explicit application, view or session scope', () => {
+    expect(SETTING_SCOPES).toEqual({
+      APPLICATION: 'application',
+      VIEW: 'view',
+      SESSION: 'session'
+    })
+    expect(Object.isFrozen(SETTING_SCOPES)).toBe(true)
+    expect(SETTING_DEFINITIONS).toHaveLength(57)
+    const expectedIds = Object.values(expectedScopeIds).flat()
+    expect(new Set(expectedIds).size).toBe(57)
+    expect(sortedIds(SETTING_DEFINITIONS.map((definition) => definition.id))).toEqual(
+      sortedIds(expectedIds)
+    )
+    for (const [scope, ids] of Object.entries(expectedScopeIds)) {
+      expect(
+        sortedIds(
+          SETTING_DEFINITIONS.filter((definition) => definition.scope === scope).map(
+            (definition) => definition.id
+          )
+        )
+      ).toEqual(sortedIds(ids))
+    }
+    const session = SETTING_DEFINITIONS.find((definition) => definition.id === 'shortcuts.enabled')
+    expect(session.db).toBeUndefined()
+    for (const id of ['geometry.widthRatio', 'geometry.heightRatio']) {
+      const definition = SETTING_DEFINITIONS.find((candidate) => candidate.id === id)
+      expect(definition).toMatchObject({ scope: 'view', writeChannel: 'none', db: null })
+    }
+  })
+
+  it('preserves the complete generic, specialized, main and read-only entrypoint sets', () => {
+    expect(SETTING_WRITE_CHANNELS).toEqual({
+      RENDERER: 'renderer',
+      SPECIALIZED: 'specialized',
+      MAIN: 'main',
+      NONE: 'none'
+    })
+    expect(Object.isFrozen(SETTING_WRITE_CHANNELS)).toBe(true)
+    expect(new Set(Object.values(expectedWriteChannelIds).flat()).size).toBe(57)
+    for (const [writeChannel, ids] of Object.entries(expectedWriteChannelIds)) {
+      expect(
+        sortedIds(
+          SETTING_DEFINITIONS.filter((definition) => definition.writeChannel === writeChannel).map(
+            (definition) => definition.id
+          )
+        )
+      ).toEqual(sortedIds(ids))
+    }
+    expect(RENDERER_WRITABLE_SETTING_IDS).toHaveLength(36)
+    expect(sortedIds(RENDERER_WRITABLE_SETTING_IDS)).toEqual(
+      sortedIds(expectedWriteChannelIds.renderer)
+    )
+    expect(Object.isFrozen(RENDERER_WRITABLE_SETTING_IDS)).toBe(true)
+  })
+
+  it('exports exactly the 24 application definitions and IDs as immutable collections', () => {
+    expect(APPLICATION_SETTING_DEFINITIONS).toHaveLength(24)
+    expect(sortedIds(APPLICATION_SETTING_IDS)).toEqual(sortedIds(expectedScopeIds.application))
+    expect(APPLICATION_SETTING_DEFINITIONS.map((definition) => definition.id)).toEqual(
+      APPLICATION_SETTING_IDS
+    )
+    expect(Object.isFrozen(APPLICATION_SETTING_DEFINITIONS)).toBe(true)
+    expect(Object.isFrozen(APPLICATION_SETTING_IDS)).toBe(true)
+    for (const definition of APPLICATION_SETTING_DEFINITIONS) {
+      expect(SETTING_DEFINITIONS).toContain(definition)
+      expect(Object.isFrozen(definition)).toBe(true)
+      expect(Object.isFrozen(definition.path)).toBe(true)
+    }
+    expect(APPLICATION_SETTING_IDS).not.toContain('appearance.titlebarStyle')
+    expect(APPLICATION_SETTING_IDS).not.toContain('shortcuts.enabled')
+    expect(APPLICATION_SETTING_IDS).not.toContain('geometry.widthRatio')
+  })
+
+  it('keeps persisted database keys unique without storing session or read-only defaults', () => {
+    const persisted = SETTING_DEFINITIONS.filter((definition) => definition.db)
+    // app_settings uniqueness uses scope and key, without type.
+    expect(persisted).toHaveLength(54)
+    expect(new Set(persisted.map((definition) => definition.db.key)).size).toBe(54)
+    for (const id of ['shortcuts.enabled', 'geometry.widthRatio', 'geometry.heightRatio']) {
+      expect(() => serializeSetting(id, true)).toThrow('不持久化')
+    }
+  })
+})
+
+describe('pure application settings projection and overlay', () => {
+  it('projects all application paths without view, session or unknown sibling fields', () => {
+    const source = createDefaultSettings(VIEW_MODES.MONTH)
+    source.appearance = {
+      uiScale: 1.25,
+      titlebarStyle: 'microsoft',
+      titlebarIconScale: 135,
+      iconColor: 'white',
+      extra: 'exclude'
+    }
+    source.shortcuts = {
+      enabled: false,
+      viewVisibility: 'Ctrl+Alt+Z',
+      screenshot: 'F4',
+      screenshotCopy: 'Control+F4'
+    }
+    source.calendar.recurringPreviewEnabled = true
+    source.notes = {
+      quickCreateUntilCompleted: true,
+      autoMoveToToday: false,
+      tagColorEnabled: false
+    }
+    source.interaction = { doubleClickQuickEdit: false, hideMainViewDuringScreenshot: true }
+    source.window = {
+      lockState: true,
+      zOrderMode: 'bottom',
+      compactWidth: 350,
+      compactHeight: 80,
+      compactFontSize: 19,
+      extra: 'exclude'
+    }
+    source.almanac.enabled = false
+    source.weather = {
+      enabled: true,
+      location: { name: 'Projection city', metadata: { label: 'original' } },
+      extra: 'exclude'
+    }
+    source.remote = { receiveNotices: false, uploadDeviceInfo: false }
+    source.onboarding.noticeVersion = 0
+    source.extra = { value: 'exclude' }
+    const original = structuredClone(source)
+
+    const result = projectApplicationSettings(source)
+
+    expect(result).toEqual({
+      appearance: { uiScale: 1.25, titlebarIconScale: 135, iconColor: 'white' },
+      shortcuts: { viewVisibility: 'Ctrl+Alt+Z', screenshot: 'F4', screenshotCopy: 'Control+F4' },
+      calendar: { recurringPreviewEnabled: true },
+      notes: { quickCreateUntilCompleted: true, autoMoveToToday: false, tagColorEnabled: false },
+      interaction: { doubleClickQuickEdit: false, hideMainViewDuringScreenshot: true },
+      window: {
+        lockState: true,
+        zOrderMode: 'bottom',
+        compactWidth: 350,
+        compactHeight: 80,
+        compactFontSize: 19
+      },
+      almanac: { enabled: false },
+      weather: {
+        enabled: true,
+        location: { name: 'Projection city', metadata: { label: 'original' } }
+      },
+      remote: { receiveNotices: false, uploadDeviceInfo: false },
+      onboarding: { noticeVersion: 0 }
+    })
+    result.weather.location.metadata.label = 'changed'
+    result.shortcuts.screenshot = 'F9'
+    expect(source).toEqual(original)
+  })
+
+  it('preserves null, false and zero while omitting undefined without filling defaults', () => {
+    expect(
+      projectApplicationSettings({
+        appearance: { uiScale: undefined },
+        shortcuts: { enabled: false },
+        weather: { enabled: false, location: null },
+        onboarding: { noticeVersion: 0 }
+      })
+    ).toEqual({ weather: { enabled: false, location: null }, onboarding: { noticeVersion: 0 } })
+    expect(projectApplicationSettings({})).toEqual({})
+  })
+
+  it('returns a separate overlay preserving view, session and unknown target fields', () => {
+    const target = createDefaultSettings(VIEW_MODES.MONTH)
+    target.appearance.titlebarStyle = 'microsoft'
+    target.shortcuts.enabled = false
+    target.geometry.width = 1234
+    target.css.fontSizeBase = 22
+    target.listFilter.tagIds = [1, 2]
+    target.extra = { markers: ['keep'] }
+    const application = {
+      appearance: { uiScale: 1.5, titlebarStyle: 'apple', extra: 'ignore' },
+      shortcuts: { enabled: true },
+      geometry: { width: 99 },
+      weather: { location: { name: 'New city', metadata: { label: 'fresh' } } },
+      extra: { markers: ['ignore'] }
+    }
+    const originalTarget = structuredClone(target)
+    const originalApplication = structuredClone(application)
+
+    const result = applyApplicationSettings(target, application)
+
+    expect(result).toEqual({
+      ...originalTarget,
+      appearance: { ...originalTarget.appearance, uiScale: 1.5 },
+      weather: {
+        ...originalTarget.weather,
+        location: { name: 'New city', metadata: { label: 'fresh' } }
+      }
+    })
+    expect(result).not.toBe(target)
+    result.weather.location.metadata.label = 'changed'
+    result.extra.markers.push('new marker')
+    result.listFilter.tagIds.push(3)
+    expect(target).toEqual(originalTarget)
+    expect(application).toEqual(originalApplication)
+  })
+
+  it('uses only defined application values and preserves explicit null, false and zero', () => {
+    const target = createDefaultSettings(VIEW_MODES.WEEK)
+    target.appearance.uiScale = 1.25
+    target.notes.autoMoveToToday = true
+    target.onboarding.noticeVersion = 5
+    target.weather.location = { name: 'Old city' }
+    const original = structuredClone(target)
+
+    const result = applyApplicationSettings(target, {
+      appearance: { uiScale: undefined },
+      notes: { autoMoveToToday: false },
+      onboarding: { noticeVersion: 0 },
+      weather: { location: null }
+    })
+
+    expect(result.appearance.uiScale).toBe(1.25)
+    expect(result.notes.autoMoveToToday).toBe(false)
+    expect(result.onboarding.noticeVersion).toBe(0)
+    expect(result.weather).toEqual({ enabled: false, location: null })
+    expect(result.geometry).toEqual(original.geometry)
+    expect(result.shortcuts.enabled).toBe(true)
+    expect(target).toEqual(original)
   })
 })

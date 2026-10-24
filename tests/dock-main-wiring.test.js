@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { RENDERER_WRITABLE_SETTING_IDS } from '../src/shared/settings-schema.js'
 
 const MAIN_PATH = new URL('../src/main/index.js', import.meta.url)
 const PRELOAD_PATH = new URL('../src/preload/index.js', import.meta.url)
@@ -11,23 +12,20 @@ describe('dock main-process wiring', () => {
   it('exposes one authorized atomic dock IPC and no generic per-field write path', () => {
     const source = readFileSync(MAIN_PATH, 'utf8')
     const preload = readFileSync(PRELOAD_PATH, 'utf8')
-    // The application IDs are now imported; using their old declaration as an
-    // end marker sliced the whole remainder of main and produced false failures.
-    const allowlistMatch = source.match(
-      /const RENDERER_WRITABLE_SETTING_IDS\s*=\s*new Set\(\[([\s\S]*?)\]\)/
+    expect(source).toContain(
+      'const RENDERER_WRITABLE_SETTING_IDS = new Set(rendererWritableSettingIds)'
     )
-    expect(allowlistMatch, 'renderer allowlist declaration must exist').not.toBeNull()
-    const allowlist = [...allowlistMatch[1].matchAll(/'([^']+)'/g)].map((match) => match[1])
     const handler = source.slice(
       source.indexOf("mainWindowIpc.handle('set-dock-config'"),
       source.indexOf("mainWindowIpc.handle('get-settings-snapshot'")
     )
 
     expect(preload).toContain(
-      "setDockConfig: (config) => ipcRenderer.invoke('set-dock-config', config)"
+      "setDockConfig: (config) => settingsClient.invoke('set-dock-config', config)"
     )
-    expect(allowlist).not.toContain('dock.revealHandleMode')
-    expect(allowlist).not.toContain('dock.enabledEdges')
+    expect(handler).toContain('settingsWriteSource.assert(event, source)')
+    expect(RENDERER_WRITABLE_SETTING_IDS).not.toContain('dock.revealHandleMode')
+    expect(RENDERER_WRITABLE_SETTING_IDS).not.toContain('dock.enabledEdges')
     expect(handler).toContain('validateDockConfigPayload(config)')
     expect(handler).toContain("id: 'dock.revealHandleMode'")
     expect(handler).toContain("id: 'dock.enabledEdges'")
@@ -60,12 +58,20 @@ describe('dock main-process wiring', () => {
     )
     expect(toggle).toContain("syncVisibleDockSide({ source: 'tray-toggle', snap: true })")
     expect(dock).toContain("syncVisibleDockSide({ source: 'hover-hide-timer', snap: true })")
-    expect(source).toContain("reconcileDockRuntimeConfig(previousDockConfig, 'reset-settings')")
+    expect(source).toContain("reset ? 'reset-settings' : 'persist'")
+    expect(source).toContain('dockRuntime.applyDockRuntimeConfig(')
+    const reset = source.slice(
+      source.indexOf("mainWindowIpc.handle('reset-settings'"),
+      source.indexOf('// ---- 贴边隐藏 IPC ----')
+    )
+    expect(reset).toContain('settingsApplicationCoordinator.completeCommittedSettings(')
+    expect(reset).toContain('previousDockConfig,')
+    expect(reset).toContain('reset: true')
     expect(dock).toContain(
       "beginNativeEdgeCleanup(generation, windowMotionBackend, 'native-edge-start-timeout')"
     )
     expect(dock).toContain('Boolean(nativeEdgeCleanupPending)')
-    expect(capture).toContain("suspendDock('screenshot')")
+    expect(capture).toContain("suspendDock('screenshot', { preserveHidden: true })")
     expect(capture).toContain("resumeDock('screenshot')")
     expect(source).toContain('screenshotCaptureActive: captureWindowIntegration.isActive()')
     expect(dock).toContain('dockInteractionSuspendCount > 0')

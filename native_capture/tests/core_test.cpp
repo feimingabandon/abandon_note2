@@ -5,6 +5,213 @@
 class CoreTest : public QObject {
   Q_OBJECT
 private slots:
+  void gaussianHasSmoothSymmetricResponseAndHonorsRegion() {
+    Capture::ImageDocument d;
+    d.base = QImage(81, 81, QImage::Format_ARGB32_Premultiplied);
+    d.base.fill(Qt::black);
+    for (int y = 0; y < 81; ++y)
+      d.base.setPixelColor(40, y, Qt::white);
+    Capture::Stroke blur{"blur", {{8, 8}, {72, 72}}, Qt::black, 6};
+    d.append(blur);
+    const auto result = d.render();
+    // A white line blurred with sigma 2 has the normalized Gaussian profile;
+    // nearest-neighbor blocks or downsample/upscale do not satisfy this shape.
+    QVERIFY(qAbs(qRed(result.pixel(40, 40)) - 51) <= 1);
+    QVERIFY(qAbs(qRed(result.pixel(41, 40)) - 45) <= 1);
+    QVERIFY(qAbs(qRed(result.pixel(42, 40)) - 31) <= 1);
+    for (int offset = 1; offset <= 6; ++offset) {
+      QCOMPARE(result.pixel(40 - offset, 40), result.pixel(40 + offset, 40));
+      QVERIFY(qRed(result.pixel(40 + offset - 1, 40)) >
+              qRed(result.pixel(40 + offset, 40)));
+    }
+    QCOMPARE(result.pixelColor(40, 7), QColor(Qt::white));
+    QCOMPARE(result.pixelColor(39, 7), QColor(Qt::black));
+    d.strokes.last().width = 12;
+    QVERIFY(qRed(d.render().pixel(40, 40)) < qRed(result.pixel(40, 40)));
+    QCOMPARE(d.base.pixelColor(40, 40), QColor(Qt::white));
+
+    // Sample the image around the region, but never beyond the screenshot's
+    // own editable selection. Neither case modifies pixels outside the region.
+    d.strokes.last().points = {{42, 10}, {60, 60}};
+    d.strokes.last().width = 6;
+    QVERIFY(qRed(d.render().pixel(42, 40)) > 0);
+    QCOMPARE(d.render().pixelColor(40, 40), QColor(Qt::white));
+    d.strokes.last().clipBounds = {42, 10, 19, 51};
+    QCOMPARE(d.render().pixelColor(42, 40), QColor(Qt::black));
+  }
+  void gaussianCacheRetainsHistoryAndExportPixels() {
+    Capture::ImageDocument d;
+    d.base = QImage(200, 140, QImage::Format_ARGB32_Premultiplied);
+    d.base.fill(Qt::white);
+    d.append({"line", {{20, 50}, {180, 50}}, Qt::black, 8});
+    const auto annotated = d.render();
+    d.append({"blur", {{30, 30}, {90, 90}}, Qt::black, 12});
+    const auto blurred = d.render();
+    QVERIFY(blurred != annotated);
+    QVERIFY(d.gaussianWorkingCost(d.strokes.last()) < d.base.sizeInBytes() * 2);
+    const auto uncachedBytes = d.memoryCost();
+    QVERIFY(d.cacheEffect(d.editable));
+    QCOMPARE(d.strokes.last().effectPixels.size(), QSize(61, 61));
+    QVERIFY(d.memoryCost() > uncachedBytes);
+    QCOMPARE(d.render(), blurred);
+    const auto cache = d.strokes.last().effectPixels.cacheKey();
+    QCOMPARE(d.render(), blurred);
+    QCOMPARE(d.strokes.last().effectPixels.cacheKey(), cache);
+    d.undo();
+    QCOMPARE(d.render(), annotated);
+    d.redo();
+    QCOMPARE(d.render(), blurred);
+    const QRect selection(40, 35, 90, 75);
+    auto pinned = d.cropped(selection);
+    QCOMPARE(pinned.render(), blurred.copy(selection));
+    QTemporaryDir folder;
+    QString error;
+    QVERIFY(Capture::saveImage(pinned.render(), folder.filePath("blur.png"), &error));
+    QCOMPARE(Capture::readImage(folder.filePath("blur.png"), &error),
+             pinned.render().convertToFormat(QImage::Format_ARGB32));
+    d.clear();
+    QCOMPARE(d.memoryCost(), d.base.sizeInBytes());
+  }
+  void gaussianPremultipliedEdgesRemainColorCorrect() {
+    QImage image(41, 41, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    for (int y = 0; y < 41; ++y)
+      image.setPixelColor(20, y, Qt::red);
+    Capture::ImageDocument::draw(
+        image, {"blur", {{5, 5}, {35, 35}}, Qt::black, 6});
+    const auto edge = image.pixelColor(22, 20);
+    QVERIFY(edge.alpha() > 0 && edge.alpha() < 255);
+    QCOMPARE(edge.red(), 255);
+    QCOMPARE(edge.green(), 0);
+    QCOMPARE(edge.blue(), 0);
+    QCOMPARE(image.pixelColor(20, 0), QColor(Qt::red));
+  }
+  void gaussianDocumentPreservesAlpha() {
+    for (auto format : {QImage::Format_ARGB32,
+                        QImage::Format_ARGB32_Premultiplied}) {
+      Capture::ImageDocument d;
+      d.base = QImage(41, 41, format);
+      d.base.fill(QColor(255, 0, 0, 128));
+      const Capture::Stroke blur{"blur", {{5, 5}, {35, 35}}, Qt::black, 6};
+      d.append(blur);
+      QCOMPARE(d.render().pixelColor(20, 20), QColor(255, 0, 0, 128));
+      QCOMPARE(d.render().pixelColor(2, 2), QColor(255, 0, 0, 128));
+      QVERIFY(d.cacheEffect(d.editable));
+      QCOMPARE(d.render(), d.base);
+      d.append(blur);
+      QVERIFY(d.cacheEffect(d.editable));
+      QCOMPARE(d.render(), d.base); // Overlapping effects must not add opacity.
+
+      d.clear();
+      d.base.fill(Qt::transparent);
+      for (int y = 0; y < 41; ++y)
+        d.base.setPixelColor(20, y, Qt::red);
+      d.append(blur);
+      const auto rendered = d.render();
+      // The normalized sigma-2 impulse response applies to alpha too. In
+      // particular, the original opaque line must no longer show through.
+      QVERIFY(qAbs(rendered.pixelColor(20, 20).alpha() - 51) <= 1);
+      QVERIFY(qAbs(rendered.pixelColor(22, 20).alpha() - 31) <= 1);
+      QCOMPARE(rendered.pixelColor(22, 20).red(), 255);
+      QCOMPARE(rendered.pixelColor(20, 0), QColor(Qt::red));
+      QCOMPARE(rendered.pixelColor(2, 2).alpha(), 0);
+      QVERIFY(d.cacheEffect(d.editable));
+      QCOMPARE(d.render(), rendered);
+    }
+  }
+  void transparentEffectsRetainCompositeHistoryAndCrop() {
+    Capture::ImageDocument d;
+    d.base = QImage(80, 60, QImage::Format_ARGB32_Premultiplied);
+    d.base.fill(QColor(255, 0, 0, 128));
+    d.append({"pen", {{10, 25}, {70, 25}}, QColor(0, 0, 255, 128), 6});
+    const auto annotated = d.render();
+    const Capture::Stroke first{"blur", {{12, 10}, {50, 45}}, Qt::black, 6};
+    const Capture::Stroke second{"blur", {{30, 12}, {65, 42}}, Qt::black, 9};
+    QImage expected = annotated.copy();
+    Capture::ImageDocument::draw(expected, first);
+    d.append(first);
+    QVERIFY(d.cacheEffect(d.editable));
+    QCOMPARE(d.render(), expected);
+    const auto once = expected;
+    Capture::ImageDocument::draw(expected, second);
+    d.append(second);
+    QVERIFY(d.cacheEffect(d.editable));
+    QCOMPARE(d.render(), expected);
+    QCOMPARE(d.render(d.editable), once);
+    d.undo();
+    QCOMPARE(d.render(), once);
+    d.redo();
+    QCOMPARE(d.render(), expected);
+
+    const QRect area(20, 15, 40, 35);
+    auto crop = d.cropped(area);
+    QCOMPARE(crop.render(), expected.copy(area));
+    crop.undo();
+    QCOMPARE(crop.render(), once.copy(area));
+    crop.redo();
+    QCOMPARE(crop.render(), expected.copy(area));
+    QCOMPARE(crop.cropped({5, 5, 25, 20}).render(),
+             expected.copy(area).copy(5, 5, 25, 20));
+    d.undo();
+    auto redoCrop = d.cropped(area);
+    redoCrop.redo();
+    QCOMPARE(redoCrop.render(), expected.copy(area));
+    QTemporaryDir folder;
+    QString error;
+    QVERIFY(Capture::saveImage(crop.render(), folder.filePath("alpha.png"), &error));
+    QCOMPARE(Capture::readImage(folder.filePath("alpha.png"), &error),
+             expected.copy(area).convertToFormat(QImage::Format_ARGB32));
+    QCOMPARE(d.base.pixelColor(40, 25), QColor(255, 0, 0, 128));
+  }
+  void transparentEraserRestoresBaseAfterEffectArchival() {
+    Capture::ImageDocument d;
+    d.base = QImage(80, 60, QImage::Format_ARGB32_Premultiplied);
+    d.base.fill(QColor(255, 0, 0, 128));
+    for (int y = 30; y < 60; ++y)
+      for (int x = 0; x < 80; ++x)
+        d.base.setPixelColor(x, y, Qt::transparent);
+    d.append({"pen", {{5, 28}, {75, 28}}, Qt::blue, 30});
+    d.append({"blur", {{5, 5}, {75, 55}}, Qt::black, 6});
+    QVERIFY(d.cacheEffect(d.editable));
+    const auto edited = d.render();
+    // Move both visible edits past the 100-command undo window, without
+    // changing the image. The original transparent pixels remain erasable.
+    for (int i = 0; i < 100; ++i)
+      d.append({"pen", {{100, 100}, {110, 100}}, Qt::black, 1});
+    QVERIFY(!d.archivedLayer.isNull());
+    QCOMPARE(d.render(), edited);
+    const QRect area(10, 10, 50, 40);
+    auto crop = d.cropped(area);
+    QCOMPARE(crop.render(), edited.copy(area));
+    Capture::Stroke eraser{"eraser", {{30.25, 2}, {30.25, 48}}, Qt::black, 9};
+    eraser.clipBounds = {15, 10, 40, 35};
+    d.append(eraser);
+    const auto erased = d.render();
+    QCOMPARE(erased.pixelColor(30, 20), d.base.pixelColor(30, 20));
+    QCOMPARE(erased.pixelColor(30, 36).alpha(), 0);
+    QCOMPARE(erased.pixelColor(30, 8), edited.pixelColor(30, 8));
+    QCOMPARE(erased.pixelColor(45, 20), edited.pixelColor(45, 20));
+    const auto edge = erased.pixelColor(25, 20).alpha();
+    QVERIFY(edge > d.base.pixelColor(25, 20).alpha());
+    QVERIFY(edge < edited.pixelColor(25, 20).alpha());
+    QCOMPARE(d.cropped(area).render(), erased.copy(area));
+    for (auto &point : eraser.points)
+      point -= area.topLeft();
+    eraser.clipBounds.translate(-area.topLeft());
+    crop.append(eraser);
+    QCOMPARE(crop.render(), erased.copy(area));
+    crop.undo();
+    QCOMPARE(crop.render(), edited.copy(area));
+    crop.redo();
+    QCOMPARE(crop.render(), erased.copy(area));
+    d.undo();
+    QCOMPARE(d.render(), edited);
+    d.redo();
+    QCOMPARE(d.render(), erased);
+    d.clear();
+    QCOMPARE(d.render(), d.base);
+    QCOMPARE(d.memoryCost(), d.base.sizeInBytes());
+  }
   void mosaicBrushFollowsPathAndPreservesCrop() {
     Capture::ImageDocument d;
     d.base = QImage(160, 120, QImage::Format_ARGB32_Premultiplied);

@@ -12,7 +12,13 @@ import { createAssertionRecorder, prepareTestProfile } from './helpers/test-resu
 const recorder = createAssertionRecorder({
   suite: 'tests/native-leaf-runtime-electron.mjs',
   mode: 'electron-main-app-native-leaf-state',
-  metadata: { browserWindow: true, mainProcessRestart: false, nativeAbi: NATIVE_ABI_VERSION }
+  metadata: {
+    browserWindow: true,
+    mainProcessRestart: false,
+    nativeAbi: NATIVE_ABI_VERSION,
+    nativeShutdown: 'direct-Blur_Destroy-and-repeated-owner-observation',
+    savedDomainRetry: 'direct-production-owner-with-unchanged-SQLite-rows'
+  }
 })
 const { assert } = recorder
 const profile = prepareTestProfile({ prefix: 'abandon-native-leaf-' })
@@ -21,6 +27,7 @@ let failure
 let exitCode = 0
 let interloper = null
 const layerEvidence = []
+const shutdownEvidence = []
 const getDefaultIme = koffi.load('imm32.dll').func('uintptr_t ImmGetDefaultIMEWnd(uintptr_t)')
 const placeWindow = koffi
   .load('user32.dll')
@@ -245,6 +252,89 @@ async function run() {
     }
     const disabled = await js('window.api.setBlurConfig({enabled:false})')
     assert.equal(disabled.runtime.effectiveEnabled, false)
+    const readSettingsRows = () => {
+      const database = new Database(join(profile.directory, 'app.db'), { readonly: true })
+      try {
+        return database.prepare('SELECT * FROM app_settings ORDER BY window_name,type,key').all()
+      } finally {
+        database.close()
+      }
+    }
+    const disabledRows = readSettingsRows()
+    const retriedDisabled = hooks.retryResolvedBlurRuntime()
+    assert.equal(
+      retriedDisabled.status,
+      'applied',
+      'retry must honor the current saved disabled value'
+    )
+    assert.deepEqual(
+      readSettingsRows(),
+      disabledRows,
+      'successful disabled retry must not rewrite SQL'
+    )
+    assert.equal(hooks.getBlurRuntimeHealth()?.healthy, true)
+
+    const enabled = await js('window.api.setBlurConfig({enabled:true})')
+    assert.equal(enabled.success, true)
+    assert.equal(enabled.runtime.effectiveEnabled, true)
+    const enabledRows = readSettingsRows()
+    assert.equal(hooks.applyResolvedBlurRuntime().status, 'applied')
+    assert.equal(hooks.retryResolvedBlurRuntime().status, 'applied')
+    assert.deepEqual(
+      readSettingsRows(),
+      enabledRows,
+      'successful enabled retry must not rewrite SQL'
+    )
+    assert.equal(hooks.getBlurRuntimeHealth()?.healthy, true)
+
+    await js("window.api.setDockConfig({enabledEdges:[],revealHandleMode:'direct'})")
+    const dockRows = readSettingsRows()
+    assert.equal(hooks.dockCommands.retrySettings('native-leaf-visible').status, 'applied')
+    assert.deepEqual(readSettingsRows(), dockRows, 'visible Dock retry must not rewrite SQL')
+    await js('window.api.closeWindow()')
+    await until(() => !window.isVisible(), 'Close did not hide the main window for Dock retry')
+    const hiddenDockRows = readSettingsRows()
+    assert.equal(hooks.dockCommands.retrySettings('native-leaf-hidden').status, 'deferred')
+    assert.equal(window.isVisible(), false, 'settings retry must preserve the user-hidden window')
+    assert.deepEqual(readSettingsRows(), hiddenDockRows, 'deferred Dock retry must not rewrite SQL')
+    await hooks.openMainWindowFromTray()
+    await until(
+      () => window.isVisible(),
+      'The tray owner did not restore the window after Dock retry'
+    )
+    const finalDisabled = await js('window.api.setBlurConfig({enabled:false})')
+    assert.equal(finalDisabled.success, true)
+    assert.equal(finalDisabled.runtime.effectiveEnabled, false)
+
+    // The layer reads above cannot prove a native STA thread has exited. Read
+    // the actual blur owner's shutdown result separately through the same DLL.
+    const native = koffi.load(process.env.ABANDON_INTEGRATION_NATIVE_DLL)
+    const destroyBlur = native.func('Blur_Destroy', 'void', [])
+    const readFailure = native.func('Blur_GetLastFailureJson', 'str', [])
+    const isBlurInitialized = native.func('Blur_IsInitialized', 'int', [])
+    const beforeDestroy = JSON.parse(readFailure())
+    shutdownEvidence.push({ phase: 'before-destroy', diagnostic: beforeDestroy })
+    assert.ok(Number.isSafeInteger(beforeDestroy.shutdown?.generation))
+    assert.ok(beforeDestroy.shutdown.generation > 0)
+    assert.equal(beforeDestroy.shutdown.status, 'not-requested')
+    assert.equal(beforeDestroy.shutdown.threadExitConfirmed, false)
+    assert.equal(beforeDestroy.shutdown.waitResult, null)
+    destroyBlur()
+    const afterDestroy = JSON.parse(readFailure())
+    shutdownEvidence.push({ phase: 'after-destroy', diagnostic: afterDestroy })
+    assert.equal(afterDestroy.shutdown.generation, beforeDestroy.shutdown.generation)
+    assert.equal(afterDestroy.shutdown.status, 'completed')
+    assert.equal(afterDestroy.shutdown.threadExitConfirmed, true)
+    assert.equal(afterDestroy.shutdown.waitResult, 0)
+    assert.equal(afterDestroy.shutdown.nativeCode, 0)
+    assert.equal(afterDestroy.shutdown.abandoned, false)
+    assert.equal(afterDestroy.shutdown.modulePinned, false)
+    assert.equal(afterDestroy.shutdown.pinNativeCode, 0)
+    assert.equal(isBlurInitialized(), 0)
+    destroyBlur()
+    const afterRepeatedDestroy = JSON.parse(readFailure())
+    shutdownEvidence.push({ phase: 'after-repeated-destroy', diagnostic: afterRepeatedDestroy })
+    assert.deepEqual(afterRepeatedDestroy.shutdown, afterDestroy.shutdown)
     completed = true
   } catch (error) {
     failure = error
@@ -264,6 +354,7 @@ app.once('will-quit', (event) => {
         completed,
         failure: failure?.stack || null,
         observations: layerEvidence,
+        nativeShutdown: shutdownEvidence,
         limits: [
           'Non-atomic Win32 reads',
           'Owned blocker is a controlled disturbance',

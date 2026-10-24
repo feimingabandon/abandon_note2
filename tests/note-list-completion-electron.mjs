@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs'
+import { readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
@@ -207,6 +207,8 @@ async function run() {
       '重载后更早应默认展开'
     )
     report('PASS reload; all completion-list UI checks passed')
+    await verifyResetDuringModeExit(win)
+    await verifyCalendarStatusViews(win)
     await lifecycle.finish({ completed: true, window: win })
   } catch (error) {
     if (win && !win.isDestroyed()) {
@@ -218,6 +220,239 @@ async function run() {
     }
     report(error?.stack || String(error))
     await lifecycle.finish({ error, window: win })
+  }
+}
+
+async function verifyResetDuringModeExit(win) {
+  const js = (code) => win.webContents.executeJavaScript(code)
+  const expectUI = (code, message) => until(() => js(code), message)
+  const trace = {
+    scope: 'real mode button and paused production WAAPI departure; real settings reset'
+  }
+  try {
+    await js(
+      "window.api.setSettingValue('listFilter',{listMode:'timeline',tagIds:[],statusFilter:[]})"
+    )
+    await expectUI(
+      "Boolean(document.querySelector('.nl-timeline .nl-card'))",
+      'reset test needs visible cards'
+    )
+    await js("document.querySelector('.sg-root').dispatchEvent(new PointerEvent('pointerenter'))")
+    await expectUI(
+      "!document.querySelector('.nl-mode-toggle').disabled",
+      'mode trigger did not expand'
+    )
+    await js("document.querySelector('.nl-mode-toggle').click()")
+    await expectUI("Boolean(document.querySelector('.nl-mode-option'))", 'mode picker did not open')
+    trace.departure = await js(`(() => {
+      const original = Element.prototype.animate;
+      window.__modeExitAnimations = [];
+      Element.prototype.animate = function(frames, options) {
+        const animation = original.call(this, frames, options);
+        if (this.classList.contains('nl-card') && options?.duration === 160 && frames?.[1]?.opacity === 0) {
+          animation.pause(); animation.currentTime = 80;
+          window.__modeExitAnimations.push({animation, element:this});
+        }
+        return animation;
+      };
+      try {
+        [...document.querySelectorAll('.nl-mode-option')].find(el=>el.textContent.trim()==='自定义').click();
+      } finally { Element.prototype.animate = original; }
+      return window.__modeExitAnimations.map(({animation,element})=>({
+        id:animation.id, state:animation.playState, currentTime:animation.currentTime,
+        opacity:Number(getComputedStyle(element).opacity)
+      }));
+    })()`)
+    assert.ok(trace.departure.length > 0, 'the actual mode action starts visible card departure')
+    assert.ok(
+      trace.departure.every(
+        (item) =>
+          item.id === 'nl-presence-exit' &&
+          item.state === 'paused' &&
+          item.currentTime === 80 &&
+          item.opacity > 0 &&
+          item.opacity < 1
+      ),
+      'the real animation is held at an intermediate frame'
+    )
+    await js('document.querySelector(\'.titlebar-btn-settings[title="设置"]\').click()')
+    await expectUI(
+      "Boolean(document.querySelector('.settings-panel.active'))",
+      'reset settings did not open'
+    )
+    await js(
+      "[...document.querySelectorAll('.settings-panel.active button')].find(el=>el.textContent.trim()==='恢复默认设置').click()"
+    )
+    await expectUI(
+      'Boolean(document.querySelector(\'.confirm-card.active[aria-label="恢复默认设置"]\'))',
+      'reset confirmation did not open'
+    )
+    await js(
+      "[...document.querySelectorAll('.confirm-card.active[aria-label=\"恢复默认设置\"] button')].find(el=>el.textContent.trim()==='恢复').click()"
+    )
+    await expectUI(
+      "[...document.querySelectorAll('.msg-text')].some(el=>el.textContent==='已恢复默认设置'||el.textContent.startsWith('默认设置已保存'))",
+      'reset did not report saved defaults'
+    )
+    trace.afterReset = await js(`(async () => ({
+      mode:document.querySelector('.nl-mode-toggle').textContent.trim(),
+      persisted:(await window.api.getSettingsSnapshot()).values.listFilter.listMode,
+      animations:window.__modeExitAnimations.map(({animation})=>animation.playState)
+    }))()`)
+    assert.equal(trace.afterReset.mode, '时间线')
+    assert.equal(trace.afterReset.persisted, 'timeline')
+    assert.ok(
+      trace.afterReset.animations.every((state) => state === 'idle'),
+      'reset cancels the old paused departure'
+    )
+    await js("document.querySelector('.settings-panel.active .panel-close-btn').click()")
+    await expectUI(
+      "!document.querySelector('.settings-panel')",
+      'reset settings did not finish leaving'
+    )
+    const notice = '[aria-label="欢迎使用 Abandon 便签"]'
+    await expectUI(
+      `Boolean(document.querySelector(${JSON.stringify(notice)}))`,
+      'reset first-use notice did not open'
+    )
+    await js(`(() => {
+      const dialog = document.querySelector(${JSON.stringify(notice)});
+      const button = [...dialog.querySelectorAll('.app-modal-footer button')]
+        .find(el => el.textContent.includes('已阅读') && !el.disabled);
+      if (!button) throw new Error('First-use acknowledgment is unavailable');
+      button.click();
+    })()`)
+    await expectUI(
+      `!document.querySelector(${JSON.stringify(notice)}) && !document.querySelector('.app-scene')?.inert`,
+      'reset first-use notice did not finish leaving and release the scene'
+    )
+    trace.firstUseAfterReset = await js(`(async () => ({
+      noticeVersion:(await window.api.getSettingsSnapshot()).values.onboarding.noticeVersion,
+      inert:document.querySelector('.app-scene').inert
+    }))()`)
+    assert.ok(trace.firstUseAfterReset.noticeVersion > 0, 'real acknowledgment was saved')
+    assert.equal(trace.firstUseAfterReset.inert, false, 'reset scene is interactive again')
+    assert.equal(
+      await js("document.querySelector('.nl-mode-toggle').textContent.trim()"),
+      '时间线',
+      'old animation finally cannot restore custom mode'
+    )
+    assert.equal(
+      await js('window.api.getSettingsSnapshot().then(s=>s.values.listFilter.listMode)'),
+      'timeline'
+    )
+  } finally {
+    await js('window.__modeExitAnimations?.forEach(({animation})=>animation.cancel())')
+    writeFileSync(
+      join(process.env.ABANDON_TEST_EVIDENCE_DIR || profile, 'sort-reset-trace.json'),
+      JSON.stringify(trace, null, 2),
+      { flag: 'wx' }
+    )
+  }
+}
+
+async function verifyCalendarStatusViews(win) {
+  const js = (code) => win.webContents.executeJavaScript(code)
+  const expectUI = (code, message) => until(() => js(code), message)
+  const traces = []
+  try {
+    for (const mode of ['month', 'week']) {
+      await globalThis.__ABANDON_WINDOW_TEST_HOOKS__.switchMainViewFromTray(mode)
+      await until(
+        () =>
+          win.webContents.getURL().endsWith('/' + mode + '.html') &&
+          js("Boolean(document.querySelector('.month-toolbar__day-panel-toggle:not(:disabled)'))"),
+        mode + ' workspace did not become ready'
+      )
+      await dismissStartupShortcutNotice(win)
+      await expectUI(
+        "Boolean(document.querySelector('.month-scene')) && !document.querySelector('.month-scene').inert && !document.querySelector('[role=dialog]')",
+        mode + ': a product modal still owns the calendar scene'
+      )
+      const note = await js(
+        `window.api.createNote({content:${JSON.stringify('E6.2 ' + mode + ' status')},effectiveAt:Date.now()-1000})`
+      )
+      assert.ok(note?.id, mode + ': status note created')
+      await expectUI(
+        `Boolean(document.querySelector('.month-event-bar[data-note-id="${note.id}"]'))`,
+        mode + ': note did not enter the calendar'
+      )
+      await js(
+        "(()=>{const b=document.querySelector('.month-toolbar__day-panel-toggle');if(b.getAttribute('aria-expanded')!=='true')b.click()})()"
+      )
+      const card = `.month-day-panel .nl-card[data-note-id="${note.id}"]`
+      await expectUI(
+        `Boolean(document.querySelector(${JSON.stringify(card)}))`,
+        mode + ': today card missing from day panel'
+      )
+      const interactions = []
+      async function clickStatus(action) {
+        const selector = JSON.stringify(card + ' .sr-control')
+        await js(`document.querySelector(${selector}).scrollIntoView({block:'center'})`)
+        const state = `(() => {
+          const control = document.querySelector(${selector});
+          const rect = control?.getBoundingClientRect();
+          const hit = rect && document.elementFromPoint(rect.x + rect.width/2, rect.y + rect.height/2);
+          return {
+            inert:Boolean(control?.closest('[inert]')),
+            enabled:Boolean(control && !control.disabled),
+            hit:Boolean(hit && control.contains(hit)),
+            visible:Boolean(rect?.width > 0 && rect?.height > 0)
+          };
+        })()`
+        await expectUI(
+          `(() => {const s = ${state}; return !s.inert && s.enabled && s.hit && s.visible})()`,
+          mode + ': ' + action + ' control is not exposed to the user'
+        )
+        interactions.push({ action, ...(await js(state)) })
+        assert.ok(
+          interactions.at(-1).hit && !interactions.at(-1).inert,
+          mode + ': ' + action + ' reaches the unobscured status control'
+        )
+        await js(`document.querySelector(${selector}).click()`)
+      }
+      await clickStatus('complete')
+      await expectUI(
+        `document.querySelector(${JSON.stringify(card)})?.classList.contains('nl-card--status-playing')`,
+        mode + ': completion animation did not start'
+      )
+      await expectUI(
+        `(()=>{const c=document.querySelector(${JSON.stringify(card)});return c?.classList.contains('nl-card--completed')&&!c.classList.contains('nl-card--status-playing')})()`,
+        mode + ': completion did not finish'
+      )
+      const completed = await js(`window.api.getNote(${note.id})`)
+      assert.equal(completed.status, 'completed', mode + ': completed status persisted')
+      await clickStatus('reopen')
+      await expectUI(
+        `document.querySelector(${JSON.stringify(card)})?.classList.contains('nl-card--status-playing')`,
+        mode + ': reopen animation did not start'
+      )
+      await expectUI(
+        `(()=>{const c=document.querySelector(${JSON.stringify(card)});return c?.classList.contains('nl-card--in_progress')&&!c.classList.contains('nl-card--status-playing')})()`,
+        mode + ': reopen did not finish'
+      )
+      const reopened = await js(`window.api.getNote(${note.id})`)
+      assert.equal(reopened.status, 'in_progress', mode + ': reopened status persisted')
+      assert.equal(
+        reopened.effective_at,
+        note.effective_at,
+        mode + ': status action preserves effective time'
+      )
+      traces.push({
+        mode,
+        id: note.id,
+        completed: completed.status,
+        reopened: reopened.status,
+        effectiveAt: reopened.effective_at,
+        interactions
+      })
+    }
+  } finally {
+    writeFileSync(
+      join(process.env.ABANDON_TEST_EVIDENCE_DIR || profile, 'calendar-status-traces.json'),
+      JSON.stringify(traces, null, 2),
+      { flag: 'wx' }
+    )
   }
 }
 

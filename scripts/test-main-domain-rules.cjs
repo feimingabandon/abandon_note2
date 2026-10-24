@@ -126,11 +126,16 @@ const releaseMainDomainRules = Object.freeze({
     'tests/ipc-authorization.test.js',
     'tests/ipc-arguments.test.js',
     'tests/business-note-reminders.test.js',
+    'tests/tag-commands-electron.mjs',
     'tests/note-draft-conflict-electron.mjs',
     'tests/business-clear-admission-electron.mjs',
     'tests/historical-note-move-db.mjs',
     'tests/new-note-workflow-electron.mjs',
     'tests/reminders-electron.mjs'
+  ],
+  'src/main/tags/tag-commands.js': [
+    'tests/tag-commands.test.js',
+    'tests/tag-commands-electron.mjs'
   ],
 
   // Schema declarations, renderer write admission and real persisted snapshots.
@@ -230,7 +235,13 @@ const releaseMainDomainRules = Object.freeze({
   'native_blur/blur_api.h': nativeApi,
   'native_blur/blur_engine.cpp': nativeBlur,
   'native_blur/blur_engine.h': nativeBlur,
-  'src/shared/native-abi-version.js': [...nativeMotion, 'tests/native-leaf-runtime-electron.mjs'],
+  'src/shared/native-abi-version.js': [
+    ...nativeMotion,
+    'tests/native-leaf-runtime-electron.mjs',
+    'tests/test-manifest.test.js',
+    'tests/run-focused-tests.test.js',
+    'tests/ci-test-selection.test.js'
+  ],
   'src/main/bridge/blur_bridge.js': [
     'tests/native-runtime-gate.test.js',
     'tests/window-motion-backend.test.js',

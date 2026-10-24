@@ -1,4 +1,11 @@
 import { createBusinessMutationAdmission } from './application/business-mutation-admission.js'
+import { suspendImageDecodes, resumeImageDecodes, disposeImageDecodes } from './db/db-images.js'
+import { imageReadService } from './images/image-read-service.js'
+import { startImagePreviewRead } from './images/image-preview-reader.js'
+import {
+  createAttachmentRecoveryRetryController,
+  registerAttachmentRecoveryRetryIpc
+} from './application/attachment-recovery-retry.js'
 import {
   runCommittedDataCleanup,
   broadcastBusinessDataCleared,
@@ -8,7 +15,21 @@ import { createFeatureRuntime } from './application/feature-runtime.js'
 import { createMainTrayController } from './tray/main-tray-controller.js'
 import { createNotificationActivation } from './services/notification-activation.js'
 import { createSettingsWriteCoordinator } from './settings/settings-write-coordinator.js'
+import { createSettingsApplicationCoordinator } from './settings/settings-application-coordinator.js'
+import {
+  registerSettingsApplicationIpc,
+  settingsApplicationStateForSource
+} from './ipc/register-settings-application-ipc.js'
+import { createSettingsWriteSource } from './settings/settings-write-source.js'
+import { createSessionDraftAssetsRuntime } from './drafts/session-draft-assets-runtime.js'
+import { createSessionDraftNoteCommands } from './drafts/session-draft-note-commands.js'
+import { registerDraftAssetsIpc } from './ipc/register-draft-assets-ipc.js'
+import { allowImageClipboardWrite } from './ipc/image-clipboard-permission.js'
+import { pathToFileURL } from 'node:url'
+import { createNoteWithAssets, saveNoteDraft } from './notes/note-commands.js'
+import { createSettingsOperationAdmission } from './settings/settings-operation-admission.js'
 import { createBackgroundSettingsCoordinator } from './settings/background-settings-coordinator.js'
+import { createWallpaperRetirement } from './settings/wallpaper-retirement.js'
 import { createMainViewNavigation } from './windows/main-view-navigation.js'
 import { createPresentationRuntime } from './windows/presentation-runtime.js'
 import { createWindowDragController } from './windows/window-drag-controller.js'
@@ -40,6 +61,8 @@ const { app, shell, BrowserWindow, screen, powerMonitor, Tray, Menu, dialog, glo
   Electron
 
 import { join, resolve } from 'path'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { sanitizeDiagnosticValue } from '../shared/diagnostic-sanitize.js'
 import { randomUUID } from 'crypto'
 import { optimizer, is } from '@electron-toolkit/utils' // Electron 开发工具集
 import icon from '../../resources/icon.png?asset' // 应用图标（Vite asset 导入）
@@ -48,6 +71,7 @@ import {
   closeDatabase,
   getDb,
   cleanupPendingAttachmentDirs,
+  getAttachmentRecoveryReport,
   clearNoteData
 } from './db/db.js'
 import { getAllSettings, setSettingsBatch } from './db/db-settings-repository.js'
@@ -107,6 +131,8 @@ import { AppUpdateService } from './services/app-update.js'
 import { CaptureCoordinator } from './capture/CaptureCoordinator.js'
 import { CaptureShortcutService } from './capture/CaptureShortcutService.js'
 import { ViewVisibilityShortcutService } from './services/view-visibility-shortcut.js'
+import { createNewNoteShortcut } from './services/new-note-shortcut.js'
+import { ACTION_SHORTCUTS } from '../shared/capture-shortcuts.js'
 import { unavailableShortcuts } from '../shared/shortcut-status.js'
 
 import { ipcMain } from './logging/ipc-main.js'
@@ -131,6 +157,8 @@ import { registerDiagnosticController } from './logging/diagnostic-controller.js
 import { enforceNativeRuntimeCompatibility } from './native-runtime-gate.js'
 import {
   DEFAULT_SETTINGS,
+  SETTING_DEFINITIONS,
+  RENDERER_WRITABLE_SETTING_IDS as rendererWritableSettingIds,
   resolveSettingsRows,
   serializeSetting,
   VIEW_MODES,
@@ -178,44 +206,7 @@ const integrationAppRoot =
 const APP_ROOT = integrationAppRoot ? resolve(integrationAppRoot) : app.getAppPath()
 const PRELOAD_ROOT = join(APP_ROOT, 'out', 'preload')
 const RENDERER_ROOT = join(APP_ROOT, 'out', 'renderer')
-const RENDERER_WRITABLE_SETTING_IDS = new Set([
-  'appearance.titlebarStyle',
-  'appearance.uiScale',
-  'appearance.titlebarIconScale',
-  'appearance.iconColor',
-  'css.bgColor',
-  'css.popupOpacity',
-  'css.bgBlur',
-  'css.windowOpacity',
-  'css.windowBorder',
-  'css.fontSizeBase',
-  'css.noteRemarkFontSize',
-  'css.textColor',
-  'sticky.fontSize',
-  'sticky.backgroundColor',
-  'sticky.cornerRadius',
-  'sticky.alwaysOnTop',
-  'wallpaper.blurRadius',
-  'ui.settingsPanelSize',
-  'ui.dayPanelSize',
-  'calendar.recurringPreviewEnabled',
-  'notes.quickCreateUntilCompleted',
-  'notes.autoMoveToToday',
-  'notes.tagColorEnabled',
-  'listAppearance.minimalMode',
-  'interaction.doubleClickQuickEdit',
-  'interaction.hideMainViewDuringScreenshot',
-  'almanac.enabled',
-  'weather.enabled',
-  'weather.location',
-  'remote.receiveNotices',
-  'remote.uploadDeviceInfo',
-  'onboarding.noticeVersion',
-  'window.compactWidth',
-  'window.compactHeight',
-  'window.compactFontSize',
-  'listFilter'
-])
+const RENDERER_WRITABLE_SETTING_IDS = new Set(rendererWritableSettingIds)
 const REMOTE_BASE_URL =
   process.env.ABANDON_REMOTE_BASE_URL || 'https://note.zhenshiyin.top/api/v1/client'
 
@@ -257,27 +248,41 @@ function getApplicationWindows() {
 
 let viewVisibilityShortcutService = null
 let captureShortcutService = null
+const canOpenNewNote = () =>
+  !shutdownCoordinator.isQuitting() && !captureWindowIntegration.isActive()
+const newNoteShortcut = createNewNoteShortcut({
+  canOpen: canOpenNewNote,
+  openWindow: () =>
+    openMainWindowFromTray({ source: 'new-note-shortcut', isCurrent: canOpenNewNote }),
+  getWindow: getMainWindow,
+  isReady: (window) => mainViewNavigation.isReadyDocument(window)
+})
 let startupShortcutFailures = []
 let startupShortcutNoticeDismissed = false
 const viewVisibilityShortcutCaptureSenders = new WeakSet()
 const captureWindowIntegration = createCaptureWindowIntegration({
   getWindow: getMainWindow,
+  isDockHidden: () => dockRuntime.hidden,
   shouldHide: () => settingsRuntime.values.interaction.hideMainViewDuringScreenshot,
   isQuitting: () => shutdownCoordinator.isQuitting(),
-  suspendDock: (source) => beginDockInteractionSuspension(source),
+  suspendDock: (source, options) => beginDockInteractionSuspension(source, options),
   resumeDock: (source) => endDockInteractionSuspension(source),
   hideWindow: (window) => hideMainWindowForViewNavigation(window),
   reassertZOrder: (source) => reassertBottomWindowZOrder(source),
-  openBusiness: () => openMainWindowFromTray()
+  openBusiness: ({ isCurrent } = {}) =>
+    openMainWindowFromTray({ source: 'capture-delivery', isCurrent })
 })
 
 let diagnosticController = null
 const businessAdmission = createBusinessMutationAdmission()
+const settingsOperations = createSettingsOperationAdmission()
 const notificationActivation = createNotificationActivation({
   protocol: APP_PROTOCOL,
   getWindow: getMainWindow,
-  exitCompactPresentation: (...args) => exitCompactPresentation(...args),
-  openMainWindow: () => openMainWindow(),
+  canRequestOpen: (window) =>
+    mainViewNavigation.isAwaitingFirstReady(window) || mainViewNavigation.isReadyDocument(window),
+  openMainWindow: () =>
+    openMainWindowFromTray({ source: 'notification', allowExpandFallback: true }),
   logger
 })
 const {
@@ -339,6 +344,13 @@ const zOrderRuntime = createZOrderRuntime({
   refreshResolvedSettings,
   getResolvedSettingsSnapshot,
   broadcastSettingsChanged,
+  completeCommittedSettings: (request) =>
+    settingsOperations.track(
+      settingsApplicationCoordinator.completeCommittedSettings({
+        scope: getActiveWindowName(),
+        ...request
+      })
+    ),
   sendAppMessage,
   logger
 })
@@ -371,14 +383,24 @@ const geometryPersistence = createWindowGeometryPersistence({
   canSchedule: () => !mainViewNavigation.isSwitching() && !isCompactPresentationActive(),
   isDockSuppressed: () => dockRuntime.isDockGeometryPersistenceSuppressed(),
   readDockBounds: () => dockRuntime.readStableSessionBounds(),
-  persistValues: (entries) => persistSettingValues(entries),
-  persistStoredBounds: (entries) =>
-    setSettingsBatch(
-      getActiveWindowName(),
-      entries.map(({ id, value }) => serializeSetting(id, value))
-    ),
+  persistValues: (entries) => persistInternalSettingValues(entries),
+  persistStoredBounds: persistStoredWindowBounds,
   onError: (error) => console.warn('[settings] 保存窗口位置失败:', error)
 })
+function persistStoredWindowBounds(entries) {
+  setSettingsBatch(
+    getActiveWindowName(),
+    entries.map(({ id, value }) => serializeSetting(id, value))
+  )
+  // Final shutdown flush owns only synchronous persistence after application drains.
+  if (shutdownCoordinator.isQuitting()) return
+  try {
+    refreshResolvedSettings({ notifyResolved: false })
+  } catch (error) {
+    // SQL already committed; readback failure must not retain dirty geometry or repeat SQL.
+    logger.error('settings.geometry-resolution', error)
+  }
+}
 function debouncedSaveGeometry() {
   geometryPersistence.schedule()
 }
@@ -396,7 +418,7 @@ const dockRuntime = createDockRuntime({
   reconcilePresentationDisplayGeometry: (change) =>
     presentationRuntime.reconcileDisplayGeometry(change),
   geometryPersistence,
-  persistSettingValues: (...args) => settingsWriteCoordinator.persistSettingValues(...args),
+  persistSettingValues: (...args) => persistInternalSettingValues(...args),
   readBlurState: () => ({
     config: blurRuntime.config,
     initialized: blurRuntime.initialized,
@@ -479,7 +501,7 @@ const presentationRuntime = createPresentationRuntime({
   applyWindowZOrder,
   reassertBottomWindowZOrder,
   applyResolvedWindowRuntime,
-  persistSettingValues: (...args) => settingsWriteCoordinator.persistSettingValues(...args),
+  persistSettingValues: (...args) => persistInternalSettingValues(...args),
   logger
 })
 const {
@@ -498,6 +520,7 @@ const mainViewNavigation = createMainViewNavigation({
   getMainWindow,
   screen,
   loadWindow: mainWindowHost.load,
+  getDocumentGeneration: () => settingsWriteSource.readGeneration(),
   getSettings: () => settingsRuntime.values,
   resetSettingsForView: (mode) => settingsRuntime.resetForView(mode),
   refreshResolvedSettings,
@@ -508,6 +531,8 @@ const mainViewNavigation = createMainViewNavigation({
   endTitlebarWindowDrag,
   openMainWindow,
   confirmEditingDrafts: (...args) => confirmEditingDrafts(...args),
+  resumePageLeave: (window, owner) => confirmEditingDrafts.resume(window, owner),
+  onNavigationSettled: () => shutdownCoordinator.resumeDeferredQuit(),
   isShutdownCheckingDrafts: () => shutdownCoordinator.isCheckingDrafts(),
   isQuitting: () => shutdownCoordinator.isQuitting(),
   isBackgroundInFlight: () => backgroundSettingsCoordinator.isInFlight(),
@@ -538,6 +563,87 @@ const {
   switchMainViewFromTray
 } = mainViewNavigation
 
+const settingsApplicationCoordinator = createSettingsApplicationCoordinator({
+  onLedgerChanged({ scopes }) {
+    const source = settingsWriteSource.captureCurrent()
+    const window = getMainWindow()
+    if (
+      !source ||
+      !scopes.includes(source.scope) ||
+      !window ||
+      window.isDestroyed() ||
+      window.webContents.isDestroyed()
+    )
+      return
+    try {
+      window.webContents.send(
+        'settings:application-changed',
+        settingsApplicationStateForSource(settingsApplicationCoordinator, source)
+      )
+    } catch (error) {
+      logger.warn('settings.application-state-delivery', '设置应用状态通知未发送', {
+        error: error.message
+      })
+    }
+  },
+  getCurrentContext: () => ({
+    scope: getActiveWindowName(),
+    source: settingsWriteSource.captureCurrent()
+  }),
+  isContextCurrent: isSettingsApplicationContextCurrent,
+  refreshResolvedSettings,
+  dependencyApplies: (name, request) =>
+    !name.startsWith('reset') ||
+    request.reset ||
+    (request.reason === 'retry' &&
+      ['failed', 'deferred', 'unconfirmed'].includes(
+        settingsApplicationCoordinator.snapshotLedger(request.scope)?.dependencies?.[name]?.status
+      )),
+  afterDomainDependencies: ['resetGeometry'],
+  dependencies: {
+    blurConfig: () => {
+      syncBlurConfigFromResolved()
+      return { status: 'applied', error: null, retryable: false }
+    },
+    theme: async (_request, guard) => {
+      if (!guard.isCurrent())
+        return { status: 'deferred', error: '设置页面已失效', retryable: true }
+      if (!screenshotService?.host?.ready || screenshotService.stopping)
+        return { status: 'deferred', error: '截图主题宿主尚未就绪', retryable: true }
+      const result = await screenshotService.syncTheme()
+      return result === false
+        ? false
+        : {
+            status: 'unconfirmed',
+            error: '截图主题已请求，宿主未提供应用确认',
+            retryable: true,
+            confirmation: 'invocation-only'
+          }
+    },
+    remote: () => {
+      if (!remoteCoordinator)
+        return { status: 'deferred', error: '远程配置服务尚未就绪', retryable: true }
+      const result = remoteCoordinator.settingsChanged()
+      return result === false ? false : { status: 'applied', error: null, retryable: false }
+    },
+    resetBindings: applyResetShortcutBindings,
+    resetGeometry: applyResetSettingsGeometry
+  },
+  applyDomains: {
+    window: () => applyResolvedWindowRuntime(),
+    blur: applyCommittedBlurRuntime,
+    dock: ({ previousDockConfig, reset }) =>
+      dockRuntime.applyDockRuntimeConfig(previousDockConfig, reset ? 'reset-settings' : 'persist')
+  },
+  retryDomains: {
+    window: () => applyResolvedWindowRuntime(),
+    blur: (_request, guard) =>
+      observeAppliedBlurRuntime(blurRuntime.retryResolvedBlurRuntime(), guard),
+    dock: () => dockRuntime.retryDockRuntimeConfig('settings-retry')
+  },
+  getResolvedSettingsSnapshot,
+  broadcastSettingsChanged
+})
 const settingsWriteCoordinator = createSettingsWriteCoordinator({
   getActiveWindowName,
   refreshResolvedSettings,
@@ -546,10 +652,103 @@ const settingsWriteCoordinator = createSettingsWriteCoordinator({
   getDockRuntimeConfig,
   reconcileDockRuntimeConfig,
   getResolvedSettingsSnapshot,
-  broadcastSettingsChanged
+  broadcastSettingsChanged,
+  completeCommittedSettings: (request) =>
+    settingsOperations.track(settingsApplicationCoordinator.completeCommittedSettings(request))
 })
 const { persistSettingValues, persistSettingValue } = settingsWriteCoordinator
+
+function readMainSettingsContext() {
+  const window = getMainWindow()
+  return {
+    scope: getActiveWindowName(),
+    source: null,
+    origin: 'main-runtime',
+    runtimeToken:
+      window && !window.isDestroyed()
+        ? `main-window:${window.webContents.id}:${settingsWriteSource.readGeneration()}`
+        : null
+  }
+}
+
+function isSettingsApplicationContextCurrent(context) {
+  if (context.scope !== getActiveWindowName()) return false
+  if (context.origin === 'main-runtime') {
+    const runtimeToken = readMainSettingsContext().runtimeToken
+    return Boolean(context.source === null && runtimeToken && context.runtimeToken === runtimeToken)
+  }
+  const source = settingsWriteSource.captureCurrent()
+  return Boolean(source && source.token === context.source?.token && source.scope === context.scope)
+}
+
+function settingsOperationForSource(source) {
+  const context = { scope: source.scope, source: { token: source.token, scope: source.scope } }
+  return { context, isCurrent: () => isSettingsApplicationContextCurrent(context) }
+}
+
+// These main-owned callers clear geometry/compact dirty flags when synchronous
+// SQL commits. Application settlement is separately tracked through shutdown;
+// an application/readback failure must not cause the same SQL to be written again.
+function persistInternalSettingValues(entries, options = {}) {
+  const completion = settingsWriteCoordinator.persistSettingValues(entries, {
+    ...options,
+    applicationContext: readMainSettingsContext()
+  })
+  void Promise.resolve(completion).catch((error) =>
+    logger.error('settings.internal-application', error)
+  )
+  return { persistence: { status: 'saved' } }
+}
+const settingsWriteSource = createSettingsWriteSource({
+  assertCanWrite: settingsOperations.assertOpen,
+  getMainWindow,
+  getActiveWindowName,
+  getActiveRendererLocation
+})
+const wallpaperRetirement = createWallpaperRetirement({
+  getMainWindow,
+  isSourceCurrent(source) {
+    const current = settingsWriteSource.captureCurrent()
+    return Boolean(current && current.token === source?.token && current.scope === source?.scope)
+  }
+})
+const draftAssetsRuntime = createSessionDraftAssetsRuntime({
+  root: join(app.getPath('userData'), 'session-draft-assets'),
+  sessionId: editingDraftSessionId,
+  settingsWriteSource,
+  imageReads: imageReadService,
+  startImageRead: (source, options) => startImagePreviewRead(source, { app, ...options }),
+  consumeAssets: (descriptors, request) => draftNoteCommands.consumeAssets(descriptors, request)
+})
+const draftNoteCommands = createSessionDraftNoteCommands({
+  runtime: draftAssetsRuntime,
+  createNoteWithAssets,
+  saveNoteDraft,
+  runMutation: businessAdmission.run,
+  logger,
+  onCommitted: (note, kind) => {
+    try {
+      featureRuntime.refreshReminders()
+    } catch (error) {
+      logger.error('draft-assets.note-reminders', error, { id: note.id })
+    }
+    for (const window of getApplicationWindows()) {
+      try {
+        if (!window.isDestroyed() && !window.webContents.isDestroyed())
+          window.webContents.send('notes:changed', {
+            reason: kind === 'create' ? 'create' : 'update',
+            id: note.id
+          })
+      } catch (error) {
+        logger.error('draft-assets.note-broadcast', error, { id: note.id })
+      }
+    }
+  }
+})
+let draftAssetsShutdown = null
+let imageDecodesShutdown = null
 const backgroundSettingsCoordinator = createBackgroundSettingsCoordinator({
+  beginWallpaperRetirement: (source) => wallpaperRetirement.begin(source),
   getMainWindow,
   getSettings: () => settingsRuntime.values,
   getViewMode: () => mainViewNavigation.mode,
@@ -575,6 +774,7 @@ const backgroundSettingsCoordinator = createBackgroundSettingsCoordinator({
   initializeBlurRuntime,
   updateBlurDiagnostic,
   runBlurRuntimeDiagnostic,
+  applicationOwnsBlurDiagnostic: true,
   notifySettled: () => mainViewNavigation.onBackgroundSettled()
 })
 
@@ -734,8 +934,8 @@ function openSafeExternal(rawUrl) {
 }
 
 /** 从 DB 重新生成完整设置；读取本身不向 DB 回写默认值。 */
-function refreshResolvedSettings({ incrementRevision = false } = {}) {
-  return settingsRuntime.refresh({ incrementRevision })
+function refreshResolvedSettings(options = {}) {
+  return settingsRuntime.refresh(options)
 }
 
 function readAutoStartRuntime() {
@@ -748,7 +948,7 @@ function readAutoStartRuntime() {
 }
 
 function getResolvedSettingsSnapshot() {
-  return settingsRuntime.snapshot()
+  return { ...settingsRuntime.snapshot(), source: settingsWriteSource.captureCurrent() }
 }
 
 /** Read-only platform providers; this operation never starts or mutates a service. */
@@ -848,11 +1048,94 @@ const scheduleVisibleBlurRestore = createDeferredWindowRestore({
   }
 })
 
+function applyResetSettingsGeometry({ reset }) {
+  const window = getMainWindow()
+  if (!window || window.isDestroyed())
+    return { status: 'deferred', error: '主窗口尚未就绪', retryable: true }
+  const display = screen.getDisplayMatching(window.getBounds())
+  const geometry = settingsRuntime.values.geometry
+  // An application retry follows the latest saved dimensions. Only a new reset
+  // chooses default ratios; it must not replay an old reset over a later resize.
+  const width = Math.round(
+    !reset && geometry.width > 0 ? geometry.width : display.workAreaSize.width * geometry.widthRatio
+  )
+  const height = Math.round(
+    !reset && geometry.height > 0
+      ? geometry.height
+      : display.workAreaSize.height * geometry.heightRatio
+  )
+  geometryPersistence.suppressUntil(Date.now() + 750)
+  window.setSize(width, height)
+  return window.getBounds().width === width && window.getBounds().height === height
+    ? { status: 'applied', error: null, retryable: false }
+    : { status: 'unconfirmed', error: '窗口尺寸尚未确认', retryable: true }
+}
+
+function applyResetShortcutBindings() {
+  if (!viewVisibilityShortcutService || !captureShortcutService)
+    return { status: 'deferred', error: '快捷键服务尚未就绪', retryable: true }
+  viewVisibilityShortcutService.initialize(settingsRuntime.values.shortcuts.viewVisibility, {
+    enabled: settingsRuntime.values.shortcuts.enabled
+  })
+  captureShortcutService.initialize(settingsRuntime.values.shortcuts)
+  rebuildTrayMenu()
+  const shortcuts = {
+    ...captureShortcutService.snapshot(),
+    viewVisibility: viewVisibilityShortcutService.snapshot()
+  }
+  const failures = unavailableShortcuts(shortcuts)
+  if (failures.length)
+    return {
+      status: 'failed',
+      error: failures.map((item) => item.message).join('；'),
+      retryable: true,
+      shortcuts
+    }
+  if (
+    Object.values(shortcuts).some(
+      (state) => state?.enabled && state.configured && !state.registered
+    )
+  )
+    return { status: 'deferred', error: '快捷键注册尚未确认', retryable: true, shortcuts }
+  return { status: 'applied', error: null, retryable: false, shortcuts }
+}
+
+function observeAppliedBlurRuntime(result, guard) {
+  if (!guard.isCurrent())
+    return { status: 'deferred', error: '设置请求所属页面已失效', retryable: true }
+  if (blurRuntime.config.enabled && blurRuntime.initialized) {
+    runBlurRuntimeDiagnostic({ reason: 'settings-change', now: Date.now() })
+    if (
+      blurRuntime.failed ||
+      !blurRuntime.config.enabled ||
+      blurRuntime.diagnostic.status === 'error'
+    )
+      return { status: 'failed', error: blurRuntime.error || '原生模糊运行期失效', retryable: true }
+    if (blurRuntime.diagnostic.status !== 'healthy')
+      return {
+        status: 'unconfirmed',
+        error: blurRuntime.diagnostic.message || '原生模糊状态尚未确认',
+        retryable: true
+      }
+  }
+  return result
+}
+
+function applyCommittedBlurRuntime(request, guard) {
+  if (!guard.isCurrent())
+    return { status: 'deferred', error: '设置请求所属页面已失效', retryable: true }
+  const result = request.applyBlurRuntime
+    ? applyResolvedBlurRuntime()
+    : { status: 'unconfirmed', error: '首次原生配置未提供独立应用确认', retryable: true }
+  return observeAppliedBlurRuntime(result, guard)
+}
+
 function applyResolvedWindowRuntime() {
   isLocked = settingsRuntime.values.window.lockState
   // 锁定或视图刷新可能在异步层级核验期间读取旧设置；保留正在提交的目标层级。
   zOrderRuntime.syncResolved()
-  if (!getMainWindow() || getMainWindow().isDestroyed()) return
+  if (!getMainWindow() || getMainWindow().isDestroyed())
+    return { status: 'deferred', error: '主窗口尚未就绪', retryable: true }
   getMainWindow().setMovable(!isLocked)
   // Windows 使用 thickFrame:false + renderer 自定义缩放手柄。调用
   // setResizable(true) 会重新引入系统 WS_THICKFRAME，破坏高 DPI 几何不变量。
@@ -861,6 +1144,7 @@ function applyResolvedWindowRuntime() {
     logger.error('window.z-order', new Error(result.error), {
       mode: zOrderRuntime.mode,
       code: result.code,
+      diagnosticId: result.diagnosticId ?? null,
       source: 'resolved-settings'
     })
     if (zOrderRuntime.mode === WINDOW_Z_ORDER_MODES.BOTTOM) {
@@ -868,6 +1152,16 @@ function applyResolvedWindowRuntime() {
     } else {
       sendAppMessage('error', result.error)
     }
+  }
+  return {
+    ...result,
+    status: result.success && getMainWindow().isMovable() === !isLocked ? 'applied' : 'failed',
+    error: result.success
+      ? getMainWindow().isMovable() === !isLocked
+        ? null
+        : '窗口锁定状态尚未确认'
+      : result.error,
+    retryable: !result.success || getMainWindow().isMovable() !== !isLocked
   }
 }
 
@@ -928,7 +1222,10 @@ function createWindow({ preferredDisplay = null } = {}) {
     dialog,
     logger,
     openDiagnostics: () => shell.openPath(getLogDirectory()),
-    canRecover: () => !shutdownCoordinator.isQuitting() && !mainViewNavigation.isSwitching(),
+    canRecover: () =>
+      !shutdownCoordinator.isQuitting() &&
+      !mainViewNavigation.isSwitching() &&
+      mainViewNavigation.hasAcceptedReady(createdWindow),
     onRendererReset: (reason) => {
       try {
         endTitlebarWindowDrag({ reason })
@@ -945,12 +1242,33 @@ function createWindow({ preferredDisplay = null } = {}) {
   const allowMainWindowGeolocation = (webContents, permission) =>
     (permission === 'geolocation' || permission === 'geolocation-approximate') &&
     webContents === getMainWindow()?.webContents
-  // 只放行当前本地主窗口的设备定位；其他 Web API 权限一律拒绝。
-  mainSession.setPermissionCheckHandler((webContents, permission) =>
-    allowMainWindowGeolocation(webContents, permission)
+  const allowMainWindowImageWrite = (webContents, permission, details) =>
+    allowImageClipboardWrite({
+      webContents,
+      permission,
+      details,
+      mainWindow: getMainWindow(),
+      isTrustedDocumentUrl(value) {
+        const location = getActiveRendererLocation()
+        const expected = new URL(
+          location.type === 'file' ? pathToFileURL(location.value).href : location.value
+        )
+        const actual = new URL(value)
+        expected.hash = ''
+        actual.hash = ''
+        return actual.href === expected.href
+      }
+    })
+  // 图片写入仅属于当前可信主页面；剪贴板读取和其他 Web API 权限仍拒绝。
+  mainSession.setPermissionCheckHandler(
+    (webContents, permission, _origin, details) =>
+      allowMainWindowGeolocation(webContents, permission) ||
+      allowMainWindowImageWrite(webContents, permission, details)
   )
-  mainSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    const allowed = allowMainWindowGeolocation(webContents, permission)
+  mainSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const allowed =
+      allowMainWindowGeolocation(webContents, permission) ||
+      allowMainWindowImageWrite(webContents, permission, details)
     if (permission === 'geolocation' || permission === 'geolocation-approximate') {
       logger.info(
         'weather.location-permission',
@@ -1113,15 +1431,10 @@ function createWindow({ preferredDisplay = null } = {}) {
     geometryPersistence.setStableBounds(null)
   })
 
-  // 根据环境加载页面：开发模式用 HMR URL，生产模式加载本地 HTML 文件。
-  // 首次启动无需阻塞 createWindow；renderer-ready 仍负责最终显示窗口。
-  const rendererLocation = getActiveRendererLocation()
-  if (mainViewNavigation.presentationTiming)
-    mainViewNavigation.recordTiming('loadRequestedAt', Date.now())
-  const initialLoad = mainWindowHost.load(createdWindow, rendererLocation)
-  void initialLoad.catch((error) =>
-    logger.error('startup.renderer-load', error, { rendererFile: rendererLocation.rendererFile })
-  )
+  // Service bootstrap and renderer readiness have separate owners. Register the
+  // bounded startup owner before requesting the first document, without holding quit.
+  void mainViewNavigation.startInitialView(createdWindow)
+  revealPendingNotificationApplication()
 }
 
 // ============================================================
@@ -1133,6 +1446,7 @@ function hideToTray() {
   const visualWindow = getActiveVisualWindow()
   if (!visualWindow || visualWindow.isDestroyed()) return
   mainViewNavigation.noteWindowHiddenByUser(visualWindow)
+  notificationActivation.cancelPendingReveal('user-hide')
 
   // Blur_ApplyConfig 要求完整材质配置，不能只传 { enabled: false }。
   // 先隐藏 Overlay 再隐藏 Electron，避免异常中断后留下孤立模糊窗口。
@@ -1162,6 +1476,12 @@ function hideToTray() {
 function toggleWindow(source = 'tray-click') {
   const visualWindow = getActiveVisualWindow()
   if (!visualWindow || visualWindow.isDestroyed()) return
+  if (mainViewNavigation.isAwaitingFirstReady(getMainWindow())) {
+    void openMainWindow()
+    return
+  }
+  if (shutdownCoordinator.isQuitting() || !mainViewNavigation.isReadyDocument(getMainWindow()))
+    return
   logger.info('window.visibility-toggle', '用户切换主窗口显示状态', {
     source,
     focused: getMainWindow().isFocused(),
@@ -1189,8 +1509,9 @@ function toggleWindow(source = 'tray-click') {
   }
 
   if (dockRuntime.hidden) {
+    const request = captureMainOpenRequest()
     doShow(source)
-    focusMainWindow(source)
+    if (canPresentMainOpenRequest(request)) focusMainWindow(source, request)
     return
   }
   // 托盘点击可能晚于移动、显示或设置事件；选择“滑入”前以实时几何和
@@ -1235,42 +1556,142 @@ function handleViewVisibilityShortcut() {
   toggleWindow('view-visibility-shortcut')
 }
 
-function focusMainWindow(source) {
+function focusMainWindow(source, request = null) {
   if (!getMainWindow() || getMainWindow().isDestroyed()) return
+  if (request && !canPresentMainOpenRequest(request)) return
   if (zOrderRuntime.mode !== WINDOW_Z_ORDER_MODES.BOTTOM) getMainWindow().moveTop()
+  if (request && !canPresentMainOpenRequest(request)) return
   getMainWindow().focus()
+  if (request && !canPresentMainOpenRequest(request)) return
   reassertBottomWindowZOrder(source)
 }
 
-function openMainWindow() {
-  const visualWindow = getActiveVisualWindow()
-  if (!visualWindow || visualWindow.isDestroyed()) return
-  if (getMainWindow().isMinimized()) getMainWindow().restore()
+let mainOpenSequence = 0
+function captureMainOpenRequest() {
+  return {
+    id: ++mainOpenSequence,
+    window: getMainWindow(),
+    documentGeneration: settingsWriteSource.readGeneration(),
+    hideGeneration: mainViewNavigation.getUserHideGeneration()
+  }
+}
+
+function canPresentMainOpenRequest(request) {
+  return (
+    ownsMainOpenRequest(request) &&
+    mainViewNavigation.isReadyDocument(request.window) &&
+    request.documentGeneration === settingsWriteSource.readGeneration()
+  )
+}
+
+function ownsMainOpenRequest(request) {
+  return (
+    !shutdownCoordinator.isQuitting() &&
+    (!request.isCurrent || request.isCurrent()) &&
+    !mainViewNavigation.snapshot().stopped &&
+    request.id === mainOpenSequence &&
+    request.window === getMainWindow() &&
+    request.window &&
+    !request.window.isDestroyed() &&
+    request.hideGeneration === mainViewNavigation.getUserHideGeneration()
+  )
+}
+
+function openMainWindow(request = captureMainOpenRequest()) {
+  if (!ownsMainOpenRequest(request)) return false
+  const startup = mainViewNavigation.requestInitialOpen(request.window)
+  if (startup !== null)
+    return startup.then(
+      (shown) =>
+        ownsMainOpenRequest(request) && mainViewNavigation.isReadyDocument(request.window) && shown
+    )
+  if (!canPresentMainOpenRequest(request)) return false
+  if (request.window.isMinimized()) request.window.restore()
+  if (!canPresentMainOpenRequest(request)) return false
   if (dockRuntime.hidden) {
     doShow('open-main-window')
   } else {
-    getMainWindow().show()
+    request.window.show()
+    if (!canPresentMainOpenRequest(request)) return false
     syncVisibleDockSide({ source: 'open-main-window', snap: true })
   }
-  focusMainWindow('open-main-window')
+  if (!canPresentMainOpenRequest(request)) return false
+  focusMainWindow('open-main-window', request)
+  return canPresentMainOpenRequest(request) && request.window.isVisible()
 }
 
-async function openMainWindowFromTray() {
-  await exitCompactPresentation({ source: 'tray-open', showWhenDone: true })
-  openMainWindow()
+async function openMainWindowFromTray({
+  source = 'tray-open',
+  allowExpandFallback = false,
+  isCurrent = null
+} = {}) {
+  const request = captureMainOpenRequest()
+  request.isCurrent = isCurrent
+  if (!ownsMainOpenRequest(request)) return false
+  const startup = mainViewNavigation.requestInitialOpen(request.window)
+  if (startup !== null)
+    return (
+      (await startup) &&
+      ownsMainOpenRequest(request) &&
+      mainViewNavigation.isReadyDocument(request.window)
+    )
+  try {
+    await exitCompactPresentation({ source, showWhenDone: false })
+  } catch (error) {
+    if (!allowExpandFallback) throw error
+    logger.error('notification.expand', error)
+  }
+  if (!canPresentMainOpenRequest(request)) return false
+  return openMainWindow(request)
 }
 
 const confirmEditingDrafts = createEditingDraftGuard({
   logger,
-  reveal: async (window) => {
+  prepareSettingsOperations: settingsOperations.sealAndDrain,
+  resumeSettingsOperations: settingsOperations.resume,
+  reveal: async (window, canContinue) => {
     if (window !== getMainWindow() || window.isDestroyed()) throw new Error('主窗口已变化')
+    // The existing page-leave owner may need to reveal a document that was
+    // exposed before startup presentation failed. Ordinary open would retry
+    // loading and recursively ask this same guard. Keep this original page.
+    const request = captureMainOpenRequest()
+    const contents = window.webContents
+    const frame = contents.mainFrame
+    const assertOwned = () => {
+      if (
+        !canContinue() ||
+        !ownsMainOpenRequest(request) ||
+        request.documentGeneration !== settingsWriteSource.readGeneration() ||
+        contents.isDestroyed() ||
+        contents.isCrashed() ||
+        contents.mainFrame !== frame ||
+        !frame ||
+        frame.isDestroyed() ||
+        frame.detached
+      )
+        throw new Error('草稿确认所属页面或显示请求已失效')
+    }
+    assertOwned()
     if (window.isMinimized()) window.restore()
-    openMainWindow()
+    assertOwned()
+    if (dockRuntime.hidden) doShow('draft-guard')
+    else window.show()
+    assertOwned()
+    syncVisibleDockSide({ source: 'draft-guard', snap: true })
+    assertOwned()
+    if (zOrderRuntime.mode !== WINDOW_Z_ORDER_MODES.BOTTOM) window.moveTop()
+    assertOwned()
+    window.focus()
+    assertOwned()
+    reassertBottomWindowZOrder('draft-guard')
+    assertOwned()
+    if (!window.isVisible()) throw new Error('草稿确认窗口未能显示')
   }
 })
 
 function toggleGlobalShortcuts() {
   try {
+    settingsOperations.assertOpen()
     const enabled = settingsRuntime.setShortcutsEnabled(!settingsRuntime.shortcutsEnabled)
     if (captureShortcutService) captureShortcutService.setEnabled(enabled)
     else viewVisibilityShortcutService?.setEnabled(enabled)
@@ -1296,6 +1717,7 @@ if (process.env.ABANDON_INTEGRATION_TEST === '1') {
       show: dockRuntime.doShow,
       suspend: dockRuntime.beginDockInteractionSuspension,
       resume: dockRuntime.endDockInteractionSuspension,
+      retrySettings: dockRuntime.retryDockRuntimeConfig,
       snapshot: dockRuntime.getDockDiagnosticSnapshot,
       resources: dockRuntime.resourceSnapshot
     }),
@@ -1307,14 +1729,22 @@ if (process.env.ABANDON_INTEGRATION_TEST === '1') {
     }),
     handleDisplayTopologyChange: handleDockDisplayTopologyChange,
     getBlurRuntimeHealth: () => (blurRuntime.initialized ? getBlurRuntimeHealth() : null),
+    applyResolvedBlurRuntime,
+    retryResolvedBlurRuntime: blurRuntime.retryResolvedBlurRuntime,
     getWindowZOrderStatus: captureTitlebarZOrderStatus,
     triggerViewVisibilityShortcut: () => viewVisibilityShortcutService?.handleTrigger(),
+    triggerNewNoteShortcut: () => captureShortcutService?.services.newNote.handleTrigger(),
     triggerTrayClick: mainTrayController.triggerClick,
     getTrayMenuTemplate: buildTrayMenuTemplate,
     getReminderService: featureRuntime.observeRemindersForIntegration,
     featureState: featureRuntime.snapshot,
     businessMutationState: businessAdmission.snapshot,
+    draftAssetState: draftAssetsRuntime.snapshot,
+    settingsOperationState: settingsOperations.snapshot,
+    getResolvedSettingsSnapshot,
+    runSettingsOperationForIntegration: settingsOperations.run,
     backgroundSettingsState: backgroundSettingsCoordinator.snapshot,
+    wallpaperRetirementState: wallpaperRetirement.snapshot,
     navigationState: mainViewNavigation.snapshot,
     notificationActivationState: notificationActivation.snapshot,
     handleNotificationProtocol,
@@ -1360,6 +1790,7 @@ const applicationBootstrap = createApplicationBootstrap({
       initDatabase({ userDataPath: app.getPath('userData') })
     )
     logger.info('startup', '数据库初始化完成', { isNewDatabase })
+    await runStage('draft-assets', () => draftAssetsRuntime.initialize())
     if (isNewDatabase) {
       createNote({
         content:
@@ -1414,6 +1845,13 @@ const applicationBootstrap = createApplicationBootstrap({
 
     // ---- IPC 通道注册 ----
     const mainWindowIpc = createMainWindowIpc(ipcMain, () => getMainWindow())
+    mainWindowIpc.handle('settings:write-context', (event) => settingsWriteSource.issue(event))
+    registerDraftAssetsIpc({
+      ipcMain,
+      runtime: draftAssetsRuntime,
+      noteCommands: draftNoteCommands,
+      logger
+    })
 
     const performanceDiagnostics = startPerformanceDiagnostics({
       app,
@@ -1457,6 +1895,7 @@ const applicationBootstrap = createApplicationBootstrap({
 
     const disposeLoggingIpc = registerLoggingIpc({
       mainWindowIpc,
+      getAttachmentRecoveryReport,
       removeHandler: (channel) => ipcMain.removeHandler(channel),
       getWindow: getMainWindow,
       dialog,
@@ -1489,6 +1928,42 @@ const applicationBootstrap = createApplicationBootstrap({
     })
     app.once('will-quit', disposeLoggingIpc)
 
+    const attachmentRecoveryRetry = createAttachmentRecoveryRetryController({
+      businessAdmission,
+      draftAssetsRuntime,
+      canStart: () =>
+        !shutdownCoordinator.isQuitting() &&
+        !shutdownCoordinator.isCheckingDrafts() &&
+        !mainViewNavigation.isSwitching() &&
+        mainViewNavigation.isReadyDocument(getMainWindow()) &&
+        Boolean(getDb()) &&
+        getDb().open !== false,
+      getSource: () => ({
+        connection: getDb(),
+        profile: resolve(app.getPath('userData')).toLowerCase(),
+        window: getMainWindow()
+      }),
+      isSourceCurrent: (source) =>
+        source.connection === getDb() &&
+        source.connection?.open !== false &&
+        source.profile === resolve(app.getPath('userData')).toLowerCase() &&
+        source.window === getMainWindow() &&
+        !source.window?.isDestroyed(),
+      recover: () =>
+        cleanupPendingAttachmentDirs({
+          onRecovery: (metadata) =>
+            logger.info('storage.attachment-recovery', '手动附件存储恢复已执行', metadata)
+        }),
+      getReport: getAttachmentRecoveryReport,
+      onError: (error) => logger.error('storage.attachment-recovery-retry', error)
+    })
+    const disposeAttachmentRecoveryRetry = registerAttachmentRecoveryRetryIpc({
+      mainWindowIpc,
+      removeHandler: (channel) => ipcMain.removeHandler(channel),
+      retry: attachmentRecoveryRetry.retry
+    })
+    app.once('will-quit', disposeAttachmentRecoveryRetry)
+
     // ---- 应用更新（检查版本后，通过浏览器直链或对应标签页下载） ----
     // renderer 只能选择固定目标；实际 URL 来自主进程刚完成的更新检查。
     const disposeAppIpc = registerAppIpc({
@@ -1501,8 +1976,18 @@ const applicationBootstrap = createApplicationBootstrap({
     app.once('will-quit', disposeAppIpc)
 
     // 【渲染就绪】渲染进程初始化完成后发送此消息，主进程收到后显示窗口
-    ipcMain.on('renderer-ready', (event, { viewMode } = {}) => {
-      mainViewNavigation.handleRendererReady(event.sender, viewMode)
+    ipcMain.on('renderer-ready', (event, { viewMode } = {}, source) => {
+      let document
+      try {
+        document = settingsWriteSource.assertDocument(event, source)
+      } catch (error) {
+        logger.warn('renderer.ready-stale', '忽略已失效页面的主视图就绪消息', {
+          viewMode,
+          code: error.code
+        })
+        return
+      }
+      mainViewNavigation.handleRendererReady(event.sender, viewMode, document)
     })
 
     ipcMain.on('presentation-mode:renderer-ready', (event, { operationId } = {}) => {
@@ -1522,7 +2007,8 @@ const applicationBootstrap = createApplicationBootstrap({
     )
 
     // 【窗口锁定 - 切换锁定状态】
-    mainWindowIpc.handle('toggle-lock', () => {
+    mainWindowIpc.handle('toggle-lock', async (event, source) => {
+      settingsWriteSource.assert(event, source)
       const now = Date.now()
       const before = {
         isLocked,
@@ -1540,8 +2026,10 @@ const applicationBootstrap = createApplicationBootstrap({
       }
       lockToggleInFlight = true
       try {
-        const snapshot = persistSettingValue('window.lockState', !isLocked)
-        const value = snapshot.values.window.lockState
+        const receipt = await settingsOperations.run(() =>
+          persistSettingValue('window.lockState', !isLocked)
+        )
+        const value = receipt.values?.window?.lockState
         logger.info('window.control-change', '窗口锁定状态已切换', {
           control: 'lock',
           before,
@@ -1555,8 +2043,17 @@ const applicationBootstrap = createApplicationBootstrap({
             nativeZOrder: captureTitlebarZOrderStatus()
           }
         })
-        sendAppMessage('success', value ? '主窗口已锁定' : '主窗口已解除锁定')
-        return { value, changed: true, throttled: false }
+        if (
+          typeof value === 'boolean' &&
+          receipt.application?.domains?.window?.status === 'applied'
+        )
+          sendAppMessage('success', value ? '主窗口已锁定' : '主窗口已解除锁定')
+        return {
+          ...(typeof value === 'boolean' ? { value } : {}),
+          changed: true,
+          throttled: false,
+          snapshot: receipt
+        }
       } catch (error) {
         sendAppMessage('error', `切换窗口锁定失败：${error.message}`)
         throw error
@@ -1567,9 +2064,11 @@ const applicationBootstrap = createApplicationBootstrap({
     })
 
     // 【主窗口层级 - top / normal / bottom】
-    mainWindowIpc.handle('set-window-z-order-mode', (_event, requestedMode) =>
-      setWindowZOrderMode(requestedMode)
-    )
+    mainWindowIpc.handle('set-window-z-order-mode', (event, requestedMode, source) => {
+      settingsWriteSource.assert(event, source)
+      const operation = settingsOperationForSource(source)
+      return settingsOperations.run(() => setWindowZOrderMode(requestedMode, operation))
+    })
 
     // 【缩放手柄 - 获取边界】返回当前窗口的位置和尺寸
     mainWindowIpc.handle('window-get-bounds', (event) => {
@@ -1658,6 +2157,14 @@ const applicationBootstrap = createApplicationBootstrap({
     })
 
     // ---- 设置 IPC ----
+    const disposeSettingsApplicationIpc = registerSettingsApplicationIpc({
+      mainWindowIpc,
+      removeHandler: (channel) => ipcMain.removeHandler(channel),
+      settingsWriteSource,
+      settingsOperations,
+      coordinator: settingsApplicationCoordinator
+    })
+    app.once('will-quit', disposeSettingsApplicationIpc)
     mainWindowIpc.handle('shortcuts:startup-notice', async () => {
       // The renderer can mount before capture initialization has registered F1.
       await startupPromise
@@ -1682,11 +2189,11 @@ const applicationBootstrap = createApplicationBootstrap({
       return snapshot
     })
     // renderer 只提交 schema ID，数据库 type/key、校验、序列化均由共享 schema 决定。
-    mainWindowIpc.handle('set-setting-value', async (_event, id, value) => {
+    mainWindowIpc.handle('set-setting-value', async (event, id, value, source) => {
+      settingsWriteSource.assert(event, source)
       if (!RENDERER_WRITABLE_SETTING_IDS.has(id))
         throw new Error(`renderer 无权直接写入设置项: ${id}`)
-      persistSettingValue(id, value)
-      return true
+      return settingsOperations.run(() => persistSettingValue(id, value))
     })
 
     mainWindowIpc.handle(
@@ -1715,7 +2222,8 @@ const applicationBootstrap = createApplicationBootstrap({
       }
     )
 
-    mainWindowIpc.handle('shortcut:view-visibility-set', (event, accelerator) => {
+    mainWindowIpc.handle('shortcut:view-visibility-set', async (event, accelerator, source) => {
+      settingsWriteSource.assert(event, source)
       if (captureShortcutService?.conflicts('viewVisibility', accelerator))
         return { status: 'conflict', runtime: viewVisibilityShortcutService.snapshot() }
       const result = viewVisibilityShortcutService.update(accelerator, {
@@ -1726,20 +2234,33 @@ const applicationBootstrap = createApplicationBootstrap({
         captureShortcutService?.endCapture(event.sender.id)
       if (!['saved', 'cleared'].includes(result.status)) return result
 
-      refreshResolvedSettings({ incrementRevision: true })
-      const snapshot = getResolvedSettingsSnapshot()
-      broadcastSettingsChanged(snapshot)
-      return { ...result, runtime: snapshot.runtime.shortcuts.viewVisibility }
+      const receipt = await settingsOperations.track(
+        settingsApplicationCoordinator.completeCommittedSettings({
+          scope: getActiveWindowName(),
+          ids: ['shortcuts.viewVisibility']
+        })
+      )
+      return {
+        ...result,
+        runtime: receipt.runtime?.shortcuts?.viewVisibility || result.runtime,
+        snapshot: receipt
+      }
     })
 
-    mainWindowIpc.handle('shortcut:capture-set', (event, key, accelerator) => {
+    mainWindowIpc.handle('shortcut:capture-set', async (event, key, accelerator, source) => {
+      settingsWriteSource.assert(event, source)
       const result = captureShortcutService.update(key, accelerator, {
         ownerId: event.sender.id,
         persist: (next) => writeApplicationSetting(`shortcuts.${key}`, next)
       })
       if (['saved', 'cleared'].includes(result.status)) {
-        refreshResolvedSettings({ incrementRevision: true })
-        broadcastSettingsChanged(getResolvedSettingsSnapshot())
+        const receipt = await settingsOperations.track(
+          settingsApplicationCoordinator.completeCommittedSettings({
+            scope: getActiveWindowName(),
+            ids: [`shortcuts.${key}`]
+          })
+        )
+        return { ...result, snapshot: receipt }
       }
       return result
     })
@@ -1748,27 +2269,24 @@ const applicationBootstrap = createApplicationBootstrap({
      * 小黑条模式与边缘多选属于同一份运行配置；通过一次数据库批量写入
      * 和一次 runtime reconcile 提交，避免短暂运行在半新半旧状态。
      */
-    mainWindowIpc.handle('set-dock-config', (_event, config) => {
+    mainWindowIpc.handle('set-dock-config', (event, config, source) => {
+      settingsWriteSource.assert(event, source)
       const normalized = validateDockConfigPayload(config)
-      return persistSettingValues([
-        { id: 'dock.revealHandleMode', value: normalized.revealHandleMode },
-        { id: 'dock.enabledEdges', value: normalized.enabledEdges }
-      ])
+      return settingsOperations.run(() =>
+        persistSettingValues([
+          { id: 'dock.revealHandleMode', value: normalized.revealHandleMode },
+          { id: 'dock.enabledEdges', value: normalized.enabledEdges }
+        ])
+      )
     })
 
     /** 获取 DB 值覆盖共享默认值后的完整设置快照。 */
-    mainWindowIpc.handle('get-settings-snapshot', () => {
+    mainWindowIpc.handle('get-settings-snapshot', (event, source) => {
+      // Reads retain their document identity while page-leave preparation seals writes.
+      settingsWriteSource.assertDocument(event, source)
       // 每次查询都重新读取 SQLite，避免设置页拿到陈旧的主进程内存副本。
-      const previousDockConfig = getDockRuntimeConfig()
-      const changed = refreshResolvedSettings()
-      if (changed) {
-        applyResolvedWindowRuntime()
-        applyResolvedBlurRuntime()
-        reconcileDockRuntimeConfig(previousDockConfig, 'snapshot-refresh')
-      }
-      const snapshot = getResolvedSettingsSnapshot()
-      if (changed) broadcastSettingsChanged(snapshot)
-      return snapshot
+      refreshResolvedSettings({ notifyResolved: false })
+      return getResolvedSettingsSnapshot()
     })
 
     // ---- 远程软件通知（全部阅读状态仅保存在本地） ----
@@ -1789,7 +2307,8 @@ const applicationBootstrap = createApplicationBootstrap({
      * 其他视图的独立设置、应用运行元数据、业务数据和开机自启 OS 状态不受影响。
      * 当前窗口立即恢复默认宽高并保留当前位置，同时清除下次启动时的几何记录。
      */
-    mainWindowIpc.handle('reset-settings', () => {
+    mainWindowIpc.handle('reset-settings', async (event, source) => {
+      settingsWriteSource.assert(event, source)
       if (isDockTransitionActive()) {
         throw new Error('请先显示贴边窗口，再恢复默认设置')
       }
@@ -1802,38 +2321,21 @@ const applicationBootstrap = createApplicationBootstrap({
       geometryPersistence.cancel()
       // Only a committed reset may clear dirty geometry and pending persistence.
       geometryPersistence.markSaved()
-      refreshResolvedSettings({ incrementRevision: true })
-      viewVisibilityShortcutService?.initialize(settingsRuntime.values.shortcuts.viewVisibility, {
-        enabled: settingsRuntime.values.shortcuts.enabled
-      })
-      captureShortcutService?.initialize(settingsRuntime.values.shortcuts)
-      rebuildTrayMenu()
-      applyResolvedWindowRuntime()
-      applyResolvedBlurRuntime()
-      reconcileDockRuntimeConfig(previousDockConfig, 'reset-settings')
-
-      // 宽高立即恢复为当前显示器工作区的默认比例；位置仍保持当前值。
-      if (getMainWindow() && !getMainWindow().isDestroyed()) {
-        const display = screen.getDisplayMatching(getMainWindow().getBounds())
-        const defaultWidth = Math.round(
-          display.workAreaSize.width * settingsRuntime.values.geometry.widthRatio
-        )
-        const defaultHeight = Math.round(
-          display.workAreaSize.height * settingsRuntime.values.geometry.heightRatio
-        )
-        geometryPersistence.suppressUntil(Date.now() + 750)
-        getMainWindow().setSize(defaultWidth, defaultHeight)
-      }
-
-      const snapshot = getResolvedSettingsSnapshot()
-      broadcastSettingsChanged(snapshot)
+      const receipt = await settingsOperations.track(
+        settingsApplicationCoordinator.completeCommittedSettings({
+          scope: resetViewScope,
+          ids: SETTING_DEFINITIONS.map(({ id }) => id),
+          previousDockConfig,
+          reset: true
+        })
+      )
       logger.info('settings.reset', '当前视图与全局共享设置已恢复默认值', {
         viewMode: mainViewNavigation.mode,
         viewScope: resetViewScope,
         clearedViewSettingCount,
         resetApplicationSettingCount
       })
-      return snapshot
+      return receipt
     })
 
     // ---- 贴边隐藏 IPC ----
@@ -1847,13 +2349,20 @@ const applicationBootstrap = createApplicationBootstrap({
     // ---- 系统模糊 IPC ----
 
     /** 设置模糊配置（立即生效 + 持久化到数据库） */
-    mainWindowIpc.handle('set-blur-config', (_event, payload) =>
-      backgroundSettingsCoordinator.setBlur(payload)
-    )
+    mainWindowIpc.handle('set-blur-config', (event, payload, source) => {
+      settingsWriteSource.assert(event, source)
+      const operation = settingsOperationForSource(source)
+      return settingsOperations.run(() => backgroundSettingsCoordinator.setBlur(payload, operation))
+    })
 
     // ---- 主页面壁纸 IPC ----
     const disposeWallpaperIpc = registerWallpaperIpc({
       mainWindowIpc,
+      assertWriteSource: (event, source) => settingsWriteSource.assert(event, source),
+      assertDocumentSource: (event, source) => settingsWriteSource.assertDocument(event, source),
+      wallpaperRetirement,
+      createSettingsOperation: settingsOperationForSource,
+      runMutation: settingsOperations.run,
       removeHandler: (channel) => ipcMain.removeHandler(channel),
       backgroundSettingsCoordinator,
       getWallpaperThumbnail,
@@ -1914,59 +2423,84 @@ const applicationBootstrap = createApplicationBootstrap({
     })
 
     // 【清空便签数据】仅清理便签、模板、标签和附件，保留 app_settings。
-    mainWindowIpc.handle('clear-note-data', () =>
-      businessAdmission.clear(async () => {
-        const counts = getDb()
-          .prepare(
-            `SELECT
+    mainWindowIpc.handle('clear-note-data', () => {
+      const owner = Symbol('clear-note-data-drafts')
+      const draftsDrained = draftAssetsRuntime.sealAndDrain(owner)
+      // Issue cancellation before waiting for read pins. Accepted saves may be
+      // waiting for these same readers to close before they can commit.
+      const imagesDrained = suspendImageDecodes(owner)
+      const readsDrained = Promise.all([draftsDrained, imagesDrained])
+      void readsDrained.catch(() => {})
+      return businessAdmission
+        .clear(async () => {
+          // No decoder may retain an attachment handle across the reset directory rename.
+          await readsDrained
+          const counts = getDb()
+            .prepare(
+              `SELECT
          (SELECT COUNT(*) FROM notes) AS notes,
          (SELECT COUNT(*) FROM note_templates) AS templates,
          (SELECT COUNT(*) FROM tags) AS tags,
          (SELECT COUNT(*) FROM note_attachments) AS attachments,
          (SELECT COUNT(*) FROM desktop_stickies) AS desktopStickies`
-          )
-          .get()
-        await clearNoteData()
-        const cleanupFailures = await runCommittedDataCleanup(
-          [
-            {
-              id: 'reminders',
-              label: '提醒清理',
-              run: () => featureRuntime.refreshReminders()
-            },
-            {
-              id: 'stickies',
-              label: '桌面便签清理',
-              run: () => featureRuntime.getStickyCommands()?.discardAllRuntime()
-            },
-            {
-              id: 'drafts',
-              label: '编辑草稿清理',
-              run: async () => {
-                const window = getMainWindow()
-                if (!window || window.isDestroyed()) return
-                const cleared = await window.webContents.executeJavaScript(
-                  'window.__clearEditingDrafts?.()'
-                )
-                if (cleared !== true) throw new Error('草稿清理接口不可用')
+            )
+            .get()
+          await clearNoteData()
+          const cleanupFailures = await runCommittedDataCleanup(
+            [
+              {
+                id: 'reminders',
+                label: '提醒清理',
+                run: () => featureRuntime.refreshReminders()
+              },
+              {
+                id: 'stickies',
+                label: '桌面便签清理',
+                run: () => featureRuntime.getStickyCommands()?.discardAllRuntime()
+              },
+              {
+                id: 'drafts',
+                label: '编辑草稿清理',
+                run: async () => {
+                  const window = getMainWindow()
+                  if (!window || window.isDestroyed()) return
+                  const cleared = await window.webContents.executeJavaScript(
+                    'window.__clearEditingDrafts?.()'
+                  )
+                  if (cleared !== true) throw new Error('草稿清理接口不可用')
+                }
+              },
+              {
+                id: 'draft-assets',
+                label: '草稿附件清理',
+                run: async () => {
+                  try {
+                    await draftAssetsRuntime.clearAfterCommit(owner)
+                  } finally {
+                    draftNoteCommands.clear()
+                  }
+                }
+              },
+              {
+                id: 'broadcast',
+                label: '界面刷新',
+                run: () => broadcastBusinessDataCleared(getApplicationWindows())
               }
-            },
-            {
-              id: 'broadcast',
-              label: '界面刷新',
-              run: () => broadcastBusinessDataCleared(getApplicationWindows())
-            }
-          ],
-          ({ id, error }) => logger.error(`data.clear-${id}`, error)
-        )
-        logger.info('data.clear', '便签业务数据已清空', {
-          viewMode: mainViewNavigation.mode,
-          ...counts
+            ],
+            ({ id, error }) => logger.error(`data.clear-${id}`, error)
+          )
+          logger.info('data.clear', '便签业务数据已清空', {
+            viewMode: mainViewNavigation.mode,
+            ...counts
+          })
+          if (cleanupFailures.length) throw createBusinessClearCleanupError(cleanupFailures)
+          return true
         })
-        if (cleanupFailures.length) throw createBusinessClearCleanupError(cleanupFailures)
-        return true
-      })
-    )
+        .finally(() => {
+          resumeImageDecodes(owner)
+          draftAssetsRuntime.resume(owner)
+        })
+    })
 
     // ---- 开机自启 ----
 
@@ -1983,7 +2517,8 @@ const applicationBootstrap = createApplicationBootstrap({
      * 设置开机自启
      * 只更新 OS 注册表/LoginItem，并返回回读后的真实状态。
      */
-    mainWindowIpc.handle('set-auto-start', (_event, enabled) => {
+    mainWindowIpc.handle('set-auto-start', (event, enabled, source) => {
+      settingsWriteSource.assert(event, source)
       app.setLoginItemSettings({ openAtLogin: Boolean(enabled) })
       const actual = readAutoStartRuntime().value
       settingsRuntime.advanceRevision()
@@ -2032,10 +2567,15 @@ const applicationBootstrap = createApplicationBootstrap({
     await runStage('capture', () => screenshotService.initialize())
     captureShortcutService = new CaptureShortcutService({
       globalShortcut,
+      definitions: ACTION_SHORTCUTS,
       viewService: viewVisibilityShortcutService,
       logger,
       onTrigger: (action) => {
         if (shutdownCoordinator.isQuitting()) return
+        if (action === 'newNote') {
+          void newNoteShortcut.trigger().catch((error) => logger.error('shortcut.new-note', error))
+          return
+        }
         void screenshotService
           .capture({ mode: action === 'screenshotCopy' ? 'copy-on-select' : 'edit' })
           .catch((error) => screenshotService?.report(error))
@@ -2080,17 +2620,74 @@ const shutdownCoordinator = createShutdownCoordinator({
   app,
   logger,
   getWindow: getMainWindow,
-  confirmDrafts: confirmEditingDrafts,
+  confirmDrafts: (window, ...args) => {
+    // The draft/setting drain can itself be waiting for this background request.
+    // Cancel its visual wait before entering that drain; a cancelled quit stays usable.
+    wallpaperRetirement.cancelAll('shutdown-draft-check')
+    return mainViewNavigation.canSkipInitialDrafts(window)
+      ? true
+      : confirmEditingDrafts(window, ...args)
+  },
   isViewDraftCheckActive: () => mainViewNavigation.isCheckingDrafts(),
+  getViewNavigationActive: () => mainViewNavigation.isNavigating(),
   onBegin: () => {
+    // Seal remote continuations and persist the local session-end checkpoint
+    // before any other owner can fail or consume the shutdown deadline.
+    remoteCoordinator?.prepareStop()
+    wallpaperRetirement.stop('shutdown')
+    settingsOperations.stop()
+    // dispose seals synchronously, then waits for admitted IO and pinned note
+    // consumers. Its async outcome belongs to the serial shutdown stage below.
+    draftAssetsShutdown = draftAssetsRuntime.dispose()
+    void draftAssetsShutdown.catch(() => {})
+    imageDecodesShutdown = disposeImageDecodes()
+    void imageDecodesShutdown.catch(() => {})
+    settingsWriteSource.stop()
     businessAdmission.preventNewMutations()
+    featureRuntime.stopReminderPresentation()
+    const stickyInitializations = featureRuntime.stopStickyInitializations()
+    logger.info('sticky.shutdown-initializations', '停止便利贴初始化并交接退出清理', {
+      stopped: stickyInitializations.stopped,
+      alreadyStopped: stickyInitializations.alreadyStopped,
+      cancelled: stickyInitializations.cancelled,
+      preserved: stickyInitializations.preserved,
+      pendingCommit: stickyInitializations.pendingCommit,
+      cleanupErrors: stickyInitializations.cleanupErrors.map(({ stickyId, error }) => ({
+        stickyId,
+        error: error?.message || String(error)
+      }))
+    })
+    for (const { stickyId, error } of stickyInitializations.cleanupErrors) {
+      logger.error('sticky.shutdown-initialization-cleanup', error, { stickyId })
+    }
     notificationActivation.dispose()
     featureRuntime.stopScheduledTasks()
     mainViewNavigation.dispose()
     presentationRuntime.prepareShutdown()
     backgroundSettingsCoordinator.preventNewRequests()
     applicationBootstrap.cancel()
-    remoteCoordinator?.preventStartup()
+  },
+  onTerminal: (snapshot) => {
+    // A deadline cannot safely close storage under admitted async mutations.
+    // Keep one bounded local failure snapshot, then the coordinator exits in
+    // the same turn without awaiting the log worker or running later cleanup.
+    if (snapshot.exitMode === 'normal') return
+    const directory = getLogDirectory()
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(
+      join(directory, 'shutdown-incomplete.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        time: new Date().toISOString(),
+        pid: process.pid,
+        shutdown: sanitizeDiagnosticValue(snapshot, {
+          maxBytes: 32768,
+          maxDepth: 8,
+          maxArray: 64,
+          maxNodes: 2048
+        })
+      })
+    )
   },
   hasRemoteSession: () => Boolean(remoteCoordinator?.hasActiveSession()),
   stages: [
@@ -2109,6 +2706,20 @@ const shutdownCoordinator = createShutdownCoordinator({
       run: () => remoteCoordinator.stop({ timeoutMs: 1600 })
     },
     { name: 'business-mutations', enabled: () => true, run: businessAdmission.drain },
+    {
+      name: 'image-decodes',
+      enabled: () => true,
+      run: () => imageDecodesShutdown || disposeImageDecodes()
+    },
+    {
+      name: 'draft-assets',
+      enabled: () => true,
+      run: () =>
+        (draftAssetsShutdown || draftAssetsRuntime.dispose()).finally(() =>
+          draftNoteCommands.clear()
+        )
+    },
+    { name: 'settings-operations', enabled: () => true, run: settingsOperations.drain },
     {
       name: 'diagnostic',
       enabled: () => Boolean(diagnosticController),

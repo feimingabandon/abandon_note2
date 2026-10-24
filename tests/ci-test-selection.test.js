@@ -7,6 +7,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import ci from '../scripts/run-ci-tests.cjs'
 import manifest from '../scripts/test-manifest.cjs'
 import focused from '../scripts/run-focused-tests.cjs'
+import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
+
+const nativeAbiPrerequisite = `blur-engine-abi-${NATIVE_ABI_VERSION}`
 
 const roots = []
 const repository = resolve(import.meta.dirname, '..')
@@ -133,6 +136,67 @@ describe('reviewed committed-change CI selection', () => {
     }
   })
 
+  it('selects the migrated owners and shared card direct consumers at their current paths', () => {
+    const registry = manifest.createTestRegistry({ root: repository })
+    const selected = (file) => {
+      const result = ci.selectCiTests({ changedFiles: [file], registry, platform: 'win32' })
+      expect(result.exitCode).toBe(0)
+      return result.selected.map((entry) => entry.file)
+    }
+    expect(selected('src/main/tags/tag-commands.js')).toEqual([
+      'tests/tag-commands.test.js',
+      'tests/tag-commands-electron.mjs'
+    ])
+    expect(selected('src/main/ipc/register-business-ipc.js')).toContain(
+      'tests/tag-commands-electron.mjs'
+    )
+    for (const owner of ['useHolidayDataSettings', 'useSettingsDiagnostics']) {
+      expect(selected(`src/renderer/src/composables/${owner}.js`)).toEqual(
+        expect.arrayContaining([
+          'tests/settings-panel-owners.test.js',
+          'tests/settings-panel-owners-electron.mjs',
+          'tests/settings-queue-electron.mjs'
+        ])
+      )
+    }
+    expect(selected('src/renderer/src/components/note/NoteCard.vue')).toEqual(
+      expect.arrayContaining([
+        'tests/clipboard-and-selection.test.js',
+        'tests/image-only-note.test.js',
+        'tests/note-remark.test.js',
+        'tests/note-text-color.test.js',
+        'tests/quick-note-edit.test.js',
+        'tests/tag-color-setting.test.js',
+        'tests/tag-group-ordering-ui.test.js',
+        'tests/ui-interaction-standard.test.js',
+        'tests/note-list-refresh-electron.mjs',
+        'tests/quick-note-edit-electron.mjs'
+      ])
+    )
+    expect(Object.hasOwn(ci.domainRules, 'src/renderer/src/components/list/NoteCard.vue')).toBe(
+      false
+    )
+  })
+
+  it('keeps moved-card deletion protection separate from live paths and selects the new owner fixtures', () => {
+    const oldCard = 'src/renderer/src/components/list/NoteCard.vue'
+    const deleted = plan([{ file: oldCard, status: 'D' }])
+    expect(deleted.exitCode).toBe(0)
+    expect(deleted.selected.map((entry) => entry.file)).toEqual(
+      ci.domainRules['src/renderer/src/components/note/NoteCard.vue']
+    )
+    for (const status of ['A', 'M']) {
+      expect(plan([{ file: oldCard, status }]).state).toBe('needs-domain-validation')
+    }
+    for (const file of ['index.html', 'main.js']) {
+      const result = plan([`tests/fixtures/settings-panel-owners/${file}`])
+      expect(result.exitCode).toBe(0)
+      expect(result.selected.map((entry) => entry.file)).toEqual([
+        'tests/settings-panel-owners-electron.mjs'
+      ])
+    }
+  })
+
   it('maps only existing registered tests, rather than accepting names created by a fixture', () => {
     const registry = manifest.createTestRegistry({ root: repository })
     const files = new Map(registry.map((entry) => [entry.file, entry]))
@@ -156,10 +220,75 @@ describe('reviewed committed-change CI selection', () => {
     })
     const selected = result.selected.flatMap((entry) => entry.runtimePrerequisites)
     expect(selected).toContain('capture-qt-deployment')
-    expect(selected).toContain('blur-engine-abi-22')
+    expect(selected).toContain(nativeAbiPrerequisite)
     expect(result.selected.some((entry) => entry.requires.includes('build-app'))).toBe(true)
     const pureUnit = plan(['tests/arbitrary.test.js'])
     expect(pureUnit.selected.flatMap((entry) => entry.runtimePrerequisites)).toEqual([])
+  })
+
+  it('executes the workflow prerequisite conditions for builds and changing ABI declarations', () => {
+    const workflow = loadYaml(readFileSync(join(repository, '.github/workflows/ci.yml'), 'utf8'))
+    const scope = workflow.jobs.verify.steps.find((step) => step.id === 'scope').run
+    const conditions = scope.slice(scope.indexOf('$prerequisites ='), scope.indexOf('"capture='))
+    expect(conditions).toContain('$requiredBuilds')
+    expect(conditions).not.toMatch(/blur-engine-abi-\d+/)
+    const scenarios = [
+      { selected: [], capture: false, native: false },
+      {
+        selected: [{ requires: ['build-app'], runtimePrerequisites: [] }],
+        capture: false,
+        native: false
+      },
+      {
+        selected: [{ requires: ['build-native'], runtimePrerequisites: [] }],
+        capture: false,
+        native: true
+      },
+      {
+        selected: [{ requires: ['build-capture'], runtimePrerequisites: [] }],
+        capture: true,
+        native: true
+      },
+      {
+        selected: [{ requires: [], runtimePrerequisites: [nativeAbiPrerequisite] }],
+        capture: false,
+        native: true
+      },
+      {
+        selected: [
+          { requires: [], runtimePrerequisites: [`blur-engine-abi-${NATIVE_ABI_VERSION + 1}`] }
+        ],
+        capture: false,
+        native: true
+      },
+      {
+        selected: [{ requires: [], runtimePrerequisites: ['capture-qt-deployment'] }],
+        capture: true,
+        native: true
+      },
+      {
+        selected: [{ requires: [], runtimePrerequisites: ['windows-msvc-toolchain'] }],
+        capture: false,
+        native: true
+      }
+    ]
+    const plans = JSON.stringify(scenarios.map(({ selected }) => ({ selected }))).replaceAll(
+      "'",
+      "''"
+    )
+    const script = `$cases = '${plans}' | ConvertFrom-Json
+      @($cases | ForEach-Object {
+        $plan = $_
+        ${conditions}
+        [pscustomobject]@{ capture=$capture; native=$native }
+      }) | ConvertTo-Json -Compress`
+    const actual = JSON.parse(
+      execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        encoding: 'utf8',
+        windowsHide: true
+      })
+    )
+    expect(actual).toEqual(scenarios.map(({ capture, native }) => ({ capture, native })))
   })
 
   it('keeps the build descriptor suite in its own change scope with fixed consumer expectations', () => {
@@ -336,6 +465,47 @@ describe('reviewed committed-change CI selection', () => {
     ).toEqual(ci.infrastructureRules['package.json'])
   })
 
+  it('admits only a publisher display-name change without admitting identity or dependency changes', () => {
+    const range = {
+      changedFiles: [{ status: 'M', file: 'package.json' }],
+      effectiveBaseSha: 'a'.repeat(40),
+      headSha: 'b'.repeat(40)
+    }
+    const base = { name: 'fixture', version: '1.4.0', author: 'old', dependencies: { one: '1' } }
+    const classify = (head) =>
+      ci.classifyPackageChange(range, {
+        git: (_command, args) => JSON.stringify(args[1].startsWith('a') ? base : head)
+      })
+    expect(classify({ ...base, author: '炁体源流' }).publisherAndScriptsOnly).toBe(true)
+    for (const extra of [
+      { dependencies: { one: '2' } },
+      { name: 'another-product' },
+      { author: '' },
+      { version: 'invalid' }
+    ]) {
+      expect(classify({ ...base, author: '炁体源流', ...extra }).publisherAndScriptsOnly).not.toBe(
+        true
+      )
+    }
+    const registry = manifest.createTestRegistry({ root: repository })
+    const result = ci.selectCiTests({
+      changedFiles: ['package.json'],
+      registry,
+      platform: 'win32',
+      packagePublisherOnly: true
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.selected.map((item) => item.file)).toContain(
+      'tests/package-native-config.test.js'
+    )
+    expect(result.reasons['tests/package-native-config.test.js'][0].rule).toBe(
+      'reviewed-publisher-metadata'
+    )
+    expect(
+      ci.selectCiTests({ changedFiles: ['package.json'], registry, platform: 'win32' }).exitCode
+    ).toBe(3)
+  })
+
   it('admits a valid version and script-only package bump while refusing metadata changes', () => {
     const range = {
       changedFiles: [{ status: 'M', file: 'package.json' }],
@@ -416,7 +586,8 @@ describe('reviewed committed-change CI selection', () => {
     )
     const upload = (job, name) =>
       job.steps.find(
-        (step) => /^actions\/upload-artifact@/.test(step.uses || '') && step.with?.name === name
+        (step) =>
+          /^actions\/upload-artifact@/.test(step.uses || '') && step.with?.name?.startsWith(name)
       )
     const installerUpload = upload(release.jobs.windows, 'abandon-note-windows-x64')
     const qualityUpload = upload(release.jobs.quality, 'release-quality-evidence')
@@ -430,11 +601,15 @@ describe('reviewed committed-change CI selection', () => {
       'dist/Abandon-Note-*-windows-x64-setup.exe.blockmap',
       'dist/latest.yml'
     ])
-    expect(downloads).toHaveLength(1)
+    expect(downloads).toHaveLength(2)
     expect(downloads[0].with).toEqual({
       name: installerUpload.with.name,
-      path: 'release-assets'
+      path: 'release-assets',
+      'run-id': '${{ env.RELEASE_SOURCE_RUN_ID }}',
+      'github-token': '${{ github.token }}'
     })
+    expect(downloads[1].with.name).toBe('release-candidate-proof')
+    expect(downloads[1].with.path).toBe('candidate-evidence')
     expect(downloads[0].with.name).not.toBe(qualityUpload.with.name)
     const checksums = release.jobs['draft-release'].steps.find((step) =>
       /sha256sum/.test(step.run || '')
@@ -469,7 +644,9 @@ describe('reviewed committed-change CI selection', () => {
       "steps.scope.outputs.native == 'true'"
     )
     expect(release).toContain('run: npm run test:release:quality')
-    expect(release).toContain('test:window-frame:win')
+    expect(release).toContain(
+      'run: node scripts/run-electron-window-tests.cjs release-window-frame'
+    )
     expect(release).toContain('--publish never')
     expect(release).toContain('gh release create')
     expect(pkg.scripts.test).toBe('node scripts/run-focused-tests.cjs')
@@ -480,5 +657,46 @@ describe('reviewed committed-change CI selection', () => {
     expect(pkg.scripts['test:daily-report:win']).toBe(
       'node scripts/run-focused-tests.cjs --file tests/daily-report-electron.mjs'
     )
+  })
+
+  it('runs independent release gates in parallel and only promotes an attested candidate', () => {
+    const release = loadYaml(
+      readFileSync(join(repository, '.github/workflows/release.yml'), 'utf8')
+    )
+    expect(release.jobs.quality.needs).toBe('validate')
+    expect(release.jobs.windows.needs).toEqual(['validate'])
+    expect(release.jobs['candidate-proof'].needs).toEqual(['quality', 'windows'])
+    const draft = release.jobs['draft-release']
+    const resolveCandidate = release.jobs.validate.steps.find((step) => step.id === 'candidate')
+    expect(resolveCandidate.with.script).toContain('await requireSuccessfulCi')
+    expect(draft.needs).toEqual(['validate', 'candidate-proof'])
+    expect(draft.if).toContain("needs.candidate-proof.result == 'success'")
+    expect(draft.if).toContain('needs.validate.outputs.candidate-run-id')
+    const runs = draft.steps.map((step) => step.run || '')
+    expect(runs.findIndex((run) => run.includes('release-candidate.cjs verify'))).toBeLessThan(
+      runs.findIndex((run) => run.includes('sha256sum'))
+    )
+    const publication = runs.find((run) => run.includes('gh release create'))
+    expect(publication.indexOf('Refusing to overwrite an already published release')).toBeLessThan(
+      publication.indexOf('gh release upload')
+    )
+    for (const job of [release.jobs.quality, release.jobs.windows]) {
+      expect(job.steps.some((step) => step['continue-on-error'] === true)).toBe(false)
+      const collector = job.steps.find((step) =>
+        step.run?.includes('release-candidate.cjs collect')
+      )
+      expect(collector.if).toBe('always()')
+      expect(collector.env.RELEASE_JOB_STATUS).toBe('${{ job.status }}')
+      const evidence = job.steps.find(
+        (step) => step.if === 'always()' && step.uses?.startsWith('actions/upload-artifact@')
+      )
+      expect(evidence.with.name).toContain('github.run_attempt')
+      expect(evidence.with['retention-days']).toBe(30)
+    }
+    const commands = release.jobs.windows.steps.map((step) => step.run || '').join('\n')
+    expect(commands).not.toContain('npm run build:native:win')
+    expect(commands).not.toContain('npm run test:window-frame:win')
+    expect(commands).not.toMatch(/npm run build\s*$/m)
+    expect(commands).toContain('--publish never')
   })
 })

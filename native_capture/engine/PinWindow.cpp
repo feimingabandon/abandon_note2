@@ -92,7 +92,8 @@ void PinWindow::refresh() {
   update();
 }
 QImage PinWindow::exportImage() {
-  annotations->complete();
+  if (!annotations->complete())
+    return {};
   return document.render();
 }
 qint64 PinWindow::memoryCost() const {
@@ -190,7 +191,8 @@ void PinWindow::placeToolbar() {
   bar->show();
 }
 void PinWindow::setEditing(bool value) {
-  annotations->complete();
+  if (!annotations->complete())
+    return;
   editing = value;
   dragging = false;
   if (value) {
@@ -396,7 +398,8 @@ void PinWindow::wheelEvent(QWheelEvent *e) {
     scaleTo(scale * (e->angleDelta().y() > 0 ? 1.1 : 1 / 1.1));
 }
 void PinWindow::transform(int key) {
-  annotations->complete();
+  if (!annotations->complete())
+    return;
   QTransform t;
   if (key == Qt::Key_1)
     t.rotate(90);
@@ -474,8 +477,11 @@ void PinWindow::keyPressEvent(QKeyEvent *e) {
   }
 }
 void PinWindow::copyImage() {
+  const auto image = exportImage();
+  if (image.isNull())
+    return;
   QString error;
-  if (!Capture::writeClipboardImage(exportImage(), &error))
+  if (!Capture::writeClipboardImage(image, &error))
     QMessageBox::warning(this, QStringLiteral("复制失败"), error);
   else
     showFeedback(QStringLiteral("已复制到剪贴板"));
@@ -492,9 +498,12 @@ void PinWindow::showFeedback(const QString &message, int duration) {
   }
 }
 void PinWindow::saveImage(bool quick) {
+  const auto image = exportImage();
+  if (image.isNull())
+    return;
   QPointer<PinWindow> guard(this);
   QString error, path;
-  const bool saved = Capture::saveWithDialog(this, exportImage(), quick,
+  const bool saved = Capture::saveWithDialog(this, image, quick,
                                              settingsPath, &error, &path);
   if (guard && saved)
     showFeedback(QStringLiteral("已保存\n%1").arg(path), 4000);
@@ -558,7 +567,8 @@ void PinWindow::destroyPin() {
   close();
 }
 void PinWindow::closeEvent(QCloseEvent *e) {
-  annotations->complete();
+  if (!annotations->complete())
+    annotations->discard(); // Closing must remain possible after a failed edit.
   annotations->panel->hide();
   if (closing)
     closing(this, destroying);

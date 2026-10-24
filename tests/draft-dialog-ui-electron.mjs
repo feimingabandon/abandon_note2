@@ -179,7 +179,7 @@ async function run() {
       current.hide()
       current.show()
       await waitCancelled()
-      assert.equal(await js('window.__prepareEditingDrafts().dirty'), true)
+      assert.equal(await js('window.__prepareEditingDrafts().then(state=>state.dirty)'), true)
       current.hide()
       app.quit()
       await until(() => current.isVisible(), 'tray quit reveals hidden window')

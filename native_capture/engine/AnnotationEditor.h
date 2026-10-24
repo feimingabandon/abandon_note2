@@ -41,7 +41,7 @@ public:
   bool key(QKeyEvent *event);
   bool wheel(QWheelEvent *event);
   void paintHandles(QPainter &p);
-  void complete();
+  bool complete();
   void discard();
   void finishText();
   bool hasCurrent() const;
@@ -107,6 +107,7 @@ private:
   void openText();
   void layoutText();
   bool reserveEdit();
+  bool finishBlur();
   QVector<QPointF> handles() const;
   QPointF rotationHandle() const;
   bool hitCurrent(QPointF point) const;

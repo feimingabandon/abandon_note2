@@ -1,0 +1,10 @@
+{
+  "sourceEvidence": "tmp/system-improvement-20261020/e83-electron-child-probe/format-run-1IOTYL",
+  "validation": "Each original fixture was decoded by Chromium Image with its declared dimensions before interpreting the empty nativeImage results. Current suite copies the frozen bytes into its own profile and records their hashes.",
+  "fixtures": [
+    { "file": "unsupported.gif", "format": "gif", "width": 1, "height": 1, "sha256": "693d949d8c3fdc7fd4ace7c340b5f177a9f0c5be7bafee8bc93a7d88b7523d75", "source": "Complete fixed GIF89a; canonical bytes checked, LZW clear(4), pixel(0), end(5)." },
+    { "file": "unsupported.bmp", "format": "bmp", "width": 3, "height": 2, "sha256": "b2dba35e3ed3b36b6c7f7ee9927f1ca9d7ef92d9388523ac2aea02e34ed3a052", "source": "Owned generated Windows 24-bit BMP, BITMAPINFOHEADER, aligned BGR rows." },
+    { "file": "unsupported.webp", "format": "webp", "width": 4, "height": 2, "sha256": "a1038a2b0b6301019cf62150ba838ee62de7efefd944ce17ae9626c81e8c8975", "source": "Owned fixed sandboxed Chromium Canvas.toDataURL(image/webp, 0.9); RIFF/WEBP checked." },
+    { "file": "unsupported.svg", "format": "svg", "width": 3, "height": 2, "sha256": "6203a3ad2e50417ba278ba85e2f1477144c7df511a4a8b1197f402b991d0c309", "source": "Owned simple SVG XML; explicit width/height and solid rect, no scripts or external resources." }
+  ]
+}

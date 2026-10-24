@@ -83,7 +83,6 @@ const { showMessage, presentationMode, locked, zOrderMode, titlebarStyle } = wor
 const wallpaper = useWorkspaceWallpaper({
   defaults: DEFAULT_SETTINGS,
   cacheLoads: true,
-  releaseDelayMs: 220,
   label: 'App'
 })
 const { wallpaperUrl, wallpaperVisible, wallpaperBlurRadius, wallpaperRenderKey } = wallpaper
@@ -301,7 +300,7 @@ async function onCreateNote() {
 <template>
   <!-- 应用根容器：同时承载背景样式（.app-bg）和布局（.app-root） -->
   <div class="app-root app-bg">
-    <Transition name="app-wallpaper">
+    <Transition name="app-wallpaper" v-bind="wallpaper.transitionHooks()">
       <div
         v-if="wallpaperVisible"
         :key="wallpaperRenderKey"

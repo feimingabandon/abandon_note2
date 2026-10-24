@@ -56,6 +56,53 @@ async function waitUntil(predicate, message, timeoutMs = 3_000) {
   throw new Error(message)
 }
 
+async function assertFontEndpoint(entry, fontSize) {
+  assert.deepEqual(
+    await entry.window.webContents.executeJavaScript(`(async () => ({
+      fontSize: (await window.stickyAPI.getState()).fontSize,
+      rendered: getComputedStyle(document.querySelector('[data-content]')).fontSize,
+      downDisabled: document.querySelector('[data-action="font-down"]').disabled,
+      upDisabled: document.querySelector('[data-action="font-up"]').disabled
+    }))()`),
+    {
+      fontSize,
+      rendered: `${fontSize}px`,
+      downDisabled: fontSize === 8,
+      upDisabled: fontSize === 40
+    },
+    '真实便利贴 Renderer、IPC 字号与边界按钮必须保持一致'
+  )
+  assert.equal(
+    listDesktopStickyRecords().find((record) => record.id === entry.id)?.fontSize,
+    fontSize
+  )
+}
+
+async function setFontEndpointWithButtons(entry, targetFontSize) {
+  const initial = await entry.window.webContents.executeJavaScript(
+    'window.stickyAPI.getState().then((state) => state.fontSize)'
+  )
+  const step = targetFontSize > initial ? 2 : -2
+  const action = step > 0 ? 'font-up' : 'font-down'
+  for (
+    let expected = initial + step;
+    step > 0 ? expected <= targetFontSize : expected >= targetFontSize;
+    expected += step
+  ) {
+    await entry.window.webContents.executeJavaScript(
+      `document.querySelector('[data-action="${action}"]').click()`
+    )
+    await waitUntil(
+      () =>
+        entry.window.webContents.executeJavaScript(
+          `getComputedStyle(document.querySelector('[data-content]')).fontSize === '${expected}px'`
+        ),
+      `便利贴字号按钮没有将真实 Renderer 更新到 ${expected}px`
+    )
+  }
+  await assertFontEndpoint(entry, targetFontSize)
+}
+
 async function createWindowsZOrderInspector() {
   if (process.platform !== 'win32') return null
   const { default: koffi } = await import('koffi')
@@ -174,6 +221,8 @@ async function runTests() {
       '便利贴没有恢复置顶'
     )
 
+    await setFontEndpointWithButtons(entry, 8)
+
     entry.window.show()
     entry.window.focus()
     await wait(100)
@@ -287,6 +336,19 @@ async function runTests() {
     entry = service.registry.get(created.id)
     assert.equal(entry.window.isAlwaysOnTop(), true, '恢复后的便利贴没有保持置顶')
     assert.equal(entry.content, '双击编辑并失焦保存后的正文', '恢复后的便利贴正文不是最新值')
+    await assertFontEndpoint(entry, 8)
+
+    await setFontEndpointWithButtons(entry, 40)
+    service.dispose()
+    assert.equal(countDesktopStickyRecords(), 1, '40px 便利贴退出后必须保留原记录')
+    await wait(250)
+    service = createService()
+    service.initialize()
+    assert.equal(await service.restoreMissing({ source: 'font-endpoint-reopen' }), 1)
+    entry = service.registry.get(created.id)
+    await assertFontEndpoint(entry, 40)
+    assert.equal(entry.content, '双击编辑并失焦保存后的正文', '字号端点恢复不得改变原正文')
+    assert.equal(entry.window.isAlwaysOnTop(), true, '字号端点恢复不得改变原置顶状态')
 
     entry.window.webContents.forcefullyCrashRenderer()
     await waitUntil(

@@ -47,6 +47,25 @@ beforeEach(() => {
 })
 
 describe('application view settings', () => {
+  it('projects application fields without importing view defaults and preserves the read API session gate', () => {
+    db.rowsByScope.set('application', [
+      { type: 'appearance', key: 'titlebar_style', value: 'microsoft' },
+      { type: 'appearance', key: 'ui_scale', value: '1.25' },
+      { type: 'css', key: 'bg_color', value: '1 2 3' },
+      { type: 'geometry', key: 'width', value: '1234' },
+      { type: 'shortcuts', key: 'enabled', value: '0' },
+      { type: 'weather', key: 'location', value: null },
+      { type: 'application', key: 'active_view', value: 'week' }
+    ])
+    const result = readApplicationSettings()
+    expect(result.activeView).toBe('week')
+    expect(result.appearance).toEqual({ uiScale: 1.25, titlebarIconScale: 100, iconColor: 'black' })
+    expect(result).not.toHaveProperty('css')
+    expect(result).not.toHaveProperty('geometry')
+    expect(result.shortcuts.enabled).toBe(true)
+    expect(result.weather.location).toBeNull()
+  })
+
   it('persists the shared quick-create default independently, excludes view inheritance and resets it', () => {
     expect(readApplicationSettings().notes.quickCreateUntilCompleted).toBe(false)
     writeApplicationSetting('notes.autoMoveToToday', true)

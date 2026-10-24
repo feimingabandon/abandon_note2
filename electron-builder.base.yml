@@ -1,6 +1,6 @@
 appId: com.abandon.note
 productName: Abandon便签
-copyright: Copyright © 2026 feimingzou
+copyright: Copyright © 2026 炁体源流
 directories:
   buildResources: build
 # 平台原生模块必须在生成 ASAR 前过滤；生成后只验证，不再修改包内文件。

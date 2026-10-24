@@ -65,8 +65,11 @@ describe('Windows maturity boundaries', () => {
       isDestroyed: () => false,
       webContents: {
         isCrashed: () => false,
-        executeJavaScript: async (code) =>
-          code.includes('__prepareEditingDrafts') ? state : accepted
+        mainFrame: {
+          isDestroyed: () => false,
+          executeJavaScript: async (code) =>
+            code.includes('__prepareEditingDrafts') ? state : accepted
+        }
       }
     }
     const guard = createEditingDraftGuard({ logger: { error: vi.fn() } })

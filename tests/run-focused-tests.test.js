@@ -8,10 +8,14 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import focused from '../scripts/run-focused-tests.cjs'
 import runner from '../scripts/test-runner.cjs'
+import descriptors from '../scripts/test-build-descriptors.cjs'
+import { NATIVE_ABI_VERSION } from '../src/shared/native-abi-version.js'
+
+const nativeAbiPrerequisite = `blur-engine-abi-${NATIVE_ABI_VERSION}`
 
 const roots = []
 const root = resolve(import.meta.dirname, '..')
@@ -37,6 +41,94 @@ const cli = (args, directory = privateRoot()) =>
   })
 
 describe('focused planning and dispatch', () => {
+  it.each([false, true])(
+    'binds the compositor input driver to its build with Qt selection %s',
+    async (withQt) => {
+      const file = 'tests/capture-compositor-electron.mjs'
+      const mode = 'electron-real-app-capture-compositor-pixels'
+      const plan = focused.createFocusedPlan([
+        '--file',
+        file,
+        ...(withQt ? ['--file', 'native_capture/tests/core_test.cpp'] : []),
+        '--plan'
+      ])
+      expect(plan.releaseCaptureInputDriver).toBe(true)
+      expect(plan.dependencies.map((entry) => entry.id).sort()).toEqual([
+        'build-app',
+        'build-capture',
+        'build-native'
+      ])
+      expect(
+        focused.createFocusedPlan(['--file', 'tests/capture-host-electron.mjs', '--plan'])
+          .releaseCaptureInputDriver
+      ).not.toBe(true)
+      const jobs = focused.createFocusedJobs(plan)
+      const job = jobs.find((entry) => entry.id === file)
+      expect(job.resultPolicy).toBe('required')
+      const directory = privateRoot()
+      const prepared = await job.prepare({ directory })
+      const captureBuild = jobs.find((entry) => entry.id === 'build-capture')
+      const descriptor = descriptors.describeBuild({
+        root,
+        id: 'build-capture',
+        inputDriver: true,
+        qtNames: captureBuild.metadata.qtNames,
+        env: focused.normalizedEnvironment()
+      })
+      expect(prepared.env.ABANDON_CAPTURE_INPUT_DRIVER).toBe(descriptor.inputDriverPath)
+      expect(isAbsolute(prepared.env.ABANDON_CAPTURE_INPUT_DRIVER)).toBe(true)
+      if (withQt) {
+        const qt = jobs.find((entry) => entry.id === 'native_capture/tests/core_test.cpp')
+        const qtPrepared = await qt.prepare({ directory })
+        expect(qtPrepared.args[2]).toBe(descriptor.buildDirectory)
+      }
+      expect(prepared.env.ABANDON_CAPTURE_INPUT_DRIVER.replaceAll('\\', '/')).toMatch(
+        /\/tmp\/focused-builds\/capture-[a-f0-9]+\/bin\/capture_input_driver\.exe$/
+      )
+      writeFileSync(
+        join(directory, 'standalone.json'),
+        JSON.stringify({
+          version: 1,
+          suite: file,
+          runToken: prepared.env.ABANDON_TEST_RUN_TOKEN,
+          mode,
+          completed: true,
+          assertions: { total: 1, passed: 1, failed: 0, skipped: 0 },
+          cleanup: { status: 'complete' },
+          evidence: { status: 'complete' },
+          profileOwnership: 'runner'
+        })
+      )
+      expect(job.assessResult({ directory, startedMs: Date.now() - 100 })).toMatchObject({
+        status: 'passed',
+        mode
+      })
+    }
+  )
+  it.each(['tests/native-leaf-runtime-electron.mjs', 'tests/dock-runtime-electron.mjs'])(
+    'builds the actual native and capture prerequisites before %s',
+    (file) => {
+      const plan = focused.createFocusedPlan(['--file', file, '--plan'])
+      // The three builds are independent; all must precede the selected product fixture.
+      expect(plan.order.slice(0, -1).sort()).toEqual(['build-app', 'build-capture', 'build-native'])
+      expect(plan.order.at(-1)).toBe(file)
+      expect(plan.runtimePrerequisites).toContain(nativeAbiPrerequisite)
+      expect(plan.runtimePrerequisites).toContain('capture-qt-deployment')
+    }
+  )
+  it.each([
+    ['tests/renderer-recovery-electron.mjs', false],
+    ['tests/test-failure-diagnostics-win.cjs', true]
+  ])(
+    'keeps the launch visibility policy of %s independent of its diagnostic GUI flag',
+    (file, hidden) => {
+      const plan = focused.createFocusedPlan(['--file', file, '--plan'])
+      const job = focused.createFocusedJobs(plan).find((entry) => entry.id === file)
+      expect(job.gui).toBe(true)
+      expect(job.windowsHide).toBe(hidden)
+    }
+  )
+
   it('keeps Qt targets on capture when app and blur builds share the selected scope', () => {
     const plan = focused.createFocusedPlan([
       '--file',
@@ -56,8 +148,71 @@ describe('focused planning and dispatch', () => {
       expect(build.metadata.qtNames).toEqual(build.id === 'build-capture' ? ['capture_core'] : [])
     }
   })
-  it('dispatches the isolated renderer fixture with its own verified result mode', async () => {
-    const file = 'tests/renderer-resource-lifetime-electron.mjs'
+  it.each([
+    [
+      'tests/sticky-quit-electron.mjs',
+      'electron-real-app-sticky-initialization-tray-quit-and-reopen',
+      240_000
+    ],
+    [
+      'tests/main-view-initialization-electron.mjs',
+      'electron-real-app-main-view-ready-load-lifecycle',
+      300_000
+    ],
+    [
+      'tests/main-view-startup-electron.mjs',
+      'electron-real-app-main-view-startup-ready-lifecycle',
+      300_000
+    ]
+  ])(
+    'keeps %s on its product prerequisites and bounded process mode',
+    async (file, mode, timeoutMs) => {
+      const plan = focused.createFocusedPlan(['--file', file, '--plan'])
+      expect(plan.order).toEqual(['build-native', 'build-capture', 'build-app', file])
+      expect(plan.runtimePrerequisites).toEqual(
+        expect.arrayContaining([
+          'owned-isolated-profile',
+          'windows-desktop',
+          'electron-abi-compatible-better-sqlite3',
+          nativeAbiPrerequisite,
+          'capture-qt-deployment'
+        ])
+      )
+      const job = focused.createFocusedJobs(plan).find((entry) => entry.id === file)
+      expect(job.args).toEqual([file])
+      expect(job.timeoutMs).toBe(timeoutMs)
+      expect(job.gui).toBe(true)
+      expect(job.windowsHide).toBe(false)
+      expect(job.resultPolicy).toBe('required')
+      const directory = privateRoot()
+      const prepared = await job.prepare({ directory })
+      writeFileSync(
+        join(directory, 'standalone.json'),
+        JSON.stringify({
+          version: 1,
+          suite: file,
+          runToken: prepared.env.ABANDON_TEST_RUN_TOKEN,
+          mode,
+          completed: true,
+          assertions: { total: 1, passed: 1, failed: 0, skipped: 0 },
+          cleanup: { status: 'complete' },
+          evidence: { status: 'complete' },
+          profileOwnership: 'runner'
+        })
+      )
+      expect(job.assessResult({ directory, startedMs: Date.now() - 100 })).toMatchObject({
+        status: 'passed',
+        mode
+      })
+    }
+  )
+  it.each([
+    ['tests/renderer-resource-lifetime-electron.mjs', 'electron-component-fixture'],
+    [
+      'tests/sticky-initialization-electron.mjs',
+      'electron-ready-controlled-load-sqlite-real-sticky-initialization'
+    ]
+  ])('dispatches %s with its own verified result mode', async (file, mode) => {
     const plan = focused.createFocusedPlan(['--file', file, '--plan'])
     expect(plan.order).toEqual([file])
     expect(plan.dependencies).toEqual([])
@@ -75,7 +230,7 @@ describe('focused planning and dispatch', () => {
         version: 1,
         suite: file,
         runToken: prepared.env.ABANDON_TEST_RUN_TOKEN,
-        mode: 'electron-component-fixture',
+        mode,
         completed: true,
         assertions: { total: 1, passed: 1, failed: 0, skipped: 0 },
         cleanup: { status: 'complete' },
@@ -85,7 +240,7 @@ describe('focused planning and dispatch', () => {
     )
     expect(job.assessResult(context)).toMatchObject({
       status: 'passed',
-      mode: 'electron-component-fixture',
+      mode,
       target: file,
       assertions: { passed: 1 }
     })
@@ -102,6 +257,39 @@ describe('focused planning and dispatch', () => {
     expect(job.args).toEqual([file])
     expect(job.resultPolicy).toBe('required')
     expect(job.blockedReason).toBeUndefined()
+  })
+  it('builds the reminder UI without starting unrelated product resources', async () => {
+    const file = 'tests/reminder-initialization-electron.mjs'
+    const plan = focused.createFocusedPlan(['--file', file, '--plan'])
+    expect(plan.order).toEqual(['build-app', file])
+    expect(plan.runtimePrerequisites).toEqual(
+      expect.arrayContaining(['windows-desktop', 'owned-isolated-profile', 'loopback-http-fixture'])
+    )
+    expect(plan.runtimePrerequisites).not.toContain('capture-qt-deployment')
+    const job = focused.createFocusedJobs(plan).find((entry) => entry.id === file)
+    expect(job.args).toEqual([file])
+    expect(job.windowsHide).toBe(false)
+    expect(job.timeoutMs).toBe(180_000)
+    const directory = privateRoot()
+    const prepared = await job.prepare({ directory })
+    writeFileSync(
+      join(directory, 'standalone.json'),
+      JSON.stringify({
+        version: 1,
+        suite: file,
+        runToken: prepared.env.ABANDON_TEST_RUN_TOKEN,
+        mode: 'electron-ready-real-reminder-load-ready-lifecycle',
+        completed: true,
+        assertions: { total: 1, passed: 1, failed: 0, skipped: 0 },
+        cleanup: { status: 'complete' },
+        evidence: { status: 'complete' },
+        profileOwnership: 'runner'
+      })
+    )
+    expect(job.assessResult({ directory, startedMs: Date.now() - 100 })).toMatchObject({
+      status: 'passed',
+      mode: 'electron-ready-real-reminder-load-ready-lifecycle'
+    })
   })
   it('retains exact selected targets and complete dependencies in the read-only plan', () => {
     const plan = focused.createFocusedPlan([
@@ -192,10 +380,45 @@ describe('focused planning and dispatch', () => {
     ])
     expect(plan.order).toEqual(['build-capture', 'tests/capture-host-electron.mjs'])
     const jobs = focused.createFocusedJobs(plan)
-    expect(jobs[0].blockedReason).toContain('lack a verified adapter')
+    expect(jobs[0].blockedReason).toBeUndefined()
     expect(jobs[1].requires).toEqual(['build-capture'])
     expect(plan.warnings.join(' ')).toContain('provenance')
   })
+  it.each([
+    ['tests/capture-host-electron.mjs', 'electron-ready-capture-host-lifecycle'],
+    ['tests/capture-lifecycle-electron.mjs', 'electron-ready-capture-overlay-lifecycle']
+  ])(
+    'requires the recorded lifecycle result for %s after its capture build',
+    async (file, mode) => {
+      const plan = focused.createFocusedPlan(['--file', file, '--plan'])
+      expect(plan.order).toEqual(['build-capture', file])
+      expect(plan.selected[0].executionBlock).toBeNull()
+      const job = focused.createFocusedJobs(plan).find((entry) => entry.id === file)
+      expect(job.requires).toEqual(['build-capture'])
+      expect(job.resultPolicy).toBe('required')
+      expect(job.gui).toBe(true)
+      const directory = privateRoot()
+      const prepared = await job.prepare({ directory })
+      writeFileSync(
+        join(directory, 'standalone.json'),
+        JSON.stringify({
+          version: 1,
+          suite: file,
+          runToken: prepared.env.ABANDON_TEST_RUN_TOKEN,
+          mode,
+          completed: true,
+          assertions: { total: 1, passed: 1, failed: 0, skipped: 0 },
+          cleanup: { status: 'complete' },
+          evidence: { status: 'complete' },
+          profileOwnership: 'runner'
+        })
+      )
+      expect(job.assessResult({ directory, startedMs: Date.now() - 100 })).toMatchObject({
+        status: 'passed',
+        mode
+      })
+    }
+  )
   it('keeps Electron ready storage and its proof env distinct from Electron-as-Node', async () => {
     const plan = focused.createFocusedPlan(['--file', 'tests/attachment-storage-electron.mjs'])
     const job = focused.createFocusedJobs(plan)[0]

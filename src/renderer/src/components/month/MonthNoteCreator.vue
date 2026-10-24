@@ -1,6 +1,6 @@
 <script setup>
 import BaseButton from '../ui/BaseButton.vue'
-import { useDraftProtection } from '../../composables/useDraftProtection.js'
+import { editingDataGeneration, useDraftProtection } from '../../composables/useDraftProtection.js'
 import { useNewNotePreferences } from '../../composables/useNewNotePreferences.js'
 import { useNoteStateDraft } from '../../composables/useNoteStateDraft.js'
 import { computed, onBeforeUnmount, ref } from 'vue'
@@ -51,7 +51,11 @@ const imagePickerRef = ref(null)
 const draftImageCount = ref(0)
 const attachmentsBusy = ref(false)
 const saving = ref(false)
+const querying = ref(false)
 const discardVisible = ref(false)
+let disposed = false
+const dataGeneration = editingDataGeneration.value
+const currentDraft = () => !disposed && dataGeneration === editingDataGeneration.value
 const dateLabel = computed(() => {
   const [year, month, day] = props.dateKey.split('-').map(Number)
   return `${year}年${month}月${day}日`
@@ -87,19 +91,56 @@ function onTimeChange() {
   timeDirty.value = true
 }
 
-function requestClose() {
+async function requestClose() {
   if (saving.value || attachmentsBusy.value) return
-  if (dirty.value) discardVisible.value = true
-  else emit('close')
+  if (commitLocked.value) {
+    showMessage('warning', '创建结果尚未确认，请先查询原请求')
+    return
+  }
+  const state = await protectedDraft.flush()
+  if (!currentDraft() || saving.value || attachmentsBusy.value) return
+  if (dirty.value) {
+    discardVisible.value = true
+    return
+  }
+  if (state.blocked) {
+    showMessage('warning', '请等待附件处理完成并确认草稿已暂存')
+    return
+  }
+  await protectedDraft.clear()
+  if (currentDraft()) emit('close')
 }
 
-function discardDraft() {
-  protectedDraft.clear()
-  emit('close')
+async function discardDraft() {
+  if (commitLocked.value) {
+    showMessage('warning', '创建结果尚未确认，请先查询原请求')
+    return
+  }
+  await protectedDraft.clear()
+  if (currentDraft()) emit('close')
 }
 
 async function create() {
   if (saving.value || attachmentsBusy.value) return
+  if (commitLocked.value) {
+    saving.value = true
+    querying.value = true
+    try {
+      await protectedDraft.commitNote('create', {})
+    } catch (error) {
+      if (currentDraft()) showMessage('error', error.message || '创建结果尚未确认，请查询原请求')
+    } finally {
+      saving.value = false
+      querying.value = false
+    }
+    return
+  }
+  const prepared = await protectedDraft.flush()
+  if (!currentDraft() || saving.value || attachmentsBusy.value) return
+  if (!prepared.persisted) {
+    showMessage('warning', '请先确认草稿暂存完成后再保存便签')
+    return
+  }
   if (!canCreate.value) {
     showMessage('warning', '请输入便签内容或添加图片')
     return
@@ -129,16 +170,14 @@ async function create() {
 
   saving.value = true
   try {
-    const created = await window.api.createNoteWithAssets({
+    const created = await protectedDraft.commitNote('create', {
       options,
       images: imagePickerRef.value?.getImages?.() || [],
       tagIds: [...tagIds.value]
     })
     if (!created?.id) throw new Error('创建接口未返回便签')
-    showMessage('success', isHistoricalBackfill.value ? '历史便签补录成功' : '便签已创建')
-    protectedDraft.clear()
-    emit('created', created)
   } catch (error) {
+    if (!currentDraft()) return
     console.error('[MonthNoteCreator] 创建失败:', error)
     showMessage('error', error.message || '创建失败，请重试')
   } finally {
@@ -147,6 +186,7 @@ async function create() {
 }
 
 onBeforeUnmount(() => {
+  disposed = true
   discardVisible.value = false
 })
 
@@ -176,8 +216,21 @@ const protectedDraft = useDraftProtection({
     // date/time instead of silently treating an old appointment as immediate.
     if (typeof data.immediateIntent !== 'boolean') immediateIntent.value = false
     return imagePickerRef.value?.restoreDraft(data.attachments)
+  },
+  onCommitted: (created, { recovered }) => {
+    if (!currentDraft()) return
+    showMessage(
+      'success',
+      recovered
+        ? '已确认上次便签创建成功'
+        : isHistoricalBackfill.value
+          ? '历史便签补录成功'
+          : '便签已创建'
+    )
+    emit('created', created)
   }
 })
+const commitLocked = computed(() => protectedDraft.commitLocked.value)
 </script>
 
 <template>
@@ -202,7 +255,7 @@ const protectedDraft = useDraftProtection({
         ×
       </button>
     </header>
-    <div class="month-creator__body scroll-y" :inert="saving">
+    <div class="month-creator__body scroll-y" :inert="saving || commitLocked">
       <ColoredTextEditor
         v-model="content"
         v-model:color-ranges="contentColorRanges"
@@ -275,6 +328,7 @@ const protectedDraft = useDraftProtection({
         /></label>
         <ScreenshotPicker
           ref="imagePickerRef"
+          :asset-port="protectedDraft"
           mode="memory"
           @count-change="draftImageCount = $event"
           @busy-change="attachmentsBusy = $event"
@@ -290,10 +344,20 @@ const protectedDraft = useDraftProtection({
         class="is-primary"
         variant="primary"
         data-diagnostic-action="note.create"
-        :disabled="saving || attachmentsBusy || !canCreate"
+        :disabled="saving || attachmentsBusy || (!canCreate && !commitLocked)"
         @click="create"
       >
-        {{ saving ? '创建中…' : attachmentsBusy ? '图片处理中…' : '创建便签' }}
+        {{
+          saving
+            ? querying
+              ? '查询中…'
+              : '创建中…'
+            : commitLocked
+              ? '查询创建结果'
+              : attachmentsBusy
+                ? '图片处理中…'
+                : '创建便签'
+        }}
       </BaseButton>
     </footer>
 

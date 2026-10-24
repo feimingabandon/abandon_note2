@@ -4,11 +4,32 @@
  * 保留 V16 兼容号；新库不创建废弃表，已有库保留该表及数据但不再使用。
  * V17 增加多方式提醒和独立提醒任务，版本号仅由迁移事务提交。
  * V18 增加附件清空提交日志，避免文件标记失败时恢复已提交的旧附件。
+ * V19 扩大独立便利贴字号范围，保留已有便签与外观设置。
  */
 import { createReminderSchema } from './db-reminders.js'
 import { createAttachmentResetJournalSchema } from './attachment-reset-journal.js'
 
-export const DATABASE_SCHEMA_VERSION = 18
+export const DATABASE_SCHEMA_VERSION = 19
+
+function migrateToVersion19(db) {
+  const definition = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'desktop_stickies'")
+    .get()?.sql
+  // 新库已经使用新范围；旧库的 CHECK 必须通过事务内重建表更新。
+  if (/CHECK\s*\(\s*font_size\s+BETWEEN\s+8\s+AND\s+40\s*\)/i.test(definition || '')) return
+
+  if (hasTable(db, 'desktop_stickies_v19')) {
+    throw new Error('便利贴字号迁移临时表已存在，已取消迁移以保留原数据')
+  }
+  createDesktopStickiesTable(db, 'desktop_stickies_v19')
+  db.exec(`
+    INSERT INTO desktop_stickies_v19
+    SELECT * FROM desktop_stickies;
+    DROP TABLE desktop_stickies;
+    ALTER TABLE desktop_stickies_v19 RENAME TO desktop_stickies;
+  `)
+  createDesktopStickiesSchema(db)
+}
 
 function migrateToVersion17(db) {
   for (const table of ['notes', 'note_templates']) {
@@ -392,6 +413,7 @@ function migrateDatabaseSchema(db, existingVersion) {
     if (existingVersion < 17 || missingReminders) migrateToVersion17(db)
     if (existingVersion < 18 || missingAttachmentResetJournal)
       createAttachmentResetJournalSchema(db)
+    if (existingVersion < 19) migrateToVersion19(db)
     if (existingVersion < DATABASE_SCHEMA_VERSION) {
       db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`)
     }
@@ -612,8 +634,19 @@ export function createNotesSchema(db) {
 }
 
 function createDesktopStickiesSchema(db) {
+  createDesktopStickiesTable(db, 'desktop_stickies')
   db.exec(`
-    CREATE TABLE IF NOT EXISTS desktop_stickies (
+    CREATE INDEX IF NOT EXISTS idx_desktop_stickies_note_id
+      ON desktop_stickies(note_id);
+    CREATE INDEX IF NOT EXISTS idx_desktop_stickies_created_at
+      ON desktop_stickies(created_at);
+  `)
+}
+
+// tableName 仅来自本模块的固定表名，不接受外部输入。
+function createDesktopStickiesTable(db, tableName) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${tableName} (
       id                 TEXT    PRIMARY KEY,
       note_id            INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
       content_snapshot   TEXT    NOT NULL,
@@ -626,16 +659,12 @@ function createDesktopStickiesSchema(db) {
       work_area_y        INTEGER,
       work_area_width    INTEGER CHECK(work_area_width IS NULL OR work_area_width > 0),
       work_area_height   INTEGER CHECK(work_area_height IS NULL OR work_area_height > 0),
-      font_size          INTEGER NOT NULL CHECK(font_size BETWEEN 12 AND 32),
+      font_size          INTEGER NOT NULL CHECK(font_size BETWEEN 8 AND 40),
       background_color   TEXT    NOT NULL,
       corner_radius      INTEGER NOT NULL CHECK(corner_radius BETWEEN 0 AND 32),
       always_on_top      INTEGER NOT NULL DEFAULT 0 CHECK(always_on_top IN (0, 1)),
       created_at         INTEGER NOT NULL,
       updated_at         INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_desktop_stickies_note_id
-      ON desktop_stickies(note_id);
-    CREATE INDEX IF NOT EXISTS idx_desktop_stickies_created_at
-      ON desktop_stickies(created_at);
   `)
 }

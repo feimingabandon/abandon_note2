@@ -1,7 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { clearDb, getDb, getDbIfInitialized } from '../src/main/db/db-connection.js'
+import { clearDb, getDb, getDbIfInitialized, setDb } from '../src/main/db/db-connection.js'
 
-const fixture = vi.hoisted(() => ({ calls: [], schemaError: null, connection: null }))
+const fixture = vi.hoisted(() => ({
+  calls: [],
+  backupError: null,
+  schemaError: null,
+  connection: null
+}))
+vi.mock('../src/main/db/db-connection.js', async (importOriginal) => {
+  const connection = await importOriginal()
+  return {
+    ...connection,
+    clearDb: vi.fn(connection.clearDb),
+    setDb: vi.fn(connection.setDb)
+  }
+})
 vi.mock('better-sqlite3', () => ({
   default: class Database {
     constructor(path) {
@@ -17,13 +30,19 @@ vi.mock('../src/main/db/db-schema.js', () => ({
   }
 }))
 vi.mock('../src/main/db/db-migration-backup.js', () => ({
-  createDatabaseMigrationBackup: () => fixture.calls.push(['backup'])
+  createDatabaseMigrationBackup: () => {
+    fixture.calls.push(['backup'])
+    if (fixture.backupError) throw fixture.backupError
+  }
 }))
 import { initializeDatabase, closeDatabase } from '../src/main/db/db-runtime.js'
 
 beforeEach(() => {
   clearDb()
+  vi.mocked(clearDb).mockClear()
+  vi.mocked(setDb).mockClear()
   fixture.calls = []
+  fixture.backupError = null
   fixture.schemaError = null
   fixture.connection = {
     pragma: (value) => fixture.calls.push(['pragma', value]),
@@ -57,6 +76,31 @@ describe('database connection lifecycle', () => {
       'schema refused the database'
     )
     expect(fixture.calls.at(-1)).toEqual(['close'])
+    expect(getDbIfInitialized()).toBeNull()
+    expect(() => getDb()).toThrow('数据库尚未初始化')
+  })
+
+  it('closes and clears the candidate without migrating or publishing when backup fails', () => {
+    fixture.backupError = new Error('migration backup refused the database')
+    let initializationError
+    try {
+      initializeDatabase({ userDataPath: 'C:/isolated-test-profile' })
+    } catch (error) {
+      initializationError = error
+    }
+
+    expect(initializationError).toBe(fixture.backupError)
+    expect(fixture.calls.map(([name]) => name)).toEqual([
+      'open',
+      'pragma',
+      'pragma',
+      'pragma',
+      'pragma',
+      'backup',
+      'close'
+    ])
+    expect(setDb).not.toHaveBeenCalled()
+    expect(clearDb).toHaveBeenCalledTimes(1)
     expect(getDbIfInitialized()).toBeNull()
     expect(() => getDb()).toThrow('数据库尚未初始化')
   })

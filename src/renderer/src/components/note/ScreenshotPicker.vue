@@ -5,7 +5,7 @@
  * 包裹 ImagePicker，在其首位添加截图按钮。
  * 点击截图 → 主进程打开独立全屏窗口 → 用户选区 → 裁切 → 添加到 ImagePicker。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ImagePicker from './ImagePicker.vue'
 import { useScreenCapture } from '../../composables/useScreenCapture.js'
 import { useMessage } from '../../composables/useMessage.js'
@@ -16,18 +16,32 @@ const emit = defineEmits(['count-change', 'draft-change', 'busy-change'])
 
 const props = defineProps({
   noteId: { type: Number, default: null },
-  mode: { type: String, default: 'persist' }
+  mode: { type: String, default: 'persist' },
+  assetPort: { type: Object, default: null }
 })
+let captureGeneration = 0
+let disposed = false
 watch(
-  () => props.noteId,
-  () => capture.invalidate()
+  () => [props.noteId, props.mode, props.assetPort],
+  () => {
+    captureGeneration++
+    capture.invalidate()
+  },
+  { flush: 'sync' }
 )
+onBeforeUnmount(() => {
+  disposed = true
+  captureGeneration++
+  capture.invalidate()
+})
 
 const imagePickerRef = ref(null)
 const capturing = ref(false)
 const launching = ref(false)
 const pickerBusy = ref(false)
-const busy = computed(() => capturing.value || pickerBusy.value)
+const acceptingCaptures = ref(0)
+const captureTokens = new Set()
+const busy = computed(() => capturing.value || pickerBusy.value || acceptingCaptures.value > 0)
 watch(busy, (value) => emit('busy-change', value), { immediate: true, flush: 'sync' })
 
 async function onScreenshot() {
@@ -38,9 +52,7 @@ async function onScreenshot() {
     launching.value = false
   })
   try {
-    await capture('note', (asset) =>
-      imagePickerRef.value?.addImage(asset.dataUrl, 'png', `截图_${Date.now()}.png`, asset.size)
-    )
+    await capture('note', (asset, deliveryOperation) => addCapture(asset, { deliveryOperation }))
   } catch (e) {
     console.error('[ScreenshotPicker] 截图失败:', e)
     showMessage('error', e.message || '截图失败')
@@ -56,6 +68,8 @@ function getImages() {
   return imagePickerRef.value?.getImages() || []
 }
 function clearImages() {
+  captureGeneration++
+  capture.invalidate()
   imagePickerRef.value?.clearImages()
 }
 
@@ -64,8 +78,40 @@ function getDraftChanges() {
 }
 
 const restoreDraft = (draft) => imagePickerRef.value?.restoreDraft(draft)
-const addCapture = (asset) =>
-  imagePickerRef.value?.addImage(asset.dataUrl, 'png', `截图_${Date.now()}.png`, asset.size)
+async function addCapture(asset, options) {
+  if (disposed) return false
+  const token = Symbol('capture-target')
+  captureTokens.add(token)
+  acceptingCaptures.value = captureTokens.size
+  try {
+    const generation = captureGeneration
+    const picker = imagePickerRef.value
+    const port = props.assetPort
+    const mode = props.mode
+    const current = () =>
+      !disposed &&
+      generation === captureGeneration &&
+      imagePickerRef.value === picker &&
+      (options?.deliveryOperation?.isCurrent() ?? true)
+    if (!current()) return false
+    if (
+      !(await picker?.addImage(asset.dataUrl, 'png', `截图_${Date.now()}.png`, asset.size, options))
+    )
+      return false
+    // addImage's persist success belongs to the original note even when the
+    // delivery or component expires during save/thumbnail work.
+    if (mode === 'persist') return true
+    if (!current()) return false
+    if (mode !== 'persist') {
+      const result = await port?.flush()
+      if (!current() || !result?.persisted) return false
+    }
+    return true
+  } finally {
+    captureTokens.delete(token)
+    acceptingCaptures.value = captureTokens.size
+  }
+}
 defineExpose({ restoreDraft, getImages, getDraftChanges, clearImages, addCapture })
 </script>
 
@@ -74,6 +120,7 @@ defineExpose({ restoreDraft, getImages, getDraftChanges, clearImages, addCapture
     ref="imagePickerRef"
     :note-id="noteId"
     :mode="mode"
+    :asset-port="assetPort"
     @count-change="(n) => emit('count-change', n)"
     @draft-change="(changes) => emit('draft-change', changes)"
     @busy-change="pickerBusy = $event"

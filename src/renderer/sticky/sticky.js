@@ -45,8 +45,8 @@ function applyAppearance(nextAppearance) {
   pinButton.setAttribute('aria-pressed', String(appearance.pinned))
   pinButton.textContent = appearance.pinned ? '已置顶' : '置顶'
   pinButton.title = appearance.pinned ? '取消置顶' : '置顶便利贴'
-  fontDownButton.disabled = appearance.fontSize <= 12
-  fontUpButton.disabled = appearance.fontSize >= 32
+  fontDownButton.disabled = appearance.fontSize <= 8
+  fontUpButton.disabled = appearance.fontSize >= 40
   for (const swatch of swatchesElement.querySelectorAll('.sticky-swatch')) {
     swatch.setAttribute('aria-pressed', String(swatch.dataset.color === appearance.backgroundColor))
   }
@@ -208,11 +208,11 @@ function createPalette(colors) {
 }
 
 fontDownButton.addEventListener('click', () => {
-  updateAppearance({ fontSize: Math.max(12, appearance.fontSize - 2) })
+  updateAppearance({ fontSize: Math.max(8, appearance.fontSize - 2) })
 })
 
 fontUpButton.addEventListener('click', () => {
-  updateAppearance({ fontSize: Math.min(32, appearance.fontSize + 2) })
+  updateAppearance({ fontSize: Math.min(40, appearance.fontSize + 2) })
 })
 
 colorButton.addEventListener('click', () => {

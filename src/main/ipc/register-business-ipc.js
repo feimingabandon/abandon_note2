@@ -27,19 +27,8 @@ import {
   updateNote,
   updateNoteTextColor
 } from '../db/db-notes.js'
-import {
-  bindTag,
-  createTag,
-  deleteTag,
-  getNoteTags,
-  getTagById,
-  getTagUsage,
-  listTags,
-  setNoteTagIds,
-  updateTagOrder,
-  updateTag,
-  unbindTag
-} from '../db/db-tags.js'
+import { getNoteTags, getTagById, getTagUsage, listTags } from '../db/db-tags.js'
+import { createTagCommands } from '../tags/tag-commands.js'
 import {
   createTemplate,
   deleteTemplate,
@@ -53,25 +42,18 @@ import {
   updateTemplate
 } from '../db/db-templates.js'
 import {
-  addImageRecord,
-  cleanupStagedImage,
-  commitStagedImage,
   deleteImageRecordAndFile,
   getImageBase64,
   getImageCount,
   getImageDimensions,
   getImageThumbnail,
+  getImageThumbnailDetails,
   listImageRecords,
-  purgeNoteAndFiles,
-  stageImage
+  purgeNoteAndFiles
 } from '../db/db-images.js'
-import { compensateFailedNoteAssets } from '../db/image-addition-compensation.js'
 import { enforceSystemNotificationPolicy } from '../../shared/notification-policy.js'
 import {
-  MAX_ATTACHMENTS_PER_NOTE,
-  assertAttachmentBatchWithinLimit
-} from '../../shared/attachment-rules.js'
-import {
+  addNoteImages,
   createNoteWithAssets,
   normalizeNoteCreateOptions,
   saveNoteDraft
@@ -210,6 +192,7 @@ export function registerBusinessIpcHandlers({
     sendToWindows(getBroadcastWindows, 'tags:changed', { reason, ...payload })
     return result
   }
+  const tagCommands = createTagCommands({ broadcastTagChange, broadcastNoteChange })
   const broadcastTemplateChange = (reason, result, payload = {}) => {
     if (!result) return result
     const id = Number(result?.id ?? payload.id)
@@ -314,47 +297,16 @@ export function registerBusinessIpcHandlers({
     broadcastNoteChange('status', reopenNote(id), { id, status: 'in_progress' })
   )
 
-  ipcMain.handle('tags:create', (_event, { name, color }) => {
-    const tag = createTag(name, color)
-    return broadcastTagChange('create', tag, { tag })
-  })
-  ipcMain.handle('tags:update', (_event, { id, fields }) => {
-    const result = updateTag(id, fields)
-    broadcastTagChange('update', result, {
-      tag: result.tag,
-      oldName: result.oldName
-    })
-    broadcastNoteChange('tag', true, { tagId: result.tag.id })
-    return result.tag
-  })
-  ipcMain.handle('tags:delete', (_event, { id }) => {
-    const deleted = deleteTag(id)
-    if (deleted) {
-      broadcastTagChange('delete', true, { id: Number(id) })
-      broadcastNoteChange('tag', true, { tagId: Number(id) })
-    }
-    return deleted
-  })
-  ipcMain.handle('tags:update-order', (_event, { tagIds }) => {
-    const tags = updateTagOrder(tagIds)
-    const normalizedTagIds = Array.isArray(tagIds) ? tagIds.map(Number) : []
-    return broadcastTagChange('reorder', tags, { tagIds: normalizedTagIds })
-  })
+  ipcMain.handle('tags:create', (_event, payload) => tagCommands.create(payload))
+  ipcMain.handle('tags:update', (_event, payload) => tagCommands.update(payload))
+  ipcMain.handle('tags:delete', (_event, payload) => tagCommands.delete(payload))
+  ipcMain.handle('tags:update-order', (_event, payload) => tagCommands.reorder(payload))
   ipcMain.handle('tags:list', () => listTags())
   ipcMain.handle('tags:get', (_event, { id }) => getTagById(id))
   ipcMain.handle('tags:usage', (_event, { id }) => getTagUsage(id))
-  ipcMain.handle('note-tags:bind', (_event, { noteId, tagId }) =>
-    broadcastNoteChange('tag', bindTag(noteId, tagId), { id: noteId, tagId })
-  )
-  ipcMain.handle('note-tags:unbind', (_event, { noteId, tagId }) =>
-    broadcastNoteChange('tag', unbindTag(noteId, tagId), { id: noteId, tagId })
-  )
-  ipcMain.handle('note-tags:set', (_event, { noteId, tagIds }) => {
-    setNoteTagIds(noteId, tagIds)
-    const tags = getNoteTags(noteId)
-    broadcastNoteChange('tag', true, { id: noteId })
-    return tags
-  })
+  ipcMain.handle('note-tags:bind', (_event, payload) => tagCommands.bind(payload))
+  ipcMain.handle('note-tags:unbind', (_event, payload) => tagCommands.unbind(payload))
+  ipcMain.handle('note-tags:set', (_event, payload) => tagCommands.setNoteTags(payload))
   ipcMain.handle('note-tags:list', (_event, { noteId }) => getNoteTags(noteId))
 
   ipcMain.handle('templates:create', (_event, options) => {
@@ -396,38 +348,7 @@ export function registerBusinessIpcHandlers({
   )
 
   ipcMain.handle('images:save-batch', async (_event, { noteId, images }) => {
-    const batch = Array.isArray(images) ? images : []
-    const remaining = MAX_ATTACHMENTS_PER_NOTE - getImageCount(noteId)
-    assertAttachmentBatchWithinLimit(batch, { maxCount: remaining })
-
-    const db = getDb()
-    const writtenImages = []
-    const stagedImages = []
-    try {
-      for (const image of batch) stagedImages.push(await stageImage(image.base64, image.ext))
-    } catch (error) {
-      await compensateFailedNoteAssets({ stagedImages })
-      throw error
-    }
-
-    const transaction = db.transaction(() => {
-      const results = []
-      for (const staged of stagedImages) {
-        const { relativePath, fileSize } = commitStagedImage(noteId, staged)
-        writtenImages.push({ relativePath, staged })
-        results.push(addImageRecord({ noteId, filePath: relativePath, fileSize }))
-      }
-      return results
-    })
-
-    let results
-    try {
-      results = transaction()
-    } catch (error) {
-      await compensateFailedNoteAssets({ writtenImages, stagedImages })
-      throw error
-    }
-    await Promise.all(stagedImages.map(cleanupStagedImage))
+    const results = await addNoteImages({ noteId, images })
     broadcastNoteChange('attachment', true, { id: noteId })
     return results
   })
@@ -445,6 +366,9 @@ export function registerBusinessIpcHandlers({
   )
   ipcMain.handle('images:get-thumbnail', (_event, { relativePath, maxSize }) =>
     getImageThumbnail(relativePath, maxSize)
+  )
+  ipcMain.handle('images:get-thumbnail-details', (_event, { relativePath, maxSize }) =>
+    getImageThumbnailDetails(relativePath, maxSize)
   )
   ipcMain.handle('images:count', (_event, { noteId }) => getImageCount(noteId))
 }

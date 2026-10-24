@@ -9,6 +9,8 @@ import { verifyDatePickerKeyboard } from './helpers/date-picker-keyboard.mjs'
 import { createElectronGuiResultLifecycle } from './helpers/electron-gui-result-lifecycle.mjs'
 
 const require = createRequire(import.meta.url)
+const excelRequire = createRequire(require.resolve('exceljs/package.json'))
+const JSZip = excelRequire('jszip')
 const WAIT_STEP_MS = 25
 const lifecycle = createElectronGuiResultLifecycle({
   app,
@@ -71,6 +73,41 @@ function dateKey(timestamp) {
   const date = new Date(timestamp)
   const pad = (value) => String(value).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+function localDateFields(timestamp) {
+  const date = new Date(timestamp)
+  return [
+    date.getFullYear(),
+    date.getMonth() + 1,
+    date.getDate(),
+    date.getHours(),
+    date.getMinutes(),
+    date.getSeconds(),
+    date.getMilliseconds()
+  ]
+}
+
+function floatingDateFields(date) {
+  return [
+    date.getUTCFullYear(),
+    date.getUTCMonth() + 1,
+    date.getUTCDate(),
+    date.getUTCHours(),
+    date.getUTCMinutes(),
+    date.getUTCSeconds(),
+    date.getUTCMilliseconds()
+  ]
+}
+
+function expectedDateCell(fields, format) {
+  const [year, month, day, hour, minute, second, millisecond] = fields
+  return {
+    fields,
+    format,
+    // These real-app fixtures use modern dates in Excel's 1900 system.
+    serial: Date.UTC(year, month - 1, day, hour, minute, second, millisecond) / 86400000 + 25569
+  }
 }
 
 function seedListView(userDataPath) {
@@ -648,15 +685,58 @@ async function verifyActualFileExports(listWindow, todayTimestamp, yesterdayTime
   assert.equal(row.getCell(2).value, '未分类')
   assert.equal(row.getCell(3).value, '进行中')
   assert.equal(row.getCell(4).value, '否')
+  const expectedDateCells = {
+    E2: {
+      ...expectedDateCell(localDateFields(yesterdayTimestamp), 'yyyy-mm-dd hh:mm'),
+      sourceTimestamp: yesterdayTimestamp
+    },
+    F2: {
+      ...expectedDateCell([...yesterdayKey.split('-').map(Number), 0, 0, 0, 0], 'yyyy-mm-dd'),
+      sourceDateKey: yesterdayKey
+    }
+  }
   assert.ok(row.getCell(5).value instanceof Date)
-  assert.equal(row.getCell(5).value.getTime(), yesterdayTimestamp)
-  const yesterdayMidnight = new Date(yesterdayTimestamp)
-  yesterdayMidnight.setHours(0, 0, 0, 0)
+  assert.deepEqual(floatingDateFields(row.getCell(5).value), expectedDateCells.E2.fields)
   assert.ok(row.getCell(6).value instanceof Date)
-  assert.equal(row.getCell(6).value.getTime(), yesterdayMidnight.getTime())
+  assert.deepEqual(floatingDateFields(row.getCell(6).value), expectedDateCells.F2.fields)
   assert.equal(row.getCell(7).value, 1)
   assert.equal(row.getCell(8).value, null)
   assert.equal(row.getCell(9).value, '否')
+  // Inspect the bytes actually written by UI -> preload -> IPC -> SQLite export.
+  // JSZip only opens the container; ExcelJS's Date round trip is insufficient.
+  const zip = await JSZip.loadAsync(xlsx)
+  const xmlFiles = {
+    worksheet: 'xl/worksheets/sheet1.xml',
+    styles: 'xl/styles.xml',
+    workbook: 'xl/workbook.xml'
+  }
+  const xml = {}
+  for (const [name, path] of Object.entries(xmlFiles)) {
+    xml[name] = await zip.file(path).async('string')
+    writeFileSync(join(testEvidenceRoot, `daily-report-xlsx-${name}.xml`), xml[name], {
+      flag: 'wx'
+    })
+  }
+  assert.equal(/<workbookPr\b[^>]*\bdate1904="(?:1|true)"/.test(xml.workbook), false)
+  const rawCells = new Map(
+    [...xml.worksheet.matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)].map((cell) => [
+      cell[1].match(/\br="([^"]*)"/)?.[1],
+      {
+        raw: (cell[2] ?? '').match(/<v>([^<]*)<\/v>/)?.[1] ?? null,
+        type: cell[1].match(/\bt="([^"]*)"/)?.[1] ?? 'n'
+      }
+    ])
+  )
+  const rawDateCells = {}
+  for (const [reference, expected] of Object.entries(expectedDateCells)) {
+    const actual = rawCells.get(reference)
+    assert.equal(actual?.type, 'n', `${reference} must contain a numeric Excel date`)
+    assert.ok(actual.raw !== null && Number.isFinite(Number(actual.raw)))
+    assert.ok(Math.abs(Number(actual.raw) - expected.serial) < 1e-9, reference)
+    assert.equal(sheet.getCell(reference).numFmt, expected.format)
+    rawDateCells[reference] = actual
+  }
+  assert.equal(rawCells.get('H2')?.raw ?? null, null)
   assert.deepEqual(
     readdirSync(exportDirectory).sort(),
     [txtPlan.fileName, xlsxPlan.fileName].sort()
@@ -676,7 +756,11 @@ async function verifyActualFileExports(listWindow, todayTimestamp, yesterdayTime
       selectedContents: xlsxPlan.selectedContents,
       subject: workbook.subject,
       rowCount: sheet.rowCount,
-      row: row.values.slice(1)
+      row: row.values.slice(1),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      offsetMinutes: new Date(yesterdayTimestamp).getTimezoneOffset(),
+      expectedDateCells,
+      rawDateCells
     },
     saveDialogCalls,
     boundary:

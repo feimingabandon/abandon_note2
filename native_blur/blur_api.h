@@ -103,6 +103,7 @@ BLUR_API const char* WindowMotion_ConsumeEdgeEventJson(void);
 BLUR_API int WindowZOrder_SetBottom(void* hwnd, int enabled);
 BLUR_API int WindowZOrder_Reassert(void* hwnd);
 BLUR_API const char* WindowZOrder_GetStatusJson(void* hwnd);
+BLUR_API const char* WindowZOrder_GetLastFailureJson(void);
 
 #ifdef __cplusplus
 }

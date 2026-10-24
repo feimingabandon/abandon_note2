@@ -13,7 +13,7 @@
 #include <winternl.h>
 
 namespace {
-constexpr int kNativeAbiVersion = 22;
+constexpr int kNativeAbiVersion = 24;
 }
 
 int AbandonNative_GetAbiVersion(void) {
@@ -404,4 +404,8 @@ int WindowZOrder_Reassert(void* hwndValue) {
 
 const char* WindowZOrder_GetStatusJson(void* hwndValue) {
     return WindowZOrder::GetStatusJson(static_cast<HWND>(hwndValue));
+}
+
+const char* WindowZOrder_GetLastFailureJson(void) {
+    return WindowZOrder::GetLastFailureJson();
 }

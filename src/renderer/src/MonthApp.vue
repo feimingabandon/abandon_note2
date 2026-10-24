@@ -66,7 +66,6 @@ const { showMessage, presentationMode, locked, zOrderMode, titlebarStyle } = wor
 const wallpaper = useWorkspaceWallpaper({
   defaults: defaults,
   cacheLoads: false,
-  releaseDelayMs: 0,
   label: 'MonthApp'
 })
 const { wallpaperUrl, wallpaperVisible, wallpaperBlurRadius, wallpaperRenderKey } = wallpaper
@@ -198,7 +197,7 @@ function releaseSettingsBlur() {
 
 <template>
   <div class="month-root app-bg" :class="{ 'is-week-view': isWeekView }">
-    <Transition name="month-wallpaper">
+    <Transition name="month-wallpaper" v-bind="wallpaper.transitionHooks()">
       <div v-if="wallpaperVisible" :key="wallpaperRenderKey" class="month-wallpaper">
         <div
           class="month-wallpaper-image"

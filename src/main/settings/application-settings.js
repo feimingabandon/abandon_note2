@@ -4,8 +4,11 @@ import {
   resetSettingsGroup
 } from '../db/db-settings-repository.js'
 import {
+  APPLICATION_SETTING_DEFINITIONS,
+  APPLICATION_SETTING_IDS,
   DEFAULT_SETTINGS,
   normalizeViewMode,
+  projectApplicationSettings,
   resolveSettingsRows,
   serializeSetting,
   VIEW_MODES,
@@ -19,35 +22,8 @@ export const VIEW_SETTINGS_SCOPES = Object.freeze({
   [VIEW_MODES.WEEK]: 'week'
 })
 
-/**
- * 保存在 application 作用域的用户可配置项。新增应用级设置时只需在此
- * 登记，持久化分流和“恢复默认设置”就会同步覆盖，避免新设置被漏掉。
- */
-export const APPLICATION_SETTING_IDS = Object.freeze([
-  'appearance.uiScale',
-  'appearance.titlebarIconScale',
-  'appearance.iconColor',
-  'shortcuts.viewVisibility',
-  'shortcuts.screenshot',
-  'shortcuts.screenshotCopy',
-  'calendar.recurringPreviewEnabled',
-  'notes.quickCreateUntilCompleted',
-  'notes.autoMoveToToday',
-  'notes.tagColorEnabled',
-  'interaction.doubleClickQuickEdit',
-  'interaction.hideMainViewDuringScreenshot',
-  'remote.receiveNotices',
-  'remote.uploadDeviceInfo',
-  'almanac.enabled',
-  'weather.enabled',
-  'weather.location',
-  'onboarding.noticeVersion',
-  'window.lockState',
-  'window.zOrderMode',
-  'window.compactWidth',
-  'window.compactHeight',
-  'window.compactFontSize'
-])
+// Keep the public import used by coordinators; the schema owns membership.
+export { APPLICATION_SETTING_IDS }
 
 const ACTIVE_VIEW_ROW = Object.freeze({
   type: 'application',
@@ -62,30 +38,16 @@ const WEEK_SETTINGS_INITIALIZED_ROW = Object.freeze({
   remark: '周视图已完成首次设置继承'
 })
 
-const APPLICATION_SETTING_DB_KEYS = new Set([
-  'appearance:ui_scale',
-  'appearance:titlebar_icon_scale',
-  'appearance:icon_color',
+const RETIRED_APPLICATION_SETTING_DB_KEYS = Object.freeze([
   'shortcuts:enabled', // Retired persistent gate must not enter per-view settings.
-  'shortcuts:view_visibility',
-  'shortcuts:screenshot',
-  'shortcuts:screenshot_copy',
   // Retired shortcuts remain excluded from per-view inheritance.
   'shortcuts:clipboard_pin',
   'shortcuts:toggle_pins',
-  'remote:receive_notices',
-  'remote:upload_device_info',
-  'almanac:almanac_enabled',
-  'weather:enabled',
-  'weather:location',
-  'calendar:recurring_preview_enabled',
-  'notes:quick_create_until_completed',
-  'notes:auto_move_to_today',
-  'notes:auto_move_checked_date',
-  'notes:tag_color_enabled',
-  'interaction:double_click_quick_edit',
-  'interaction:hide_main_view_during_screenshot',
-  'onboarding:first_use_notice_version'
+  'notes:auto_move_checked_date'
+])
+const APPLICATION_SETTING_DB_KEYS = new Set([
+  ...APPLICATION_SETTING_DEFINITIONS.map(({ db }) => `${db.type}:${db.key}`),
+  ...RETIRED_APPLICATION_SETTING_DB_KEYS
 ])
 
 // 1.1.0 曾把常显小黑条拖动位置写入各视图。位置现在仅属于一次隐藏会话，
@@ -116,23 +78,16 @@ export function readApplicationSettings() {
   const uploadDeviceInfo =
     applicationRows.get('remote:upload_device_info') ?? legacyRows.get('remote:upload_device_info')
   const storedView = applicationRows.get(`${ACTIVE_VIEW_ROW.type}:${ACTIVE_VIEW_ROW.key}`)
+  const projected = projectApplicationSettings(applicationResolved)
+  // Preserve this read API's default session gate; runtime applies the actual
+  // current-session value last. It is never a persistent application setting.
+  projected.shortcuts.enabled = DEFAULT_SETTINGS.shortcuts.enabled
 
   return {
     activeView: normalizeViewMode(storedView),
-    appearance: {
-      uiScale: applicationResolved.appearance.uiScale,
-      titlebarIconScale: applicationResolved.appearance.titlebarIconScale,
-      iconColor: applicationResolved.appearance.iconColor
-    },
-    shortcuts: { ...applicationResolved.shortcuts },
-    interaction: { ...applicationResolved.interaction },
-    calendar: { ...applicationResolved.calendar },
-    notes: { ...applicationResolved.notes },
-    window: { ...applicationResolved.window },
-    almanac: { ...applicationResolved.almanac },
-    weather: applicationResolved.weather,
-    onboarding: applicationResolved.onboarding,
+    ...projected,
     remote: {
+      ...projected.remote,
       receiveNotices: parseStoredBoolean(receiveNotices, DEFAULT_SETTINGS.remote.receiveNotices),
       uploadDeviceInfo: parseStoredBoolean(
         uploadDeviceInfo,

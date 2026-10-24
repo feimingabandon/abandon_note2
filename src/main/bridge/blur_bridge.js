@@ -286,6 +286,11 @@ function initNative() {
     loaded.WindowZOrder_GetStatusJson = loaded.func('WindowZOrder_GetStatusJson', 'str', [
       'intptr_t'
     ])
+    loaded.WindowZOrder_GetLastFailureJson = loaded.func(
+      'WindowZOrder_GetLastFailureJson',
+      'str',
+      []
+    )
     lib = loaded
     registerNativeMotionDiagnostics({
       setLease: (durationMs) => loaded.WindowMotion_SetDiagnosticLease(durationMs),
@@ -452,6 +457,31 @@ export function moveWindowPhysical(window, physicalX, physicalY) {
   })
 }
 
+// Read the frozen native failure before another native call or rollback can replace the latest one.
+// Diagnostic read failures must never replace the original operation result/code.
+export function getWindowZOrderFailureDiagnostic() {
+  try {
+    if (process.platform !== 'win32' || !initNative()) return { supported: false }
+    return { supported: true, ...JSON.parse(lib.WindowZOrder_GetLastFailureJson()) }
+  } catch (error) {
+    return { supported: true, captureError: error?.message || String(error) }
+  }
+}
+
+function windowZOrderFailureDetails(code) {
+  if (code === 1) return {}
+  const diagnostic = getWindowZOrderFailureDiagnostic()
+  return {
+    nativeFailure: diagnostic.lastFailure ?? null,
+    nativeFirstFailure: diagnostic.firstFailure ?? null,
+    nativeFailureCount: diagnostic.failureCount ?? null,
+    nativeFailureCaptureError:
+      diagnostic.captureError ??
+      diagnostic.diagnosticError ??
+      (diagnostic.supported ? null : 'native-diagnostics-unavailable')
+  }
+}
+
 export function setWindowAlwaysOnBottom(window, enabled) {
   return measureNativeOperation('setWindowAlwaysOnBottom', () => {
     if (process.platform !== 'win32') {
@@ -463,9 +493,11 @@ export function setWindowAlwaysOnBottom(window, enabled) {
       return { success: false, code: null, error: 'Windows 原生窗口层级组件不可用' }
     }
     const code = lib.WindowZOrder_SetBottom(getWindowHandleValue(window), enabled ? 1 : 0)
+    const failureDetails = windowZOrderFailureDetails(code)
     return {
       success: code === 1,
       code,
+      ...failureDetails,
       error:
         code === 1
           ? null
@@ -480,9 +512,11 @@ export function reassertWindowZOrder(window) {
       return { success: false, code: null, error: 'Windows 原生窗口层级组件不可用' }
     }
     const code = lib.WindowZOrder_Reassert(getWindowHandleValue(window))
+    const failureDetails = windowZOrderFailureDetails(code)
     return {
       success: code === 1,
       code,
+      ...failureDetails,
       error:
         code === 1
           ? null
@@ -619,11 +653,89 @@ export function consumeWindowEdgeMonitorEvent() {
 }
 
 export function destroy() {
-  if (!lib) return
+  let nativeShutdown = null
+  const errors = []
+  const recordError = (phase, error) => {
+    errors.push({
+      phase,
+      message: String(error?.message || error),
+      ...(error?.code !== undefined ? { code: error.code } : {})
+    })
+  }
   try {
-    lib.WindowMotion_DisarmEdgeMonitor(0)
+    if (lib) {
+      try {
+        const code = lib.WindowMotion_DisarmEdgeMonitor(0)
+        if (code !== 1) {
+          const error = new Error(
+            EDGE_MONITOR_RESULT_MESSAGES[code] || `停止原生边缘监视器失败 (${code})`
+          )
+          error.code = code
+          recordError('edge-monitor-disarm', error)
+        }
+      } catch (error) {
+        recordError('edge-monitor-disarm', error)
+      }
+      try {
+        // A failed/partial initialization can still own a native STA thread.
+        // The JS flag is not evidence that its native owner has exited.
+        lib.Blur_Destroy()
+      } catch (error) {
+        recordError('native-destroy', error)
+      }
+      try {
+        nativeShutdown = JSON.parse(lib.Blur_GetLastFailureJson())?.shutdown ?? null
+      } catch (error) {
+        recordError('observe-shutdown', error)
+      }
+    } else {
+      recordError('observe-shutdown', new Error('原生模糊未加载，未取得线程退出观测'))
+    }
   } finally {
-    if (initialized) lib.Blur_Destroy()
     initialized = false
+  }
+  // The JSON extension is observational. An older compatible DLL may omit it;
+  // keep that startup/runtime compatibility while reporting teardown unconfirmed.
+  const valid =
+    nativeShutdown &&
+    typeof nativeShutdown === 'object' &&
+    ['generation', 'nativeCode', 'pinNativeCode'].every(
+      (key) => Number.isSafeInteger(nativeShutdown[key]) && nativeShutdown[key] >= 0
+    ) &&
+    ['threadExitConfirmed', 'abandoned', 'modulePinned'].every(
+      (key) => typeof nativeShutdown[key] === 'boolean'
+    ) &&
+    (nativeShutdown.waitResult === null ||
+      (Number.isSafeInteger(nativeShutdown.waitResult) && nativeShutdown.waitResult >= 0)) &&
+    ['not-created', 'not-requested', 'completed', 'timed-out', 'failed'].includes(
+      nativeShutdown.status
+    )
+  let outcome = 'degraded'
+  if (valid) {
+    if (nativeShutdown.status === 'failed') outcome = 'failed'
+    else if (nativeShutdown.status === 'timed-out') outcome = 'timed-out'
+    else if (
+      !nativeShutdown.abandoned &&
+      ((nativeShutdown.status === 'completed' &&
+        nativeShutdown.generation > 0 &&
+        nativeShutdown.threadExitConfirmed &&
+        nativeShutdown.waitResult === 0) ||
+        (nativeShutdown.status === 'not-created' &&
+          nativeShutdown.generation === 0 &&
+          !nativeShutdown.threadExitConfirmed &&
+          nativeShutdown.waitResult === null))
+    )
+      outcome = 'completed'
+  } else if (!errors.some((error) => error.phase === 'observe-shutdown')) {
+    recordError('observe-shutdown', new Error('原生模糊退出诊断缺少有效的 shutdown 状态'))
+  }
+  if (errors.some((error) => error.phase !== 'observe-shutdown')) outcome = 'failed'
+  else if (errors.length) outcome = 'degraded'
+  return {
+    outcome,
+    nativeShutdown,
+    ...(errors.length
+      ? { error: errors[0], ...(errors.length > 1 ? { additionalErrors: errors.slice(1) } : {}) }
+      : {})
   }
 }

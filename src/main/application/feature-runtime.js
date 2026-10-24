@@ -26,6 +26,8 @@ export function createFeatureRuntime({
   let scheduled = false
   let automaticMoveEnabled = false
   let automaticMoveForceCheck = false
+  let stickyInitializationsStopped = false
+  let reminderPresentationStopped = false
   const weatherPauses = new Set()
 
   function resource(name) {
@@ -47,6 +49,7 @@ export function createFeatureRuntime({
       entry.status = 'disposed'
     } catch (error) {
       entry.status = 'failed'
+      entry.error = error?.message || String(error)
       logger.error('feature.dispose', error, { resource: name })
     } finally {
       entry.resource = null
@@ -55,6 +58,25 @@ export function createFeatureRuntime({
         child.resource = null
         child.status = entry.status === 'disposed' ? 'disposed-by-parent' : 'parent-dispose-failed'
       }
+    }
+  }
+  function disposalOutcome(names = created.keys()) {
+    const group = new Set(names)
+    const failures = [...created].filter(
+      ([name, entry]) =>
+        group.has(name) && ['failed', 'parent-dispose-failed'].includes(entry.status)
+    )
+    if (!failures.length) return { status: 'completed' }
+    return {
+      status: 'failed',
+      failedResources: failures.map(([name]) => name),
+      error: [
+        ...new Set(
+          failures.map(
+            ([name, entry]) => entry.error || created.get(entry.parent)?.error || `${name} 清理失败`
+          )
+        )
+      ].join('; ')
     }
   }
   function stage(operation) {
@@ -117,6 +139,7 @@ export function createFeatureRuntime({
   })
 
   function initializeSticky() {
+    if (stickyInitializationsStopped) return false
     return stage(() => {
       const repository = Object.fromEntries(
         Object.entries(stickies.commands.repository).map(([name, command]) => [
@@ -144,7 +167,14 @@ export function createFeatureRuntime({
         },
         (service) => service.dispose()
       )
+      // A factory or initialize callback can synchronously begin shutdown. Keep
+      // the resource owned, but never start its renderer or startup restore later.
+      if (stickyInitializationsStopped) {
+        stopStickyInitializations()
+        return false
+      }
       value.initialize()
+      if (stickyInitializationsStopped) return false
       void stickyCommands
         .restoreMissing({ source: 'startup' })
         .catch((error) => logger.error('sticky.startup-restore', error))
@@ -152,7 +182,32 @@ export function createFeatureRuntime({
     })
   }
 
+  function stopStickyInitializations() {
+    const alreadyStopped = stickyInitializationsStopped
+    // This gate also covers shutdown before the sticky resource has been built.
+    stickyInitializationsStopped = true
+    const report = {
+      stopped: true,
+      alreadyStopped,
+      cancelled: [],
+      preserved: [],
+      pendingCommit: [],
+      cleanupErrors: []
+    }
+    const value = resource('sticky')
+    if (!value) return report
+    try {
+      return { ...value.stopInitializations(), stopped: true, alreadyStopped }
+    } catch (error) {
+      // onBegin must continue stopping the other producers. The normal resource
+      // ledger retains this service for the later drain/dispose cleanup attempt.
+      report.cleanupErrors.push({ stickyId: null, error })
+      return report
+    }
+  }
+
   function initializeReminders() {
+    if (reminderPresentationStopped) return false
     return stage(() => {
       const configuration = reminders.configuration
       const ports = reminders.windowPorts
@@ -169,6 +224,7 @@ export function createFeatureRuntime({
         },
         (value) => value.dispose()
       )
+      if (reminderPresentationStopped) return false
       const tray = own(
         'trayReminder',
         () => {
@@ -191,6 +247,7 @@ export function createFeatureRuntime({
         },
         (value) => value.dispose()
       )
+      if (reminderPresentationStopped) return false
       const popup = own(
         'reminderPopup',
         () => {
@@ -209,6 +266,10 @@ export function createFeatureRuntime({
         },
         (value) => value.dispose()
       )
+      if (reminderPresentationStopped) {
+        stopReminderPresentation()
+        return false
+      }
       const service = own(
         'reminders',
         () => {
@@ -230,6 +291,7 @@ export function createFeatureRuntime({
         created.get(name).status = 'transferred'
         created.get(name).parent = 'reminders'
       }
+      if (reminderPresentationStopped) return false
       reminders.activationPort.attachAction((payload) =>
         admission.run(() => service.nativeAction(payload))
       )
@@ -479,16 +541,28 @@ export function createFeatureRuntime({
     unsubscribe('scheduler')
     scheduled = false
     release('scheduler')
+    return disposalOutcome(['scheduler'])
   }
   function disposeWeather() {
     unsubscribe('weather')
     weatherPauses.clear()
     release('weather')
+    return disposalOutcome(['weather'])
   }
   function disposeReminders() {
     reminders.activationPort.detachAction()
     release('reminders')
     for (const name of ['reminderPopup', 'trayReminder', 'notification']) release(name)
+    return disposalOutcome(['reminders', 'reminderPopup', 'trayReminder', 'notification'])
+  }
+  function stopReminderPresentation() {
+    reminderPresentationStopped = true
+    try {
+      resource('reminderPopup')?.stopPresentation()
+    } catch (error) {
+      // Keep shutdown admission closed even if native window cleanup fails.
+      logger.error('reminders.shutdown-presentation', error)
+    }
   }
   return Object.freeze({
     initializeSticky,
@@ -497,7 +571,7 @@ export function createFeatureRuntime({
     initializeWeather,
     getStickyCommands: () => (resource('sticky') ? stickyCommands : null),
     refreshReminders: () => resource('reminders')?.refresh(),
-    showReminders: () => resource('reminders')?.showAll(),
+    showReminders: () => !reminderPresentationStopped && resource('reminders')?.showAll(),
     getReminderCount: () => resource('reminders')?.activeIds?.size || 0,
     applyNativeReminderAction: (payload) =>
       admission.run(() => resource('reminders')?.nativeAction(payload)),
@@ -527,17 +601,24 @@ export function createFeatureRuntime({
     },
     observeRemindersForIntegration: () => resource('reminders'),
     stopScheduledTasks,
+    stopStickyInitializations,
+    stopReminderPresentation,
     disposeReminders,
     disposeSticky: () => release('sticky'),
-    disposeStickyAfterDrain: () => admission.runCleanup(() => release('sticky')),
+    disposeStickyAfterDrain: () =>
+      admission.runCleanup(() => {
+        release('sticky')
+        return disposalOutcome(['sticky'])
+      }),
     disposeWeather,
     disposeCreated() {
-      if (disposed) return
+      if (disposed) return disposalOutcome()
       disposed = true
       stopScheduledTasks()
       disposeWeather()
       disposeReminders()
       for (const name of [...created.keys()].reverse()) release(name)
+      return disposalOutcome()
     },
     snapshot: () => ({
       disposed,

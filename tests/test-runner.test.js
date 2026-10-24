@@ -10,6 +10,8 @@ import fs, {
   writeFileSync
 } from 'node:fs'
 import { createRequire } from 'node:module'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -67,6 +69,53 @@ afterEach(() => {
 })
 
 describe('test execution evidence', () => {
+  it.each([
+    ['Node diagnostic fixture', { gui: true }, true],
+    ['explicit hidden console', { gui: true, windowsHide: true }, true],
+    ['actual Electron GUI', { gui: true, windowsHide: false }, false],
+    ['Electron Node mode', { electronNode: true }, true]
+  ])(
+    'preserves the launch window policy for %s in the process and evidence',
+    async (_name, policy, hidden) => {
+      const childProcess = fixtureRequire('node:child_process')
+      const originalSpawn = childProcess.spawn
+      const modulePath = fixtureRequire.resolve('../scripts/test-runner.cjs')
+      const previousModule = fixtureRequire.cache[modulePath]
+      const launches = []
+      childProcess.spawn = (_command, _args, launchOptions) => {
+        launches.push(launchOptions)
+        const child = Object.assign(new EventEmitter(), {
+          pid: 24680,
+          exitCode: null,
+          signalCode: null,
+          stdout: new PassThrough(),
+          stderr: new PassThrough()
+        })
+        queueMicrotask(() => {
+          child.exitCode = 0
+          child.emit('exit', 0, null)
+          child.stdout.end()
+          child.stderr.end()
+          child.emit('close', 0, null)
+        })
+        return child
+      }
+      delete fixtureRequire.cache[modulePath]
+      try {
+        const selectedRunner = fixtureRequire(modulePath)
+        const result = await selectedRunner.runJob(job('window-policy', '', policy), options())
+        expect(launches).toHaveLength(1)
+        expect(launches[0].windowsHide).toBe(hidden)
+        expect(result.windowsHide).toBe(hidden)
+        expect(result.code).toBe(0)
+      } finally {
+        childProcess.spawn = originalSpawn
+        delete fixtureRequire.cache[modulePath]
+        if (previousModule) fixtureRequire.cache[modulePath] = previousModule
+      }
+    }
+  )
+
   it('continues after failures, persists output and blocks only dependants', async () => {
     const opts = options()
     const results = await runner.runJobs(
@@ -115,6 +164,136 @@ describe('test execution evidence', () => {
     expect(result.status).toBe('timeout')
     expect(result.processResult.timedOut).toBe(true)
     expect(existsSync(result.preservedTemporary)).toBe(true)
+  })
+
+  it('collects before terminating an owned timed-out GUI child and preserves its first failure', async () => {
+    const captured = []
+    const result = await runner.runJob(
+      job(
+        'owned-gui-timeout',
+        "console.error('original business failure'); setInterval(() => {}, 100)",
+        {
+          gui: true,
+          timeoutMs: 200
+        }
+      ),
+      {
+        ...options(),
+        collectFailureDiagnostics: async (request) => {
+          // Signal 0 only checks liveness. The original child must still exist
+          // when the external collector is asked to inspect its own windows.
+          expect(() => process.kill(request.rootPid, 0)).not.toThrow()
+          captured.push(request)
+          return { version: 1, status: 'complete', windows: [{ Text: 'controlled Error' }] }
+        }
+      }
+    )
+    expect(captured).toHaveLength(1)
+    expect(result.processResult.status).toBe('timeout')
+    expect(result.firstFailure).toMatchObject({ kind: 'timeout', timeoutMs: 200 })
+    expect(result.accepted).toBe(false)
+    expect(readFileSync(join(result.directory, 'stderr.log'), 'utf8')).toContain(
+      'original business failure'
+    )
+    expect(result.failureDiagnostics.collections[0]).toMatchObject({
+      trigger: 'timeout',
+      observation: { windows: [{ Text: 'controlled Error' }] }
+    })
+    expect(existsSync(join(result.directory, 'failure-diagnostics-1.json'))).toBe(true)
+    expect(existsSync(result.preservedTemporary)).toBe(true)
+  })
+
+  it('retains a nonzero child exit when the supplemental collector fails', async () => {
+    const result = await runner.runJob(
+      job('owned-gui-exit', "console.error('first native failure'); process.exit(17)", {
+        gui: true
+      }),
+      {
+        ...options(),
+        collectFailureDiagnostics: async () => {
+          throw new Error('controlled collector failure')
+        }
+      }
+    )
+    expect(result.code).toBe(17)
+    expect(result.processResult.status).toBe('failed')
+    expect(result.firstFailure).toMatchObject({ kind: 'process-exit', code: 17, signal: null })
+    expect(result.failureDiagnostics.collections[0].observation).toMatchObject({
+      status: 'unavailable',
+      reason: 'controlled collector failure'
+    })
+    expect(result.accepted).toBe(false)
+    expect(readFileSync(join(result.directory, 'stderr.log'), 'utf8')).toContain(
+      'first native failure'
+    )
+  })
+
+  it('does not tree-kill an exited root PID when descendants still retain its output pipe', async () => {
+    const childProcess = fixtureRequire('node:child_process')
+    const originalSpawn = childProcess.spawn
+    const modulePath = fixtureRequire.resolve('../scripts/test-runner.cjs')
+    const previousModule = fixtureRequire.cache[modulePath]
+    const opts = options()
+    const treeKills = []
+    const child = new EventEmitter()
+    Object.assign(child, {
+      pid: 24680,
+      exitCode: null,
+      signalCode: null,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: () => {
+        throw new Error('Exited root must not be killed')
+      },
+      unref: () => {}
+    })
+    childProcess.spawn = (command) => {
+      if (command === 'controlled-root.exe') return child
+      treeKills.push(command)
+      throw new Error('Unexpected PID-based termination after root exit')
+    }
+    delete fixtureRequire.cache[modulePath]
+    try {
+      const isolated = fixtureRequire(modulePath)
+      const result = await isolated.runJob(
+        {
+          id: 'root-exits-during-capture',
+          command: 'controlled-root.exe',
+          gui: true,
+          timeoutMs: 20
+        },
+        {
+          ...opts,
+          collectFailureDiagnostics: async () => {
+            // Model the event contract directly: exit is observed during capture,
+            // but close follows later after a descendant releases its inherited pipe.
+            child.exitCode = 0
+            child.emit('exit', 0, null)
+            setTimeout(() => {
+              child.stdout.write('descendant output retained')
+              child.emit('close', 0, null)
+            }, 20)
+            return { version: 1, status: 'complete' }
+          }
+        }
+      )
+      expect(treeKills).toEqual([])
+      expect(result.code).toBe(0)
+      expect(result.processResult).toMatchObject({
+        status: 'timeout',
+        timedOut: true,
+        terminationIncomplete: true
+      })
+      expect(result.firstFailure.kind).toBe('timeout')
+      expect(result.accepted).toBe(false)
+      expect(readFileSync(join(result.directory, 'stdout.log'), 'utf8')).toContain(
+        'descendant output retained'
+      )
+    } finally {
+      childProcess.spawn = originalSpawn
+      delete fixtureRequire.cache[modulePath]
+      if (previousModule) fixtureRequire.cache[modulePath] = previousModule
+    }
   })
 
   it('removes inherited Electron node mode for GUI and keeps it for database scripts', async () => {
@@ -176,7 +355,10 @@ describe('test execution evidence', () => {
     for (const gui of jobs.filter((entry) => entry.gui)) {
       expect(gui.requires).toContain('build-capture')
       expect(jobs.indexOf(gui)).toBeGreaterThan(jobs.indexOf(capture))
+      expect(gui.windowsHide).toBe(false)
     }
+    for (const file of manifest.focusedNativeTests)
+      expect(jobs.find((entry) => entry.id === file).windowsHide).toBe(true)
     const target = 'tests/capture-business-electron.mjs'
     expect(fullRunner.selectJobs(jobs, ['build-capture', target]).at(-1).requires).toEqual([
       'build-native',

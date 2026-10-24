@@ -14,12 +14,19 @@ const sources = ref([])
 const initialIndex = ref(0)
 let loadSequence = 0
 
-async function loadSource(index, sequence = loadSequence) {
+async function resolveSource(index) {
+  const sequence = loadSequence
   const record = records.value[index]
-  if (!record) return
-  const source = await window.api.getImageBase64(record.file_path)
-  if (sequence !== loadSequence || !source) return
-  sources.value[index] = source
+  if (!record) throw new Error('图片预览已失效')
+  try {
+    const src = await window.api.getImageBase64(record.file_path)
+    if (sequence !== loadSequence || !props.visible || !src) throw new Error('图片预览已失效')
+    return { src, release() {} }
+  } catch (error) {
+    if (sequence === loadSequence && props.visible)
+      showMessage('warning', '图片暂时无法读取，请重试')
+    throw error
+  }
 }
 
 async function openNoteImages() {
@@ -42,7 +49,6 @@ async function openNoteImages() {
     )
     if (sequence !== loadSequence) return
     sources.value = thumbnails
-    await loadSource(0, sequence)
   } catch (error) {
     console.error('[NoteImagePreview] 加载图片失败:', error)
     if (sequence === loadSequence) {
@@ -52,20 +58,24 @@ async function openNoteImages() {
   }
 }
 
-function onChange(index) {
-  void loadSource(index)
-}
-
 watch(
   () => [props.visible, props.noteId],
   ([visible]) => {
     if (visible) void openNoteImages()
-    else loadSequence++
+    else {
+      loadSequence++
+      records.value = []
+      sources.value = []
+    }
   },
   { immediate: true }
 )
 
-onBeforeUnmount(() => loadSequence++)
+onBeforeUnmount(() => {
+  loadSequence++
+  records.value = []
+  sources.value = []
+})
 </script>
 
 <template>
@@ -73,7 +83,7 @@ onBeforeUnmount(() => loadSequence++)
     :visible="visible && sources.length > 0"
     :sources="sources"
     :initial-index="initialIndex"
-    @change="onChange"
+    :resolve-source="resolveSource"
     @close="emit('close')"
   />
 </template>

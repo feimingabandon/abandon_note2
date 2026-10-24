@@ -10,6 +10,7 @@
 
 #include "blur_engine.h"
 #include "blur_effects.h"
+#include "dispatcher_queue_lifetime.h"
 #include "window_motion_diagnostics.h"
 
 #include <windows.ui.composition.interop.h>
@@ -126,8 +127,31 @@ void Engine::RecordNativeFailure(const char* stage, long long nativeCode) {
 
 const char* Engine::GetLastFailureJson() const {
     thread_local std::string snapshot;
-    std::lock_guard<std::mutex> lock(m_failureMutex);
-    snapshot = m_failureJson;
+    std::string failure;
+    ShutdownDiagnostic shutdown;
+    {
+        std::lock_guard<std::mutex> lock(m_failureMutex);
+        failure = m_failureJson;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_shutdownMutex);
+        shutdown = m_shutdown;
+    }
+    // The existing failure object keeps all of its original fields. Shutdown
+    // is an independent owner snapshot, not a replacement for the last failure.
+    std::ostringstream text;
+    text << failure.substr(0, failure.size() - 1);
+    if (failure.size() > 2) text << ',';
+    text << "\"shutdown\":{\"generation\":" << shutdown.generation
+        << ",\"status\":\"" << shutdown.status << "\",\"threadExitConfirmed\":"
+        << (shutdown.threadExitConfirmed ? "true" : "false") << ",\"waitResult\":";
+    if (shutdown.hasWaitResult) text << shutdown.waitResult;
+    else text << "null";
+    text << ",\"nativeCode\":" << shutdown.nativeCode
+        << ",\"abandoned\":" << (shutdown.abandoned ? "true" : "false")
+        << ",\"modulePinned\":" << (shutdown.modulePinned ? "true" : "false")
+        << ",\"pinNativeCode\":" << shutdown.pinNativeCode << "}}";
+    snapshot = text.str();
     return snapshot.c_str();
 }
 
@@ -191,7 +215,14 @@ bool Engine::Initialize(HWND parentHwnd) {
     }
     m_parentHwnd.store(parentHwnd);
     m_running.store(true);
-    m_staThread = std::thread(&Engine::StaThreadProc, this, parentHwnd);
+    {
+        std::lock_guard<std::mutex> lock(m_shutdownMutex);
+        m_staThread = std::thread(&Engine::StaThreadProc, this, parentHwnd);
+        const auto generation = m_shutdown.generation + 1;
+        m_shutdown = ShutdownDiagnostic{};
+        m_shutdown.generation = generation;
+        m_shutdown.status = "not-requested";
+    }
 
     std::unique_lock<std::mutex> lock(m_initMutex);
     const bool completed = m_initCv.wait_for(lock, std::chrono::seconds(5), [this] {
@@ -536,9 +567,9 @@ void Engine::StaThreadProc(HWND parentHwnd) {
     CreateOverlayWindow(parentHwnd);
     if (!m_overlayHwnd) {
         m_lastError.store(BlurErrorCode::OverlayWindowFailed);
-        Cleanup();
         m_running.store(false);
         SignalInitialization(false);
+        Cleanup();
         return;
     }
 
@@ -551,25 +582,25 @@ void Engine::StaThreadProc(HWND parentHwnd) {
     }
     if (!m_compositor || !m_target) {
         m_lastError.store(BlurErrorCode::CompositionTargetFailed);
-        Cleanup();
         m_running.store(false);
         SignalInitialization(false);
+        Cleanup();
         return;
     }
 
     if (!BuildEffectGraph()) {
         m_lastError.store(BlurErrorCode::EffectGraphFailed);
-        Cleanup();
         m_running.store(false);
         SignalInitialization(false);
+        Cleanup();
         return;
     }
 
     if (!InstallWinEventHooks()) {
         m_lastError.store(BlurErrorCode::UnknownFailure);
-        Cleanup();
         m_running.store(false);
         SignalInitialization(false);
+        Cleanup();
         return;
     }
     m_lastError.store(BlurErrorCode::None);
@@ -612,6 +643,11 @@ void Engine::SignalInitialization(bool success) {
 }
 
 void Engine::Cleanup() {
+    // Public state is retired before the owner begins asynchronous queue drain.
+    // A slow/failed drain must never continue advertising a usable engine.
+    m_initialized.store(false);
+    m_runtimeHealthy.store(false);
+    m_running.store(false);
     m_messageHwnd.store(nullptr);
     m_configUpdatePending.store(false);
     m_geometryUpdatePending.store(false);
@@ -643,34 +679,76 @@ void Engine::Cleanup() {
     m_target = nullptr;
     m_compositor = nullptr;
     if (m_overlayHwnd) { DestroyWindow(m_overlayHwnd); m_overlayHwnd = nullptr; }
-    if (m_dispatcherQueueController) {
-        m_dispatcherQueueController = nullptr;
-    }
+    // C++/WinRT also owns module-cached agile activation factories. Release
+    // them while this apartment/queue still exists, so a later STA cannot
+    // reuse a factory retained across the last apartment's CoUninitialize.
+    winrt::clear_factory_cache();
+    Detail::ShutdownDispatcherQueueOnCurrentThread(m_dispatcherQueueController,
+        [](void* context, const char* stage, HRESULT error) noexcept {
+            auto* self = static_cast<Engine*>(context);
+            self->RecordNativeFailure(stage, error);
+            // Preserve a more specific initialization failure as the root cause.
+            if (self->m_lastError.load() == BlurErrorCode::None)
+                self->m_lastError.store(BlurErrorCode::UnknownFailure);
+        }, this);
+    // The helper returns only after actual shutdown. On an unconfirmed result,
+    // this STA retains its apartment/controller and the caller's old timeout
+    // isolates it without TerminateThread or an early COM teardown.
     CoUninitialize();
 }
 
 bool Engine::StopStaThread(DWORD timeoutMs) {
     m_running.store(false);
     if (HWND hwnd = m_messageHwnd.load()) PostMessage(hwnd, WM_BLUR_DESTROY, 0, 0);
-    if (!m_staThread.joinable()) return true;
+    // A detached owner remains unconfirmed; repeated Destroy cannot replace
+    // its real wait/pin result with an apparent empty-owner success.
+    if (!m_staThread.joinable()) return !m_threadAbandoned.load();
 
     const DWORD waitResult = WaitForSingleObject(
         static_cast<HANDLE>(m_staThread.native_handle()),
         timeoutMs);
+    const DWORD nativeCode = waitResult == WAIT_FAILED ? ::GetLastError() : ERROR_SUCCESS;
     if (waitResult == WAIT_OBJECT_0) {
-        m_staThread.join();
+        try {
+            m_staThread.join();
+        } catch (...) {
+            std::lock_guard<std::mutex> lock(m_shutdownMutex);
+            m_shutdown.status = "failed";
+            m_shutdown.hasWaitResult = true;
+            m_shutdown.waitResult = waitResult;
+            m_shutdown.nativeCode = nativeCode;
+            throw;
+        }
+        std::lock_guard<std::mutex> lock(m_shutdownMutex);
+        m_shutdown.status = "completed";
+        m_shutdown.threadExitConfirmed = true;
+        m_shutdown.hasWaitResult = true;
+        m_shutdown.waitResult = waitResult;
+        m_shutdown.nativeCode = nativeCode;
         return true;
     }
 
     // 不能让损坏或卡死的 WinRT/DComp 调用无限阻塞 Electron 主进程。
     // TerminateThread 会破坏 COM/堆状态，因此保留 Engine 与 DLL 到进程结束并分离线程。
     HMODULE pinnedModule = nullptr;
-    GetModuleHandleExW(
+    const BOOL modulePinned = GetModuleHandleExW(
         GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
         reinterpret_cast<LPCWSTR>(&Engine::Instance),
         &pinnedModule);
+    const DWORD pinNativeCode = modulePinned ? ERROR_SUCCESS : ::GetLastError();
     m_threadAbandoned.store(true);
     m_runtimeHealthy.store(false);
+    {
+        std::lock_guard<std::mutex> lock(m_shutdownMutex);
+        m_shutdown.status = waitResult == WAIT_TIMEOUT ? "timed-out" : "failed";
+        m_shutdown.threadExitConfirmed = false;
+        m_shutdown.hasWaitResult = true;
+        m_shutdown.waitResult = waitResult;
+        m_shutdown.nativeCode = nativeCode;
+        m_shutdown.abandoned = true;
+        m_shutdown.modulePinned = modulePinned != FALSE;
+        m_shutdown.pinNativeCode = pinNativeCode;
+    }
     m_staThread.detach();
     return false;
 }

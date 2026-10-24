@@ -58,7 +58,8 @@ let reachedWillQuit = false,
 const cleanupErrors = [],
   verifiedViews = [],
   layouts = [],
-  failureScreenshots = []
+  failureScreenshots = [],
+  resetOutcomes = []
 const wait = (ms) => new Promise((done) => setTimeout(done, ms))
 const js = (source) => current.webContents.executeJavaScript(source)
 async function until(predicate, label) {
@@ -265,6 +266,7 @@ async function shutdown(error = null) {
       verifiedViews,
       layouts,
       failureScreenshots,
+      resetOutcomes,
       error: error?.stack || null
     }
     if (current && !current.isDestroyed()) {
@@ -499,7 +501,7 @@ async function run() {
           await until(
             () =>
               js(
-                `document.querySelector('.panel-body')?.classList.contains('is-resetting') === false && document.body.textContent.includes('恢复默认设置失败')`
+                `document.querySelector('.settings-panel')?.classList.contains('is-resetting') === false && document.body.textContent.includes('恢复默认设置失败')`
               ),
             'reset error did not restore writable UI'
           )
@@ -561,11 +563,36 @@ async function run() {
         await until(
           () =>
             js(
-              `document.querySelector('.panel-body')?.classList.contains('is-resetting') === false && document.body.textContent.includes('已恢复默认设置')`
+              `document.querySelector('.settings-panel')?.classList.contains('is-resetting') === false && document.body.textContent.includes('默认设置已保存，应用结果尚待确认')`
             ),
-          'same reset retry did not succeed'
+          'same reset retry did not preserve the saved-but-unconfirmed application result'
         )
+        // Reset includes capture theme. Its production port only confirms the
+        // invocation, so a successful SQL reset must not claim full application.
+        const application = await js('window.api.getSettingsApplicationState()')
+        const applicationUi = await js(`(() => {
+          const root=document.querySelector('[data-settings-application-status]');
+          return { state:root?.dataset.state, text:root?.textContent || '',
+            theme:root?.querySelector('[data-application-target="dependency:theme"]')?.textContent || '',
+            unsaved:Boolean(document.querySelector('.settings-save-error')) };
+        })()`)
+        assert.equal(application.ledger.dependencies.theme.status, 'unconfirmed')
+        assert.equal(
+          application.ledger.dependencies.theme.error,
+          '截图主题已请求，宿主未提供应用确认'
+        )
+        assert.equal(applicationUi.state, 'unconfirmed')
+        assert.match(applicationUi.theme, /应用尚待确认/)
+        assert.doesNotMatch(applicationUi.text, /已保存，已应用/)
+        assert.equal(applicationUi.unsaved, false, 'committed reset is not an unsaved write')
         const retry = await js('window.api.getSettingsSnapshot()')
+        resetOutcomes.push({
+          mode,
+          application,
+          applicationUi,
+          beforeRevision: beforeRetry.revision,
+          revision: retry.revision
+        })
         assert.equal(
           retry.values.sticky.backgroundColor,
           createDefaultSettings('list').sticky.backgroundColor

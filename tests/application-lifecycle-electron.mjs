@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import { app, BrowserWindow } from 'electron'
 import { createDatabaseSchema } from '../src/main/db/db-schema.js'
+import { createShutdownCoordinator } from '../src/main/application/shutdown-coordinator.js'
+import { createBusinessMutationAdmission } from '../src/main/application/business-mutation-admission.js'
 import { createAssertionRecorder, prepareTestProfile } from './helpers/test-result-recorder.cjs'
 
 const script = fileURLToPath(import.meta.url)
@@ -50,6 +52,10 @@ async function child() {
     await recoveryFailureChild(require)
     return
   }
+  if (childMode === 'deadline-pending') {
+    await deadlinePendingChild()
+    return
+  }
   const watchdog = setTimeout(() => app.exit(1), 25000)
   require(resolve('out/main/index.js'))
   await waitUntil(() => {
@@ -67,6 +73,109 @@ async function child() {
     app.quit()
     app.quit()
   }
+}
+
+async function deadlinePendingChild() {
+  await app.whenReady()
+  const profile = process.env.ABANDON_LIFECYCLE_PROFILE
+  const database = new Database(join(profile, 'app.db'))
+  database.pragma('journal_mode = WAL')
+  database.exec('CREATE TABLE shutdown_deadline_probe (value TEXT NOT NULL)')
+  database
+    .prepare(
+      `INSERT INTO remote_session_end_outbox
+    (session_id, ended_at, attempts, created_at, updated_at) VALUES (?, ?, 0, ?, ?)`
+    )
+    .run('deadline-preserved-outbox', '2026-10-23T00:00:00.000Z', Date.now(), Date.now())
+  const staging = join(profile, '.attachments-staging', 'deadline-held')
+  mkdirSync(staging, { recursive: true })
+  writeFileSync(join(staging, 'operation.json'), JSON.stringify({ version: 1, type: 'image-add' }))
+  writeFileSync(join(staging, 'payload'), 'controlled pending asset')
+  const trace = {
+    scope: 'Production coordinator/admission with controlled pending command and real SQLite',
+    expectedProcessExit: { code: 1, normalQuit: false, reason: 'timed-out' },
+    cancellationLimit:
+      'Pending owner is not cancelled; process termination prevents its continuation',
+    events: [],
+    cleanupCalls: [],
+    flushCalls: 0,
+    pendingCommitted: false
+  }
+  const record = (event) => trace.events.push(event)
+  const admission = createBusinessMutationAdmission()
+  let release
+  const gate = new Promise((resolveGate) => {
+    release = resolveGate
+  })
+  const pending = admission.run(async () => {
+    record('pending-owner-entered')
+    // Like note-commands, this closure retains its database across an await;
+    // stopping new admission does not revoke the later direct transaction.
+    await gate
+    database.transaction(() => {
+      database.prepare('INSERT INTO shutdown_deadline_probe(value) VALUES (?)').run('late commit')
+    })()
+    trace.pendingCommitted = true
+    record('pending-owner-committed')
+  })
+  void pending.catch((error) => process.stderr.write(`deadline-owner-error:${error.stack}\n`))
+  app.on('will-quit', () => process.stdout.write('deadline-unexpected-will-quit\n'))
+  createShutdownCoordinator({
+    app,
+    logger: { info: (scope) => record(scope), error: (scope) => record(scope) },
+    getWindow: () => null,
+    confirmDrafts: async () => true,
+    hasRemoteSession: () => false,
+    onBegin: () => {
+      admission.preventNewMutations()
+      record('new-admission-sealed')
+    },
+    stages: [{ name: 'business-mutations', enabled: () => true, run: admission.drain }],
+    cleanup: [
+      {
+        name: 'database',
+        run: () => {
+          trace.cleanupCalls.push('database')
+          database.close()
+        }
+      },
+      {
+        name: 'staging',
+        run: () => {
+          trace.cleanupCalls.push('staging')
+          rmSync(staging, { recursive: true })
+        }
+      }
+    ],
+    flushLogs: async () => {
+      trace.flushCalls++
+      return { incomplete: false }
+    },
+    timeoutMs: 60,
+    onTerminal: (snapshot) => {
+      record('synchronous-terminal-observation')
+      writeFileSync(
+        join(profile, 'deadline-terminal.json'),
+        JSON.stringify(
+          {
+            ...trace,
+            snapshot,
+            databaseOpen: database.open,
+            admission: admission.snapshot()
+          },
+          null,
+          2
+        ),
+        { flag: 'wx' }
+      )
+    }
+  })
+  // If the implementation incorrectly resumes the normal quit path or merely
+  // abandons its wait, this real command will commit. The expected app.exit(1)
+  // must happen first; no test helper kills this child to make the assertion pass.
+  setTimeout(release, 250)
+  process.stdout.write('lifecycle-deadline-child-armed\n')
+  app.quit()
 }
 
 async function recoveryFailureChild(require) {
@@ -220,7 +329,8 @@ function runChild(mode, profile) {
     const processHandle = spawn(process.execPath, [script], {
       cwd: process.cwd(),
       env,
-      windowsHide: true,
+      // Windows launch hiding suppresses GUI show in this Electron child.
+      windowsHide: false,
       stdio: ['ignore', 'pipe', 'pipe']
     })
     let stdout = ''
@@ -230,13 +340,25 @@ function runChild(mode, profile) {
     processHandle.stderr.on('data', (chunk) => (stderr += chunk))
     const timer = setTimeout(() => {
       timedOut = true
-      processHandle.kill()
+      // Keep the original 30s acceptance boundary, but let the focused runner
+      // collect its external process-tree diagnostics before owned termination.
+      // A later child exit still fails via timedOut; it cannot become a retry.
+      try {
+        writeFileSync(
+          join(process.env.ABANDON_TEST_EVIDENCE_DIR || profile, `${mode}-timeout.json`),
+          JSON.stringify({ mode, pid: processHandle.pid, timedOut, stdout, stderr }),
+          { flag: 'wx' }
+        )
+      } catch (error) {
+        console.error('Lifecycle timeout evidence failed:', error)
+      }
+      console.error(`Lifecycle child ${mode} exceeded 30000ms; awaiting runner diagnostics`)
     }, 30000)
     processHandle.once('error', (error) => {
       clearTimeout(timer)
       reject(error)
     })
-    processHandle.once('exit', (code, signal) => {
+    processHandle.once('close', (code, signal) => {
       clearTimeout(timer)
       complete({ code, signal, timedOut, pid: processHandle.pid, stdout, stderr })
     })
@@ -250,8 +372,13 @@ async function controller() {
     metadata: {
       browserWindow: true,
       mainProcessRestart: true,
-      scenarios: ['normal', 'reentrant', 'recovery-failure'],
-      simulation: { recoveryFailure: 'filesystem EACCES and delayed readdir; real app/SQLite' }
+      scenarios: ['normal', 'reentrant', 'recovery-failure', 'deadline-pending'],
+      processScopes: { fullApplicationChildren: 3, isolatedProductionCoordinatorChildren: 1 },
+      simulation: {
+        recoveryFailure: 'filesystem EACCES and delayed readdir; real app/SQLite',
+        deadlinePending: '60ms injected coordinator budget; pending direct SQLite command'
+      },
+      expectedFailure: 'deadline-pending child must exit 1; outer validates its failure policy'
     }
   })
   const { assert } = recorder
@@ -262,6 +389,27 @@ async function controller() {
   let completed = false
   let failure
   let exitCode = 0
+  function verifyFinalLogging(mode, directory, pid, sessionId) {
+    const bytes = readFileSync(join(directory, 'logs', 'shutdown-logging.json'))
+    writeFileSync(join(evidence, `${mode}-logging-shutdown.json`), bytes, { flag: 'wx' })
+    const closed = JSON.parse(bytes.toString('utf8'))
+    assert.equal(closed.schemaVersion, 1)
+    assert.equal(closed.pid, pid, 'Final logging evidence must belong to this child')
+    assert.equal(closed.sessionId, sessionId, 'A previous process journal is not current evidence')
+    assert.equal(closed.outcome, 'completed')
+    assert.equal(closed.exitCode, 0)
+    assert.equal(closed.reportError, null)
+    assert.equal(closed.flush.incomplete, false, 'Final flush must report its actual result')
+    assert.equal(closed.writer.outcome, 'completed')
+    assert.equal(closed.writer.incomplete, false)
+    assert.equal(closed.writer.termination.requested, true)
+    assert.equal(
+      closed.writer.termination.confirmed,
+      true,
+      'Termination request alone is insufficient'
+    )
+    assert.equal(closed.writer.termination.outcome, 'completed')
+  }
   try {
     for (const mode of ['normal', 'reentrant']) {
       const childProfile = join(profile.directory, mode)
@@ -293,6 +441,7 @@ async function controller() {
         'The final shutdown record was not durably written exactly once'
       )
       assert.equal(finishes[0].sessionId, starts[0].sessionId)
+      verifyFinalLogging(mode, childProfile, result.pid, finishes[0].sessionId)
       sessions.push(finishes[0].sessionId)
       for (const name of [
         'capture',
@@ -309,6 +458,11 @@ async function controller() {
         )
       assert.equal(finishes[0].metadata.stages['remote-session'].result, 'completed')
       assert.equal(finishes[0].metadata.stages.diagnostic.result.complete, true)
+      const nativeShutdown = finishes[0].metadata.stages['native-blur'].result.nativeShutdown
+      assert.equal(nativeShutdown.status, 'completed')
+      assert.equal(nativeShutdown.threadExitConfirmed, true)
+      assert.equal(nativeShutdown.waitResult, 0)
+      assert.equal(nativeShutdown.abandoned, false)
       const database = new Database(join(childProfile, 'app.db'))
       try {
         assert.equal(database.pragma('integrity_check', { simple: true }), 'ok')
@@ -392,8 +546,19 @@ async function controller() {
       (record) => record.scope === 'lifecycle.shutdown-complete'
     )
     assert.equal(recoveryFinishes.length, 1)
+    verifyFinalLogging(
+      'recovery-failure',
+      recoveryProfile,
+      recovery.pid,
+      recoveryFinishes[0].sessionId
+    )
     assert.equal(recoveryFinishes[0].metadata.stages['startup-settlement'].status, 'complete')
     assert.equal(recoveryFinishes[0].metadata.stages.database.status, 'complete')
+    const uncreatedShutdown =
+      recoveryFinishes[0].metadata.stages['native-blur'].result.nativeShutdown
+    assert.equal(uncreatedShutdown.status, 'not-created')
+    assert.equal(uncreatedShutdown.generation, 0)
+    assert.equal(uncreatedShutdown.threadExitConfirmed, false)
     for (const name of ['capture', 'remote-session', 'diagnostic']) {
       assert.equal(recoveryFinishes[0].metadata.stages[name].status, 'not-created')
     }
@@ -415,6 +580,82 @@ async function controller() {
     writeFileSync(
       join(evidence, 'recovery-failure-shutdown-records.json'),
       JSON.stringify({ finishes: recoveryFinishes }, null, 2)
+    )
+    const deadlineProfile = join(profile.directory, 'deadline-pending')
+    seed(deadlineProfile)
+    const deadline = await runChild('deadline-pending', deadlineProfile)
+    writeFileSync(
+      join(evidence, 'deadline-pending-process.json'),
+      JSON.stringify(deadline, null, 2)
+    )
+    assert.equal(
+      deadline.timedOut,
+      false,
+      'The deadline child must not depend on controller termination'
+    )
+    assert.equal(deadline.signal, null)
+    assert.equal(
+      deadline.code,
+      1,
+      'The controlled deadline is a failed exit, never normal exit success'
+    )
+    assert.ok(deadline.stdout.includes('lifecycle-deadline-child-armed'))
+    assert.ok(!deadline.stdout.includes('deadline-unexpected-will-quit'))
+    const deadlineTrace = JSON.parse(
+      readFileSync(join(deadlineProfile, 'deadline-terminal.json'), 'utf8')
+    )
+    writeFileSync(join(evidence, 'deadline-terminal.json'), JSON.stringify(deadlineTrace, null, 2))
+    assert.equal(deadlineTrace.snapshot.terminal, true)
+    assert.equal(deadlineTrace.snapshot.completed, false)
+    assert.equal(deadlineTrace.snapshot.outcome, 'timed-out')
+    assert.equal(deadlineTrace.snapshot.exitMode, 'deadline')
+    assert.equal(deadlineTrace.snapshot.stages['business-mutations'].status, 'timed-out')
+    assert.equal(deadlineTrace.snapshot.stages['business-mutations'].settled, false)
+    assert.equal(deadlineTrace.snapshot.stages.database.status, 'not-started')
+    assert.equal(deadlineTrace.snapshot.stages.staging.status, 'not-started')
+    assert.equal(deadlineTrace.snapshot.logFlush.status, 'not-started')
+    assert.equal(
+      deadlineTrace.databaseOpen,
+      true,
+      'DB must remain open under the live admitted owner'
+    )
+    assert.equal(deadlineTrace.admission.pending, 1)
+    assert.equal(deadlineTrace.pendingCommitted, false)
+    assert.deepEqual(deadlineTrace.cleanupCalls, [])
+    assert.equal(deadlineTrace.flushCalls, 0)
+    const afterDeadline = new Database(join(deadlineProfile, 'app.db'))
+    try {
+      assert.equal(
+        afterDeadline.prepare('SELECT COUNT(*) AS count FROM shutdown_deadline_probe').get().count,
+        0
+      )
+      assert.equal(
+        afterDeadline
+          .prepare(
+            "SELECT COUNT(*) AS count FROM remote_session_end_outbox WHERE session_id='deadline-preserved-outbox'"
+          )
+          .get().count,
+        1
+      )
+      assert.equal(afterDeadline.pragma('integrity_check', { simple: true }), 'ok')
+    } finally {
+      afterDeadline.close()
+    }
+    assert.deepEqual(
+      JSON.parse(
+        readFileSync(
+          join(deadlineProfile, '.attachments-staging', 'deadline-held', 'operation.json'),
+          'utf8'
+        )
+      ),
+      { version: 1, type: 'image-add' }
+    )
+    assert.equal(
+      readFileSync(
+        join(deadlineProfile, '.attachments-staging', 'deadline-held', 'payload'),
+        'utf8'
+      ),
+      'controlled pending asset'
     )
     completed = true
   } catch (error) {

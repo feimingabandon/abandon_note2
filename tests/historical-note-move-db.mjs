@@ -4,6 +4,7 @@ import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { clearDb, setDb } from '../src/main/db/db-connection.js'
 import { createDatabaseSchema } from '../src/main/db/db-schema.js'
+import { createRecurringNoteSnapshot } from '../src/main/db/db-notes.js'
 import {
   moveHistoricalNotesToToday,
   previewHistoricalNotesToToday
@@ -223,9 +224,14 @@ app.once('ready', async () => {
     assert.equal(read(atomic[0]).effective_at, ts(14), '任一更新失败则整批回滚')
     db.exec('DROP TRIGGER reject_manual_move')
 
-    // 自动仅处理昨天、每日持久化去重，并与同一天已存在的循环实例保持独立。
+    // 自动仅处理昨天的非循环便签；生成实例不随普通待办逐日累积。
     const previous = seed('自动普通')
-    const autoRecurring = seed('自动循环', { from_template: 1 })
+    const autoRecurring = createRecurringNoteSnapshot({
+      content: '自动循环',
+      effectiveAt: ts(14)
+    }).id
+    const autoRecurringBefore = read(autoRecurring)
+    assert.equal(autoRecurringBefore.from_template, 1, '真实生成入口保留循环来源')
     const autoOld = seed('自动前天', { day: 13 })
     assert.equal(runAutomaticNoteMove({ enabled: false, now }).skipped, true)
     assert.equal(
@@ -233,10 +239,10 @@ app.once('ready', async () => {
       undefined
     )
     const auto = runAutomaticNoteMove({ enabled: true, now })
-    assert.equal(auto.count, 4, '两条原子测试余项加两条自动候选')
+    assert.equal(auto.count, 3, '两条原子测试余项加一条普通自动候选，循环实例排除')
     assert.equal(auto.sourceDateKey, '2026-10-14')
     assert.equal(read(previous).effective_at, now)
-    assert.equal(read(autoRecurring).effective_at, now)
+    assert.deepEqual(read(autoRecurring), autoRecurringBefore, '自动移动不改循环实例任何字段')
     assert.equal(read(autoOld).effective_at, ts(13))
     assert.equal(
       db.prepare("SELECT type FROM app_settings WHERE key = 'auto_move_checked_date'").get().type,
@@ -261,6 +267,12 @@ app.once('ready', async () => {
       1,
       '重新开启可强制补检查昨天'
     )
+    assert.deepEqual(read(autoRecurring), autoRecurringBefore, '强制补检查也排除循环实例')
+    const nextRecurring = createRecurringNoteSnapshot({
+      content: '新一天的循环实例',
+      effectiveAt: ts(15)
+    }).id
+    const nextRecurringBefore = read(nextRecurring)
     const snapshotBefore = db
       .prepare('SELECT id, effective_at, updated_at FROM notes ORDER BY id')
       .all()
@@ -278,6 +290,25 @@ app.once('ready', async () => {
     )
     db.exec('DROP TRIGGER reject_auto_checkpoint')
     assert.ok(runAutomaticNoteMove({ enabled: true, now: ts(16) }).count > 0)
+    assert.deepEqual(read(autoRecurring), autoRecurringBefore, '更早的循环实例继续保留')
+    assert.deepEqual(read(nextRecurring), nextRecurringBefore, '下一天不搬前一日循环实例')
+    assert.equal(read(recurring).effective_at, now, '手动移过的循环实例也不再次自动移动')
+    const thirdRecurring = createRecurringNoteSnapshot({
+      content: '再一天的循环实例',
+      effectiveAt: ts(16)
+    }).id
+    const thirdRecurringBefore = read(thirdRecurring)
+    assert.ok(runAutomaticNoteMove({ enabled: true, now: ts(17) }).count > 0)
+    assert.deepEqual(read(thirdRecurring), thirdRecurringBefore)
+    assert.equal(
+      db
+        .prepare(
+          'SELECT COUNT(*) AS count FROM notes WHERE from_template = 1 AND effective_at >= ?'
+        )
+        .get(ts(17, 0)).count,
+      0,
+      '连续自动移动后，今天不会累积前几天的循环实例'
+    )
     assert.equal(
       runAutomaticNoteMove({ enabled: true, now: ts(19) }).count,
       0,

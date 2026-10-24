@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,6 +33,9 @@ const sessionId = randomUUID()
 let logDirectory = ''
 let applicationContext = {}
 let unsubscribePolicy = null
+let closePromise = null
+let lastCloseResult = null
+let shutdownResult = null
 let incident = null
 let incidentTimer = null
 let ringBytes = 0
@@ -91,6 +94,133 @@ function resolveWriterFile() {
   if (!path) throw new Error('日志后台模块不存在')
   return path
 }
+
+const closeError = (error) => ({
+  message: String(error?.message || error).slice(0, 500),
+  ...(error?.code ? { code: String(error.code).slice(0, 100) } : {})
+})
+
+function installFinalLogBarrier({
+  app,
+  close,
+  save,
+  identity,
+  getProgress = () => null,
+  onResult = () => {},
+  getExitCode = () => Number(process.exitCode) || 0,
+  // Keep the client's 1000ms flush + 1000ms termination budgets unchanged;
+  // allow 500ms for deferred close scheduling and delivery of its full result.
+  timeoutMs = 2500
+}) {
+  let promise = null
+  let result = null
+  app.on('will-quit', (event) => {
+    // Re-entry must also be blocked while the single close is pending.
+    event.preventDefault?.()
+    if (promise) return
+    promise = new Promise((resolve) => {
+      let finished = false
+      let watchdog
+      const finish = (closed) => {
+        if (finished) return
+        finished = true
+        clearTimeout(watchdog)
+        let outcome = ['completed', 'degraded', 'timed-out', 'failed'].includes(closed?.outcome)
+          ? closed.outcome
+          : 'failed'
+        if (!closed?.writer?.termination?.confirmed && outcome !== 'failed') outcome = 'timed-out'
+        let exitCode
+        try {
+          exitCode = Number(getExitCode()) || 0
+        } catch {
+          exitCode = 1
+        }
+        if (!closed?.writer?.termination?.confirmed || ['timed-out', 'failed'].includes(outcome))
+          exitCode ||= 1
+        result = {
+          schemaVersion: 1,
+          time: new Date().toISOString(),
+          ...identity,
+          outcome,
+          flush: closed?.flush || { incomplete: true, reason: 'close-result-unavailable' },
+          writer: closed?.writer || null,
+          exitCode,
+          reportError: null,
+          ...(closed?.error ? { error: closed.error } : {})
+        }
+        try {
+          // This is one bounded local observation, never a durable log outbox.
+          // It must not depend on the worker that has just closed or failed.
+          const saved = save(result)
+          if (saved && typeof saved.then === 'function') {
+            void Promise.resolve(saved).catch(() => {})
+            throw new TypeError('最终日志结果必须同步记录')
+          }
+        } catch (error) {
+          result = {
+            ...result,
+            outcome: 'failed',
+            reportError: closeError(error),
+            exitCode: result.exitCode || 1
+          }
+        } finally {
+          try {
+            onResult(result)
+          } catch (error) {
+            result = {
+              ...result,
+              outcome: 'failed',
+              reportError: closeError(error),
+              exitCode: result.exitCode || 1
+            }
+          } finally {
+            // There is no downstream resource cleanup after this barrier. A
+            // late close Promise can neither replace this result nor exit again.
+            try {
+              app.exit?.(result.exitCode)
+            } finally {
+              resolve(result)
+            }
+          }
+        }
+      }
+      watchdog = setTimeout(() => {
+        let progress
+        try {
+          progress = getProgress()
+        } catch (error) {
+          progress = { observationError: closeError(error) }
+        }
+        finish({
+          outcome: 'timed-out',
+          flush: { incomplete: true, reason: 'final-close-result-unavailable' },
+          writer: {
+            outcome: 'timed-out',
+            incomplete: true,
+            termination: { requested: null, outcome: 'timed-out', confirmed: false },
+            progress
+          }
+        })
+      }, timeoutMs)
+      // Let the remaining will-quit listeners submit their final records first.
+      setImmediate(() => {
+        if (finished) return
+        void Promise.resolve()
+          .then(close)
+          .then(finish, (error) =>
+            finish({
+              outcome: 'failed',
+              error: closeError(error),
+              flush: { incomplete: true, reason: 'close-rejected' },
+              writer: null
+            })
+          )
+      })
+    })
+  })
+  return { settled: () => promise || Promise.resolve(null), snapshot: () => result }
+}
+
 export function initializeLogger() {
   if (initialized) return
   initialized = true
@@ -146,16 +276,28 @@ export function initializeLogger() {
       metadata: { ...policy, reason }
     })
   })
-  let closing = false
-  app.on?.('will-quit', (event) => {
-    if (closing) return
-    closing = true
-    event.preventDefault?.()
-    // 等其它 will-quit 清理结束，收进最后的 shutdown-complete 再发写入屏障。
-    setImmediate(async () => {
-      await closeLogs(1000)
-      app.exit?.(Number(process.exitCode) || 0)
-    })
+  installFinalLogBarrier({
+    app,
+    close: () => closeLogs(1000),
+    identity: { sessionId, pid: process.pid },
+    getProgress: () => writer?.snapshot() || { status: 'unavailable' },
+    onResult: (result) => {
+      shutdownResult = result
+    },
+    save: (result) => {
+      mkdirSync(logDirectory, { recursive: true })
+      writeFileSync(
+        join(logDirectory, 'shutdown-logging.json'),
+        JSON.stringify(
+          sanitizeDiagnosticValue(result, {
+            maxBytes: 32768,
+            maxDepth: 10,
+            maxArray: 64,
+            maxNodes: 2048
+          })
+        )
+      )
+    }
   })
 }
 export const getLogDirectory = () => {
@@ -460,15 +602,14 @@ export function getLoggingHealth() {
     ringRecords: ring.length,
     retainedFrom: ring[0]?.record.time || null,
     writer: writer?.snapshot() || { status: 'unavailable' },
+    shutdown: shutdownResult || lastCloseResult || { outcome: 'not-started' },
     incidents: recentIncidents.slice(),
     ...diagnosticState.snapshot()
   }
 }
-export async function flushLogs(timeoutMs = 5000) {
-  initializeLogger()
-  for (const entry of duplicates.values()) if (entry.count > 1) emitDuplicate(entry)
-  if (!writer) return { incomplete: true, reason: 'writer-unavailable' }
-  const result = await writer.flush(timeoutMs)
+function normalizeFlushResult(result) {
+  if (!result || typeof result !== 'object')
+    result = { incomplete: true, reason: 'flush-result-unavailable' }
   return {
     ...result,
     incomplete: Boolean(
@@ -480,11 +621,50 @@ export async function flushLogs(timeoutMs = 5000) {
     )
   }
 }
-export async function closeLogs(timeoutMs = 1000) {
-  clearTimeout(incidentTimer)
-  unsubscribePolicy?.()
-  await flushLogs(timeoutMs)
-  await writer?.close(0)
+export async function flushLogs(timeoutMs = 5000) {
+  initializeLogger()
+  for (const entry of duplicates.values()) if (entry.count > 1) emitDuplicate(entry)
+  if (!writer) return { incomplete: true, reason: 'writer-unavailable' }
+  return normalizeFlushResult(await writer.flush(timeoutMs))
+}
+export function closeLogs(timeoutMs = 1000) {
+  if (closePromise) return closePromise
+  closePromise = Promise.resolve().then(async () => {
+    let preparationError
+    try {
+      initializeLogger()
+      clearTimeout(incidentTimer)
+      unsubscribePolicy?.()
+      unsubscribePolicy = null
+      for (const entry of duplicates.values()) if (entry.count > 1) emitDuplicate(entry)
+    } catch (error) {
+      preparationError = closeError(error)
+    }
+    // The client owns the one final flush and the separately bounded real
+    // termination wait. Do not flush here and silently discard a second result.
+    const closed = writer
+      ? await writer.close(timeoutMs, { terminateTimeoutMs: 1000 })
+      : {
+          outcome: 'degraded',
+          incomplete: true,
+          flush: { incomplete: true, reason: 'writer-unavailable' },
+          termination: { requested: false, outcome: 'not-created', confirmed: true }
+        }
+    const flush = normalizeFlushResult(closed.flush)
+    let outcome = closed.outcome
+    if (preparationError) outcome = 'failed'
+    else if (!closed.termination?.confirmed && outcome !== 'failed') outcome = 'timed-out'
+    else if (outcome === 'completed' && flush.incomplete) outcome = 'degraded'
+    lastCloseResult = {
+      outcome,
+      incomplete: Boolean(closed.incomplete || flush.incomplete || outcome !== 'completed'),
+      flush,
+      writer: closed,
+      ...(preparationError ? { error: { phase: 'logger-preparation', ...preparationError } } : {})
+    }
+    return lastCloseResult
+  })
+  return closePromise
 }
 export async function queryLogs(query = {}) {
   initializeLogger()
@@ -578,5 +758,6 @@ export function normalizeRendererLog(payload = {}) {
 export const loggingInternals = {
   serializeUnknown: sanitizeDiagnosticValue,
   installConsoleStreamGuard,
-  isConsoleStreamAvailable
+  isConsoleStreamAvailable,
+  installFinalLogBarrier
 }

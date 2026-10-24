@@ -1,6 +1,7 @@
 #include "AnnotationEditor.h"
 #include "CaptureAppearance.h"
 #include "DesktopCapture.h"
+#include "PinWindow.h"
 #include <QApplication>
 #include <QDir>
 #include <QFontDatabase>
@@ -74,7 +75,7 @@ private slots:
     c.editor->panel->show();
     QVERIFY(!c.editor->action("polyline"));
     for (const auto id : {"rectangle", "ellipse", "arrow", "line", "pen",
-                          "marker", "text", "mosaic", "eraser"}) {
+                          "marker", "text", "mosaic", "blur", "eraser"}) {
       auto button = c.findChild<QToolButton *>("captureTool_" + QString(id));
       QVERIFY(button);
       QVERIFY(!button->menu());
@@ -207,7 +208,7 @@ private slots:
   void annotationControlsFollowTool_data() {
     QTest::addColumn<QString>("tool");
     for (auto tool : {"rectangle", "ellipse", "line", "arrow", "pen", "marker",
-                      "mosaic", "eraser"})
+                      "mosaic", "blur", "eraser"})
       QTest::newRow(tool) << QString(tool);
   }
   void annotationControlsFollowTool() {
@@ -235,7 +236,7 @@ private slots:
       c.editor->move(&hover);
     // Hide only the pointer guide, then hover a non-brush object's handle.
     const bool noHandles = tool == "pen" || tool == "marker" ||
-                           tool == "mosaic" || tool == "eraser" ||
+                           tool == "mosaic" || tool == "blur" || tool == "eraser" ||
                            tool == "polyline";
     if (noHandles)
       QApplication::sendEvent(&c, &leave);
@@ -321,7 +322,7 @@ private slots:
     c.show();
     c.editor->panel->show();
     c.editor->choose("mosaic");
-    QVERIFY(!c.editor->action("blur"));
+    QVERIFY(c.editor->action("blur"));
     auto mode = c.findChild<QComboBox *>("annotationMosaicMode");
     auto brush = c.findChild<QSpinBox *>("annotationSize");
     auto block = c.findChild<QSpinBox *>("annotationMosaicBlock");
@@ -354,6 +355,125 @@ private slots:
     c.drag({100, 100}, {200, 150});
     QCOMPARE(c.doc.strokes.size(), 3);
     QVERIFY(c.doc.strokes.last().mosaicBrush);
+  }
+  void gaussianRegionGestureStrengthHistoryAndMovement() {
+    Canvas c;
+    {
+      QPainter p(&c.doc.base);
+      for (int x = 0; x < 960; x += 13)
+        p.fillRect(x, 0, 4, 600, Qt::black);
+    }
+    c.editor->choose("blur");
+    QCOMPARE(c.editor->tool, QString("blur"));
+    auto strength = c.findChild<QSpinBox *>("annotationSize");
+    QCOMPARE(strength->maximum(), 32);
+    QCOMPARE(strength->accessibleName(), QStringLiteral("高斯模糊强度"));
+    QVERIFY(!c.findChild<QComboBox *>("annotationMosaicMode")->isVisible());
+    strength->setValue(6);
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(100, 100), QPointF(100, 100),
+                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent move(QEvent::MouseMove, QPointF(300, 250), QPointF(300, 250),
+                      Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    c.editor->press(&press);
+    c.editor->move(&move);
+    QVERIFY(c.doc.strokes.last().effectDraft);
+    QCOMPARE(c.doc.render(), c.doc.base); // Dragging does not repeatedly convolve.
+    QImage guide(c.size(), QImage::Format_ARGB32_Premultiplied);
+    guide.fill(Qt::transparent);
+    const auto empty = guide.copy();
+    {
+      QPainter p(&guide);
+      c.editor->paintHandles(p);
+    }
+    QVERIFY(guide != empty);
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(300, 250), QPointF(300, 250),
+                         Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    c.editor->release(&release);
+    QVERIFY(!c.doc.strokes.last().effectDraft);
+    QVERIFY(!c.doc.strokes.last().effectPixels.isNull());
+    const auto weak = c.doc.render();
+    QVERIFY(weak != c.doc.base);
+    const auto weakCache = c.doc.strokes.last().effectPixels.cacheKey();
+    strength->setValue(20);
+    const auto strong = c.doc.render();
+    QVERIFY(strong != weak);
+    QVERIFY(c.doc.strokes.last().effectPixels.cacheKey() != weakCache);
+    c.editor->action("undo")->trigger();
+    QCOMPARE(c.doc.render(), c.doc.base);
+    c.editor->action("redo")->trigger();
+    QCOMPARE(c.doc.render(), strong);
+    c.drag({150, 150}, {350, 260}); // Overlapping regions remain independent edits.
+    QCOMPARE(c.doc.strokes.size(), 2);
+    const auto points = c.doc.strokes.last().points;
+    c.drag({200, 180}, {220, 190}, Qt::AltModifier);
+    QCOMPARE(c.doc.strokes.size(), 2);
+    QCOMPARE(c.doc.strokes.last().points.first(), points.first() + QPointF(20, 10));
+    QVERIFY(!c.doc.strokes.last().effectPixels.isNull());
+    QVERIFY(c.editor->complete());
+    c.editor->choose("mosaic");
+    QCOMPARE(strength->maximum(), 200);
+    QCOMPARE(c.editor->tool, QString("mosaic"));
+  }
+  void gaussianFailedFinalizationCanRetryUndoOrCancel() {
+    Canvas c;
+    c.editor->choose("blur");
+    QSignalSpy notices(c.editor, &AnnotationEditor::notice);
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(100, 100), QPointF(100, 100),
+                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent move(QEvent::MouseMove, QPointF(300, 250), QPointF(300, 250),
+                      Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    c.editor->press(&press);
+    c.editor->move(&move);
+    c.editor->allowAllocation = [](qint64) { return false; };
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(300, 250), QPointF(300, 250),
+                         Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    c.editor->release(&release);
+    QVERIFY(c.doc.strokes.last().effectDraft);
+    QVERIFY(!c.editor->complete());
+    QVERIFY(!notices.isEmpty());
+    c.editor->choose("mosaic");
+    QCOMPARE(c.editor->tool, QString("blur"));
+    c.editor->action("undo")->trigger();
+    QVERIFY(c.doc.strokes.isEmpty());
+    c.editor->allowAllocation = [](qint64) { return true; };
+    c.editor->action("redo")->trigger();
+    QVERIFY(!c.doc.strokes.last().effectDraft);
+    QVERIFY(!c.doc.strokes.last().effectPixels.isNull());
+    const auto retained = c.doc.strokes.last().effectPixels;
+    const auto previousWidth = c.doc.strokes.last().width;
+    c.editor->allowAllocation = [](qint64) { return false; };
+    c.findChild<QSpinBox *>("annotationSize")->setValue(previousWidth + 1);
+    QCOMPARE(c.doc.strokes.last().effectPixels, retained);
+    QCOMPARE(c.findChild<QSpinBox *>("annotationSize")->value(), previousWidth);
+    QTest::keyClick(&c, Qt::Key_Escape);
+    QVERIFY(c.doc.strokes.isEmpty());
+    QVERIFY(c.editor->complete());
+  }
+  void gaussianPinExportRejectsUnfinishedEffect() {
+    Capture::ImageDocument document;
+    document.base = QImage(120, 100, QImage::Format_ARGB32_Premultiplied);
+    document.base.fill(Qt::white);
+    document.append({"line", {{5, 50}, {110, 50}}, Qt::black, 8});
+    // Pin construction completes the supplied document. Create the pending
+    // effect afterwards so this exercises export finalization, not construction.
+    PinWindow pin(document);
+    Capture::Stroke blur{"blur", {{10, 10}, {100, 90}}, Qt::black, 12};
+    blur.effectDraft = true;
+    pin.document.append(blur);
+    pin.annotations->allowAllocation = [](qint64) { return false; };
+    pin.annotations->sync();
+    QCOMPARE(pin.document.editable, 1);
+    QVERIFY(pin.document.strokes.last().effectDraft);
+    QVERIFY(pin.document.strokes.last().effectPixels.isNull());
+    QVERIFY(pin.exportImage().isNull());
+    QVERIFY(pin.document.strokes.last().effectDraft);
+    pin.annotations->allowAllocation = [](qint64) { return true; };
+    const auto output = pin.exportImage();
+    QVERIFY(!output.isNull());
+    QVERIFY(!pin.document.strokes.last().effectDraft);
+    blur.effectDraft = false;
+    document.append(blur);
+    QCOMPARE(output, document.render());
   }
   void lineEndpointsAndAccurateHit() {
     Canvas c;
@@ -633,6 +753,16 @@ private slots:
                   .save(QDir(output).filePath(QString("parameters-mosaic-") +
                                               theme + ".png")));
       c.editor->closePopovers();
+      c.editor->choose("blur");
+      c.findChild<QSpinBox *>("annotationSize")->setValue(18);
+      c.drag({180, 270}, {500, 370});
+      QApplication::processEvents();
+      QVERIFY(c.grab().save(
+          QDir(output).filePath(QString("gaussian-") + theme + ".png")));
+      QVERIFY(c.findChild<QScrollArea *>("annotationOptions")
+                  ->grab()
+                  .save(QDir(output).filePath(QString("parameters-gaussian-") +
+                                              theme + ".png")));
       c.editor->choose("eraser");
       c.findChild<QSpinBox *>("annotationSize")->setValue(40);
       c.drag({350, 130}, {350, 230});

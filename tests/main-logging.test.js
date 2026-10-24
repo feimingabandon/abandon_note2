@@ -2,9 +2,12 @@ import { EventEmitter } from 'node:events'
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { encodeLogRecord } from '../src/main/logging/log-store.mjs'
+import { createLogWriterClient } from '../src/main/logging/log-writer-client.js'
 import { drainOperationPerformance } from '../src/main/logging/operation-performance.js'
+import { createMainWindowIpc } from '../src/main/ipc/ipc-authorization.js'
+import { registerLoggingIpc } from '../src/main/ipc/register-logging-ipc.js'
 
 const testUserData = mkdtempSync(join(tmpdir(), 'abandon-note-logging-'))
 process.env.ABANDON_NOTE_LOG_TEST_USER_DATA = testUserData
@@ -164,6 +167,186 @@ describe('main-process logging', () => {
     expect(records[0]).toMatchObject({ type: 'diagnostic-export', metadata: { fixture: true } })
     expect(records.some((record) => record.message === marker)).toBe(true)
     expect(records.at(-1)).toEqual({ type: 'diagnostic-system', schemaVersion: 1, snapshot })
+  })
+
+  it('redacts attachment recovery evidence inside the existing diagnostic-system JSONL tail', async () => {
+    const target = join(testUserData, 'attachment-recovery-redacted-export.jsonl')
+    const privatePath = 'C:\\Users\\Example\\private\\payload.png'
+    const counts = {
+      completed: 0,
+      cleanupPending: 0,
+      referenceMissing: 0,
+      preservedConflict: 0,
+      undetermined: 1
+    }
+    await logging.exportLogs(
+      target,
+      { fixture: 'attachment-recovery' },
+      {
+        capturedAt: '2026-10-23T00:00:00.000Z',
+        attachmentRecovery: {
+          schemaVersion: 1,
+          scope: 'pending-attachment-recovery-round',
+          status: 'undetermined',
+          phase: 'failed',
+          partial: true,
+          counts,
+          operations: [
+            {
+              operationId: privatePath,
+              operationType: 'unknown',
+              status: 'undetermined',
+              decision: 'unknown',
+              failurePhase: 'read-manifest',
+              reason: `Failed ${privatePath} token=private-recovery-token data:image/png;base64,cHJpdmF0ZQ==`
+            }
+          ]
+        }
+      }
+    )
+    const jsonl = readFileSync(target, 'utf8')
+    const records = jsonl
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(records.filter((record) => record.type === 'diagnostic-system')).toHaveLength(1)
+    expect(records.at(-1)).toMatchObject({ type: 'diagnostic-system', schemaVersion: 1 })
+    const report = records.at(-1).snapshot.attachmentRecovery
+    expect(report).toMatchObject({
+      scope: 'pending-attachment-recovery-round',
+      status: 'undetermined',
+      phase: 'failed',
+      partial: true,
+      counts
+    })
+    expect(report.operations[0].operationId).toContain('[local-path]')
+    expect(report.operations[0].reason).toContain('[local-path]')
+    expect(report.operations[0].reason).toContain('[redacted]')
+    expect(report.operations[0].reason).toContain('[data omitted]')
+    expect(jsonl).not.toContain(privatePath)
+    expect(jsonl).not.toContain('private-recovery-token')
+    expect(jsonl).not.toContain('cHJpdmF0ZQ==')
+  })
+
+  it('keeps recovery scope and counts while the existing maxArray budget explicitly omits excess operations', async () => {
+    const target = join(testUserData, 'attachment-recovery-array-budget-export.jsonl')
+    const counts = {
+      completed: 129,
+      cleanupPending: 0,
+      referenceMissing: 0,
+      preservedConflict: 0,
+      undetermined: 0
+    }
+    await logging.exportLogs(
+      target,
+      { fixture: 'attachment-recovery-budget' },
+      {
+        attachmentRecovery: {
+          schemaVersion: 1,
+          scope: 'pending-attachment-recovery-round',
+          status: 'completed',
+          phase: 'finished',
+          partial: false,
+          counts,
+          operations: Array.from({ length: 129 }, (_, index) => ({
+            operationId: `operation-${index}`,
+            status: 'completed'
+          }))
+        },
+        largeSystemDetails: Array.from({ length: 128 }, () => 'system-details'.repeat(256))
+      }
+    )
+    const records = readFileSync(target, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(records.filter((record) => record.type === 'diagnostic-system')).toHaveLength(1)
+    expect(records.at(-1)).toMatchObject({ type: 'diagnostic-system', schemaVersion: 1 })
+    const report = records.at(-1).snapshot.attachmentRecovery
+    expect(report).toMatchObject({
+      scope: 'pending-attachment-recovery-round',
+      partial: false,
+      counts
+    })
+    expect(report.operations).toHaveLength(129)
+    expect(report.operations[127]).toEqual({ operationId: 'operation-127', status: 'completed' })
+    expect(report.operations.at(-1)).toEqual({ omittedItems: 1 })
+    expect(JSON.stringify(report)).not.toContain('[budget omitted]')
+  })
+
+  it('preserves actual registrar collector errors and recovery summary when large operations exhaust the JSONL budget', async () => {
+    const target = join(testUserData, 'registrar-attachment-recovery-budget-export.jsonl')
+    const handlers = new Map()
+    const window = { webContents: {}, isDestroyed: () => false }
+    const ipc = { handle: (channel, handler) => handlers.set(channel, handler) }
+    const counts = {
+      completed: 0,
+      cleanupPending: 0,
+      referenceMissing: 0,
+      preservedConflict: 0,
+      undetermined: 128
+    }
+    const dispose = registerLoggingIpc({
+      mainWindowIpc: createMainWindowIpc(ipc, () => window),
+      removeHandler: (channel) => handlers.delete(channel),
+      getWindow: () => window,
+      dialog: { showSaveDialog: async () => ({ canceled: false, filePath: target }) },
+      shell: { openPath: async () => '' },
+      diagnosticController: {
+        freeze: async () => ({ requestId: 'registrar-recovery-budget', complete: true }),
+        state: () => ({ mode: 'off' })
+      },
+      logStore: logging,
+      collectSystemDiagnostics: async () => {
+        throw new Error('system collector unavailable in budget fixture')
+      },
+      getAttachmentRecoveryReport: () => ({
+        schemaVersion: 1,
+        scope: 'pending-attachment-recovery-round',
+        status: 'undetermined',
+        phase: 'finished',
+        partial: false,
+        counts,
+        operations: Array.from({ length: 128 }, (_, index) => ({
+          operationId: `operation-${index}`,
+          operationType: 'reset',
+          status: 'undetermined',
+          decision: 'unknown',
+          failurePhase: 'read-manifest',
+          reason: 'unavailable-operation-detail-'.repeat(150)
+        }))
+      }),
+      getCrashDumpsPath: () => 'fixture-crash-dumps',
+      refreshCrashDumpIndex: async () => [],
+      logger: logging.logger
+    })
+    try {
+      await expect(
+        handlers.get('logs:export')({ sender: window.webContents }, { range: 'all' })
+      ).resolves.toEqual({ canceled: false, filePath: target })
+      const records = readFileSync(target, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+      expect(records.filter((record) => record.type === 'diagnostic-system')).toHaveLength(1)
+      const tail = records.at(-1)
+      expect(tail).toMatchObject({ type: 'diagnostic-system', schemaVersion: 1 })
+      expect(tail.snapshot.collectionErrors).toEqual([
+        { field: 'system', message: 'system collector unavailable in budget fixture' }
+      ])
+      expect(tail.snapshot.attachmentRecovery).toMatchObject({
+        scope: 'pending-attachment-recovery-round',
+        partial: false,
+        counts
+      })
+      const operations = tail.snapshot.attachmentRecovery.operations
+      expect(operations.length).toBeGreaterThan(1)
+      expect(operations.length).toBeLessThan(128)
+      expect(operations.at(-1).omittedItems).toBeGreaterThan(0)
+    } finally {
+      dispose()
+    }
+    expect(handlers.size).toBe(0)
   })
 
   it('persists action correlation fields and can export only one run session', async () => {
@@ -527,5 +710,268 @@ describe('main-process logging', () => {
     for (const listener of process.listeners('warning')) {
       if (!beforeWarning.has(listener)) process.removeListener('warning', listener)
     }
+  })
+
+  it('returns one shared close with the normalized flush and actual writer termination result', async () => {
+    const closing = logging.closeLogs()
+    expect(logging.closeLogs()).toBe(closing)
+    const result = await closing
+    expect(result.writer.termination).toMatchObject({ confirmed: true, outcome: 'completed' })
+    expect(result.writer.termination.exitCode).toEqual(expect.any(Number))
+    // The earlier controlled storage failure remains part of this logging session.
+    expect(result.flush.incomplete).toBe(true)
+    expect(result.outcome).toBe('degraded')
+    expect(result.incomplete).toBe(true)
+    expect(logging.getLoggingHealth().shutdown).toEqual(result)
+  })
+})
+
+function completedLogClose(outcome = 'completed') {
+  const flush = { status: 'ready', incomplete: outcome !== 'completed', queuedBytes: 0 }
+  return {
+    outcome,
+    flush,
+    writer: {
+      outcome,
+      incomplete: flush.incomplete,
+      flush,
+      termination: { requested: true, confirmed: true, outcome: 'completed', exitCode: 1 }
+    }
+  }
+}
+
+function logBarrierFixture(overrides = {}) {
+  vi.useFakeTimers()
+  const app = new EventEmitter()
+  app.exit = vi.fn()
+  const close = vi.fn(async () => completedLogClose())
+  const save = vi.fn()
+  const observe = vi.fn()
+  const barrier = logging.loggingInternals.installFinalLogBarrier({
+    app,
+    close,
+    save,
+    identity: { sessionId: 'controlled-logging-close', pid: 1234 },
+    getExitCode: () => 0,
+    getProgress: () => ({ status: 'closing', pendingRecords: 2 }),
+    onResult: observe,
+    ...overrides
+  })
+  const event = () => {
+    const value = { preventDefault: vi.fn() }
+    app.emit('will-quit', value)
+    return value
+  }
+  return { app, close, save, observe, barrier, event }
+}
+
+describe('final logging quit barrier', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('prevents every reentrant quit event while sharing one close, observation and exit', async () => {
+    let release
+    const close = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          release = resolve
+        })
+    )
+    const state = logBarrierFixture({ close })
+    const first = state.event(),
+      second = state.event()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(first.preventDefault).toHaveBeenCalledOnce()
+    expect(second.preventDefault).toHaveBeenCalledOnce()
+    expect(close).toHaveBeenCalledOnce()
+    expect(state.app.exit).not.toHaveBeenCalled()
+    release(completedLogClose())
+    const result = await state.barrier.settled()
+    expect(result).toMatchObject({
+      schemaVersion: 1,
+      sessionId: 'controlled-logging-close',
+      pid: 1234,
+      outcome: 'completed',
+      flush: { incomplete: false },
+      reportError: null,
+      exitCode: 0
+    })
+    expect(state.save).toHaveBeenCalledExactlyOnceWith(result)
+    expect(state.observe).toHaveBeenCalledExactlyOnceWith(result)
+    expect(state.app.exit).toHaveBeenCalledExactlyOnceWith(0)
+    const third = state.event()
+    expect(third.preventDefault).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(close).toHaveBeenCalledOnce()
+    expect(state.app.exit).toHaveBeenCalledOnce()
+  })
+
+  it.each([0, 7])(
+    'preserves exit code %i for a degraded flush whose worker termination is confirmed',
+    async (exitCode) => {
+      const state = logBarrierFixture({
+        getExitCode: () => exitCode,
+        close: async () => completedLogClose('degraded')
+      })
+      state.event()
+      await vi.advanceTimersByTimeAsync(0)
+      const result = await state.barrier.settled()
+      expect(result).toMatchObject({ outcome: 'degraded', flush: { incomplete: true }, exitCode })
+      expect(result.writer.termination).toMatchObject({ confirmed: true, exitCode: 1 })
+      expect(state.app.exit).toHaveBeenCalledExactlyOnceWith(exitCode)
+    }
+  )
+
+  it('saves a close rejection and still exits through the same final path', async () => {
+    const state = logBarrierFixture({
+      close: async () => {
+        throw Object.assign(new Error('terminate rejected'), { code: 'CONTROLLED' })
+      }
+    })
+    state.event()
+    await vi.advanceTimersByTimeAsync(0)
+    const result = await state.barrier.settled()
+    expect(result).toMatchObject({
+      outcome: 'failed',
+      writer: null,
+      exitCode: 1,
+      error: { message: 'terminate rejected', code: 'CONTROLLED' },
+      flush: { incomplete: true, reason: 'close-rejected' }
+    })
+    expect(state.save).toHaveBeenCalledExactlyOnceWith(result)
+    expect(state.app.exit).toHaveBeenCalledExactlyOnceWith(1)
+  })
+
+  it('does not wait forever for an unknown close and ignores its later successful result', async () => {
+    let release
+    const state = logBarrierFixture({
+      timeoutMs: 2000,
+      close: () =>
+        new Promise((resolve) => {
+          release = resolve
+        })
+    })
+    state.event()
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(2000)
+    const result = await state.barrier.settled()
+    expect(result).toMatchObject({
+      outcome: 'timed-out',
+      exitCode: 1,
+      writer: {
+        termination: { requested: null, confirmed: false, outcome: 'timed-out' },
+        progress: { pendingRecords: 2 }
+      }
+    })
+    const saved = JSON.stringify(result)
+    release(completedLogClose())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(JSON.stringify(state.barrier.snapshot())).toBe(saved)
+    expect(state.save).toHaveBeenCalledOnce()
+    expect(state.app.exit).toHaveBeenCalledExactlyOnceWith(1)
+  })
+
+  it('retains the real flush timeout and confirmed termination at the full combined budget', async () => {
+    let writer
+    let writerResult
+    let terminationStartedAt
+    let terminationResolvedAt
+    const close = vi.fn(async () => {
+      writerResult = await writer.close(1000, { terminateTimeoutMs: 1000 })
+      return {
+        outcome: writerResult.outcome,
+        incomplete: writerResult.incomplete,
+        flush: writerResult.flush,
+        writer: writerResult
+      }
+    })
+    // Keep the barrier's production default: an earlier outer watchdog must not
+    // replace a complete writer result with unknown termination at this edge.
+    const state = logBarrierFixture({ close, getProgress: () => writer.snapshot() })
+    const startedAt = Date.now()
+    const worker = new EventEmitter()
+    worker.ref = () => {}
+    worker.unref = () => {}
+    worker.postMessage = vi.fn()
+    worker.terminate = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          terminationStartedAt = Date.now()
+          setTimeout(() => {
+            terminationResolvedAt = Date.now()
+            resolve(1)
+          }, 1000)
+        })
+    )
+    writer = createLogWriterClient({
+      directory: 'unused',
+      workerFile: 'unused',
+      createWorker: () => worker
+    })
+    worker.emit('message', { ready: true })
+    expect(writer.enqueue({ id: 'unacknowledged-at-quit', message: 'pending' }, 3)).toBe(true)
+    expect(worker.postMessage).toHaveBeenCalledOnce()
+    expect(worker.postMessage.mock.calls[0][0].operation).toBe('append')
+    // No append acknowledgement: preserve the original flush-timeout result.
+    state.event()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(close).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(999)
+    expect(worker.terminate).not.toHaveBeenCalled()
+    expect(state.app.exit).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(worker.terminate).toHaveBeenCalledOnce()
+    expect(terminationStartedAt - startedAt).toBe(1000)
+    await vi.advanceTimersByTimeAsync(999)
+    expect(state.app.exit).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(terminationResolvedAt - terminationStartedAt).toBe(1000)
+    expect(writerResult).toMatchObject({
+      outcome: 'timed-out',
+      incomplete: true,
+      flush: { incomplete: true, reason: 'flush-timeout', pendingRecords: 1 },
+      termination: { requested: true, outcome: 'completed', confirmed: true, exitCode: 1 }
+    })
+    const result = await state.barrier.settled()
+    expect(result).toMatchObject({
+      outcome: 'timed-out',
+      flush: { incomplete: true, reason: 'flush-timeout', pendingRecords: 1 },
+      writer: {
+        outcome: 'timed-out',
+        termination: { requested: true, outcome: 'completed', confirmed: true, exitCode: 1 }
+      },
+      exitCode: 1
+    })
+    expect(state.save).toHaveBeenCalledExactlyOnceWith(result)
+    expect(state.app.exit).toHaveBeenCalledExactlyOnceWith(1)
+  })
+
+  it('never reports unknown termination as success even if its caller returned completed', async () => {
+    const unknown = completedLogClose()
+    unknown.writer.termination.confirmed = false
+    unknown.writer.termination.outcome = 'timed-out'
+    const state = logBarrierFixture({ close: async () => unknown })
+    state.event()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await state.barrier.settled()).toMatchObject({ outcome: 'timed-out', exitCode: 1 })
+    expect(state.app.exit).toHaveBeenCalledExactlyOnceWith(1)
+  })
+
+  it('retains an observation failure without waiting for the failed log sink or skipping exit', async () => {
+    const state = logBarrierFixture({
+      save: () => {
+        throw Object.assign(new Error('shutdown-logging EACCES'), { code: 'EACCES' })
+      }
+    })
+    state.event()
+    await vi.advanceTimersByTimeAsync(0)
+    const result = await state.barrier.settled()
+    expect(result).toMatchObject({
+      outcome: 'failed',
+      exitCode: 1,
+      writer: { termination: { confirmed: true } },
+      reportError: { message: 'shutdown-logging EACCES', code: 'EACCES' }
+    })
+    expect(state.observe).toHaveBeenCalledExactlyOnceWith(result)
+    expect(state.app.exit).toHaveBeenCalledExactlyOnceWith(1)
   })
 })

@@ -3,7 +3,7 @@ import { enterPopover, leavePopover } from '../../utils/popoverMotion.js'
 import { pointerMenuStyle } from '../../utils/anchoredPopover.js'
 import { measureRendererLayout } from '../../utils/performanceDiagnostics.js'
 import { isComposingInput } from '../../utils/inputComposition.js'
-import { useDraftProtection } from '../../composables/useDraftProtection.js'
+import { editingDataGeneration, useDraftProtection } from '../../composables/useDraftProtection.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import MonthEventBar from './MonthEventBar.vue'
 import DateContextBadge from '../almanac/DateContextBadge.vue'
@@ -59,6 +59,7 @@ const contextMenuRef = ref(null)
 const dayPreviewRef = ref(null)
 const quickDrafts = reactive(new Map())
 const quickSavingKeys = reactive(new Set())
+let disposed = false
 const activeQuickCreateKey = ref('')
 const quickCreateReady = ref(false)
 const contextMenuVisible = ref(false)
@@ -548,6 +549,13 @@ function onQuickInputKeydown(event, day) {
 
 async function submitQuickNote(day) {
   if (quickSavingKeys.has(day.key)) return
+  const generation = editingDataGeneration.value
+  const prepared = await protectedDraft.flush()
+  if (disposed || generation !== editingDataGeneration.value || quickSavingKeys.has(day.key)) return
+  if (!prepared.persisted) {
+    showMessage('warning', '请先确认草稿暂存完成后再创建便签')
+    return
+  }
   const content = quickDraft(day.key)
   if (!content.trim()) {
     showMessage('warning', '请输入便签内容')
@@ -568,11 +576,22 @@ async function submitQuickNote(day) {
   try {
     const created = await window.api.createNote(options)
     if (!created?.id) throw new Error('创建接口未返回便签')
+    if (disposed || generation !== editingDataGeneration.value) return
     quickDrafts.set(day.key, '')
+    const state = await protectedDraft.flush()
+    if (disposed || generation !== editingDataGeneration.value) return
     emit('quick-created', created)
-    showMessage('success', day.key < props.todayKey ? '历史便签补录成功' : '便签创建成功')
+    showMessage(
+      state.persisted ? 'success' : 'warning',
+      state.persisted
+        ? day.key < props.todayKey
+          ? '历史便签补录成功'
+          : '便签创建成功'
+        : '便签已创建，但其余草稿暂存失败，请先保存再离开。'
+    )
     if (activeQuickCreateKey.value === day.key) await focusQuickCreator(day.key)
   } catch (error) {
+    if (disposed || generation !== editingDataGeneration.value) return
     console.error('[MonthCalendarGrid] 快速创建失败:', error)
     showMessage('error', error.message || '创建失败，请重试')
     if (activeQuickCreateKey.value === day.key) await focusQuickCreator(day.key)
@@ -774,6 +793,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
   observer?.disconnect()
   fontObserver?.disconnect()
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
@@ -787,7 +807,7 @@ onBeforeUnmount(() => {
   closeDayPreview()
   cancelEventBarMotion()
 })
-useDraftProtection({
+const protectedDraft = useDraftProtection({
   key: 'calendar:quick',
   fields: {},
   dirty: () => [...quickDrafts.values()].some((value) => !!value),

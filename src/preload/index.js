@@ -12,8 +12,14 @@
 import { contextBridge, ipcRenderer as electronIpcRenderer } from 'electron'
 import { getSystemNotificationCapability } from '../shared/notification-policy.js'
 import { createDiagnosticIpcRenderer } from './diagnostic-ipc.js'
+import { createSettingsClient } from './settings-client.js'
+import { createDraftAssetsClient } from './draft-assets-client.js'
 
 const ipcRenderer = createDiagnosticIpcRenderer(electronIpcRenderer)
+const settingsClient = createSettingsClient(ipcRenderer)
+const draftAssetsClient = createDraftAssetsClient({
+  invoke: settingsClient.invoke.bind(settingsClient)
+})
 
 const editingDraftSessionId =
   process.argv
@@ -26,6 +32,17 @@ const editingDraftSessionId =
  * 每个方法通过 ipcRenderer.send（单向）或 ipcRenderer.invoke（双向）与主进程通信
  */
 const api = {
+  draftAssets: Object.freeze({
+    openOwner: draftAssetsClient.openOwner,
+    stage: draftAssetsClient.stage,
+    preview: draftAssetsClient.preview,
+    thumbnail: draftAssetsClient.thumbnail,
+    release: draftAssetsClient.release,
+    discardOwner: draftAssetsClient.discardOwner,
+    submitNote: draftAssetsClient.submitNote,
+    noteState: draftAssetsClient.noteState,
+    waitNote: draftAssetsClient.waitNote
+  }),
   runtimeCapabilities: {
     platform: process.platform,
     systemNotifications: getSystemNotificationCapability(),
@@ -45,6 +62,10 @@ const api = {
   onDiagnosticFlush: (callback) => ipcRenderer.diagnostics.onFlush(callback),
   registerDiagnosticCapability: (name) => ipcRenderer.diagnostics.capability(name),
   getDiagnosticState: () => ipcRenderer.invoke('logs:state'),
+  /** 读取当前来源本轮附件恢复报告，不执行扫描或重试。 */
+  getAttachmentRecoveryReport: () => ipcRenderer.invoke('logs:attachment-recovery'),
+  /** 封写并排空后尝试本轮附件恢复，调用方不能选择数据源或路径。 */
+  retryAttachmentRecovery: () => ipcRenderer.invoke('attachments:recovery-retry'),
   startDeepDiagnostics: () => ipcRenderer.invoke('logs:mode-start'),
   extendDeepDiagnostics: () => ipcRenderer.invoke('logs:mode-extend'),
   stopDeepDiagnostics: () => ipcRenderer.invoke('logs:mode-stop'),
@@ -63,11 +84,11 @@ const api = {
 
   // ---- 窗口锁定 ----
   /** 切换窗口锁定状态（禁止/允许移动和缩放），返回最终状态及节流结果。 */
-  toggleLock: () => ipcRenderer.invoke('toggle-lock'),
+  toggleLock: () => settingsClient.invoke('toggle-lock'),
 
   // ---- 主窗口层级 ----
   /** 设置 top / normal / bottom 三态窗口层级，返回最终生效状态。 */
-  setWindowZOrderMode: (mode) => ipcRenderer.invoke('set-window-z-order-mode', mode),
+  setWindowZOrderMode: (mode) => settingsClient.invoke('set-window-z-order-mode', mode),
 
   // ---- 缩放手柄（窗口边界操作） ----
   /** 获取当前窗口的位置和尺寸（双向通信，返回 Promise） */
@@ -106,28 +127,28 @@ const api = {
     ipcRenderer.invoke('titlebar-window:end-drag', diagnostics),
   // ---- 设置桥接（双向通信，均返回 Promise） ----
   /** 按共享 schema ID 写入设置；数据库键名和校验不暴露给 renderer */
-  setSettingValue: (id, value) => ipcRenderer.invoke('set-setting-value', id, value),
+  setSettingValue: (id, value) => settingsClient.invoke('set-setting-value', id, value),
   beginViewVisibilityShortcutCapture: (action = 'viewVisibility') =>
     ipcRenderer.invoke('shortcut:view-visibility-capture-start', action),
   endViewVisibilityShortcutCapture: (action = 'viewVisibility') =>
     ipcRenderer.invoke('shortcut:view-visibility-capture-end', action),
   setViewVisibilityShortcut: (accelerator) =>
-    ipcRenderer.invoke('shortcut:view-visibility-set', accelerator),
+    settingsClient.invoke('shortcut:view-visibility-set', accelerator),
   getShortcutStartupNotice: () => ipcRenderer.invoke('shortcuts:startup-notice'),
   dismissShortcutStartupNotice: () => ipcRenderer.invoke('shortcuts:dismiss-startup-notice'),
   retryShortcuts: () => ipcRenderer.invoke('shortcuts:retry'),
   /** 原子更新小黑条模式与贴边方向多选 */
-  setDockConfig: (config) => ipcRenderer.invoke('set-dock-config', config),
+  setDockConfig: (config) => settingsClient.invoke('set-dock-config', config),
   /** 获取 DB 值覆盖共享默认值后的完整设置快照 */
-  getSettingsSnapshot: () => ipcRenderer.invoke('get-settings-snapshot'),
+  getSettingsSnapshot: () => settingsClient.getSnapshot(),
+  /** Application metadata has its own revision and never stands in for saved values. */
+  getSettingsApplicationState: () => settingsClient.getApplicationState(),
+  onSettingsApplicationChanged: (callback) => settingsClient.subscribeApplication(callback),
+  retrySettingsApplication: (targets) => settingsClient.retryApplication(targets),
   /** 只恢复当前视图的独立默认设置（不影响公共设置、其他视图和业务数据） */
-  resetSettings: () => ipcRenderer.invoke('reset-settings'),
+  resetSettings: () => settingsClient.invoke('reset-settings'),
   /** 监听设置快照变化；返回取消监听函数 */
-  onSettingsChanged: (callback) => {
-    const handler = (_event, snapshot) => callback(snapshot)
-    ipcRenderer.on('settings:changed', handler)
-    return () => ipcRenderer.removeListener('settings:changed', handler)
-  },
+  onSettingsChanged: (callback) => settingsClient.subscribe(callback),
   onMainViewSwitchFinished: (callback) => {
     const handler = (_event, result) => callback(result)
     ipcRenderer.on('view:switch-finished', handler)
@@ -153,7 +174,11 @@ const api = {
 
   // ---- 生命周期通知 ----
   /** 通知主进程渲染已就绪，可以显示窗口了 */
-  rendererReady: (viewMode) => ipcRenderer.send('renderer-ready', { viewMode }),
+  rendererReady: (viewMode) => {
+    void settingsClient.send('renderer-ready', { viewMode }).catch((error) => {
+      console.warn('[lifecycle] 主视图就绪通知未发送:', error)
+    })
+  },
 
   // ---- 应用内消息条（主进程降级提醒：系统通知发送失败时改用应用内 Toast） ----
   /** 监听主进程下发的应用内消息；返回取消监听函数。 */
@@ -180,11 +205,11 @@ const api = {
   /** 直接读取操作系统的开机自启真实状态（不使用数据库副本） */
   verifyAutoStart: () => ipcRenderer.invoke('verify-auto-start'),
   /** 设置开机自启并回读操作系统真实状态（不写入 app_settings） */
-  setAutoStart: (enabled) => ipcRenderer.invoke('set-auto-start', enabled),
+  setAutoStart: (enabled) => settingsClient.invoke('set-auto-start', enabled),
 
   // ---- 系统模糊 ----
   /** 设置模糊配置（立即生效 + 持久化） */
-  setBlurConfig: (config) => ipcRenderer.invoke('set-blur-config', config),
+  setBlurConfig: (config) => settingsClient.invoke('set-blur-config', config),
   /** 监听统一调度器产出的毛玻璃诊断结果 */
   onBlurDiagnosticChanged: (callback) => {
     const handler = (_event, diagnostic) => callback(diagnostic)
@@ -197,10 +222,22 @@ const api = {
     ipcRenderer.invoke('wallpapers:get-thumbnail', { id, maxSize }),
   getWallpaperData: (id, original = false) =>
     ipcRenderer.invoke('wallpapers:get-data', { id, original }),
-  saveWallpaper: (payload) => ipcRenderer.invoke('wallpapers:save', payload),
-  activateWallpaper: (id) => ipcRenderer.invoke('wallpapers:activate', { id }),
-  disableWallpaper: () => ipcRenderer.invoke('wallpapers:disable'),
-  deleteWallpaper: (id) => ipcRenderer.invoke('wallpapers:delete', { id }),
+  saveWallpaper: (payload) => settingsClient.invoke('wallpapers:save', payload),
+  activateWallpaper: (id) => settingsClient.invoke('wallpapers:activate', { id }),
+  disableWallpaper: () => settingsClient.invoke('wallpapers:disable'),
+  deleteWallpaper: (id) => settingsClient.invoke('wallpapers:delete', { id }),
+  onWallpaperRetirementRequested: (callback) => {
+    const handler = (_event, request) => callback(request)
+    ipcRenderer.on('wallpapers:retirement-request', handler)
+    return () => ipcRenderer.removeListener('wallpapers:retirement-request', handler)
+  },
+  onWallpaperRetirementCancelled: (callback) => {
+    const handler = (_event, request) => callback(request)
+    ipcRenderer.on('wallpapers:retirement-cancel', handler)
+    return () => ipcRenderer.removeListener('wallpapers:retirement-cancel', handler)
+  },
+  acknowledgeWallpaperRetirement: (payload) =>
+    settingsClient.invoke('wallpapers:retirement-ack', payload),
   // ---- 便签 CRUD ----
   /** 创建便签 */
   createNote: (options) => ipcRenderer.invoke('notes:create', options),
@@ -382,12 +419,20 @@ const api = {
   listImages: (noteId) => ipcRenderer.invoke('images:list', { noteId }),
   /** 获取图片 Base64 */
   getImageBase64: (relativePath) => ipcRenderer.invoke('images:get-base64', { relativePath }),
+  onNewNoteRequested: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('notes:new-requested', handler)
+    return () => ipcRenderer.removeListener('notes:new-requested', handler)
+  },
   /** 获取原图像素尺寸 */
   getImageDimensions: (relativePath) =>
     ipcRenderer.invoke('images:get-dimensions', { relativePath }),
   /** 获取图片缩略图 */
   getImageThumbnail: (relativePath, maxSize = 240) =>
     ipcRenderer.invoke('images:get-thumbnail', { relativePath, maxSize }),
+  /** 一次读取获取缩略图及原图像素尺寸 */
+  getImageThumbnailDetails: (relativePath, maxSize = 240) =>
+    ipcRenderer.invoke('images:get-thumbnail-details', { relativePath, maxSize }),
   /** 获取图片数量 */
   getImageCount: (noteId) => ipcRenderer.invoke('images:count', { noteId }),
 
@@ -395,14 +440,21 @@ const api = {
   /** 捕获全屏截图，返回 data URL */
   captureScreen: (options) => ipcRenderer.invoke('screenshot:capture', options),
   acknowledgeScreenshot: (delivery) => ipcRenderer.invoke('screenshot:ack', delivery),
+  reportScreenshotDelivery: (delivery) =>
+    ipcRenderer.invoke('screenshot:delivery-progress', delivery),
   cancelScreenshot: (token) => ipcRenderer.invoke('screenshot:cancel', token),
   invalidateScreenshotSource: (token) => ipcRenderer.invoke('screenshot:source-gone', token),
   setCaptureShortcut: (key, accelerator) =>
-    ipcRenderer.invoke('shortcut:capture-set', key, accelerator),
+    settingsClient.invoke('shortcut:capture-set', key, accelerator),
   onScreenshotDelivery: (callback) => {
     const handler = (_event, delivery) => callback(delivery)
     ipcRenderer.on('screenshot:delivery', handler)
     return () => ipcRenderer.removeListener('screenshot:delivery', handler)
+  },
+  onScreenshotDeliveryState: (callback) => {
+    const handler = (_event, state) => callback(state)
+    ipcRenderer.on('screenshot:delivery-state', handler)
+    return () => ipcRenderer.removeListener('screenshot:delivery-state', handler)
   },
   onScreenshotFinished: (callback) => {
     const handler = (_event, result) => callback(result)

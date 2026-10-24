@@ -1,6 +1,6 @@
 <script setup>
 import BaseButton from '../ui/BaseButton.vue'
-import { useDraftProtection } from '../../composables/useDraftProtection.js'
+import { editingDataGeneration, useDraftProtection } from '../../composables/useDraftProtection.js'
 import { useNewTemplatePreferences } from '../../composables/useNewTemplatePreferences.js'
 import { useTemplatePreviewClock } from '../../composables/useTemplatePreviewClock.js'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
@@ -364,7 +364,7 @@ const previewClock = useTemplatePreviewClock({
   refresh: refreshPreview
 })
 
-function submit() {
+async function submit() {
   previewClock.sync()
   if (!canSubmit.value) return
   if (tagIds.value.length > MAX_ASSIGNED_TAGS) {
@@ -379,6 +379,14 @@ function submit() {
   restoreSubmissionFocus = !!submittedFocus
   submittedReset = false
   lockSubmission()
+  const generation = editingDataGeneration.value
+  const prepared = await protectedDraft.flush()
+  if (disposed || generation !== editingDataGeneration.value) return
+  if (!prepared.persisted) {
+    showMessage('error', '草稿暂存未完成，请保留内容后重试')
+    await unlockSubmission()
+    return
+  }
   emit('submit', {
     content: content.value,
     recurrenceRule: recurrenceRule.value,
@@ -465,32 +473,33 @@ watch(
   }
 )
 
-function reset() {
+async function reset() {
+  const generation = editingDataGeneration.value
   const resettingSubmission = submissionLocked.value
   submittedReset = resettingSubmission
-  protectedDraft.clear()
-  protectedDraft.resume()
+  await protectedDraft.clear()
+  if (disposed || generation !== editingDataGeneration.value) return
   const sequence = ++initialLoadSequence
   loadInitial(null)
   previewRevision.value += 1
-  nextTick(() => {
-    if (sequence === initialLoadSequence) {
-      initialSnapshot.value = currentSnapshot.value
-      initialRuleSnapshot.value = currentRuleSnapshot.value
-      if (resettingSubmission) return
-      const root = formRootRef.value
-      const focused = document.activeElement
-      const belongsToForm = root?.contains(focused)
-      const disabledSubmitLostFocus =
-        focused === document.body &&
-        submittedFocus?.isConnected &&
-        submittedFocus.disabled === true &&
-        root?.contains(submittedFocus)
-      if (props.active && !props.editorMode && (belongsToForm || disabledSubmitLostFocus))
-        root?.querySelector('textarea')?.focus({ preventScroll: true })
-      submittedFocus = null
-    }
-  })
+  await nextTick()
+  if (!disposed && generation === editingDataGeneration.value && sequence === initialLoadSequence) {
+    initialSnapshot.value = currentSnapshot.value
+    initialRuleSnapshot.value = currentRuleSnapshot.value
+    await protectedDraft.resume()
+    if (resettingSubmission || disposed || generation !== editingDataGeneration.value) return
+    const root = formRootRef.value
+    const focused = document.activeElement
+    const belongsToForm = root?.contains(focused)
+    const disabledSubmitLostFocus =
+      focused === document.body &&
+      submittedFocus?.isConnected &&
+      submittedFocus.disabled === true &&
+      root?.contains(submittedFocus)
+    if (props.active && !props.editorMode && (belongsToForm || disabledSubmitLostFocus))
+      root?.querySelector('textarea')?.focus({ preventScroll: true })
+    submittedFocus = null
+  }
 }
 defineExpose({ reset, hasChanges, clearDraft: () => protectedDraft.clear() })
 onBeforeUnmount(() => {
@@ -518,7 +527,7 @@ const protectedDraft = useDraftProtection({
     tagIds
   },
   dirty: () => hasChanges.value,
-  busy: () => props.submitting,
+  busy: () => props.submitting || submissionLocked.value,
   restoreExtra: () => {
     // Restored time is already a user choice; first expansion must not replace it.
     hasActivated = true
